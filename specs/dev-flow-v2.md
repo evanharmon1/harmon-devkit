@@ -2,7 +2,7 @@
 
 - **Status:** Draft
 - **Owner:** Evan Harmon
-- **Date:** 2026-08-29
+- **Date:** 2026-08-31
 - **Related:** [harmon-devkit milestone "Dev flow v2"](https://github.com/evanharmon1/harmon-devkit/milestone/2)
   (anchor issue [#633](https://github.com/evanharmon1/harmon-devkit/issues/633)),
   [harmon-init milestone "Dev flow v2"](https://github.com/evanharmon1/harmon-init/milestone/4),
@@ -10,7 +10,7 @@
   [docs/product/domain.md § Lifecycles](../docs/product/domain.md),
   [docs/glossary.md](../docs/glossary.md),
   [docs/decisions/0002](../docs/decisions/0002-round-evidence-lives-on-the-pr.md),
-  [harmon-init decision record 0008](https://github.com/evanharmon1/harmon-init/pull/1114)
+  [harmon-init decision record 0009](https://github.com/evanharmon1/harmon-init/pull/1114)
   (beside 0006/0007; PR #1114).
 
 ## Problem / Why
@@ -79,10 +79,10 @@ on harmon-devkit is not a signal.
 ## Non-goals
 
 - An orchestrator *agent*. The orchestrator is the session, interactive or
-  headless (harmon-init decision record 0008).
+  headless (harmon-init decision record 0009).
 - Foreman's supervision loop. Foreman consumes the shared contracts in its own
   Python; it never wraps devkit's skills or scripts.
-- Parallel implementers or reviewer fan-out
+- Reviewer fan-out beyond the finders declared for a stage
   ([#603](https://github.com/evanharmon1/harmon-devkit/issues/603)).
 - A dedicated `fixer` role. Fix rounds re-dispatch the implementer; a fixer is
   a later option if that proves weak.
@@ -111,14 +111,17 @@ The orchestrator-driven span is implement → integration; that span is what
 "unattended" means in the metric. `merge` is always a human.
 
 `gauntlet` and `shepherd` are retired names. Skills are named for stages
-(`/implement`, `/review`, `/integrate`); agents for roles (`implementer`,
-`reviewer`, `integrator`). `/orchestrator` is the session's standing operating
-mode, not a stage. Each stage skill owns its own procedure and ends by naming
-the next stage; there is no skill that restates the walk.
+(`/implement`, `/challenge`, `/review`, `/integrate`); agents for roles
+(`implementer`, `challenger`, `reviewer`, `integrator`). `/orchestrator` is the
+session's standing operating mode, not a stage. Each stage skill owns its own
+procedure and ends by naming the next stage; there is no skill that restates
+the walk.
 
 This milestone **builds** implement, verify, challenge, review, security,
 integration, `/orchestrator`, and the retro integration
 ([#664](https://github.com/evanharmon1/harmon-devkit/issues/664)). It
+supports parallel implementers through the implement-stage pool, council's
+family-diversity constraint, and breadth ceilings. It
 **names only** explore, deployment, release, smoke. Kickoff, claim, plan, wrap
 are unchanged.
 
@@ -131,10 +134,21 @@ file (`ai/agents/<role>.md`) is one implementation of a role.
 
 | Role | Returns | May write | Never |
 |---|---|---|---|
-| `implementer` | `result.implementer` | commits on the branch; the round push via `push-round.sh` | open PRs, merge, adjudicate |
+| `implementer` | `result.implementer` | commits on the branch its dispatch names; feature-branch round pushes through `push-round.sh` | push the feature branch from a parallel lane; open PRs, merge, adjudicate |
+| `challenger` | `result.challenger` | nothing outside its result | fix, dispose, decide an exit |
 | `reviewer` | `result.reviewer` | nothing outside its result | fix, dispose, decide an exit |
 | `integrator` | `result.integrator` | the Codex trigger comment; thread replies of **given** text | author reply text, dispose, promote |
 | orchestrator (the session) | — | dispositions, adjudication record, `gh pr create --draft`, the PR body, evidence and run-record comments, `gh pr ready` | merge; override an exit downward |
+
+**Invariant:** for any run, no interleaving of writers — parallel lanes,
+resumed sessions, or concurrent machines — may land more than one writer's
+outputs on the feature branch, and a superseded run's writes are rejected.
+The enforcing mechanism belongs to #638's stage skills and #635's broker
+contract, not this spec: for each feature-branch write, the broker atomically
+binds the expected head to the active run identity and generation. A bare
+expected-head compare-and-set is insufficient because a superseded and a
+resumed run can present the same head; the two-machines-same-head race and
+crashed-writer resumption are required test cases there.
 
 **This spec is the anchor; the implementation issues are reconciled to it.**
 [#634](https://github.com/evanharmon1/harmon-devkit/issues/634),
@@ -154,10 +168,10 @@ and every permitted external write goes through a broker script that
 validates its one action (`push-round.sh` for the round push; a thread-reply
 helper that posts exactly the text it is given; the Codex-cycle helper's
 reserve → post → attach sequence for the `@codex review` trigger, which is
-the integrator's one authorized comment). The `reviewer` and
-`integrator` roles **must not run with ambient write credentials**: a
-harness that cannot restrict a subagent's tools (a plain subagent inheriting
-the orchestrator's shell and `gh` token) may not dispatch those roles, and
+the integrator's one authorized comment). The `challenger`, `reviewer`, and
+`integrator` roles **must not run with ambient write credentials**: a harness
+that cannot restrict a subagent's tools (a plain subagent inheriting the
+orchestrator's shell and `gh` token) may not dispatch those roles, and
 `/orchestrator` refuses the dispatch rather than disclosing the gap — a
 disclosed bypass is still a bypass. The implementer is the one role that
 legitimately pushes, through `push-round.sh`. Foreman's sandbox is the
@@ -167,9 +181,11 @@ equivalent scoping for headless runs.
 brief is prose. The agent → orchestrator result is validated on receipt
 against `ai/schemas/` before the orchestrator reads it.
 
-**Whoever holds the worktree pushes.** In interactive and sandboxed runs the
-implementer commits and pushes each round through `push-round.sh`, so a crash
-never strands a fix on one machine. Under Foreman, Foreman pushes.
+**Whoever holds the dispatched worktree writes its named branch.** In
+interactive and sandboxed runs the feature-branch implementer commits and
+pushes each round through `push-round.sh`, so a crash never strands a fix on
+one machine. Parallel implementers remain confined to their lane branches;
+they never share feature-branch write authority. Under Foreman, Foreman pushes.
 
 **The orchestrator is interactive or headless with one procedure.** A
 Foreman-dispatched session and a human-attended one follow the same stage
@@ -189,7 +205,12 @@ Every result is an **envelope** wrapping a per-role payload
   "status": "completed",
   "head": "<40-hex sha>",
   "produced_at": "2026-08-29T15:04:05Z",
-  "producer": { "harness": "claude-code", "model": "…", "tier": "frontier" },
+  "producer": {
+    "harness": "claude-code",
+    "family": "claude",
+    "model": "…",
+    "tier": "frontier"
+  },
   "run": { "run_id": "…", "initiated_by": "human" },
   "payload": { }
 }
@@ -197,12 +218,27 @@ Every result is an **envelope** wrapping a per-role payload
 
 - `implementer` payload keeps every Foreman v1 field (`summary`, `handoff`,
   `ac_test_map`, `human_tasks`, `blocked_question`) so Foreman accepts the
-  envelope with a validator widening ([foreman#182](https://github.com/ponderousdev/foreman/issues/182)).
-- `reviewer` payload: one **pass** (one finder's contribution to a round;
-  the round is the aggregate, § Configuration) — `stage`, `round`, `reviewed_head`,
-  `finder`, and `findings[]`, each with `id`, `path`, `line`, `class`,
-  `provenance`, `fingerprint`, `priority` (the reviewer's label),
-  `recommended_disposition`, `evidence`. **Immutable once returned.** A
+  envelope with a validator widening
+  ([foreman#182](https://github.com/ponderousdev/foreman/issues/182)), and adds
+  optional `synthesis_of`: the ordered source-proposal identities, present
+  exactly when the artifact is synthesized. That schema widening rides
+  [#638](https://github.com/evanharmon1/harmon-devkit/issues/638)'s synthesis
+  criterion.
+- `challenger` payload: one **challenge-stage pass** carrying attack scenarios,
+  design-level findings, and de-scaffolding recommendations. It attacks the
+  design and approach; it does not perform the reviewer's consistency and
+  test-gap check.
+- `reviewer` payload: one **review-stage pass** carrying consistency evidence
+  and test-gap classes. It verifies the implementation; it does not own the
+  challenger's design attack or de-scaffolding recommendations.
+- Both confidence-role payloads carry the same stage-keyed pass core — `stage`,
+  `round`, `reviewed_head`, `slot` (the configured primary finder), `finder`
+  (the finder that ran), optional `substitutes_for` (present only on a
+  substitution), and `findings[]`, each with `id`, `path`, `line`, `class`,
+  `provenance`, `fingerprint`, `priority` (the producing role's label),
+  `recommended_disposition`, and `evidence`. The exit script computes over
+  that common finding core according to `stage`; it never hardcodes
+  `result.reviewer`. Results are **immutable once returned**. A
   finding `id` is unique within the run by construction —
   `<stage>-r<round>-<finder>-<n>` — and receipt validation **rejects a
   result whose ids collide** with each other or with any finding already in
@@ -212,6 +248,9 @@ Every result is an **envelope** wrapping a per-role payload
   names a head (`reviewed_head`, the integrator's reviewed-commit stamp)
   different from the envelope's `head`; a schema-valid result can never carry
   stale evidence under a current-head label.
+- The envelope's runtime-attested `producer` names the resolved `family` as
+  well as its harness, model, and tier. Retained results therefore prove both
+  council `distinct_families` and every disclosed horizontal family fallback.
 - `integrator` payload: checks, the Codex cycle (accepted surface, comment id,
   reviewed-commit stamp, checker exit code), findings verbatim, unanswered
   thread roots, `settled_at`, `applied_dispositions`.
@@ -226,8 +265,8 @@ Every result is an **envelope** wrapping a per-role payload
   the run record (`settlements[]`, keyed by finding id, one per finding), so
   a finding still has exactly one adjudication and one terminal settlement,
   and neither invalidates the other's digest. Scripts read the
-  adjudicated view; the raw reviewer output is kept so reviewer-vs-orchestrator
-  disagreement can be measured.
+  adjudicated view; the raw challenger/reviewer output is kept so
+  confidence-role-vs-orchestrator disagreement can be measured.
 - The **run record** (`run.json`) is the only home of mutable run state —
   `interventions[]`, stage transitions, `outcome`, `pr`. An envelope carries
   only the immutable identity (`run_id`, `initiated_by`), so two documents can
@@ -255,11 +294,12 @@ Finding fields:
 
 - `class ∈ design | correctness | consistency | hardening | nit`
 - `provenance ∈ original | round:N` — whether the finding is about the change
-  or about round N's fix. Asserted by the reviewer; the exit script
+  or about round N's fix. Asserted by the challenger or reviewer that produced
+  the finding; the exit script
   **verifies** it.
 - `fingerprint ∈ new | repeat-of:<id> | supersedes:<id>` — asserted by the
-  reviewer, which has prior rounds' findings in its brief; the exit script
-  **verifies** it.
+  producing confidence role, which has prior rounds' findings in its brief;
+  the exit script **verifies** it.
 
 **Verification is a property, not a procedure.** Two rounds of review of
 this spec showed that any concrete mechanism written here (line numbers, then
@@ -269,7 +309,7 @@ this spec states the invariants and delegates the mechanism to the exit
 script ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)),
 where it can be tested:
 
-- The script may **downgrade** a reviewer's `original` to `round:N`, or
+- The script may **downgrade** a producer's `original` to `round:N`, or
   refuse a `repeat-of`/`supersedes`, only with evidence it records alongside
   the finding; it never silently overrides. A case it cannot decide is
   logged `unverified`. An unverified finding **keeps its adjudicated
@@ -299,7 +339,7 @@ adjudicated rounds and `[convergence]`:
 
 | Outcome | Meaning | Orchestrator may |
 |---|---|---|
-| `continue` | no exit predicate satisfied; cap not reached | dispatch the next round — a fix round when any disposition changes code, otherwise another reviewer pass on the unchanged head (a clean round under `min_rounds` changes nothing to fix) |
+| `continue` | no exit predicate satisfied; cap not reached | dispatch the next round — a fix round when any disposition changes code, otherwise another pass from the stage's confidence role on the unchanged head (a clean round under `min_rounds` changes nothing to fix) |
 | `converged` | **zero adjudicated P0/P1 of any class** (a universal precondition, not a predicate), an exit predicate satisfied, and `min_rounds` met | advance; or override **upward** (one more round) with a recorded reason |
 | `diverging` | adjudicated P0/P1 findings are feeding on earlier rounds' fixes, and the cap is not reached | dispatch a fix round **only** with a `delete` or `restructure` disposition on the `round:N` findings; otherwise the run stops with a blocker |
 | `capped` | cap reached | advance if zero adjudicated P0/P1 remain **and the final round reviewed the current head** (**capped-clean**); otherwise **escalate to a human** — no PR is opened, and no further round is dispatched whatever else holds. A P2 found by the final round is therefore `defer`red to integration rather than fixed pre-PR, since no round remains to review the fix |
@@ -366,8 +406,8 @@ is clean, which is where omator#397 would have been stopped.
 - `repeat_after_fix()` — true when any current-round finding is
   `repeat-of:<id>` (verified, or a script-detected repeat) where `<id>`'s
   adjudicated disposition **changed the code** — `fix`, `restructure`, or
-  `delete` — in an earlier round. (A repeat after `decline` is the reviewer
-  disagreeing, not the loop feeding on itself.)
+  `delete` — in an earlier round. (A repeat after `decline` is the finding
+  producer disagreeing, not the loop feeding on itself.)
 
 Boundary fixtures for each — empty current round, a single round, a
 denominator of zero, a repeat whose original was `decline`d — ship with the
@@ -386,89 +426,225 @@ fixture.
 ## Configuration (`.devflow.toml`)
 
 Owned by harmon-init ([#1081](https://github.com/evanharmon1/harmon-init/issues/1081)).
-The v2 shape, on top of the shipped migrated file:
+The complete schema-v2 draft and rationale are in the issue's 2026-08-31
+decision comment. Schema v2 is incompatible under harmon-init decision record
+0008, the versioned-devflow compatibility contract: v1 consumers reject this
+file with a migration hint, and v2 consumers refuse both the legacy and v1
+shapes rather than carrying multiple interpretations. Shape refusal applies
+only to the file a consumer operates under; a historical merge-base copy is
+interpreted under its own declared `schema_version` — v1 by v1 rules and legacy
+by legacy rules.
+The composed predicate catalog in this spec is normative for `[convergence]`;
+the draft's flat keys are illustrative placeholders until the exit script
+[#636](https://github.com/evanharmon1/harmon-devkit/issues/636) pins predicate
+names, as the [2026-09-01 correction](https://github.com/evanharmon1/harmon-init/issues/1081#issuecomment-5489563184)
+records.
 
-- `[caps.<policy>]` — renamed from `[review.*]`: `challenge`, `review`,
-  `integration` (formerly `shepherd`), `remediation`, `min_rounds`. Each
-  rigor level points at one policy via `caps = "<policy>"`. A cap is a
-  ceiling; `min_rounds` is a floor per confidence stage below which
-  `converged` cannot fire. `remediation` bounds fix pushes in the integration
-  stage (shipped default 4 at `standard`, scaling with the level like the
-  others; its terminal action is escalation, below). There is no cap for
-  checks. **A `challenge` or `review` cap of 0 disables that confidence
-  stage**: no round runs and the stage advances with exit `capped`, reason
-  `disabled` — the one case where capped-clean needs no current-head
-  round — exactly as the migrated policy already defines it. The effective
-  `min_rounds` for a stage is `min(min_rounds, cap)`, so a mixed policy
-  (`challenge = 2`, `review = 0`, `min_rounds = 1`) is valid and the disabled
-  stage simply owes nothing. Zero means something different for
-  the integration caps, defined next: `integration = 0` waives only the
-  Codex cycle, and `remediation = 0` means the first finding that needs a
-  fix push escalates.
-- The **integration cap bounds Codex re-review cycles only.** Answering every
-  human and CI finding is unconditional; `integration = 0` means "no Codex
-  cycle required" — and, exactly as AGENTS.md already states for a 0 cap, the
-  readiness gate's Codex-verdict condition **drops out** under it while every
-  other condition stays; this is the one readiness-gate condition v2 touches,
-  and only by inheriting the existing rule — never "abandon reviews". That is
-  why a policy may lower it
-  (resolves [#624](https://github.com/evanharmon1/harmon-devkit/issues/624)).
-  When the last permitted Codex cycle finds something that is then fixed,
-  the fix push moves the head and the readiness gate would need a cycle the
-  cap forbids: that is `capped` for the integration stage — the run stops,
-  posts a blocker report naming the unreviewed head, and the PR stays draft
-  for a human to grant a cycle or promote. The verdict is never waived.
-  This **deliberately revises** [#633](https://github.com/evanharmon1/harmon-devkit/issues/633)'s
-  "rigor may raise it, never lower it" criterion: that rule assumed the cap
-  bounded all findings, and once it bounds only Codex cycles, lowering it
-  removes nothing a human or CI raised — which is also what harmon-init's
-  shipped `review.none`/`driveby` values already do.
-  Unconditional is not unbounded: fix pushes in the integration stage are
-  counted by `[caps].remediation`, whose terminal action is **escalation
-  with the unresolved findings listed** — never abandoning them and never
-  promoting past them — so a flaky check or a reviewer who finds something new
-  after every push cannot run an unattended session forever.
-- `[gates]` — `round_code` (`task verify`), `round_docs` (`task check`),
-  `docs_only_paths[]` (the **only** copy of the allowlist;
-  [#632](https://github.com/evanharmon1/harmon-devkit/issues/632) reads it),
-  `secret_scan` (unconditional), `pre_pr`. The pre-PR gate is: assert the head
-  carries a round-gate marker, then `task security`; a head with no marker
-  runs the round gate first. `task ci` is on demand
+Every array key declares one of five semantics:
+
+| Kind | Meaning |
+|---|---|
+| **preference** | ordered any-of; use the first configured and available entry, then fall over on failure or quota and disclose the substitution |
+| **chain** | ordered and consumed strictly in sequence |
+| **all-of** | unordered; every entry must be satisfied |
+| **allowlist** | unordered membership restriction, never a preference order |
+| **ranking** | ordered scale definition, not a selection |
+
+The v2 shape is:
+
+- Top level: `schema_version = 2`, `default_rigor`, `default_strategy`, and two
+  rankings. `rigor_order` is `cursory → light → standard → thorough → deep →
+  forensic`; the old `trivial` and `minimal` levels collapse into `cursory`,
+  which still buys a 1/1/1 challenge/review/integration glance. `forensic` is
+  the new top level and sets `min_rounds = 2`. A custom all-zero policy remains
+  schema-valid, but no shipped level uses one. `tier_order` is
+  `local → economy → standard → frontier → apex` and is the only definition
+  of one-rung escalation or strongest-wins tier conflicts.
+
+  Resolution precedence is normative: an explicit operator instruction from
+  an attributable channel (never repository content) overrides labels, which
+  override the rigor profile or configured defaults, which override the
+  built-in fallback. An unscoped `tier:*` targets only the implementer role.
+  Tier conflicts resolve strongest-wins by `tier_order`, with a concrete tier
+  beating `adaptive`. Strategy conflicts are ambiguous: an interactive
+  resolver asks, while unattended automation falls back to `default_strategy`
+  with a warning. Labels remain advisory and never outrank an explicit
+  instruction: an interactive session requires operator confirmation before
+  using any off-default label resolution, while unattended automation acts on
+  one only after verifying the label's provenance end to end against
+  trusted-actor configuration re-read immediately before acting, or falls back
+  to defaults with a warning.
+  Conflicting `rigor:*` labels resolve to the strongest recognized level in
+  `rigor_order`; values absent from that ranking are ignored.
+- `[rigor.<level>]` points to one same-named `[rounds.*]` policy and one
+  same-named `[breadth.*]` envelope, carries the five role overrides
+  (`orchestrator_tier`, `implementer_tier`, `challenger_tier`,
+  `reviewer_tier`, `integrator_tier`), and declares boolean `tier_escalation`.
+  The shipped baselines are orchestrator `apex`, implementer `standard`,
+  challenger `frontier`, reviewer `standard`, and integrator `economy`.
+  Orchestrator, challenger, and reviewer are each at least as capable as
+  implementer; challenger rides one stratum above reviewer at most levels
+  because design attack is the more judgment-heavy contract. Unscoped
+  `tier:adaptive` remains a valid implementer refinement: preflight classifies
+  that role's tier instead of pinning a rung, using the rigor profile's tier
+  provisionally until it answers. A concrete tier label for the same role beats
+  adaptive under `tier_order`; scoped `tier:<role>:adaptive` has no registry
+  tier and is ignored.
+- `[rounds.<policy>]` is the **vertical appetite**: `challenge`, `review`,
+  `integration`, `remediation`, `min_rounds`, and `wall_clock_min`. A
+  challenge or review value of 0 disables that confidence stage with
+  `capped`/`disabled`; otherwise the effective floor is
+  `min(min_rounds, cap)`. `integration` bounds Codex re-review cycles only:
+  0 waives the readiness gate's Codex condition entirely, never the obligation
+  to answer human or CI findings. The post-fix unreviewed-head blocker applies
+  only when `integration > 0`: a fix after the last permitted cycle stops with
+  a blocker naming that head and leaves the PR draft. `remediation`
+  independently bounds integration-stage fix pushes, including when
+  `integration = 0`; at its ceiling, or at the first fix when it is 0, the run
+  escalates with unresolved findings rather than abandoning or promoting past
+  them. `wall_clock_min` is a ceiling for the **whole run**; reaching it posts
+  a blocker report and stops, never trims an unfinished stage to fit. There is
+  no round cap for deterministic checks.
+- `[breadth.<policy>]` is the **horizontal scale** and contains only
+  `max_agent_runs` and `max_parallel_agents`. Review passes spend the rounds
+  envelope instead. These ceilings bound orchestrated and council execution,
+  including the milestone's parallel implementers. Mandatory fix dispatches
+  spend `max_agent_runs` too; if one would exceed it, the run ends `capped` and
+  escalates naming the exhausted envelope — never an uncounted dispatch or
+  `continue` with no legal action.
+- `[spend.<policy>]` defines `max_tokens` and `max_usd`; a
+  `[rigor.<level>]` may name `spend = "<policy>"`, and absent that key no spend
+  envelope applies. The table is **unshipped**, so spend limits remain
+  `UNENFORCED` in shipped profiles until measurable. Tier escalation is not a
+  spend key; it belongs to each rigor profile.
+- `[gates]` declares `round_code`, `round_docs`, `secret_scan`, and `pre_pr` as
+  **bare existing Taskfile target names** — no argv, paths, spaces, or slashes.
+  The validator refuses anything else, so config may select a repository
+  command but can never mint one; consumers compose `task <target>`. The
+  pre-PR target runs after asserting the head carries a round-gate marker, and
+  `task ci` remains on demand
   ([harmon-init#1080](https://github.com/evanharmon1/harmon-init/issues/1080)).
-  Foreman's `[verify].default` derives from `[gates].pre_pr`
+  `docs_only_paths[]` is an allowlist and the **only** copy of the docs-only
+  classification; the push helper re-derives it from the diff. Foreman's
+  `[verify].default` derives from `pre_pr`
   ([foreman#183](https://github.com/ponderousdev/foreman/issues/183)).
-- `[convergence]` — as above, with `[rigor.<level>.convergence]` overrides.
-- `[role.<slug>]` — `tier` baseline (implementer `standard`, reviewer
-  `frontier`, integrator `economy`, orchestrator `apex`) and optional
-  `family`; a rigor level's `*_tier` keys override it.
-- `[stage.<stage>].finders[]` — which registry finders serve each confidence
-  stage and integration. With more than one finder, a **logical round** is
-  one result per configured finder at the same `reviewed_head`; it is
-  complete only when every finder has returned, its findings are the union,
-  and caps and `min_rounds` count logical rounds. Vocabulary: each finder's
-  `result.reviewer` is a **pass**; the **round** is the aggregate of the
-  passes at one head — one pass when one finder is configured. Payload
-  cardinality: a round has one or more passes, each naming its finder. A finder that fails returns
-  `blocked`; the orchestrator retries that finder **once**, and a second
-  failure ends the run with exit `capped`, reason `finder_unavailable`, and
-  a blocker naming the finder — never a round silently one finder short, and
-  never an unbounded retry.
-- `tier:<role>:*` label values are hand-added to `label-registry.json`.
-- **Self-modified policy is read from the merge base.** When the change
-  under review edits `.devflow.toml`, **every value read during policy
-  resolution** — `default_rigor` and `default_strategy`, the rigor level's
-  `caps` pointer and tier profile, `[caps]`, `[convergence]`, `[gates]`
-  (`docs_only_paths` included), `[role]`, `[stage]`, `[tier]`, `[strategy]`,
-  `[budget]` — is resolved from the merge-base copy; and the same rule
-  covers **`agent-registry.json`** whenever it is in the diff, since it
-  supplies the role write boundaries and the finders' trusted actor IDs a
-  branch could otherwise widen for itself — exactly as
-  AGENTS.md already requires for caps, so a branch cannot lower the gate it
-  is changing or classify its code as docs-only. An explicit human
+- `[convergence]` is the predicate catalog above, with tighten-only
+  `[rigor.<level>.convergence]` overrides.
+- `[role.<slug>]` declares the role's baseline `tier` and its `families[]` and
+  optional `harnesses[]`, both **preference** arrays. `harnesses[]` values must
+  resolve against `agent-registry.json` `harnesses[]`; valid examples are
+  `claude-code`, `codex-cli`, and `antigravity`. Resolution is family first,
+  then harness within that family. When the resolved rigor profile sets
+  `tier_escalation = true`, failure, refusal, or operator policy — never cost
+  alone — may first attempt vertical escalation by exactly one `tier_order`
+  rung within the same family. A family with no model at that higher rung
+  simply cannot escalate; that fact alone does not make the family unavailable.
+  Horizontal fallback to the next `families[]` entry happens only when the
+  current family cannot serve at the resolved (or already-escalated current)
+  tier at all, and every fallback is disclosed. Validation requires every role
+  × rigor profile to have at least one resolvable family. An absent harness
+  preference means any registered harness that serves the family. The
+  orchestrator declares both arrays too: they are descriptive when a human has
+  already opened the session, and binding when Foreman or another automation
+  chooses the harness to open.
+- `[strategy.<name>]` carries the v1-shipped strategy contract forward
+  unchanged. `topology` selects `single-agent` (one accountable lead and only
+  optional helper subagents), `lead-and-workers` (a lead with required
+  first-class workers), `independent-proposals` (a coordinator dispatches at
+  least two independent proposers and judges them), or `human-directed` (the
+  human is accountable). `planning` is `inline` (folded into the first turn),
+  `explicit` (a stated plan), `independent` (each proposal plans for itself),
+  or `collaborative` (planned with the human). `delegation` is `none`,
+  `optional`, or `required`, with the v1 topology constraints; optional
+  `coordination = "parallel-when-independent"` governs delegated scheduling.
+  Council alone uses `selection = "judge"` and boolean `synthesis`; its
+  `min_agents` counts proposers, while orchestrate's counts the lead plus
+  workers. `human_gates` may contain only `after-discovery`, `after-plan`,
+  `before-delegation`, `before-selection`, `before-synthesis`,
+  `before-scope-expansion`, `before-budget-escalation`, `before-publication`,
+  `before-ready-for-review`, and `each-phase`. Constitutional approvals remain
+  outside strategy and cannot be disabled by it. Under v2's breadth
+  accounting, every implementer or lane dispatch and every synthesis dispatch
+  consumes one `max_agent_runs`; council judging is write-free and consumes
+  none. Challenge and review passes never consume this envelope —
+  `[rounds.<policy>]` bounds them on its independent axis.
+- `[stage.<stage>]` uses monomorphic arrays whose keys carry the semantics and
+  whose values are always registry slugs. `finders` is **all-of**. In the
+  confidence stages (`challenge` and `review`), each primary finder defines one
+  round slot, and every slot must produce exactly one pass at the same
+  `reviewed_head`; the common `stage`/`round`/`slot` pass contract applies only
+  there. Integration finders instead contribute checks, cycle, and thread
+  evidence inside `result.integrator` and produce no confidence pass.
+  `finder_fallbacks` is a **preference** list consumed in listed order after a
+  primary is unavailable after its retry.
+  Fallback candidates are tried until one can fill the failed slot, but at
+  most one substitute binds to that slot for the round. A primary pass has
+  `finder == slot` and omits `substitutes_for`; a fallback pass names the
+  fallback that ran in `finder`, keeps the configured primary in `slot`, and
+  sets `substitutes_for` to that primary. An actor already serving as a primary
+  or substitute in the round cannot satisfy a second slot. Every substitution
+  is recorded and disclosed. A slot still unavailable when the fallback list
+  is exhausted ends the run
+  `capped`/`finder_unavailable`, never silently one pass short.
+
+  `pool` is an optional **allowlist** for the implement stage; when absent,
+  every implementer-capable registered harness is eligible. Strategy supplies
+  the number and topology — including council's `distinct_families` constraint
+  — while breadth supplies the ceilings. Before dispatch, strategy, pool,
+  breadth, and registry are cross-validated against every strategy's required
+  topology. Orchestrate requires `max_agent_runs >= min_agents` and, only under
+  parallel coordination, `max_parallel_agents >= min_agents`; sequential
+  dispatch needs only the run coverage. A council requiring N distinct families
+  likewise requires at least N eligible families in the implement-stage pool
+  and `max_agent_runs >= N`, plus `max_parallel_agents >= N` only under parallel
+  coordination. A council with `synthesis = true` requires
+  `max_agent_runs >= N + 1` for the fresh synthesis dispatch. Judging itself
+  consumes no run. Any unsatisfiable strategy-and-breadth pair is reported
+  incompatible at resolution time, never allowed to deadlock at dispatch.
+  Council judging yields one artifact:
+  either a selected proposal or, when `synthesis = true`, the output of one
+  fresh implementer dispatch briefed with the source proposals. The judge
+  writes no code, confidence roles remain write-free, and no new role is
+  introduced: synthesis returns an ordinary lane artifact under the existing
+  `result.implementer` contract, with `synthesis_of` naming its ordered source
+  proposals. The run record records that judged artifact and every proposal's
+  identity and outcome. The judged artifact enters the same serialized
+  single-writer apply path; other lane outputs are discarded.
+
+  Validation makes two independent checks. **Role dispatch:** the agent
+  dispatched for a stage implements that stage's role (implement →
+  implementer, challenge → challenger, review → reviewer, integration →
+  integrator). **Finder affinity:** each `finders[]` and `finder_fallbacks[]`
+  entry is valid for the stage according to its registry-declared surface and
+  permitted stage kinds, never according to the dispatched role. An ineligible
+  fallback is excluded at resolution time; a slot left with no eligible
+  substitute ends `capped`/`finder_unavailable`. The challenge stage therefore
+  receives `result.challenger`, the review stage receives `result.reviewer`,
+  and the exit script consumes their shared finding core by stage rather than
+  hardcoding one result role.
+- There are **no `[tier.*]` tables**. Model-stratum classification belongs to
+  `agent-registry.json` `families[].models[].tier`; when a family exposes two
+  or more models at one rung, exactly one carries `default: true`
+  ([#635](https://github.com/evanharmon1/harmon-devkit/issues/635)). The
+  resolved model is the chosen family's registry model at the resolved rung.
+  When enabled by the rigor profile, escalation derives as one rung up
+  `tier_order` and never switches family; a family with no model at that rung
+  simply cannot escalate. That is not, by itself, the unavailable-family case
+  and does not trigger horizontal fallback; whether fallback is legal still
+  depends on the family's ability to serve at the resolved or current tier.
+  Local binding is the registry's `-local` harnesses under ADR 0005. This
+  config never names a concrete model. `tier:<role>:*` label values remain
+  hand-authored in `label-registry.json`.
+- **Self-modified policy is read from the merge base.** When the change edits
+  `.devflow.toml` or `agent-registry.json`, every input that can affect policy
+  resolution comes from the merge-base copy: defaults and both rankings, the
+  rigor profile, `[rounds]`, `[breadth]`, any `[spend]`, `[gates]`
+  (`docs_only_paths` included), `[convergence]`, `[role]`, `[stage]`,
+  `[strategy]`, and the registry's roles, actors, model classifications, and
+  trusted IDs. A branch therefore cannot lower or widen the gate it is
+  changing. A v1→v2 migration therefore resolves its budget from the v1
+  merge-base by v1 rules while shipping the v2 file. An explicit human
   instruction still overrides.
-- **The legacy shape is refused** with a migration hint
-  ([#604](https://github.com/evanharmon1/harmon-devkit/issues/604)). No skill
-  or script carries both shapes.
 
 ## Evidence
 
@@ -526,17 +702,17 @@ Two rules make the posted evidence trustworthy on a public repository:
   comment is subject to the **same author check**, so a stranger cannot
   forge a record that vouches for their own evidence; an orchestrator that
   rewrites its own record is outside the threat model — it could equally have
-  lied in the first place, and the reviewer's raw output on the same comments
-  is what the retro compares against.
+  lied in the first place, and the challenger/reviewer raw output on the same
+  comments is what the retro compares against.
 
 See [decision 0002](../docs/decisions/0002-round-evidence-lives-on-the-pr.md).
 
 ## Sequencing
 
-1. This spec, through at least one challenge round ([#633](https://github.com/evanharmon1/harmon-devkit/issues/633)), with harmon-init decision record 0008.
+1. This spec, through at least one challenge round ([#633](https://github.com/evanharmon1/harmon-devkit/issues/633)), with harmon-init decision record 0009.
 2. Schemas + fixtures [#634](https://github.com/evanharmon1/harmon-devkit/issues/634) → registry roles/finders [#635](https://github.com/evanharmon1/harmon-devkit/issues/635) → config [harmon-init#1081](https://github.com/evanharmon1/harmon-init/issues/1081).
 3. Exit script [#636](https://github.com/evanharmon1/harmon-devkit/issues/636) → renderer [#637](https://github.com/evanharmon1/harmon-devkit/issues/637) → diff-aware gate [#632](https://github.com/evanharmon1/harmon-devkit/issues/632).
-4. Reviewer agent + `/review` [#638](https://github.com/evanharmon1/harmon-devkit/issues/638) → integrator + `/integrate` [#639](https://github.com/evanharmon1/harmon-devkit/issues/639) → `/orchestrator`.
+4. Implement dispatch draws from the stage pool under strategy and breadth constraints and obeys the single-writer invariant above; council judgment emits the selected or synthesized artifact described above. Then challenger agent + `/challenge`, reviewer agent + `/review` [#638](https://github.com/evanharmon1/harmon-devkit/issues/638) → integrator + `/integrate` [#639](https://github.com/evanharmon1/harmon-devkit/issues/639) → `/orchestrator`.
 5. AGENTS.md shrink [harmon-init#1082](https://github.com/evanharmon1/harmon-init/issues/1082) + pre-PR gate [harmon-init#1080](https://github.com/evanharmon1/harmon-init/issues/1080) → drop legacy [#604](https://github.com/evanharmon1/harmon-devkit/issues/604).
 6. Foreman [#182](https://github.com/ponderousdev/foreman/issues/182)–[#185](https://github.com/ponderousdev/foreman/issues/185); stats [#663](https://github.com/evanharmon1/harmon-devkit/issues/663) → retro [#664](https://github.com/evanharmon1/harmon-devkit/issues/664).
 7. `copier update` sweep across the generated repos.
@@ -556,7 +732,7 @@ absorbed by the issue that carries their criteria;
 - [ ] Roles, results, envelope, run record, and adjudication record exist as JSON schemas with valid/invalid fixtures.
 - [ ] The exit script computes `continue | converged | diverging | capped` from adjudicated rounds and `[convergence]`, verifies provenance and fingerprints, and replays omator#397.
 - [ ] The readiness gate accepts only a schema-valid `result.integrator` for the current head as evidence of a Codex verdict — necessary, not sufficient: the gate's own pre/post-promotion content fingerprint over body, reviews, and comments (`readiness-gate.sh`) stays, because a human finding can land without moving the head.
-- [ ] `.devflow.toml` has `[caps]`, `[gates]`, `[convergence]`, `[role]`, `[stage]`; the legacy shape is refused.
+- [ ] `.devflow.toml` has top-level `default_rigor`, `default_strategy`, `rigor_order`, and `tier_order`, plus `[rounds]`, `[breadth]`, `[gates]`, `[convergence]`, `[role]`, `[stage]`, and `[strategy.*]`; `[spend]` is schema-only and shipped absent; both legacy and v1 shapes are refused.
 - [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (post refused); a stage split across comments (reassembled); a run capped before any PR (stage evidence and run record found on the issue).
 - [ ] `dev-flow-stats.sh` prints the success metric and replays policies.
 - [ ] AGENTS.md's Dev Loop is the stage table, the constitution rules, and references.
@@ -564,11 +740,11 @@ absorbed by the issue that carries their criteria;
 
 ## Acceptance criteria (Given / When / Then)
 
-### Scenario: a reviewer cannot end a stage
+### Scenario: a confidence role cannot end a stage
 
-- **Given** a reviewer round returns zero findings
+- **Given** a challenger pass in challenge or a reviewer pass in review returns zero findings
 - **When** the orchestrator runs the exit script
-- **Then** the outcome is `converged` only if `min_rounds` is met, and the reviewer's own recommendation is not consulted
+- **Then** the outcome is `converged` only if `min_rounds` is met, and the producing role's own recommendation is not consulted
 
 ### Scenario: provenance is verified, not trusted
 
@@ -594,11 +770,12 @@ absorbed by the issue that carries their criteria;
 - **When** the readiness gate evaluates
 - **Then** it refuses until the comment is answered, with no Codex cycle required
 
-### Scenario: a legacy config is refused
+### Scenario: a legacy config cannot be the operating config
 
-- **Given** a `.devflow.toml` with `[rigor.*]` caps and no `[caps]` table
-- **When** any v2 skill or script reads it
+- **Given** a legacy `.devflow.toml` with direct `[rigor.*]` caps, or a v1 file with `[review.*]` and `[budget.*]`
+- **When** a v2 skill or script attempts to operate under it as the active config
 - **Then** it exits non-zero naming the migration, and no default is invented
+- **And** for a migration PR, policy resolution instead reads the historical merge-base copy under that copy's own legacy or v1 schema; that required historical read is not operation under the old file
 
 ### Scenario: evidence outlives the branch
 
@@ -626,12 +803,13 @@ absorbed by the issue that carries their criteria;
 
 ## Open questions
 
-- None at draft time; the grill session of 2026-08-28 settled the design.
+- None at draft time; the grill session of 2026-08-28 and config session of
+  2026-08-31 settled the design.
   Findings from the challenge round go here until adjudicated.
 
 ## Notes
 
-Provenance: grill-with-docs session, 2026-08-28/29, against the retro of
-ponderousdev/omator#397. The constitution's rule 1 (never merge without
+Provenance: grill-with-docs sessions, 2026-08-28/29 and 2026-08-31, against the
+retro of ponderousdev/omator#397. The constitution's rule 1 (never merge without
 per-merge approval) is why `merge` is a human stage and why no exit outcome
 can promote past ready-for-review.
