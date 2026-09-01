@@ -1,9 +1,9 @@
 ---
 name: openspec-apply-change
 description: Implement tasks from an OpenSpec change. Use when the user wants to start implementing, continue implementation, or work through tasks.
-allowed-tools: Bash(openspec:*)
+allowed-tools: Bash(scripts/openspec.sh:*)
 license: MIT
-compatibility: Requires openspec CLI.
+compatibility: Requires the repository-pinned scripts/openspec.sh wrapper.
 metadata:
   author: openspec
   version: "1.0"
@@ -12,7 +12,7 @@ metadata:
 
 Implement tasks from an OpenSpec change.
 
-**Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `openspec store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `schemas`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `openspec status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
+**Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `scripts/openspec.sh store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `schemas`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `scripts/openspec.sh status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
 
 **Input**: Optionally specify a change name (e.g., `/openspec-apply-change add-auth`). If omitted, check if it can be inferred from conversation context. If vague or ambiguous you MUST prompt for available changes.
 
@@ -23,14 +23,14 @@ Implement tasks from an OpenSpec change.
    If a name is provided, use it. Otherwise:
    - Infer from conversation context if the user mentioned a change
    - Auto-select if only one active change exists
-   - If ambiguous, run `openspec list --json` to get available changes and ask the user to select one
+   - If ambiguous, run `scripts/openspec.sh list --json` to get available changes and ask the user to select one
 
    Always announce: "Using change: `<name>`" and how to override (e.g., `/openspec-apply-change <other>`).
 
 2. **Check status to understand the schema**
 
    ```bash
-   openspec status --change "<name>" --json
+   scripts/openspec.sh status --change "<name>" --json
    ```
 
    Parse the JSON to understand:
@@ -41,7 +41,7 @@ Implement tasks from an OpenSpec change.
 3. **Get apply instructions**
 
    ```bash
-   openspec instructions apply --change "<name>" --json
+   scripts/openspec.sh instructions apply --change "<name>" --json
    ```
 
    This returns:
@@ -53,7 +53,7 @@ Implement tasks from an OpenSpec change.
    - Optional `operationGuidance`: current advisory guidance for apply
 
    **Handle states:**
-   - If `state: "blocked"` (missing artifacts): show message, suggest using `/openspec-continue-change` (if it is not installed, run `openspec status --change "<name>" --json` to see the next artifact and `openspec instructions <artifact-id> --change "<name>" --json` for how to create it)
+   - If `state: "blocked"` (missing artifacts): show message, suggest using `/openspec-continue-change` (if it is not installed, run `scripts/openspec.sh status --change "<name>" --json` to see the next artifact and `scripts/openspec.sh instructions <artifact-id> --change "<name>" --json` for how to create it)
    - If `state: "all_done"`: congratulate, suggest archive
    - Otherwise: proceed to implementation
 
@@ -90,14 +90,30 @@ Implement tasks from an OpenSpec change.
    - Remaining tasks overview
    - Dynamic instruction from CLI
 
-6. **Implement tasks (loop until done or blocked)**
+6. **Select exactly one pending task**
 
-   For each pending task:
-   - Show which task is being worked on
-   - Make the code changes required
-   - Keep changes minimal and focused
-   - Mark task complete in the tasks file: `- [ ]` → `- [x]`
-   - Continue to next task
+   One apply invocation handles one task only. Each task in this repository maps
+   to one milestone issue and owns an independent claim, branch, Dev Loop, and
+   ready-for-review PR.
+
+   - If the user named a task or issue, select that pending task.
+   - Otherwise, show the pending tasks and ask the user to select one; do not
+     infer permission to batch them.
+   - Confirm the selected task maps to exactly one milestone issue.
+   - Use the repository's `/claim` workflow for that issue before implementation.
+   - Create or use the task's dedicated feature branch/worktree as required by
+     `AGENTS.md`; never combine another OpenSpec task or milestone issue into it.
+
+7. **Implement the selected task through the repository Dev Loop**
+
+   - Show which task is being worked on.
+   - Make only the code and documentation changes required by that task.
+   - Drive the task through the repository's complete Dev Loop to its own
+     ready-for-review PR; merging remains a human decision.
+   - Mark the task complete in the tasks file (`- [ ]` → `- [x]`) only when its
+     specified behavior and verification are complete.
+   - Stop after that task's PR handoff. Report the remaining tasks, but do not
+     select or implement another one in the same apply invocation.
 
    **Pause if:**
    - Task is unclear → ask for clarification
@@ -106,12 +122,14 @@ Implement tasks from an OpenSpec change.
    - Error or blocker encountered → report and wait for guidance
    - User interrupts
 
-7. **On completion or pause, show status**
+8. **On completion or pause, show status**
 
    Display:
-   - Tasks completed this session
+   - The single task selected and whether it completed this session
    - Overall progress: "N/M tasks complete"
-   - If all done: suggest archive
+   - The task's branch and PR handoff state
+   - If all tasks are done: suggest archive
+   - If tasks remain: stop and name the next apply invocation as the handoff
    - If paused: explain why and wait for guidance
 
 **Output During Implementation**
@@ -123,9 +141,7 @@ Working on task 3/7: <task description>
 [...implementation happening...]
 ✓ Task complete
 
-Working on task 4/7: <task description>
-[...implementation happening...]
-✓ Task complete
+Stopping after this task's ready-for-review PR handoff.
 ```
 
 **Output On Completion**
@@ -135,14 +151,12 @@ Working on task 4/7: <task description>
 
 **Change:** <change-name>
 **Schema:** <schema-name>
-**Progress:** 7/7 tasks complete ✓
+**Progress:** 3/7 tasks complete
 
 ### Completed This Session
-- [x] Task 1
-- [x] Task 2
-...
+- [x] Task 3 — ready-for-review PR <reference>
 
-All tasks complete! You can archive this change with `/openspec-archive-change`.
+This apply run is complete. Start a new apply invocation for another task.
 ```
 
 **Output On Pause (Issue Encountered)**
@@ -166,11 +180,13 @@ What would you like to do?
 ```
 
 **Guardrails**
-- Keep going through tasks until done or blocked
+- Select exactly one task per apply invocation and stop after its PR handoff
+- Treat each task as one milestone issue with its own claim, branch, and PR
+- Never batch another task into the selected task's branch or PR
 - Always read context files before starting (from the apply instructions output)
 - If task is ambiguous, pause and ask before implementing
 - If implementation reveals issues, pause and suggest artifact updates
-- Keep code changes minimal and scoped to each task
+- Keep code changes minimal and scoped to the single selected task
 - Update task checkbox immediately after completing each task
 - Pause on errors, blockers, or unclear requirements - don't guess
 - When a task needs work beyond what the spec describes, surface the added scope and pause - never silently narrow, defer, or simplify away specified behavior

@@ -32,8 +32,9 @@ asset owns a behavior instead of assuming shared application infrastructure.
   gate: check, validation, guards, and tests. `task ci` adds security checks and
   mirrors the build workflow locally.
 - Node-based tools run through `npx`; the repository intentionally has no root
-  `package.json`. OpenSpec is invoked through the pinned `openspec:validate`
-  Taskfile target or through an explicit `npx` invocation.
+  `package.json`. OpenSpec is pinned by `scripts/openspec.sh`; use that wrapper
+  directly or the `openspec:validate` Taskfile target rather than a bare CLI or
+  an explicit unpinned `npx` invocation.
 - Changes use Conventional Commits and are developed on feature branches.
   Safety gates are never bypassed, secrets never enter git, releases are
   intentional, and merges remain a human decision.
@@ -59,5 +60,9 @@ entrypoints.
 - Capability deltas live under each change's `specs/` directory and use
   requirement/scenario format.
 - Run `task openspec:validate` before considering an OpenSpec change complete.
+- OpenSpec initialization regenerates the six `.agents/skills/openspec-*`
+  skills with bare CLI commands. Reapply their `scripts/openspec.sh` routing
+  whenever those skills are regenerated so clean checkouts keep using the
+  pinned version.
 - The anchor documents in the repository's root `specs/` directory are source
   material; OpenSpec capability deltas are the implementation-ready contract.

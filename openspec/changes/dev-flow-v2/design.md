@@ -138,6 +138,15 @@ records lane ownership, paths, dependencies, environment, and run identity,
 maintains a persistent event monitor, and continuously recomputes a stage-costed
 merge queue from actual branch/PR files.
 
+Each parallel lane writes only its isolated lane branch; the feature branch has
+exactly one writer. The orchestrator selects lane outputs, integrates exactly
+those outputs through the feature branch's single-writer path, and records an
+assembly transition naming the integrated and discarded lanes plus the resulting
+canonical SHA. Confidence stages review only that exact assembled head. The
+monitor persists terminal-event identities and atomically records each action
+receipt before advancing its cursor, so re-arming cannot replay a completed
+action.
+
 Unbounded fan-out was rejected. Parallelism is safe only when ownership,
 overlap, concurrency, and invalidation costs are explicit. Product, scope, and
 safety questions still stop for humans; lane scheduling and merge-order advice
@@ -164,10 +173,12 @@ letting unverified provenance manufacture a provenance-dependent predicate.
 Only current-head rounds can certify clean exit; ancestor rounds remain useful
 for trajectory predicates.
 
-Finder passes aggregate into one logical round at a shared head. Every primary
-finder is all-of; one retry precedes `finder_unavailable`. A fallback is a
-recorded substitution, not a silent omission. DevKit and Foreman evaluate a
-shared conformance corpus.
+Finder passes aggregate into one logical round at a shared head. Every configured
+primary slot is all-of: its primary receives one retry, then its configured
+`finder_fallbacks` chain is attempted in order. Each substitution is a recorded,
+disclosed pass that preserves one pass for that primary slot;
+`finder_unavailable` applies only after the retry and fallback chain are
+exhausted. DevKit and Foreman evaluate a shared conformance corpus.
 
 ### 10. Rendering is a projection, never another source of truth
 

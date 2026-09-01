@@ -2,6 +2,11 @@ Each checkbox maps to exactly one open issue in the Harmon DevKit Dev flow v2
 milestone. Cross-repository config and Foreman work remain dependencies in their
 own sibling milestones and are not duplicated as DevKit tasks here.
 
+Each OpenSpec apply run selects exactly one unchecked task. That task's milestone
+issue owns one `/claim` → feature branch/worktree → repository Dev Loop →
+ready-for-review PR lifecycle. Stop and hand off after that PR; never batch
+multiple task checkboxes or milestone issues into one apply run, branch, or PR.
+
 ## 1. Reconcile the contract and schema foundation
 
 - [ ] 1.1 Complete [#666](https://github.com/evanharmon1/harmon-devkit/issues/666): fold the capped Codex findings and all 2026-08-31 config amendments into the anchor spec, lifecycle docs, glossary, and Harmon Init ADR reference; verify every issue criterion and `task check` pass.
@@ -17,7 +22,7 @@ own sibling milestones and are not duplicated as DevKit tasks here.
 
 ## 3. Replace stage orchestration and prove trajectory invariants
 
-- [ ] 3.1 Complete [#638](https://github.com/evanharmon1/harmon-devkit/issues/638): add challenger/reviewer agents, the `/review` stage skill, and `/orchestrator` standing mode with scoped dispatch, parallel-implementer bounds, persistent monitoring, and merge scheduling; verify skill/agent validation and the fixture-driven stage dry run pass.
+- [ ] 3.1 Complete [#638](https://github.com/evanharmon1/harmon-devkit/issues/638): add challenger/reviewer agents, the `/review` stage skill, and `/orchestrator` standing mode with scoped dispatch, parallel-implementer bounds, single-writer lane assembly, replay-safe persistent monitoring, and merge scheduling; verify skill/agent validation and the fixture-driven stage dry run pass.
 - [ ] 3.2 Complete [#639](https://github.com/evanharmon1/harmon-devkit/issues/639): add the scoped integrator agent and `/integrate` stage skill, resumable CI/Codex collection, JSON-only readiness evidence, remediation accounting, and session-owned promotion; verify fake-clock protocol and readiness-gate regression suites pass.
 - [ ] 3.3 Complete [#685](https://github.com/evanharmon1/harmon-devkit/issues/685): add every de-scoped run-trajectory receipt case to the exit and readiness suites using `[rounds]` paths and stage-resolved challenger/reviewer contracts; verify missing finders, cap-zero skips, remediation loops, stale promotion, evidence markers, chronology, and settlement tests all reject their attacks.
 

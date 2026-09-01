@@ -80,7 +80,13 @@ role family and harness preferences, strategy constraints, and breadth limits.
 Independent work MAY run in parallel; council strategy SHALL draw distinct
 families when eligibility allows. The orchestrator SHALL record worktree,
 branch, scope, ownership, dependencies, and conflict overlap per lane, and SHALL
-serialize or declare dependencies for overlapping files.
+serialize or declare dependencies for overlapping files. Each lane SHALL write
+only its isolated lane branch and SHALL NOT push the feature branch, which SHALL
+have exactly one writer at a time. The orchestrator SHALL integrate exactly the
+selected lane outputs through that single-writer feature-branch path, then append
+an assembly transition to the run record naming every integrated and discarded
+lane and the assembled canonical head. Confidence stages SHALL review only that
+canonical head after verifying its exact SHA.
 
 #### Scenario: Two planned slices edit the same file
 
@@ -92,6 +98,16 @@ serialize or declare dependencies for overlapping files.
 - **WHEN** its minimum agents exceed the resolved run or concurrency ceilings
 - **THEN** policy validation refuses the strategy-rigor combination rather than silently shrinking the council
 
+#### Scenario: Selected lanes assemble into the feature branch
+
+- **WHEN** parallel lanes finish and the orchestrator selects a subset of their outputs
+- **THEN** the sole feature-branch writer integrates exactly that subset, records integrated and discarded lanes, and captures the resulting canonical SHA before confidence review
+
+#### Scenario: A lane attempts to push the feature branch
+
+- **WHEN** a parallel implementer lane attempts to write or push the shared feature branch
+- **THEN** the single-writer path rejects the operation and the lane remains confined to its isolated branch
+
 ### Requirement: Parallel work has persistent supervision and scheduling
 
 The orchestrator SHALL maintain durable lane state, a persistent event monitor,
@@ -99,12 +115,20 @@ and a merge queue containing paths, pairwise overlap, stage, dependency, and
 invalidation cost. Every terminal agent or PR event SHALL lead to a documented
 action, and merge-order recommendations SHALL disclose effects on other active
 branches. Product, scope, and safety decisions SHALL remain human decisions;
-sequencing and scheduling SHALL be orchestrator decisions with disclosure.
+sequencing and scheduling SHALL be orchestrator decisions with disclosure. The
+monitor SHALL persist terminal-event identities and atomically record each action
+receipt before advancing its durable event cursor. Re-armed monitoring SHALL
+resume from that cursor and SHALL NOT re-execute an action whose receipt exists.
 
 #### Scenario: A monitor exits unexpectedly
 
 - **WHEN** the persistent lane monitor terminates before all lanes are terminal
 - **THEN** the orchestrator re-arms it and does not interpret the exit as human cancellation
+
+#### Scenario: Monitoring resumes after an action receipt
+
+- **WHEN** the monitor records an action receipt for a terminal event and exits before observing the next event
+- **THEN** the re-armed monitor advances from the durable cursor without executing the receipted action again
 
 #### Scenario: A cheap branch would invalidate a terminal-stage branch
 

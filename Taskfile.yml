@@ -182,7 +182,7 @@ tasks:
   openspec:validate:
     desc: Validate OpenSpec changes and specs (strict)
     cmds:
-      - npx --yes @fission-ai/openspec@1.11.0 validate --all --strict --no-interactive
+      - ./scripts/openspec.sh validate --all --strict --no-interactive
 
   validate:skills:
     desc: Guard shared agent skills (unique names across categories, valid SKILL.md frontmatter)

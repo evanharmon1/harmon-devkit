@@ -21,15 +21,24 @@ result before reading its recommendation or evidence.
 ### Requirement: Logical rounds require every configured finder
 
 A confidence-stage logical round SHALL contain one completed pass from every
-configured finder at one `reviewed_head`. Each retained pass SHALL have exactly
-one adjudication document and each adjudication SHALL refer to one retained
-pass. A missing or twice-blocked finder SHALL yield `capped` with reason
-`finder_unavailable`; a round SHALL NOT silently proceed with fewer finders.
+configured primary finder slot at one `reviewed_head`. A blocked primary SHALL
+receive its single retry before the configured `finder_fallbacks` chain for that
+slot is attempted in order. Every substitution SHALL be recorded and disclosed,
+and the round SHALL retain exactly one completed pass for each configured primary
+slot. Each retained pass SHALL have exactly one adjudication document and each
+adjudication SHALL refer to one retained pass. Only exhaustion of the primary's
+retry and complete fallback chain SHALL yield `capped` with reason
+`finder_unavailable`; a round SHALL NOT silently proceed with fewer slots.
 
 #### Scenario: One of two review finders is unavailable
 
-- **WHEN** one finder completes and the other remains blocked after its single retry
-- **THEN** no logical round is counted and the stage returns `capped` with the unavailable finder named
+- **WHEN** one primary slot completes and the other remains blocked after its primary retry and every configured fallback attempt
+- **THEN** no logical round is counted and the stage returns `capped` with the exhausted primary slot and attempted substitutions named
+
+#### Scenario: A fallback substitutes for a blocked primary
+
+- **WHEN** a primary remains blocked after its retry and the next configured fallback completes at the shared head
+- **THEN** the run records and discloses the substitution and counts its pass exactly once for that primary slot
 
 ### Requirement: Exit computation is deterministic and ordered
 
