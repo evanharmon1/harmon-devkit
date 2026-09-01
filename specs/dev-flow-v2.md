@@ -146,6 +146,9 @@ orchestrate workers alike — works on an isolated lane branch and never pushes
 the feature branch; lane outputs reach the feature branch only through the
 serialized single-writer apply path, and the confidence stages review only
 that assembled head, verified by exact SHA.
+Every feature-branch apply or push is a compare-and-set bound to the run ID and
+expected old head (`push-round.sh --expect`); a stale or superseded writer fails
+that head check and its work is rejected, regardless of session or machine.
 
 **This spec is the anchor; the implementation issues are reconciled to it.**
 [#634](https://github.com/evanharmon1/harmon-devkit/issues/634),
@@ -413,6 +416,11 @@ decision comment. Schema v2 is incompatible under harmon-init decision record
 0008, the versioned-devflow compatibility contract: v1 consumers reject this
 file with a migration hint, and v2 consumers refuse both the legacy and v1
 shapes rather than carrying multiple interpretations.
+The composed predicate catalog in this spec is normative for `[convergence]`;
+the draft's flat keys are illustrative placeholders until the exit script
+[#636](https://github.com/evanharmon1/harmon-devkit/issues/636) pins predicate
+names, as the [2026-09-01 correction](https://github.com/evanharmon1/harmon-init/issues/1081#issuecomment-5489563184)
+records.
 
 Every array key declares one of five semantics:
 
@@ -460,10 +468,11 @@ The v2 shape is:
   `max_agent_runs` and `max_parallel_agents`. Review passes spend the rounds
   envelope instead. These ceilings bound orchestrated and council execution,
   including the milestone's parallel implementers.
-- `[spend.<policy>]` defines `max_tokens` and `max_usd` in the schema but is
-  **unshipped**. Until a consumer can measure one of those limits, it reports
-  the limit as `UNENFORCED` rather than claiming enforcement. Tier escalation
-  is not a spend key; it belongs to each rigor profile.
+- `[spend.<policy>]` defines `max_tokens` and `max_usd`; a
+  `[rigor.<level>]` may name `spend = "<policy>"`, and absent that key no spend
+  envelope applies. The table is **unshipped**, so spend limits remain
+  `UNENFORCED` in shipped profiles until measurable. Tier escalation is not a
+  spend key; it belongs to each rigor profile.
 - `[gates]` declares `round_code`, `round_docs`, `secret_scan`, and `pre_pr` as
   **bare existing Taskfile target names** — no argv, paths, spaces, or slashes.
   The validator refuses anything else, so config may select a repository
@@ -478,13 +487,17 @@ The v2 shape is:
 - `[convergence]` is the predicate catalog above, with tighten-only
   `[rigor.<level>.convergence]` overrides.
 - `[role.<slug>]` declares the role's baseline `tier` and its `families[]` and
-  optional `harnesses[]`, both **preference** arrays. Resolution is family
-  first, then harness within that family; failure, quota, or a family with no
-  usable harness falls horizontally to the next family and is disclosed like
-  an off-profile tier. An absent harness preference means any registered
-  harness that serves the family. The orchestrator declares both arrays too:
-  they are descriptive when a human has already opened the session, and
-  binding when Foreman or another automation chooses the harness to open.
+  optional `harnesses[]`, both **preference** arrays. `harnesses[]` values must
+  resolve against `agent-registry.json` `harnesses[]`; valid examples are
+  `claude-code`, `codex-cli`, and `antigravity`. Resolution is family first,
+  then harness within that family; failure, quota, no usable harness, or no
+  registry model at the resolved tier makes that family unavailable, so
+  resolution falls to the next `families[]` entry and discloses the fallback.
+  Validation requires every role × rigor profile to have at least one
+  resolvable family. An absent harness preference means any registered harness
+  that serves the family. The orchestrator declares both arrays too: they are
+  descriptive when a human has already opened the session, and binding when
+  Foreman or another automation chooses the harness to open.
 - `[stage.<stage>]` uses monomorphic arrays whose keys carry the semantics and
   whose values are always registry slugs. `finders` is **all-of**: each primary
   finder defines one round slot, and every slot must produce exactly one pass
@@ -502,11 +515,14 @@ The v2 shape is:
   every implementer-capable registered harness is eligible. Strategy supplies
   the number and topology — including council's `distinct_families` constraint
   — while breadth supplies the ceilings. Council judging yields one artifact:
-  either a selected proposal or, when `synthesis = true`, a synthesized
-  artifact whose provenance names its source proposals. The run record records
-  that judged artifact and every proposal's identity and outcome. The judged
-  artifact enters the same serialized single-writer apply path; other lane
-  outputs are discarded.
+  either a selected proposal or, when `synthesis = true`, the output of one
+  fresh implementer dispatch briefed with the source proposals. The judge
+  writes no code, confidence roles remain write-free, and no new role is
+  introduced: synthesis returns an ordinary lane artifact under the existing
+  `result.implementer` contract, with provenance naming its source proposals.
+  The run record records that judged artifact and every proposal's identity and
+  outcome. The judged artifact enters the same serialized single-writer apply
+  path; other lane outputs are discarded.
 
   Validation makes two independent checks. **Role dispatch:** the agent
   dispatched for a stage implements that stage's role (implement →
