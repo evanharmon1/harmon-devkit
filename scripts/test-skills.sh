@@ -409,6 +409,50 @@ mkdir -p "$G12/ai/skills/frontend/oscar"
 expect_ok "same inconsistency under non-universal category passes (out of scope)" \
     bash -c "cd '$G12' && bash '$SCRIPTS/verify-skills.sh'"
 
+# The two invocation flags are independent axes (round-1 fix, issue #702): a
+# universal skill with disable-model-invocation:true must never carry "Use
+# when", whether or not it is also user-invocable:false; and a universal
+# skill that is only user-invocable:false (no disable-model-invocation) is
+# still model-invocable, so it still requires "Use when".
+
+# Both flags set, but the description still says "Use when" — fails, naming
+# the skill.
+G13="$TMPROOT/guard-universal-both-flags-use-when"
+git_init "$G13"
+mkdir -p "$G13/ai/skills/universal/papa"
+{
+    echo "---"
+    echo "name: papa"
+    echo "description: >-"
+    echo "  Internal runtime support. Use when another skill needs it. Do not"
+    echo "  invoke directly."
+    echo "disable-model-invocation: true"
+    echo "user-invocable: false"
+    echo "---"
+    echo "# papa"
+} >"$G13/ai/skills/universal/papa/SKILL.md"
+expect_fail_contains "both-flags universal skill with 'Use when' fails, naming the skill" \
+    "ai/skills/universal/papa/SKILL.md" \
+    bash -c "cd '$G13' && bash '$SCRIPTS/verify-skills.sh'"
+
+# user-invocable:false alone (no disable-model-invocation) is still
+# model-invocable, so it still needs "Use when" — fails without it, naming
+# the skill.
+G14="$TMPROOT/guard-universal-userinvocable-only-missing-trigger"
+git_init "$G14"
+mkdir -p "$G14/ai/skills/universal/quebec"
+{
+    echo "---"
+    echo "name: quebec"
+    echo "description: Internal helper skill. Do not invoke directly."
+    echo "user-invocable: false"
+    echo "---"
+    echo "# quebec"
+} >"$G14/ai/skills/universal/quebec/SKILL.md"
+expect_fail_contains "user-invocable:false-only universal skill missing 'Use when' fails, naming the skill" \
+    "ai/skills/universal/quebec/SKILL.md" \
+    bash -c "cd '$G14' && bash '$SCRIPTS/verify-skills.sh'"
+
 # ── sync-skills.sh (vendoring engine) ──────────────────────────────────
 echo "==> sync-skills.sh"
 

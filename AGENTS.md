@@ -333,10 +333,10 @@ same way, as an off-profile decision distinct from an off-default rigor cap
 - **`task challenge`** — adversarial second-model review, under the resolved
   **challenge cap**. Where the optional `/gauntlet` skill is vendored **and its
   supported topology holds — `origin` is the repository the PR will
-  target** — it is the procedure, and it is **user-invocable only**
-  (`disable-model-invocation: true`): an agent enters the stage by reading
-  `.claude/skills/gauntlet/SKILL.md` and following it, not by calling a slash
-  command it cannot call. That skill carries the mechanics this file does not
+  target** — it is the procedure: where the harness exposes the Skill tool,
+  invoke `gauntlet` through it; where it does not (a subagent, another
+  harness), enter the stage by reading `.claude/skills/gauntlet/SKILL.md` and
+  following it. That skill carries the mechanics this file does not
   restate — backgrounding the long reviewer runs, the adjudication table and
   its ledger, the deferred-findings sidecar recipe, and the PR-open ritual.
   Where it is not vendored — or the checkout is the conventional fork layout
@@ -453,10 +453,11 @@ same way, as an off-profile decision distinct from an off-default rigor cap
   instead of judging for yourself when the PR is finished. The PR stays draft
   for the whole stage; only the readiness gate below may promote it.
   Where the optional
-  `/shepherd` skill is vendored it is the procedure, and it is **user-invocable
-  only** (`disable-model-invocation: true`): an agent enters the stage by
-  reading `.agents/skills/shepherd/SKILL.md` and following it, not by calling a
-  slash command it cannot call. Where it is not vendored, this bullet is the
+  `/shepherd` skill is vendored it is the procedure: where the harness
+  exposes the Skill tool, invoke `shepherd` through it; where it does not (a
+  subagent, another harness), enter the stage by reading
+  `.agents/skills/shepherd/SKILL.md` and following it. Where it is not
+  vendored, this bullet is the
   procedure. Start by
   re-reading any **unsettled** findings the PR description defers to this
   stage — they are open work, not a changelog; mark each one off in the body
@@ -702,8 +703,10 @@ Setup and mechanics: [docs/guides/codex-review.md](docs/guides/codex-review.md).
 These tasks slot into the **Dev Loop** above: after `task verify` goes green,
 before `task ci` — and where the optional `/gauntlet` skill is vendored **and
 its supported topology holds (`origin` is the repository the PR will
-target)**, the procedure for running them to convergence is that skill,
-entered by reading `.claude/skills/gauntlet/SKILL.md`; otherwise the Dev
+target)**, the procedure for running them to convergence is that skill: where
+the harness exposes the Skill tool, invoke `gauntlet` through it; where it
+does not (a subagent, another harness), enter the stage by reading
+`.claude/skills/gauntlet/SKILL.md` and following it. Otherwise the Dev
 Loop's fallback above is the procedure. What follows here is the policy it runs
 under; where the two disagree, this file wins.
 Codex cloud review is also connected to the repo; it reviews PRs too and posts

@@ -208,20 +208,16 @@ while IFS= read -r md; do
         category="${rel%%/*}"
         if [ "$category" = "universal" ]; then
             desc="$(frontmatter_description_text "$md")"
-            if frontmatter_flag_is "$md" "user-invocable" "false"; then
-                case "$desc" in
-                *"Do not invoke directly"*) ;;
-                *)
-                    err "$md: user-invocable: false requires 'Do not invoke directly' in the description"
-                    ;;
-                esac
-            elif frontmatter_flag_is "$md" "disable-model-invocation" "true"; then
-                case "$desc" in
-                *"Invoke as /$name"*) ;;
-                *)
-                    err "$md: disable-model-invocation: true requires 'Invoke as /$name' in the description"
-                    ;;
-                esac
+            # The two flags are independent axes: `disable-model-invocation`
+            # gates whether a model may trigger the skill at all, and
+            # `user-invocable` (checked only inside that branch) picks which
+            # invocation phrase the description must carry instead. Checking
+            # model-invocation first means the "Use when"/"Trigger it" ban
+            # below always applies to a disable-model-invocation:true skill,
+            # whatever user-invocable says — and a skill that leaves
+            # disable-model-invocation unset always requires "Use when", even
+            # if it also sets user-invocable: false.
+            if frontmatter_flag_is "$md" "disable-model-invocation" "true"; then
                 case "$desc" in
                 *"Use when"*)
                     err "$md: disable-model-invocation: true but description contains 'Use when' (a user-only skill must not carry model-trigger phrasing)"
@@ -232,6 +228,21 @@ while IFS= read -r md; do
                     err "$md: disable-model-invocation: true but description contains 'Trigger it' (a user-only skill must not carry model-trigger phrasing)"
                     ;;
                 esac
+                if frontmatter_flag_is "$md" "user-invocable" "false"; then
+                    case "$desc" in
+                    *"Do not invoke directly"*) ;;
+                    *)
+                        err "$md: user-invocable: false requires 'Do not invoke directly' in the description"
+                        ;;
+                    esac
+                else
+                    case "$desc" in
+                    *"Invoke as /$name"*) ;;
+                    *)
+                        err "$md: disable-model-invocation: true requires 'Invoke as /$name' in the description"
+                        ;;
+                    esac
+                fi
             else
                 case "$desc" in
                 *"Use when"*) ;;
