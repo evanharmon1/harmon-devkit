@@ -15,7 +15,7 @@ The core entities/nouns and what each means.
 | run | One execution of the dev flow for an issue, from kickoff until ready-for-review or until it ends earlier (capped, abandoned, escalated); identified by `run_id`; owns a run record, stage transitions, and interventions. |
 | stage | A named phase of the lifecycle below. A confidence stage owns rounds. |
 | pass | One finder's `result.challenger` or `result.reviewer` at one reviewed head in its confidence stage. |
-| round | The aggregate of one pass per configured finder at one reviewed head — one pass when one finder is configured; the unit caps and `min_rounds` count. Produces findings. |
+| round | The aggregate of exactly one pass per configured primary-finder slot at one reviewed head, each filled by its primary or exactly one substitute; the unit caps and `min_rounds` count. Produces findings. |
 | finding | One challenger or reviewer observation, immutable, uniquely identified within the run. |
 | adjudication | The orchestrator's verdict on one finding: adjudicated priority and disposition. Exactly one per finding. |
 | exit | The computed outcome of a confidence stage at a point in time, from its adjudicated rounds. |

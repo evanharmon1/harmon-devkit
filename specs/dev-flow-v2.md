@@ -143,10 +143,12 @@ file (`ai/agents/<role>.md`) is one implementation of a role.
 **Invariant:** for any run, no interleaving of writers — parallel lanes,
 resumed sessions, or concurrent machines — may land more than one writer's
 outputs on the feature branch, and a superseded run's writes are rejected.
-The enforcing mechanism (expected-head compare-and-set, per-run remote lease,
-or equivalent) belongs to #638's stage skills and #635's broker contract, not
-this spec; the two-machines-same-head race and crashed-writer resumption are
-required test cases there.
+The enforcing mechanism belongs to #638's stage skills and #635's broker
+contract, not this spec: for each feature-branch write, the broker atomically
+binds the expected head to the active run identity and generation. A bare
+expected-head compare-and-set is insufficient because a superseded and a
+resumed run can present the same head; the two-machines-same-head race and
+crashed-writer resumption are required test cases there.
 
 **This spec is the anchor; the implementation issues are reconciled to it.**
 [#634](https://github.com/evanharmon1/harmon-devkit/issues/634),
@@ -203,7 +205,12 @@ Every result is an **envelope** wrapping a per-role payload
   "status": "completed",
   "head": "<40-hex sha>",
   "produced_at": "2026-08-29T15:04:05Z",
-  "producer": { "harness": "claude-code", "model": "…", "tier": "frontier" },
+  "producer": {
+    "harness": "claude-code",
+    "family": "claude",
+    "model": "…",
+    "tier": "frontier"
+  },
   "run": { "run_id": "…", "initiated_by": "human" },
   "payload": { }
 }
@@ -220,11 +227,13 @@ Every result is an **envelope** wrapping a per-role payload
   and test-gap classes. It verifies the implementation; it does not own the
   challenger's design attack or de-scaffolding recommendations.
 - Both confidence-role payloads carry the same stage-keyed pass core — `stage`,
-  `round`, `reviewed_head`, `finder`, and `findings[]`, each with `id`, `path`,
-  `line`, `class`, `provenance`, `fingerprint`, `priority` (the producing
-  role's label), `recommended_disposition`, and `evidence`. The exit script
-  computes over that common finding core according to `stage`; it never
-  hardcodes `result.reviewer`. Results are **immutable once returned**. A
+  `round`, `reviewed_head`, `slot` (the configured primary finder), `finder`
+  (the finder that ran), optional `substitutes_for` (present only on a
+  substitution), and `findings[]`, each with `id`, `path`, `line`, `class`,
+  `provenance`, `fingerprint`, `priority` (the producing role's label),
+  `recommended_disposition`, and `evidence`. The exit script computes over
+  that common finding core according to `stage`; it never hardcodes
+  `result.reviewer`. Results are **immutable once returned**. A
   finding `id` is unique within the run by construction —
   `<stage>-r<round>-<finder>-<n>` — and receipt validation **rejects a
   result whose ids collide** with each other or with any finding already in
@@ -234,6 +243,9 @@ Every result is an **envelope** wrapping a per-role payload
   names a head (`reviewed_head`, the integrator's reviewed-commit stamp)
   different from the envelope's `head`; a schema-valid result can never carry
   stale evidence under a current-head label.
+- The envelope's runtime-attested `producer` names the resolved `family` as
+  well as its harness, model, and tier. Retained results therefore prove both
+  council `distinct_families` and every disclosed horizontal family fallback.
 - `integrator` payload: checks, the Codex cycle (accepted surface, comment id,
   reviewed-commit stamp, checker exit code), findings verbatim, unanswered
   thread roots, `settled_at`, `applied_dispositions`.
@@ -446,7 +458,7 @@ The v2 shape is:
 - `[rigor.<level>]` points to one same-named `[rounds.*]` policy and one
   same-named `[breadth.*]` envelope, carries the five role overrides
   (`orchestrator_tier`, `implementer_tier`, `challenger_tier`,
-  `reviewer_tier`, `integrator_tier`), and declares `tier_escalation`.
+  `reviewer_tier`, `integrator_tier`), and declares boolean `tier_escalation`.
   The shipped baselines are orchestrator `apex`, implementer `standard`,
   challenger `frontier`, reviewer `standard`, and integrator `economy`.
   Orchestrator, challenger, and reviewer are each at least as capable as
@@ -499,25 +511,53 @@ The v2 shape is:
   optional `harnesses[]`, both **preference** arrays. `harnesses[]` values must
   resolve against `agent-registry.json` `harnesses[]`; valid examples are
   `claude-code`, `codex-cli`, and `antigravity`. Resolution is family first,
-  then harness within that family; failure, quota, no usable harness, or no
-  registry model at the resolved tier makes that family unavailable, so
-  resolution falls to the next `families[]` entry and discloses the fallback.
-  Validation requires every role × rigor profile to have at least one
-  resolvable family. An absent harness preference means any registered harness
-  that serves the family. The orchestrator declares both arrays too: they are
-  descriptive when a human has already opened the session, and binding when
-  Foreman or another automation chooses the harness to open.
+  then harness within that family. When the resolved rigor profile sets
+  `tier_escalation = true`, failure, refusal, or operator policy — never cost
+  alone — may first attempt vertical escalation by exactly one `tier_order`
+  rung within the same family. A family with no model at that higher rung
+  simply cannot escalate; that fact alone does not make the family unavailable.
+  Horizontal fallback to the next `families[]` entry happens only when the
+  current family cannot serve at the resolved (or already-escalated current)
+  tier at all, and every fallback is disclosed. Validation requires every role
+  × rigor profile to have at least one resolvable family. An absent harness
+  preference means any registered harness that serves the family. The
+  orchestrator declares both arrays too: they are descriptive when a human has
+  already opened the session, and binding when Foreman or another automation
+  chooses the harness to open.
+- `[strategy.<name>]` carries the v1-shipped strategy contract forward
+  unchanged. `topology` selects `single-agent` (one accountable lead and only
+  optional helper subagents), `lead-and-workers` (a lead with required
+  first-class workers), `independent-proposals` (a coordinator dispatches at
+  least two independent proposers and judges them), or `human-directed` (the
+  human is accountable). `planning` is `inline` (folded into the first turn),
+  `explicit` (a stated plan), `independent` (each proposal plans for itself),
+  or `collaborative` (planned with the human). `delegation` is `none`,
+  `optional`, or `required`, with the v1 topology constraints; optional
+  `coordination = "parallel-when-independent"` governs delegated scheduling.
+  Council alone uses `selection = "judge"` and boolean `synthesis`; its
+  `min_agents` counts proposers, while orchestrate's counts the lead plus
+  workers. `human_gates` may contain only `after-discovery`, `after-plan`,
+  `before-delegation`, `before-selection`, `before-synthesis`,
+  `before-scope-expansion`, `before-budget-escalation`, `before-publication`,
+  `before-ready-for-review`, and `each-phase`. Constitutional approvals remain
+  outside strategy and cannot be disabled by it. Under v2's breadth
+  accounting, every implementer or lane dispatch and every synthesis dispatch
+  consumes one `max_agent_runs`; council judging is write-free and consumes
+  none. Challenge and review passes never consume this envelope —
+  `[rounds.<policy>]` bounds them on its independent axis.
 - `[stage.<stage>]` uses monomorphic arrays whose keys carry the semantics and
   whose values are always registry slugs. `finders` is **all-of**: each primary
   finder defines one round slot, and every slot must produce exactly one pass
   at the same `reviewed_head`. `finder_fallbacks` is a **preference** list
   consumed in listed order after a primary is unavailable after its retry.
   Fallback candidates are tried until one can fill the failed slot, but at
-  most one substitute binds to that slot for the round; its pass identifies
-  both the primary it substitutes and the fallback that ran. An actor already
-  serving as a primary or substitute in the round cannot satisfy a second
-  slot. Every substitution is recorded and disclosed. A slot still unavailable
-  when the fallback list is exhausted ends the run
+  most one substitute binds to that slot for the round. A primary pass has
+  `finder == slot` and omits `substitutes_for`; a fallback pass names the
+  fallback that ran in `finder`, keeps the configured primary in `slot`, and
+  sets `substitutes_for` to that primary. An actor already serving as a primary
+  or substitute in the round cannot satisfy a second slot. Every substitution
+  is recorded and disclosed. A slot still unavailable when the fallback list
+  is exhausted ends the run
   `capped`/`finder_unavailable`, never silently one pass short.
 
   `pool` is an optional **allowlist** for the implement stage; when absent,
@@ -526,9 +566,11 @@ The v2 shape is:
   — while breadth supplies the ceilings. Before dispatch, strategy, pool,
   breadth, and registry are cross-validated: a council requiring N distinct
   families requires at least N eligible families in the implement-stage pool,
-  `max_parallel_agents >= N`, and `max_agent_runs >= N + 1`. An unsatisfiable
-  combination is reported incompatible at resolution time, never allowed to
-  deadlock at dispatch. Council judging yields one artifact:
+  `max_parallel_agents >= N`, and `max_agent_runs >= N`; only a council with
+  `synthesis = true` requires `max_agent_runs >= N + 1` for the fresh synthesis
+  dispatch. Judging itself consumes no run. An unsatisfiable combination is
+  reported incompatible at resolution time, never allowed to deadlock at
+  dispatch. Council judging yields one artifact:
   either a selected proposal or, when `synthesis = true`, the output of one
   fresh implementer dispatch briefed with the source proposals. The judge
   writes no code, confidence roles remain write-free, and no new role is
@@ -552,13 +594,14 @@ The v2 shape is:
   models at one rung, exactly one carries `default: true`
   ([#635](https://github.com/evanharmon1/harmon-devkit/issues/635)). The
   resolved model is the chosen family's registry model at the resolved rung.
-  Escalation derives as one rung up `tier_order` and never switches family;
-  a family with no model at that rung simply cannot escalate. That is not the
-  unavailable-family case and does not trigger horizontal fallback: the role
-  continues at its current tier with the limitation recorded. Local binding
-  is the registry's `-local` harnesses under ADR 0005. This config never names
-  a concrete model. `tier:<role>:*` label values remain hand-authored in
-  `label-registry.json`.
+  When enabled by the rigor profile, escalation derives as one rung up
+  `tier_order` and never switches family; a family with no model at that rung
+  simply cannot escalate. That is not, by itself, the unavailable-family case
+  and does not trigger horizontal fallback; whether fallback is legal still
+  depends on the family's ability to serve at the resolved or current tier.
+  Local binding is the registry's `-local` harnesses under ADR 0005. This
+  config never names a concrete model. `tier:<role>:*` label values remain
+  hand-authored in `label-registry.json`.
 - **Self-modified policy is read from the merge base.** When the change edits
   `.devflow.toml` or `agent-registry.json`, every input that can affect policy
   resolution comes from the merge-base copy: defaults and both rankings, the
