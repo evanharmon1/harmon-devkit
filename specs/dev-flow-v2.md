@@ -140,15 +140,13 @@ file (`ai/agents/<role>.md`) is one implementation of a role.
 | `integrator` | `result.integrator` | the Codex trigger comment; thread replies of **given** text | author reply text, dispose, promote |
 | orchestrator (the session) | — | dispositions, adjudication record, `gh pr create --draft`, the PR body, evidence and run-record comments, `gh pr ready` | merge; override an exit downward |
 
-**Whatever the strategy, the feature branch has exactly one writer at any
-time.** Every parallel implementer dispatch — council proposers and
-orchestrate workers alike — works on an isolated lane branch and never pushes
-the feature branch; lane outputs reach the feature branch only through the
-serialized single-writer apply path, and the confidence stages review only
-that assembled head, verified by exact SHA.
-Every feature-branch apply or push is a compare-and-set bound to the run ID and
-expected old head (`push-round.sh --expect`); a stale or superseded writer fails
-that head check and its work is rejected, regardless of session or machine.
+**Invariant:** for any run, no interleaving of writers — parallel lanes,
+resumed sessions, or concurrent machines — may land more than one writer's
+outputs on the feature branch, and a superseded run's writes are rejected.
+The enforcing mechanism (expected-head compare-and-set, per-run remote lease,
+or equivalent) belongs to #638's stage skills and #635's broker contract, not
+this spec; the two-machines-same-head race and crashed-writer resumption are
+required test cases there.
 
 **This spec is the anchor; the implementation issues are reconciled to it.**
 [#634](https://github.com/evanharmon1/harmon-devkit/issues/634),
@@ -415,7 +413,10 @@ The complete schema-v2 draft and rationale are in the issue's 2026-08-31
 decision comment. Schema v2 is incompatible under harmon-init decision record
 0008, the versioned-devflow compatibility contract: v1 consumers reject this
 file with a migration hint, and v2 consumers refuse both the legacy and v1
-shapes rather than carrying multiple interpretations.
+shapes rather than carrying multiple interpretations. Shape refusal applies
+only to the file a consumer operates under; a historical merge-base copy is
+interpreted under its own declared `schema_version` — v1 by v1 rules and legacy
+by legacy rules.
 The composed predicate catalog in this spec is normative for `[convergence]`;
 the draft's flat keys are illustrative placeholders until the exit script
 [#636](https://github.com/evanharmon1/harmon-devkit/issues/636) pins predicate
@@ -450,7 +451,12 @@ The v2 shape is:
   challenger `frontier`, reviewer `standard`, and integrator `economy`.
   Orchestrator, challenger, and reviewer are each at least as capable as
   implementer; challenger rides one stratum above reviewer at most levels
-  because design attack is the more judgment-heavy contract.
+  because design attack is the more judgment-heavy contract. Unscoped
+  `tier:adaptive` remains a valid implementer refinement: preflight classifies
+  that role's tier instead of pinning a rung, using the rigor profile's tier
+  provisionally until it answers. A concrete tier label for the same role beats
+  adaptive under `tier_order`; scoped `tier:<role>:adaptive` has no registry
+  tier and is ignored.
 - `[rounds.<policy>]` is the **vertical appetite**: `challenge`, `review`,
   `integration`, `remediation`, `min_rounds`, and `wall_clock_min`. A
   challenge or review value of 0 disables that confidence stage with
@@ -467,7 +473,10 @@ The v2 shape is:
 - `[breadth.<policy>]` is the **horizontal scale** and contains only
   `max_agent_runs` and `max_parallel_agents`. Review passes spend the rounds
   envelope instead. These ceilings bound orchestrated and council execution,
-  including the milestone's parallel implementers.
+  including the milestone's parallel implementers. Mandatory fix dispatches
+  spend `max_agent_runs` too; if one would exceed it, the run ends `capped` and
+  escalates naming the exhausted envelope — never an uncounted dispatch or
+  `continue` with no legal action.
 - `[spend.<policy>]` defines `max_tokens` and `max_usd`; a
   `[rigor.<level>]` may name `spend = "<policy>"`, and absent that key no spend
   envelope applies. The table is **unshipped**, so spend limits remain
@@ -514,7 +523,12 @@ The v2 shape is:
   `pool` is an optional **allowlist** for the implement stage; when absent,
   every implementer-capable registered harness is eligible. Strategy supplies
   the number and topology — including council's `distinct_families` constraint
-  — while breadth supplies the ceilings. Council judging yields one artifact:
+  — while breadth supplies the ceilings. Before dispatch, strategy, pool,
+  breadth, and registry are cross-validated: a council requiring N distinct
+  families requires at least N eligible families in the implement-stage pool,
+  `max_parallel_agents >= N`, and `max_agent_runs >= N + 1`. An unsatisfiable
+  combination is reported incompatible at resolution time, never allowed to
+  deadlock at dispatch. Council judging yields one artifact:
   either a selected proposal or, when `synthesis = true`, the output of one
   fresh implementer dispatch briefed with the source proposals. The judge
   writes no code, confidence roles remain write-free, and no new role is
@@ -539,9 +553,11 @@ The v2 shape is:
   ([#635](https://github.com/evanharmon1/harmon-devkit/issues/635)). The
   resolved model is the chosen family's registry model at the resolved rung.
   Escalation derives as one rung up `tier_order` and never switches family;
-  family fallback is the separate horizontal axis above. Local binding is the
-  registry's `-local` harnesses under ADR 0005. This config never names a
-  concrete model. `tier:<role>:*` label values remain hand-authored in
+  a family with no model at that rung simply cannot escalate. That is not the
+  unavailable-family case and does not trigger horizontal fallback: the role
+  continues at its current tier with the limitation recorded. Local binding
+  is the registry's `-local` harnesses under ADR 0005. This config never names
+  a concrete model. `tier:<role>:*` label values remain hand-authored in
   `label-registry.json`.
 - **Self-modified policy is read from the merge base.** When the change edits
   `.devflow.toml` or `agent-registry.json`, every input that can affect policy
@@ -550,7 +566,9 @@ The v2 shape is:
   (`docs_only_paths` included), `[convergence]`, `[role]`, `[stage]`,
   `[strategy]`, and the registry's roles, actors, model classifications, and
   trusted IDs. A branch therefore cannot lower or widen the gate it is
-  changing. An explicit human instruction still overrides.
+  changing. A v1→v2 migration therefore resolves its budget from the v1
+  merge-base by v1 rules while shipping the v2 file. An explicit human
+  instruction still overrides.
 
 ## Evidence
 
