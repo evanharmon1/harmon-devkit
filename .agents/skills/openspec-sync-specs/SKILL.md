@@ -164,10 +164,11 @@ This is an **agent-driven** operation - you will read delta specs and directly e
       - Add Requirements section with the ADDED requirements
       - Follow the **Main Spec Format Reference** below
 
-5. **Validate updated main specs**
+5. **Validate updated main specs and the change**
 
    Run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate --specs` with the same selected-root flags used earlier.
-   If validation fails, report the problems and do not claim the sync succeeded.
+   Then run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate "<name>" --type change --strict --no-interactive` with those flags.
+   If either validation fails, report the problems and do not claim the sync succeeded.
 
 6. **Show summary**
 

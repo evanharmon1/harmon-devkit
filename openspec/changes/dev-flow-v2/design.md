@@ -278,13 +278,14 @@ and `shepherd` are removed after v2 migration.
    vocabulary, and generated-repository migration.
 4. Implement trajectory receipt and exit computation, deterministic rendering,
    and the diff-aware round-push gate.
-5. Replace gauntlet/shepherd with role-scoped reviewer/challenger, orchestrator,
-   and integrator workflows; add evidence posting, harvesting, metrics, and
-   retro consumption.
+5. Publish the role-scoped reviewer/challenger, orchestrator, and integrator
+   successor skills as v2-only from their first release; add evidence posting,
+   harvesting, metrics, and retro consumption.
 6. Update Foreman to accept envelope v2 and recompute terminal exits from the
    same fixtures and policy.
-7. Run copier updates across consumers, validate each rendered repository, and
-   only then remove every older-shape branch and enable v2-only refusal.
+7. Keep each unmigrated consumer pinned to the last pre-v2 skill release; after
+   its `.devflow.toml` migrates, advance its skills-sync pin to the v2-only
+   release and validate the rendered repository.
 
 Rollback is versioned rather than interpretive: consumers that have not
 migrated remain on their pinned v1 assets. A v2 consumer encountering v1 stops

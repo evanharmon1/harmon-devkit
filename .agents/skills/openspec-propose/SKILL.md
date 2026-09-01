@@ -127,7 +127,16 @@ When the user is ready to implement, they must start the apply workflow explicit
       - Ask the user to clarify
       - Then continue with creation
 
-6. **Show final status**
+6. **Strictly validate the change**
+
+   ```bash
+   "$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate "<name>" --type change --strict --no-interactive
+   ```
+
+   Refuse the ready handoff on any failure and report the validation errors.
+   `status` proves file existence only and never authorizes that handoff.
+
+7. **Show final status**
 
    ```bash
    "$(git rev-parse --show-toplevel)/scripts/openspec.sh" status --change "<name>"

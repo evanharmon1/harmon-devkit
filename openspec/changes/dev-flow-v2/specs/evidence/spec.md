@@ -86,7 +86,10 @@ indexed run's evidence chain is missing or broken, the harvester SHALL reject it
 as deleted-entry tampering, never reinterpret it as a run that did not happen.
 The run-record author's authority SHALL derive from configured trusted
 orchestrator actor IDs or the trusted kickoff event, never an identity declared
-inside the record.
+inside the record. The digest chain defends against non-trusted actors and
+accidental edits; a compromised trusted-account token is explicitly out of
+scope because it defeats every mechanism in the repository, branch history
+included.
 
 #### Scenario: An indexed evidence entry is deleted
 

@@ -34,6 +34,6 @@ duplicated as DevKit tasks here.
 - [ ] 4.1 Complete [#663](https://github.com/evanharmon1/harmon-devkit/issues/663): implement read-only run harvesting, append-only digest-chained history, closed-cohort unattended-success metrics, per-run JSON/table output, immutable `--as-of` reconstruction, and convergence-policy replay; verify cutoff reconstruction, edited/deleted-entry rejection, and omator/Foreman trajectory fixtures pass.
 - [ ] 4.2 Complete [#664](https://github.com/evanharmon1/harmon-devkit/issues/664): make `/retro` consume per-run evidence when present, report fixed per-stage measurements, and carry run provenance into tracked improvements while retaining the no-record fallback; verify skill validation passes.
 
-## 5. Remove transitional compatibility
+## 5. Ship v2-only successor skills
 
-- [ ] 5.1 Complete [#604](https://github.com/evanharmon1/harmon-devkit/issues/604): after every consumer is migrated, remove all pre-v1 and v1 policy branches from the successor stage skills and refuse each detected older shape with a specific migration hint; verify the consumer audit, refusal fixtures, and `task test:skills` pass.
+- [ ] 5.1 Complete [#604](https://github.com/evanharmon1/harmon-devkit/issues/604): ship successor stage skills as v2-only from their first release, with no pre-v1 or v1 branches; keep unmigrated consumers on the existing skills-sync pin to the last pre-v2 skill release until their `.devflow.toml` migrates, then advance the pin; verify the consumer pin audit, older-shape refusal fixtures, and `task test:skills` pass.

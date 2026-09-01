@@ -77,7 +77,18 @@ anchored to the repository root; never use a cwd-relative wrapper path.
      "$(git rev-parse --show-toplevel)/scripts/openspec.sh" instructions "<artifact-id>" --change "<name>" --json
      ```
 
-6. **Point to the next step (guidance only - NEVER act on it)**
+6. **Strictly validate the change before handoff**
+   - After any artifact write and before announcing success or a next-step
+     handoff, run:
+
+     ```bash
+     "$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate "<name>" --type change --strict --no-interactive
+     ```
+
+   - On failure, report the validation errors and refuse the successful
+     handoff. `status` or a coherence review alone never authorizes it.
+
+7. **Point to the next step (guidance only - NEVER act on it)**
    - Artifacts still missing -> suggest `/openspec-continue-change` to create them.
    - Change already implemented (tasks checked off / already applied) -> the code may no longer match the revised plan; suggest `/openspec-apply-change` to carry the delta into code.
    - Everything done and implemented -> suggest `/openspec-archive-change`.
