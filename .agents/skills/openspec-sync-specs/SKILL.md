@@ -1,7 +1,7 @@
 ---
 name: openspec-sync-specs
 description: Sync delta specs from a change to main specs. Use when the user wants to update main specs with changes from a delta spec, without archiving the change.
-allowed-tools: Bash(scripts/openspec.sh:*)
+allowed-tools: Read, Glob, Grep, Edit, Bash(git rev-parse:*), Bash(*scripts/openspec.sh":*)
 license: MIT
 compatibility: Requires the repository-pinned scripts/openspec.sh wrapper.
 metadata:

@@ -49,15 +49,24 @@ its issue blocker record. PR creation SHALL NOT delete local evidence.
 ### Requirement: Evidence writes are reserve-first and idempotent
 
 Before any GitHub evidence write, the system SHALL persist a deterministic
-reservation locally. On resume it SHALL search the destination for that marker
-and adopt only a matching comment authored by the run's trusted actor; an
-untrusted matching marker SHALL be reported and SHALL NOT suppress the
-legitimate write.
+reservation locally. Before creating a comment, it SHALL search the destination
+for that marker and adopt the lowest-ID matching comment authored by the run's
+trusted actor instead of posting. An untrusted matching marker SHALL be reported
+and SHALL NOT suppress the legitimate write. Because GitHub comment creation has
+no idempotency key, concurrent writers can still double-post; the trusted
+comment with the lowest ID is canonical, and every reader SHALL treat later
+duplicates as superseded and ignore them. Harvesting SHALL resolve duplicate
+markers by this rule rather than report them as ambiguous.
 
 #### Scenario: Posting succeeds but the comment ID is not recorded
 
 - **WHEN** interruption occurs after the trusted comment is created
 - **THEN** a resumed writer adopts the existing comment by marker and records its ID without creating a duplicate
+
+#### Scenario: Concurrent writers create duplicate markers
+
+- **WHEN** two trusted comments are created with the same reservation marker
+- **THEN** the lowest comment ID is canonical and every reader ignores the later duplicate as superseded
 
 ### Requirement: Evidence is scanned and safely redacted
 

@@ -1,7 +1,7 @@
 ---
 name: openspec-archive-change
 description: Archive a completed change in the experimental workflow. Use when the user wants to finalize and archive a change after implementation is complete.
-allowed-tools: Bash(scripts/openspec.sh:*)
+allowed-tools: Read, Glob, Grep, Edit, Bash(git rev-parse:*), Bash(*scripts/openspec.sh":*), Bash(mkdir -p *changes/archive":*), Bash(mv *changes/* *changes/archive/*)
 license: MIT
 compatibility: Requires the repository-pinned scripts/openspec.sh wrapper.
 metadata:

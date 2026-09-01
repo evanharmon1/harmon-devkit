@@ -1,7 +1,7 @@
 ---
 name: openspec-apply-change
 description: Implement tasks from an OpenSpec change. Use when the user wants to start implementing, continue implementation, or work through tasks.
-allowed-tools: Bash(scripts/openspec.sh:*)
+allowed-tools: Read, Glob, Grep, Edit, Bash(git rev-parse:*), Bash(*scripts/openspec.sh":*)
 license: MIT
 compatibility: Requires the repository-pinned scripts/openspec.sh wrapper.
 metadata:
