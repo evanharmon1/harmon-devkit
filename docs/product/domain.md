@@ -14,9 +14,9 @@ The core entities/nouns and what each means.
 | issue | The unit of work and of the success metric. Has one or more runs. |
 | run | One execution of the dev flow for an issue, from kickoff until ready-for-review or until it ends earlier (capped, abandoned, escalated); identified by `run_id`; owns a run record, stage transitions, and interventions. |
 | stage | A named phase of the lifecycle below. A confidence stage owns rounds. |
-| pass | One finder's `result.reviewer` at one reviewed head in one confidence stage. |
-| round | The aggregate of one pass per configured finder at one reviewed head — one pass when one finder is configured; the unit caps and `min_rounds` count. Produces findings. |
-| finding | One reviewer observation, immutable, uniquely identified within the run. |
+| pass | One finder's `result.challenger` or `result.reviewer` at one reviewed head in its confidence stage. |
+| round | The aggregate of exactly one pass per configured primary-finder slot at one reviewed head, each filled by its primary or exactly one substitute; the unit caps and `min_rounds` count. Produces findings. |
+| finding | One challenger or reviewer observation, immutable, uniquely identified within the run. |
 | adjudication | The orchestrator's verdict on one finding: adjudicated priority and disposition. Exactly one per finding. |
 | exit | The computed outcome of a confidence stage at a point in time, from its adjudicated rounds. |
 | pull request | The durable home of a run's evidence once opened; at most one per run. |
@@ -47,8 +47,8 @@ The stages a change moves through from an issue to a merged, released change.
 Optional stages are marked; the rest run on every change. Stage names are the
 canonical vocabulary — skills, config keys, and round records use the stage
 name, never a synonym (`gauntlet` is retired; see the glossary). **Agents are
-named for roles, not stages** (`implementer`, `reviewer`, `integrator`): one
-reviewer role serves both confidence stages.
+named for roles, not stages** (`implementer`, `challenger`, `reviewer`,
+`integrator`): challenger serves challenge, and reviewer serves review.
 
 | # | Stage | What happens | Optional |
 |---|---|---|---|
@@ -57,9 +57,9 @@ reviewer role serves both confidence stages.
 | 3 | explore | Research / scout the codebase or external sources before committing to a design. | yes |
 | 4 | plan | Design or spec the change; write the plan the implementer will be briefed with. | |
 | 5 | implement | The implementer produces the change on a branch and returns a result. | |
-| 6 | verify | The deterministic gate (`task verify`, or `task check` on a docs-only diff). A **check**. | |
-| 7 | challenge | Adversarial second-model rounds on design and approach, to convergence. Raises confidence; never authoritative. | |
-| 8 | review | Verification-lens second-model rounds on correctness, consistency, tests. Raises confidence; never authoritative. | |
+| 6 | verify | The deterministic target resolved from `.devflow.toml`: shipped defaults are `[gates].round_code = "verify"`, or `[gates].round_docs = "check"` on a docs-only diff. A **check**. | |
+| 7 | challenge | The challenger runs adversarial second-model rounds on design and approach, to convergence. Raises confidence; never authoritative. | |
+| 8 | review | The reviewer runs verification-lens second-model rounds on correctness, consistency, tests. Raises confidence; never authoritative. | |
 | 9 | security | `task security` — secret scan, SAST, dependency audit. A check. | |
 | 10 | integration | Open the draft PR, carry it through CI, requested reviews, and the readiness gate to ready-for-review. | |
 | 11 | merge | A human merges. Always. | |
