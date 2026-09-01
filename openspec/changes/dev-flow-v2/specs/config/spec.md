@@ -109,6 +109,22 @@ attributable explicit operator instruction MAY override the merge-base value.
 - **WHEN** the branch changes `[gates].round_code` or expands `docs_only_paths`
 - **THEN** its Dev flow run uses the merge-base gate and allowlist rather than the branch values
 
+### Requirement: Gate authority separates policy from branch implementation
+
+Merge-base resolution SHALL determine gate policy, including required target
+slugs, allowlists, and thresholds. Taskfile recipes, scripts, and the push broker
+executed from the feature branch SHALL be treated as branch-resident
+implementations, and any local evidence they produce SHALL be recorded as
+branch-attested. The deterministic readiness authorities SHALL be the
+merge-base-resolved policy and the PR's concluded required CI checks. The
+readiness gate SHALL NOT accept branch-attested local gate evidence as a
+substitute for any required check conclusion.
+
+#### Scenario: A branch attests its modified local gate
+
+- **WHEN** a branch changes a gate implementation, produces passing local evidence, and its corresponding required PR check has not concluded
+- **THEN** the run records the local evidence as branch-attested and readiness remains blocked on the required check
+
 ### Requirement: Policy validation is cross-file and fail-closed
 
 Validation SHALL verify threshold ranges, vocabulary permutations, nonempty

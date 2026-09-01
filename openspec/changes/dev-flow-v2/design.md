@@ -91,6 +91,13 @@ This lets repositories select their own gates without making config an
 arbitrary command-execution surface. Duplicating an allowlist in the skill and
 broker was rejected because they would drift.
 
+Merge-base resolution protects the policy that selects target slugs,
+allowlists, and thresholds; it does not attest the feature branch's Taskfile
+recipes, scripts, or push-broker implementation. Evidence produced by those
+local implementations is branch-attested. Readiness therefore combines the
+merge-base-resolved policy with concluded required CI checks on the PR and
+never substitutes a local marker for a required check conclusion.
+
 ### 4. Roles select; stages require
 
 `[role.*]` carries tier baselines and ordered `families[]` and `harnesses[]`
@@ -149,9 +156,12 @@ exactly one writer. The orchestrator selects lane outputs, integrates exactly
 those outputs through the feature branch's single-writer path, and records an
 assembly transition naming the integrated and discarded lanes plus the resulting
 canonical SHA. Confidence stages review only that exact assembled head. The
-monitor persists terminal-event identities and atomically records each action
-receipt before advancing its cursor, so re-arming cannot replay a completed
-action.
+monitor persists terminal-event identities and reserves durable intent before
+an external merge, push, or comment. It advances its cursor only after
+reconciling the expected external postcondition. Re-arming adopts a landed
+action, re-executes only one proven absent, and blocks on an indeterminate
+postcondition, so interruption cannot turn a reservation into either a skipped
+or duplicated write.
 
 Unbounded fan-out was rejected. Parallelism is safe only when ownership,
 overlap, concurrency, and invalidation costs are explicit. Product, scope, and
@@ -196,10 +206,13 @@ byte-stable and golden-tested. Readiness reads JSON and append-only settlements,
 not human Markdown.
 
 PR publication is a transaction: validate local sources, bind the exact pushed
-head and draft PR, capture the body version, and merge generated sections into
-the latest body without changing human-owned sections. A concurrent mutation
-restarts from a fresh read. The writer re-reads and fingerprints the merged body,
-then retires local transfer records only after the remote postcondition is proven.
+head and draft PR, and merge only marked generated sections into the latest
+body without changing the non-generated content in that read. GitHub has no
+conditional PR-body write, so the remaining read-modify-write race is documented
+rather than disguised as compare-and-swap. The writer re-reads and fingerprints
+the body after every write, repairs mismatches from a fresh read within a bounded
+retry limit, blocks on exhaustion, and retires local transfer records only after
+the remote postcondition is proven.
 
 ### 11. Evidence starts at kickoff and is authenticated at read time
 

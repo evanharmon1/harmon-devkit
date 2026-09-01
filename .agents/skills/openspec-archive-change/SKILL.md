@@ -12,7 +12,11 @@ metadata:
 
 Archive a completed change in the experimental workflow.
 
-**Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `scripts/openspec.sh store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `schemas`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `scripts/openspec.sh status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
+**Pinned wrapper:** Every OpenSpec command MUST invoke
+`"$(git rev-parse --show-toplevel)/scripts/openspec.sh"` so execution is
+anchored to the repository root; never use a cwd-relative wrapper path.
+
+**Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `schemas`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
 
 `<capability-path>` is the spec directory relative to `specs/` (for example, `user-auth` or `identity/user-auth`). Preserve the full path from each delta spec when resolving its main spec.
 
@@ -25,7 +29,7 @@ Archive a completed change in the experimental workflow.
    If a name is provided, use it. Otherwise:
    - Infer from conversation context if the user mentioned a change
    - Auto-select if only one active change exists
-   - If ambiguous, run `scripts/openspec.sh list --json` to get available changes and ask the user to select one
+   - If ambiguous, run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" list --json` to get available changes and ask the user to select one
 
    When prompting, show only active changes (not already archived).
    Include the schema used for each change if available.
@@ -37,7 +41,7 @@ Archive a completed change in the experimental workflow.
    After resolving the selected change and planning root, run:
 
    ```bash
-   scripts/openspec.sh instructions archive --change "<name>" --json
+   "$(git rev-parse --show-toplevel)/scripts/openspec.sh" instructions archive --change "<name>" --json
    ```
 
    Keep the same selected-root flags on this command. This lookup is advisory and
@@ -63,7 +67,7 @@ Archive a completed change in the experimental workflow.
 
 2. **Check artifact completion status**
 
-   Run `scripts/openspec.sh status --change "<name>" --json` to check artifact completion.
+   Run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" status --change "<name>" --json` to check artifact completion.
 
    Parse the JSON to understand:
    - `schemaName`: The workflow being used
@@ -79,9 +83,22 @@ Archive a completed change in the experimental workflow.
 
    Read the tasks file (typically `tasks.md`) to check for incomplete tasks.
 
-   Count tasks marked with `- [ ]` (incomplete) vs `- [x]` (complete).
+   First resolve its apply mode from explicit task metadata.
 
-   **If incomplete tasks found:**
+   **Issue-mapped mode:** Resolve every task's linked issue state before the
+   completeness check. Treat issue state as authoritative and reconcile the
+   checkbox projection from it: an issue closed with reason `COMPLETED` is
+   complete and must be checked; an open issue is pending and must be unchecked.
+   An unreadable, missing, ambiguous, or differently closed linked issue state
+   is indeterminate and stops the archive. Refuse to archive while any linked
+   issue is open; this is a completion precondition, not a warning the operator
+   may override. Re-run this reconciliation immediately before step 5 moves the
+   change so stale checkbox state is never archived after an issue state changes.
+
+   **Default mode:** Count tasks marked with `- [ ]` (incomplete) vs `- [x]`
+   (complete).
+
+   **If incomplete default-mode tasks are found:**
    - Display warning showing count of incomplete tasks
    - Ask the user to confirm they want to proceed
    - Proceed if user confirms
@@ -111,7 +128,7 @@ Archive a completed change in the experimental workflow.
    - Anything else — ask again rather than archiving
 
    Before a selected sync writes any main spec, run
-   `scripts/openspec.sh instructions specs --change "<name>" --json` once with the same
+   `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" instructions specs --change "<name>" --json` once with the same
    selected-root flags. Require a zero exit status and valid artifact-instruction
    JSON. If the lookup fails or returns invalid JSON, report the error and stop
    before writing any main spec or moving the change. A valid response with omitted
@@ -131,13 +148,18 @@ Archive a completed change in the experimental workflow.
 
 5. **Perform the archive**
 
+   If step 3 resolved issue-mapped mode, re-read all linked issue states and
+   reconcile their task checkboxes again now. Stop if any issue is open or
+   indeterminate; do not move a change whose durable completion state and task
+   projection differ.
+
    Create an `archive` directory under `planningHome.changesDir` if it doesn't exist:
 
    ```bash
    mkdir -p "<planningHome.changesDir>/archive"
    ```
 
-   Generate the target name: use the change name as-is when it already starts with a `YYYY-MM-DD-` prefix; otherwise prepend the current date as `YYYY-MM-DD-<change-name>`. Never stack a second date (same rule as `scripts/openspec.sh archive`).
+   Generate the target name: use the change name as-is when it already starts with a `YYYY-MM-DD-` prefix; otherwise prepend the current date as `YYYY-MM-DD-<change-name>`. Never stack a second date (same rule as `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" archive`).
 
    **Check if target already exists:**
    - If yes: Fail with error, suggest renaming existing archive or using different date
@@ -171,7 +193,7 @@ Archive a completed change in the experimental workflow.
 
 **Guardrails**
 - Announce the selected change; prompt for selection when it is ambiguous
-- Use artifact graph (`scripts/openspec.sh status --json`) for completion checking
+- Use artifact graph (`"$(git rev-parse --show-toplevel)/scripts/openspec.sh" status --json`) for completion checking
 - Don't block archive on warnings - just inform and confirm
 - Preserve .openspec.yaml when moving to archive (it moves with the directory)
 - Show clear summary of what happened
@@ -183,3 +205,4 @@ Archive a completed change in the experimental workflow.
 - Existing CLI checks, resolved paths, prompts, and command contracts are unchanged
 - Artifact rules constrain only the specs being written and are never operation guidance
 - Never copy runtime context, operation guidance, or artifact-rule text verbatim into output files
+- In issue-mapped mode, issue state is authoritative: reconcile the checkbox projection and refuse every open or indeterminate linked issue before moving the change

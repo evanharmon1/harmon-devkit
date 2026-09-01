@@ -12,11 +12,15 @@ metadata:
 
 Revise a change's existing planning artifacts and keep them coherent. Never edit code.
 
-**Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `scripts/openspec.sh store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `schemas`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `scripts/openspec.sh status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
+**Pinned wrapper:** Every OpenSpec command MUST invoke
+`"$(git rev-parse --show-toplevel)/scripts/openspec.sh"` so execution is
+anchored to the repository root; never use a cwd-relative wrapper path.
+
+**Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `schemas`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
 
 **Input**: Optionally specify a change name. If omitted, check if it can be inferred from conversation context. If vague or ambiguous you MUST prompt for available changes.
 
-`/openspec-continue-change` is an optional workflow and may not be installed. Before suggesting it anywhere below, verify that it is available. If it is unavailable, `scripts/openspec.sh status --change "<name>" --json` shows the next artifact and `scripts/openspec.sh instructions "<artifact-id>" --change "<name>" --json` explains how to create it.
+`/openspec-continue-change` is an optional workflow and may not be installed. Before suggesting it anywhere below, verify that it is available. If it is unavailable, `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" status --change "<name>" --json` shows the next artifact and `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" instructions "<artifact-id>" --change "<name>" --json` explains how to create it.
 
 **Steps**
 
@@ -25,7 +29,7 @@ Revise a change's existing planning artifacts and keep them coherent. Never edit
    If a name is provided, use it. Otherwise:
    - Infer from conversation context if the user mentioned a change
    - Auto-select if only one active change exists
-   - If ambiguous, run `scripts/openspec.sh list --json` to get available changes sorted by most recently modified, and ask the user to select one
+   - If ambiguous, run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" list --json` to get available changes sorted by most recently modified, and ask the user to select one
 
    When prompting, present the top 3-4 most recently modified changes as options, showing:
    - Change name
@@ -40,7 +44,7 @@ Revise a change's existing planning artifacts and keep them coherent. Never edit
 2. **Get the change's artifacts**
 
    ```bash
-   scripts/openspec.sh status --change "<name>" --json
+   "$(git rev-parse --show-toplevel)/scripts/openspec.sh" status --change "<name>" --json
    ```
 
    Parse the JSON to understand current state. The response includes:
@@ -70,7 +74,7 @@ Revise a change's existing planning artifacts and keep them coherent. Never edit
    - When a substantial rewrite is needed, get that artifact's rules and template first:
 
      ```bash
-     scripts/openspec.sh instructions "<artifact-id>" --change "<name>" --json
+     "$(git rev-parse --show-toplevel)/scripts/openspec.sh" instructions "<artifact-id>" --change "<name>" --json
      ```
 
 6. **Point to the next step (guidance only - NEVER act on it)**
@@ -87,8 +91,8 @@ After each invocation, show:
 
 **Guardrails**
 - Planning artifacts only - NEVER edit implementation code. If the revised plan implies code changes, stop and point to `/openspec-apply-change`.
-- Use the artifact ids and paths reported by `scripts/openspec.sh status`; never branch on hardcoded artifact names.
+- Use the artifact ids and paths reported by `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" status`; never branch on hardcoded artifact names.
 - Edit only the concrete files in `existingOutputPaths`; never write to a glob `resolvedOutputPath`.
 - Do not advance the build frontier: no new artifacts, no new files under glob artifacts - that is `/openspec-continue-change`'s job.
 - Confirm every edit with the user before writing.
-- If the request changes the change's *intent* rather than refining it, first verify whether the optional `/openspec-new-change` workflow is available. If it is, recommend starting fresh with `/openspec-new-change` (the "Update vs. Start Fresh" heuristic). If it is unavailable, ask for a distinct unused change name and recommend `scripts/openspec.sh new change "<new-change-name>"` instead.
+- If the request changes the change's *intent* rather than refining it, first verify whether the optional `/openspec-new-change` workflow is available. If it is, recommend starting fresh with `/openspec-new-change` (the "Update vs. Start Fresh" heuristic). If it is unavailable, ask for a distinct unused change name and recommend `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" new change "<new-change-name>"` instead.

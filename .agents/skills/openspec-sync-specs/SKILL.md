@@ -12,9 +12,13 @@ metadata:
 
 Sync delta specs from a change to main specs.
 
+**Pinned wrapper:** Every OpenSpec command MUST invoke
+`"$(git rev-parse --show-toplevel)/scripts/openspec.sh"` so execution is
+anchored to the repository root; never use a cwd-relative wrapper path.
+
 This is an **agent-driven** operation - you will read delta specs and directly edit main specs to apply the changes. This allows intelligent merging (e.g., adding a scenario without copying the entire requirement).
 
-**Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `scripts/openspec.sh store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `schemas`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `scripts/openspec.sh status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
+**Store selection:** If the user names a store (a store is a standalone OpenSpec repo registered on this machine) or the work lives in one, run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" store list --json` to discover registered store ids, then pass `--store <id>` on the commands that read or write specs and changes (`new change`, `status`, `instructions`, `list`, `show`, `validate`, `archive`, `doctor`, `context`, `schemas`, `view`). Once selected, treat `--store <id>` as sticky for the rest of the workflow. Every unscoped example of those commands below is shorthand: before running it, append the flag. For example, run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" status --change "<name>" --json --store "<id>"`, not the unscoped form shown below. Other commands do not take the flag. Hints printed by commands already carry the flag; keep it on follow-ups. Without a store, commands act on the nearest local `openspec/` root.
 
 `<capability-path>` is the spec directory relative to `specs/` (for example, `user-auth` or `identity/user-auth`). Preserve the full path from each delta spec when resolving its main spec.
 
@@ -27,7 +31,7 @@ This is an **agent-driven** operation - you will read delta specs and directly e
    If a name is provided, use it. Otherwise:
    - Infer from conversation context if the user mentioned a change
    - Auto-select if only one active change exists
-   - If ambiguous, run `scripts/openspec.sh list --json` to get available changes and ask the user to select one
+   - If ambiguous, run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" list --json` to get available changes and ask the user to select one
 
    When prompting, show changes that have delta specs (under `specs/` directory).
 
@@ -38,7 +42,7 @@ This is an **agent-driven** operation - you will read delta specs and directly e
    Run:
 
    ```bash
-   scripts/openspec.sh status --change "<name>" --json
+   "$(git rev-parse --show-toplevel)/scripts/openspec.sh" status --change "<name>" --json
    ```
 
    The JSON includes `planningHome.root`. Main specs live under `<planningHome.root>/openspec/specs/` — use that (store-aware) root for every main-spec path below, not a hardcoded repo path. When a store is selected it points at the store, not the current repository.
@@ -77,7 +81,7 @@ This is an **agent-driven** operation - you will read delta specs and directly e
 
    Before the first main-spec write, obtain one current specs-rule snapshot:
    - If archive invoked this workflow inline and supplied a valid snapshot from
-     `scripts/openspec.sh instructions specs --change "<name>" --json`, reuse it and do not
+     `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" instructions specs --change "<name>" --json`, reuse it and do not
      fetch the same instructions again.
    - Otherwise run that command once now with the same selected-root flags.
    - If the direct lookup exits non-zero or returns invalid artifact-instruction
@@ -92,6 +96,16 @@ This is an **agent-driven** operation - you will read delta specs and directly e
    constraints without copying it verbatim into a main spec or summary.
 
    For each capability delta spec path selected in step 3 — the full `existingOutputPaths` list, or the narrowed subset when a caller supplied one (these may belong to a selected store, not the repo):
+
+   Before **every** main-spec read, create, modification, or deletion, apply the
+   same path guard again. Resolve the real specs root. Reject the target if any
+   existing file or directory component between that root and `spec.md` is a
+   symlink. Resolve the target's real path when it exists, or the real path of
+   its nearest existing parent plus the remaining normalized components when it
+   does not, and require the result to equal the specs root or be contained
+   beneath its path-component boundary. Any resolution failure, symlink, or
+   escape stops the sync before that operation; selected-store paths never fall
+   back to the caller's repository.
 
    a. **Read the delta spec** to understand the intended changes
 
@@ -141,18 +155,18 @@ This is an **agent-driven** operation - you will read delta specs and directly e
 
       **`## Purpose` in the delta:**
       - The main spec already has one and it is authoritative - leave it alone
-        (this is what `scripts/openspec.sh archive` does; it warns and moves on)
+        (this is what `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" archive` does; it warns and moves on)
 
    d. **Create new main spec** if capability doesn't exist yet:
       - Create `<planningHome.root>/openspec/specs/<capability-path>/spec.md`
       - Add Purpose section: copy the delta's `## Purpose` body verbatim when it has one
-        (this is what `scripts/openspec.sh archive` does); only write a brief TBD placeholder when it does not
+        (this is what `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" archive` does); only write a brief TBD placeholder when it does not
       - Add Requirements section with the ADDED requirements
       - Follow the **Main Spec Format Reference** below
 
 5. **Validate updated main specs**
 
-   Run `scripts/openspec.sh validate --specs` with the same selected-root flags used earlier.
+   Run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate --specs` with the same selected-root flags used earlier.
    If validation fails, report the problems and do not claim the sync succeeded.
 
 6. **Show summary**
@@ -227,7 +241,7 @@ The system SHALL do something new.
 **Key Principle: Intelligent Merging**
 
 Unlike programmatic merging, you merge rather than overwrite:
-- A MODIFIED block carries the whole requirement - body plus every scenario that survives the change. `scripts/openspec.sh validate` and `scripts/openspec.sh archive` both reject one that drops a scenario the main spec still has.
+- A MODIFIED block carries the whole requirement - body plus every scenario that survives the change. `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate` and `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" archive` both reject one that drops a scenario the main spec still has.
 - Keep anything the delta does not mention, in the main spec's existing order
 - Use your judgment to merge changes sensibly
 
@@ -261,3 +275,4 @@ Main specs are now updated. The change remains active - archive when implementat
 - Fetch specs instructions once for direct sync, or reuse the archive-supplied snapshot inline
 - Stop before every main-spec write on a non-zero or invalid JSON specs-instruction response
 - Artifact rules constrain only the specs being written and are never copied into output files
+- Re-run the realpath, containment, and no-symlink guard before every main-spec read, create, modification, or deletion

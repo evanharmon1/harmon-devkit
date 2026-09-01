@@ -116,19 +116,23 @@ invalidation cost. Every terminal agent or PR event SHALL lead to a documented
 action, and merge-order recommendations SHALL disclose effects on other active
 branches. Product, scope, and safety decisions SHALL remain human decisions;
 sequencing and scheduling SHALL be orchestrator decisions with disclosure. The
-monitor SHALL persist terminal-event identities and atomically record each action
-receipt before advancing its durable event cursor. Re-armed monitoring SHALL
-resume from that cursor and SHALL NOT re-execute an action whose receipt exists.
+monitor SHALL persist terminal-event identities and reserve durable action intent
+before every external merge, push, or comment write. Completion SHALL be recorded
+and the durable event cursor advanced only after reconciling the action's external
+postcondition. Re-armed monitoring SHALL inspect any existing reservation and
+determine whether its merge, push, or comment landed before it either adopts the
+completed action or re-executes an absent one; an indeterminate postcondition
+SHALL block rather than guess.
 
 #### Scenario: A monitor exits unexpectedly
 
 - **WHEN** the persistent lane monitor terminates before all lanes are terminal
 - **THEN** the orchestrator re-arms it and does not interpret the exit as human cancellation
 
-#### Scenario: Monitoring resumes after an action receipt
+#### Scenario: Monitoring resumes after an external write
 
-- **WHEN** the monitor records an action receipt for a terminal event and exits before observing the next event
-- **THEN** the re-armed monitor advances from the durable cursor without executing the receipted action again
+- **WHEN** the monitor reserves an action, performs its external write, and exits before recording completion
+- **THEN** the re-armed monitor reconciles the expected postcondition and adopts the landed action without repeating it
 
 #### Scenario: A cheap branch would invalidate a terminal-stage branch
 
