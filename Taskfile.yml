@@ -174,9 +174,15 @@ tasks:
   validate:
     desc: Validate project config/artifacts
     cmds:
+      - task: openspec:validate
       - task: validate:skills
       - task: validate:agents
       - task: validate:independence
+
+  openspec:validate:
+    desc: Validate OpenSpec changes and specs (strict)
+    cmds:
+      - npx --yes @fission-ai/openspec@1.11.0 validate --all --strict --no-interactive
 
   validate:skills:
     desc: Guard shared agent skills (unique names across categories, valid SKILL.md frontmatter)
