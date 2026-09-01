@@ -5,8 +5,9 @@ description: >-
   repo's own dev loop (inner lint gate, definition-of-done gate, second-model
   review, security gate), tick acceptance criteria as they are verified, open the
   PR, then continue through the shepherd stage until it reaches a terminal
-  condition. Never claims, never merges. Invoke as /implement [issue # or URL].
-disable-model-invocation: true
+  condition. Never claims, never merges. Use when an issue is already claimed
+  and the session is told to implement it. Invoke as /implement [issue # or
+  URL].
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branch --show-current), Bash(git rev-parse:*), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(gh label list:*)
 ---
 
@@ -401,9 +402,10 @@ end of this skill's work**. Continue into the shepherd stage while the PR stays
 draft — watch CI *and* incoming
 bot/human reviews, settle the deferred findings, reply per thread — and stop
 only when shepherd reaches one of its own terminal conditions. Where the repo's
-`AGENTS.md` mandates that stage (harmon-init does, and it is user-invocable
-only), entering it means **reading `/shepherd`'s `SKILL.md` and following it**,
-not calling a slash command an agent cannot call.
+`AGENTS.md` mandates that stage (harmon-init does), enter it the way the
+harness allows: where the Skill tool is available, **invoke `shepherd`
+through it**; where it is not (a subagent, another harness), **read
+`/shepherd`'s `SKILL.md` and follow it directly**.
 
 Do not treat "draft PR opened" as a stopping point. A draft with unpolled
 checks is the middle of the work, and the deferred findings from step 6 are

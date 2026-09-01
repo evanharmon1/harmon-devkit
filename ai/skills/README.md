@@ -32,12 +32,22 @@ ai/skills/
     └── standardize-repo/SKILL.md
 ```
 
-`universal/` ships the dev-workflow session suite — nine user-invoked slash
-commands (`disable-model-invocation: true`) covering the phases of a working
-session, from decomposing the work and naming the session to shepherding its
-PR to ready for review, plus the backlog-maintenance `/triage` (run by
-`task triage` with a cheap headless model, or interactively) — plus `track-work`,
-which is deliberately **not** slash-only. Tracking
+`universal/` ships the dev-workflow session suite, split on whether invoking
+the skill is itself the thing that authorizes what it does. Four stay
+user-only (`disable-model-invocation: true`): `/claim` and `/breakdown`,
+because invoking them **is** the human consent for the GitHub writes they
+make (claiming the issue; proposing a decomposition for one human approval),
+so a model triggering either on its own would be writing to a shared system
+with nobody having agreed to it; and `/wrap` and `/retro`, because they are
+human-timed session rituals — only the person at the keyboard knows a session
+is actually ending. The rest are model-invocable, so an agent following the
+repo's own dev loop (`AGENTS.md`) can enter a stage through the Skill tool
+instead of waiting for a human to type the command: `/kickoff`, `/implement`,
+`/gauntlet`, and `/shepherd` cover orienting at the start of a session through
+driving a claimed issue to a shepherded PR, and `/triage` (also run by
+`task triage` with a cheap headless model, or interactively) classifies the
+backlog. `track-work` is model-invocable too, and deliberately **not**
+slash-only. Tracking
 mistakes happen mid-flow, while a PR body is being written and nobody is typing
 a command, so it must be model-invocable to fire at all. It also bundles
 executable checks under `assets/` that harmon-devkit's own CI runs against every
