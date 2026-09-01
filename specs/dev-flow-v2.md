@@ -134,20 +134,18 @@ file (`ai/agents/<role>.md`) is one implementation of a role.
 
 | Role | Returns | May write | Never |
 |---|---|---|---|
-| `implementer` | `result.implementer` | commits on the branch its dispatch names; feature-branch round pushes through `push-round.sh` | push the feature branch from a council proposal; open PRs, merge, adjudicate |
+| `implementer` | `result.implementer` | commits on the branch its dispatch names; feature-branch round pushes through `push-round.sh` | push the feature branch from a parallel lane; open PRs, merge, adjudicate |
 | `challenger` | `result.challenger` | nothing outside its result | fix, dispose, decide an exit |
 | `reviewer` | `result.reviewer` | nothing outside its result | fix, dispose, decide an exit |
 | `integrator` | `result.integrator` | the Codex trigger comment; thread replies of **given** text | author reply text, dispose, promote |
 | orchestrator (the session) | — | dispositions, adjudication record, `gh pr create --draft`, the PR body, evidence and run-record comments, `gh pr ready` | merge; override an exit downward |
 
-**The feature branch has exactly one writer at a time.** A normal implementer
-dispatch names that branch. Under council, every proposer instead receives an
-isolated proposal branch and worktree and never pushes the feature branch. The
-orchestrator's judge selects exactly one proposal; a normal single-implementer
-dispatch then carries that winning change to the feature branch through
-`push-round.sh`, producing the one head downstream stages review. The run
-record keeps every proposal's identity and outcome, and losing proposals are
-discarded.
+**Whatever the strategy, the feature branch has exactly one writer at any
+time.** Every parallel implementer dispatch — council proposers and
+orchestrate workers alike — works on an isolated lane branch and never pushes
+the feature branch; lane outputs reach the feature branch only through the
+serialized single-writer apply path, and the confidence stages review only
+that assembled head, verified by exact SHA.
 
 **This spec is the anchor; the implementation issues are reconciled to it.**
 [#634](https://github.com/evanharmon1/harmon-devkit/issues/634),
@@ -183,7 +181,7 @@ against `ai/schemas/` before the orchestrator reads it.
 **Whoever holds the dispatched worktree writes its named branch.** In
 interactive and sandboxed runs the feature-branch implementer commits and
 pushes each round through `push-round.sh`, so a crash never strands a fix on
-one machine. Council proposers remain confined to their proposal branches;
+one machine. Parallel implementers remain confined to their lane branches;
 they never share feature-branch write authority. Under Foreman, Foreman pushes.
 
 **The orchestrator is interactive or headless with one procedure.** A
@@ -503,15 +501,19 @@ The v2 shape is:
   `pool` is an optional **allowlist** for the implement stage; when absent,
   every implementer-capable registered harness is eligible. Strategy supplies
   the number and topology — including council's `distinct_families` constraint
-  — while breadth supplies the ceilings. Parallel council proposers work only
-  on isolated proposal branches and worktrees and never push the feature
-  branch, which has exactly one writer at a time. The judge selects exactly one
-  proposal; its change reaches the feature branch through the normal
-  single-implementer `push-round.sh` path and produces the single reviewed
-  head. Proposal identity and outcome are recorded in the run record, then
-  losing proposals are discarded. In short: **roles select, stages require**.
-  Validation requires implement → implementer, challenge → challenger, review
-  → reviewer, and integration → integrator. The challenge stage therefore
+  — while breadth supplies the ceilings. Council judging yields one artifact:
+  either a selected proposal or, when `synthesis = true`, a synthesized
+  artifact whose provenance names its source proposals. The run record records
+  that judged artifact and every proposal's identity and outcome. The judged
+  artifact enters the same serialized single-writer apply path; other lane
+  outputs are discarded.
+
+  Validation makes two independent checks. **Role dispatch:** the agent
+  dispatched for a stage implements that stage's role (implement →
+  implementer, challenge → challenger, review → reviewer, integration →
+  integrator). **Finder affinity:** each `finders[]` entry is valid for the
+  stage according to its registry-declared surface and permitted stage kinds,
+  never according to the dispatched role. The challenge stage therefore
   receives `result.challenger`, the review stage receives `result.reviewer`,
   and the exit script consumes their shared finding core by stage rather than
   hardcoding one result role.
@@ -600,7 +602,7 @@ See [decision 0002](../docs/decisions/0002-round-evidence-lives-on-the-pr.md).
 1. This spec, through at least one challenge round ([#633](https://github.com/evanharmon1/harmon-devkit/issues/633)), with harmon-init decision record 0009.
 2. Schemas + fixtures [#634](https://github.com/evanharmon1/harmon-devkit/issues/634) → registry roles/finders [#635](https://github.com/evanharmon1/harmon-devkit/issues/635) → config [harmon-init#1081](https://github.com/evanharmon1/harmon-init/issues/1081).
 3. Exit script [#636](https://github.com/evanharmon1/harmon-devkit/issues/636) → renderer [#637](https://github.com/evanharmon1/harmon-devkit/issues/637) → diff-aware gate [#632](https://github.com/evanharmon1/harmon-devkit/issues/632).
-4. Implement dispatch draws from the stage pool under strategy and breadth constraints. Council proposers use isolated proposal branches/worktrees and never push the feature branch; the judge records every proposal's identity and outcome, selects exactly one, discards the losers, and sends the winner through the normal single-implementer `push-round.sh` path so the feature branch has exactly one writer and produces one reviewed head. Then challenger agent + `/challenge`, reviewer agent + `/review` [#638](https://github.com/evanharmon1/harmon-devkit/issues/638) → integrator + `/integrate` [#639](https://github.com/evanharmon1/harmon-devkit/issues/639) → `/orchestrator`.
+4. Implement dispatch draws from the stage pool under strategy and breadth constraints and obeys the single-writer invariant above; council judgment emits the selected or synthesized artifact described above. Then challenger agent + `/challenge`, reviewer agent + `/review` [#638](https://github.com/evanharmon1/harmon-devkit/issues/638) → integrator + `/integrate` [#639](https://github.com/evanharmon1/harmon-devkit/issues/639) → `/orchestrator`.
 5. AGENTS.md shrink [harmon-init#1082](https://github.com/evanharmon1/harmon-init/issues/1082) + pre-PR gate [harmon-init#1080](https://github.com/evanharmon1/harmon-init/issues/1080) → drop legacy [#604](https://github.com/evanharmon1/harmon-devkit/issues/604).
 6. Foreman [#182](https://github.com/ponderousdev/foreman/issues/182)–[#185](https://github.com/ponderousdev/foreman/issues/185); stats [#663](https://github.com/evanharmon1/harmon-devkit/issues/663) → retro [#664](https://github.com/evanharmon1/harmon-devkit/issues/664).
 7. `copier update` sweep across the generated repos.
