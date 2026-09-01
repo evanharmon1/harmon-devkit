@@ -74,12 +74,24 @@ disclosing the secret.
 
 ### Requirement: Harvested evidence is authenticated
 
-The run record SHALL store evidence comment IDs, immutable author actor IDs,
-display logins, canonical SHA-256 payload digests, and marker sequence. A
-harvester SHALL accept only comments named by the trusted run record whose
-current author and body match those values. The run-record author's authority
-SHALL derive from configured trusted orchestrator actor IDs or the trusted
-kickoff event, never an identity declared inside the record.
+At kickoff, the orchestrator SHALL append a run-index entry containing
+`run_id`, `initiated_by`, branch, and run-record digest where the claim lives on
+the issue, and the branch pointer SHALL name that run. The run record SHALL
+store evidence comment IDs, immutable author actor IDs, display logins,
+canonical SHA-256 payload digests, and marker sequence. A harvester SHALL accept
+only comments named by the trusted run record whose current author and body
+match those values. The issue-level index and branch pointer, not the continued
+existence of deletable evidence comments, SHALL anchor run discovery. If an
+indexed run's evidence chain is missing or broken, the harvester SHALL reject it
+as deleted-entry tampering, never reinterpret it as a run that did not happen.
+The run-record author's authority SHALL derive from configured trusted
+orchestrator actor IDs or the trusted kickoff event, never an identity declared
+inside the record.
+
+#### Scenario: An indexed evidence entry is deleted
+
+- **WHEN** the issue run index names a run whose referenced evidence chain is missing an entry
+- **THEN** harvesting rejects deleted-entry tampering rather than reporting that no run occurred
 
 #### Scenario: An evidence comment is edited later
 

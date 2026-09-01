@@ -92,9 +92,12 @@ anchored to the repository root; never use a cwd-relative wrapper path.
 
    - **Issue-mapped mode:** When the change declares `apply-mode: issue-mapped`
      and links each task to one tracker issue, tracker state is authoritative.
-     A closed issue is complete and an open issue is pending regardless of the
-     task checkbox; an unreadable issue state is indeterminate and blocks
-     selection. Display progress from closed versus open linked issues.
+     Only `state: CLOSED` with `stateReason: COMPLETED` is complete; an open
+     issue is pending regardless of the task checkbox. A `NOT_PLANNED` or
+     `DUPLICATE` closure, or any unreadable issue state, is indeterminate:
+     surface it to the operator, block selection, and never auto-complete or
+     silently skip that task. Display progress from completed versus open
+     linked issues and report indeterminate closures separately.
    - **Default mode:** Without that declaration, follow OpenSpec's normal apply
      flow. Display CLI progress and use task checkboxes as completion state.
 

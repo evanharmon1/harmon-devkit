@@ -112,13 +112,22 @@ attributable explicit operator instruction MAY override the merge-base value.
 ### Requirement: Gate authority separates policy from branch implementation
 
 Merge-base resolution SHALL determine gate policy, including required target
-slugs, allowlists, and thresholds. Taskfile recipes, scripts, and the push broker
-executed from the feature branch SHALL be treated as branch-resident
-implementations, and any local evidence they produce SHALL be recorded as
-branch-attested. The deterministic readiness authorities SHALL be the
-merge-base-resolved policy and the PR's concluded required CI checks. The
-readiness gate SHALL NOT accept branch-attested local gate evidence as a
-substitute for any required check conclusion.
+slugs, allowlists, and thresholds. Before any round push, the orchestrator SHALL
+materialize outside the feature worktree and execute the merge-base
+implementations of both the secret scan and the round-push broker, for example
+by extracting each path with `git show <merge-base>:<path>`. This boundary is
+mandatory because a secret is public when the push lands and PR CI is too late.
+A branch that edits either implementation SHALL exercise its changed version in
+required PR CI, but SHALL NOT use that version to authorize its own push. Every
+other local gate SHALL execute its branch implementation and record branch-
+attested evidence. The deterministic readiness authorities SHALL be the merge-
+base-resolved policy and the PR's concluded required CI checks; branch-attested
+local evidence SHALL NOT substitute for a required check conclusion.
+
+#### Scenario: A branch modifies pre-push enforcement
+
+- **WHEN** a branch changes the secret scanner or round-push broker before a round push
+- **THEN** the push executes both merge-base implementations outside the worktree, while required PR CI exercises the branch versions
 
 #### Scenario: A branch attests its modified local gate
 
