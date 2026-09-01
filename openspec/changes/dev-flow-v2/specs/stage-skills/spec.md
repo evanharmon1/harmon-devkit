@@ -62,11 +62,20 @@ rounds SHALL dispatch an implementer in fresh bounded context.
 ### Requirement: Confidence stages follow computed exits
 
 For each logical round, the stage skill SHALL capture scope, dispatch every
-configured finder, validate results, obtain orchestrator adjudication, record
-evidence, run exit computation, and act on exactly the returned outcome.
-`continue` dispatches the next permitted pass or fix; `diverging` requires
-delete or restructure; capped with P0/P1 escalates before PR creation; terminal
-clean outcomes advance.
+configured finder, validate results, and run the exit script's provenance and
+fingerprint verification before obtaining orchestrator adjudication or posting
+adjudication evidence. The orchestrator SHALL adjudicate the verified or
+corrected finding facts, and every posted immutable evidence projection SHALL
+carry that verified provenance rather than the reviewer's superseded assertion.
+The stage skill SHALL then record evidence, run exit computation, and act on
+exactly the returned outcome. `continue` dispatches the next permitted pass or
+fix; `diverging` requires delete or restructure; capped with P0/P1 escalates
+before PR creation; terminal clean outcomes advance.
+
+#### Scenario: Provenance verification corrects a reviewer assertion
+
+- **WHEN** the exit script verifies that a reviewer's asserted `original` provenance is actually `round:N`
+- **THEN** adjudication and every subsequently posted immutable evidence projection use the verified `round:N` value and never retain `original`
 
 #### Scenario: Challenge caps with a P1
 
@@ -117,12 +126,14 @@ action, and merge-order recommendations SHALL disclose effects on other active
 branches. Product, scope, and safety decisions SHALL remain human decisions;
 sequencing and scheduling SHALL be orchestrator decisions with disclosure. The
 monitor SHALL persist terminal-event identities and reserve durable action intent
-before every external merge, push, or comment write. Completion SHALL be recorded
-and the durable event cursor advanced only after reconciling the action's external
-postcondition. Re-armed monitoring SHALL inspect any existing reservation and
-determine whether its merge, push, or comment landed before it either adopts the
-completed action or re-executes an absent one; an indeterminate postcondition
-SHALL block rather than guess.
+only for replayable lane assembly, push, and comment actions. Completion SHALL
+be recorded and the durable event cursor advanced only after reconciling the
+action's external postcondition. Re-armed monitoring SHALL inspect any existing
+reservation and determine whether its lane assembly, push, or comment landed
+before it either adopts the completed action or re-executes an absent one; an
+indeterminate postcondition SHALL block rather than guess. A PR merge SHALL
+never be a reservable or replayable action and SHALL always remain a separate
+human decision.
 
 #### Scenario: A monitor exits unexpectedly
 
@@ -133,6 +144,11 @@ SHALL block rather than guess.
 
 - **WHEN** the monitor reserves an action, performs its external write, and exits before recording completion
 - **THEN** the re-armed monitor reconciles the expected postcondition and adopts the landed action without repeating it
+
+#### Scenario: Automation attempts to reserve a PR merge
+
+- **WHEN** the monitor is asked to reserve or replay a PR merge
+- **THEN** it rejects the action because merging is exclusively a separate human decision
 
 #### Scenario: A cheap branch would invalidate a terminal-stage branch
 
@@ -172,9 +188,27 @@ The readiness gate SHALL be the sole terminal predicate over current-head
 integrator evidence plus CI, findings, thread replies, settlements, review
 decision, merge state, workflow completion, and pre/post content fingerprints.
 Only the orchestrator SHALL promote a draft after a complete pass and immediate
-head re-read. Merge SHALL always remain a separate human decision.
+head re-read. A draft promoted outside the readiness gate SHALL be audited on
+its current head. If that head independently passes the full readiness gate,
+the orchestrator SHALL reconcile and accept the existing promotion. Otherwise,
+it SHALL run `gh pr ready --undo` exactly once, provided the PR's own timeline
+contains no prior `convert_to_draft` event. That timeline bound persists across
+sessions: a prior conversion blocks a second undo, in which case the PR SHALL
+remain ready and the orchestrator SHALL stop with a blocker report. This is the
+sole permitted ready-with-blocker state. Merge SHALL always remain a separate
+human decision.
 
 #### Scenario: The head changes after integration reports clean
 
 - **WHEN** the readiness gate re-reads a different head before promotion
 - **THEN** it invalidates the evidence, leaves the PR draft, and starts a new permitted current-head cycle
+
+#### Scenario: An external promotion fails the readiness audit
+
+- **WHEN** a draft was promoted outside the gate, its current head fails the full readiness audit, and the PR timeline has no `convert_to_draft` event
+- **THEN** the orchestrator runs one `gh pr ready --undo`, confirms draft state, and resumes or stops from the failed gate evidence
+
+#### Scenario: The timeline blocks a second undo
+
+- **WHEN** an externally promoted PR fails the readiness audit and its timeline already contains a `convert_to_draft` event
+- **THEN** the orchestrator does not undo again, leaves the PR ready, and stops with a blocker report naming the standing promotion

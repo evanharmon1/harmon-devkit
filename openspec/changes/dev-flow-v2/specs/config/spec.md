@@ -47,9 +47,12 @@ runtime cannot enforce them.
 
 The policy SHALL define `rigor_order` as `cursory`, `light`, `standard`,
 `thorough`, `deep`, and `forensic`, weakest to strongest. Every rigor profile
-SHALL select rounds and breadth policies, five role tiers, and whether tier
-escalation is permitted; the forensic rounds policy SHALL require at least two
-rounds before the empty-round shortcut can end a confidence stage.
+SHALL select rounds and breadth policies and whether tier escalation is
+permitted, and MAY supply a tier for any role. For every role, validation SHALL
+require a tier to be resolvable from either the rigor profile or that role's
+`[role.<slug>]` baseline; a profile is not required to repeat all five role
+tiers. The forensic rounds policy SHALL require at least two rounds before the
+empty-round shortcut can end a confidence stage.
 
 #### Scenario: Forensic receives an empty first round
 
@@ -58,13 +61,21 @@ rounds before the empty-round shortcut can end a confidence stage.
 
 ### Requirement: Round limits have stage-specific meanings
 
-The rounds policy SHALL bound challenge passes, review passes, Codex
-integration cycles, integration remediation pushes, and whole-run wall-clock
-time separately. A zero challenge or review limit SHALL disable only that
-confidence stage; a zero integration limit SHALL waive only the Codex-verdict
-condition; a zero remediation limit SHALL escalate the first finding that
-requires a code fix. Hitting the wall-clock ceiling SHALL produce a blocker
-report rather than silently trimming a stage.
+The rounds policy SHALL bound challenge logical rounds, review logical rounds,
+Codex integration cycles, integration remediation pushes, and whole-run
+wall-clock time separately. One challenge or review logical round SHALL consist
+of one completed pass for every configured primary finder slot; the challenge
+and review limits SHALL count that aggregate round once and SHALL NOT count its
+individual finder passes. A zero challenge or review limit SHALL disable only
+that confidence stage; a zero integration limit SHALL waive only the Codex-
+verdict condition; a zero remediation limit SHALL escalate the first finding
+that requires a code fix. Hitting the wall-clock ceiling SHALL produce a
+blocker report rather than silently trimming a stage.
+
+#### Scenario: A multi-finder round spends one unit of its cap
+
+- **WHEN** a review logical round completes one pass for each of three configured primary finder slots
+- **THEN** the review cap advances by one logical round, not by three finder passes
 
 #### Scenario: Integration review is disabled but a human finding exists
 
@@ -117,6 +128,11 @@ rules.
 
 - **WHEN** the resolved rigor profile omits the integrator tier and `[role.integrator].tier` is present
 - **THEN** the integrator baseline supplies the tier before any applicable tier label refines it
+
+#### Scenario: Neither profile nor role supplies a tier
+
+- **WHEN** a rigor profile omits a role's tier and that role has no baseline tier
+- **THEN** policy validation fails because the role cannot be resolved
 
 #### Scenario: The preferred family has no compatible harness
 

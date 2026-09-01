@@ -114,12 +114,16 @@ This is an **agent-driven** operation - you will read delta specs and directly e
    For each capability delta spec path selected in step 3 — the full `existingOutputPaths` list, or the narrowed subset when a caller supplied one (these may belong to a selected store, not the repo):
 
    Before **every** main-spec read, create, modification, or deletion, apply the
-   same path guard again. Resolve the real specs root. Reject the target if any
-   existing file or directory component between that root and `spec.md` is a
-   symlink. Resolve the target's real path when it exists, or the real path of
-   its nearest existing parent plus the remaining normalized components when it
-   does not, and require the result to equal the specs root or be contained
-   beneath its path-component boundary. Any resolution failure, symlink, or
+   same path guard again. Resolve the real planning root first, then walk the
+   complete destination chain from that root through `openspec/specs/` to the
+   target without following symlinks. Reject the target if any existing
+   component in that chain is a symlink, including the `openspec` or `specs`
+   entry itself. Resolve the real specs root only after that check and require it
+   to remain contained beneath the real planning root's path-component boundary.
+   Resolve the target's real path when it exists, or the real path of its nearest
+   existing parent plus the remaining normalized components when it does not,
+   and require every component and the final result to remain within the real
+   specs root's path-component boundary. Any resolution failure, symlink, or
    escape stops the sync before that operation; selected-store paths never fall
    back to the caller's repository.
 
@@ -201,7 +205,16 @@ This is an **agent-driven** operation - you will read delta specs and directly e
    installation or post-install validation failure SHALL restore the original set
    before reporting failure, so no failure path leaves a partial main-spec sync.
 
-   Finally run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate --specs --strict --no-interactive` with the original selected-root flags, then run `"$(git rev-parse --show-toplevel)/scripts/openspec.sh" validate "<name>" --type change --strict --no-interactive` with those flags. Only a successful live revalidation commits the transaction and authorizes the success summary.
+   Finally run these commands with the original selected-root flags:
+
+   ```bash
+   "$openspec_wrapper" validate --specs --strict --no-interactive
+   "$openspec_wrapper" validate "<name>" --type change --strict --no-interactive
+   ```
+
+   Reuse the absolute wrapper path captured before entering the temporary root;
+   never recompute it from the staging working directory. Only a successful live
+   revalidation commits the transaction and authorizes the success summary.
 
 6. **Show summary**
 

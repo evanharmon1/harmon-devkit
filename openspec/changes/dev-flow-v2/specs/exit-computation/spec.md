@@ -105,12 +105,15 @@ incorporated by reference. Every implementation SHALL implement and evaluate
 that catalog verbatim; a local subset, renamed parameter, altered predicate
 meaning, or different composition rule is nonconforming unless a later contract
 version replaces the imported catalog. Below the cap, a zero-finding
-current-head round that meets the effective `min_rounds` MUST end the stage with
-outcome `converged` and reason `empty_round`; this dedicated empty-round exit is
-mandatory and does not depend on a consumer's preference. A final clean round
-at the cap SHALL instead return outcome `capped`, reason `clean`, the contract's
-capped terminal exit code, and an advance action without requiring a forbidden
-confirmation round.
+current-head round that meets the effective `min_rounds` and for which every
+configured converged predicate evaluates true MUST end the stage with outcome
+`converged` and reason `empty_round`; this dedicated empty-round exit is
+mandatory when those conditions hold and does not depend on a consumer's
+preference. Below the cap, if any configured converged predicate evaluates
+false, the outcome SHALL be `continue` even after the floor is met. A final
+clean round at the cap SHALL instead return outcome `capped`, reason `clean`,
+the contract's capped terminal exit code, and an advance action without
+requiring a forbidden confirmation round.
 
 #### Scenario: A policy composes predicates from the anchor catalog
 
@@ -122,10 +125,15 @@ confirmation round.
 - **WHEN** a clean logical round completes before the effective `min_rounds`
 - **THEN** the evaluator returns `continue` and does not consult the reviewer's exit recommendation
 
-#### Scenario: An empty round reaches the floor below the cap
+#### Scenario: An empty round satisfies convergence at the floor below the cap
 
-- **WHEN** a zero-finding logical round reviewed the current head, meets the effective `min_rounds`, and leaves at least one permitted round unspent
+- **WHEN** a zero-finding logical round reviewed the current head, meets the effective `min_rounds`, satisfies every configured converged predicate, and leaves at least one permitted round unspent
 - **THEN** the evaluator returns outcome `converged` with reason `empty_round` and directs the orchestrator to advance
+
+#### Scenario: An empty round fails a configured convergence predicate
+
+- **WHEN** a zero-finding logical round reviewed the current head and meets the effective `min_rounds`, but at least one configured converged predicate evaluates false
+- **THEN** the evaluator returns `continue` and does not take the `empty_round` exit
 
 #### Scenario: The capped final round is clean
 

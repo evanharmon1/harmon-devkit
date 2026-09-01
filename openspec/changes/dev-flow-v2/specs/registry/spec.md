@@ -64,7 +64,13 @@ tier, exactly one SHALL carry `default: true`; registry validation SHALL reject
 both no default and multiple defaults. A family-tier rung containing one model
 needs no default flag. Escalation SHALL move through the policy's tier order
 while retaining the resolved family; it SHALL NOT use a duplicated per-policy
-model map.
+model map. During initial role resolution, a family that has a compatible
+harness but no model at the resolved tier SHALL be unavailable for that
+resolution. Resolution SHALL fall through to the next entry in the role's
+ordered `families[]` and disclose the substitution. After a family and model
+have resolved, the absence of a model at the next tier SHALL make vertical
+escalation unavailable for that family; it SHALL NOT change the resolved tier
+or family and SHALL NOT fail the otherwise valid resolution.
 
 #### Scenario: Two models claim the same family-tier default
 
@@ -80,6 +86,16 @@ model map.
 
 - **WHEN** a family has exactly one model at a tier and that model omits `default`
 - **THEN** registry validation accepts the rung and resolution selects its sole model
+
+#### Scenario: A compatible family has no model at the resolved rung
+
+- **WHEN** the first `families[]` entry has a compatible harness but no model at the resolved tier
+- **THEN** role resolution treats that family as unavailable, tries the next family, and discloses the substitution without changing the resolved tier
+
+#### Scenario: A resolved family has no model on the next escalation rung
+
+- **WHEN** vertical escalation is requested but the resolved family has no model at the next tier
+- **THEN** escalation is unavailable for that family and resolution keeps its current family and tier without failing
 
 ### Requirement: Harnesses advertise executable role support
 
