@@ -218,7 +218,12 @@ Every result is an **envelope** wrapping a per-role payload
 
 - `implementer` payload keeps every Foreman v1 field (`summary`, `handoff`,
   `ac_test_map`, `human_tasks`, `blocked_question`) so Foreman accepts the
-  envelope with a validator widening ([foreman#182](https://github.com/ponderousdev/foreman/issues/182)).
+  envelope with a validator widening
+  ([foreman#182](https://github.com/ponderousdev/foreman/issues/182)), and adds
+  optional `synthesis_of`: the ordered source-proposal identities, present
+  exactly when the artifact is synthesized. That schema widening rides
+  [#638](https://github.com/evanharmon1/harmon-devkit/issues/638)'s synthesis
+  criterion.
 - `challenger` payload: one **challenge-stage pass** carrying attack scenarios,
   design-level findings, and de-scaffolding recommendations. It attacks the
   design and approach; it does not perform the reviewer's consistency and
@@ -455,6 +460,15 @@ The v2 shape is:
   schema-valid, but no shipped level uses one. `tier_order` is
   `local → economy → standard → frontier → apex` and is the only definition
   of one-rung escalation or strongest-wins tier conflicts.
+
+  Resolution precedence is normative: an explicit operator instruction from
+  an attributable channel (never repository content) overrides labels, which
+  override the rigor profile or configured defaults, which override the
+  built-in fallback. An unscoped `tier:*` targets only the implementer role.
+  Tier conflicts resolve strongest-wins by `tier_order`, with a concrete tier
+  beating `adaptive`. Strategy conflicts are ambiguous: an interactive
+  resolver asks, while unattended automation falls back to `default_strategy`
+  with a warning.
 - `[rigor.<level>]` points to one same-named `[rounds.*]` policy and one
   same-named `[breadth.*]` envelope, carries the five role overrides
   (`orchestrator_tier`, `implementer_tier`, `challenger_tier`,
@@ -546,10 +560,14 @@ The v2 shape is:
   none. Challenge and review passes never consume this envelope —
   `[rounds.<policy>]` bounds them on its independent axis.
 - `[stage.<stage>]` uses monomorphic arrays whose keys carry the semantics and
-  whose values are always registry slugs. `finders` is **all-of**: each primary
-  finder defines one round slot, and every slot must produce exactly one pass
-  at the same `reviewed_head`. `finder_fallbacks` is a **preference** list
-  consumed in listed order after a primary is unavailable after its retry.
+  whose values are always registry slugs. `finders` is **all-of**. In the
+  confidence stages (`challenge` and `review`), each primary finder defines one
+  round slot, and every slot must produce exactly one pass at the same
+  `reviewed_head`; the common `stage`/`round`/`slot` pass contract applies only
+  there. Integration finders instead contribute checks, cycle, and thread
+  evidence inside `result.integrator` and produce no confidence pass.
+  `finder_fallbacks` is a **preference** list consumed in listed order after a
+  primary is unavailable after its retry.
   Fallback candidates are tried until one can fill the failed slot, but at
   most one substitute binds to that slot for the round. A primary pass has
   `finder == slot` and omits `substitutes_for`; a fallback pass names the
@@ -566,26 +584,30 @@ The v2 shape is:
   — while breadth supplies the ceilings. Before dispatch, strategy, pool,
   breadth, and registry are cross-validated: a council requiring N distinct
   families requires at least N eligible families in the implement-stage pool,
-  `max_parallel_agents >= N`, and `max_agent_runs >= N`; only a council with
-  `synthesis = true` requires `max_agent_runs >= N + 1` for the fresh synthesis
-  dispatch. Judging itself consumes no run. An unsatisfiable combination is
-  reported incompatible at resolution time, never allowed to deadlock at
-  dispatch. Council judging yields one artifact:
+  and `max_agent_runs >= N`. `max_parallel_agents >= N` applies only when the
+  strategy's coordination is parallel; sequential proposal dispatch needs only
+  the `max_agent_runs` coverage. A council with `synthesis = true` requires
+  `max_agent_runs >= N + 1` for the fresh synthesis dispatch. Judging itself
+  consumes no run. An unsatisfiable combination is reported incompatible at
+  resolution time, never allowed to deadlock at dispatch. Council judging
+  yields one artifact:
   either a selected proposal or, when `synthesis = true`, the output of one
   fresh implementer dispatch briefed with the source proposals. The judge
   writes no code, confidence roles remain write-free, and no new role is
   introduced: synthesis returns an ordinary lane artifact under the existing
-  `result.implementer` contract, with provenance naming its source proposals.
-  The run record records that judged artifact and every proposal's identity and
-  outcome. The judged artifact enters the same serialized single-writer apply
-  path; other lane outputs are discarded.
+  `result.implementer` contract, with `synthesis_of` naming its ordered source
+  proposals. The run record records that judged artifact and every proposal's
+  identity and outcome. The judged artifact enters the same serialized
+  single-writer apply path; other lane outputs are discarded.
 
   Validation makes two independent checks. **Role dispatch:** the agent
   dispatched for a stage implements that stage's role (implement →
   implementer, challenge → challenger, review → reviewer, integration →
-  integrator). **Finder affinity:** each `finders[]` entry is valid for the
-  stage according to its registry-declared surface and permitted stage kinds,
-  never according to the dispatched role. The challenge stage therefore
+  integrator). **Finder affinity:** each `finders[]` and `finder_fallbacks[]`
+  entry is valid for the stage according to its registry-declared surface and
+  permitted stage kinds, never according to the dispatched role. An ineligible
+  fallback is excluded at resolution time; a slot left with no eligible
+  substitute ends `capped`/`finder_unavailable`. The challenge stage therefore
   receives `result.challenger`, the review stage receives `result.reviewer`,
   and the exit script consumes their shared finding core by stage rather than
   hardcoding one result role.
