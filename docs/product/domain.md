@@ -57,7 +57,7 @@ named for roles, not stages** (`implementer`, `challenger`, `reviewer`,
 | 3 | explore | Research / scout the codebase or external sources before committing to a design. | yes |
 | 4 | plan | Design or spec the change; write the plan the implementer will be briefed with. | |
 | 5 | implement | The implementer produces the change on a branch and returns a result. | |
-| 6 | verify | The deterministic gate (`task verify`, or `task check` on a docs-only diff). A **check**. | |
+| 6 | verify | The deterministic target resolved from `.devflow.toml`: shipped defaults are `[gates].round_code = "verify"`, or `[gates].round_docs = "check"` on a docs-only diff. A **check**. | |
 | 7 | challenge | The challenger runs adversarial second-model rounds on design and approach, to convergence. Raises confidence; never authoritative. | |
 | 8 | review | The reviewer runs verification-lens second-model rounds on correctness, consistency, tests. Raises confidence; never authoritative. | |
 | 9 | security | `task security` — secret scan, SAST, dependency audit. A check. | |

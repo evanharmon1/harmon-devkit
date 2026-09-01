@@ -134,11 +134,20 @@ file (`ai/agents/<role>.md`) is one implementation of a role.
 
 | Role | Returns | May write | Never |
 |---|---|---|---|
-| `implementer` | `result.implementer` | commits on the branch; the round push via `push-round.sh` | open PRs, merge, adjudicate |
+| `implementer` | `result.implementer` | commits on the branch its dispatch names; feature-branch round pushes through `push-round.sh` | push the feature branch from a council proposal; open PRs, merge, adjudicate |
 | `challenger` | `result.challenger` | nothing outside its result | fix, dispose, decide an exit |
 | `reviewer` | `result.reviewer` | nothing outside its result | fix, dispose, decide an exit |
 | `integrator` | `result.integrator` | the Codex trigger comment; thread replies of **given** text | author reply text, dispose, promote |
 | orchestrator (the session) | — | dispositions, adjudication record, `gh pr create --draft`, the PR body, evidence and run-record comments, `gh pr ready` | merge; override an exit downward |
+
+**The feature branch has exactly one writer at a time.** A normal implementer
+dispatch names that branch. Under council, every proposer instead receives an
+isolated proposal branch and worktree and never pushes the feature branch. The
+orchestrator's judge selects exactly one proposal; a normal single-implementer
+dispatch then carries that winning change to the feature branch through
+`push-round.sh`, producing the one head downstream stages review. The run
+record keeps every proposal's identity and outcome, and losing proposals are
+discarded.
 
 **This spec is the anchor; the implementation issues are reconciled to it.**
 [#634](https://github.com/evanharmon1/harmon-devkit/issues/634),
@@ -171,9 +180,11 @@ equivalent scoping for headless runs.
 brief is prose. The agent → orchestrator result is validated on receipt
 against `ai/schemas/` before the orchestrator reads it.
 
-**Whoever holds the worktree pushes.** In interactive and sandboxed runs the
-implementer commits and pushes each round through `push-round.sh`, so a crash
-never strands a fix on one machine. Under Foreman, Foreman pushes.
+**Whoever holds the dispatched worktree writes its named branch.** In
+interactive and sandboxed runs the feature-branch implementer commits and
+pushes each round through `push-round.sh`, so a crash never strands a fix on
+one machine. Council proposers remain confined to their proposal branches;
+they never share feature-branch write authority. Under Foreman, Foreman pushes.
 
 **The orchestrator is interactive or headless with one procedure.** A
 Foreman-dispatched session and a human-attended one follow the same stage
@@ -238,8 +249,8 @@ Every result is an **envelope** wrapping a per-role payload
   the run record (`settlements[]`, keyed by finding id, one per finding), so
   a finding still has exactly one adjudication and one terminal settlement,
   and neither invalidates the other's digest. Scripts read the
-  adjudicated view; the raw reviewer output is kept so reviewer-vs-orchestrator
-  disagreement can be measured.
+  adjudicated view; the raw challenger/reviewer output is kept so
+  confidence-role-vs-orchestrator disagreement can be measured.
 - The **run record** (`run.json`) is the only home of mutable run state —
   `interventions[]`, stage transitions, `outcome`, `pr`. An envelope carries
   only the immutable identity (`run_id`, `initiated_by`), so two documents can
@@ -477,20 +488,33 @@ The v2 shape is:
   they are descriptive when a human has already opened the session, and
   binding when Foreman or another automation chooses the harness to open.
 - `[stage.<stage>]` uses monomorphic arrays whose keys carry the semantics and
-  whose values are always registry slugs. `finders` is **all-of**: every finder
-  must complete a pass at the same `reviewed_head`. `finder_fallbacks` is a
-  **preference** list tried after a primary finder is unavailable after its
-  retry; every substitution is recorded and disclosed. Without an available
-  fallback the run ends `capped`/`finder_unavailable`, never silently one pass
-  short. `pool` is an optional **allowlist** for the implement stage; when
-  absent, every implementer-capable registered harness is eligible. Strategy
-  supplies the number and topology — including council's `distinct_families`
-  constraint — while breadth supplies the ceilings. In short: **roles select,
-  stages require**. Validation requires implement → implementer, challenge →
-  challenger, review → reviewer, and integration → integrator. The challenge
-  stage therefore receives `result.challenger`, the review stage receives
-  `result.reviewer`, and the exit script consumes their shared finding core by
-  stage rather than hardcoding one result role.
+  whose values are always registry slugs. `finders` is **all-of**: each primary
+  finder defines one round slot, and every slot must produce exactly one pass
+  at the same `reviewed_head`. `finder_fallbacks` is a **preference** list
+  consumed in listed order after a primary is unavailable after its retry.
+  Fallback candidates are tried until one can fill the failed slot, but at
+  most one substitute binds to that slot for the round; its pass identifies
+  both the primary it substitutes and the fallback that ran. An actor already
+  serving as a primary or substitute in the round cannot satisfy a second
+  slot. Every substitution is recorded and disclosed. A slot still unavailable
+  when the fallback list is exhausted ends the run
+  `capped`/`finder_unavailable`, never silently one pass short.
+
+  `pool` is an optional **allowlist** for the implement stage; when absent,
+  every implementer-capable registered harness is eligible. Strategy supplies
+  the number and topology — including council's `distinct_families` constraint
+  — while breadth supplies the ceilings. Parallel council proposers work only
+  on isolated proposal branches and worktrees and never push the feature
+  branch, which has exactly one writer at a time. The judge selects exactly one
+  proposal; its change reaches the feature branch through the normal
+  single-implementer `push-round.sh` path and produces the single reviewed
+  head. Proposal identity and outcome are recorded in the run record, then
+  losing proposals are discarded. In short: **roles select, stages require**.
+  Validation requires implement → implementer, challenge → challenger, review
+  → reviewer, and integration → integrator. The challenge stage therefore
+  receives `result.challenger`, the review stage receives `result.reviewer`,
+  and the exit script consumes their shared finding core by stage rather than
+  hardcoding one result role.
 - There are **no `[tier.*]` tables**. Model-stratum classification belongs to
   `agent-registry.json` `families[].models[].tier`; when a family exposes two
   models at one rung, exactly one carries `default: true`
@@ -576,7 +600,7 @@ See [decision 0002](../docs/decisions/0002-round-evidence-lives-on-the-pr.md).
 1. This spec, through at least one challenge round ([#633](https://github.com/evanharmon1/harmon-devkit/issues/633)), with harmon-init decision record 0009.
 2. Schemas + fixtures [#634](https://github.com/evanharmon1/harmon-devkit/issues/634) → registry roles/finders [#635](https://github.com/evanharmon1/harmon-devkit/issues/635) → config [harmon-init#1081](https://github.com/evanharmon1/harmon-init/issues/1081).
 3. Exit script [#636](https://github.com/evanharmon1/harmon-devkit/issues/636) → renderer [#637](https://github.com/evanharmon1/harmon-devkit/issues/637) → diff-aware gate [#632](https://github.com/evanharmon1/harmon-devkit/issues/632).
-4. Challenger agent + `/challenge`, then reviewer agent + `/review` [#638](https://github.com/evanharmon1/harmon-devkit/issues/638) → integrator + `/integrate` [#639](https://github.com/evanharmon1/harmon-devkit/issues/639) → `/orchestrator`; implement dispatch draws from the stage pool under strategy and breadth constraints rather than assuming one implementer.
+4. Implement dispatch draws from the stage pool under strategy and breadth constraints. Council proposers use isolated proposal branches/worktrees and never push the feature branch; the judge records every proposal's identity and outcome, selects exactly one, discards the losers, and sends the winner through the normal single-implementer `push-round.sh` path so the feature branch has exactly one writer and produces one reviewed head. Then challenger agent + `/challenge`, reviewer agent + `/review` [#638](https://github.com/evanharmon1/harmon-devkit/issues/638) → integrator + `/integrate` [#639](https://github.com/evanharmon1/harmon-devkit/issues/639) → `/orchestrator`.
 5. AGENTS.md shrink [harmon-init#1082](https://github.com/evanharmon1/harmon-init/issues/1082) + pre-PR gate [harmon-init#1080](https://github.com/evanharmon1/harmon-init/issues/1080) → drop legacy [#604](https://github.com/evanharmon1/harmon-devkit/issues/604).
 6. Foreman [#182](https://github.com/ponderousdev/foreman/issues/182)–[#185](https://github.com/ponderousdev/foreman/issues/185); stats [#663](https://github.com/evanharmon1/harmon-devkit/issues/663) → retro [#664](https://github.com/evanharmon1/harmon-devkit/issues/664).
 7. `copier update` sweep across the generated repos.
@@ -596,7 +620,7 @@ absorbed by the issue that carries their criteria;
 - [ ] Roles, results, envelope, run record, and adjudication record exist as JSON schemas with valid/invalid fixtures.
 - [ ] The exit script computes `continue | converged | diverging | capped` from adjudicated rounds and `[convergence]`, verifies provenance and fingerprints, and replays omator#397.
 - [ ] The readiness gate accepts only a schema-valid `result.integrator` for the current head as evidence of a Codex verdict — necessary, not sufficient: the gate's own pre/post-promotion content fingerprint over body, reviews, and comments (`readiness-gate.sh`) stays, because a human finding can land without moving the head.
-- [ ] `.devflow.toml` has `[rounds]`, `[breadth]`, `[gates]`, `[convergence]`, `[role]`, `[stage]`, and top-level `tier_order`; `[spend]` is schema-only and shipped absent; both legacy and v1 shapes are refused.
+- [ ] `.devflow.toml` has top-level `default_rigor`, `default_strategy`, `rigor_order`, and `tier_order`, plus `[rounds]`, `[breadth]`, `[gates]`, `[convergence]`, `[role]`, `[stage]`, and `[strategy.*]`; `[spend]` is schema-only and shipped absent; both legacy and v1 shapes are refused.
 - [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (post refused); a stage split across comments (reassembled); a run capped before any PR (stage evidence and run record found on the issue).
 - [ ] `dev-flow-stats.sh` prints the success metric and replays policies.
 - [ ] AGENTS.md's Dev Loop is the stage table, the constitution rules, and references.
