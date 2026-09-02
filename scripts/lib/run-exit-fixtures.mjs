@@ -71,6 +71,7 @@ const VERDICT_EXPECTATION_KEYS = new Set([
   "verified_provenance_for",
   "no_repeat_relationship",
   "unresolved_slot",
+  "next_round",
 ]);
 
 function checkVerdict(expected, actual) {
@@ -92,6 +93,9 @@ function checkVerdict(expected, actual) {
   }
   if (expected.unresolved_slot !== undefined && actual.unresolved_slot !== expected.unresolved_slot) {
     return `unresolved_slot: expected "${expected.unresolved_slot}", got ${JSON.stringify(actual.unresolved_slot)}`;
+  }
+  if ("next_round" in expected && actual.next_round !== expected.next_round) {
+    return `next_round: expected ${JSON.stringify(expected.next_round)}, got ${JSON.stringify(actual.next_round)}`;
   }
   // corrections_field/corrections_status: at least one verified_findings
   // entry has that field's status — verdict.corrections[] only records a

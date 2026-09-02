@@ -189,13 +189,24 @@ export function detectShape(doc) {
   if (hasMethodTable) legacyMarkers.push("[method]");
   const hasLegacy = hasDirectCaps && hasDefaultMethod && hasMethodTable;
 
-  // A "mixed marker set SHALL be rejected... not guessed into either shape"
-  // (specs/config/spec.md) applies even when schema_version = 2 is present
-  // — review round 3, confirmed: returning "v2" the moment hasV2 was true
-  // never checked for coexisting v1/legacy markers, so a partially
-  // migrated file (schema_version = 2 plus complete stale legacy or v1
-  // markers never cleaned up) was silently accepted as pure v2.
-  if (hasV2 && (hasV1 || hasLegacy)) {
+  // specs/config/spec.md: "A mixed OR INCOMPLETE marker set SHALL be
+  // rejected... not guessed into either shape" — review round 3 closed the
+  // COMPLETE-old-shape-alongside-v2 case, but a single coexisting older
+  // marker is exactly the spec's "incomplete" case too, not only "every
+  // marker of some other complete shape." Shepherd-stage cloud finding,
+  // confirmed: checking hasV1/hasLegacy (each requiring ALL of that
+  // shape's own markers) let a lone stray marker — e.g. `default_method`
+  // alone, with neither direct caps nor a `[method]` table — coexist with
+  // `schema_version = 2` and still resolve as pure v2, even though the
+  // file literally carries markers from two different shape vocabularies
+  // at once. `rigor_order` is the one exception: v2 itself REQUIRES it
+  // (resolveRigorLevel), so its mere presence can never signal v1 the way
+  // `[review.*]`/the `.review` pointer genuinely do — counting it here
+  // would make every valid v2 policy "mixed" (self-caught in this same
+  // fix: the hand-rolled test-dev-flow-exit.sh breadth-shortfall check
+  // constructs a v2 policy and immediately hit exactly this).
+  const hasV1ExclusiveMarker = hasReviewTables || hasReviewPointer;
+  if (hasV2 && (hasV1ExclusiveMarker || legacyMarkers.length > 0)) {
     return { shape: "mixed", markers: ["schema_version = 2", ...v1Markers, ...legacyMarkers] };
   }
   if (hasV2) return { shape: "v2", markers: ["schema_version = 2"] };
@@ -382,6 +393,19 @@ const PREDICATE_PARAM_VALIDATORS = {
     }
   },
 };
+// Every catalog predicate's own allowed key set, `predicate` included —
+// shepherd-stage cloud finding, confirmed: PREDICATE_PARAM_VALIDATORS only
+// ever checked its OWN expected keys were present and valid, never that no
+// OTHER keys were present, so e.g. `{predicate = "no_gating_findings",
+// increases = 99}` resolved cleanly with `increases` silently ignored — a
+// misspelled parameter (or one copied from the wrong predicate) can look
+// like it tightens convergence while having no effect at all.
+const PREDICATE_ALLOWED_KEYS = {
+  no_gating_findings: new Set(["predicate"]),
+  provenance_share: new Set(["predicate", "min", "exclude_classes"]),
+  count_rising: new Set(["predicate", "increases"]),
+  repeat_after_fix: new Set(["predicate"]),
+};
 
 // Recursive: a composition list entry is either a leaf (`{predicate, ...}`)
 // or a nested `{any: [...]} | {all: [...]}` node — specs/dev-flow-v2.md
@@ -417,6 +441,11 @@ function validatePredicateExpr(expr, errorPath) {
       throw new PolicyError(`${entryPath}.predicate "${entry.predicate}" is not in the v0 catalog (${[...PREDICATES].join(", ")})`);
     }
     PREDICATE_PARAM_VALIDATORS[entry.predicate]?.(entry, entryPath);
+    const allowedKeys = PREDICATE_ALLOWED_KEYS[entry.predicate];
+    const extraKeys = Object.keys(entry).filter((k) => !allowedKeys.has(k));
+    if (extraKeys.length > 0) {
+      throw new PolicyError(`${entryPath}: predicate "${entry.predicate}" does not accept parameter(s) ${extraKeys.join(", ")}`);
+    }
   }
   return { kind, list };
 }
@@ -432,17 +461,33 @@ function checkTightenOnly(base, over, stageName, errorPath) {
   // comparison by (every nested node would collide under the same
   // `undefined` key, and "which parameter moved which direction" has no
   // defined meaning across a whole subtree) — refuse rather than silently
-  // comparing the wrong things. Nested composition is fully supported in a
-  // base [convergence] table; only layering a per-rigor tightening override
-  // on top of one is out of scope here.
-  const hasNested = (list) => list.some((e) => !e || typeof e !== "object" || typeof e.predicate !== "string");
-  if (hasNested(base.list) || hasNested(over.list)) {
+  // comparing the wrong things, but ONLY when a nested subtree is itself
+  // added, removed, or changed. Shepherd-stage cloud finding, confirmed:
+  // the original check refused ANY list containing a nested entry
+  // anywhere, in either base or override, even when the override left
+  // every nested subtree byte-for-byte untouched and just added a new
+  // flat leaf beside it — a well-defined, unambiguous tightening move by
+  // the exact same rule already applied to flat-only lists. Nested
+  // entries are matched between base and override by full structural
+  // identity (no `.predicate` to key by): one present in both lists,
+  // unchanged, contributes nothing to added/removed and is not
+  // ambiguous; one that differs, or that only one side has, still has no
+  // defined tightening direction and is refused exactly as before.
+  const isNested = (e) => !e || typeof e !== "object" || typeof e.predicate !== "string";
+  const baseFlat = base.list.filter((e) => !isNested(e));
+  const overFlat = over.list.filter((e) => !isNested(e));
+  const baseNested = base.list.filter(isNested);
+  const overNested = over.list.filter(isNested);
+  const baseNestedKeys = new Set(baseNested.map((e) => JSON.stringify(e)));
+  const overNestedKeys = new Set(overNested.map((e) => JSON.stringify(e)));
+  const nestedChanged = baseNested.some((e) => !overNestedKeys.has(JSON.stringify(e))) || overNested.some((e) => !baseNestedKeys.has(JSON.stringify(e)));
+  if (nestedChanged) {
     throw new PolicyError(
-      `${errorPath}: nested any/all composition inside a rigor-level convergence override is not a supported tightening move`,
+      `${errorPath}: a nested any/all composition entry was added, removed, or changed by the override — not a supported tightening move`,
     );
   }
-  const baseByName = new Map(base.list.map((e) => [e.predicate, e]));
-  const overByName = new Map(over.list.map((e) => [e.predicate, e]));
+  const baseByName = new Map(baseFlat.map((e) => [e.predicate, e]));
+  const overByName = new Map(overFlat.map((e) => [e.predicate, e]));
   const added = [...overByName.keys()].filter((k) => !baseByName.has(k));
   const removed = [...baseByName.keys()].filter((k) => !overByName.has(k));
 
@@ -561,8 +606,20 @@ function resolveStages(doc) {
   const result = {};
   for (const stage of STAGES) {
     const table = doc.stage?.[stage];
+    const finders = resolveStageArray(table?.finders, `[stage.${stage}].finders`, []);
+    // Each entry in `finders` is its own all-of primary slot (dev-flow-exit.mjs
+    // keys logical-round assembly by slot name) — a duplicate slug collapses
+    // two nominally distinct slots onto the same map key. Shepherd-stage
+    // cloud finding, confirmed: `finders = ["codex-cli", "codex-cli"]`
+    // resolved cleanly, let ONE real pass silently satisfy BOTH nominal
+    // slots, and breadth's worst-case calculation (finders.length * ...)
+    // charged for two slots a single pass could actually fill.
+    const dup = finders.find((f, i) => finders.indexOf(f) !== i);
+    if (dup !== undefined) {
+      throw new PolicyError(`[stage.${stage}].finders contains duplicate primary slot "${dup}" — each finder may fill at most one primary slot`);
+    }
     result[stage] = {
-      finders: resolveStageArray(table?.finders, `[stage.${stage}].finders`, []),
+      finders,
       finder_fallbacks: resolveStageArray(table?.finder_fallbacks, `[stage.${stage}].finder_fallbacks`, []),
       pool: resolveStageArray(table?.pool, `[stage.${stage}].pool`, null),
     };
@@ -577,7 +634,16 @@ function resolveStrategy(doc, requestedStrategy) {
   if (!table) {
     throw new PolicyError(`strategy "${name}" has no [strategy.${name}] table`);
   }
-  return { name, ...table };
+  // `name` spread AFTER `table` (never before): the selected TOML section
+  // key is the authoritative name. A `table` carrying its own `name` field
+  // (e.g. `[strategy.council] name = "solo"`) must not be able to overwrite
+  // it — spreading `table` first then `name` is what makes the outer
+  // assignment win either way. Shepherd-stage cloud finding, confirmed: the
+  // old `{ name, ...table }` let exactly that field silently relabel a
+  // selected "council" as resolved.strategy.name === "solo", which made
+  // crossValidate's council/orchestrate anchor-rule check skip entirely —
+  // an incompatible council execution plan would then pass validation.
+  return { ...table, name };
 }
 
 /**
@@ -681,7 +747,9 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
 
   if (registryDoc) {
     const familySlugs = new Set((registryDoc.families || []).map((f) => f.slug));
+    const familyBySlug = new Map((registryDoc.families || []).map((f) => [f.slug, f]));
     const harnessSlugs = new Set((registryDoc.harnesses || []).map((h) => h.slug));
+    const harnessBySlug = new Map((registryDoc.harnesses || []).map((h) => [h.slug, h]));
     const finderBySlug = new Map((registryDoc.finders || []).map((f) => [f.slug, f]));
 
     for (const [role, r] of Object.entries(resolved.roles)) {
@@ -696,8 +764,50 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
       for (const fam of r.families) {
         if (!familySlugs.has(fam)) errors.push(`[role.${role}].families references unknown family "${fam}"`);
       }
+      // Family/harness/tier are checked jointly, not as independent slug
+      // memberships — shepherd-stage cloud finding, confirmed: existence
+      // checks alone let a role select a harness whose registry-declared
+      // family_constraint excludes every family the role itself declared,
+      // or a harness whose own `roles[]` list does not include this role
+      // (e.g. an implementer-only harness assigned to `reviewer`), or a
+      // tier no model in any of the role's families can ever provide —
+      // every one of those resolves with no cross-validation error today.
       for (const h of r.harnesses) {
-        if (!harnessSlugs.has(h)) errors.push(`[role.${role}].harnesses references unknown harness "${h}"`);
+        const harness = harnessBySlug.get(h);
+        if (!harness) {
+          errors.push(`[role.${role}].harnesses references unknown harness "${h}"`);
+          continue;
+        }
+        if (Array.isArray(harness.roles) && !harness.roles.includes(role)) {
+          errors.push(`[role.${role}].harnesses includes "${h}", whose registry entry permits only role(s) ${harness.roles.join(", ")}`);
+        }
+        // "broker" family_constraint means the harness resolves its family
+        // at runtime (no fixed family to check against); only "fixed"
+        // constrains which of the role's own families can satisfy it.
+        if (harness.family_constraint?.kind === "fixed") {
+          const fixedFamily = harness.family_constraint.family;
+          if (!r.families.includes(fixedFamily)) {
+            errors.push(
+              `[role.${role}].harnesses includes "${h}", whose family_constraint fixes family "${fixedFamily}", ` +
+                `not among [role.${role}].families (${r.families.join(", ") || "none"})`,
+            );
+          }
+        }
+      }
+      // A family's own `models[].tier` list is additive, like `finder.stages`
+      // above: a registry that doesn't populate it (or doesn't populate it
+      // for any family this role declares) carries no tier-achievability
+      // evidence either way and is unrestricted, not an error. Only once at
+      // least one declared family DOES carry model-tier data does an
+      // unachievable tier become checkable — and, having that data, refused.
+      if (r.tier !== "adaptive" && r.families.length > 0) {
+        const tierAwareFamilies = r.families.filter((famSlug) => Array.isArray(familyBySlug.get(famSlug)?.models));
+        if (tierAwareFamilies.length > 0) {
+          const achievable = tierAwareFamilies.some((famSlug) => familyBySlug.get(famSlug).models.some((m) => m.tier === r.tier));
+          if (!achievable) {
+            errors.push(`[role.${role}] tier "${r.tier}" is not achievable by any model in its declared families (${r.families.join(", ")})`);
+          }
+        }
       }
     }
 
@@ -756,6 +866,16 @@ export function resolveV2(doc, { rigor: requestedRigor, strategy: requestedStrat
   const tierOrder = doc.tier_order;
   if (!Array.isArray(tierOrder) || tierOrder.length === 0) {
     throw new PolicyError("policy has no tier_order ranking");
+  }
+  // tier_order is a spec-pinned constant (BUILTIN_TIER_ORDER's own comment:
+  // "the ONLY definition of one-rung escalation"), not a per-repo choice —
+  // exactly like rigor_order, it must equal the canonical ladder exactly,
+  // not merely be nonempty. Shepherd-stage cloud finding, confirmed: a
+  // reversed list, or one containing only `local`, resolved with no
+  // cross-validation error, letting strongest-wins conflicts and one-rung
+  // escalation silently select weaker tiers or lose required rungs.
+  if (tierOrder.length !== BUILTIN_TIER_ORDER.length || tierOrder.some((v, i) => v !== BUILTIN_TIER_ORDER[i])) {
+    throw new PolicyError(`policy's tier_order must be exactly [${BUILTIN_TIER_ORDER.join(", ")}] (weakest to strongest), got [${tierOrder.join(", ")}]`);
   }
   const roles = resolveRoles(doc, profile, level, tierOrder);
   const stages = resolveStages(doc);
@@ -913,6 +1033,16 @@ export function resolvePolicy(doc, opts = {}) {
 
   const mbDetection = detectShape(opts.mergeBaseDoc);
   if (mbDetection.shape === "v2") {
+    // requireOperatingV2 above only checks doc's SHAPE MARKER, never that it
+    // actually resolves — the merge-base rule protects which VALUES govern
+    // review, not whether the branch's own v2 content is well-formed. A
+    // branch doc carrying nothing but `schema_version = 2` would otherwise
+    // resolve successfully here (borrowing the merge-base's real values) and
+    // then fail every future resolution the moment this PR merges and there
+    // is no more merge-base to fall back to. Resolve doc for its own sake —
+    // the result is discarded, this call exists only to throw if doc itself
+    // is not independently well-formed.
+    resolveV2(doc, opts);
     return { ...resolveV2(opts.mergeBaseDoc, opts), source: "merge-base" };
   }
   if (mbDetection.shape === "legacy" || mbDetection.shape === "v1") {

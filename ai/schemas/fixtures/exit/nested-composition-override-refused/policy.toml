@@ -1,7 +1,7 @@
 schema_version = 2
 default_rigor = "standard"
 rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
-tier_order = ["standard"]
+tier_order = ["local", "economy", "standard", "frontier", "apex"]
 
 [convergence]
 converged = { all = [ { predicate = "no_gating_findings" } ] }
@@ -21,9 +21,8 @@ integrator_tier = "standard"
 
 [rigor.standard.convergence]
 diverging = { any = [
-  { all = [ { predicate = "count_rising", increases = 2 }, { predicate = "repeat_after_fix" } ] },
+  { all = [ { predicate = "count_rising", increases = 3 }, { predicate = "repeat_after_fix" } ] },
   { predicate = "provenance_share", min = 0.5 },
-  { predicate = "count_rising", increases = 1 },
 ] }
 
 [rounds.standard]

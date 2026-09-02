@@ -1,0 +1,9 @@
+{
+  "outcome": "continue",
+  "reason": "below_threshold",
+  "rounds_counted": 1,
+  "verified_provenance_for": {
+    "id": "review-r3-codex-cli-1",
+    "value": "original"
+  }
+}

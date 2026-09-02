@@ -1,8 +1,7 @@
 schema_version = 2
 default_rigor = "standard"
 rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
-tier_order = ["standard"]
-default_method = "plan"
+tier_order = ["local", "economy", "standard", "frontier", "apex"]
 
 [convergence]
 converged = { all = [ { predicate = "no_gating_findings" } ] }

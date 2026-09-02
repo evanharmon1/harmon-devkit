@@ -1458,6 +1458,91 @@ actual 4 rounds. The review replay reproduces the retro's own account ("both
 stages capped with adjudicated P1s every round") as `capped/findings_remain`
 at round 3.
 
+**Ten more fixes landed during PR #720's shepherd stage**, from the current-head
+Codex cloud review of the whole branch diff (not a local `task
+challenge`/`task review` round — see AGENTS.md's shepherd section):
+
+- **The operating (branch) policy resolves on its own too when merge-base
+  is v2**, not only via `requireOperatingV2`'s shape-marker-only gate: a
+  branch policy carrying nothing but `schema_version = 2` used to borrow
+  the merge-base's real values during review and fail the moment the PR
+  merged and there was no more merge-base to fall back to.
+- **A `[strategy.<X>]` table's own `name` field cannot relabel the selected
+  strategy** — `resolveStrategy` now spreads `table` before `name`
+  (`{ ...table, name }`), not after; the old order let `[strategy.council]
+  name = "solo"` silently make `resolved.strategy.name === "solo"`, which
+  skipped the anchor-rule check for an actually-selected, actually-
+  incompatible council.
+- **`diverging` no longer hands back a `next_round`**, matching
+  `capped`/`converged` (neither sets one either — both inherit
+  `base.next_round === null`): offering a concrete next round number
+  alongside an action string that names "fix" as one of three options read
+  as authorizing an automated continue, exactly where the self-feeding
+  loop is supposed to be interrupted. Which disposition a "fix" verdict
+  actually satisfies stays the session's judgement to record (issue
+  #636's own "Out of scope" section), not this script's to arbitrate from
+  free-text adjudication reasoning.
+- **`resolveOriginPath` no longer hangs on a legitimate rename-back**
+  (round 1: `a→b`, round 2: `b→a`): it now walks distinct earlier rounds
+  strictly descending, at most once each, instead of re-scanning the whole
+  ledger to a fixpoint — the old loop bounced between the two paths
+  forever. Bounded by construction now, not merely in the cases tested.
+- **Role/family/harness/tier are cross-validated jointly, not as
+  independent slug memberships**: a role's `harnesses[]` entries are
+  checked against the registry's `family_constraint` (a `"fixed"`-kind
+  harness must be family-compatible with the role's own `families[]`; a
+  `"broker"`-kind harness has no fixed family and is unrestricted) and
+  against the harness's own `roles[]` list (absent means unrestricted,
+  matching `finder.stages`); a role's tier must be achievable by some
+  model in at least one of its families' `models[]` lists (additive, like
+  every other field in this family — a registry that doesn't populate
+  `models[]` for any of a role's families carries no evidence either way
+  and is unrestricted, not an error; only once at least one declared
+  family DOES carry model-tier data does an unachievable tier become
+  checkable).
+- **A single stray older-shape marker alongside `schema_version = 2` is
+  `mixed`, not silently accepted as v2** — review round 3 closed the
+  complete-old-shape-alongside-v2 case; a lone marker (e.g. `default_method`
+  with neither direct caps nor a `[method]` table) is exactly the
+  spec's "incomplete" marker set too. The one carve-out: `rigor_order`
+  itself cannot signal v1 this way, since v2 requires it too — only the
+  genuinely v1-exclusive markers (`[review.*]` tables, the `.review`
+  pointer) or any legacy marker count.
+- **`tier_order` must equal the canonical `[local, economy, standard,
+  frontier, apex]` ladder exactly**, the same exact-match requirement
+  `rigor_order` already has — previously only non-empty was checked, so a
+  reversed or truncated list resolved with no error and could silently
+  select a weaker tier or drop a required escalation rung.
+- **A rigor-level convergence override may add/remove a flat leaf beside
+  an untouched nested `any`/`all` node** — narrowing the earlier
+  all-or-nothing refusal (any list containing a nested entry anywhere, in
+  either base or override, was refused outright). Nested entries are now
+  matched between base and override by full structural identity: one
+  present in both, byte-for-byte unchanged, contributes nothing to
+  added/removed and is not ambiguous; one that differs, or that only one
+  side has, still has no defined tightening direction and is refused
+  exactly as before.
+- **A predicate rejects any parameter outside its own declared set** — a
+  `no_gating_findings`/`repeat_after_fix` entry (which take none) or an
+  unrecognized key on `count_rising`/`provenance_share` used to resolve
+  cleanly and be silently ignored, so a misspelled or misattached
+  parameter could look like it tightened convergence while doing nothing.
+- **A stage's `finders[]` list rejects a duplicate primary slot** — each
+  entry is its own all-of slot in logical-round assembly; a repeated slug
+  used to collapse two nominal slots onto the same map key, letting one
+  real pass silently satisfy both while breadth's worst-case math still
+  charged for two.
+
+Two findings from the same review were confirmed but are genuinely
+architectural rather than a quick patch, and are tracked instead of fixed
+here: `dev-flow-exit.mjs` computing an exit off a policy no registry ever
+validated when a caller skips `devflow-policy.mjs resolve --registry`
+first ([#724](https://github.com/evanharmon1/harmon-devkit/issues/724)),
+and `verifyFingerprint` trusting a producer-asserted `fingerprint: "new"`
+with no check against the change ledger, unlike `verifyProvenance`'s
+analogous handling of `"original"`
+([#725](https://github.com/evanharmon1/harmon-devkit/issues/725)).
+
 ## The Foreman conformance contract
 
 harmon-devkit is the single source of truth for this schema family, vendored

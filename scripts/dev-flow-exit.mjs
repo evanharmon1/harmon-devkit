@@ -485,15 +485,20 @@ function loadLedger({ historyFile, repoRoot }) {
 function resolveOriginPath(pathName, beforeRound, ledger) {
   if (!ledger) return pathName; // no ledger available: no rename can be tracked, origin is the path itself
   let cur = pathName;
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const entry of ledger) {
-      if (entry.round < beforeRound && entry.path === cur && entry.renamed_from) {
-        cur = entry.renamed_from;
-        changed = true;
-      }
-    }
+  // Walk rounds strictly descending from beforeRound - 1, consulting each
+  // round at most once, rather than re-scanning the whole ledger until
+  // nothing changes. Shepherd-stage cloud finding, confirmed: a legitimate
+  // rename-back history (round 1: a.js -> b.js, round 2: b.js -> a.js)
+  // made the old scan-to-fixpoint loop bounce between the two paths
+  // forever — a real rename-back trajectory hung exit computation entirely
+  // rather than computing a wrong-but-terminating answer. Descending
+  // through each distinct earlier round exactly once still finds the same
+  // chain for a genuine (non-cyclic) rename history, and is bounded by
+  // construction.
+  const roundsDesc = [...new Set(ledger.filter((e) => e.round < beforeRound).map((e) => e.round))].sort((a, b) => b - a);
+  for (const round of roundsDesc) {
+    const entry = ledger.find((e) => e.round === round && e.path === cur && e.renamed_from);
+    if (entry) cur = entry.renamed_from;
   }
   return cur;
 }
@@ -823,7 +828,19 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
     const divergingEval = evalExpr(convergence.diverging, ctx);
     if (divergingEval.overall) {
       const hitName = divergingEval.results.find((r) => r.hit)?.name;
-      return { ...base, outcome: "diverging", reason: hitName, action: "fix-delete-or-restructure", next_round: maxRoundNumber + 1 };
+      // No next_round: `diverging` is an escalating outcome exactly like
+      // `capped`/`converged` (neither of which sets one either, both
+      // inheriting base.next_round === null) — a session must choose
+      // delete/restructure/genuinely-in-scope before any further round is
+      // legitimate, per AGENTS.md's round-2 checkpoint discipline; which of
+      // those a fix disposition actually satisfies is the session's
+      // judgement to record (issue #636's own "Out of scope" section), not
+      // this script's to arbitrate from a free-text adjudication reason.
+      // Shepherd-stage cloud finding, confirmed: handing back a concrete
+      // next_round here, alongside an action string that names "fix" as one
+      // of three options, reads as authorizing an automated continue —
+      // exactly the self-feeding loop `diverging` exists to interrupt.
+      return { ...base, outcome: "diverging", reason: hitName, action: "fix-delete-or-restructure" };
     }
 
     // base.rounds_counted (COMPLETE rounds only), not retained.length (which
