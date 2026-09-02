@@ -478,14 +478,18 @@ branch (`feat/636-dev-flow-exit`, PR #720, not yet merged) pins and
 range-validates — confirmed directly against that branch, matching this
 spec's own catalog byte-for-byte. A catalog entry may itself be a nested `{ any = [...] }` /
 `{ all = [...] }` node, recursively; a per-rigor `[rigor.<level>.convergence]`
-override may only tighten a **flat** entry the structural rules above (the
-reader matches nested entries between base and override by full structural
-identity, not by a `.predicate` key). A nested subtree the override adds,
-removes, or changes has no defined tightening direction and is refused; one
-present unchanged in both base and override contributes nothing to
-added/removed and tightening the base's own flat siblings around it is a
-normal, permitted tightening move — refusing every override merely because
-the base nests anywhere would forbid that well-defined case too.
+override tightens by the same structural rules above whether an entry is
+flat or itself a nested subtree (the reader matches nested entries between
+base and override by full structural identity, not by a `.predicate` key):
+adding a whole new nested subtree to a `converged` `all` list or a
+`diverging` `any` list is exactly as well-defined a tightening move as
+adding a flat leaf to either, and refusing it would forbid a case the
+general rule above already permits. What has **no** defined direction, and
+is refused, is an override that changes the **internal structure** of a
+nested subtree the base already carries — whether that sub-formula got
+stricter or looser needs recursively evaluating a composed predicate this
+rule does not define. One present unchanged in both base and override
+contributes nothing to added/removed either way.
 
 `#636`'s branch also carries the one bounded historical decoder the
 merge-base rule below requires: on a migration branch, it maps the legacy
@@ -505,7 +509,12 @@ change resolves those axes from built-ins rather than the merge-base's own
 declared values, which the merge-base rule requires. Closing that gap
 belongs to #636's own scope, not this lane's; noted here so the anchor
 states what is actually true of that branch's reader today, before it
-merges, rather than the fuller decode the design intends.
+merges, rather than the fuller decode the design intends. Task 2.3's own
+fixture requirement now names this precisely: a mutate-and-prove-unchanged
+fixture alone cannot force the fuller decode (a built-ins-only decoder
+that ignores the merge-base's declared values passes it trivially), so the
+task additionally proves a decoded value equals what the merge-base itself
+declares whenever that value is non-default.
 
 Every array key declares one of five semantics:
 
