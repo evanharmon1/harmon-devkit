@@ -1,6 +1,6 @@
 ## Deferred findings
 
-- [x] `review-r1-codex-cli-1` scripts/render-dev-flow.mjs:300 — mergeSections can append sections in an order the caller did not request — fixed in c0ffeec
-- [x] `review-r1-codex-cli-3` scripts/render-dev-flow.mjs:500 — settlementSuffix's unknown-reference-type path has no covering fixture — declined: see comment 2222222222
-- [x] `review-r2-codex-cli-1` scripts/render-dev-flow.mjs:210 — round-1's lock fix narrowed but did not close the concurrent-publish race — filed as #900
-- [ ] `review-r2-codex-cli-3` scripts/render-dev-flow.mjs:320 — mergeSections silently accepts an empty sections object
+- [x] `review-r1-codex-cli-1` scripts/render-dev-flow.mjs:300 — append order is stable across runs, just not caller-specified — fixed in c0ffeec
+- [x] `review-r1-codex-cli-3` scripts/render-dev-flow.mjs:500 — the fail() branch in settlementSuffix is currently untested — declined: see comment 2222222222
+- [x] `review-r2-codex-cli-1` scripts/render-dev-flow.mjs:210 — only reproduced under load, not in the fixture-driven suite — filed as #900
+- [ ] `review-r2-codex-cli-3` scripts/render-dev-flow.mjs:320 — only reachable via direct API misuse, not the shipped CLI

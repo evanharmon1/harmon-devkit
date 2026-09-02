@@ -5,5 +5,5 @@
 - Outcome: `continue` (`unresolved integration finding`)
 - Spent: integration 1/4
 - Unresolved:
-  - review-r2-codex-cli-3 — scripts/render-dev-flow.mjs:320 — mergeSections silently accepts an empty sections object (P2, defer)
+  - review-r2-codex-cli-3 — scripts/render-dev-flow.mjs:320 — only reachable via direct API misuse, not the shipped CLI (P2, defer)
 - Next action: dispatch round 2

@@ -424,8 +424,13 @@ function validatePolicyShape(policy, file) {
   }
   for (const key of ['challenge', 'review', 'integration', 'remediation', 'min_rounds']) {
     const value = policy.rounds[key]
-    if (!(Number.isInteger(value) && value >= 0)) {
-      fail(`${file}: rounds.${key} must be a non-negative integer`)
+    // min_rounds is a FLOOR (AGENTS.md: every rigor level's own min_rounds is
+    // always >= 1 — "the floor every shipped level states explicitly"), so
+    // 0 is semantically invalid for it specifically, not merely a low value
+    // like the other four caps may legitimately be.
+    const minimum = key === 'min_rounds' ? 1 : 0
+    if (!(Number.isInteger(value) && value >= minimum)) {
+      fail(`${file}: rounds.${key} must be ${minimum === 1 ? 'a positive integer' : 'a non-negative integer'}`)
     }
   }
   if (policy.disclosures !== undefined) {
@@ -602,6 +607,24 @@ function validateCrossDocumentConsistency(record) {
     }
   }
 
+  // Establish one expected initiated_by for the whole record and validate
+  // EVERY supplied pass against it — not only passes joined to a row, which
+  // a zero-finding pass never is (this is exactly how a foreign-run
+  // integration snapshot was reachable: such a pass bypasses every
+  // row-scoped check entirely). run_id alone is not the run's full identity
+  // — ai/schemas/README.md names the pair "run_id AND initiated_by" — so a
+  // pass claiming a Foreman-initiated run must not enrich a human-initiated
+  // record merely because its free-form run_id was copied or collided.
+  if (record.passes.length > 0) {
+    const referenceInitiatedBy = record.run ? record.run.initiated_by : record.passes[0].envelope.run.initiated_by
+    const referenceLabel2 = record.run ? "run.json's initiated_by" : `${record.passes[0].file}'s initiated_by`
+    for (const { file, envelope } of record.passes) {
+      if (envelope.run.initiated_by !== referenceInitiatedBy) {
+        fail(`${file}: its envelope names initiated_by ${envelope.run.initiated_by}, but ${referenceLabel2} is ${referenceInitiatedBy}`)
+      }
+    }
+  }
+
   for (const row of rows) {
     // "disposition: defer is rejected for stage integration" is a receipt
     // check in the schema family's own validator (adjudication.schema.json's
@@ -622,17 +645,6 @@ function validateCrossDocumentConsistency(record) {
     if (row.pass.runId !== row.run_id) {
       fail(
         `${row.entry.finding_id}: its pass envelope names run_id ${row.pass.runId}, but the adjudicating document's run_id is ${row.run_id}`
-      )
-    }
-    // run_id alone is not the run's full identity — ai/schemas/README.md
-    // names the pair "run_id AND initiated_by" — so also bind initiated_by
-    // when run.json is supplied (adjudication documents carry no
-    // initiated_by of their own to compare against otherwise): a pass
-    // claiming a Foreman-initiated run must not enrich a human-initiated
-    // record merely because its free-form run_id was copied or collided.
-    if (record.run && row.pass.initiatedBy !== record.run.initiated_by) {
-      fail(
-        `${row.entry.finding_id}: its pass envelope names initiated_by ${row.pass.initiatedBy}, but run.json's initiated_by is ${record.run.initiated_by}`
       )
     }
     const allowedRoles = STAGE_ROLES[row.stage] || []
@@ -778,10 +790,16 @@ function location(row) {
   return row.entry.finding_id
 }
 
+// adjudication.schema.json requires evidence (non-empty) on every entry,
+// with or without a matching pass, so this is never a degraded fallback —
+// it is always the authoritative value. Preferring a pass's raw finding
+// text here (the previous behavior) published the ORIGINAL, possibly
+// superseded reviewer/integrator claim instead of the orchestrator's own
+// adjudicated reasoning: a finding downgraded because the original concern
+// turned out to be wrong would still show the wrong original concern as
+// its "Evidence" on every authoritative surface (adjudication-record,
+// deferred-findings, blocker-comment, thread-reply-plan).
 function summary(row) {
-  if (row.pass) {
-    return row.pass.role === 'integrator' ? row.pass.finding.body : row.pass.finding.evidence
-  }
   return row.entry.evidence
 }
 
@@ -1047,8 +1065,9 @@ function renderAdjudicationRecord(record) {
 
 function verdictLine(verdict) {
   if (!verdict) return null
+  const outcome = neutralizeMarkers(verdict.outcome)
   const reason = verdict.reason ? neutralizeMarkers(verdict.reason) : null
-  const head = reason ? `${verdict.outcome} — ${reason}` : verdict.outcome
+  const head = reason ? `${outcome} — ${reason}` : outcome
   const details = []
   if (Number.isInteger(verdict.rounds_counted)) details.push(`rounds counted: ${verdict.rounds_counted}`)
   if (Number.isInteger(verdict.next_round)) details.push(`next round: ${verdict.next_round}`)
@@ -1118,8 +1137,26 @@ function renderBlockerComment(record, options = {}) {
   // projection that claims a prior head").
   if (!options.head) fail('blocker-comment requires --head <sha> (the caller\'s current HEAD, never inferred)')
   const lastTransition = record.run.stage_transitions[record.run.stage_transitions.length - 1]
-  const verdict = record.verdict || {}
-  const outcome = neutralizeMarkers(verdict.outcome || record.run.outcome || 'unknown')
+  // renderer/spec.md: "Blocker projections SHALL identify the affected
+  // head, stage, outcome, unresolved conditions or findings, spent limits,
+  // and the attributable next action" — outcome and the spent limit are
+  // required inputs, not a graceful degradation: an outcome silently
+  // defaulting to "unknown", or a Spent line silently omitted, is exactly
+  // the incomplete, still-authoritative-looking report the SHALL exists to
+  // prevent.
+  if (!record.verdict) fail('blocker-comment requires verdict.json (or --verdict) in the record directory')
+  const verdict = record.verdict
+  // validateVerdictShape (loadRecord, or main() for a --verdict override)
+  // already guarantees a non-empty verdict.outcome whenever record.verdict
+  // is set at all, so there is no separate "present but empty" case to
+  // guard here — only "absent entirely", handled above.
+  if (!record.policy || record.policy.rounds?.[lastTransition.stage] === undefined) {
+    fail(`blocker-comment requires policy.json's rounds.${lastTransition.stage} cap (or --policy) to report the spent limit`)
+  }
+  if (!Number.isInteger(verdict.rounds_counted)) {
+    fail('blocker-comment requires verdict.rounds_counted to report the spent limit')
+  }
+  const outcome = neutralizeMarkers(verdict.outcome)
   const reason = neutralizeMarkers(verdict.reason || lastTransition.exit || 'unresolved')
   const rows = buildFindingIndex(record)
   const settlements = buildSettlementIndex(record.run)
@@ -1134,9 +1171,8 @@ function renderBlockerComment(record, options = {}) {
   // "Spent" names the BLOCKED stage's own round count against its cap — the
   // verdict's rounds_counted is the exit script's authoritative count for
   // that one stage; record.policy.rounds only supplies the matching cap.
-  if (Number.isInteger(verdict.rounds_counted) && record.policy?.rounds?.[lastTransition.stage] !== undefined) {
-    lines.push(`- Spent: ${lastTransition.stage} ${verdict.rounds_counted}/${record.policy.rounds[lastTransition.stage]}`)
-  }
+  // Both are validated required above, so this always renders now.
+  lines.push(`- Spent: ${lastTransition.stage} ${verdict.rounds_counted}/${record.policy.rounds[lastTransition.stage]}`)
   lines.push('- Unresolved:')
   if (unresolved.length === 0) {
     lines.push('  - None.')
@@ -1577,6 +1613,17 @@ function main(argv) {
   if (options.policyFile) {
     record.policy = loadJson(options.policyFile)
     validatePolicyShape(record.policy, options.policyFile)
+  }
+  // An override replaces record.policy/record.verdict AFTER the check above
+  // already ran against the record directory's own copies — a --policy
+  // override's caps would otherwise never get the cross-document
+  // round-consistency check (rounds.challenge: 0 alongside an actual
+  // challenge round 1 adjudication), since validateCrossDocumentConsistency
+  // only reads whatever record.policy/record.verdict held at the time it
+  // was called. Re-run it whenever an override was actually supplied,
+  // rather than unconditionally re-doing the (otherwise redundant) work.
+  if (options.verdictFile || options.policyFile) {
+    validateCrossDocumentConsistency(record)
   }
 
   if (options.command === 'publish') {

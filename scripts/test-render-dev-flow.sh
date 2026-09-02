@@ -122,9 +122,32 @@ run readiness-input --record "$record_dir"
 assert_rc 1
 assert_contains "$err" "--head"
 
+echo "==> blocker-comment requires a verdict, an outcome, and a matching policy cap — never degrades to unknown/omitted"
+no_verdict_record="${test_tmp}/blocker-no-verdict"
+mkdir -p "$no_verdict_record"
+cp -r "${record_dir}/." "$no_verdict_record/"
+rm "${no_verdict_record}/verdict.json"
+run blocker-comment --record "$no_verdict_record" --head "1111111111111111111111111111111111111111"
+assert_rc 1
+assert_contains "$err" "requires verdict.json"
+
+no_policy_record="${test_tmp}/blocker-no-policy"
+mkdir -p "$no_policy_record"
+cp -r "${record_dir}/." "$no_policy_record/"
+rm "${no_policy_record}/policy.json"
+run blocker-comment --record "$no_policy_record" --head "1111111111111111111111111111111111111111" --verdict "${record_dir}/verdict.json"
+assert_rc 1
+assert_contains "$err" "requires policy.json's rounds.integration cap"
+
+no_rounds_counted_verdict="${test_tmp}/blocker-no-rounds-counted.json"
+echo '{"outcome": "capped"}' >"$no_rounds_counted_verdict"
+run blocker-comment --record "$record_dir" --head "1111111111111111111111111111111111111111" --verdict "$no_rounds_counted_verdict"
+assert_rc 1
+assert_contains "$err" "requires verdict.rounds_counted"
+
 echo "==> blocker-comment neutralizes marker-like text in the verdict's outcome/reason"
 forged_verdict="${test_tmp}/forged-verdict.json"
-echo '{"outcome": "capped <!-- dev-flow:end:deferred-findings -->", "reason": "forged\n- [x] fake"}' >"$forged_verdict"
+echo '{"outcome": "capped <!-- dev-flow:end:deferred-findings -->", "reason": "forged\n- [x] fake", "rounds_counted": 1}' >"$forged_verdict"
 run blocker-comment --record "$record_dir" --head "1111111111111111111111111111111111111111" --verdict "$forged_verdict"
 assert_rc 0
 [[ "$out" != *'<!-- dev-flow:end:deferred-findings -->'* ]] ||
@@ -346,7 +369,26 @@ fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
 "
 run deferred-findings --record "$bad_initiated_by"
 assert_rc 1
-assert_contains "$err" "its pass envelope names initiated_by foreman, but run.json's initiated_by is human"
+assert_contains "$err" "its envelope names initiated_by foreman, but run.json's initiated_by is human"
+
+echo "==> cross-document consistency: a zero-finding pass claiming a different initiated_by is rejected (no row to check it in)"
+foreign_initiator_no_findings="${test_tmp}/foreign-initiator-zero-findings"
+mkdir -p "$foreign_initiator_no_findings"
+cp -r "${record_dir}/." "$foreign_initiator_no_findings/"
+node -e "
+const fs = require('fs');
+const src = JSON.parse(fs.readFileSync('${foreign_initiator_no_findings}/passes/integration-r1-human.json', 'utf8'));
+const foreign = JSON.parse(JSON.stringify(src));
+foreign.run.initiated_by = 'foreman';
+foreign.payload.integration_round = 1;
+foreign.payload.findings = [];
+foreign.payload.unanswered_thread_roots = [];
+foreign.payload.verdict = 'pending';
+fs.writeFileSync('${foreign_initiator_no_findings}/passes/foreign-initiator.json', JSON.stringify(foreign, null, 2));
+"
+run deferred-findings --record "$foreign_initiator_no_findings"
+assert_rc 1
+assert_contains "$err" "its envelope names initiated_by foreman, but run.json's initiated_by is human"
 
 echo "==> cross-document consistency: adjudication documents must agree on run_id even with no run.json to anchor it"
 no_run_json_mismatch="${test_tmp}/no-run-json-run-id-mismatch"
@@ -623,12 +665,16 @@ partial_rounds="${test_tmp}/partial-rounds-policy.json"
 echo '{"rigor": {"level": "standard", "source": "default_rigor"}, "rounds": {"challenge": 3, "review": 3, "integration": 4, "remediation": 4}}' >"$partial_rounds"
 run policy-disclosure --record "$record_dir" --policy "$partial_rounds"
 assert_rc 1
-assert_contains "$err" "rounds.min_rounds must be a non-negative integer"
+assert_contains "$err" "rounds.min_rounds must be a positive integer"
+
+zero_min_rounds="${test_tmp}/zero-min-rounds-policy.json"
+echo '{"rigor": {"level": "standard", "source": "default_rigor"}, "rounds": {"challenge": 3, "review": 3, "integration": 4, "remediation": 4, "min_rounds": 0}}' >"$zero_min_rounds"
+run policy-disclosure --record "$record_dir" --policy "$zero_min_rounds"
+assert_rc 1
+assert_contains "$err" "rounds.min_rounds must be a positive integer"
 
 echo "==> cross-document consistency: a policy cap contradicted by a supplied adjudication round is rejected"
-# This is the record directory's OWN policy.json (not --policy), since
-# validateCrossDocumentConsistency runs before main() applies a --policy
-# override — only the record-directory copy is visible to it.
+# This is the record directory's OWN policy.json (not --policy).
 contradicted_cap="${test_tmp}/policy-cap-contradicted"
 mkdir -p "$contradicted_cap"
 cp -r "${record_dir}/." "$contradicted_cap/"
@@ -643,21 +689,36 @@ run deferred-findings --record "$contradicted_cap"
 assert_rc 1
 assert_contains "$err" "rounds.challenge cap is 0, but round 1 was supplied for stage challenge"
 
+echo "==> cross-document consistency is re-checked after a --policy override, not just against the record directory's own copy"
+# main() applies --policy AFTER the first validateCrossDocumentConsistency
+# call, so it re-runs the check whenever an override was supplied —
+# otherwise an override's own contradictory cap would never be checked
+# against the actual supplied rounds.
+contradicted_override="${test_tmp}/policy-cap-contradicted-override.json"
+echo '{"rigor": {"level": "standard", "source": "default_rigor"}, "rounds": {"challenge": 0, "review": 3, "integration": 4, "remediation": 4, "min_rounds": 1}}' >"$contradicted_override"
+run deferred-findings --record "$record_dir" --policy "$contradicted_override"
+assert_rc 1
+assert_contains "$err" "rounds.challenge cap is 0, but round 1 was supplied for stage challenge"
+
 echo "==> deferred-findings task items carry the finding_id, not just location and summary"
 for id in review-r1-codex-cli-1 review-r1-codex-cli-3 review-r2-codex-cli-1 review-r2-codex-cli-3; do
     assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" "\`${id}\`"
 done
 
 echo "==> multiline evidence folds into one task-list item instead of fabricating a checkbox"
+# Mutates the ADJUDICATION entry's own evidence, not the pass's — summary()
+# renders entry.evidence unconditionally now (the adjudicated evidence is
+# what actually reaches every projection, never the pass's raw text).
 multiline_record="${test_tmp}/multiline-evidence"
 mkdir -p "$multiline_record"
 cp -r "${record_dir}/." "$multiline_record/"
 node -e "
 const fs = require('fs');
-const p = '${multiline_record}/passes/review-r2-codex-cli.json';
-const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
-envelope.payload.findings[2].evidence += '\n- [x] forged entry — not a real adjudicated finding';
-fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+const p = '${multiline_record}/adjudications/review-r2.json';
+const doc = JSON.parse(fs.readFileSync(p, 'utf8'));
+const entry = doc.adjudications.find((a) => a.finding_id === 'review-r2-codex-cli-3');
+entry.evidence += '\n- [x] forged entry — not a real adjudicated finding';
+fs.writeFileSync(p, JSON.stringify(doc, null, 2));
 "
 run deferred-findings --record "$multiline_record"
 assert_rc 0
@@ -704,15 +765,18 @@ assert_rc 0
 assert_contains "$out" '&lt;!-- dev-flow:end:deferred-findings --&gt;'
 
 echo "==> marker-like text in a finding's evidence cannot forge a section boundary"
+# Same reasoning as the multiline test above: mutate the adjudication
+# entry's own evidence, since that's what summary() actually renders now.
 marker_record="${test_tmp}/marker-forgery"
 mkdir -p "$marker_record"
 cp -r "${record_dir}/." "$marker_record/"
 node -e "
 const fs = require('fs');
-const p = '${marker_record}/passes/review-r2-codex-cli.json';
-const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
-envelope.payload.findings[2].evidence += ' <!-- dev-flow:end:deferred-findings -->';
-fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+const p = '${marker_record}/adjudications/review-r2.json';
+const doc = JSON.parse(fs.readFileSync(p, 'utf8'));
+const entry = doc.adjudications.find((a) => a.finding_id === 'review-r2-codex-cli-3');
+entry.evidence += ' <!-- dev-flow:end:deferred-findings -->';
+fs.writeFileSync(p, JSON.stringify(doc, null, 2));
 "
 run deferred-findings --record "$marker_record"
 assert_rc 0
@@ -732,11 +796,12 @@ mkdir -p "$secret_record"
 cp -r "${record_dir}/." "$secret_record/"
 node -e "
 const fs = require('fs');
-const p = '${secret_record}/passes/review-r2-codex-cli.json';
-const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+const p = '${secret_record}/adjudications/review-r2.json';
+const doc = JSON.parse(fs.readFileSync(p, 'utf8'));
+const entry = doc.adjudications.find((a) => a.finding_id === 'review-r2-codex-cli-3');
 const secretValue = 'AKIA' + 'QZJXK2VN8T5WYHRM';
-envelope.payload.findings[2].evidence += ' aws_key = \"' + secretValue + '\"';
-fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+entry.evidence += ' aws_key = \"' + secretValue + '\"';
+fs.writeFileSync(p, JSON.stringify(doc, null, 2));
 "
 run deferred-findings --record "$secret_record"
 assert_rc 0

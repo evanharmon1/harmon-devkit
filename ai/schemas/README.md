@@ -1065,7 +1065,7 @@ authenticated against the target repo.
 |---|---|---|
 | `run.json` | One `run.schema.json` document | For `blocker-comment`, `readiness-input`; optional elsewhere |
 | `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
-| `passes/*.json` | Result envelopes (`role: challenger`, `reviewer`, or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `body`/`source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location, its adjudication's own `evidence`) when no matching pass is supplied. **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
+| `passes/*.json` | Result envelopes (`role: challenger`, `reviewer`, or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location) when no matching pass is supplied. The "Evidence" column is always the adjudication's own `evidence` field — schema-required, never pass-dependent — never a pass's raw finding text (see "Evidence is always the adjudicated record's own" below). **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
 | `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines. Shape-validated when present (`outcome` a non-empty string; `reason` a string; `rounds_counted` a non-negative integer; `next_round` a positive integer; `corrections` an array of strings — each only when present) |
 | `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present: `rigor.level`/`rigor.source` non-empty strings; `rounds` and every one of its five caps are **required** whenever `policy.json` exists at all (each a non-negative integer) — a partial or omitted `rounds` would let the rendered rigor line silently disclose an incomplete budget; `disclosures[]` stays optional, each entry `{kind, detail}` |
 
@@ -1155,6 +1155,16 @@ Every column that reads from a challenge/review pass's shared finding core
 (`class`, `provenance`, the reviewer_priority-fidelity check) treats
 `challenger` and `reviewer` identically, since `result.challenger.schema.json`
 declares that core field-for-field the same as `result.reviewer.schema.json`.
+
+**Evidence is always the adjudicated record's own.** Every projection's
+"Evidence" column (and `thread-reply-plan`'s `evidence` field) reads the
+adjudication entry's own `evidence` — required and non-empty on every entry
+regardless of whether a matching pass exists — never a matching pass's raw
+finding text. A finding downgraded because the original concern turned out
+to be wrong (or upgraded, or otherwise recontextualized) has its *adjudicated*
+reasoning published, not the possibly-superseded original claim: publishing
+the pass's raw text instead would let the "Evidence" column contradict the
+very disposition sitting next to it in the same row.
 
 ### Projections
 
