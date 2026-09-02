@@ -582,6 +582,12 @@ function decodeLegacyRounds(doc, levelName) {
     remediation: BUILTIN_REMEDIATION_FALLBACK(level.shepherd),
     min_rounds: level.min_rounds,
     wall_clock_min: BUILTIN_WALL_CLOCK_MIN_FALLBACK,
+    // Decoder-only marker (see decodeHistoricalPolicy's own comment): legacy
+    // had ONE undifferentiated "shepherd" cap, never two independent ones,
+    // so integration and remediation here are not separate budgets that
+    // each independently allow N actions — together they must never permit
+    // more than N total.
+    shared_budget: true,
   };
 }
 
@@ -608,6 +614,10 @@ function decodeV1Rounds(doc, levelName) {
     remediation: BUILTIN_REMEDIATION_FALLBACK(table.shepherd),
     min_rounds: table.min_rounds,
     wall_clock_min: BUILTIN_WALL_CLOCK_MIN_FALLBACK,
+    // Decoder-only marker — see decodeLegacyRounds's comment; v1's
+    // [review.<policy>] carried the identical single undifferentiated
+    // "shepherd" cap legacy did.
+    shared_budget: true,
   };
 }
 

@@ -1013,7 +1013,13 @@ copy under its OWN declared shape (legacy `[rigor.<level>]` direct caps —
 `rounds.remediation` (legacy has one undifferentiated cap where v2 splits
 Codex re-review cycles from remediation fix-push accounting; decoding the same
 number into both is the closest legacy equivalent, not an independent
-built-in), and `min_rounds` maps to the v2 floor unchanged; v1
+built-in) — and the decoded `rounds` also carries `shared_budget: true`,
+present **only** on this decode path, never on a normal v2 resolution: it
+tells a downstream consumer (the integrator, #639's readiness gate) that
+`integration` and `remediation` are not two independent N-sized budgets here
+— together, cycles plus fix pushes must never exceed the single legacy
+`shepherd` total N, exactly as AGENTS.md's legacy shepherd cap always meant.
+`min_rounds` maps to the v2 floor unchanged; v1
 `[review.<policy>]` via the `[rigor.<level>].review` pointer, same field
 mapping) and supplies built-in `[gates]` defaults (`round_code = "verify"`,
 `round_docs = "check"`, `secret_scan = "security:secrets"`, `pre_pr =
