@@ -4,17 +4,12 @@
     {
       "finding_id": "integration-r1-human-1",
       "root_comment_id": "IC_kwIarandom0001",
-      "reply_text": "Declined: already covered by the JSON result's own reason field; Markdown is a convenience, not the contract"
-    },
-    {
-      "finding_id": "integration-r1-human-2",
-      "root_comment_id": "IC_kwIarandom0002",
-      "reply_text": "Fixed: added the missing blank line"
-    },
-    {
-      "finding_id": "integration-r1-human-3",
-      "root_comment_id": "IC_kwIarandom0003",
-      "reply_text": "Fixed: removed escapeRegExp, routed its one caller through escapeCell's escaping instead"
+      "reply_text": "Declined: already covered by the JSON result's own reason field; Markdown is a convenience, not the contract",
+      "head": "2222222222222222222222222222222222222222",
+      "adjudicated_priority": "P2",
+      "classification": "false positive",
+      "evidence": "Human reviewer: the retry-exhausted blocker never surfaces how many attempts remain to the caller.",
+      "action": "decline — already covered by the JSON result's own reason field; Markdown is a convenience, not the contract"
     }
   ]
 }

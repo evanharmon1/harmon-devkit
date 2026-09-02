@@ -41,7 +41,7 @@
         "source_id": "IC_kwIarandom0003"
       }
     ],
-    "unanswered_thread_roots": [],
+    "unanswered_thread_roots": ["IC_kwIarandom0001"],
     "settled_at": "2026-08-30T13:00:00Z",
     "verdict": "findings"
   }

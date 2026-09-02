@@ -54,6 +54,13 @@ $(diff <(printf '%s' "$out") "${golden_dir}/${golden_file}" || true)"
 
 # ── golden projections ──────────────────────────────────────────────────
 
+# The record's latest round (review round 2) reviewed this head; blocker-
+# comment and readiness-input require --head explicitly (Codex challenge
+# round 1, finding "Require the current head for blocker projections" —
+# inferring it from adjudication order would silently under-report an
+# unreviewed fix push as the reviewed round's own head).
+render_head="2222222222222222222222222222222222222222"
+
 echo "==> golden: deferred-findings matches ai/schemas/fixtures/render/golden/deferred-findings.txt"
 golden_matches deferred-findings deferred-findings.txt
 
@@ -67,13 +74,13 @@ echo "==> golden: policy-disclosure matches golden/policy-disclosure.txt"
 golden_matches policy-disclosure policy-disclosure.txt
 
 echo "==> golden: blocker-comment matches golden/blocker-comment.txt"
-golden_matches blocker-comment blocker-comment.txt --verdict "${record_dir}/verdict.json"
+golden_matches blocker-comment blocker-comment.txt --verdict "${record_dir}/verdict.json" --head "$render_head"
 
 echo "==> golden: thread-reply-plan matches golden/thread-reply-plan.json"
 golden_matches thread-reply-plan thread-reply-plan.json
 
 echo "==> golden: readiness-input matches golden/readiness-input.json"
-golden_matches readiness-input readiness-input.json
+golden_matches readiness-input readiness-input.json --head "$render_head"
 
 echo "==> every disposition (fix/restructure/delete/decline/defer/file) appears in the adjudication-record golden"
 for disposition in 'fix —' 'restructure —' 'delete —' 'decline —' 'defer —'; do
@@ -84,12 +91,18 @@ for suffix in 'fixed in' 'declined: see comment' 'filed as #'; do
 done
 
 echo "==> determinism: re-rendering the same record twice is byte-identical"
-for projection in deferred-findings adjudication-record policy-disclosure thread-reply-plan readiness-input; do
+for projection in deferred-findings adjudication-record policy-disclosure thread-reply-plan; do
     run "$projection" --record "$record_dir"
     first="$out"
+    assert_rc 0
     run "$projection" --record "$record_dir"
     [ "$out" = "$first" ] || fail "$projection is not deterministic across identical runs"
 done
+run readiness-input --record "$record_dir" --head "$render_head"
+first="$out"
+assert_rc 0
+run readiness-input --record "$record_dir" --head "$render_head"
+[ "$out" = "$first" ] || fail "readiness-input is not deterministic across identical runs"
 
 echo "==> unsettled deferred findings stay unchecked; settled ones carry their disposition"
 assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [ ] scripts/render-dev-flow.mjs:320'
@@ -101,9 +114,88 @@ unsettled_count="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$
 [ "$settled_count" = 3 ] || fail "expected 3 settled deferred findings, got $settled_count"
 [ "$unsettled_count" = 1 ] || fail "expected 1 unsettled deferred finding, got $unsettled_count"
 
-echo "==> thread-reply-plan carries only integration-stage findings (challenge/review have no root_comment_id in this schema family)"
+echo "==> blocker-comment and readiness-input refuse to guess --head"
+run blocker-comment --record "$record_dir" --verdict "${record_dir}/verdict.json"
+assert_rc 1
+assert_contains "$err" "--head"
+run readiness-input --record "$record_dir"
+assert_rc 1
+assert_contains "$err" "--head"
+
+echo "==> thread-reply-plan carries only unanswered integration-stage inline threads"
 entry_count="$(node -e "console.log(JSON.parse(require('fs').readFileSync('${golden_dir}/thread-reply-plan.json','utf8')).entries.length)")"
-[ "$entry_count" = 3 ] || fail "expected 3 integration-stage thread-reply-plan entries, got $entry_count"
+[ "$entry_count" = 1 ] || fail "expected 1 unanswered-thread entry (the fixture pass answers the other two), got $entry_count"
+entry="$(node -e "console.log(JSON.stringify(JSON.parse(require('fs').readFileSync('${golden_dir}/thread-reply-plan.json','utf8')).entries[0]))")"
+for field in root_comment_id reply_text head adjudicated_priority classification evidence action; do
+    assert_contains "$entry" "\"$field\""
+done
+
+echo "==> cross-document consistency: an orphan settlement (no matching deferred finding) is rejected"
+bad_run="${test_tmp}/orphan-settlement"
+mkdir -p "$bad_run"
+cp -r "${record_dir}/." "$bad_run/"
+node -e "
+const fs = require('fs');
+const p = '${bad_run}/run.json';
+const run = JSON.parse(fs.readFileSync(p, 'utf8'));
+run.settlements.push({finding_id: 'review-r1-codex-cli-99', disposition: 'fix', settled_at: '2026-08-30T13:08:00Z', reference: {type: 'sha', value: 'c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff'}});
+fs.writeFileSync(p, JSON.stringify(run, null, 2));
+"
+run deferred-findings --record "$bad_run"
+assert_rc 1
+assert_contains "$err" "orphan settlement"
+
+echo "==> cross-document consistency: a settlement whose reference.type disagrees with its disposition is rejected"
+bad_type="${test_tmp}/settlement-type-mismatch"
+mkdir -p "$bad_type"
+cp -r "${record_dir}/." "$bad_type/"
+node -e "
+const fs = require('fs');
+const p = '${bad_type}/run.json';
+const run = JSON.parse(fs.readFileSync(p, 'utf8'));
+run.settlements[0].reference = {type: 'issue_number', value: '42'};
+fs.writeFileSync(p, JSON.stringify(run, null, 2));
+"
+run deferred-findings --record "$bad_type"
+assert_rc 1
+assert_contains "$err" "expected 'sha'"
+
+echo "==> cross-document consistency: a pass naming a different head than its adjudication is rejected"
+bad_head="${test_tmp}/pass-head-mismatch"
+mkdir -p "$bad_head"
+cp -r "${record_dir}/." "$bad_head/"
+node -e "
+const fs = require('fs');
+const p = '${bad_head}/passes/challenge-r1-codex-cli.json';
+const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+envelope.head = '9999999999999999999999999999999999999999';
+fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+"
+run deferred-findings --record "$bad_head"
+assert_rc 1
+assert_contains "$err" "its pass envelope names head"
+
+echo "==> marker-like text in a finding's evidence cannot forge a section boundary"
+marker_record="${test_tmp}/marker-forgery"
+mkdir -p "$marker_record"
+cp -r "${record_dir}/." "$marker_record/"
+node -e "
+const fs = require('fs');
+const p = '${marker_record}/passes/review-r2-codex-cli.json';
+const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+envelope.payload.findings[2].evidence += ' <!-- dev-flow:end:deferred-findings -->';
+fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+"
+run deferred-findings --record "$marker_record"
+assert_rc 0
+[[ "$out" != *'<!-- dev-flow:end:deferred-findings -->'* ]] ||
+    fail "a finding's own evidence text must never reproduce a literal marker token: $out"
+assert_contains "$out" '&lt;!-- dev-flow:end:deferred-findings --&gt;'
+
+echo "==> usage: a negative --max-retries is rejected before any gh call"
+run publish --record "$record_dir" --repo o/r --pr 1 --head "1111111111111111111111111111111111111111" \
+    --sections policy-disclosure --max-retries -1
+assert_rc 2
 
 # ── usage / validation errors ───────────────────────────────────────────
 
@@ -191,8 +283,10 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = edit ]; then
         printf '\n\nHuman note added mid-write.\n' >>"$body"
         : >"$GH_FIXTURES/concurrent-edit-done"
     fi
-    jq -n --rawfile body "$body" --arg head "$(cat "$GH_FIXTURES/current-head")" \
-        '{number: 123, url: "https://example/pull/123", headRefOid: $head, isDraft: true, body: $body}' \
+    is_draft=true
+    [ ! -f "$GH_FIXTURES/promote-after-write" ] || is_draft=false
+    jq -n --rawfile body "$body" --arg head "$(cat "$GH_FIXTURES/current-head")" --argjson draft "$is_draft" \
+        '{number: 123, url: "https://example/pull/123", headRefOid: $head, isDraft: $draft, body: $body}' \
         >"$GH_FIXTURES/current-view.json"
     if [ -f "$GH_FIXTURES/crash-after-write" ]; then
         echo "simulated crash after the write landed" >&2
@@ -281,6 +375,25 @@ assert_contains "$final_body" 'Human note added mid-write.'
 assert_contains "$final_body" 'Human prose stays untouched.'
 assert_contains "$final_body" '<!-- dev-flow:begin:policy-disclosure -->'
 [ ! -f "${pub_record}/.publish-state.json" ] || fail "reservation must be retired once the repair round verifies"
+
+echo "==> publish: a promotion landing during the write is a blocker, not a reported success"
+# Codex challenge round 1, finding "Recheck draft state after publishing the
+# body": the write can land on a PR another actor promoted out of draft
+# between publish's initial read and its gh pr edit call; the post-write
+# verification read must catch that rather than reporting success because
+# only headRefOid/body were re-checked.
+reset_gh_fixtures
+seed_view 'Prose.
+'
+: >"${gh_fixtures}/promote-after-write"
+pub_record="$(fresh_record 8)"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --sections policy-disclosure
+assert_rc 1
+assert_contains "$out" '"status": "blocker"'
+assert_contains "$out" '"reason": "promoted-during-publish"'
+[ -f "${pub_record}/.publish-state.json" ] ||
+    fail "a promotion mid-write must retain the reservation — the write landed but the transaction did not verify clean"
+rm -f "${gh_fixtures}/promote-after-write"
 
 echo "==> publish: interruption after a landed write, before local success is recorded, resumes without duplicating"
 reset_gh_fixtures

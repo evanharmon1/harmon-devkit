@@ -1029,13 +1029,33 @@ family's other scripts).
 | `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure` |
 
 Every file present is schema-validated (structural shape only — this
-family's cross-document receipt checks are `validate-result-schemas.mjs`'s
-job upstream of the renderer, not duplicated here) before anything renders;
-a malformed document fails loudly naming the file, never a partial render.
+family's full receipt suite needs cross-run context, e.g. `--known-ids`, no
+single record directory carries, and stays `validate-result-schemas.mjs`'s
+job upstream of the renderer); a malformed document fails loudly naming the
+file, never a partial render. What IS local to one record directory is also
+checked, before anything renders: every pass's `head`/`run_id` must agree
+with the adjudication document that cross-references it by finding id, and
+every `run.json` settlement must name a finding some supplied adjudication
+document actually dispositioned `defer` (an "orphan" settlement is rejected),
+with a `reference.type` that agrees with its own `disposition` (`fix`→`sha`,
+`decline`→`comment_id`, `file`→`issue_number`) — renderer/spec.md
+"Publication SHALL validate local sidecar entries against adjudications,"
+applied to every projection rather than only `publish`, since an
+inconsistent record is suspect for all of them alike.
 `--verdict <file>` / `--policy <file>` override the record directory's own
 `verdict.json`/`policy.json`. A finding's `class` and `provenance` columns
 read `n/a` when no matching pass supplies them (always true for integration-
 stage findings, which carry neither field at all).
+
+Free-text fields pulled from a finding's evidence, an adjudication's reason,
+or a policy disclosure detail are reviewer- or human-authored prose this
+renderer does not control, and are embedded verbatim into a marked PR-body
+section. Before rendering, every such field has its literal `<!--`/`-->`
+sequences HTML-entity-escaped (`&lt;!--`/`--&gt;`) — visually unchanged in a
+rendered PR, but no longer byte-identical to a real marker on a later parse.
+Without it, evidence that happens to quote a marker token (a real risk when
+reviewing this renderer itself) would forge an extra section boundary the
+next `publish` misreads.
 
 **Once `#635` ships `result.challenger.schema.json` and an envelope
 `role: challenger`,** this renderer's pass loader (which currently accepts
@@ -1063,12 +1083,22 @@ deferred-then-settled finding does via `settlements[].reference` — a gap
 worth closing on a future revision of this family if that evidence is
 needed for the directly-resolved case too.
 
-`thread-reply-plan` carries only **integration-stage** findings: they alone
-have a GitHub-native `source_id` (`result.integrator.schema.json`
-`findings[].source_id`) to use as the reply plan's `root_comment_id`.
-Challenge/review findings (`result.reviewer.schema.json`) carry no such
-field — there is no inline-comment linkage to preserve for them in the
-current schema family, so no reply plan entry is produced.
+`thread-reply-plan` carries only **integration-stage** findings whose
+`source_id` is named in that same pass's own `unanswered_thread_roots` — the
+only findings with both a GitHub-native id to reply to
+(`result.integrator.schema.json` `findings[].source_id`) and confirmation
+that the thread is still open. A `source_id` can just as easily be a CI-check
+marker or an already-answered thread (the schema permits both), so skipping
+this filter would attempt an invalid reply or duplicate an existing one.
+Challenge/review findings (`result.reviewer.schema.json`) carry no
+`source_id` at all — there is no inline-comment linkage to preserve for them
+in the current schema family, so no reply plan entry is produced for them.
+Each entry carries `root_comment_id`/`reply_text` plus the same
+`head`/`adjudicated_priority`/`classification`/`evidence`/`action` the ledger
+and PR-body projections carry for that finding, so a consumer can verify
+semantic equivalence rather than trust the reply text alone (renderer/spec.md
+"Multi-surface dispositions remain equivalent") and a stale plan naming an
+old `head` can be rejected outright.
 
 ### Publishing: marked PR-body sections
 
@@ -1110,21 +1140,31 @@ A human edit that lands strictly *after* publish's last read but *before*
 its write is a window this design cannot close — GitHub gives no primitive
 to close it — and is not claimed to be closed. `publish` requires the exact
 pushed `--head` and an open draft PR (`isDraft: true`); either condition
-failing is a blocker (`head-mismatch`/`not-draft`) with no write attempted,
-and the PR's head moving between publish's own pre- and post-write reads is
-a `head-changed-during-publish` blocker.
+failing is a blocker (`head-mismatch`/`not-draft`) with no write attempted.
+The post-write verification read checks both `headRefOid` and `isDraft`
+again, not just the body's fingerprint: the head moving mid-write is a
+`head-changed-during-publish` blocker, and the PR leaving draft state mid-write
+(a known external actor can promote a draft outside this transaction — see
+AGENTS.md's Codex-connector signature) is a `promoted-during-publish`
+blocker — the body write may have landed in both cases, but reporting
+success would hide that the transaction's own precondition broke partway
+through.
 
 ### `readiness-input`: JSON for the readiness gate
 
 Emitted by the `readiness-input` projection, for the readiness gate
 ([#639](https://github.com/evanharmon1/harmon-devkit/issues/639)) to consume
-instead of parsing the rendered `## Deferred findings` Markdown:
+instead of parsing the rendered `## Deferred findings` Markdown. `--head` is
+required, never inferred from adjudication order (the same requirement
+`blocker-comment` has, for the same reason): the readiness gate evaluates the
+*current* head, which a fix push can move past every round this record set
+has ever seen.
 
 ```json
 {
   "schema": "dev-flow-render.readiness-input.v1",
   "run_id": "<run.json run_id>",
-  "head": "<--head, else the latest supplied adjudication document's reviewed_head, else null>",
+  "head": "<--head, verbatim>",
   "deferred_findings": {
     "settled": [
       { "finding_id": "…", "disposition": "fix|decline|file", "reference": { "type": "…", "value": "…" }, "settled_at": "…" }

@@ -27,14 +27,22 @@
 //                         off-default/off-profile disclosures, from
 //                         --policy.
 //   blocker-comment       Markdown: head/stage/outcome/unresolved/next
-//                         action, from run.json + --verdict.
-//   thread-reply-plan     JSON: {finding_id, root_comment_id, reply_text}
-//                         per integration-stage finding (the only stage
-//                         whose findings carry a GitHub-native source_id —
-//                         see ai/schemas/README.md).
+//                         action, from run.json + --verdict. Requires --head
+//                         (the caller's actual current HEAD — never inferred
+//                         from adjudication order, which can lag behind an
+//                         unreviewed fix push).
+//   thread-reply-plan     JSON: {finding_id, root_comment_id, reply_text,
+//                         head, adjudicated_priority, classification,
+//                         evidence, action} per integration-stage finding
+//                         whose source_id is a still-unanswered inline
+//                         thread root (result.integrator.schema.json
+//                         unanswered_thread_roots) — the only stage whose
+//                         findings carry a GitHub-native source_id at all
+//                         (see ai/schemas/README.md).
 //   readiness-input       JSON: settled/unsettled deferred findings by id,
 //                         for the readiness gate to consume instead of
-//                         parsing Markdown.
+//                         parsing Markdown. Requires --head, same reasoning
+//                         as blocker-comment.
 //
 // A record directory (--record <dir>) holds:
 //   run.json              One run.schema.json document. Required except when
@@ -60,6 +68,16 @@
 //                         {rigor:{level,source}, rounds:{challenge,review,
 //                         integration,remediation,min_rounds},
 //                         disclosures:[{kind,detail}]}.
+//
+// Every record is checked, beyond schema validity, for local (single-
+// directory) cross-document consistency before anything renders: a pass
+// naming a different head/run_id than the adjudication that references it,
+// a settlement naming a finding absent from every supplied adjudication
+// document, a settlement for a finding never dispositioned `defer`, or a
+// settlement whose reference shape disagrees with its own disposition are
+// all rejected (renderer/spec.md "Publication SHALL validate local sidecar
+// entries against adjudications" — applied to every projection, not only
+// publish, since an inconsistent record is suspect for all of them).
 //
 // publish additionally requires --repo, --pr, --head, and --sections (a
 // comma list drawn from policy-disclosure, deferred-findings,
@@ -94,6 +112,7 @@ const PUBLISHABLE_SECTIONS = ['policy-disclosure', 'deferred-findings', 'adjudic
 const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-([a-z0-9-]+)-([1-9][0-9]*)$/
 const STAGE_ORDER = { challenge: 0, review: 1, integration: 2 }
 const SETTLEMENT_GRAMMAR = { fix: 'fixed in', decline: 'declined:', file: 'filed as' }
+const REPLY_VERB = { fix: 'Fixed', restructure: 'Restructured', delete: 'Removed', decline: 'Declined', file: 'Filed' }
 
 function usage() {
   console.error(
@@ -196,6 +215,7 @@ function parseArgs(argv) {
       }
     }
     options.maxRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 3
+    if (options.maxRetries < 0) usageError(`--max-retries must be a non-negative integer, got ${options.maxRetries}`)
   }
   return options
 }
@@ -230,12 +250,17 @@ function validateAgainst(schemasDir, schemaBasename, instance, location) {
 }
 
 // loadRecord DIR SCHEMAS_DIR — read and schema-validate every document in a
-// record directory. Structural validation only (this schema family's own
-// receipt/cross-document checks — run chronology, adjudication-vs-pass
-// agreement — are validate-result-schemas.mjs's job upstream of this
-// renderer; re-running them here would duplicate ~1800 lines for no
-// projection this script produces). A malformed document fails loudly
-// naming the file, rather than silently rendering from a partial parse.
+// record directory. Structural (schema) validation only — this schema
+// family's full receipt suite (run chronology, run-wide id collisions,
+// cross-run context) stays validate-result-schemas.mjs's job upstream of
+// this renderer, since it needs context (prior runs, --known-ids) no single
+// --record directory carries. What IS local to one record directory —
+// whether its own settlements and passes agree with its own adjudications —
+// is this renderer's obligation too (renderer/spec.md "Publication SHALL
+// validate local sidecar entries against adjudications"): see
+// validateCrossDocumentConsistency, run once in main() over the loaded
+// record. A malformed document fails loudly naming the file, rather than
+// silently rendering from a partial parse.
 function loadRecord(dir, schemasDir) {
   const record = { run: null, adjudications: [], passes: [], verdict: null, policy: null }
 
@@ -282,11 +307,19 @@ function buildFindingIndex(record) {
   const passFindingsById = new Map()
   for (const { file, envelope } of record.passes) {
     const findings = envelope.payload.findings || []
+    const unansweredThreadRoots =
+      envelope.role === 'integrator' ? new Set(envelope.payload.unanswered_thread_roots || []) : null
     for (const finding of findings) {
       if (passFindingsById.has(finding.id)) {
         fail(`${file}: finding id ${finding.id} also appears in an earlier pass file`)
       }
-      passFindingsById.set(finding.id, { finding, role: envelope.role })
+      passFindingsById.set(finding.id, {
+        finding,
+        role: envelope.role,
+        head: envelope.head,
+        runId: envelope.run.run_id,
+        unansweredThreadRoots
+      })
     }
   }
 
@@ -300,6 +333,7 @@ function buildFindingIndex(record) {
         stage: doc.stage,
         round: doc.round,
         reviewed_head: doc.reviewed_head,
+        run_id: doc.run_id,
         finder: idMatch[3],
         n: Number.parseInt(idMatch[4], 10),
         pass: passFindingsById.get(entry.finding_id) || null
@@ -307,6 +341,59 @@ function buildFindingIndex(record) {
     }
   }
   return entries
+}
+
+const EXPECTED_REFERENCE_TYPE = { fix: 'sha', decline: 'comment_id', file: 'issue_number' }
+
+// validateCrossDocumentConsistency — the local (single-record-directory)
+// checks renderer/spec.md requires before publication, and that every
+// projection benefits from: a settlement naming a finding this record set
+// never adjudicated ("orphan"), settling a finding that was never deferred,
+// or pairing a disposition with the wrong reference shape, are all
+// indistinguishable from a real settlement by JSON Schema alone (schema
+// validates each settlement/adjudication document on its own; these
+// invariants span two documents). A pass envelope naming a different
+// head/run_id than the adjudication it was cross-referenced by would
+// otherwise let a stale or foreign pass silently enrich a finding it does
+// not actually belong to.
+function validateCrossDocumentConsistency(record) {
+  const rows = buildFindingIndex(record)
+  const byId = new Map(rows.map((row) => [row.entry.finding_id, row]))
+
+  for (const row of rows) {
+    if (!row.pass) continue
+    if (row.pass.head !== row.reviewed_head) {
+      fail(
+        `${row.entry.finding_id}: its pass envelope names head ${row.pass.head}, but the adjudicating document's reviewed_head is ${row.reviewed_head}`
+      )
+    }
+    if (row.pass.runId !== row.run_id) {
+      fail(
+        `${row.entry.finding_id}: its pass envelope names run_id ${row.pass.runId}, but the adjudicating document's run_id is ${row.run_id}`
+      )
+    }
+  }
+
+  if (!record.run) return
+  for (const settlement of record.run.settlements) {
+    const row = byId.get(settlement.finding_id)
+    if (!row) {
+      fail(
+        `run.json: settlement for ${settlement.finding_id} names a finding absent from every supplied adjudication document (orphan settlement)`
+      )
+    }
+    if (row.entry.disposition !== 'defer') {
+      fail(
+        `run.json: settlement for ${settlement.finding_id} names a finding whose adjudicated disposition is '${row.entry.disposition}', not 'defer' — only a deferred finding is ever settled`
+      )
+    }
+    const expectedType = EXPECTED_REFERENCE_TYPE[settlement.disposition]
+    if (settlement.reference.type !== expectedType) {
+      fail(
+        `run.json: settlement for ${settlement.finding_id} has disposition '${settlement.disposition}' but reference.type '${settlement.reference.type}' (expected '${expectedType}')`
+      )
+    }
+  }
 }
 
 function sortKey(row) {
@@ -350,8 +437,24 @@ function provenance(row) {
   return row.pass && row.pass.role === 'reviewer' ? row.pass.finding.provenance : 'n/a'
 }
 
+// neutralizeMarkers — free text (a finding's own evidence/reason, a policy
+// disclosure detail) is reviewer- or human-authored prose that this renderer
+// does not control, and it is embedded verbatim inside a marked PR-body
+// section. Left unescaped, text that happens to quote
+// "<!-- dev-flow:end:deferred-findings -->" — a plausible thing to write
+// when reviewing THIS renderer, and exactly how this finding was raised —
+// forges an extra marker: mergeSections' regex has no way to tell a
+// legitimate boundary from one sitting inside a rendered sentence. HTML-
+// entity-escaping just the comment delimiters (not full HTML-escaping, which
+// would mangle unrelated `<`/`>` in ordinary prose) keeps the text
+// human-readable — a browser or GFM renderer still shows `<!--` — while
+// making it byte-distinct from a real marker on every later parse.
+function neutralizeMarkers(text) {
+  return String(text).replaceAll('<!--', '&lt;!--').replaceAll('-->', '--&gt;')
+}
+
 function escapeCell(text) {
-  return String(text).replaceAll('|', '\\|').replaceAll('\r\n', ' ').replaceAll('\n', '<br>')
+  return neutralizeMarkers(text).replaceAll('|', '\\|').replaceAll('\r\n', ' ').replaceAll('\n', '<br>')
 }
 
 // ── settlements ─────────────────────────────────────────────────────────
@@ -373,12 +476,16 @@ function buildSettlementIndex(run) {
 // no issue/PR number to build a permalink from, and no free-text reason: the
 // reason lives in the referenced comment itself, not in this record. This
 // renders exactly what the record has rather than guessing a URL shape.
+// disposition (not reference.type) is authoritative — "there it is settled
+// to fix, decline, or file" (specs/dev-flow-v2.md § Results) — validated by
+// validateCrossDocumentConsistency to actually agree with reference.type
+// before this ever runs.
 function settlementSuffix(settlement) {
-  const { type, value } = settlement.reference
-  if (type === 'sha') return `${SETTLEMENT_GRAMMAR.fix} ${shortSha(value)}`
-  if (type === 'issue_number') return `${SETTLEMENT_GRAMMAR.file} #${value}`
-  if (type === 'comment_id') return `${SETTLEMENT_GRAMMAR.decline} see comment ${value}`
-  fail(`run.json: settlement for ${settlement.finding_id} has unknown reference type ${type}`)
+  const { disposition, reference } = settlement
+  if (disposition === 'fix') return `${SETTLEMENT_GRAMMAR.fix} ${shortSha(reference.value)}`
+  if (disposition === 'file') return `${SETTLEMENT_GRAMMAR.file} #${reference.value}`
+  if (disposition === 'decline') return `${SETTLEMENT_GRAMMAR.decline} see comment ${reference.value}`
+  fail(`run.json: settlement for ${settlement.finding_id} has unknown disposition ${disposition}`)
   return ''
 }
 
@@ -472,7 +579,7 @@ function renderDeferredFindings(record) {
     for (const row of rows) {
       const settlement = settlements.get(row.entry.finding_id)
       const loc = location(row)
-      const text = summary(row)
+      const text = neutralizeMarkers(summary(row))
       if (settlement) {
         lines.push(`- [x] ${loc} — ${text} — ${settlementSuffix(settlement)}`)
       } else {
@@ -513,12 +620,13 @@ function renderAdjudicationRecord(record) {
 
 function verdictLine(verdict) {
   if (!verdict) return null
-  const head = verdict.reason ? `${verdict.outcome} — ${verdict.reason}` : verdict.outcome
+  const reason = verdict.reason ? neutralizeMarkers(verdict.reason) : null
+  const head = reason ? `${verdict.outcome} — ${reason}` : verdict.outcome
   const details = []
   if (Number.isInteger(verdict.rounds_counted)) details.push(`rounds counted: ${verdict.rounds_counted}`)
   if (Number.isInteger(verdict.next_round)) details.push(`next round: ${verdict.next_round}`)
   if (Array.isArray(verdict.corrections) && verdict.corrections.length > 0) {
-    details.push(`corrections: ${verdict.corrections.join('; ')}`)
+    details.push(`corrections: ${verdict.corrections.map(neutralizeMarkers).join('; ')}`)
   }
   return details.length > 0 ? `**Exit:** ${head} (${details.join('; ')})` : `**Exit:** ${head}`
 }
@@ -561,27 +669,22 @@ function renderPolicyDisclosure(record) {
   const disclosures = record.policy.disclosures || []
   if (disclosures.length > 0) {
     lines.push('')
-    for (const d of disclosures) lines.push(`- ${d.kind}: ${d.detail}`)
+    for (const d of disclosures) lines.push(`- ${neutralizeMarkers(d.kind)}: ${neutralizeMarkers(d.detail)}`)
   }
   return lines.join('\n')
 }
 
-// The most recent adjudication document by (stage order, round) — the same
-// ordering renderAdjudicationRecord groups by — stands in for "the run's
-// current head" when the caller does not pass --head explicitly: it is the
-// reviewed_head of whichever round most recently ran.
-function latestReviewedHead(record) {
-  if (record.adjudications.length === 0) return null
-  const sorted = [...record.adjudications].sort((a, b) => {
-    const sa = STAGE_ORDER[a.doc.stage] ?? 99
-    const sb = STAGE_ORDER[b.doc.stage] ?? 99
-    return sa !== sb ? sa - sb : a.doc.round - b.doc.round
-  })
-  return sorted[sorted.length - 1].doc.reviewed_head
-}
-
 function renderBlockerComment(record, options = {}) {
   if (!record.run) fail('blocker-comment requires run.json in the record directory')
+  // --head must be the caller's actual current HEAD, never inferred from
+  // adjudication order: after the final permitted cycle finds an issue, the
+  // resulting fix moves the head PAST the last round any adjudication
+  // document ever reviewed, so "most recent reviewed_head" would silently
+  // name a stale, already-superseded commit instead of the new unreviewed
+  // one the blocker must name (renderer/spec.md "Blocker reports bind to
+  // unresolved state": "A head change SHALL invalidate a blocker ...
+  // projection that claims a prior head").
+  if (!options.head) fail('blocker-comment requires --head <sha> (the caller\'s current HEAD, never inferred)')
   const lastTransition = record.run.stage_transitions[record.run.stage_transitions.length - 1]
   const verdict = record.verdict || {}
   const outcome = verdict.outcome || record.run.outcome || 'unknown'
@@ -593,8 +696,7 @@ function renderBlockerComment(record, options = {}) {
     return !settlements.has(row.entry.finding_id)
   })
   const lines = [`## Blocker: ${lastTransition.stage} ${outcome} (${reason})`, '']
-  const head = options.head || latestReviewedHead(record) || 'unknown'
-  lines.push(`- Head: \`${head}\``)
+  lines.push(`- Head: \`${options.head}\``)
   lines.push(`- Stage: ${lastTransition.stage}`)
   lines.push(`- Outcome: \`${outcome}\` (\`${reason}\`)`)
   // "Spent" names the BLOCKED stage's own round count against its cap — the
@@ -609,7 +711,7 @@ function renderBlockerComment(record, options = {}) {
   } else {
     for (const row of unresolved.sort(compareRows)) {
       lines.push(
-        `  - ${row.entry.finding_id} — ${location(row)} — ${summary(row)} (${row.entry.adjudicated_priority}, ${row.entry.disposition})`
+        `  - ${row.entry.finding_id} — ${location(row)} — ${neutralizeMarkers(summary(row))} (${row.entry.adjudicated_priority}, ${row.entry.disposition})`
       )
     }
   }
@@ -618,23 +720,53 @@ function renderBlockerComment(record, options = {}) {
   return lines.join('\n')
 }
 
+// Only a finding whose source_id is named in ITS OWN pass's
+// unanswered_thread_roots is an open inline thread still owed a reply: the
+// integrator schema's source_id is the GitHub-native id of "an inline review
+// comment id, a review id, [or] a locally-minted CI-failure marker"
+// (ai/schemas/README.md) — most of those are not a thread at all, and even
+// a genuine thread may already carry its reply. Emitting a plan entry for
+// any of those would attempt an invalid API reply or duplicate an existing
+// one.
 function renderThreadReplyPlan(record) {
-  const rows = buildFindingIndex(record).filter((row) => row.stage === 'integration' && row.pass)
+  const rows = buildFindingIndex(record).filter(
+    (row) =>
+      row.stage === 'integration' &&
+      row.pass &&
+      row.pass.unansweredThreadRoots &&
+      row.pass.unansweredThreadRoots.has(row.pass.finding.source_id)
+  )
   const entries = rows
     .sort(compareRows)
     .map((row) => {
       const { entry } = row
-      let replyText
-      if (entry.disposition === 'decline') replyText = `Declined: ${entry.reason}`
-      else if (entry.disposition === 'file') replyText = `Filed: ${entry.reason}`
-      else replyText = `Fixed: ${entry.reason}`
-      return { finding_id: entry.finding_id, root_comment_id: row.pass.finding.source_id, reply_text: replyText }
+      const verb = REPLY_VERB[entry.disposition]
+      if (!verb) fail(`${entry.finding_id}: unknown disposition ${entry.disposition} for a reply plan`)
+      return {
+        finding_id: entry.finding_id,
+        root_comment_id: row.pass.finding.source_id,
+        reply_text: `${verb}: ${entry.reason}`,
+        // Carried alongside root_comment_id/reply_text so a consumer can
+        // verify this entry's semantic equivalence with the ledger and
+        // PR-body projections, and so a head change invalidates a stale
+        // plan instead of it being replayed against different code
+        // (renderer/spec.md "Multi-surface dispositions remain equivalent").
+        head: row.reviewed_head,
+        adjudicated_priority: entry.adjudicated_priority,
+        classification: classification(entry.disposition),
+        evidence: summary(row),
+        action: `${entry.disposition} — ${entry.reason}`
+      }
     })
   return JSON.stringify({ schema: 'dev-flow-render.thread-reply-plan.v1', entries }, null, 2)
 }
 
 function renderReadinessInput(record, options = {}) {
   if (!record.run) fail('readiness-input requires run.json in the record directory')
+  // Same reasoning as renderBlockerComment: the readiness gate evaluates
+  // against the CURRENT head, which a fix push can move past every
+  // adjudication document this record set has ever seen.
+  if (!options.head) fail('readiness-input requires --head <sha> (the caller\'s current HEAD, never inferred)')
   const settlements = buildSettlementIndex(record.run)
   const rows = buildFindingIndex(record).filter((row) => row.entry.disposition === 'defer')
   const settled = []
@@ -661,7 +793,7 @@ function renderReadinessInput(record, options = {}) {
     {
       schema: 'dev-flow-render.readiness-input.v1',
       run_id: record.run.run_id,
-      head: options.head || latestReviewedHead(record) || null,
+      head: options.head,
       deferred_findings: { settled, unsettled }
     },
     null,
@@ -783,9 +915,20 @@ function publish(record, options) {
       gh(['pr', 'edit', String(options.pr), '--repo', options.repo, '--body-file', '-'], intendedBody)
       wroteAny = true
 
-      const reread = JSON.parse(gh(['pr', 'view', String(options.pr), '--repo', options.repo, '--json', 'headRefOid,body']))
+      const reread = JSON.parse(
+        gh(['pr', 'view', String(options.pr), '--repo', options.repo, '--json', 'headRefOid,isDraft,body'])
+      )
       if (reread.headRefOid !== options.head) {
         return blockerResult('head-changed-during-publish', `PR head moved to ${reread.headRefOid} mid-write`, { pr: options.pr })
+      }
+      if (!reread.isDraft) {
+        // A known external actor (AGENTS.md's Codex-connector signature) can
+        // promote a draft outside this transaction; the write already
+        // landed, but reporting success would tell the caller a routine
+        // publish where actually the PR just left draft mid-write.
+        return blockerResult('promoted-during-publish', `PR #${options.pr} left draft state during the write`, {
+          pr: options.pr
+        })
       }
       const actualFingerprint = sha256(reread.body)
       if (actualFingerprint === intendedFingerprint) {
@@ -814,6 +957,7 @@ function main(argv) {
   const options = parseArgs(argv)
   const schemasDir = options.schemasDir || process.env.RESULT_SCHEMAS_DIR || DEFAULT_SCHEMAS_DIR
   const record = loadRecord(options.record, schemasDir)
+  validateCrossDocumentConsistency(record)
   if (options.verdictFile) record.verdict = loadJson(options.verdictFile)
   if (options.policyFile) record.policy = loadJson(options.policyFile)
 
