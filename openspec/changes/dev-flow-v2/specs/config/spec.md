@@ -157,6 +157,11 @@ attributable explicit operator instruction MAY override the merge-base value.
 - **WHEN** the branch changes `[gates].round_code` or expands `docs_only_paths`
 - **THEN** its Dev flow run uses the merge-base gate and allowlist rather than the branch values
 
+#### Scenario: A branch migrates the policy shape
+
+- **WHEN** the change under review replaces a v1 or legacy `.devflow.toml` with a `schema_version = 2` file
+- **THEN** the run resolves its caps, floor, and gates from the merge-base copy interpreted under that copy's own declared shape, while the branch copy must still validate as version 2 and an active older shape is still refused
+
 ### Requirement: Gate authority separates policy from branch implementation
 
 Merge-base resolution SHALL determine gate policy, including required target

@@ -258,6 +258,23 @@ merge-base rule when the change under review edits the policy or the registry.
 The exit script is its first consumer and carries it; the push broker,
 integrator, and stage skills consume it rather than parsing TOML themselves.
 
+Refusal applies to the policy a consumer operates under, never to a
+merge-base copy. The anchor requires a historical merge-base policy to be
+interpreted under its own declared schema (v1 by v1 rules, legacy by legacy
+rules), which is what lets a v1-to-v2 migration branch resolve the gates,
+caps, and floor it is protected by. The reader therefore carries one
+bounded historical decoder used only on the merge-base path when the change
+under review migrates the policy shape: it reads the legacy `[rigor.<level>]`
+caps (`shepherd` as the integration cycle limit, `min_rounds` as the floor)
+or the v1 `[review.*]` policy the rigor pointer names, maps them onto the v2
+`rounds` values, and supplies the built-in gate defaults (`verify`, `check`,
+`security:secrets`, `security` with the shipped `docs_only_paths`) because
+neither older shape declares `[gates]`. That decoder is not an operating-mode
+fallback: an active v1 or legacy file is still refused, and the decoder is
+exercised only from the merge-base resolution path with fixtures for both
+migrations. Keeping the two paths distinct is what reconciles "no fallback
+interpreter" with the anchor's merge-base rule.
+
 Its tests evaluate fixture policies only. DevKit's own `.devflow.toml` is a
 rendered Harmon Init artifact and stays on its current shape until the copier
 update lands, so no verify-gate target may run a v2 consumer against the live

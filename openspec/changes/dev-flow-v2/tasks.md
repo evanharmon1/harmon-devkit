@@ -12,11 +12,14 @@ Harmon Init issues this milestone sequences directly are listed in section 6:
 they apply in the Harmon Init repository and complete by that repository's
 issue state, never by a DevKit PR.
 
-Execution order (2026-09-02 orchestration plan): wave 1 runs 2.1, 2.3, and 2.4
-in parallel, then 1.3 and 1.1 as lanes free; wave 2 runs 3.1, 3.2, and 2.2
-followed by 4.1; wave 3 runs 6.1, 6.2, 4.2, and 5.1. Each wave holds at most
-three worktrees. Lanes that share a file (Taskfile targets, schema README) merge
-through the feature branch's single writer rather than editing concurrently.
+Execution order (2026-09-02 orchestration plan). A subwave starts only after
+every task its lanes are declared `after` has merged to `main`; each subwave
+holds at most three worktrees. Wave 1: 2.1, 2.3, and 2.4 in parallel, then
+1.3 and 1.1 as lanes free. Wave 2a (after wave 1): 2.2, 3.2, and 4.1.
+Wave 2b (after 2.2): 3.1. Wave 3a (after wave 2): 6.1, 6.2, and 4.2.
+Wave 3b (after 6.1): 5.1. Lanes that share a file (Taskfile targets, schema
+README) merge through the feature branch's single writer rather than editing
+concurrently.
 
 ## 1. Reconcile the contract and schema foundation
 
