@@ -1,0 +1,1 @@
+$result.payload.findings[0].id: does not match ^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$

@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-4002-single-finding-null-line",
+  "stage": "challenge",
+  "round": 2,
+  "reviewed_head": "6c56d75b7df54c947a83e89210a432a6dff987df",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r2-codex-adversarial-1",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "restructure",
+      "reason": "the convergence model section can be restructured to an invariant rather than left as prose",
+      "evidence": "matches the challenger's own recommended_disposition",
+      "override": null
+    }
+  ]
+}

@@ -775,10 +775,10 @@ Treat a claim as information rather than a mutex.
 
 When an orchestrator dispatches a subagent to an issue, the claim belongs to
 the **orchestrating session**, made before dispatch through the ordinary
-`/claim` contract — and `/claim` is user-invocable only, so the route is the
-user typing `/claim` for that issue; ask for it before dispatching. Neither a
-decision to delegate nor a conversational go-ahead authorizes the claim
-writes on their own. Subagents never
+`/claim` contract — and `/claim` is model-invocable, so the orchestrator
+invokes it itself for that issue before dispatching, rather than asking the
+user to type it. Neither a decision to delegate nor a conversational
+go-ahead authorizes the claim writes on their own. Subagents never
 claim: a brief is not a slash command, shared GitHub identities cannot
 distinguish their claims, and only the orchestrator knows when the work is
 done. The subagent's report-back ends the *dispatch*, not the claim, which

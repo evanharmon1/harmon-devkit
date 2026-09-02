@@ -3,8 +3,9 @@ name: kickoff
 description: >-
   Start-of-session ritual — get oriented in the repo (branch, working tree, open
   PRs/issues) and compose a descriptive session name, emitting a
-  copy-pasteable /rename command for the user. Invoke as /kickoff [topic or issue #].
-disable-model-invocation: true
+  copy-pasteable /rename command for the user. Use when a working session is
+  starting and needs orientation before beginning work. Invoke as /kickoff
+  [topic or issue #].
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh pr list:*), Bash(gh issue list:*), Bash(gh label list:*)
 ---
 

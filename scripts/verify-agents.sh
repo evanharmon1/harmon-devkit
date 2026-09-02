@@ -40,6 +40,7 @@ cd "$repo"
 
 AGENTS_ROOT="ai/agents"
 SKILLS_ROOT="ai/skills"
+REGISTRY_FILE="agent-registry.json"
 
 fail=0
 err() {
@@ -50,6 +51,22 @@ err() {
 if [ ! -d "$AGENTS_ROOT" ]; then
     echo "no $AGENTS_ROOT directory — nothing to verify"
     exit 0
+fi
+
+# --- registry role vocabulary, for the "resolves to a role" check ------
+# specs/dev-flow-v2.md 'Roles and authority' / registry delta spec Scenario
+# "An agent definition has no registry role": every shared agent implements a
+# role declared in agent-registry.json roles[] (#635). Optional, like the
+# other registry-adjacent profile files test-registry-drift.sh skips when
+# absent (a claude-providers wrapper, a labels script) — a consumer that
+# vendors ai/agents/ without also carrying the root registry (or without jq)
+# still gets a working guard for everything else this script checks; it just
+# cannot cross-check role membership.
+registry_roles=""
+if [ -f "$REGISTRY_FILE" ] && command -v jq >/dev/null 2>&1; then
+    registry_roles="$(jq -r '.roles[]?.slug // empty' "$REGISTRY_FILE")"
+else
+    echo "note: $REGISTRY_FILE not present (or jq unavailable) — skipping the registry-role cross-check" >&2
 fi
 
 # Extract the value of the first top-level `name:` key inside the leading `---`
@@ -282,6 +299,16 @@ EOF
     if printf '%s\n' "$skill_names" | grep -qxF "$name"; then
         err "$md: agent name '$name' collides with the skill of the same name"
         err "  rename one — sibling dests mean nothing fails, it just reads ambiguously"
+    fi
+
+    # --- resolves to a registry role -------------------------------------
+    # Skipped entirely when the registry is unavailable (see above). Match on
+    # the filename, for the same reason as the collision check above (name ==
+    # filename is already enforced; the registry role slug and the vendored
+    # path both need to agree with it).
+    if [ -n "$registry_roles" ] && ! printf '%s\n' "$registry_roles" | grep -qxF "$name"; then
+        err "$md: agent name '$name' does not resolve to a role in $REGISTRY_FILE roles[]"
+        err "  every shared agent implements a registered dev-flow-v2 role (specs/dev-flow-v2.md 'Roles and authority')"
     fi
 done <<EOF
 $agent_files

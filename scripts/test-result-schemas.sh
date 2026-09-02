@@ -55,11 +55,13 @@ is_context_only_fixture() {
     *.known-ids.json | *.pass.json | *.known-adjudicated.json | *.adjudication.json) return 0 ;;
     */result.envelope.schema/invalid/run-mismatch.json) return 0 ;;
     */result.reviewer.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
+    */result.challenger.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
     */result.integrator.schema/invalid/known-ids-collision.json) return 0 ;;
     */result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-missing-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-extra-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-reviewer-priority-drift.json) return 0 ;;
+    */adjudication.schema/invalid/mixed-role-union-adjudication.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/integration-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/integration-round-mismatch.json) return 0 ;;
@@ -77,6 +79,7 @@ kind_for_dir() {
     case "$1" in
     result.envelope.schema) echo "envelope" ;;
     result.implementer.schema) echo "implementer" ;;
+    result.challenger.schema) echo "challenger" ;;
     result.reviewer.schema) echo "reviewer" ;;
     result.integrator.schema) echo "integrator" ;;
     adjudication.schema) echo "adjudication" ;;
@@ -89,6 +92,7 @@ schema_file_for_dir() {
     case "$1" in
     result.envelope.schema) echo "result.envelope.schema.json" ;;
     result.implementer.schema) echo "result.implementer.schema.json" ;;
+    result.challenger.schema) echo "result.challenger.schema.json" ;;
     result.reviewer.schema) echo "result.reviewer.schema.json" ;;
     result.integrator.schema) echo "result.integrator.schema.json" ;;
     adjudication.schema) echo "adjudication.schema.json" ;;
@@ -176,6 +180,7 @@ engine.assertSupportedSchema(composed)
 
 const ROLE_DIRS = {
   implementer: 'result.implementer.schema',
+  challenger: 'result.challenger.schema',
   reviewer: 'result.reviewer.schema',
   integrator: 'result.integrator.schema'
 }
@@ -203,6 +208,22 @@ const SEMANTIC_ONLY = new Set([
   'result.reviewer.schema/invalid/finding-id-stage-mismatch.json',
   'result.reviewer.schema/invalid/head-mismatch.json',
   'result.reviewer.schema/invalid/blocked-with-findings.json',
+  // result.challenger.schema shares the same finding core and the same
+  // receipt-validation functions (checkFindingIds, checkReviewerBlockedStatus,
+  // checkHeadAgreement — see scripts/validate-result-schemas.mjs), so it needs
+  // the identical set of receipt-only fixtures, plus two challenger-only ones
+  // that need array-to-array comparison (attack_scenarios[] against
+  // findings[]) no single-document schema keyword can express.
+  'result.challenger.schema/invalid/counts-mismatch-tally.json',
+  'result.challenger.schema/invalid/duplicate-finding-id-within-pass.json',
+  'result.challenger.schema/invalid/duplicate-id-across-passes.json',
+  'result.challenger.schema/invalid/finding-id-finder-mismatch.json',
+  'result.challenger.schema/invalid/finding-id-round-mismatch.json',
+  'result.challenger.schema/invalid/finding-id-stage-mismatch.json',
+  'result.challenger.schema/invalid/head-mismatch.json',
+  'result.challenger.schema/invalid/blocked-with-findings.json',
+  'result.challenger.schema/invalid/attack-scenario-unknown-finding-reference.json',
+  'result.challenger.schema/invalid/attack-scenario-duplicate-id.json',
   'result.integrator.schema/invalid/accepted-reviewed_commit-mismatch.json',
   'result.integrator.schema/invalid/applied-dispositions-duplicate-finding-id.json',
   'result.integrator.schema/invalid/blocked-with-clean-verdict.json',
@@ -289,6 +310,14 @@ function stripDocMeta(doc) {
 function normalizeReviewerRefs(fragment) {
   return JSON.parse(JSON.stringify(fragment).replaceAll('#/$defs/reviewer/$defs/finding', '#/$defs/finding'))
 }
+// The challenger twin: its $defs nests both `finding` and `attackScenario`
+// under $defs.challenger in the composed document, so both internal refs need
+// the same rewrite-then-compare treatment.
+function normalizeChallengerRefs(fragment) {
+  return JSON.parse(
+    JSON.stringify(fragment).replaceAll('#/$defs/challenger/$defs/', '#/$defs/')
+  )
+}
 
 for (const role of Object.keys(ROLE_DIRS)) {
   const standalone = stripDocMeta(
@@ -296,6 +325,7 @@ for (const role of Object.keys(ROLE_DIRS)) {
   )
   let composedDef = composed.$defs[role]
   if (role === 'reviewer') composedDef = normalizeReviewerRefs(composedDef)
+  if (role === 'challenger') composedDef = normalizeChallengerRefs(composedDef)
   if (canonicalJson(standalone) !== canonicalJson(composedDef)) {
     console.error(
       `FAIL: result.schema.json's \$defs.${role} has drifted from result.${role}.schema.json (compared minus $schema/$id/title/$comment)`
@@ -342,6 +372,29 @@ function expect(description, condition) {
   expect(
     'minimum/maximum: error message names the bound',
     engine.validate(0, schema, '$x').some((e) => e.includes('>= 1'))
+  )
+}
+
+// maxItems (added for #635's challenger completed/blocked attack_scenarios
+// conditional — minItems already existed for ac_test_map's non-emptiness)
+{
+  const schema = { type: 'array', minItems: 1, maxItems: 2 }
+  const engine = createSchemaValidator(schema)
+  expect('maxItems: rejects an array above it', engine.validate([1, 2, 3], schema, '$x').length > 0)
+  expect('maxItems: accepts the boundary value', engine.validate([1, 2], schema, '$x').length === 0)
+  expect('maxItems of 0: rejects any non-empty array', (() => {
+    const zeroSchema = { type: 'array', maxItems: 0 }
+    const zeroEngine = createSchemaValidator(zeroSchema)
+    return zeroEngine.validate([1], zeroSchema, '$x').length > 0
+  })())
+  expect('maxItems of 0: accepts an empty array', (() => {
+    const zeroSchema = { type: 'array', maxItems: 0 }
+    const zeroEngine = createSchemaValidator(zeroSchema)
+    return zeroEngine.validate([], zeroSchema, '$x').length === 0
+  })())
+  expect(
+    'maxItems: error message names the bound',
+    engine.validate([1, 2, 3], schema, '$x').some((e) => e.includes('at most 2 item(s)'))
   )
 }
 
@@ -473,6 +526,13 @@ run_context_case \
     "$fixtures_dir/result.reviewer.schema/invalid/duplicate-id-across-passes.json" \
     "collides with a finding already in the run" \
     --known-ids "$fixtures_dir/result.reviewer.schema/invalid/duplicate-id-across-passes.known-ids.json"
+
+run_context_case \
+    "duplicate finding id across passes in the same run is rejected (challenger)" \
+    challenger \
+    "$fixtures_dir/result.challenger.schema/invalid/duplicate-id-across-passes.json" \
+    "collides with a finding already in the run" \
+    --known-ids "$fixtures_dir/result.challenger.schema/invalid/duplicate-id-across-passes.known-ids.json"
 
 run_context_case \
     "a run that is not the active run is rejected" \
@@ -653,6 +713,25 @@ accept_context_case \
     "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" \
     --pass "$fixtures_dir/result.reviewer.schema/valid/omator-397-challenge-r1.json"
 
+# #635 challenge round 2: a challenge-stage --pass used to be hard-rejected as
+# "expected reviewer, found challenger" regardless of its actual content,
+# because passAllowedRoles/passRole never admitted the new role at all. Proven
+# both ways: a genuine CHALLENGER pass is now accepted (the fix), and a
+# REVIEWER pass for the same stage still is too (a pre-#635 trajectory, e.g.
+# every omator-397 challenge-round fixture above, must keep working).
+accept_context_case \
+    "a challenge-stage adjudication is accepted against a CHALLENGER --pass envelope" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/challenger-pass-adjudication.json" \
+    --pass "$fixtures_dir/result.challenger.schema/valid/single-finding-null-line.json"
+
+run_context_case \
+    "a challenge-stage adjudication rejects an IMPLEMENTER --pass envelope (the role allowlist still excludes it)" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/challenger-pass-adjudication.json" \
+    "expected reviewer or challenger, found" \
+    --pass "$fixtures_dir/result.implementer.schema/valid/completed.json"
+
 accept_context_case \
     "an integration-stage adjudication is checked against an INTEGRATOR --pass envelope, priority fidelity skipped" \
     adjudication \
@@ -693,6 +772,19 @@ accept_context_case \
     "$two_finder_dir/two-finder-union-adjudication.json" \
     --pass "$two_finder_dir/two-finder-a.pass.json" \
     --pass "$two_finder_dir/two-finder-b.pass.json"
+
+# #635 challenge round 2: a challenge-stage round can now legitimately mix a
+# pre-#635 reviewer pass with a #635 challenger one ACROSS DIFFERENT rounds
+# (each stays internally single-role), but never WITHIN one round's own
+# union — that would combine two different evidence contracts (challenger's
+# attack_scenarios vs reviewer's absence of them) into one adjudication.
+run_context_case \
+    "a union adjudication mixing a reviewer pass and a challenger pass in one round is rejected" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/invalid/mixed-role-union-adjudication.json" \
+    "a round aggregates passes from one role, never a mix" \
+    --pass "$fixtures_dir/adjudication.schema/valid/mixed-role-reviewer.pass.json" \
+    --pass "$fixtures_dir/adjudication.schema/valid/mixed-role-challenger.pass.json"
 
 accept_context_case \
     "a settlement of a genuinely deferred finding is accepted" \
@@ -856,6 +948,24 @@ accept_context_case \
     reviewer "$reviewer_receipt_fixture" \
     --receipt --run-id "$reviewer_receipt_run_id" --initiated-by human --known-ids "$empty_ids_file"
 
+# challenger shares reviewer's exact CONTEXT_FLAGS shape (--known-ids,
+# --run-id/--initiated-by) since it shares checkFindingIds — one round-trip
+# smoke test proves the wiring, not a full repeat of every reviewer case above.
+challenger_receipt_fixture="$fixtures_dir/result.challenger.schema/valid/single-finding-null-line.json"
+challenger_receipt_run_id="run-4002-single-finding-null-line"
+
+out="$(node "$validator" challenger "$challenger_receipt_fixture" 2>&1)" || fail "challenger with no context flags should still be accepted: $out"
+case "$out" in
+*"context skipped: --known-ids, --run-id"*) ;;
+*) fail "the challenger success message should name every applicable flag that was skipped, got: $out" ;;
+esac
+echo "PASS: the success message names every applicable context flag left unsupplied (challenger)"
+
+accept_context_case \
+    "--receipt is satisfied once every applicable challenger flag is supplied" \
+    challenger "$challenger_receipt_fixture" \
+    --receipt --run-id "$challenger_receipt_run_id" --initiated-by human --known-ids "$empty_ids_file"
+
 usage_error_case \
     "--receipt on an adjudication with none of --pass, --known-adjudicated, or --run-id is a usage error" \
     adjudication "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" --receipt
@@ -952,6 +1062,7 @@ const [schemasDir, fixturesDir] = process.argv.slice(2)
 const DIR_TO_SCHEMA = {
   'result.envelope.schema': ['result.envelope.schema.json', '$result'],
   'result.implementer.schema': ['result.implementer.schema.json', '$result.payload'],
+  'result.challenger.schema': ['result.challenger.schema.json', '$result.payload'],
   'result.reviewer.schema': ['result.reviewer.schema.json', '$result.payload'],
   'result.integrator.schema': ['result.integrator.schema.json', '$result.payload'],
   'adjudication.schema': ['adjudication.schema.json', '$adjudication'],

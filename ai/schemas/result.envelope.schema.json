@@ -13,7 +13,7 @@
     },
     "role": {
       "description": "Which role produced this result -- selects the payload schema (result.<role>.schema.json). The orchestrator is not a role that returns a result: it authors adjudication.schema.json and run.schema.json documents directly, never through this envelope.",
-      "enum": ["implementer", "reviewer", "integrator"]
+      "enum": ["implementer", "challenger", "reviewer", "integrator"]
     },
     "status": {
       "description": "completed: the role produced its full payload. blocked: the role could not (e.g. an implementer escalating a genuinely ambiguous spec per Foreman's v1 contract, or a finder that failed and will be retried once). See result.implementer.schema.json for the completed/blocked conditional fields it enforces via a receipt-validation semantic check, not a structural keyword, because the deciding field (this one) lives on the envelope while the conditioned fields live in payload.",

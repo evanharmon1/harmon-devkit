@@ -18,6 +18,11 @@ role SHALL use the same role slug.
 - **WHEN** an `ai/agents/*.md` name does not resolve to a registry role
 - **THEN** agent validation fails before the definition is vendored
 
+#### Scenario: A role names a result schema that does not exist
+
+- **WHEN** a registry role names a result schema file that is absent from the shipped schema set
+- **THEN** registry validation fails rather than deferring the schema to a later stage-skill release
+
 ### Requirement: Challenger and reviewer are distinct roles
 
 The challenger contract SHALL produce adversarial attack scenarios,

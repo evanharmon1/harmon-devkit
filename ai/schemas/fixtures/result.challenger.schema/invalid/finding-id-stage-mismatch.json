@@ -1,0 +1,42 @@
+{
+  "schema": 2,
+  "role": "challenger",
+  "status": "completed",
+  "head": "78b009197a646b8d439ab34f817c95f1f783ea95",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-2129-finding-id-stage-mismatch",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "78b009197a646b8d439ab34f817c95f1f783ea95",
+    "finder": "codex-adversarial",
+    "findings": [
+      {
+        "id": "review-r1-codex-adversarial-1",
+        "path": "some/file.md",
+        "line": 10,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "some evidence text"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 1,
+      "P2": 0,
+      "P3": 0
+    },
+    "attack_scenarios": []
+  }
+}

@@ -314,6 +314,288 @@ mkdir -p "$G8/ai/skills/frontend/india"
 expect_ok "matched double-quoted skill name passes" \
     bash -c "cd '$G8' && bash '$SCRIPTS/verify-skills.sh'"
 
+# universal/ invocation consistency (issue #702): a description that tells an
+# agent how to invoke the skill must not sit under a flag that forbids exactly
+# that, and vice versa. Scoped to universal/ — third-party categories are not
+# ours to police.
+
+# A compliant universal/ tree passes: model-invocable with a folded (`>-`)
+# description (proves the joined-text parsing), disable-model-invocation with
+# a single-line description, and user-invocable:false side by side.
+G9="$TMPROOT/guard-universal-ok"
+git_init "$G9"
+mkdir -p "$G9/ai/skills/universal/juliett"
+{
+    echo "---"
+    echo "name: juliett"
+    echo "description: >-"
+    echo "  Do a thing for the dev loop. Use when the dev loop reaches this"
+    echo "  stage. Invoke as /juliett."
+    echo "---"
+    echo "# juliett"
+} >"$G9/ai/skills/universal/juliett/SKILL.md"
+mkdir -p "$G9/ai/skills/universal/kilo"
+{
+    echo "---"
+    echo "name: kilo"
+    echo "description: A user-only ritual. Invoke as /kilo."
+    echo "disable-model-invocation: true"
+    echo "---"
+    echo "# kilo"
+} >"$G9/ai/skills/universal/kilo/SKILL.md"
+mkdir -p "$G9/ai/skills/universal/lima"
+{
+    echo "---"
+    echo "name: lima"
+    echo "description: Internal runtime support. Do not invoke directly."
+    echo "disable-model-invocation: true"
+    echo "user-invocable: false"
+    echo "---"
+    echo "# lima"
+} >"$G9/ai/skills/universal/lima/SKILL.md"
+expect_ok "compliant universal/ tree passes" \
+    bash -c "cd '$G9' && bash '$SCRIPTS/verify-skills.sh'"
+
+# A disable-model-invocation universal skill whose description says "Use when"
+# fails, naming the skill.
+G10="$TMPROOT/guard-universal-contradiction"
+git_init "$G10"
+mkdir -p "$G10/ai/skills/universal/mike"
+{
+    echo "---"
+    echo "name: mike"
+    echo "description: >-"
+    echo "  A user-only ritual. Use when the agent decides to run it. Invoke"
+    echo "  as /mike."
+    echo "disable-model-invocation: true"
+    echo "---"
+    echo "# mike"
+} >"$G10/ai/skills/universal/mike/SKILL.md"
+expect_fail_contains "flagged universal skill with 'Use when' fails, naming the skill" \
+    "ai/skills/universal/mike/SKILL.md" \
+    bash -c "cd '$G10' && bash '$SCRIPTS/verify-skills.sh'"
+
+# An unflagged (model-invocable) universal skill lacking "Use when" fails,
+# naming the skill.
+G11="$TMPROOT/guard-universal-missing-trigger"
+git_init "$G11"
+mkdir -p "$G11/ai/skills/universal/november"
+{
+    echo "---"
+    echo "name: november"
+    echo "description: Do a thing for the dev loop. Invoke as /november."
+    echo "---"
+    echo "# november"
+} >"$G11/ai/skills/universal/november/SKILL.md"
+expect_fail_contains "unflagged universal skill missing 'Use when' fails, naming the skill" \
+    "ai/skills/universal/november/SKILL.md" \
+    bash -c "cd '$G11' && bash '$SCRIPTS/verify-skills.sh'"
+
+# The same inconsistency under a non-universal category is out of scope and
+# passes — third-party/other categories are not ours to police.
+G12="$TMPROOT/guard-nonuniversal-out-of-scope"
+git_init "$G12"
+mkdir -p "$G12/ai/skills/frontend/oscar"
+{
+    echo "---"
+    echo "name: oscar"
+    echo "description: >-"
+    echo "  A user-only ritual. Use when the agent decides to run it. Invoke"
+    echo "  as /oscar."
+    echo "disable-model-invocation: true"
+    echo "---"
+    echo "# oscar"
+} >"$G12/ai/skills/frontend/oscar/SKILL.md"
+expect_ok "same inconsistency under non-universal category passes (out of scope)" \
+    bash -c "cd '$G12' && bash '$SCRIPTS/verify-skills.sh'"
+
+# The two invocation flags are independent axes (round-1 fix, issue #702): a
+# universal skill with disable-model-invocation:true must never carry "Use
+# when", whether or not it is also user-invocable:false; and a universal
+# skill that is only user-invocable:false (no disable-model-invocation) is
+# still model-invocable, so it still requires "Use when".
+
+# Both flags set, but the description still says "Use when" — fails, naming
+# the skill.
+G13="$TMPROOT/guard-universal-both-flags-use-when"
+git_init "$G13"
+mkdir -p "$G13/ai/skills/universal/papa"
+{
+    echo "---"
+    echo "name: papa"
+    echo "description: >-"
+    echo "  Internal runtime support. Use when another skill needs it. Do not"
+    echo "  invoke directly."
+    echo "disable-model-invocation: true"
+    echo "user-invocable: false"
+    echo "---"
+    echo "# papa"
+} >"$G13/ai/skills/universal/papa/SKILL.md"
+expect_fail_contains "both-flags universal skill with 'Use when' fails, naming the skill" \
+    "ai/skills/universal/papa/SKILL.md" \
+    bash -c "cd '$G13' && bash '$SCRIPTS/verify-skills.sh'"
+
+# user-invocable:false alone (no disable-model-invocation) is still
+# model-invocable, so it still needs "Use when" — fails without it, naming
+# the skill.
+G14="$TMPROOT/guard-universal-userinvocable-only-missing-trigger"
+git_init "$G14"
+mkdir -p "$G14/ai/skills/universal/quebec"
+{
+    echo "---"
+    echo "name: quebec"
+    echo "description: Internal helper skill. Do not invoke directly."
+    echo "user-invocable: false"
+    echo "---"
+    echo "# quebec"
+} >"$G14/ai/skills/universal/quebec/SKILL.md"
+expect_fail_contains "user-invocable:false-only universal skill missing 'Use when' fails, naming the skill" \
+    "ai/skills/universal/quebec/SKILL.md" \
+    bash -c "cd '$G14' && bash '$SCRIPTS/verify-skills.sh'"
+
+# The universal/ consistency guard has five rejection branches; G10/mike and
+# G13/papa exercise the "Use when" prohibition, and G11/november and
+# G14/quebec exercise the missing-"Use when" case. These three cover the
+# remaining branches: the "Trigger it" prohibition, a
+# disable-model-invocation:true skill missing "Invoke as /<name>", and a
+# disable-model-invocation:true + user-invocable:false skill missing "Do not
+# invoke directly".
+
+# disable-model-invocation:true with "Trigger it" in the description — fails,
+# naming the skill.
+G15="$TMPROOT/guard-universal-trigger-it"
+git_init "$G15"
+mkdir -p "$G15/ai/skills/universal/romeo"
+{
+    echo "---"
+    echo "name: romeo"
+    echo "description: A user-only ritual. Trigger it manually. Invoke as /romeo."
+    echo "disable-model-invocation: true"
+    echo "---"
+    echo "# romeo"
+} >"$G15/ai/skills/universal/romeo/SKILL.md"
+expect_fail_contains "disable-model-invocation universal skill with 'Trigger it' fails, naming the skill" \
+    "ai/skills/universal/romeo/SKILL.md" \
+    bash -c "cd '$G15' && bash '$SCRIPTS/verify-skills.sh'"
+
+# disable-model-invocation:true (not user-invocable:false) missing "Invoke as
+# /<name>" — fails, naming the skill.
+G16="$TMPROOT/guard-universal-missing-invoke-as"
+git_init "$G16"
+mkdir -p "$G16/ai/skills/universal/sierra"
+{
+    echo "---"
+    echo "name: sierra"
+    echo "description: A user-only ritual with no invocation hint."
+    echo "disable-model-invocation: true"
+    echo "---"
+    echo "# sierra"
+} >"$G16/ai/skills/universal/sierra/SKILL.md"
+expect_fail_contains "disable-model-invocation universal skill missing 'Invoke as /<name>' fails, naming the skill" \
+    "ai/skills/universal/sierra/SKILL.md" \
+    bash -c "cd '$G16' && bash '$SCRIPTS/verify-skills.sh'"
+
+# disable-model-invocation:true + user-invocable:false missing "Do not invoke
+# directly" — fails, naming the skill.
+G17="$TMPROOT/guard-universal-missing-do-not-invoke"
+git_init "$G17"
+mkdir -p "$G17/ai/skills/universal/tango"
+{
+    echo "---"
+    echo "name: tango"
+    echo "description: Internal runtime support with no disclaimer."
+    echo "disable-model-invocation: true"
+    echo "user-invocable: false"
+    echo "---"
+    echo "# tango"
+} >"$G17/ai/skills/universal/tango/SKILL.md"
+expect_fail_contains "both-flags universal skill missing 'Do not invoke directly' fails, naming the skill" \
+    "ai/skills/universal/tango/SKILL.md" \
+    bash -c "cd '$G17' && bash '$SCRIPTS/verify-skills.sh'"
+
+# Shepherd round 1 (PR #710 deferred findings): an inline YAML comment on a
+# flag line must not hide the flag, and user-invocable:false must forbid
+# claiming a slash command that doesn't exist, independent of
+# disable-model-invocation.
+
+# A trailing " # comment" on the disable-model-invocation line must not hide
+# the flag — the skill still fails on "Use when" as if uncommented.
+G18="$TMPROOT/guard-universal-flag-inline-comment"
+git_init "$G18"
+mkdir -p "$G18/ai/skills/universal/uniform"
+{
+    echo "---"
+    echo "name: uniform"
+    echo "description: >-"
+    echo "  A user-only ritual annotated with an inline comment. Use when the"
+    echo "  agent decides to run it. Invoke as /uniform."
+    echo "disable-model-invocation: true # user-only"
+    echo "---"
+    echo "# uniform"
+} >"$G18/ai/skills/universal/uniform/SKILL.md"
+expect_fail_contains "disable-model-invocation with a trailing YAML comment still catches 'Use when', naming the skill" \
+    "ai/skills/universal/uniform/SKILL.md" \
+    bash -c "cd '$G18' && bash '$SCRIPTS/verify-skills.sh'"
+
+# user-invocable:false alone (no disable-model-invocation) must not claim
+# "Invoke as /<name>" — there is no slash command for it to invoke.
+G19="$TMPROOT/guard-universal-userinvocable-claims-slash"
+git_init "$G19"
+mkdir -p "$G19/ai/skills/universal/victor"
+{
+    echo "---"
+    echo "name: victor"
+    echo "description: >-"
+    echo "  Use when another skill needs this helper. Invoke as /victor."
+    echo "user-invocable: false"
+    echo "---"
+    echo "# victor"
+} >"$G19/ai/skills/universal/victor/SKILL.md"
+expect_fail_contains "user-invocable:false skill claiming 'Invoke as /<name>' fails, naming the skill" \
+    "ai/skills/universal/victor/SKILL.md" \
+    bash -c "cd '$G19' && bash '$SCRIPTS/verify-skills.sh'"
+
+# Shepherd round 2 (Codex cloud-review findings on 9a0752d): a block-scalar
+# header must still be recognized with a trailing YAML comment, and "Invoke
+# as /<name>" needs a command-name boundary so a longer name sharing the
+# prefix doesn't satisfy (or trip) the check.
+
+# `description: >- # folded` is still a valid block-scalar header — the
+# indented body (with "Use when") must still be read, so this compliant
+# model-invocable skill passes.
+G20="$TMPROOT/guard-universal-header-trailing-comment"
+git_init "$G20"
+mkdir -p "$G20/ai/skills/universal/x-ray"
+{
+    echo "---"
+    echo "name: x-ray"
+    echo "description: >- # folded"
+    echo "  Do a thing for the dev loop. Use when the dev loop reaches this"
+    echo "  stage. Invoke as /x-ray."
+    echo "---"
+    echo "# x-ray"
+} >"$G20/ai/skills/universal/x-ray/SKILL.md"
+expect_ok "block-scalar header with a trailing YAML comment is still recognized (body read, 'Use when' found)" \
+    bash -c "cd '$G20' && bash '$SCRIPTS/verify-skills.sh'"
+
+# "Invoke as /whiskey-other." does not name the /whiskey command — the
+# character after the name continues an identifier, so this must fail as
+# if "Invoke as /whiskey" were missing entirely.
+G21="$TMPROOT/guard-universal-invoke-as-name-boundary"
+git_init "$G21"
+mkdir -p "$G21/ai/skills/universal/whiskey"
+{
+    echo "---"
+    echo "name: whiskey"
+    echo "description: Invoke as /whiskey-other."
+    echo "disable-model-invocation: true"
+    echo "---"
+    echo "# whiskey"
+} >"$G21/ai/skills/universal/whiskey/SKILL.md"
+expect_fail_contains "'Invoke as /whiskey-other' does not satisfy the /whiskey command boundary, naming the skill" \
+    "ai/skills/universal/whiskey/SKILL.md" \
+    bash -c "cd '$G21' && bash '$SCRIPTS/verify-skills.sh'"
+
 # ── sync-skills.sh (vendoring engine) ──────────────────────────────────
 echo "==> sync-skills.sh"
 
