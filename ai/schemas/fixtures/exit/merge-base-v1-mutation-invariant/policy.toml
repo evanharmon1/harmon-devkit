@@ -1,0 +1,73 @@
+schema_version = 2
+default_rigor = "standard"
+default_strategy = "poisoned"
+rigor_order = ["standard"]
+tier_order = ["local", "economy", "standard", "frontier", "apex"]
+
+[convergence]
+converged = { any = [ { predicate = "no_gating_findings" } ] }
+diverging = { all = [ { predicate = "repeat_after_fix" } ] }
+
+[rigor.standard]
+rounds = "poisoned"
+breadth = "poisoned"
+orchestrator_tier = "local"
+implementer_tier = "local"
+challenger_tier = "local"
+reviewer_tier = "local"
+integrator_tier = "local"
+
+[rounds.poisoned]
+challenge = 99
+review = 99
+integration = 99
+remediation = 99
+min_rounds = 99
+wall_clock_min = 99999
+
+[breadth.poisoned]
+max_agent_runs = 99999
+max_parallel_agents = 99999
+
+[gates]
+round_code = "poisoned-code-gate"
+round_docs = "poisoned-docs-gate"
+secret_scan = "poisoned-secret-gate"
+pre_pr = "poisoned-pre-pr-gate"
+docs_only_paths = ["**/*"]
+
+[role.orchestrator]
+tier = "local"
+families = ["poisoned-family"]
+
+[role.implementer]
+tier = "local"
+families = ["poisoned-family"]
+
+[role.challenger]
+tier = "local"
+families = ["poisoned-family"]
+
+[role.reviewer]
+tier = "local"
+families = ["poisoned-family"]
+
+[role.integrator]
+tier = "local"
+families = ["poisoned-family"]
+
+[stage.challenge]
+finders = ["poisoned-finder"]
+finder_fallbacks = ["poisoned-fallback"]
+
+[stage.review]
+finders = ["poisoned-finder"]
+finder_fallbacks = ["poisoned-fallback"]
+
+[stage.integration]
+finders = ["poisoned-finder"]
+
+[strategy.poisoned]
+topology = "lead-and-workers"
+planning = "explicit"
+delegation = "required"

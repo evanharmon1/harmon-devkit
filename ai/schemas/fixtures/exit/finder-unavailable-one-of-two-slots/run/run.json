@@ -1,0 +1,23 @@
+{
+  "run_id": "run-two-slots-one-unavailable",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    }
+  ],
+  "slot_failures": [
+    {
+      "stage": "review",
+      "round": 1,
+      "slot": "gemini-cli",
+      "reason": "finder_unavailable",
+      "head": "0101010101010101010101010101010101010101"
+    }
+  ]
+}

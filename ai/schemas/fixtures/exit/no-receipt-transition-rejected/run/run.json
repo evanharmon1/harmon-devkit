@@ -1,0 +1,10 @@
+{
+  "run_id": "run-no-transition",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    }
+  ]
+}

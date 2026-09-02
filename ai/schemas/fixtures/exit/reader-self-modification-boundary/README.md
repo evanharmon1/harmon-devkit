@@ -1,0 +1,3 @@
+# reader-self-modification-boundary
+
+`poisoned-devflow-policy.mjs` is a mutated copy of `scripts/devflow-policy.mjs` (its built-in breadth default is changed from 8/3 to 999999/999999) — standing in for a branch that edited the reader's own resolution code instead of `.devflow.toml`. `scripts/lib/run-exit-fixtures.mjs` invokes it with `--closure <temp dir>`, where the temp dir is built at test time from whatever `scripts/devflow-policy.mjs` the repository currently ships (never a copy committed here, so this fixture cannot drift from the real reader). expected.json's breadth values are the UN-tampered built-in default, proving the poisoned code's own constant was never reached.

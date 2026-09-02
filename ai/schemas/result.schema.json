@@ -178,6 +178,16 @@
           "type": "string",
           "minLength": 1
         },
+        "slot": {
+          "description": "The configured primary finder this pass fills (specs/dev-flow-v2.md § Configuration: 'each primary finder defines one round slot'). Equal to `finder` on a primary pass; on a fallback pass, `slot` stays the configured primary while `finder` names who actually ran (see `substitutes_for`). Optional here so existing envelope-only fixtures/producers remain valid — scripts/dev-flow-exit.mjs (#636), which assembles logical rounds from this field, requires it on every pass it consumes; this schema only bounds its shape when present.",
+          "type": "string",
+          "minLength": 1
+        },
+        "substitutes_for": {
+          "description": "Present only on a fallback pass: the configured primary finder slug this pass substituted for after the primary was unavailable past its retry (specs/dev-flow-v2.md § Configuration). Absent on a primary pass, where `finder == slot` already says everything.",
+          "type": "string",
+          "minLength": 1
+        },
         "findings": {
           "description": "May be empty — 'a reviewer round returns zero findings' is a normal, schema-valid pass (see specs/dev-flow-v2.md Acceptance criteria: a reviewer cannot end a stage — the reviewer's own recommendation, including an empty findings list, never decides the exit on its own).",
           "type": "array",

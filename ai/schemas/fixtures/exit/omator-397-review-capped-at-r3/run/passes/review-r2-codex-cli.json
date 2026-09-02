@@ -1,0 +1,74 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "a9f2bcb978cb3572edb1010ba2b1be7b257368c9",
+  "produced_at": "2026-07-15T09:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "omator-397-replay-review",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "review",
+    "round": 2,
+    "reviewed_head": "a9f2bcb978cb3572edb1010ba2b1be7b257368c9",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r2-codex-cli-1",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 143,
+        "class": "design",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "ref-less contacts.csv has no identity (about challenge r3/r4 fix)"
+      },
+      {
+        "id": "review-r2-codex-cli-2",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 219,
+        "class": "consistency",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "primary-contact exception contradicts \"every created row\" (about review r1 fix)"
+      },
+      {
+        "id": "review-r2-codex-cli-3",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 246,
+        "class": "design",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "batch contacts on surviving customers never deleted/unlocked (about challenge r4 fix)"
+      },
+      {
+        "id": "review-r2-codex-cli-4",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 265,
+        "class": "hardening",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "error CSV not reversibly decoded (about challenge r4 fix)"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 3,
+      "P2": 1,
+      "P3": 0
+    }
+  }
+}

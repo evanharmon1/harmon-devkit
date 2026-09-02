@@ -1,0 +1,9 @@
+[
+  {
+    "round": 1,
+    "path": "scripts/new-name.mjs",
+    "added_lines": [],
+    "deleted_lines": [],
+    "renamed_from": "scripts/old-name.mjs"
+  }
+]

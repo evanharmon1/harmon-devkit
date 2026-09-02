@@ -1,0 +1,14 @@
+{
+  "run_id": "run-deleted-line",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r2-codex-cli"
+    }
+  ]
+}

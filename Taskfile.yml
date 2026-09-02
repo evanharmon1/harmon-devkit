@@ -72,6 +72,7 @@ tasks:
       - task: validate
       - task: test:agent-registry
       - task: test:result-schemas
+      - task: test:dev-flow-exit
       - task: test:registry-drift
       - task: test:registry-docs
       - task: test:label-registry
@@ -331,6 +332,7 @@ tasks:
       - test:confirm-answers
       - test:migrate-label-family
       - test:result-schemas
+      - test:dev-flow-exit
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -341,6 +343,11 @@ tasks:
     desc: Schema-check the dev-flow-v2 result/record schemas and their conformance fixtures
     cmds:
       - ./scripts/test-result-schemas.sh
+
+  test:dev-flow-exit:
+    desc: Behavioral test for the Dev flow v2 policy reader and exit-computation engine against fixture policies
+    cmds:
+      - ./scripts/test-dev-flow-exit.sh
 
   test:worktree:
     desc: Behavioral test for worktree:new / worktree:rm (create → verify hooks → remove, in a throwaway fixture repo)
@@ -611,6 +618,16 @@ tasks:
     desc: "Codex adversarial review (usage: task challenge:codex -- [--base <ref>|--uncommitted] [focus text])"
     cmds:
       - ./scripts/codex-review.sh challenge {{.CLI_ARGS}}
+
+  devflow:policy:
+    desc: "Resolve a Dev flow v2 .devflow.toml (usage: task devflow:policy -- resolve --policy <file> [--registry <file>] [--rigor <level>] [--json])"
+    cmds:
+      - node scripts/devflow-policy.mjs {{.CLI_ARGS}}
+
+  devflow:exit:
+    desc: "Compute a Dev flow v2 confidence-stage exit verdict (usage: task devflow:exit -- --run <dir> --stage <challenge|review> --policy <file> [--json])"
+    cmds:
+      - ./scripts/dev-flow-exit.sh {{.CLI_ARGS}}
 
   codex:gate:enable:
     desc: Enable the automatic Claude → Codex stop-gate review (this repo, this machine)

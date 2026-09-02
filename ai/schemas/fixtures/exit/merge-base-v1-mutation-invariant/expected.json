@@ -1,0 +1,33 @@
+{
+  "rounds": {
+    "challenge": 3,
+    "review": 3,
+    "integration": 4,
+    "min_rounds": 1
+  },
+  "gates": {
+    "round_code": "verify",
+    "round_docs": "check",
+    "secret_scan": "security:secrets",
+    "pre_pr": "security"
+  },
+  "breadth": {
+    "policy": "builtin-default",
+    "max_agent_runs": 8,
+    "max_parallel_agents": 3
+  },
+  "convergence_json": "{\"converged\":{\"kind\":\"all\",\"list\":[{\"predicate\":\"no_gating_findings\"}]},\"diverging\":{\"kind\":\"any\",\"list\":[{\"predicate\":\"count_rising\",\"increases\":2},{\"predicate\":\"repeat_after_fix\"},{\"predicate\":\"provenance_share\",\"min\":0.5,\"exclude_classes\":[\"design\"]}]}}",
+  "role_tiers": {
+    "orchestrator": "apex",
+    "implementer": "standard",
+    "challenger": "frontier",
+    "reviewer": "standard",
+    "integrator": "economy"
+  },
+  "stage_finders_empty": [
+    "challenge",
+    "review",
+    "integration"
+  ],
+  "decoded_from": "v1"
+}

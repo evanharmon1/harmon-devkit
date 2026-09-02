@@ -1,0 +1,6 @@
+{
+  "outcome": "continue",
+  "reason": "below_threshold",
+  "rounds_counted": 1,
+  "no_corrections_for": "review-r2-codex-cli-1"
+}

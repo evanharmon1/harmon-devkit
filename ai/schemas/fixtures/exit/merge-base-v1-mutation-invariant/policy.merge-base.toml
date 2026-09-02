@@ -1,0 +1,25 @@
+rigor_order = ["light", "standard", "deep"]
+default_rigor = "standard"
+
+[rigor.light]
+review = "light"
+[rigor.standard]
+review = "standard"
+[rigor.deep]
+review = "deep"
+
+[review.light]
+challenge = 2
+review = 2
+shepherd = 4
+min_rounds = 1
+[review.standard]
+challenge = 3
+review = 3
+shepherd = 4
+min_rounds = 1
+[review.deep]
+challenge = 5
+review = 5
+shepherd = 4
+min_rounds = 1

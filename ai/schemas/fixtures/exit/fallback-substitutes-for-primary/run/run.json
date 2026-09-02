@@ -1,0 +1,14 @@
+{
+  "run_id": "run-fallback-substitutes",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-gemini-cli"
+    }
+  ]
+}
