@@ -158,12 +158,22 @@ duplicate — harvesting SHALL fail closed and report the run indeterminate
 rather than choosing either branch as canonical. Concurrent writers from
 more than one orchestrator session are out of scope, the same GitHub
 read-modify-write limitation already disclosed elsewhere in this family:
-nothing here claims to close it.
+nothing here claims to close it. Repeatability SHALL hold for the chain as
+durably observed, not for an event's own self-reported timestamp: an entry
+reserved before a cutoff but not yet landed at read time is not part of any
+chain a reader can see yet, so a later re-read that then includes it
+reflects what has newly landed, never a violation of "the same cutoff over
+the same materialized chain reports the same result."
 
 #### Scenario: The run-record chain forks
 
 - **WHEN** two entries in a run's history both name the same previous-entry digest but carry different content
 - **THEN** harvesting reports the run indeterminate and does not choose either branch as canonical
+
+#### Scenario: An entry lands after an earlier read at the same cutoff
+
+- **WHEN** an entry timestamped at or before cutoff `C` is reserved before a first `--as-of C` read but its run-record write does not durably land until after that read completes
+- **THEN** the first read's result reflects the chain as it was durably observed at that time, and a later `--as-of C` read that now includes the landed entry is not a repeatability violation
 
 #### Scenario: A transition occurs after the scoring cutoff
 

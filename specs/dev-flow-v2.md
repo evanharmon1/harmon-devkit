@@ -76,7 +76,13 @@ are not a duplicate — `--as-of` reconstruction SHALL fail closed and report
 the run indeterminate rather than silently choosing a branch. Concurrent writers
 from more than one orchestrator session are explicitly out of scope, the
 same GitHub read-modify-write limitation this spec discloses elsewhere
-rather than claims to close. The evidence delta spec's append-only,
+rather than claims to close. Repeatability is a property of the chain as
+**durably observed**, not of an event's own self-reported timestamp: an
+entry reserved before a cutoff but not yet landed at read time is simply
+not part of any chain a reader can see yet, so a later re-read that then
+includes it is a difference in what has durably landed, never a violation
+of "the same cutoff over the same materialized chain reports the same
+share." The evidence delta spec's append-only,
 digest-chained history
 ([§ Run history is append-only and as-of reconstructable](../openspec/changes/dev-flow-v2/specs/evidence/spec.md))
 states this property — and the fork/indeterminate case — in testable form,
@@ -777,9 +783,11 @@ Two rules make the posted evidence trustworthy on a public repository:
   kickoff event" without saying what makes it trusted) and all three were
   broken the same way — a kickoff-shaped event proves nothing about who
   posted it, so an actor able to forge one can equally forge whatever the
-  fallback checks inside it. The schema field for the configured list is
-  [#634](https://github.com/evanharmon1/harmon-devkit/issues/634)'s to add,
-  not a mechanism this anchor re-derives. Until a repository configures that
+  fallback checks inside it. The schema field for the configured list belongs
+  to the registry's own cross-file validation work
+  ([#635](https://github.com/evanharmon1/harmon-devkit/issues/635) task
+  2.1 — #634 shipped the result schemas and does not own this list), not a
+  mechanism this anchor re-derives. Until a repository configures that
   list, a run record has no authority to validate against and its evidence
   is reported unauthenticated rather than silently accepted on an unproven
   identity.
