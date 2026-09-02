@@ -338,8 +338,19 @@ fi
 # 1. PR scalars. `gh pr view` is a single-object read (pagination does not
 # apply); the list surfaces below all go through --paginate --slurp.
 scalars="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName)" ||
     indeterminate fetch-failed "cannot fetch the PR state"
+
+# This PR's own branch name — an extra signal `evaluate_checks` uses below to
+# narrow the case actions/runs' own `pull_requests[]` cannot: two open PRs
+# sharing a head sha where GitHub returns an EMPTY pull_requests for BOTH
+# workflow runs (harmon-devkit#714 shepherd, PR #723's own current-head
+# cycle). Not a full answer — two PRs can also share the same branch name
+# against different bases — but it costs nothing extra (already part of this
+# same `gh pr view` call) and catches the more common case of a differently
+# named sibling branch that happens to produce an identical tree.
+head_ref_name="$(jq -er '.headRefName | select(type == "string")' <<<"$scalars")" ||
+    indeterminate malformed-data "PR payload carries no head branch name"
 
 pr_state="$(jq -er '.state | select(type == "string")' <<<"$scalars")" ||
     indeterminate malformed-data "PR payload carries no state"
@@ -485,15 +496,33 @@ evaluate_checks() {
     # still fell through to the app-id identity and — if it happened to be a
     # FAILURE — could still fail a PR it was never really testing. A
     # positively-other-PR check run is now dropped outright, before any
-    # identity is computed, not merely disconnected from its metadata.
+    # identity is computed, not merely disconnected from its metadata. The
+    # current-head Codex cycle then found a further gap in the empty-list
+    # case itself: TWO open PRs sharing a head sha can both get an empty
+    # `pull_requests` from GitHub, in which case both runs read as
+    # "unscoped" and collapse together with nothing to tell them apart
+    # (harmon-devkit#714 shepherd, PR #723). `pull_requests[]` isn't the only
+    # signal available, though — a run's own `head_branch` is, at no extra
+    # fetch cost, and a run whose branch is NOT this PR's own branch is
+    # excluded exactly like a positively-other-PR run, even when
+    # `pull_requests` is empty. This still isn't complete (two PRs can share
+    # one branch against different bases, in which case the names match and
+    # nothing here would catch it), but it costs nothing and narrows the
+    # common case of a differently named sibling branch that happens to
+    # produce an identical tree. A missing `head_branch` (some trigger types
+    # never set it) keeps the prior behavior — unscoped, kept — rather than
+    # excluding on absence.
     workflow_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/actions/runs?head_sha=$head&per_page=100")" ||
         indeterminate fetch-failed "cannot fetch workflow runs for the head"
-    workflow_runs="$(jq -ce --argjson pr "$pr" \
+    workflow_runs="$(jq -ce --argjson pr "$pr" --arg head_ref_name "$head_ref_name" \
         '[.[] | if (.workflow_runs | type) == "array" then .workflow_runs[]
                 else error("page carries no workflow_runs") end]
          | map((.pull_requests // []) as $prs |
-               if ($prs | length) == 0 then . + {_scope: "unscoped"}
+               if ($prs | length) == 0 and
+                  (.head_branch != null and .head_branch != $head_ref_name)
+                 then . + {_scope: "other-pr"}
+               elif ($prs | length) == 0 then . + {_scope: "unscoped"}
                elif ($prs | length) == 1 and $prs[0].number == $pr
                  then . + {_scope: "this-pr"}
                elif ($prs | length) == 1 then . + {_scope: "other-pr"}

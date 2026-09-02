@@ -171,7 +171,8 @@ BODY
 write_defaults() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
-          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+          headRefName:"feature-branch"}' \
         >"${fixtures}/pr-view.json"
     jq -cn --arg head "$head_sha" --arg body "$(default_body)" \
         '{number:493,title:"feat: change",body:$body,
@@ -298,7 +299,8 @@ echo "==> a closed PR fails as pr-not-open"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"MERGED",isDraft:false,headRefOid:$head,
-      reviewDecision:"",mergeStateStatus:"UNKNOWN"}' >"${fixtures}/pr-view.json"
+      reviewDecision:"",mergeStateStatus:"UNKNOWN",
+      headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
 run_gate --codex-disabled
 assert_gate 1 fail pr-not-open
 
@@ -306,7 +308,8 @@ echo "==> a non-draft PR fails as pr-not-draft"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch"}' \
     >"${fixtures}/pr-view.json"
 run_gate --codex-disabled
 assert_gate 1 fail pr-not-draft
@@ -315,7 +318,8 @@ echo "==> a head other than the adjudicated one fails as head-mismatch"
 write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch"}' \
     >"${fixtures}/pr-view.json"
 run_gate --codex-disabled
 assert_gate 1 fail head-mismatch
@@ -672,6 +676,31 @@ assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
     fail "checks-failing did not survive when a different non-Actions app's later success shared a check name with an earlier failure: $gate_out"
 
+echo "==> a shared head where BOTH PRs get an empty pull_requests is still told apart by branch name (harmon-devkit#714 shepherd, PR #723)"
+# GitHub can return an empty pull_requests for a run genuinely triggered by a
+# SIBLING PR too, not only for this one -- pull_requests[] membership alone
+# then has nothing to compare. head_branch is available at no extra fetch
+# cost and, when it does not match this PR's own branch (write_defaults sets
+# headRefName to "feature-branch"), is positive evidence the run belongs to
+# a different PR even though pull_requests came back empty on both sides.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[],head_branch:"feature-branch"},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",
+     pull_requests:[],head_branch:"someone-elses-branch"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive when a later run on a DIFFERENT branch (both sides reporting empty pull_requests) shared the same name/workflow/event: $gate_out"
+
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \
@@ -684,7 +713,8 @@ echo "==> CHANGES_REQUESTED fails as changes-requested"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch"}' \
     >"${fixtures}/pr-view.json"
 run_gate --codex-disabled
 assert_gate 1 fail changes-requested
@@ -697,7 +727,8 @@ for pair in "DIRTY 1 fail merge-state-dirty" "BEHIND 1 fail merge-state-behind" 
     write_defaults
     jq -cn --arg head "$head_sha" --arg ms "$1" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
-          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:$ms}' \
+          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:$ms,
+          headRefName:"feature-branch"}' \
         >"${fixtures}/pr-view.json"
     run_gate --codex-disabled
     assert_gate "$2" "$3" "$4"
@@ -996,7 +1027,8 @@ printf '%s\n' "$gate_out" | grep -Fq 'no GNU timeout' ||
 nondraft_pr_view() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:false,headRefOid:$head,
-          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+          headRefName:"feature-branch"}' \
         >"${fixtures}/pr-view.json"
 }
 
