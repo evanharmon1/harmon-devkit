@@ -1009,6 +1009,209 @@ case above, and a coverage check that every `required` field and every
 `enum` declared anywhere in each schema has at least one invalid fixture
 exercising it.
 
+## Evidence marker and digest grammar
+
+The contract both sides of the evidence protocol implement: the writer that
+will post run records and round evidence to GitHub (stage skills, #638/#639)
+and the reader that harvests them back (`scripts/dev-flow-stats.mjs`, #663).
+Neither exists as an implementation yet; this section is the interface, not
+a description of running code. It implements `specs/dev-flow-v2.md`
+§ Evidence and the evidence delta spec's requirements — this doc is where a
+concrete byte-level grammar for "deterministic marker" and "canonical
+digest" lives, since neither the anchor nor the delta spec pins one.
+
+### Comment kinds
+
+Every evidence comment (issue or PR) opens with one marker line — an HTML
+comment, invisible in GitHub's rendered view:
+
+```text
+<!-- devflow:<kind> v2 run_id=<run_id> stage=<stage> dest=<issue|pr> round=<n|-> seq=<n> -->
+```
+
+— followed immediately by the payload in a fenced ` ```json ` block ending
+with a bare ` ``` ` line, exactly the shape this document's own code
+examples use.
+
+Two kinds:
+
+- **`run-record`** — the durable record (`run.schema.json`), reserved at
+  kickoff on the issue and **edited in place** at every later transition.
+  `stage` is always `kickoff` (the run's first `stage_transitions` entry)
+  and `round`/`seq` are always `-`/`1` — the run record has exactly one
+  comment, never split, never duplicated by sequence. Because it is edited
+  rather than append-only itself, its digest (below) authenticates only
+  the **current** body; the append-only history it must satisfy is
+  `stage_transitions`/`interventions`/`settlements` inside the JSON payload,
+  each entry carrying its own `seq`, `prev_digest`, and `digest` (see
+  "Append-only entry chaining" below) — the outer comment digest changing on
+  every edit is expected and is not itself evidence of tampering.
+- **`evidence`** — one immutable comment per confidence-stage round (posted
+  to the **issue**, per spec, regardless of whether a PR exists yet) or one
+  per-stage rollup (posted to the **pr** once it opens, linking the issue's
+  round comments). `round` is the 1-based round number for a round comment,
+  `-` for a stage rollup. `seq` is 1 unless the payload exceeds GitHub's
+  comment size limit, in which case it splits into ordered comments sharing
+  every other marker field, `seq` = 1, 2, 3, …
+
+`stage` is one of `run.schema.json`'s `stage_transitions[].stage` enum
+(`kickoff`, `claim`, `explore`, `plan`, `implement`, `verify`, `challenge`,
+`review`, `security`, `integration`) — the run's own defined span.
+
+### Discovery is anchored by `evidence_comments[]`, never by scanning alone
+
+Marker-scanning (below) finds *candidate* evidence; it does not by itself
+prove nothing has been deleted. The run record's own `evidence_comments[]`
+is the authoritative index (evidence spec: "the issue-level index... SHALL
+anchor run discovery... SHALL reject deleted-entry tampering, never
+reinterpret it as a run that did not happen"). A harvester checks every
+listed entry against the comments it actually finds: a listed comment id
+that no longer exists, or whose current body no longer hashes to the
+listed digest, invalidates the **whole run** as indeterminate — the same
+severity as a broken append-only chain, and for the same reason (a
+malicious or buggy deletion could otherwise hide exactly the round most
+worth seeing, e.g. one that capped with an unresolved P1). This check and
+marker-scanning are complementary, not redundant: `evidence_comments[]`
+proves nothing *listed* has been removed; marker-scanning is still how a
+harvester learns *what* to look for in the first place, and how a reader
+without episode-by-episode bookkeeping (a test double supplying comments
+directly, for instance) still functions correctly.
+
+### Segment reassembly
+
+A harvester collects every **trusted** (see below) comment sharing a
+marker's `run_id`/`stage`/`dest`/`round`, sorts by `seq`, and requires the
+complete sequence with no gap starting at 1 — a `seq` 1 and 3 with no 2
+found is rejected as incomplete evidence (`ExitIndeterminate`-shaped:
+return "indeterminate", never fall back to a partial payload). The fenced
+block's raw text (between the ```json fence markers, exclusive) from each
+segment is concatenated in `seq` order, and the concatenated string is then
+parsed once as JSON — a segment boundary never lands mid-JSON-token; the
+writer is responsible for splitting on a structurally safe boundary (e.g.
+array-element or object-key boundaries), the reader only concatenates and
+parses.
+
+### Digest
+
+`digest` (in `run.schema.json`'s `evidence_comments[].digest` and each
+run-record append-only entry's `digest`) is the lowercase hex SHA-256 of
+the **exact bytes** of the payload as posted — for a single-segment
+comment, the fenced JSON text; for a split comment, the full reassembled
+text before parsing, not a re-serialization. Compute it once at post time
+over the string that is about to be written, and verify it by re-hashing
+the string actually read back — never a round-tripped
+`JSON.stringify(JSON.parse(...))` of it, which is not guaranteed
+byte-stable (key order, numeric formatting) across two implementations
+(devkit's writer, Foreman's Python writer, this repo's harvester). A digest
+mismatch is tampered evidence (edited or corrupted), reported as such, and
+never silently replayed.
+
+### Trust: actor ID, never a payload claim
+
+There is exactly **one** trust root: a configured set of trusted
+orchestrator actor ids (a human's or Foreman's service account — passed to
+the harvester explicitly, `--trusted-actor-id <id>` repeatable and/or
+`--trusted-actors-file <path>` naming a JSON `{"trusted_actor_ids": [...]}`
+document). Nothing else grants trust — never a payload field (an
+`initiated_by: "foreman"` claim is ordinary data about *who dispatched the
+run*, not a claim this protocol trusts for *who is authorized to post
+evidence about it*), and never "whoever posted first" as its own
+justification.
+
+The run record's own comment must be authored by a member of that
+configured set directly — there is no separate "kickoff event" trust root
+and no comment is ever trusted merely for looking like a run record. Once
+*that* check has passed, the run record's `evidence_comments[]`
+(`author_actor_id`, read off the now-validated record, never off the
+candidate comment being checked) narrows the same root to the *specific*
+already-trusted actor expected to have posted the rest of this run's
+evidence — a convenience for a run whose evidence naturally comes from one
+session throughout, not a second independent root: an evidence comment
+authored by anyone outside the original configured set is never trusted,
+run record or no.
+
+A comment whose marker matches but whose author fails this check is a
+**forged-author** comment: reported, ignored, and never allowed to
+suppress or shadow a legitimate trusted comment carrying the same marker.
+
+### Duplicate markers: lowest id is canonical — never a chain fork
+
+There is exactly **one** writer per run (the orchestrating session; see
+"Trust" above — nothing outside that one configured, run-specific identity
+is ever a source of evidence for this run at all). Because GitHub comment
+creation has no idempotency key, *that one writer* can still end up
+posting the same marker twice — a resumed session, after a crash, that
+lost track of a comment id it already created and re-posts the identical
+event. Among every **trusted** comment sharing one marker, the **lowest
+comment id** is canonical; every other is a superseded duplicate, ignored
+by every reader. This rule is what makes `--as-of` reconstruction stable:
+canonical-comment selection depends only on which trusted comments **exist
+by the cutoff**, never on read order, poll timing, or which one a
+harvester happened to see first — two harvesters reading the same marker
+at the same cutoff, in any order, on any machine, resolve to the same
+canonical comment. A duplicate discovered **after** the cutoff (a
+resume that lands later) does not retroactively change a reconstruction
+already computed at an earlier cutoff, for the same reason `--as-of`
+excludes any entry timestamped after it (see "Append-only entry chaining"
+below).
+
+This rule applies **only** to a duplicate post of the identical event — two
+trusted comments whose full marker (including `seq`) and content agree.
+It never applies inside the run record's own append-only arrays: two
+chain entries that both name the **same** `prev_digest` (a fork — two
+different next-events both claiming to extend the same parent) is not a
+"pick the lowest something" situation, because there is only one writer
+and a legitimate single writer never produces one. A fork found in the
+data means the record is corrupt, or a second identity somehow satisfied
+the trust check, or the data was tampered with after the fact — the
+harvester rejects the whole run as indeterminate rather than choosing a
+branch (see "Append-only entry chaining").
+
+### Append-only entry chaining (`--as-of` reconstruction)
+
+`stage_transitions[]`, `interventions[]`, and `settlements[]` inside the
+run record are each append-only: every entry the harvester trusts (see
+above) carries `seq` (0-based, per array, extending the array — not a
+global counter), `digest` (SHA-256 of that entry's own canonical JSON,
+`JSON.stringify` with sorted keys — this one entry, unlike the outer
+comment digest above, IS reproducible cross-implementation because it is
+freshly computed from parsed, already-trusted structured data, not
+re-hashing free text), and `prev_digest` (the previous entry's `digest`,
+or the fixed string `"genesis"` for `seq: 0`). Appending extends the chain;
+editing or deleting any entry changes a later entry's expected
+`prev_digest` and breaks validation from that point forward — a broken
+chain is reported and the run record is not trusted past the last valid
+entry. `--as-of <cutoff>` first validates the complete chain (every entry,
+regardless of cutoff — a chain broken *after* the cutoff still proves
+nothing *before* it can be trusted either, since the break could be a
+rewrite of history that also touches earlier entries), then reconstructs
+state using only entries whose own timestamp is at or before the cutoff.
+
+`seq`/`digest`/`prev_digest` are **not yet part of the shipped
+`run.schema.json`** — that schema's `stage_transitions`/`interventions`/
+`settlements` items have `additionalProperties: false` with no such
+fields, and its fixture corpus (~100 files) is substantial, pre-existing,
+shared work this section does not touch. The harvester
+(`scripts/dev-flow-stats.mjs`, issue evanharmon1/harmon-devkit#663)
+verifies the chain by its own field-presence and hash checks against
+this documented shape — the same way `dev-flow-exit.mjs`'s `loadRunDir`
+already reads its local `run.json` without a formal schema gate (#727) —
+rather than by invoking the strict JSON-Schema validator against
+`run.schema.json` for this document. Formally extending `run.schema.json`
+to require these three fields is a follow-up
+([#738](https://github.com/evanharmon1/harmon-devkit/issues/738)) for
+whoever next touches that schema's evolution, not a change made here.
+
+### What this section does not cover
+
+Posting is out of scope for #663 (stage-skill work, #638/#639); this
+section defines only the grammar those writers must produce and this
+reader consumes. Redaction (the secret-scanner pass before posting) is a
+writer-side obligation the spec already states and has no reader-visible
+shape beyond "a redaction placeholder and rule id may appear in place of a
+span" — a harvester treats a redacted span as ordinary text, not as a
+schema or grammar concern.
+
 ## The Foreman conformance contract
 
 harmon-devkit is the single source of truth for this schema family, vendored

@@ -72,6 +72,11 @@ jobs:
       - run: task test:session-cleanup
       - run: task test:setup-github
       - run: task test:agent-registry
+      # This list is hand-maintained and already misses several task-verify
+      # suites (harmon-devkit#726) — added here so this one doesn't join
+      # them; #726 tracks fixing the list itself so a future addition can't
+      # silently skip CI again.
+      - run: task test:dev-flow-stats
       - run: task test:registry-drift
       - run: task test:registry-docs
       - run: task test:label-registry

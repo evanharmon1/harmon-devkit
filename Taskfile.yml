@@ -72,6 +72,7 @@ tasks:
       - task: validate
       - task: test:agent-registry
       - task: test:result-schemas
+      - task: test:dev-flow-stats
       - task: test:registry-drift
       - task: test:registry-docs
       - task: test:label-registry
@@ -331,6 +332,7 @@ tasks:
       - test:confirm-answers
       - test:migrate-label-family
       - test:result-schemas
+      - test:dev-flow-stats
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -341,6 +343,11 @@ tasks:
     desc: Schema-check the dev-flow-v2 result/record schemas and their conformance fixtures
     cmds:
       - ./scripts/test-result-schemas.sh
+
+  test:dev-flow-stats:
+    desc: Behavioral test for the Dev flow v2 evidence harvester, success metric, trajectory rendering, and policy replay
+    cmds:
+      - ./scripts/test-dev-flow-stats.sh
 
   test:worktree:
     desc: Behavioral test for worktree:new / worktree:rm (create → verify hooks → remove, in a throwaway fixture repo)
