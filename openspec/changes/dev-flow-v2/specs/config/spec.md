@@ -176,7 +176,7 @@ instruction MAY override the merge-base value.
 #### Scenario: A legacy cap bounds both integration limits
 
 - **WHEN** the merge-base copy is the legacy shape whose `shepherd` cap bounded fix pushes and no-change cycles together
-- **THEN** the decoded policy sets both `integration` and `remediation` to that `shepherd` value, so the migration run can neither gain fix pushes nor cap earlier than the older policy allowed
+- **THEN** the decoded policy sets both `integration` and `remediation` to that `shepherd` value and marks them as one shared budget, so the integration stage counts every Codex cycle and every fix push against a single total of `shepherd` rounds, exactly as the legacy contract did; the migration run can neither gain rounds nor cap earlier than the older policy allowed
 
 #### Scenario: A migration branch edits a value the older shape never declared
 

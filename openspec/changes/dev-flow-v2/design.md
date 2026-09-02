@@ -273,7 +273,9 @@ DevKit ships a single v2 policy reader that every script and stage skill uses
 to load `.devflow.toml`: it detects the shape from its controlling markers,
 refuses legacy and v1 shapes with a migration message, resolves rigor into
 rounds, breadth, gates, convergence, role, and stage values, and applies the
-merge-base rule when the change under review edits the policy or the registry.
+merge-base rule when the change under review edits the policy, the registry,
+or any file in the reader's own trusted closure (the reader, its defaults,
+the historical decoder).
 The exit script is its first consumer and carries it; the push broker,
 integrator, and stage skills consume it rather than parsing TOML themselves.
 
@@ -284,9 +286,10 @@ rules), which is what lets a v1-to-v2 migration branch resolve the gates,
 caps, and floor it is protected by. The reader therefore carries one
 bounded historical decoder used only on the merge-base path when the change
 under review migrates the policy shape: it reads the legacy `[rigor.<level>]`
-caps (`shepherd` as both the integration cycle limit and the remediation
-limit, since the legacy cap bounded fix pushes and no-change cycles together;
-`min_rounds` as the floor)
+caps (`shepherd` decoded as `integration = N`, `remediation = N`, and a
+decoder-only shared-budget marker under which the integration stage counts
+cycles and fix pushes against one total of N, because the legacy cap counted
+either kind as one shepherd round; `min_rounds` as the floor)
 or the v1 `[review.*]` policy the rigor pointer names, maps them onto the v2
 `rounds` values, and supplies the built-in gate defaults (`verify`, `check`,
 `security:secrets`, `security` with the shipped `docs_only_paths`) because
