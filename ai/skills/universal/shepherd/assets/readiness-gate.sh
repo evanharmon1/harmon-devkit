@@ -472,10 +472,20 @@ evaluate_checks() {
     # another run's failure, because a sibling PR's base branch can make the
     # identical commit behave differently under base-relative workflow
     # logic (the same reasoning behind scoping runs to a PR at all). Such a
-    # run is kept, since dropping it could hide a real failure that IS ours,
-    # but tagged into its own identity so it can only ever compete with
-    # itself across suites, never supersede (or be superseded by) a run this
-    # gate is confident belongs to this PR.
+    # run is kept, since dropping it could hide a real failure that IS ours
+    # — but review round 2 found kept was not enough on its own: (1) two
+    # ambiguous suites for the same nominal workflow/event still shared one
+    # `:shared-pr` identity, so a later ambiguous suite could still supersede
+    # an earlier one — there is no confident basis for "later ambiguous
+    # supersedes earlier ambiguous" any more than there was for "supersedes
+    # this PR's own run", so an ambiguous run's identity now folds in its own
+    # check_suite.id, making it permanently distinct from every other suite,
+    # ambiguous or not; and (2) "other-pr" was excluded only from the
+    # workflow-run lookup, not from `check_runs` itself, so its check run
+    # still fell through to the app-id identity and — if it happened to be a
+    # FAILURE — could still fail a PR it was never really testing. A
+    # positively-other-PR check run is now dropped outright, before any
+    # identity is computed, not merely disconnected from its metadata.
     workflow_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/actions/runs?head_sha=$head&per_page=100")" ||
         indeterminate fetch-failed "cannot fetch workflow runs for the head"
@@ -487,21 +497,27 @@ evaluate_checks() {
                elif ($prs | length) == 1 and $prs[0].number == $pr
                  then . + {_scope: "this-pr"}
                elif ($prs | length) == 1 then . + {_scope: "other-pr"}
-               else . + {_scope: "ambiguous"} end)
-         | map(select(._scope != "other-pr"))' \
+               else . + {_scope: "ambiguous"} end)' \
         <<<"$workflow_runs_pages" 2>/dev/null)" ||
         indeterminate malformed-data "workflow-runs payload is malformed"
     check_runs="$(jq -ce \
         --slurpfile wf_sf <(printf '%s' "$workflow_runs") '
-          ($wf_sf[0] | map({key: (.check_suite_id | tostring),
+          ($wf_sf[0] | map(select(._scope == "other-pr") | (.check_suite_id | tostring))) as $other_pr_suites |
+          ($wf_sf[0] | map(select(._scope != "other-pr") |
+                           {key: (.check_suite_id | tostring),
                             value: {workflow_id, event, scope: ._scope}}) | from_entries) as $suite_workflow |
-          map(. + {_identity: [.name,
-              ($suite_workflow[(.check_suite.id | tostring)]
-               | if . == null then "app:" + ((.app.id // 0) | tostring)
-                 else "wf:" + (.workflow_id | tostring) + ":" +
-                      (.event // "unknown") +
-                      (if .scope == "ambiguous" then ":shared-pr" else "" end)
-                 end)]})
+          map(select((((.check_suite.id | tostring) as $s | $other_pr_suites | index($s)) // null) == null))
+          | map(
+              (.check_suite.id | tostring) as $sid |
+              ($suite_workflow[$sid]) as $sw |
+              . + {_identity: [.name,
+                  ($sw | if . == null then "app:" + ((.app.id // 0) | tostring)
+                         elif .scope == "ambiguous" then
+                           "wf:" + (.workflow_id | tostring) + ":" +
+                           (.event // "unknown") + ":shared-pr:" + $sid
+                         else "wf:" + (.workflow_id | tostring) + ":" +
+                              (.event // "unknown")
+                         end)]})
           | group_by(._identity)
           | map(. as $group | ($group | max_by(.check_suite.id) | .check_suite.id) as $latest_suite |
                 $group[] | select(.check_suite.id == $latest_suite))' \

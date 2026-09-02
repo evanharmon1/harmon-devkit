@@ -610,6 +610,46 @@ assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "a failing run naming multiple PRs (including this one) was dropped instead of surfaced: $gate_out"
 
+echo "==> two ambiguous (multi-PR) suites do not clear one another (harmon-devkit#714 review r2)"
+# There is no more confident basis for "later ambiguous suite supersedes an
+# earlier ambiguous suite" than there was for "supersedes this PR's own
+# confidently-scoped run" -- an ambiguous suite's identity must be
+# permanently distinct so a later ambiguous success cannot hide an earlier
+# ambiguous failure.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493},{number:999}]},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493},{number:999}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive when a later ambiguous suite's success shared its nominal workflow/event with an earlier ambiguous failure: $gate_out"
+
+echo "==> a failing run unambiguously scoped to another PR is dropped outright, not just its metadata (harmon-devkit#714 review r2)"
+# Excluding a run from the workflow lookup alone is not enough: its check
+# run must not survive at all, or it falls to the app-id identity and, if
+# failing, wrongly fails a PR it was never testing.
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:999}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 0 pass ready
+
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \
