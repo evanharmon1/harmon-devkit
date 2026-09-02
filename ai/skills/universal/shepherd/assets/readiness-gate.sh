@@ -509,9 +509,10 @@ evaluate_checks() {
           map(select((((.check_suite.id | tostring) as $s | $other_pr_suites | index($s)) // null) == null))
           | map(
               (.check_suite.id | tostring) as $sid |
+              (.app.id // 0) as $app_id |
               ($suite_workflow[$sid]) as $sw |
               . + {_identity: [.name,
-                  ($sw | if . == null then "app:" + ((.app.id // 0) | tostring)
+                  ($sw | if . == null then "app:" + ($app_id | tostring)
                          elif .scope == "ambiguous" then
                            "wf:" + (.workflow_id | tostring) + ":" +
                            (.event // "unknown") + ":shared-pr:" + $sid

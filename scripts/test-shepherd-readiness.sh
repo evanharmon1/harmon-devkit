@@ -650,6 +650,28 @@ jq -cn '[{total_count:1,workflow_runs:[
 run_gate --codex-disabled
 assert_gate 0 pass ready
 
+echo "==> two different non-Actions apps sharing a check name are never conflated (harmon-devkit#714 review r3)"
+# A check run with no actions/runs match falls back to its own app id. Piping
+# the suite lookup result into a variable changes jq's current input for
+# that branch -- reading .app.id from inside it (instead of capturing the
+# outer run's app id first) silently reads the LOOKUP's non-existent app.id
+# instead, which is always null, so every non-Actions run collapsed into the
+# same "app:0" bucket regardless of which app actually posted it. Two
+# different real app ids sharing a check name must stay in separate
+# identities, or one app's later success can hide an entirely different
+# app's failure.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"lint",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10},app:{id:42}},
+    {id:2,name:"lint",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20},app:{id:77}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
+    fail "checks-failing did not survive when a different non-Actions app's later success shared a check name with an earlier failure: $gate_out"
+
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \
