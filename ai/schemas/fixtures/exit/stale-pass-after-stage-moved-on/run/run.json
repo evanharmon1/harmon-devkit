@@ -1,0 +1,26 @@
+{
+  "run_id": "run-stale-pass-after-stage-moved-on",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "challenge"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r1-codex-cli"
+    },
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r2-codex-cli"
+    }
+  ]
+}

@@ -57,7 +57,46 @@ assert.equal(legacy.rigor.standard.shepherd, 4);
 assert.throws(() => parseToml("[[a]]\nx = 1\n"), TomlError);
 assert.throws(() => parseToml(`x = """multi\nline"""\n`), TomlError);
 
+// .devflow.toml is branch-controlled, untrusted content: a table header or
+// key named "__proto__"/"constructor"/"prototype" must never reach the
+// shared Object.prototype (a plain {} object'"'"'s inherited accessors turn
+// `"__proto__" in {}` true even on a fresh object, letting a hostile header
+// walk `cur[key]` onto Object.prototype itself and corrupt every object in
+// the process for the rest of its lifetime).
+const before = ({}).polluted;
+const evil = parseToml(`
+[__proto__]
+polluted = "yes"
+`);
+assert.equal(({}).polluted, before, "an ordinary object must not observe a property from parsing untrusted TOML");
+assert.deepEqual(Object.keys(evil), ["__proto__"], "__proto__ must parse as an ordinary own key, not a prototype write");
+
 console.log("TOML parser smoke checks OK");
+'
+
+echo "== dev-flow-exit.mjs: an unavailable ledger fails safe, distinct from a real-but-empty one =="
+node --input-type=module -e '
+import { loadLedger, verifyProvenance } from "./scripts/dev-flow-exit.mjs";
+import assert from "node:assert/strict";
+
+// --repo-root names the (unimplemented) production git adapter: it must
+// return null (unavailable), never [] (a real ledger that happens to be
+// empty) — the two must drive verifyProvenance to different, non-silent
+// conclusions for the identical asserted claim, or an "original" assertion
+// could evade provenance_share divergence just by there being no adapter
+// to catch it.
+assert.equal(loadLedger({ repoRoot: "." }), null);
+assert.deepEqual(loadLedger({}), []);
+
+const originalClaim = { provenance: "original", line: 10, path: "scripts/example.mjs", round: 2 };
+
+const withRealEmptyLedger = verifyProvenance(originalClaim, []);
+assert.equal(withRealEmptyLedger.status, "verified", "a real, merely-empty ledger legitimately confirms an untouched original claim");
+
+const withUnavailableLedger = verifyProvenance(originalClaim, null);
+assert.equal(withUnavailableLedger.status, "unverified", "an UNAVAILABLE ledger must never verify a claim it never actually checked");
+
+console.log("ledger-availability smoke check OK");
 '
 
 echo "== devflow-policy.mjs never operates under this repo'\''s live legacy .devflow.toml =="

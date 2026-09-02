@@ -107,14 +107,23 @@ function validateReceipts(runRecord, passes, { validatorPath, requireSchemaValid
   receipts.forEach((r, idx) => {
     if (r.kind === "pass") passSeqByName.set(r.file, idx);
   });
-  const transitionSeqsByStage = new Map();
-  receipts.forEach((r, idx) => {
-    if (r.kind === "transition") {
-      const list = transitionSeqsByStage.get(r.stage) || [];
-      list.push(idx);
-      transitionSeqsByStage.set(r.stage, list);
+  // All transitions in receipt order, regardless of stage — used below to
+  // find whichever stage was ACTIVE immediately before a given pass arrived
+  // (not merely "some transition into this pass's stage happened earlier",
+  // which a stale pass arriving after the run moved on to a later stage
+  // would also satisfy).
+  const transitionsInOrder = receipts
+    .map((r, idx) => ({ ...r, seq: idx }))
+    .filter((r) => r.kind === "transition");
+
+  function activeStageBefore(seq) {
+    let active = null;
+    for (const t of transitionsInOrder) {
+      if (t.seq >= seq) break;
+      active = t.stage;
     }
-  });
+    return active;
+  }
 
   const decorated = [];
   const seenIds = new Set();
@@ -148,10 +157,20 @@ function validateReceipts(runRecord, passes, { validatorPath, requireSchemaValid
       diagnostics.push({ pass: pass.name, level: "reject", reason: `initiated_by "${env.run.initiated_by}" does not match the active run "${runRecord.initiated_by}"` });
       continue;
     }
-    const stageTransitions = transitionSeqsByStage.get(payload.stage) || [];
-    const hasPriorTransition = stageTransitions.some((tseq) => tseq < seq);
-    if (!hasPriorTransition) {
-      diagnostics.push({ pass: pass.name, level: "reject", reason: `no receipt transition into stage "${payload.stage}" precedes this pass (seq ${seq})` });
+    // The pass's own stage must be whichever stage was ACTIVE immediately
+    // before it arrived — not merely "entered at some earlier point" — so a
+    // stale pass received after the run has already moved on to a later
+    // stage is rejected rather than silently counted (exit-computation spec
+    // "Results are validated before interpretation": "a pass from an
+    // earlier stage SHALL NOT count in a later stage even when both name
+    // the same head").
+    const active = activeStageBefore(seq);
+    if (active !== payload.stage) {
+      diagnostics.push({
+        pass: pass.name,
+        level: "reject",
+        reason: `stage "${payload.stage}" was not the active stage when this pass arrived (seq ${seq}; active stage was ${active ? `"${active}"` : "none"})`,
+      });
       continue;
     }
 
@@ -230,10 +249,30 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
 
   for (const roundNumber of sorted) {
     const passesThisRound = stagePasses.filter((p) => p.payload.round === roundNumber);
+    // A pass's claimed slot/substitutes_for is producer-asserted data, not
+    // an authority — validate every invariant the spec requires before a
+    // pass is allowed to fill a slot at all: a primary pass has finder ==
+    // slot and no substitutes_for; a fallback pass's substitutes_for must
+    // equal the slot it claims; the claimed slot must be one this stage
+    // actually configures; at most one pass may claim a given slot per
+    // round; and one finder cannot fill two slots in the same round.
+    // Anything that fails these is dropped from bySlot (never silently
+    // overwritten or trusted), which naturally falls through to
+    // finder_unavailable/breadth_exhausted handling below exactly as if no
+    // pass had arrived for that slot.
     const bySlot = new Map();
+    const claimedByFinder = new Set();
     for (const p of passesThisRound) {
       const slot = p.payload.slot || p.payload.finder;
+      const finder = p.payload.finder;
+      const isPrimaryClaim = !p.payload.substitutes_for;
+      const validPrimary = isPrimaryClaim && finder === slot;
+      const validFallback = !isPrimaryClaim && p.payload.substitutes_for === slot && finder !== slot;
+      if (!primarySlots.includes(slot) || !(validPrimary || validFallback)) continue;
+      if (bySlot.has(slot)) continue; // duplicate claim on one slot: neither is trusted
+      if (claimedByFinder.has(finder)) continue; // one finder cannot fill two slots this round
       bySlot.set(slot, p);
+      claimedByFinder.add(finder);
     }
 
     const substitutions = [];
@@ -299,13 +338,24 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
 // Change ledger (provenance/fingerprint evidence) — see ai/schemas/README.md.
 // ---------------------------------------------------------------------------
 
+// Returns `null` (not `[]`) when no real change-ledger source is available —
+// deliberately distinct from a real, legitimately EMPTY ledger (e.g. every
+// fixture whose rounds simply haven't touched much yet). `null` means
+// "nothing here can verify anything"; `[]` means "verified against real
+// evidence, which happens to record no matching entries" — verifyProvenance/
+// verifyFingerprint treat the two very differently: an empty-but-real ledger
+// can legitimately confirm `original` provenance (no tracked fix touched
+// this line), while an UNAVAILABLE ledger must never be silently treated as
+// confirming evidence, since that would let every finding evade verification
+// just by asserting the claim a missing ledger cannot contradict.
 function loadLedger({ historyFile, repoRoot }) {
   if (historyFile) return loadJson(historyFile);
-  if (repoRoot) return []; // best-effort git adapter is intentionally not wired into fixture tests; see "## Deferred findings".
+  if (repoRoot) return null; // git adapter deliberately not implemented yet — see ai/schemas/README.md / "## Deferred findings".
   return [];
 }
 
 function resolveOriginPath(pathName, beforeRound, ledger) {
+  if (!ledger) return pathName; // no ledger available: no rename can be tracked, origin is the path itself
   let cur = pathName;
   let changed = true;
   while (changed) {
@@ -330,6 +380,9 @@ function ledgerEntriesForOrigin(originPath, beforeRound, ledger) {
 }
 
 function verifyProvenance(finding, ledger) {
+  if (ledger === null) {
+    return { status: "unverified", value: finding.provenance, reason: "no change ledger is available to verify against" };
+  }
   if (finding.line === null || finding.line === undefined) {
     return { status: "unverified", value: finding.provenance, reason: "not line-anchored" };
   }
@@ -681,13 +734,26 @@ function main() {
     if (!args.tmp) rmSync(tmpDir, { recursive: true, force: true });
   }
 
-  const rounds = assembleLogicalRounds(args.stage, validPasses, runDir.adjudications, resolved.stages[args.stage], runDir.runRecord);
-
+  // Adjudications must be validated BEFORE assembleLogicalRounds joins them
+  // to findings and reads their adjudicated_priority for gating — an
+  // invalid adjudication (wrong run/head, schema violation) that were
+  // merely logged here and still consumed downstream could silently
+  // downgrade a real P0/P1 into an exit-computation result that trusts it.
+  const validAdjudications = [];
   for (const adj of runDir.adjudications) {
-    if (adj.doc.stage !== args.stage) continue;
+    if (adj.doc.stage !== args.stage) {
+      validAdjudications.push(adj);
+      continue;
+    }
     const { ok, message } = validateAdjudicationSchema(validatorPath, adj.file);
-    if (!ok) diagnostics.push({ pass: adj.name, level: "reject", reason: `adjudication schema validation failed: ${message}` });
+    if (ok) {
+      validAdjudications.push(adj);
+    } else {
+      diagnostics.push({ pass: adj.name, level: "reject", reason: `adjudication schema validation failed: ${message}` });
+    }
   }
+
+  const rounds = assembleLogicalRounds(args.stage, validPasses, validAdjudications, resolved.stages[args.stage], runDir.runRecord);
 
   const missingAdjudication = rounds.some((r) => r.status === "complete" && r.findings.length > 0 && r.findings.some((f) => f.adjudicated_priority === null));
   if (missingAdjudication) {
@@ -698,15 +764,42 @@ function main() {
   const ledger = loadLedger({ historyFile: args.history, repoRoot: args["repo-root"] });
   const corrections = applyVerification(rounds, ledger);
 
-  const currentHead = args["current-head"] || (rounds.length > 0 ? rounds[rounds.length - 1].reviewedHead : null);
+  // --current-head must be an INDEPENDENTLY captured value (the caller's own
+  // `git rev-parse HEAD`), never derived from the evidence being certified —
+  // falling back to "whichever round is latest" would make that round
+  // trivially "the current head round" by construction, defeating head
+  // ancestry verification entirely (a stale round could certify convergence
+  // simply by being the last one recorded).
+  const currentHead = args["current-head"];
   if (!currentHead) {
-    console.error("dev-flow-exit: indeterminate: no --current-head given and no round supplies one");
+    console.error("dev-flow-exit: indeterminate: --current-head is required (an independently captured value, never derived from a round's own reviewed_head)");
     return EXIT_CODES.indeterminate;
   }
 
   const ancestryOpts = { headsMap: loadHeadsMap(args.heads), repoRoot: args["repo-root"] };
   const cap = resolved.rounds[args.stage];
   const minRounds = effectiveMinRounds(resolved.rounds, cap);
+
+  // "No confidence pass or adjudication round number SHALL exceed its
+  // resolved stage cap, and a cap-zero confidence stage SHALL contain no
+  // rounds" (exit-computation spec, "Caps constrain retained trajectory
+  // records"). A trajectory that violates this is corrupt/inconsistent
+  // with its own resolved policy and must be rejected outright, never
+  // silently treated as "the round conveniently at the cap" or "disabled
+  // with 0 rounds" while ignoring rounds that actually exist.
+  const overCapRound = rounds.find((r) => r.round > cap);
+  if (overCapRound) {
+    console.error(
+      `dev-flow-exit: indeterminate: round ${overCapRound.round} exceeds the resolved ${args.stage} cap (${cap}) — trajectory inconsistent with its own policy`,
+    );
+    return EXIT_CODES.indeterminate;
+  }
+  if (cap === 0 && rounds.length > 0) {
+    console.error(
+      `dev-flow-exit: indeterminate: ${args.stage} cap is 0 (disabled) but the trajectory contains round ${rounds[0].round} — trajectory inconsistent with its own policy`,
+    );
+    return EXIT_CODES.indeterminate;
+  }
 
   let verdict;
   if (cap === 0) {

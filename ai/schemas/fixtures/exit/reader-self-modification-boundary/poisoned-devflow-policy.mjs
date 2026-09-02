@@ -218,14 +218,13 @@ function resolveRigorLevel(doc, requestedRigor) {
   return { level, profile, order };
 }
 
-function resolveRounds(doc, profile, levelName, { allowMissingTable = false, fallbackIntegration } = {}) {
+function resolveRounds(doc, profile, levelName) {
   const policyName = profile.rounds;
   if (typeof policyName !== "string") {
     throw new PolicyError(`[rigor.${levelName}] has no "rounds" pointer`);
   }
   const table = doc.rounds?.[policyName];
   if (!table || typeof table !== "object") {
-    if (allowMissingTable) return null;
     throw new PolicyError(`[rounds.${policyName}] is missing (pointed to by [rigor.${levelName}])`);
   }
   const rounds = { policy: policyName };
@@ -306,30 +305,30 @@ function resolveGates(doc, { allowMissing = false, fallback = null } = {}) {
   return resolved;
 }
 
-function validatePredicateExpr(expr, path) {
-  if (!expr || typeof expr !== "object") throw new PolicyError(`${path} must be an object`);
+function validatePredicateExpr(expr, errorPath) {
+  if (!expr || typeof expr !== "object") throw new PolicyError(`${errorPath} must be an object`);
   const kinds = Object.keys(expr).filter((k) => k === "all" || k === "any");
-  if (kinds.length !== 1) throw new PolicyError(`${path} must have exactly one of "all"/"any"`);
+  if (kinds.length !== 1) throw new PolicyError(`${errorPath} must have exactly one of "all"/"any"`);
   const kind = kinds[0];
   const list = expr[kind];
-  if (!Array.isArray(list) || list.length === 0) throw new PolicyError(`${path}.${kind} must be a non-empty array`);
+  if (!Array.isArray(list) || list.length === 0) throw new PolicyError(`${errorPath}.${kind} must be a non-empty array`);
   for (const [i, entry] of list.entries()) {
     if (!entry || typeof entry !== "object" || typeof entry.predicate !== "string") {
-      throw new PolicyError(`${path}.${kind}[${i}] must be an object with a "predicate" string`);
+      throw new PolicyError(`${errorPath}.${kind}[${i}] must be an object with a "predicate" string`);
     }
     if (!PREDICATES.has(entry.predicate)) {
       throw new PolicyError(
-        `${path}.${kind}[${i}].predicate "${entry.predicate}" is not in the v0 catalog (${[...PREDICATES].join(", ")})`,
+        `${errorPath}.${kind}[${i}].predicate "${entry.predicate}" is not in the v0 catalog (${[...PREDICATES].join(", ")})`,
       );
     }
   }
   return { kind, list };
 }
 
-function checkTightenOnly(base, over, stageName, path) {
+function checkTightenOnly(base, over, stageName, errorPath) {
   if (base.kind !== over.kind) {
     throw new PolicyError(
-      `${path}: rigor override changes composition from "${base.kind}" to "${over.kind}", which is not a defined tightening move`,
+      `${errorPath}: rigor override changes composition from "${base.kind}" to "${over.kind}", which is not a defined tightening move`,
     );
   }
   const kind = base.kind;
@@ -343,10 +342,10 @@ function checkTightenOnly(base, over, stageName, path) {
   const removeTightens = (stageName === "converged" && kind === "any") || (stageName === "diverging" && kind === "all");
 
   if (added.length > 0 && !addTightens) {
-    throw new PolicyError(`${path}: adding ${added.join(", ")} to a "${kind}"-composed ${stageName} list loosens it`);
+    throw new PolicyError(`${errorPath}: adding ${added.join(", ")} to a "${kind}"-composed ${stageName} list loosens it`);
   }
   if (removed.length > 0 && !removeTightens) {
-    throw new PolicyError(`${path}: removing ${removed.join(", ")} from a "${kind}"-composed ${stageName} list loosens it`);
+    throw new PolicyError(`${errorPath}: removing ${removed.join(", ")} from a "${kind}"-composed ${stageName} list loosens it`);
   }
 
   for (const [name, overEntry] of overByName) {
@@ -360,16 +359,15 @@ function checkTightenOnly(base, over, stageName, path) {
       const raises = ov > bv;
       const wantsRaise = stageName === "converged";
       if (raises !== wantsRaise) {
-        throw new PolicyError(`${path}: ${name}.${key} moved from ${bv} to ${ov}, which loosens ${stageName}`);
+        throw new PolicyError(`${errorPath}: ${name}.${key} moved from ${bv} to ${ov}, which loosens ${stageName}`);
       }
     }
   }
 }
 
-function resolveConvergence(doc, levelName, { allowMissing = false } = {}) {
+function resolveConvergence(doc, levelName) {
   const base = doc.convergence;
   if (!base || typeof base !== "object" || !base.converged || !base.diverging) {
-    if (allowMissing) return null;
     throw new PolicyError("policy has no [convergence] table with converged/diverging");
   }
   const baseConverged = validatePredicateExpr(base.converged, "[convergence].converged");
@@ -739,8 +737,8 @@ function parseArgs(argv) {
   return args;
 }
 
-function loadTomlFile(path) {
-  const text = readFileSync(path, "utf8");
+function loadTomlFile(filePath) {
+  const text = readFileSync(filePath, "utf8");
   return parseToml(text);
 }
 

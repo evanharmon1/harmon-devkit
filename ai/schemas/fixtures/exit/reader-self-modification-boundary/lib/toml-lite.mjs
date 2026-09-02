@@ -168,18 +168,32 @@ function tokenize(text) {
   return tokens;
 }
 
+// Every table object this parser creates is null-prototype (Object.create(null),
+// never {}) and every existence check below uses hasOwnProperty rather than
+// `in` — TOML input is branch-controlled, untrusted content, and a plain {}
+// object's inherited `__proto__`/`constructor`/`prototype` accessors turn a
+// table header or key like [__proto__] into a prototype-pollution write:
+// `"__proto__" in {}` is true via the inherited chain even on a fresh
+// object, so `cur["__proto__"]` resolves to Object.prototype itself and a
+// later assignment corrupts every object in the process for the rest of its
+// lifetime (a hostile .devflow.toml could, for example, make every parsed
+// object appear to carry `schema_version: 2` by polluting the shared
+// prototype). A null-prototype object has no such inherited accessor, so
+// assigning "__proto__" on one is an ordinary own-property write.
+const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
 function setPath(node, parts, value, fullKeyForError) {
   let cur = node;
   for (let idx = 0; idx < parts.length - 1; idx++) {
     const key = parts[idx];
-    if (!(key in cur)) cur[key] = {};
+    if (!hasOwn(cur, key)) cur[key] = Object.create(null);
     if (typeof cur[key] !== "object" || cur[key] === null || Array.isArray(cur[key])) {
       throw new TomlError(`key path "${fullKeyForError}" conflicts with an existing non-table value at "${key}"`);
     }
     cur = cur[key];
   }
   const last = parts[parts.length - 1];
-  if (last in cur) {
+  if (hasOwn(cur, last)) {
     throw new TomlError(`duplicate key "${fullKeyForError}"`);
   }
   cur[last] = value;
@@ -188,7 +202,7 @@ function setPath(node, parts, value, fullKeyForError) {
 function ensurePath(root, parts) {
   let node = root;
   for (const key of parts) {
-    if (!(key in node)) node[key] = {};
+    if (!hasOwn(node, key)) node[key] = Object.create(null);
     if (typeof node[key] !== "object" || node[key] === null || Array.isArray(node[key])) {
       throw new TomlError(`table header path conflicts with an existing non-table value at "${key}"`);
     }
@@ -273,7 +287,7 @@ class Parser {
 
   parseInlineTable() {
     this.expect("lbrace");
-    const obj = {};
+    const obj = Object.create(null);
     while (this.peek().type !== "rbrace") {
       const keyParts = this.parseDottedKey();
       this.expect("equals");
@@ -291,13 +305,19 @@ class Parser {
 }
 
 /**
- * Parse a TOML document (the subset described above) into a plain JS object.
+ * Parse a TOML document (the subset described above) into a null-prototype
+ * JS object tree (every nested table is also null-prototype — see the
+ * prototype-pollution note above setPath/ensurePath). Ordinary property
+ * access, Object.keys, spread, and JSON.stringify all work normally;
+ * `.hasOwnProperty(...)` called AS A METHOD on the result does not, since
+ * there is no inherited Object.prototype to supply it — use
+ * `Object.prototype.hasOwnProperty.call(obj, key)` instead.
  * Throws TomlError on anything it cannot represent.
  */
 export function parseToml(text) {
   const tokens = tokenize(text);
   const parser = new Parser(tokens);
-  const root = {};
+  const root = Object.create(null);
   let current = root;
   while (parser.peek().type !== "eof") {
     if (parser.peek().type === "lbracket") {

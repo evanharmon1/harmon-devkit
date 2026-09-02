@@ -2,5 +2,5 @@
   "outcome": "continue",
   "reason": "no_rounds_yet",
   "rounds_counted": 0,
-  "diagnostic_contains": "no receipt transition"
+  "diagnostic_contains": "was not the active stage"
 }
