@@ -30,6 +30,11 @@ interpreter for an older shape.
 - **WHEN** a policy has caps directly on `[rigor.*]`, `default_method`, and `[method]` and also contains `[tier.*]`
 - **THEN** the consumer identifies the legacy shape from its rigor and method markers and directs the operator to migrate it
 
+#### Scenario: The tooling's own repository has not migrated
+
+- **WHEN** a v2 consumer's test suite runs in a repository whose live `.devflow.toml` is still legacy or v1
+- **THEN** the suite evaluates shipped fixture policies and passes, while any direct invocation against the live file refuses it with the migration message
+
 ### Requirement: Policy separates rounds, breadth, and spend
 
 The policy SHALL represent vertical review appetite in `[rounds.*]`, horizontal
@@ -158,7 +163,10 @@ Merge-base resolution SHALL determine gate policy, including required target
 slugs, allowlists, and thresholds. Before any round push, the orchestrator SHALL
 materialize outside the feature worktree and execute the merge-base
 implementations of both the secret scan and the round-push broker, for example
-by extracting each path with `git show <merge-base>:<path>`. This boundary is
+by extracting each path with `git show <merge-base>:<path>`. Both
+implementations SHALL live at stable repository-owned paths that stage skills
+reference rather than vendor, so the merge-base extraction survives a skill
+rename. This boundary is
 mandatory because a secret is public when the push lands and PR CI is too late.
 A branch that edits either implementation SHALL exercise its changed version in
 required PR CI, but SHALL NOT use that version to authorize its own push. Every

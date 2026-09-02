@@ -91,6 +91,15 @@ This lets repositories select their own gates without making config an
 arbitrary command-execution surface. Duplicating an allowlist in the skill and
 broker was rejected because they would drift.
 
+The round-push broker and the secret scanner live at stable repository-owned
+script paths (`scripts/round-push.sh`, the existing secrets target) rather than
+inside a skill's assets: the merge-base rule materializes them with
+`git show <merge-base>:<path>`, which needs a path that survives skill renames,
+and stage skills reference the broker by path instead of vendoring a copy that
+would drift. Keeping the broker as a skill asset was rejected because #638
+renames the skill that carried it and the merge-base extraction would then
+point at a path that no longer exists.
+
 Merge-base resolution protects the policy that selects target slugs,
 allowlists, and thresholds; it does not attest the feature branch's Taskfile
 recipes, scripts, or push-broker implementation. Evidence produced by those
@@ -123,6 +132,12 @@ to the stage.
 A single reviewer role with a mode flag was rejected because it blurs role
 tiering, instructions, registry permissions, and conformance fixtures. Neither
 role writes externally, fixes code, adjudicates, or decides exit.
+
+The challenger result schema ships with the registry roles rather than with the
+stage skills: a registry role names its result schema, and the exit script
+validates challenger passes before any `/review` skill exists. Shipping it with
+the skills would leave the registry naming a schema that does not exist and the
+exit script validating against a placeholder.
 
 ### 6. Model strata and executable inventory live in the registry
 
@@ -233,6 +248,24 @@ This supports a closed-cohort success metric, immutable `--as-of` scoring,
 per-run inspection, convergence replay, and retros that start from retained
 facts rather than conversation memory.
 
+### 13. One policy reader serves every DevKit consumer
+
+DevKit ships a single v2 policy reader that every script and stage skill uses
+to load `.devflow.toml`: it detects the shape from its controlling markers,
+refuses legacy and v1 shapes with a migration message, resolves rigor into
+rounds, breadth, gates, convergence, role, and stage values, and applies the
+merge-base rule when the change under review edits the policy or the registry.
+The exit script is its first consumer and carries it; the push broker,
+integrator, and stage skills consume it rather than parsing TOML themselves.
+
+Its tests evaluate fixture policies only. DevKit's own `.devflow.toml` is a
+rendered Harmon Init artifact and stays on its current shape until the copier
+update lands, so no verify-gate target may run a v2 consumer against the live
+file: doing so would make the repository's own gate fail by design until the
+sibling milestone ships. Per-script TOML parsing was rejected because shape
+refusal and resolution would drift between consumers, defeating the
+determinism the milestone exists for.
+
 ### 12. Stage names, skill names, and write ownership are explicit
 
 Lifecycle stages use nouns; invocable skills use verbs (`/implement`,
@@ -273,11 +306,14 @@ and `shepherd` are removed after v2 migration.
 1. Reconcile the anchor spec and decision record to the 2026-08-31 vocabulary,
    then finish single-document schema residue and fixtures.
 2. Extend the registry with roles, finders, model tiers, harness support, and
-   write boundaries; publish versioned conformance fixtures.
+   write boundaries, and ship the challenger result schema; publish versioned
+   conformance fixtures. In parallel, implement the policy reader, trajectory
+   receipt and exit computation, and deterministic rendering against fixture
+   policies, then the repository-owned diff-aware round-push broker.
 3. Ship Harmon Init's v2 config template, schema, gate-slug validation, label
-   vocabulary, and generated-repository migration.
-4. Implement trajectory receipt and exit computation, deterministic rendering,
-   and the diff-aware round-push gate.
+   vocabulary, and generated-repository migration, using the registry tiers
+   and the pinned predicate names from step 2.
+4. (Merged into step 2.)
 5. Publish the role-scoped reviewer/challenger, orchestrator, and integrator
    successor skills as v2-only from their first release; add evidence posting,
    harvesting, metrics, and retro consumption.
