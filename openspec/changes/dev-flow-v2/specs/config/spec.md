@@ -181,12 +181,17 @@ instruction MAY override the merge-base value.
 #### Scenario: A legacy cap bounds both integration limits
 
 - **WHEN** the merge-base copy is the legacy shape whose `shepherd` cap bounded fix pushes and no-change cycles together
-- **THEN** the decoded policy sets both `integration` and `remediation` to that `shepherd` value and marks them as one shared budget under legacy accounting: one charge per legacy round, where a round is either one fix push or one no-change cycle, and the cycle whose findings a fix push answers is not charged separately from that push; the migration run can neither gain rounds nor cap earlier than the older policy allowed
+- **THEN** the decoded policy sets both `integration` and `remediation` to that `shepherd` value and marks them as one shared budget under legacy accounting (a v1 merge base's `[review.*].shepherd` cap decodes the same way): one charge per legacy round, where a round is either one fix push or one no-change cycle, and the cycle whose findings a fix push answers is not charged separately from that push; the migration run can neither gain rounds nor cap earlier than the older policy allowed
 
 #### Scenario: A migration branch edits a value the older shape never declared
 
-- **WHEN** the merge-base copy is an older shape with no breadth, convergence, finder, role, or trusted-actor declarations and the branch copy sets any of them
-- **THEN** the run resolves those values from the consumer's built-in defaults, not from the branch copy, and the resolved policy is identical whatever the branch copy declares
+- **WHEN** the merge-base policy copy is an older shape and the branch copy sets a value that copy never declared
+- **THEN** the run decodes every value the older copy does declare under its own rules, takes registry-owned values (finders, roles, write boundaries, trusted actor IDs, tiers) from the merge-base registry, uses the consumer's built-in defaults only for values absent from both, and the resolved policy is identical whatever the branch copy declares
+
+#### Scenario: The relocation change has no merge-base broker
+
+- **WHEN** the change under review is the one that first creates the broker's stable path and its merge base holds only the skill-asset copy
+- **THEN** the push materializes and executes that skill-asset copy as the merge-base broker for that change alone, and a merge base holding neither copy refuses the push
 
 ### Requirement: Gate authority separates policy from branch implementation
 

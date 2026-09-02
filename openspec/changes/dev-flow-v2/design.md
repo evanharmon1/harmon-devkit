@@ -92,8 +92,9 @@ arbitrary command-execution surface. Duplicating an allowlist in the skill and
 broker was rejected because they would drift.
 
 The round-push broker and the secret scanner live at stable repository-owned
-script paths (`scripts/round-push.sh`, the existing secrets target) rather than
-inside a skill's assets: the merge-base rule materializes them with
+script paths (`scripts/round-push.sh`; `scripts/gitleaks-scan.sh` with its
+`.gitleaks.toml`, which the `security:secrets` target already wraps) rather
+than inside a skill's assets: the merge-base rule materializes them with
 `git show <merge-base>:<path>`, which needs a path that survives skill renames,
 and stage skills reference the broker by path instead of vendoring a copy that
 would drift. Keeping the broker as a skill asset was rejected because #638
@@ -118,6 +119,14 @@ rather than authoritative. Extracting only the two entrypoints was rejected
 because it left the policy reader and scanner config branch-controlled;
 sweeping the round gate into the closure was rejected because it would
 contradict the branch-attested rule.
+
+One bootstrap exception is explicit and tested: the change that first creates
+`scripts/round-push.sh` (task 2.2) has no merge-base copy at that path, so
+for that relocation change only, the merge-base broker is the skill asset it
+relocates (`ai/skills/universal/gauntlet/assets/push-round.sh`), materialized
+the same way. Every later change extracts the stable path; a merge base that
+has neither copy refuses the push rather than trusting the branch broker,
+mirroring the reader-before-policy rule in decision 13.
 
 Merge-base resolution protects the policy that selects target slugs,
 allowlists, and thresholds; it does not attest the feature branch's Taskfile
@@ -291,10 +300,15 @@ decoder-only shared-budget marker under which the integration stage charges
 one legacy round per fix push or per no-change cycle, never a finding cycle
 and its answering push separately, because that is how the legacy cap
 counted; `min_rounds` as the floor)
-or the v1 `[review.*]` policy the rigor pointer names, maps them onto the v2
-`rounds` values, and supplies the built-in gate defaults (`verify`, `check`,
-`security:secrets`, `security` with the shipped `docs_only_paths`) because
-neither older shape declares `[gates]`. That decoder is not an operating-mode
+or the v1 `[review.*]` policy the rigor pointer names (whose `shepherd` cap
+receives the same shared-budget marker, since it counted the same way), maps
+them onto the v2 `rounds` values, decodes every other value the older shape
+does declare under that shape's own rules (v1 `[budget.*]` onto `breadth`,
+v1 per-role tiers on the rigor profile, v1 `default_strategy` and
+`[strategy.*]`; legacy `default_tier` and `default_method`), and supplies the
+built-in gate defaults (`verify`, `check`, `security:secrets`, `security`
+with the shipped `docs_only_paths`) because neither older shape declares
+`[gates]`. That decoder is not an operating-mode
 fallback: an active v1 or legacy file is still refused, and the decoder is
 exercised only from the merge-base resolution path with fixtures for both
 migrations. Keeping the two paths distinct is what reconciles "no fallback
@@ -305,10 +319,13 @@ migration branch, every value the merge-base rule protects (defaults,
 rounds, breadth, convergence, gates, roles, stages, strategy, registry
 mappings, trusted actors) resolves either from the older copy's own
 effective semantics or from the consumer's built-in defaults, and never from
-the branch copy. Where the older shape has no equivalent (breadth,
-convergence predicates, finders, roles, trusted actors), the built-in
-default is the only admissible source, because a built-in cannot be edited
-by the branch. Built-in defaults are part of the reader, and the reader is
+the branch copy. Registry-owned values (finders, roles, write boundaries,
+trusted actor IDs, model tiers) come from the merge-base
+`agent-registry.json`, which exists independently of the policy shape. The
+built-in default is admissible only for a value absent from both the older
+policy copy and the merge-base registry (legacy breadth, and convergence
+predicates under either older shape), because a built-in cannot be edited by
+the branch. Built-in defaults are part of the reader, and the reader is
 part of the gate's trusted closure (decision 3), so the self-modification
 boundary covers it: a change that edits the reader, its defaults, or the
 decoder resolves policy by executing the merge-base reader from the
