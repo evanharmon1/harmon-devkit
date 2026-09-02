@@ -94,8 +94,10 @@ broker was rejected because they would drift.
 The round-push broker and the secret scanner live at stable repository-owned
 script paths (`scripts/round-push.sh`; `scripts/gitleaks-scan.sh` with its
 `.gitleaks.toml` and the `scripts/summarize-gitleaks.mjs` helper it executes
-under `GITHUB_STEP_SUMMARY`, which the `security:secrets` target already
-wraps) rather than inside a skill's assets: the merge-base rule materializes them with
+under `GITHUB_STEP_SUMMARY`; the extracted broker invokes that extracted
+script by explicit path, never through the worktree's `security:secrets`
+Taskfile recipe, which exists for humans and CI) rather than inside a
+skill's assets: the merge-base rule materializes them with
 `git show <merge-base>:<path>`, which needs a path that survives skill renames,
 and stage skills reference the broker by path instead of vendoring a copy that
 would drift. Keeping the broker as a skill asset was rejected because #638
@@ -355,8 +357,9 @@ determinism the milestone exists for.
 
 Sequencing follows from that boundary: the reader must exist at the merge
 base before a policy migration can be reviewed, so the reader lands in its
-own change (for DevKit, task 2.3; for generated repositories, the skills
-sync) and the policy migration is a later change. A migration whose merge
+own change (for DevKit, task 2.3; for generated repositories, whatever
+distribution their template uses, which harmon-init#1081 decides) and the
+policy migration is a later change. A migration whose merge
 base has no reader is refused rather than bootstrapped from the branch,
 because a branch-supplied reader is exactly what the boundary excludes. A
 pinned external bootstrap copy was rejected as a second trust root that
