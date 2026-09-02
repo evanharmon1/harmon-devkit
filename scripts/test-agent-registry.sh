@@ -40,6 +40,9 @@ const registry = JSON.parse(await readFile(inputPath, 'utf8'))
 const adapter = (slug) => registry.foreman_adapters.find((entry) => entry.slug === slug)
 const family = (slug) => registry.families.find((entry) => entry.slug === slug)
 const harness = (slug) => registry.harnesses.find((entry) => entry.slug === slug)
+const role = (slug) => registry.roles.find((entry) => entry.slug === slug)
+const finder = (slug) => registry.finders.find((entry) => entry.slug === slug)
+const modelOf = (familySlug, modelSlug) => family(familySlug).models.find((m) => m.slug === modelSlug)
 
 switch (mutation) {
   case 'duplicate-family':
@@ -111,6 +114,105 @@ switch (mutation) {
     // the foreman description wrapper is the longest, so the adapter bound is
     // tighter and needs its own declarative limit.
     adapter('claude').display_name = 'X'.repeat(48)
+    break
+  // ── roles[] (#635) ─────────────────────────────────────────────────────
+  case 'missing-required-role':
+    registry.roles = registry.roles.filter((entry) => entry.slug !== 'challenger')
+    break
+  case 'duplicate-role-slug':
+    registry.roles.push(structuredClone(role('reviewer')))
+    break
+  case 'orchestrator-with-result-schema':
+    role('orchestrator').result_schema = 'ai/schemas/result.implementer.schema.json'
+    break
+  case 'role-missing-result-schema':
+    role('implementer').result_schema = null
+    break
+  case 'role-result-schema-unknown-value':
+    role('integrator').result_schema = 'ai/schemas/result.nonexistent.schema.json'
+    break
+  case 'role-result-schema-wrong-role':
+    // A schema-legal value (it is one of the four enum members) that names a
+    // DIFFERENT role's own schema — challenge-review#635's own finding: this
+    // used to pass because the check only asked "non-null and exists",
+    // never "matches this role's own slug".
+    role('challenger').result_schema = 'ai/schemas/result.reviewer.schema.json'
+    break
+  case 'challenger-with-writes':
+    // A schema-legal value (borrowed from another role's own enum member) —
+    // isolates the "challenger must be empty" semantic rule from the
+    // separate closed-vocabulary enum check an arbitrary string would hit
+    // instead.
+    role('challenger').writes = ['gh pr ready']
+    break
+  case 'role-empty-writes':
+    role('implementer').writes = []
+    break
+  case 'role-writes-wrong-content':
+    // Schema-legal (every value is in the shared enum) but not THIS role's
+    // own expected set — challenge round 3's own finding: non-emptiness
+    // alone let a role borrow another role's write, or narrow its own.
+    role('orchestrator').writes = ['gh pr ready']
+    break
+  case 'role-writes-borrowed-from-another-role':
+    role('integrator').writes = ['the PR body', 'gh pr ready']
+    break
+  case 'role-writes-arbitrary-string':
+    // Codex round 3's own example: an arbitrary string outside the shared
+    // enum entirely (not merely another role's legitimate write).
+    role('integrator').writes = ['merge main']
+    break
+  // ── finders[] (#635) ───────────────────────────────────────────────────
+  case 'duplicate-finder-slug':
+    registry.finders.push(structuredClone(finder('codex-adversarial')))
+    break
+  case 'pr-cloud-finder-on-pre-pr-stage':
+    finder('codex-cloud').stages = ['challenge', 'integration']
+    break
+  case 'pr-cloud-finder-with-invocation':
+    finder('codex-cloud').invocation = { type: 'taskfile-target', target: 'bogus' }
+    break
+  case 'local-cli-finder-with-collection':
+    finder('codex-adversarial').collection = { type: 'shepherd-checker', protocol: 'x' }
+    break
+  case 'local-cli-finder-with-trusted-actor':
+    finder('codex-adversarial').trusted_actor_id = '1'
+    finder('codex-adversarial').trusted_actor_login = 'someone'
+    break
+  case 'finder-mismatched-trusted-actor-pair':
+    finder('codex-cloud').trusted_actor_login = null
+    break
+  case 'finder-non-numeric-trusted-actor-id':
+    finder('codex-cloud').trusted_actor_id = 'chatgpt-codex-connector'
+    break
+  case 'finder-role-result-schema-mismatch':
+    finder('codex-adversarial').result_schema = 'ai/schemas/result.reviewer.schema.json'
+    break
+  case 'finder-role-stage-affinity-violation':
+    finder('codex-adversarial').stages = ['review']
+    break
+  case 'finder-null-role-with-result-schema':
+    // review round 1's own finding: role:null skips the role-bound
+    // result_schema check entirely, so a role-less finder could still
+    // claim a real schema — an internally contradictory pair nothing
+    // caught before the converse check was added.
+    finder('codex-cloud').result_schema = 'ai/schemas/result.integrator.schema.json'
+    break
+  case 'finder-null-role-with-result-schema':
+    // review round 1's own finding: role:null skipped this branch entirely,
+    // so a role-less finder could still name a real result_schema.
+    finder('codex-cloud').result_schema = 'ai/schemas/result.integrator.schema.json'
+    break
+  // ── model tier defaults (#635) ─────────────────────────────────────────
+  case 'tier-rung-no-default':
+    delete modelOf('qwen', 'coder-plus').default
+    break
+  case 'tier-rung-multi-default':
+    modelOf('qwen', 'coder-next').default = true
+    break
+  // ── harness write-restriction (#635) ────────────────────────────────────
+  case 'harness-write-restricted-without-capability':
+    harness('codex-cli').can_restrict_writes = false
     break
   default:
     throw new Error(`unknown mutation: ${mutation}`)
@@ -264,6 +366,81 @@ rejects "a display_name over the schema's declarative length cap" \
 rejects "an adapter display_name over its tighter 47-char cap" \
     'overlong-adapter-display-name' \
     'must contain at most 47 character(s)'
+rejects "roles[] missing a required role slug" \
+    'missing-required-role' \
+    'roles[] is missing required role challenger'
+rejects "duplicate role slugs" \
+    'duplicate-role-slug' \
+    'duplicate role slug'
+rejects "orchestrator declaring a result_schema" \
+    'orchestrator-with-result-schema' \
+    'role orchestrator returns no result and must have result_schema: null'
+rejects "a non-orchestrator role with no result_schema" \
+    'role-missing-result-schema' \
+    'role implementer must name its own result schema'
+rejects "a role naming a result_schema value outside the closed enum" \
+    'role-result-schema-unknown-value' \
+    'must be one of'
+rejects "a role naming a different role's own result_schema" \
+    'role-result-schema-wrong-role' \
+    'must name its own result schema'
+rejects "challenger declaring external writes" \
+    'challenger-with-writes' \
+    'role challenger must declare no external writes'
+rejects "a non-write-restricted role with empty writes" \
+    'role-empty-writes' \
+    'role implementer must declare its permitted external writes'
+rejects "a role's writes narrowed to a subset of its own expected set" \
+    'role-writes-wrong-content' \
+    'writes must exactly match its own expected set'
+rejects "a role's writes containing another role's own write" \
+    'role-writes-borrowed-from-another-role' \
+    'writes must exactly match its own expected set'
+rejects "a role's writes containing a string outside the shared vocabulary entirely" \
+    'role-writes-arbitrary-string' \
+    'must be one of'
+rejects "duplicate finder slugs" \
+    'duplicate-finder-slug' \
+    'duplicate finder slug'
+rejects "a pr-cloud finder configured for a pre-PR stage" \
+    'pr-cloud-finder-on-pre-pr-stage' \
+    'cannot serve a stage that runs before a PR exists'
+rejects "a pr-cloud finder declaring an invocation" \
+    'pr-cloud-finder-with-invocation' \
+    'pr-cloud finders are collected, never invoked'
+rejects "a local-cli finder declaring a collection protocol" \
+    'local-cli-finder-with-collection' \
+    'local-cli finders are invoked, never collected'
+rejects "a local-cli finder declaring a trusted_actor_id" \
+    'local-cli-finder-with-trusted-actor' \
+    'not a scraped remote identity'
+rejects "a finder with trusted_actor_id/login split (one null, one not)" \
+    'finder-mismatched-trusted-actor-pair' \
+    'must set trusted_actor_id and trusted_actor_login together'
+rejects "a finder trusted_actor_id that is not digits-only" \
+    'finder-non-numeric-trusted-actor-id' \
+    'must be a digits-only GitHub actor id'
+rejects "a finder whose result_schema disagrees with its declared role" \
+    'finder-role-result-schema-mismatch' \
+    "does not match that role's own result_schema"
+rejects "a finder configured outside its declared role's stage affinity" \
+    'finder-role-stage-affinity-violation' \
+    "outside that role's own affinity"
+rejects "a role-less finder that still names a real result_schema" \
+    'finder-null-role-with-result-schema' \
+    'a role-less finder has no role to derive an expected schema from'
+rejects "a role-less finder naming a real result_schema" \
+    'finder-null-role-with-result-schema' \
+    'has no role to derive an expected schema from'
+rejects "a multi-model family-tier rung with no default" \
+    'tier-rung-no-default' \
+    'and none is marked default'
+rejects "a multi-model family-tier rung with two defaults" \
+    'tier-rung-multi-default' \
+    'at most one may be default'
+rejects "a write-restricted role on a harness that cannot restrict writes" \
+    'harness-write-restricted-without-capability' \
+    'must not dispatch a write-restricted role'
 
 node --input-type=module - "$schema" "$mutated_schema" <<'NODE'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -427,5 +604,58 @@ case "$output" in
 *) fail "boolean items schema failed for the wrong reason: $output" ;;
 esac
 echo "PASS: rejects boolean items schemas"
+
+# --- Label provenance: tier:<role>:<tier> resolution (#635) ----------------
+# specs/dev-flow-v2.md 'Labels resolve role names through the registry':
+# resolveRoleTierLabel (scripts/lib/registry-roles.mjs) is imported directly
+# rather than invoked as a CLI, so this exercises the exact function the
+# orchestrator will later call, not a reimplementation of it.
+node --input-type=module - "$registry" <<'NODE'
+import { readFile } from 'node:fs/promises'
+import { resolveRoleTierLabel, TIER_ORDER } from './scripts/lib/registry-roles.mjs'
+
+const [registryPath] = process.argv.slice(2)
+const registry = JSON.parse(await readFile(registryPath, 'utf8'))
+
+let failures = 0
+function expect(description, condition) {
+  if (condition) {
+    console.log(`PASS: ${description}`)
+  } else {
+    console.error(`FAIL: ${description}`)
+    failures += 1
+  }
+}
+
+const ok = resolveRoleTierLabel('tier:challenger:standard', registry)
+expect('resolves a known role and tier', ok.ok === true && ok.role === 'challenger' && ok.tier === 'standard')
+
+const unknownRole = resolveRoleTierLabel('tier:bogus:standard', registry)
+expect(
+  'rejects an unknown role',
+  unknownRole.ok === false && unknownRole.error.includes('unknown role: bogus')
+)
+
+const unknownTier = resolveRoleTierLabel('tier:challenger:ultra', registry)
+expect(
+  'rejects an unknown tier',
+  unknownTier.ok === false && unknownTier.error.includes('unknown tier: ultra')
+)
+
+const malformed = resolveRoleTierLabel('suggest:claude', registry)
+expect('rejects a label that is not tier:<role>:<tier> shaped', malformed.ok === false)
+
+expect(
+  'TIER_ORDER excludes adaptive (a config resolution input, never a concrete tier)',
+  !TIER_ORDER.includes('adaptive')
+)
+
+for (const requiredRole of ['orchestrator', 'implementer', 'challenger', 'reviewer', 'integrator']) {
+  const resolved = resolveRoleTierLabel(`tier:${requiredRole}:standard`, registry)
+  expect(`resolves every registry role (${requiredRole})`, resolved.ok === true)
+}
+
+process.exit(failures === 0 ? 0 : 1)
+NODE
 
 echo "agent registry mutation tests OK"

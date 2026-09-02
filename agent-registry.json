@@ -1,6 +1,6 @@
 {
   "$schema": "./agent-registry.schema.json",
-  "schema_version": 2,
+  "schema_version": 3,
   "labels": {
     "suggest": {
       "prefix": "suggest",
@@ -21,10 +21,10 @@
       "display_name": "Claude",
       "legacy_claim_labels": ["agent:claude-code"],
       "models": [
-        { "slug": "fable", "display_name": "Fable" },
-        { "slug": "opus", "display_name": "Opus" },
-        { "slug": "sonnet", "display_name": "Sonnet" },
-        { "slug": "haiku", "display_name": "Haiku" }
+        { "slug": "fable", "display_name": "Fable", "tier": "apex" },
+        { "slug": "opus", "display_name": "Opus", "tier": "frontier" },
+        { "slug": "sonnet", "display_name": "Sonnet", "tier": "standard" },
+        { "slug": "haiku", "display_name": "Haiku", "tier": "economy" }
       ]
     },
     {
@@ -32,17 +32,17 @@
       "display_name": "GPT",
       "legacy_claim_labels": ["agent:codex"],
       "models": [
-        { "slug": "sol", "display_name": "Sol" },
-        { "slug": "terra", "display_name": "Terra" },
-        { "slug": "luna", "display_name": "Luna" }
+        { "slug": "sol", "display_name": "Sol", "tier": "apex" },
+        { "slug": "terra", "display_name": "Terra", "tier": "standard" },
+        { "slug": "luna", "display_name": "Luna", "tier": "economy" }
       ]
     },
     {
       "slug": "mai",
       "display_name": "MAI",
       "models": [
-        { "slug": "code-1-flash", "display_name": "Code-1-Flash" },
-        { "slug": "thinking-1", "display_name": "Thinking-1" }
+        { "slug": "code-1-flash", "display_name": "Code-1-Flash", "tier": "economy" },
+        { "slug": "thinking-1", "display_name": "Thinking-1", "tier": "standard" }
       ]
     },
     {
@@ -50,54 +50,54 @@
       "display_name": "Qwen",
       "legacy_claim_labels": ["agent:qwen-code"],
       "models": [
-        { "slug": "max", "display_name": "3.7 Max" },
-        { "slug": "coder-plus", "display_name": "3 Coder Plus" },
-        { "slug": "coder", "display_name": "3 Coder" },
-        { "slug": "coder-next", "display_name": "3 Coder Next" },
-        { "slug": "coder-30b", "display_name": "3 Coder 30B" }
+        { "slug": "max", "display_name": "3.7 Max", "tier": "frontier" },
+        { "slug": "coder-plus", "display_name": "3 Coder Plus", "tier": "standard", "default": true },
+        { "slug": "coder", "display_name": "3 Coder", "tier": "economy" },
+        { "slug": "coder-next", "display_name": "3 Coder Next", "tier": "standard" },
+        { "slug": "coder-30b", "display_name": "3 Coder 30B", "tier": "local" }
       ]
     },
     {
       "slug": "deepseek",
       "display_name": "DeepSeek",
       "models": [
-        { "slug": "v4-pro", "display_name": "V4 Pro" },
-        { "slug": "v4-flash", "display_name": "V4 Flash" }
+        { "slug": "v4-pro", "display_name": "V4 Pro", "tier": "standard" },
+        { "slug": "v4-flash", "display_name": "V4 Flash", "tier": "economy" }
       ]
     },
     {
       "slug": "glm",
       "display_name": "GLM",
       "models": [
-        { "slug": "5-2", "display_name": "5.2" },
-        { "slug": "4-7-flash", "display_name": "4.7 Flash" }
+        { "slug": "5-2", "display_name": "5.2", "tier": "standard" },
+        { "slug": "4-7-flash", "display_name": "4.7 Flash", "tier": "economy" }
       ]
     },
     {
       "slug": "kimi",
       "display_name": "Kimi",
       "legacy_claim_labels": ["agent:kimi-k2"],
-      "models": [{ "slug": "k3", "display_name": "K3" }]
+      "models": [{ "slug": "k3", "display_name": "K3", "tier": "standard" }]
     },
     {
       "slug": "minimax",
       "display_name": "MiniMax",
-      "models": [{ "slug": "m3", "display_name": "M3" }]
+      "models": [{ "slug": "m3", "display_name": "M3", "tier": "standard" }]
     },
     {
       "slug": "gemini",
       "display_name": "Gemini",
       "legacy_claim_labels": ["agent:gemini-cli"],
       "models": [
-        { "slug": "3-1-pro", "display_name": "3.1 Pro" },
-        { "slug": "3-6-flash", "display_name": "3.6 Flash" },
-        { "slug": "3-5-flash-lite", "display_name": "3.5 Flash-Lite" }
+        { "slug": "3-1-pro", "display_name": "3.1 Pro", "tier": "frontier" },
+        { "slug": "3-6-flash", "display_name": "3.6 Flash", "tier": "standard" },
+        { "slug": "3-5-flash-lite", "display_name": "3.5 Flash-Lite", "tier": "economy" }
       ]
     },
     {
       "slug": "mistral",
       "display_name": "Mistral",
-      "models": [{ "slug": "devstral-small-2", "display_name": "Devstral Small 2" }]
+      "models": [{ "slug": "devstral-small-2", "display_name": "Devstral Small 2", "tier": "standard" }]
     }
   ],
   "harnesses": [
@@ -110,7 +110,9 @@
         "owner": "runner-config",
         "details": "The runner or repository configuration selects the Claude model; labels do not."
       },
-      "provider_rewired": false
+      "provider_rewired": false,
+      "roles": ["implementer", "challenger", "reviewer", "integrator"],
+      "can_restrict_writes": true
     },
     {
       "slug": "claude-code-action",
@@ -121,7 +123,9 @@
         "owner": "workflow-config",
         "details": "The GitHub Actions workflow input selects the Claude model."
       },
-      "provider_rewired": false
+      "provider_rewired": false,
+      "roles": ["implementer", "challenger", "reviewer", "integrator"],
+      "can_restrict_writes": true
     },
     {
       "slug": "claude-code-deepseek",
@@ -132,7 +136,9 @@
         "owner": "provider-wrapper",
         "details": "The provider-rewired wrapper fixes the family and its runtime configuration selects the model."
       },
-      "provider_rewired": true
+      "provider_rewired": true,
+      "roles": ["implementer", "challenger", "reviewer", "integrator"],
+      "can_restrict_writes": true
     },
     {
       "slug": "claude-code-glm",
@@ -143,7 +149,9 @@
         "owner": "provider-wrapper",
         "details": "The provider-rewired wrapper fixes the family and its runtime configuration selects the model."
       },
-      "provider_rewired": true
+      "provider_rewired": true,
+      "roles": ["implementer", "challenger", "reviewer", "integrator"],
+      "can_restrict_writes": true
     },
     {
       "slug": "claude-code-kimi",
@@ -154,7 +162,9 @@
         "owner": "provider-wrapper",
         "details": "The provider-rewired wrapper fixes the family and its runtime configuration selects the model."
       },
-      "provider_rewired": true
+      "provider_rewired": true,
+      "roles": ["implementer", "challenger", "reviewer", "integrator"],
+      "can_restrict_writes": true
     },
     {
       "slug": "claude-code-minimax",
@@ -165,7 +175,9 @@
         "owner": "provider-wrapper",
         "details": "The provider-rewired wrapper fixes the family and its runtime configuration selects the model."
       },
-      "provider_rewired": true
+      "provider_rewired": true,
+      "roles": ["implementer", "challenger", "reviewer", "integrator"],
+      "can_restrict_writes": true
     },
     {
       "slug": "claude-code-qwen",
@@ -176,7 +188,9 @@
         "owner": "provider-wrapper",
         "details": "The provider-rewired wrapper fixes the family; per-role model env vars select Qwen3.7-Max for the main/reasoning roles and Qwen3-Coder-Plus for the coding/subagent roles."
       },
-      "provider_rewired": true
+      "provider_rewired": true,
+      "roles": ["implementer", "challenger", "reviewer", "integrator"],
+      "can_restrict_writes": true
     },
     {
       "slug": "claude-code-qwen-local",
@@ -187,7 +201,9 @@
         "owner": "provider-wrapper",
         "details": "The provider-rewired wrapper points at a local Anthropic-compatible endpoint (Ollama or LM Studio) serving qwen3-coder:30b."
       },
-      "provider_rewired": true
+      "provider_rewired": true,
+      "roles": ["implementer", "challenger", "reviewer", "integrator"],
+      "can_restrict_writes": true
     },
     {
       "slug": "codex-cli",
@@ -198,7 +214,9 @@
         "owner": "runner-config",
         "details": "The runner or CLI invocation selects the GPT model."
       },
-      "provider_rewired": false
+      "provider_rewired": false,
+      "roles": ["implementer", "challenger", "reviewer"],
+      "can_restrict_writes": true
     },
     {
       "slug": "copilot-cli",
@@ -209,7 +227,9 @@
         "owner": "harness-runtime",
         "details": "Copilot's picker selects among MAI and brokered third-party models at runtime."
       },
-      "provider_rewired": false
+      "provider_rewired": false,
+      "roles": ["implementer"],
+      "can_restrict_writes": false
     },
     {
       "slug": "qwen-code",
@@ -220,7 +240,9 @@
         "owner": "runner-config",
         "details": "The runner or Qwen Code configuration selects the Qwen model."
       },
-      "provider_rewired": false
+      "provider_rewired": false,
+      "roles": ["implementer"],
+      "can_restrict_writes": false
     },
     {
       "slug": "antigravity",
@@ -231,7 +253,9 @@
         "owner": "harness-runtime",
         "details": "The Antigravity session selects the Gemini model."
       },
-      "provider_rewired": false
+      "provider_rewired": false,
+      "roles": ["implementer"],
+      "can_restrict_writes": false
     },
     {
       "slug": "opencode",
@@ -242,7 +266,9 @@
         "owner": "harness-runtime",
         "details": "The multi-provider harness selects both provider family and model at runtime."
       },
-      "provider_rewired": false
+      "provider_rewired": false,
+      "roles": ["implementer"],
+      "can_restrict_writes": false
     },
     {
       "slug": "pi",
@@ -253,7 +279,9 @@
         "owner": "harness-runtime",
         "details": "The multi-provider harness selects both provider family and model at runtime."
       },
-      "provider_rewired": false
+      "provider_rewired": false,
+      "roles": ["implementer"],
+      "can_restrict_writes": false
     },
     {
       "slug": "goose",
@@ -264,7 +292,9 @@
         "owner": "harness-runtime",
         "details": "The multi-provider harness selects both provider family and model at runtime."
       },
-      "provider_rewired": false
+      "provider_rewired": false,
+      "roles": ["implementer"],
+      "can_restrict_writes": false
     },
     {
       "slug": "cline",
@@ -275,7 +305,9 @@
         "owner": "harness-runtime",
         "details": "The multi-provider harness selects both provider family and model at runtime."
       },
-      "provider_rewired": false
+      "provider_rewired": false,
+      "roles": ["implementer"],
+      "can_restrict_writes": false
     }
   ],
   "foreman_adapters": [
@@ -332,6 +364,89 @@
       "classification": "test-only",
       "production_dispatchable": false,
       "provision_label": false
+    }
+  ],
+  "roles": [
+    {
+      "slug": "orchestrator",
+      "display_name": "Orchestrator",
+      "result_schema": null,
+      "writes": [
+        "dispositions",
+        "the adjudication record",
+        "gh pr create --draft",
+        "the PR body",
+        "evidence and run-record comments",
+        "gh pr ready"
+      ]
+    },
+    {
+      "slug": "implementer",
+      "display_name": "Implementer",
+      "result_schema": "ai/schemas/result.implementer.schema.json",
+      "writes": [
+        "commits on the branch its dispatch names",
+        "feature-branch round pushes through the round-push broker"
+      ]
+    },
+    {
+      "slug": "challenger",
+      "display_name": "Challenger",
+      "result_schema": "ai/schemas/result.challenger.schema.json",
+      "writes": []
+    },
+    {
+      "slug": "reviewer",
+      "display_name": "Reviewer",
+      "result_schema": "ai/schemas/result.reviewer.schema.json",
+      "writes": []
+    },
+    {
+      "slug": "integrator",
+      "display_name": "Integrator",
+      "result_schema": "ai/schemas/result.integrator.schema.json",
+      "writes": [
+        "the brokered Codex trigger comment",
+        "brokered thread replies containing text supplied by the orchestrator"
+      ]
+    }
+  ],
+  "finders": [
+    {
+      "slug": "codex-adversarial",
+      "display_name": "Codex Adversarial Review",
+      "surface": "local-cli",
+      "role": "challenger",
+      "stages": ["challenge"],
+      "result_schema": "ai/schemas/result.challenger.schema.json",
+      "invocation": { "type": "taskfile-target", "target": "challenge:codex" },
+      "collection": null,
+      "trusted_actor_id": null,
+      "trusted_actor_login": null
+    },
+    {
+      "slug": "codex-verification",
+      "display_name": "Codex Verification Review",
+      "surface": "local-cli",
+      "role": "reviewer",
+      "stages": ["review"],
+      "result_schema": "ai/schemas/result.reviewer.schema.json",
+      "invocation": { "type": "taskfile-target", "target": "review:codex" },
+      "collection": null,
+      "trusted_actor_id": null,
+      "trusted_actor_login": null
+    },
+    {
+      "slug": "codex-cloud",
+      "display_name": "Codex Cloud Review",
+      "surface": "pr-cloud",
+      "role": null,
+      "stages": ["integration"],
+      "result_schema": null,
+      "invocation": null,
+      "collection": { "type": "shepherd-checker", "protocol": "reserve-trigger-attach-check" },
+      "trusted_actor_id": "199175422",
+      "trusted_actor_login": "chatgpt-codex-connector[bot]"
     }
   ]
 }

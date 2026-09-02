@@ -9,7 +9,7 @@
 // Usage:
 //   validate-result-schemas.mjs <kind> <file> [options]
 //
-//   kind: envelope | implementer | reviewer | integrator | adjudication | run
+//   kind: envelope | implementer | challenger | reviewer | integrator | adjudication | run
 //   `envelope` dispatches on the instance's own `role` field (after the
 //   envelope schema itself passes) and runs exactly the same payload +
 //   receipt checks as invoking the role's own kind name directly — it is
@@ -17,8 +17,8 @@
 //   the caller having to already know its role.
 //
 //   --known-ids <file.json>       JSON array of finding ids already used
-//                                 elsewhere in the run (reviewer and
-//                                 integrator) — rejects a collision (spec:
+//                                 elsewhere in the run (challenger, reviewer,
+//                                 and integrator) — rejects a collision (spec:
 //                                 "a finding id is unique within the run by
 //                                 construction").
 //   --run-id <id>                 The active run's run_id. Must be given
@@ -27,11 +27,13 @@
 //                                 guaranteed-mismatch: rejects an envelope
 //                                 whose `run` names a different run.
 //   --pass <envelope.json>        (adjudication only, repeatable) the
-//                                 envelope this document adjudicates: a
-//                                 reviewer envelope for stage challenge/
-//                                 review, or an INTEGRATOR envelope for
-//                                 stage integration (the document's own
-//                                 `stage` decides which — read before
+//                                 envelope this document adjudicates: for
+//                                 stage challenge, a REVIEWER envelope (a
+//                                 pre-#635 trajectory) or a CHALLENGER one
+//                                 (post-#635); stage review is REVIEWER-only
+//                                 (that role never split); stage integration
+//                                 is INTEGRATOR-only (the document's own
+//                                 `stage` decides which set applies — read before
 //                                 parsing the rest of argv, since --pass may
 //                                 appear anywhere). Each file is itself
 //                                 validated in full (envelope schema + its
@@ -97,8 +99,8 @@
 //                                 caller's cwd.
 //   --receipt                    Require every context flag applicable to
 //                                 this invocation's <kind> (envelope kinds:
-//                                 --run-id/--initiated-by; reviewer and
-//                                 integrator: also --known-ids;
+//                                 --run-id/--initiated-by; challenger,
+//                                 reviewer, and integrator: also --known-ids;
 //                                 adjudication: --pass and
 //                                 --known-adjudicated; run: --adjudication)
 //                                 — a missing one is a
@@ -128,14 +130,14 @@ import { fileURLToPath } from 'node:url'
 import { createSchemaValidator } from './lib/json-schema-subset.mjs'
 
 const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'ai', 'schemas')
-const KINDS = ['envelope', 'implementer', 'reviewer', 'integrator', 'adjudication', 'run']
+const KINDS = ['envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run']
 const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
 const SHA_PATTERN = /^[0-9a-f]{40}$/
 const ISSUE_NUMBER_PATTERN = /^[1-9][0-9]*$/
 
 function usage() {
   console.error(
-    'usage: validate-result-schemas.mjs <envelope|implementer|reviewer|integrator|adjudication|run> <file> ' +
+    'usage: validate-result-schemas.mjs <envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
       '[--no-adjudications] [--schemas-dir <dir>] [--receipt]'
@@ -213,16 +215,21 @@ function parseArgs(argv) {
     usage()
     process.exit(2)
   }
-  // --pass's own expected role: a reviewer envelope for stage challenge/
-  // review, an integrator envelope for stage integration. --pass is parsed
-  // (and its file validated) as the loop below reaches it, which may be
-  // before OR after this document's own `stage` would otherwise be known —
-  // so peek at it now, from the primary file already in hand, rather than
-  // discovering it mid-parse.
-  let passRole = 'reviewer'
+  // --pass's own expected role(s). --pass is parsed (and its file validated)
+  // as the loop below reaches it, which may be before OR after this
+  // document's own `stage` would otherwise be known — so peek at it now,
+  // from the primary file already in hand, rather than discovering it
+  // mid-parse.
+  // Stage `review` has always been reviewer-only; stage `integration` is
+  // integrator-only. Stage `challenge` now admits EITHER role: `reviewer`
+  // for a pre-#635 trajectory (the single pre-split role covered both
+  // stages) or `challenger` going forward — peeking a fixed single expected
+  // role here would reject every legitimate challenger --pass outright.
+  let passAllowedRoles = ['reviewer']
   if (kind === 'adjudication') {
     const peek = loadJson(file)
-    if (peek && peek.stage === 'integration') passRole = 'integrator'
+    if (peek && peek.stage === 'integration') passAllowedRoles = ['integrator']
+    else if (peek && peek.stage === 'challenge') passAllowedRoles = ['reviewer', 'challenger']
   }
   const options = {
     knownIds: null,
@@ -248,30 +255,46 @@ function parseArgs(argv) {
       case '--pass': {
         const passFile = rest[(i += 1)]
         const data = loadAndValidateContext(passFile, '--pass', (candidate) => {
-          const errors = validateEnvelopeInstance(candidate, passRole, {
+          // Dispatch as `envelope` (self-dispatch on candidate's own role)
+          // rather than asserting one fixed expected role, then separately
+          // confirm that role is one this stage may legitimately produce —
+          // this is what lets a challenge-stage --pass be either a
+          // pre-#635 reviewer pass or a challenger pass without the two
+          // being conflated or one being silently rejected.
+          if (
+            candidate &&
+            typeof candidate.role === 'string' &&
+            !passAllowedRoles.includes(candidate.role)
+          ) {
+            return [
+              `$result.role: expected ${passAllowedRoles.join(' or ')}, found ${JSON.stringify(candidate.role)}`
+            ]
+          }
+          const errors = validateEnvelopeInstance(candidate, 'envelope', {
             knownIds: null,
             runId: null,
             initiatedBy: null
           })
-          // A blocked REVIEWER contributes no pass at all (the orchestrator
-          // retries it once, spec § Configuration) — a status: blocked
-          // reviewer envelope is a perfectly valid standalone result (it
-          // just means the finder produced nothing), but it is never a
-          // legitimate --pass: checkReviewerBlockedStatus already forces
-          // its findings empty, so there is never real content to cross-
-          // check an adjudication against, unconditionally. A blocked
-          // INTEGRATOR is different: checkIntegratorBlockedStatus permits
-          // verdict findings/pending/escalate while blocked (only clean is
-          // forbidden), so a blocked integrator CAN carry real findings —
+          // A blocked confidence-role pass (reviewer OR challenger) contributes
+          // no pass at all (the orchestrator retries it once, spec §
+          // Configuration) — a status: blocked envelope is a perfectly valid
+          // standalone result (it just means the finder produced nothing), but
+          // it is never a legitimate --pass: checkReviewerBlockedStatus already
+          // forces its findings empty for either role, so there is never real
+          // content to cross-check an adjudication against, unconditionally. A
+          // blocked INTEGRATOR is different: checkIntegratorBlockedStatus
+          // permits verdict findings/pending/escalate while blocked (only clean
+          // is forbidden), so a blocked integrator CAN carry real findings —
           // evidence gathered before being cut short — and is accepted as
-          // --pass context precisely when it does; one with none is
-          // rejected for the same "nothing to adjudicate" reason.
+          // --pass context precisely when it does; one with none is rejected
+          // for the same "nothing to adjudicate" reason.
+          const isConfidenceRole = candidate && (candidate.role === 'reviewer' || candidate.role === 'challenger')
           if (errors.length === 0 && candidate.status === 'blocked') {
             const hasFindings =
               candidate.payload &&
               Array.isArray(candidate.payload.findings) &&
               candidate.payload.findings.length > 0
-            if (passRole === 'reviewer' || !hasFindings) {
+            if (isConfidenceRole || !hasFindings) {
               errors.push('$result.status: a blocked pass contributes no findings and cannot be used as --pass context')
             }
           }
@@ -344,6 +367,7 @@ function parseFindingId(id) {
 const RUN_ID_FLAG = { flag: '--run-id', given: (o) => o.runId !== null }
 const CONTEXT_FLAGS = {
   implementer: [RUN_ID_FLAG],
+  challenger: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
   reviewer: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
   integrator: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
   adjudication: [
@@ -455,7 +479,13 @@ function checkAdjudicationActiveRun(document, options, errors) {
 // zero — the same "blocked reviewer still validates against the same
 // shape, just empty" design the schema and README already describe, made
 // explicit as a receipt check. Cross-field (envelope status vs payload
-// content), always runs for role reviewer.
+// content), always runs for role reviewer — and, since result.challenger's
+// pass core is field-for-field identical (findings + counts), reused
+// unchanged for role challenger rather than duplicated as a twin function.
+// attack_scenarios is challenger-only and gets its own status rule in
+// checkChallengerAttackScenarios below, kept apart from this generic
+// findings/counts check the same way that field is kept apart from the
+// shared pass core in the schema itself.
 function checkReviewerBlockedStatus(envelope, errors) {
   if (envelope.status !== 'blocked') return
   const { payload } = envelope
@@ -474,7 +504,10 @@ function checkReviewerBlockedStatus(envelope, errors) {
 // checkFindingIds — (b) no duplicate id within this pass, (c) no collision
 // with ids already used elsewhere in the run (when --known-ids is given),
 // (e) each id's stage/round/finder segments match this pass's own metadata,
-// plus a counts-vs-tally cross-check.
+// plus a counts-vs-tally cross-check. Generic over any payload shaped like
+// the shared pass core (findings[] + stage/round/finder + counts), so it
+// serves both role reviewer and role challenger without a role-specific
+// branch.
 function checkFindingIds(envelope, options, errors) {
   const { payload } = envelope
   if (!Array.isArray(payload.findings)) return
@@ -522,11 +555,67 @@ function checkFindingIds(envelope, options, errors) {
   }
 }
 
+// checkChallengerAttackScenarios — role challenger only. Same-document checks
+// (no external context needed, unlike checkFindingIds' --known-ids cross-run
+// collision case): (a) attack_scenarios must be non-empty when the envelope
+// is completed, and empty when blocked — the field exists specifically so a
+// clean round still proves the design was actually attacked rather than
+// merely inspected (ai/schemas/README.md); a completed pass reporting zero
+// scenarios defeats that purpose exactly the way an empty findings[] would
+// not (findings may legitimately be empty on their own). (b) no duplicate
+// attack_scenarios[].id within this pass — the schema's own description
+// promises "unique within this pass", which is otherwise nowhere enforced;
+// (c) every entry whose outcome is surfaced-finding must name a finding_id
+// that actually appears in THIS pass's own findings[] — a scenario cannot
+// claim to have surfaced a finding this pass never returned. The schema's own
+// if/then already forces finding_id null for outcome:held and a string for
+// outcome:surfaced-finding; this adds the one thing a schema keyword cannot
+// check, that the string names a real sibling finding.
+function checkChallengerAttackScenarios(envelope, errors) {
+  const { status, payload } = envelope
+  if (!Array.isArray(payload.attack_scenarios)) return
+  if (status === 'completed' && payload.attack_scenarios.length === 0) {
+    errors.push(
+      '$result.payload.attack_scenarios: must be non-empty when the envelope status is completed — a clean pass still records what it attempted'
+    )
+  }
+  if (status === 'blocked' && payload.attack_scenarios.length > 0) {
+    errors.push('$result.payload.attack_scenarios: must be empty when the envelope status is blocked')
+  }
+  const findingIds = new Set(
+    Array.isArray(payload.findings)
+      ? payload.findings.filter((f) => typeof f.id === 'string').map((f) => f.id)
+      : []
+  )
+  const seenScenarioIds = new Set()
+  for (const scenario of payload.attack_scenarios) {
+    if (typeof scenario.id === 'string') {
+      if (seenScenarioIds.has(scenario.id)) {
+        errors.push(
+          `$result.payload.attack_scenarios: duplicate scenario id ${scenario.id} within this pass`
+        )
+      }
+      seenScenarioIds.add(scenario.id)
+    }
+    if (scenario.outcome === 'surfaced-finding' && typeof scenario.finding_id === 'string') {
+      if (!findingIds.has(scenario.finding_id)) {
+        errors.push(
+          `$result.payload.attack_scenarios: scenario ${JSON.stringify(scenario.id)} names finding_id ${scenario.finding_id}, which is not in this pass's own findings`
+        )
+      }
+    }
+  }
+}
+
 // checkHeadAgreement — every head-shaped field in a payload must equal the
 // envelope's head (specs/dev-flow-v2.md § Results, "Heads must agree").
 function checkHeadAgreement(kind, envelope, errors) {
   const { head, payload } = envelope
-  if (kind === 'reviewer' && typeof payload.reviewed_head === 'string' && payload.reviewed_head !== head) {
+  if (
+    (kind === 'reviewer' || kind === 'challenger') &&
+    typeof payload.reviewed_head === 'string' &&
+    payload.reviewed_head !== head
+  ) {
     errors.push(
       `$result.payload.reviewed_head: ${payload.reviewed_head} does not match envelope head ${head}`
     )
@@ -828,10 +917,11 @@ function validateEnvelopeInstance(instance, kind, options) {
       if (errors.length === 0) {
         checkActiveRun(instance, options, errors)
         if (role === 'implementer') checkImplementerStatus(instance, errors)
-        if (role === 'reviewer') {
+        if (role === 'reviewer' || role === 'challenger') {
           checkReviewerBlockedStatus(instance, errors)
           checkFindingIds(instance, options, errors)
         }
+        if (role === 'challenger') checkChallengerAttackScenarios(instance, errors)
         if (role === 'integrator') {
           checkIntegratorBlockedStatus(instance, errors)
           checkCodexCycleAcceptedScope(instance.payload, errors)
@@ -1039,6 +1129,19 @@ function checkAdjudicationAgainstPass(document, passes, options, errors) {
     if (other.data.payload.reviewed_head !== reference.data.payload.reviewed_head) {
       errors.push(
         `$adjudication: --pass ${other.file} has reviewed_head ${other.data.payload.reviewed_head}, disagreeing with ${reference.file}'s ${reference.data.payload.reviewed_head}`
+      )
+    }
+    // A confidence round aggregates passes from ONE stage role (challenge ->
+    // challenger, review -> reviewer) — never a mix. This only bites for
+    // stage challenge, where a --pass may now be EITHER role (a pre-#635
+    // reviewer trajectory or a #635 challenger one, see passAllowedRoles
+    // above): allowing that per-file is correct, but the passes making up
+    // ONE round must still all agree with each other, or a round could
+    // combine two different evidence contracts (result.challenger findings
+    // alongside result.reviewer ones) into one adjudication.
+    if (!isIntegration && other.data.role !== reference.data.role) {
+      errors.push(
+        `$adjudication: --pass ${other.file} has role ${other.data.role}, disagreeing with ${reference.file}'s ${reference.data.role} — a round aggregates passes from one role, never a mix`
       )
     }
   }

@@ -1,0 +1,1 @@
+$result.payload.findings: must be empty when the envelope status is blocked

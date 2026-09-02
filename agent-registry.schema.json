@@ -4,10 +4,22 @@
   "title": "Harmon agent registry",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "schema_version", "labels", "families", "harnesses", "foreman_adapters"],
+  "required": [
+    "$schema",
+    "schema_version",
+    "labels",
+    "families",
+    "harnesses",
+    "foreman_adapters",
+    "roles",
+    "finders"
+  ],
   "properties": {
     "$schema": { "const": "./agent-registry.schema.json" },
-    "schema_version": { "const": 2 },
+    "schema_version": {
+      "$comment": "Bumped 2 -> 3 by #635: roles[] and finders[] are new required top-level arrays, and families[].models[]/harnesses[] gained new required fields (tier, roles, can_restrict_writes) — a v2 document is not a valid v3 document, so consumers need a version bump to detect the shape change, exactly as this family's result-schema envelope bumps `schema` when Foreman v1's flat shape changed.",
+      "const": 3
+    },
     "labels": {
       "type": "object",
       "additionalProperties": false,
@@ -31,6 +43,17 @@
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/$defs/foremanAdapter" }
+    },
+    "roles": {
+      "description": "The five dev-flow-v2 roles (specs/dev-flow-v2.md 'Roles and authority') — orchestrator, implementer, challenger, reviewer, integrator — each declaring its result schema (null for orchestrator, which returns no result) and its permitted external writes. No minItems here: cross-file validation (scripts/validate-agent-registry.mjs) requires exactly these five slugs, each once, which is a more precise guarantee than a bare array-length bound could express.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/role" }
+    },
+    "finders": {
+      "description": "External review products that produce findings for a confidence or integration stage (docs/glossary.md 'finder'). Cross-file validation enforces surface/stage affinity (a pr-cloud finder may not serve challenge or review), role/result_schema consistency, and role/stage affinity.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/finder" }
     }
   },
   "$defs": {
@@ -65,10 +88,18 @@
     "model": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["slug", "display_name"],
+      "required": ["slug", "display_name", "tier"],
       "properties": {
         "slug": { "$ref": "#/$defs/slug" },
-        "display_name": { "type": "string", "minLength": 1 }
+        "display_name": { "type": "string", "minLength": 1 },
+        "tier": {
+          "description": "The model stratum (specs/dev-flow-v2.md, #635) — seeded from this repo's .devflow.toml [tier.*] tables, which harmon-init#1081 removes once resolution reads this field instead.",
+          "enum": ["local", "economy", "standard", "frontier", "apex"]
+        },
+        "default": {
+          "description": "Required true on exactly one model when its family has more than one model at the same tier; omitted (or true) on a singleton family-tier rung, where it is unambiguous. Cross-file validation (scripts/validate-agent-registry.mjs) enforces both directions: no family-tier rung may have zero OR more than one default.",
+          "type": "boolean"
+        }
       }
     },
     "family": {
@@ -125,7 +156,9 @@
         "product",
         "family_constraint",
         "model_resolution",
-        "provider_rewired"
+        "provider_rewired",
+        "roles",
+        "can_restrict_writes"
       ],
       "properties": {
         "slug": { "$ref": "#/$defs/slug" },
@@ -133,7 +166,133 @@
         "product": { "type": "string", "minLength": 1 },
         "family_constraint": { "$ref": "#/$defs/familyConstraint" },
         "model_resolution": { "$ref": "#/$defs/modelResolution" },
-        "provider_rewired": { "type": "boolean" }
+        "provider_rewired": { "type": "boolean" },
+        "roles": {
+          "description": "Which dev-flow-v2 roles this harness can execute (specs/dev-flow-v2.md, #635) — never orchestrator, which is the session itself and is never dispatched. [role.<slug>].harnesses[] preferences in .devflow.toml resolve against this array.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["implementer", "challenger", "reviewer", "integrator"] }
+        },
+        "can_restrict_writes": {
+          "description": "Whether this harness can deny ambient writes for a dispatched subagent (a tool/credential allowlist, e.g. Claude Code's `allowed-tools` frontmatter). specs/dev-flow-v2.md 'Roles and authority': a harness that cannot deny ambient writes must not dispatch a write-restricted role (challenger, reviewer, integrator) — cross-file validation rejects `roles` containing one of those without this set true.",
+          "type": "boolean"
+        }
+      }
+    },
+    "role": {
+      "description": "One row of specs/dev-flow-v2.md's 'Roles and authority' table: the result schema an agent implementing this role must return, and the external writes it may make.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "display_name", "result_schema", "writes"],
+      "properties": {
+        "slug": {
+          "enum": ["orchestrator", "implementer", "challenger", "reviewer", "integrator"]
+        },
+        "display_name": { "type": "string", "minLength": 1 },
+        "result_schema": {
+          "description": "Repo-relative path to this role's result schema, or null for orchestrator, which authors adjudication.schema.json and run.schema.json directly and returns no enveloped result. Cross-file validation requires a non-null path to actually exist. An explicit enum, not a pattern: this repo's schema-subset engines (this one and the breakdown skill's independent, more restrictive re-implementation for fetched remote registries) both check `enum` unconditionally regardless of `type`, so listing `null` as a member is what lets a nullable field admit it structurally with no `if`/`then` — and every legal value here is one of a small, fixed, already-known set of filenames anyway, so an enum is also a tighter guarantee than a pattern would be.",
+          "enum": [
+            "ai/schemas/result.implementer.schema.json",
+            "ai/schemas/result.challenger.schema.json",
+            "ai/schemas/result.reviewer.schema.json",
+            "ai/schemas/result.integrator.schema.json",
+            null
+          ]
+        },
+        "writes": {
+          "description": "Permitted external writes. A closed enum, not free text — specs/dev-flow-v2.md's 'Roles and authority' table names an EXACT, fixed set of permitted actions per role, so a role's writes[] is bound to that same fixed vocabulary rather than merely required to be non-empty (which would still accept e.g. orchestrator.writes = [\"merge main\"], a materially different and false claim about its authority). Empty for challenger and reviewer, which write nothing outside their own result — cross-file validation enforces both non-empty for implementer/integrator/orchestrator and empty for challenger/reviewer.",
+          "type": "array",
+          "items": {
+            "enum": [
+              "dispositions",
+              "the adjudication record",
+              "gh pr create --draft",
+              "the PR body",
+              "evidence and run-record comments",
+              "gh pr ready",
+              "commits on the branch its dispatch names",
+              "feature-branch round pushes through the round-push broker",
+              "the brokered Codex trigger comment",
+              "brokered thread replies containing text supplied by the orchestrator"
+            ]
+          }
+        }
+      }
+    },
+    "finder": {
+      "description": "An external review product that produces findings for a confidence or integration stage (docs/glossary.md 'finder').",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slug",
+        "display_name",
+        "surface",
+        "role",
+        "stages",
+        "result_schema",
+        "invocation",
+        "collection",
+        "trusted_actor_id",
+        "trusted_actor_login"
+      ],
+      "properties": {
+        "slug": { "$ref": "#/$defs/slug" },
+        "display_name": { "type": "string", "minLength": 1 },
+        "surface": {
+          "description": "local-cli: runs before a PR exists, invoked as a Taskfile target. pr-cloud: exists only once a PR is open, collected rather than invoked. Cross-file validation refuses a pr-cloud finder on a pre-PR stage (challenge or review).",
+          "enum": ["local-cli", "pr-cloud"]
+        },
+        "role": {
+          "description": "The registry role this finder implements, when it implements one. null for a finder that is a collected review product rather than a role dispatch (e.g. codex-cloud, whose accepted evidence rides inside the integrator's own result.integrator payload rather than being its own enveloped result) — a finder is never required to implement a role merely because it serves that role's stage. Never `implementer`: a finder serves a confidence or integration stage (challenge, review, integration), never the implement stage, so implementer has no finder stage to be valid for at all. An explicit enum listing null, not type+if/then: see result_schema's own comment below for why.",
+          "enum": ["challenger", "reviewer", "integrator", null]
+        },
+        "stages": {
+          "description": "Which stage(s) this finder may be configured for ([stage.<name>].finders in .devflow.toml resolve against this).",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["challenge", "review", "integration"] }
+        },
+        "result_schema": {
+          "description": "Repo-relative path to the result schema this finder's own output conforms to, or null when it has none of its own (see `role`). When `role` is non-null, cross-file validation requires this to equal that role's own result_schema. An explicit enum, not a pattern: this repo's schema-subset engines (this one and the breakdown skill's independent, more restrictive re-implementation for fetched remote registries) both check `enum` unconditionally regardless of `type`, so listing `null` as a member is what lets a nullable field admit it structurally with no `if`/`then` — and every legal value here is one of a small, fixed, already-known set of filenames anyway, so an enum is also a tighter guarantee than a pattern would be.",
+          "enum": [
+            "ai/schemas/result.implementer.schema.json",
+            "ai/schemas/result.challenger.schema.json",
+            "ai/schemas/result.reviewer.schema.json",
+            "ai/schemas/result.integrator.schema.json",
+            null
+          ]
+        },
+        "invocation": {
+          "description": "Required (non-null) for a local-cli finder, and null for a pr-cloud finder (which is collected, never invoked).",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["type", "target"],
+          "properties": {
+            "type": { "const": "taskfile-target" },
+            "target": { "type": "string", "minLength": 1 }
+          }
+        },
+        "collection": {
+          "description": "Required (non-null) for a pr-cloud finder, and null for a local-cli finder (which is invoked directly, never collected).",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["type", "protocol"],
+          "properties": {
+            "type": { "const": "shepherd-checker" },
+            "protocol": { "type": "string", "minLength": 1 }
+          }
+        },
+        "trusted_actor_id": {
+          "description": "The finder's immutable GitHub actor id, required (non-null) exactly when the finder's evidence is attributed to a remote bot identity rather than being the direct return value of a locally-run harness invocation — paired with trusted_actor_login, both null or both present. No pattern here (unlike a fixed-vocabulary field, a future finder's id is not yet known to enumerate, and a numeric-string pattern is not in the breakdown skill's fixed safe-pattern allowlist) — scripts/validate-agent-registry.mjs's own semantic check verifies the digits-only shape instead.",
+          "type": ["string", "null"]
+        },
+        "trusted_actor_login": {
+          "description": "The human-readable login paired with trusted_actor_id (e.g. chatgpt-codex-connector[bot]) — documentation only; the id is the immutable, authoritative value.",
+          "type": ["string", "null"],
+          "minLength": 1
+        }
       }
     },
     "foremanAdapter": {

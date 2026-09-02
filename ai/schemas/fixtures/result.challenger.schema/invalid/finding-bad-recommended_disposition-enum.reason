@@ -1,0 +1,1 @@
+$result.payload.findings[0].recommended_disposition: must be one of "fix", "restructure", "delete", "decline", "defer", "file"
