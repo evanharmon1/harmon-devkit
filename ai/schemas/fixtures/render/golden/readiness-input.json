@@ -1,0 +1,44 @@
+{
+  "schema": "dev-flow-render.readiness-input.v1",
+  "run_id": "run-637-fixture-0001",
+  "head": "2222222222222222222222222222222222222222",
+  "deferred_findings": {
+    "settled": [
+      {
+        "finding_id": "review-r1-codex-cli-1",
+        "disposition": "fix",
+        "reference": {
+          "type": "sha",
+          "value": "c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff"
+        },
+        "settled_at": "2026-08-30T13:05:00Z"
+      },
+      {
+        "finding_id": "review-r1-codex-cli-3",
+        "disposition": "decline",
+        "reference": {
+          "type": "comment_id",
+          "value": "2222222222"
+        },
+        "settled_at": "2026-08-30T13:06:00Z"
+      },
+      {
+        "finding_id": "review-r2-codex-cli-1",
+        "disposition": "file",
+        "reference": {
+          "type": "issue_number",
+          "value": "900"
+        },
+        "settled_at": "2026-08-30T13:07:00Z"
+      }
+    ],
+    "unsettled": [
+      {
+        "finding_id": "review-r2-codex-cli-3",
+        "adjudicated_priority": "P2",
+        "stage": "review",
+        "round": 2
+      }
+    ]
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "1111111111111111111111111111111111111111",
+  "produced_at": "2026-08-30T12:30:00Z",
+  "producer": { "harness": "codex-cli", "model": "gpt-5-codex", "tier": "standard" },
+  "run": { "run_id": "run-637-fixture-0001", "initiated_by": "human" },
+  "payload": {
+    "stage": "review",
+    "round": 1,
+    "reviewed_head": "1111111111111111111111111111111111111111",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r1-codex-cli-1",
+        "path": "scripts/render-dev-flow.mjs",
+        "line": 300,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "mergeSections can append sections in an order the caller did not request"
+      },
+      {
+        "id": "review-r1-codex-cli-2",
+        "path": "scripts/render-dev-flow.mjs",
+        "line": 150,
+        "class": "consistency",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "file",
+        "evidence": "the CLI has no --help output distinct from a bare usage error"
+      },
+      {
+        "id": "review-r1-codex-cli-3",
+        "path": "scripts/render-dev-flow.mjs",
+        "line": 500,
+        "class": "hardening",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "defer",
+        "evidence": "settlementSuffix's unknown-reference-type path has no covering fixture"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 1, "P2": 2, "P3": 0 }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "run_id": "run-637-fixture-0001",
+  "stage": "integration",
+  "round": 1,
+  "reviewed_head": "2222222222222222222222222222222222222222",
+  "adjudications": [
+    {
+      "finding_id": "integration-r1-human-1",
+      "reviewer_priority": null,
+      "adjudicated_priority": "P2",
+      "disposition": "decline",
+      "reason": "already covered by the JSON result's own reason field; Markdown is a convenience, not the contract",
+      "evidence": "readiness-input carries the same detail machine-readably",
+      "override": null
+    },
+    {
+      "finding_id": "integration-r1-human-2",
+      "reviewer_priority": null,
+      "adjudicated_priority": "P3",
+      "disposition": "fix",
+      "reason": "added the missing blank line",
+      "evidence": "markdownlint clean locally after the fix",
+      "override": null
+    },
+    {
+      "finding_id": "integration-r1-human-3",
+      "reviewer_priority": null,
+      "adjudicated_priority": "P3",
+      "disposition": "delete",
+      "reason": "removed escapeRegExp, routed its one caller through escapeCell's escaping instead",
+      "evidence": "the two helpers escaped the same two characters; deleting one is simpler than hardening both",
+      "override": null
+    }
+  ]
+}

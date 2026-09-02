@@ -72,6 +72,7 @@ tasks:
       - task: validate
       - task: test:agent-registry
       - task: test:result-schemas
+      - task: test:render-dev-flow
       - task: test:registry-drift
       - task: test:registry-docs
       - task: test:label-registry
@@ -331,6 +332,7 @@ tasks:
       - test:confirm-answers
       - test:migrate-label-family
       - test:result-schemas
+      - test:render-dev-flow
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -341,6 +343,16 @@ tasks:
     desc: Schema-check the dev-flow-v2 result/record schemas and their conformance fixtures
     cmds:
       - ./scripts/test-result-schemas.sh
+
+  test:render-dev-flow:
+    desc: Golden-fixture + fake-gh regression tests for the dev-flow-v2 renderer/publisher
+    cmds:
+      - ./scripts/test-render-dev-flow.sh
+
+  devflow:render:
+    desc: 'Render a dev-flow-v2 projection or publish generated sections (task devflow:render -- <projection|publish> --record <dir> ...)'
+    cmds:
+      - ./scripts/render-dev-flow.sh {{.CLI_ARGS}}
 
   test:worktree:
     desc: Behavioral test for worktree:new / worktree:rm (create → verify hooks → remove, in a throwaway fixture repo)

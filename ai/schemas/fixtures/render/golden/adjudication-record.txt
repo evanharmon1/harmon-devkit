@@ -1,0 +1,44 @@
+## Adjudication record
+
+<details>
+<summary>challenge round 1 — reviewed 1111111111111111111111111111111111111111</summary>
+
+| Finding | Reviewer | Adjudicated | Classification | Evidence | Action | Provenance |
+| --- | --- | --- | --- | --- | --- | --- |
+| challenge-r1-codex-cli-1 | P1 | P1 | correctness | reproduced by running two publishes concurrently against the fixture gh shim | fix — confirmed — reservation write and gh call need a lock | original |
+| challenge-r1-codex-cli-2 | P2 | P2 | hardening | no caller in this milestone passes --record twice | decline — last-write-wins on a repeated positional flag is acceptable; no observed double-record usage | original |
+
+</details>
+
+<details>
+<summary>review round 1 — reviewed 1111111111111111111111111111111111111111</summary>
+
+| Finding | Reviewer | Adjudicated | Classification | Evidence | Action | Provenance |
+| --- | --- | --- | --- | --- | --- | --- |
+| review-r1-codex-cli-1 | P1 | P2 (override: cosmetic ordering, not a correctness defect) | correctness | append order is stable across runs, just not caller-specified | defer — downgraded — append ordering is cosmetic, not a correctness defect; carrying to integration for a second look | original |
+| review-r1-codex-cli-2 | P2 | P2 | consistency | usability gap, not a defect | file — tracked as follow-up UX polish, not blocking | original |
+| review-r1-codex-cli-3 | P2 | P2 | hardening | the fail() branch in settlementSuffix is currently untested | defer — carrying to integration; needs a fixture for the unknown reference-type path | original |
+
+</details>
+
+<details>
+<summary>review round 2 — reviewed 2222222222222222222222222222222222222222</summary>
+
+| Finding | Reviewer | Adjudicated | Classification | Evidence | Action | Provenance |
+| --- | --- | --- | --- | --- | --- | --- |
+| review-r2-codex-cli-1 | P1 | P2 (override: reproduces only under sustained load, not the shipped CLI's real path) | correctness | only reproduced under load, not in the fixture-driven suite | defer — downgraded — only reproduces under sustained load the shipped CLI never sustains; carrying to integration for a live concurrency test this stage cannot run | round:1 |
+| review-r2-codex-cli-2 | P3 | P3 | nit | cosmetic duplication only, no behavioral difference observed | restructure — extract one shared escaping helper | original |
+| review-r2-codex-cli-3 | P2 | P2 | hardening | only reachable via direct API misuse, not the shipped CLI | defer — carrying to integration; low risk, worth a follow-up check | original |
+
+</details>
+
+<details>
+<summary>integration round 1 — reviewed 2222222222222222222222222222222222222222</summary>
+
+| Finding | Reviewer | Adjudicated | Classification | Evidence | Action | Provenance |
+| --- | --- | --- | --- | --- | --- | --- |
+| integration-r1-human-1 | n/a | P2 | n/a | readiness-input carries the same detail machine-readably | decline — already covered by the JSON result's own reason field; Markdown is a convenience, not the contract | n/a |
+| integration-r1-human-2 | n/a | P3 | n/a | markdownlint clean locally after the fix | fix — added the missing blank line | n/a |
+| integration-r1-human-3 | n/a | P3 | n/a | the two helpers escaped the same two characters; deleting one is simpler than hardening both | delete — removed escapeRegExp, routed its one caller through escapeCell's escaping instead | n/a |
+
+</details>
