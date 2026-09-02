@@ -74,10 +74,16 @@ share, from any read, any number of times) and SHALL NOT silently lose or
 reorder an event under concurrent or resumed writers. The evidence delta
 spec's append-only, digest-chained history
 ([§ Run history is append-only and as-of reconstructable](../openspec/changes/dev-flow-v2/specs/evidence/spec.md))
-states that property in testable form; #663 owns the mechanism, its
-fixtures, and every attack scenario these three rounds raised as required
-test cases — concurrent-append loss, delayed-write cutoff drift, and replay
-stability chief among them.
+states the digest-chain and cutoff-filtering half of this today; the
+concurrent-writer half is this anchor's own addition and is **not yet**
+reflected there or in `openspec/changes/dev-flow-v2/tasks.md`'s #663
+criteria — reconciling those two into explicit scenarios (concurrent-append
+loss, delayed-write cutoff drift, replay stability) is out of this lane's
+scope (`openspec/**` is not a file this lane owns) and is noted in the
+report for whoever next touches #663's task or the evidence delta. Per this
+spec's own precedent (§ Roles and authority: "the spec wins and the issue
+body is edited to match"), the anchor states the requirement now rather than
+waiting on that reconciliation.
 "Reached ready-for-review" means the run record carries the orchestrator's
 own promotion entry — the readiness-gate pass fingerprint and the
 `gh pr ready` it issued. A ready transition on the PR **without** that entry
@@ -761,25 +767,25 @@ Two rules make the posted evidence trustworthy on a public repository:
   hashes to the recorded digest — so an edited, deleted, or impostor comment
   is reported as tampered evidence, never silently replayed. "The run's
   orchestrator" is never a value the record's own JSON body declares — that
-  would let a forged record vouch for its own evidence. It is the immutable
-  actor ID of whoever authored the run record comment at kickoff, validated
-  against the repository's configured trusted-orchestrator actor IDs — the
-  same trust list evidence comments already check against, and the **only**
-  source of authority. **There is no fallback for an unconfigured
-  repository.** Two review rounds tried to define one from the kickoff
-  event's own actor (matching identity, then matching identity plus a
-  persisted permission claim) and both were broken the same way: whatever
-  the fallback checks, an actor able to forge the kickoff-shaped event can
-  equally forge whatever the check demands inside it, because nothing
-  outside the record itself backs the claim. A permission that can only be
-  read at write time (GitHub exposes no historical grant) cannot be proven
-  true at an earlier kickoff without an external signer this spec does not
-  have. Absent the trusted-actor configuration, the run record and every
-  evidence comment it names are unauthenticatable and the harvester treats
-  them as untrusted — the run is excluded from the success metric and its
-  replay corpus rather than counted on an unproven identity; a repository
-  that wants counted evidence configures the trust list, and there is no
-  weaker substitute.
+  would let a forged record vouch for its own evidence. Its authority instead
+  derives from configured trusted-orchestrator actor IDs, or the trusted
+  kickoff event — the same two sources the evidence delta spec names
+  ([§ Harvested evidence is authenticated](../openspec/changes/dev-flow-v2/specs/evidence/spec.md)),
+  matched here rather than re-derived: two earlier drafts of this paragraph
+  tried to define a kickoff-based fallback from scratch (matching the
+  kickoff actor's identity; matching identity plus a locally-asserted
+  permission claim) and both were broken the same way an adversarial review
+  found twice — an actor able to forge the kickoff-shaped event can equally
+  forge whatever the fallback checks inside it, because nothing outside the
+  record itself backed the claim. **Neither trust source is backed by a
+  schema field today** — `agent-registry.schema.json` and `run.schema.json`
+  define no top-level trusted-orchestrator list, and no independent
+  kickoff-trust mechanism is specified yet — so this is a requirement on
+  whichever of #634's schemas or #663's kickoff handling ends up owning it,
+  not a procedure this anchor should re-derive a third time. Until one
+  exists, a run record has no authority to validate against and its
+  evidence is reported unauthenticated rather than silently accepted on an
+  unproven identity.
   The run record comment is subject to the **same author check** against
   that trust root, so a stranger cannot forge a record that vouches
   for their own evidence; an orchestrator that
