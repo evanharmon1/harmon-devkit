@@ -636,6 +636,19 @@ function validateCrossDocumentConsistency(record) {
     if (row.stage === 'integration' && row.entry.disposition === 'defer') {
       fail(`${row.entry.finding_id}: disposition 'defer' is not valid for stage integration (nothing downstream would ever settle it)`)
     }
+    // AGENTS.md: "only P0/P1 gate the local loops" — a P0/P1 finding must be
+    // fixed (or adjudicated down) at the stage that found it, never carried
+    // forward. adjudicated_priority is the authoritative post-adjudication
+    // value (unlike reviewer_priority, a copy of the raw finding), so this
+    // checks the value that actually decided the disposition. A downward
+    // override to P2/P3 is the sanctioned way to defer something a reviewer
+    // flagged P0/P1 but the adjudicator judged otherwise — that path already
+    // requires a non-null override recording why.
+    if (row.entry.disposition === 'defer' && (row.entry.adjudicated_priority === 'P0' || row.entry.adjudicated_priority === 'P1')) {
+      fail(
+        `${row.entry.finding_id}: disposition 'defer' is not valid for adjudicated_priority ${row.entry.adjudicated_priority} (only P2/P3 may carry forward; P0/P1 must be fixed at the originating stage)`
+      )
+    }
     if (!row.pass) continue
     if (row.pass.head !== row.reviewed_head) {
       fail(
@@ -1395,8 +1408,42 @@ function writeReservation(recordDir, state) {
   fs.writeFileSync(reservationPath(recordDir), JSON.stringify(state, null, 2))
 }
 
-function clearReservation(recordDir) {
-  fs.rmSync(reservationPath(recordDir), { force: true })
+// A reservation records ONE in-flight (or interrupted) publish's own target
+// section set. Clearing it is only ever safe for the invocation whose write
+// it actually describes: an interrupted publish for one section set followed
+// by a later, unrelated invocation for different sections must not delete
+// the first reservation on the second's say-so — that reservation is the
+// only durable record that the first write's outcome is still unknown.
+// Compare sections before removing; a reservation for a different section
+// set is left alone for its own invocation to reconcile.
+//
+// Deliberately NOT compared: intended_fingerprint. Within one publishLocked
+// call, a repair attempt (a concurrent edit landed, so a fresh read/re-merge
+// is needed) recomputes it every attempt against the then-current live body —
+// the same retry that legitimately resolves to a no-op (this attempt's own
+// re-merge already matches the now-updated body) necessarily carries a
+// different fingerprint than the EARLIER attempt's writeReservation call
+// recorded, even though it is unquestionably still this same invocation's own
+// reservation. Gating on fingerprint equality would leave that reservation
+// stranded after a successful repair; sections alone already identifies "was
+// this reservation mine" for the only case that needs to reject it (a
+// genuinely different --sections invocation).
+function clearReservation(recordDir, expected) {
+  const p = reservationPath(recordDir)
+  let stored
+  try {
+    stored = JSON.parse(fs.readFileSync(p, 'utf8'))
+  } catch (error) {
+    if (error.code === 'ENOENT') return
+    fail(`${p}: reservation file exists but could not be read as JSON (${error.message})`)
+  }
+  const sameSections =
+    Array.isArray(stored.sections) &&
+    stored.sections.length === expected.sections.length &&
+    stored.sections.every((section) => expected.sections.includes(section))
+  if (sameSections) {
+    fs.rmSync(p, { force: true })
+  }
 }
 
 function blockerResult(reason, detail, extra = {}) {
@@ -1542,7 +1589,7 @@ function publishLocked(record, options) {
       const intendedFingerprint = sha256(intendedBody)
 
       if (intendedBody === view.body) {
-        clearReservation(options.record)
+        clearReservation(options.record, { sections: options.sections })
         return { status: 'published', pr: options.pr, head: options.head, sections: options.sections, fingerprint: intendedFingerprint, attempts: attempt, changed: wroteAny }
       }
 
@@ -1580,7 +1627,7 @@ function publishLocked(record, options) {
       }
       const actualFingerprint = sha256(reread.body)
       if (actualFingerprint === intendedFingerprint) {
-        clearReservation(options.record)
+        clearReservation(options.record, { sections: options.sections })
         return { status: 'published', pr: options.pr, head: options.head, sections: options.sections, fingerprint: actualFingerprint, attempts: attempt, changed: true }
       }
       // Mismatch: a concurrent edit landed in the write window. Loop for a

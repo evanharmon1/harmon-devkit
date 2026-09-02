@@ -26,7 +26,7 @@
 
 | Finding | Reviewer | Adjudicated | Classification | Evidence | Action | Provenance |
 | --- | --- | --- | --- | --- | --- | --- |
-| review-r2-codex-cli-1 | P1 | P1 | correctness | only reproduced under load, not in the fixture-driven suite | defer — carrying to integration — needs a live concurrency test this stage cannot run | round:1 |
+| review-r2-codex-cli-1 | P1 | P2 (override: reproduces only under sustained load, not the shipped CLI's real path) | correctness | only reproduced under load, not in the fixture-driven suite | defer — downgraded — only reproduces under sustained load the shipped CLI never sustains; carrying to integration for a live concurrency test this stage cannot run | round:1 |
 | review-r2-codex-cli-2 | P3 | P3 | nit | cosmetic duplication only, no behavioral difference observed | restructure — extract one shared escaping helper | original |
 | review-r2-codex-cli-3 | P2 | P2 | hardening | only reachable via direct API misuse, not the shipped CLI | defer — carrying to integration; low risk, worth a follow-up check | original |
 

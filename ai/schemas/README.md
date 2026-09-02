@@ -1067,7 +1067,7 @@ authenticated against the target repo.
 | `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
 | `passes/*.json` | Result envelopes (`role: challenger`, `reviewer`, or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location) when no matching pass is supplied. The "Evidence" column is always the adjudication's own `evidence` field — schema-required, never pass-dependent — never a pass's raw finding text (see "Evidence is always the adjudicated record's own" below). **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
 | `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines. Shape-validated when present (`outcome` a non-empty string; `reason` a string; `rounds_counted` a non-negative integer; `next_round` a positive integer; `corrections` an array of strings — each only when present) |
-| `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present: `rigor.level`/`rigor.source` non-empty strings; `rounds` and every one of its five caps are **required** whenever `policy.json` exists at all (each a non-negative integer) — a partial or omitted `rounds` would let the rendered rigor line silently disclose an incomplete budget; `disclosures[]` stays optional, each entry `{kind, detail}` |
+| `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present: `rigor.level`/`rigor.source` non-empty strings; `rounds` and every one of its five caps are **required** whenever `policy.json` exists at all — a partial or omitted `rounds` would let the rendered rigor line silently disclose an incomplete budget — each a non-negative integer, **except `min_rounds`, which must be positive** (AGENTS.md: every rigor level's floor is always `>= 1`; `0` is semantically invalid for that one key, not just a low value); `disclosures[]` stays optional, each entry `{kind, detail}` |
 
 Every file present is schema-validated (structural shape only — this
 family's full receipt suite needs cross-run context, e.g. `--known-ids`, no
@@ -1104,7 +1104,14 @@ no two adjudication documents may claim the same `(stage, round)` (one
 document per round, or `adjudication-record` would render both files' rows
 under each file's collapsed block instead of one round each);
 `disposition: defer` is rejected for stage `integration` (nothing downstream
-would ever settle it); every adjudication document's own `run_id` must agree
+would ever settle it); `disposition: defer` is likewise rejected whenever
+`adjudicated_priority` is `P0`/`P1` (AGENTS.md: "only P0/P1 gate the local
+loops" — a P0/P1 finding must be fixed, or adjudicated down, at the stage
+that found it, never carried forward; `adjudicated_priority` is the
+authoritative post-adjudication value, unlike `reviewer_priority`, a copy of
+the raw finding — a downward override to P2/P3 is the sanctioned way to defer
+something a reviewer flagged P0/P1, and that path already requires a
+non-null `override` recording why); every adjudication document's own `run_id` must agree
 with `run.json`'s when `run.json` is supplied, or with each other when it is
 not (`run.json` is optional for several projections, and without this check
 two adjudication documents from genuinely different runs could still combine
@@ -1283,6 +1290,20 @@ call and retired only once a re-read confirms the fingerprint match — so a
 crash between a landed write and that confirmation leaves the reservation in
 place, and the next invocation's own fresh read finds its intended content
 already present and resolves as a no-op rather than duplicating a section.
+Retiring a reservation compares its recorded section set against the current
+invocation's own `--sections` first — an unrelated, still-interrupted publish
+for a *different* section set must not lose its only durable
+still-needs-reconciliation record just because a later invocation for
+different sections happened to find its own target content already
+satisfied. Deliberately not part of that comparison: the reservation's
+`intended_fingerprint`. A same-invocation repair round (attempt N+1, after a
+concurrent edit forced a fresh re-merge) legitimately resolves to a no-op
+against the now-updated body — its own recomputed fingerprint differs from
+what an *earlier* attempt of the very same call recorded, even though the
+reservation is unquestionably still this call's own; gating on fingerprint
+equality would strand that reservation right after a successful repair. The
+section set alone already distinguishes "mine" from "a different invocation
+entirely," which is the only case that needs to be rejected.
 A human edit that lands strictly *after* publish's last read but *before*
 its write is a window this design cannot close — GitHub gives no primitive
 to close it — and is not claimed to be closed. `publish` requires the exact

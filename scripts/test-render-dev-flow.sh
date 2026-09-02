@@ -579,6 +579,23 @@ run deferred-findings --record "$defer_integration"
 assert_rc 1
 assert_contains "$err" "is not valid for stage integration"
 
+echo "==> cross-document consistency: disposition defer is rejected for adjudicated_priority P0/P1"
+defer_p1="${test_tmp}/defer-p1"
+mkdir -p "$defer_p1"
+cp -r "${record_dir}/." "$defer_p1/"
+node -e "
+const fs = require('fs');
+const p = '${defer_p1}/adjudications/review-r2.json';
+const doc = JSON.parse(fs.readFileSync(p, 'utf8'));
+const entry = doc.adjudications.find((a) => a.finding_id === 'review-r2-codex-cli-3');
+entry.adjudicated_priority = 'P1';
+entry.override = { reason: 'adversarial test entry' };
+fs.writeFileSync(p, JSON.stringify(doc, null, 2));
+"
+run deferred-findings --record "$defer_p1"
+assert_rc 1
+assert_contains "$err" "disposition 'defer' is not valid for adjudicated_priority P1"
+
 echo "==> deferred-findings requires the matching pass for a deferred finding (never a bare finding_id as its location)"
 no_pass_deferred="${test_tmp}/deferred-no-pass"
 mkdir -p "$no_pass_deferred"
@@ -979,6 +996,25 @@ assert_rc 0
 assert_contains "$out" '"changed": false'
 gh_calls="$(wc -l <"$gh_log" | tr -d ' ')"
 [ "$gh_calls" = 1 ] || fail "a no-op resume should make exactly one gh call (the read), got $gh_calls: $(cat "$gh_log")"
+
+echo "==> publish: a no-op resume must not clear an unrelated reservation for a different section set"
+# clearReservation() must compare the on-disk reservation's own sections/
+# fingerprint against THIS invocation before deleting it — otherwise an
+# interrupted publish for one section set loses its only durable
+# still-needs-reconciliation record the moment an unrelated invocation for
+# different sections happens to find its own write already satisfied.
+stale_reservation='{"head":"'"$head_sha"'","pr":123,"repo":"owner/repo","sections":["policy-disclosure"],"intended_fingerprint":"deadbeef","attempt":1}'
+printf '%s' "$stale_reservation" >"${pub_record}/.publish-state.json"
+: >"$gh_log"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" \
+    --sections policy-disclosure,deferred-findings,adjudication-record
+assert_rc 0
+assert_contains "$out" '"changed": false'
+[ -f "${pub_record}/.publish-state.json" ] ||
+    fail "a no-op resume must not clear a stale reservation belonging to a different section set"
+[ "$(cat "${pub_record}/.publish-state.json")" = "$stale_reservation" ] ||
+    fail "the unrelated reservation's content must be left byte-for-byte untouched"
+rm -f "${pub_record}/.publish-state.json"
 
 echo "==> publish: a concurrent human edit during the write window is repaired from a fresh read"
 reset_gh_fixtures

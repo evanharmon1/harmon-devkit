@@ -8,11 +8,11 @@
     {
       "finding_id": "review-r2-codex-cli-1",
       "reviewer_priority": "P1",
-      "adjudicated_priority": "P1",
+      "adjudicated_priority": "P2",
       "disposition": "defer",
-      "reason": "carrying to integration — needs a live concurrency test this stage cannot run",
+      "reason": "downgraded — only reproduces under sustained load the shipped CLI never sustains; carrying to integration for a live concurrency test this stage cannot run",
       "evidence": "only reproduced under load, not in the fixture-driven suite",
-      "override": null
+      "override": { "reason": "reproduces only under sustained load, not the shipped CLI's real path" }
     },
     {
       "finding_id": "review-r2-codex-cli-2",
