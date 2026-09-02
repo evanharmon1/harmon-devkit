@@ -453,6 +453,66 @@ expect_fail_contains "user-invocable:false-only universal skill missing 'Use whe
     "ai/skills/universal/quebec/SKILL.md" \
     bash -c "cd '$G14' && bash '$SCRIPTS/verify-skills.sh'"
 
+# The universal/ consistency guard has five rejection branches; G10/mike and
+# G13/papa exercise the "Use when" prohibition, and G11/november and
+# G14/quebec exercise the missing-"Use when" case. These three cover the
+# remaining branches: the "Trigger it" prohibition, a
+# disable-model-invocation:true skill missing "Invoke as /<name>", and a
+# disable-model-invocation:true + user-invocable:false skill missing "Do not
+# invoke directly".
+
+# disable-model-invocation:true with "Trigger it" in the description — fails,
+# naming the skill.
+G15="$TMPROOT/guard-universal-trigger-it"
+git_init "$G15"
+mkdir -p "$G15/ai/skills/universal/romeo"
+{
+    echo "---"
+    echo "name: romeo"
+    echo "description: A user-only ritual. Trigger it manually. Invoke as /romeo."
+    echo "disable-model-invocation: true"
+    echo "---"
+    echo "# romeo"
+} >"$G15/ai/skills/universal/romeo/SKILL.md"
+expect_fail_contains "disable-model-invocation universal skill with 'Trigger it' fails, naming the skill" \
+    "ai/skills/universal/romeo/SKILL.md" \
+    bash -c "cd '$G15' && bash '$SCRIPTS/verify-skills.sh'"
+
+# disable-model-invocation:true (not user-invocable:false) missing "Invoke as
+# /<name>" — fails, naming the skill.
+G16="$TMPROOT/guard-universal-missing-invoke-as"
+git_init "$G16"
+mkdir -p "$G16/ai/skills/universal/sierra"
+{
+    echo "---"
+    echo "name: sierra"
+    echo "description: A user-only ritual with no invocation hint."
+    echo "disable-model-invocation: true"
+    echo "---"
+    echo "# sierra"
+} >"$G16/ai/skills/universal/sierra/SKILL.md"
+expect_fail_contains "disable-model-invocation universal skill missing 'Invoke as /<name>' fails, naming the skill" \
+    "ai/skills/universal/sierra/SKILL.md" \
+    bash -c "cd '$G16' && bash '$SCRIPTS/verify-skills.sh'"
+
+# disable-model-invocation:true + user-invocable:false missing "Do not invoke
+# directly" — fails, naming the skill.
+G17="$TMPROOT/guard-universal-missing-do-not-invoke"
+git_init "$G17"
+mkdir -p "$G17/ai/skills/universal/tango"
+{
+    echo "---"
+    echo "name: tango"
+    echo "description: Internal runtime support with no disclaimer."
+    echo "disable-model-invocation: true"
+    echo "user-invocable: false"
+    echo "---"
+    echo "# tango"
+} >"$G17/ai/skills/universal/tango/SKILL.md"
+expect_fail_contains "both-flags universal skill missing 'Do not invoke directly' fails, naming the skill" \
+    "ai/skills/universal/tango/SKILL.md" \
+    bash -c "cd '$G17' && bash '$SCRIPTS/verify-skills.sh'"
+
 # ── sync-skills.sh (vendoring engine) ──────────────────────────────────
 echo "==> sync-skills.sh"
 
