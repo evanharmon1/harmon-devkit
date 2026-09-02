@@ -710,7 +710,7 @@ function settlementSuffix(settlement) {
   const { disposition, reference } = settlement
   if (disposition === 'fix') return `${SETTLEMENT_GRAMMAR.fix} ${shortSha(reference.value)}`
   if (disposition === 'file') return `${SETTLEMENT_GRAMMAR.file} #${reference.value}`
-  if (disposition === 'decline') return `${SETTLEMENT_GRAMMAR.decline} see comment ${reference.value}`
+  if (disposition === 'decline') return `${SETTLEMENT_GRAMMAR.decline} see comment ${neutralizeMarkers(reference.value)}`
   fail(`run.json: settlement for ${settlement.finding_id} has unknown disposition ${disposition}`)
   return ''
 }
@@ -1158,21 +1158,30 @@ function lockPath(recordDir) {
 // it and retry, the same operational shape as any other file-based recovery
 // state in this family.
 function publish(record, options) {
+  const lock = lockPath(options.record)
   try {
-    fs.writeFileSync(lockPath(options.record), String(process.pid), { flag: 'wx' })
+    fs.writeFileSync(lock, String(process.pid), { flag: 'wx' })
   } catch (error) {
     if (error.code === 'EEXIST') {
       return blockerResult(
         'concurrent-publish',
-        `another publish is already in flight for this record directory (${lockPath(options.record)}); if left behind by a crashed process, remove it and retry`
+        `another publish is already in flight for this record directory (${lock}); if left behind by a crashed process, remove it and retry`
       )
     }
     throw error
   }
+  // A section renderer can call fail() on malformed record data (e.g. a
+  // deferred finding with no matching pass) while this lock is held, and
+  // fail() terminates via process.exit(), which skips the finally below
+  // entirely — Node runs no pending finally block on that path. The 'exit'
+  // event is the one hook Node guarantees fires (synchronously) on every
+  // exit, explicit or not, so the lock is released there too; fs.rmSync's
+  // force:true makes running it twice (finally, then here) harmless.
+  process.on('exit', () => fs.rmSync(lock, { force: true }))
   try {
     return publishLocked(record, options)
   } finally {
-    fs.rmSync(lockPath(options.record), { force: true })
+    fs.rmSync(lock, { force: true })
   }
 }
 
@@ -1190,7 +1199,7 @@ function publishLocked(record, options) {
         `run.json names PR #${record.run.pr.number}, but publish was invoked for PR #${options.pr}`
       )
     }
-    const urlMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+$/.exec(record.run.pr.url)
+    const urlMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(record.run.pr.url)
     // An unparseable or unexpected-host URL must BLOCK, not silently skip
     // the check it was meant to feed: the same repo/number can otherwise
     // collide across a fork, and a malformed URL disabling the very safety
@@ -1202,6 +1211,16 @@ function publishLocked(record, options) {
       return blockerResult(
         'pr-mismatch',
         `run.json's PR URL names repo ${urlMatch[1]}, but publish was invoked for --repo ${options.repo}`
+      )
+    }
+    // The URL's own trailing number is a second, independent encoding of the
+    // same PR — checking only options.pr against record.run.pr.number (above)
+    // would silently accept a run.json where those two fields already
+    // disagree with each other (a copy-pasted number, a stale terminal).
+    if (Number(urlMatch[2]) !== record.run.pr.number) {
+      return blockerResult(
+        'pr-mismatch',
+        `run.json's PR URL names #${urlMatch[2]}, but run.json.pr.number is ${record.run.pr.number}`
       )
     }
   }

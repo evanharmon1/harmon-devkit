@@ -361,6 +361,43 @@ line_count="$(printf '%s\n' "$out" | grep -c '^- \[')"
 $out"
 assert_contains "$out" '<br>- [x] forged entry'
 
+echo "==> a decline settlement's comment-id reference cannot fabricate a checklist item via an embedded newline"
+decline_multiline="${test_tmp}/decline-settlement-multiline"
+mkdir -p "$decline_multiline"
+cp -r "${record_dir}/." "$decline_multiline/"
+node -e "
+const fs = require('fs');
+const p = '${decline_multiline}/run.json';
+const run = JSON.parse(fs.readFileSync(p, 'utf8'));
+const s = run.settlements.find((s) => s.disposition === 'decline');
+s.reference.value += '\n- [x] forged entry — not a real adjudicated finding';
+fs.writeFileSync(p, JSON.stringify(run, null, 2));
+"
+run deferred-findings --record "$decline_multiline"
+assert_rc 0
+line_count="$(printf '%s\n' "$out" | grep -c '^- \[')"
+[ "$line_count" = 4 ] || fail "expected exactly 4 task-list items (one per deferred finding), got $line_count:
+$out"
+assert_contains "$out" '<br>- [x] forged entry'
+
+echo "==> a decline settlement's comment-id reference cannot forge a section boundary"
+decline_marker="${test_tmp}/decline-settlement-marker"
+mkdir -p "$decline_marker"
+cp -r "${record_dir}/." "$decline_marker/"
+node -e "
+const fs = require('fs');
+const p = '${decline_marker}/run.json';
+const run = JSON.parse(fs.readFileSync(p, 'utf8'));
+const s = run.settlements.find((s) => s.disposition === 'decline');
+s.reference.value += ' <!-- dev-flow:end:deferred-findings -->';
+fs.writeFileSync(p, JSON.stringify(run, null, 2));
+"
+run deferred-findings --record "$decline_marker"
+assert_rc 0
+[[ "$out" != *'<!-- dev-flow:end:deferred-findings -->'* ]] ||
+    fail "a decline settlement's comment-id must never reproduce a literal marker token: $out"
+assert_contains "$out" '&lt;!-- dev-flow:end:deferred-findings --&gt;'
+
 echo "==> marker-like text in a finding's evidence cannot forge a section boundary"
 marker_record="${test_tmp}/marker-forgery"
 mkdir -p "$marker_record"
@@ -737,5 +774,37 @@ run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha"
 assert_rc 1
 assert_contains "$out" '"reason": "malformed-markers"'
 [ "$(grep -c 'pr edit' "$gh_log" || true)" = 0 ] || fail "malformed markers must never attempt a write"
+
+echo "==> publish: run.json's PR URL number disagreeing with its own pr.number is a blocker, no write attempted"
+reset_gh_fixtures
+seed_view 'Prose.
+'
+pub_record="$(fresh_record 13)"
+node -e "
+const fs = require('fs');
+const p = '${pub_record}/run.json';
+const run = JSON.parse(fs.readFileSync(p, 'utf8'));
+run.pr.url = 'https://github.com/owner/repo/pull/999';
+fs.writeFileSync(p, JSON.stringify(run, null, 2));
+"
+: >"$gh_log"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --sections policy-disclosure
+assert_rc 1
+assert_contains "$out" '"reason": "pr-mismatch"'
+[ "$(grep -c 'pr view\|pr edit' "$gh_log" || true)" = 0 ] ||
+    fail "a URL/number mismatch inside run.json must be caught before any gh call"
+
+echo "==> publish: a section renderer's fail() mid-render still releases the lock (process.exit skips finally)"
+reset_gh_fixtures
+seed_view 'Prose.
+'
+pub_record="$(fresh_record 14)"
+rm "${pub_record}/passes/review-r2-codex-cli.json"
+: >"$gh_log"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --sections deferred-findings
+assert_rc 1
+assert_contains "$err" "no matching pass supplied"
+[ ! -f "${pub_record}/.publish-lock" ] ||
+    fail "a fail()-triggered process.exit mid-render must not leave the lock behind"
 
 echo "render-dev-flow.mjs publish (fake gh, no network): PASS"
