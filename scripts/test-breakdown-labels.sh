@@ -257,22 +257,6 @@ write_migrated_label_registry() {
 JSON
 }
 
-# schema_version 3 (harnesses gain a roles array) — a real post-#1047
-# harmon-init agent-registry.json/schema.json pair, simulated by mutating this
-# repo's own (still schema_version 2) copies.
-write_migrated_agent_registry() {
-    local fixture="$1"
-    jq '.schema_version = 3 | .harnesses[0].roles = ["implement"]' \
-        "$repo/agent-registry.json" >"$fixture/agent-registry.json"
-    jq '.properties.schema_version.const = 3
-        | (.["$defs"].harness.properties.roles) = {
-            "type": "array",
-            "items": {"type": "string", "enum": ["orchestrate", "implement", "review"]},
-            "uniqueItems": true
-          }' \
-        "$repo/agent-registry.schema.json" >"$fixture/agent-registry.schema.json"
-}
-
 write_migrated_labels() {
     local fixture="$1" area="$2"
     cat >"$fixture/labels.json" <<JSON
@@ -867,7 +851,10 @@ fi
 echo "==> migrated registry (harmon-init#1047: devflow source, schema_version 3)"
 migrated="$tmproot/migrated"
 mkdir -p "$migrated"
-write_migrated_agent_registry "$migrated"
+# This repo's own agent-registry.json/.schema.json are schema_version 3 as of
+# #635 — real, not simulated — so the same copy write_agent_registry uses for
+# the plain-discovery test above also exercises this fetch path.
+write_agent_registry "$migrated"
 write_migrated_label_registry "$migrated" api
 write_migrated_labels "$migrated" api
 if migrated_output="$(discover "$migrated" 2>"$migrated/error")"; then

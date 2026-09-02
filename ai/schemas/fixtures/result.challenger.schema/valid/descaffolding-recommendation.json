@@ -1,0 +1,49 @@
+{
+  "schema": 2,
+  "role": "challenger",
+  "status": "completed",
+  "head": "d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-4003-descaffolding-recommendation",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 3,
+    "reviewed_head": "d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3",
+    "finder": "codex-adversarial",
+    "findings": [
+      {
+        "id": "challenge-r3-codex-adversarial-1",
+        "path": "scripts/lib/round-supervisor.mjs",
+        "line": null,
+        "class": "design",
+        "provenance": "round:2",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "delete",
+        "evidence": "this hand-rolled process supervisor exists only to work around round 1s finding; deleting it moots the per-run-state and PID-reuse findings it would otherwise accrete"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 1,
+      "P2": 0,
+      "P3": 0
+    },
+    "attack_scenarios": [
+      {
+        "id": "as-1",
+        "description": "asked whether the round-2 scaffolding is in scope or should be deleted per the round-2 checkpoint",
+        "outcome": "surfaced-finding",
+        "finding_id": "challenge-r3-codex-adversarial-1"
+      }
+    ]
+  }
+}

@@ -9,7 +9,7 @@
 // Usage:
 //   validate-result-schemas.mjs <kind> <file> [options]
 //
-//   kind: envelope | implementer | reviewer | integrator | adjudication | run
+//   kind: envelope | implementer | challenger | reviewer | integrator | adjudication | run
 //   `envelope` dispatches on the instance's own `role` field (after the
 //   envelope schema itself passes) and runs exactly the same payload +
 //   receipt checks as invoking the role's own kind name directly — it is
@@ -17,8 +17,8 @@
 //   the caller having to already know its role.
 //
 //   --known-ids <file.json>       JSON array of finding ids already used
-//                                 elsewhere in the run (reviewer and
-//                                 integrator) — rejects a collision (spec:
+//                                 elsewhere in the run (challenger, reviewer,
+//                                 and integrator) — rejects a collision (spec:
 //                                 "a finding id is unique within the run by
 //                                 construction").
 //   --run-id <id>                 The active run's run_id. Must be given
@@ -97,8 +97,8 @@
 //                                 caller's cwd.
 //   --receipt                    Require every context flag applicable to
 //                                 this invocation's <kind> (envelope kinds:
-//                                 --run-id/--initiated-by; reviewer and
-//                                 integrator: also --known-ids;
+//                                 --run-id/--initiated-by; challenger,
+//                                 reviewer, and integrator: also --known-ids;
 //                                 adjudication: --pass and
 //                                 --known-adjudicated; run: --adjudication)
 //                                 — a missing one is a
@@ -128,14 +128,14 @@ import { fileURLToPath } from 'node:url'
 import { createSchemaValidator } from './lib/json-schema-subset.mjs'
 
 const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'ai', 'schemas')
-const KINDS = ['envelope', 'implementer', 'reviewer', 'integrator', 'adjudication', 'run']
+const KINDS = ['envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run']
 const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
 const SHA_PATTERN = /^[0-9a-f]{40}$/
 const ISSUE_NUMBER_PATTERN = /^[1-9][0-9]*$/
 
 function usage() {
   console.error(
-    'usage: validate-result-schemas.mjs <envelope|implementer|reviewer|integrator|adjudication|run> <file> ' +
+    'usage: validate-result-schemas.mjs <envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
       '[--no-adjudications] [--schemas-dir <dir>] [--receipt]'
@@ -344,6 +344,7 @@ function parseFindingId(id) {
 const RUN_ID_FLAG = { flag: '--run-id', given: (o) => o.runId !== null }
 const CONTEXT_FLAGS = {
   implementer: [RUN_ID_FLAG],
+  challenger: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
   reviewer: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
   integrator: [{ flag: '--known-ids', given: (o) => o.knownIds !== null }, RUN_ID_FLAG],
   adjudication: [
@@ -455,7 +456,9 @@ function checkAdjudicationActiveRun(document, options, errors) {
 // zero — the same "blocked reviewer still validates against the same
 // shape, just empty" design the schema and README already describe, made
 // explicit as a receipt check. Cross-field (envelope status vs payload
-// content), always runs for role reviewer.
+// content), always runs for role reviewer — and, since result.challenger's
+// pass core is field-for-field identical (findings + counts), reused
+// unchanged for role challenger rather than duplicated as a twin function.
 function checkReviewerBlockedStatus(envelope, errors) {
   if (envelope.status !== 'blocked') return
   const { payload } = envelope
@@ -474,7 +477,10 @@ function checkReviewerBlockedStatus(envelope, errors) {
 // checkFindingIds — (b) no duplicate id within this pass, (c) no collision
 // with ids already used elsewhere in the run (when --known-ids is given),
 // (e) each id's stage/round/finder segments match this pass's own metadata,
-// plus a counts-vs-tally cross-check.
+// plus a counts-vs-tally cross-check. Generic over any payload shaped like
+// the shared pass core (findings[] + stage/round/finder + counts), so it
+// serves both role reviewer and role challenger without a role-specific
+// branch.
 function checkFindingIds(envelope, options, errors) {
   const { payload } = envelope
   if (!Array.isArray(payload.findings)) return
@@ -522,11 +528,54 @@ function checkFindingIds(envelope, options, errors) {
   }
 }
 
+// checkChallengerAttackScenarios — role challenger only. Same-document checks
+// (no external context needed, unlike checkFindingIds' --known-ids cross-run
+// collision case): (a) no duplicate attack_scenarios[].id within this pass —
+// the schema's own description promises "unique within this pass", which is
+// otherwise nowhere enforced; (b) every entry whose outcome is
+// surfaced-finding must name a finding_id that actually appears in THIS
+// pass's own findings[] — a scenario cannot claim to have surfaced a finding
+// this pass never returned. The schema's own if/then already forces
+// finding_id null for outcome:held and a string for outcome:surfaced-finding;
+// this adds the one thing a schema keyword cannot check, that the string
+// names a real sibling finding.
+function checkChallengerAttackScenarios(envelope, errors) {
+  const { payload } = envelope
+  if (!Array.isArray(payload.attack_scenarios)) return
+  const findingIds = new Set(
+    Array.isArray(payload.findings)
+      ? payload.findings.filter((f) => typeof f.id === 'string').map((f) => f.id)
+      : []
+  )
+  const seenScenarioIds = new Set()
+  for (const scenario of payload.attack_scenarios) {
+    if (typeof scenario.id === 'string') {
+      if (seenScenarioIds.has(scenario.id)) {
+        errors.push(
+          `$result.payload.attack_scenarios: duplicate scenario id ${scenario.id} within this pass`
+        )
+      }
+      seenScenarioIds.add(scenario.id)
+    }
+    if (scenario.outcome === 'surfaced-finding' && typeof scenario.finding_id === 'string') {
+      if (!findingIds.has(scenario.finding_id)) {
+        errors.push(
+          `$result.payload.attack_scenarios: scenario ${JSON.stringify(scenario.id)} names finding_id ${scenario.finding_id}, which is not in this pass's own findings`
+        )
+      }
+    }
+  }
+}
+
 // checkHeadAgreement — every head-shaped field in a payload must equal the
 // envelope's head (specs/dev-flow-v2.md § Results, "Heads must agree").
 function checkHeadAgreement(kind, envelope, errors) {
   const { head, payload } = envelope
-  if (kind === 'reviewer' && typeof payload.reviewed_head === 'string' && payload.reviewed_head !== head) {
+  if (
+    (kind === 'reviewer' || kind === 'challenger') &&
+    typeof payload.reviewed_head === 'string' &&
+    payload.reviewed_head !== head
+  ) {
     errors.push(
       `$result.payload.reviewed_head: ${payload.reviewed_head} does not match envelope head ${head}`
     )
@@ -828,10 +877,11 @@ function validateEnvelopeInstance(instance, kind, options) {
       if (errors.length === 0) {
         checkActiveRun(instance, options, errors)
         if (role === 'implementer') checkImplementerStatus(instance, errors)
-        if (role === 'reviewer') {
+        if (role === 'reviewer' || role === 'challenger') {
           checkReviewerBlockedStatus(instance, errors)
           checkFindingIds(instance, options, errors)
         }
+        if (role === 'challenger') checkChallengerAttackScenarios(instance, errors)
         if (role === 'integrator') {
           checkIntegratorBlockedStatus(instance, errors)
           checkCodexCycleAcceptedScope(instance.payload, errors)

@@ -1,0 +1,49 @@
+{
+  "schema": 2,
+  "role": "challenger",
+  "status": "completed",
+  "head": "a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-attack-scenario-unknown-finding-reference",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6",
+    "finder": "codex-adversarial",
+    "findings": [
+      {
+        "id": "challenge-r1-codex-adversarial-1",
+        "path": "some/file.md",
+        "line": 10,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "some evidence text"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 1,
+      "P2": 0,
+      "P3": 0
+    },
+    "attack_scenarios": [
+      {
+        "id": "as-1",
+        "description": "claims a finding this pass never returned",
+        "outcome": "surfaced-finding",
+        "finding_id": "challenge-r1-codex-adversarial-99"
+      }
+    ]
+  }
+}

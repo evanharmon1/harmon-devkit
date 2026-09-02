@@ -13,7 +13,7 @@
     },
     "role": {
       "description": "Which role produced this result -- selects the payload schema (result.<role>.schema.json). The orchestrator is not a role that returns a result: it authors adjudication.schema.json and run.schema.json documents directly, never through this envelope.",
-      "enum": ["implementer", "reviewer", "integrator"]
+      "enum": ["implementer", "challenger", "reviewer", "integrator"]
     },
     "status": {
       "description": "completed: the role produced its full payload. blocked: the role could not (e.g. an implementer escalating a genuinely ambiguous spec per Foreman's v1 contract, or a finder that failed and will be retried once). See result.implementer.schema.json for the completed/blocked conditional fields it enforces via a receipt-validation semantic check, not a structural keyword, because the deciding field (this one) lives on the envelope while the conditioned fields live in payload.",
@@ -63,6 +63,10 @@
     {
       "if": { "properties": { "role": { "const": "implementer" } }, "required": ["role"] },
       "then": { "properties": { "payload": { "$ref": "#/$defs/implementer" } } }
+    },
+    {
+      "if": { "properties": { "role": { "const": "challenger" } }, "required": ["role"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/challenger" } } }
     },
     {
       "if": { "properties": { "role": { "const": "reviewer" } }, "required": ["role"] },
@@ -152,6 +156,149 @@
           "description": "Optional at every status, exactly as in v1.",
           "type": "string",
           "minLength": 1
+        }
+      }
+    },
+    "challenger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "round", "reviewed_head", "finder", "findings", "counts", "attack_scenarios"],
+      "properties": {
+        "stage": {
+          "description": "Always challenge — the challenger role never produces a review-stage pass (that is the reviewer role's contract, result.reviewer.schema.json). A single legal value is expressed as const, not a one-member enum, matching this family's convention for fields with exactly one valid value (e.g. the envelope's `schema: const 2`).",
+          "const": "challenge"
+        },
+        "round": {
+          "description": "This pass's round number within the challenge stage, 1-based. Rounds are numbered independently per stage — see docs/product/domain.md 'A fix round returns to the stage that produced the findings; challenge and review keep separate round counts and caps.'",
+          "type": "integer",
+          "minimum": 1
+        },
+        "reviewed_head": {
+          "description": "Must equal the envelope's `head` — enforced by the validator's receipt-validation pass (schemas cannot see sibling fields outside their own instance).",
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "finder": {
+          "description": "The external review product that produced this pass (e.g. codex-adversarial). Free string here — the finder catalog and its stage affinity are agent-registry.json's concern (#635), not this schema's. Must match the finder segment embedded in every finding id below (checked by the validator, not this schema).",
+          "type": "string",
+          "minLength": 1
+        },
+        "findings": {
+          "description": "May be empty — a challenge round returning zero findings is a normal, schema-valid pass (specs/dev-flow-v2.md Acceptance criteria: a confidence role cannot end a stage on its own recommendation, including an empty findings list). A design-level finding is one with `class: design`; a de-scaffolding recommendation is one whose `recommended_disposition` is `delete` or `restructure` — both are ordinary entries in this same array, not a separate field.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/challenger/$defs/finding" }
+        },
+        "counts": {
+          "description": "Per-priority finding counts for this pass. The validator cross-checks these against the actual `findings` tally.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["P0", "P1", "P2", "P3"],
+          "properties": {
+            "P0": { "type": "integer", "minimum": 0 },
+            "P1": { "type": "integer", "minimum": 0 },
+            "P2": { "type": "integer", "minimum": 0 },
+            "P3": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "attack_scenarios": {
+          "description": "Adversarial scenarios this pass attempted against the design or approach, independent of whether each one surfaced a finding — the record that the challenger actually attacked the change rather than only reporting what it happened to notice. May be empty (e.g. a blocked pass, see checkChallengerBlockedStatus in scripts/validate-result-schemas.mjs). A scenario whose outcome is `surfaced-finding` names the finding it produced via `finding_id`; the validator cross-checks that id against this same pass's own `findings[]` (a same-document check, no external context needed).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/challenger/$defs/attackScenario" }
+        }
+      },
+      "$defs": {
+        "finding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "path",
+            "line",
+            "class",
+            "provenance",
+            "fingerprint",
+            "priority",
+            "recommended_disposition",
+            "evidence"
+          ],
+          "properties": {
+            "id": {
+              "description": "Unique within the run by construction: <stage>-r<round>-<finder>-<n>. The validator checks the stage/round/finder segments match this pass's own stage/round/finder, and (given prior-run context) that the id collides with neither an earlier finding in this pass nor any finding already in the run.",
+              "type": "string",
+              "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+            },
+            "path": {
+              "description": "Repo-relative path the finding is about.",
+              "type": "string",
+              "minLength": 1
+            },
+            "line": {
+              "description": "1-based line number, or null when the finding is not line-bound (e.g. a whole-file or cross-file design finding — the challenger's own contract, so this is common here). Design decision: null rather than 0 or omission, so 'not line-bound' is an explicit, typed value instead of a sentinel integer or an absent key a consumer could forget to check for.",
+              "type": ["integer", "null"],
+              "minimum": 1
+            },
+            "class": {
+              "enum": ["design", "correctness", "consistency", "hardening", "nit"]
+            },
+            "provenance": {
+              "description": "original: about the change under review. round:N: about round N's fix, where N is a round of THIS SAME STAGE (challenge's round:N never refers to a review round). Asserted by the challenger; the exit script (#636) verifies it against the diff and may downgrade original to round:N with recorded evidence, never the reverse.",
+              "type": "string",
+              "pattern": "^(original|round:[1-9][0-9]*)$"
+            },
+            "fingerprint": {
+              "description": "new: not seen before. repeat-of:<id> / supersedes:<id>: this finding is the same defect recurring, or a stronger restatement of an earlier one, where <id> is an earlier finding id in this run. Asserted by the challenger (which has prior rounds' findings in its brief); the exit script (#636) verifies it.",
+              "type": "string",
+              "pattern": "^(new|repeat-of:(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*|supersedes:(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*)$"
+            },
+            "priority": {
+              "description": "The challenger's own label. The orchestrator's adjudicated priority (which may differ) lives in adjudication.schema.json, never here.",
+              "enum": ["P0", "P1", "P2", "P3"]
+            },
+            "recommended_disposition": {
+              "description": "The challenger's recommendation only — never binding. `delete` and `restructure` are the two de-scaffolding recommendations (AGENTS.md 'Deleting the added code is a legitimate way to converge' / 'Restructuring to invariants'); the orchestrator's actual disposition lives in adjudication.schema.json.",
+              "enum": ["fix", "restructure", "delete", "decline", "defer", "file"]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "attackScenario": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "description", "outcome", "finding_id"],
+          "properties": {
+            "id": {
+              "description": "Unique within this pass. Free-form (e.g. as-1) — unlike a finding id, an attack scenario is never adjudicated or cross-referenced from another document, so it carries no run-wide grammar.",
+              "type": "string",
+              "minLength": 1
+            },
+            "description": {
+              "description": "What was attempted (the attack, failure scenario, or de-scaffolding angle explored).",
+              "type": "string",
+              "minLength": 1
+            },
+            "outcome": {
+              "description": "held: the design withstood this scenario — no finding resulted. surfaced-finding: this scenario produced a finding, named by finding_id.",
+              "enum": ["held", "surfaced-finding"]
+            },
+            "finding_id": {
+              "description": "Required key at every outcome; null when outcome is held (nothing to name), and a finding id from this same pass's findings[] when outcome is surfaced-finding — enforced by the if/then below and, for same-pass membership, by the validator (checkChallengerAttackScenarios).",
+              "type": ["string", "null"],
+              "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+            }
+          },
+          "if": {
+            "properties": { "outcome": { "const": "surfaced-finding" } },
+            "required": ["outcome"]
+          },
+          "then": {
+            "properties": { "finding_id": { "type": "string" } }
+          },
+          "else": {
+            "properties": { "finding_id": { "const": null } }
+          }
         }
       }
     },

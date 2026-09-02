@@ -6,6 +6,10 @@ set -euo pipefail
 
 repo="$(git rev-parse --show-toplevel)"
 GUARD="$repo/scripts/verify-agents.sh"
+command -v jq >/dev/null 2>&1 || {
+    echo "TEST FAIL: jq is required to build the registry fixtures below" >&2
+    exit 1
+}
 
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
@@ -339,6 +343,37 @@ newrepo "$R10"
 mkdir -p "$R10/ai/agents/universal"
 expect_fail_contains "a subdirectory with no agent files still fails" "$R10" \
     "must be flat"
+
+# mkregistry DIR ROLE_SLUG... — write a minimal agent-registry.json whose
+# roles[] holds exactly the given slugs, enough for the "resolves to a role"
+# cross-check (#635) without needing a full, schema-valid registry — this
+# guard only ever reads .roles[].slug.
+mkregistry() {
+    local dir="$1"
+    shift
+    local roles_json="[]"
+    for slug in "$@"; do
+        roles_json="$(printf '%s' "$roles_json" | jq --arg s "$slug" '. + [{"slug": $s}]')"
+    done
+    jq -n --argjson roles "$roles_json" '{"roles": $roles}' >"$dir/agent-registry.json"
+}
+
+# Without a registry (every repo above), the role check is skipped entirely —
+# already proven by every "expect_ok" case using NATO-alphabet names that are
+# not real dev-flow-v2 roles. With one, an agent name absent from roles[]
+# fails, and a name present in it passes.
+R24="$TMPROOT/registry-unknown-role"
+newrepo "$R24"
+mkagent "$R24" whiskey
+mkregistry "$R24" implementer challenger reviewer
+expect_fail_contains "an agent name absent from registry roles[] fails" "$R24" \
+    "agent name 'whiskey' does not resolve to a role in agent-registry.json roles[]"
+
+R25="$TMPROOT/registry-known-role"
+newrepo "$R25"
+mkagent "$R25" implementer
+mkregistry "$R25" orchestrator implementer challenger reviewer integrator
+expect_ok "an agent name present in registry roles[] passes" "$R25"
 
 echo ""
 echo "test-agents: $pass passed, $fail failed"
