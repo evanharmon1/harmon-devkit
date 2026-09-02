@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "run_id": "run-nested-diverging",
+  "stage": "review",
+  "round": 2,
+  "reviewed_head": "0202020202020202020202020202020202020202",
+  "adjudications": [
+    {
+      "finding_id": "review-r2-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "still broken",
+      "evidence": "confirmed by orchestrator",
+      "override": null
+    },
+    {
+      "finding_id": "review-r2-codex-cli-2",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "confirmed by orchestrator",
+      "override": null
+    }
+  ]
+}

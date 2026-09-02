@@ -1,0 +1,23 @@
+{
+  "run_id": "run-incomplete-excluded-floor",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r2-codex-cli"
+    }
+  ],
+  "slot_failures": [
+    {
+      "stage": "review",
+      "round": 1,
+      "slot": "codex-cli",
+      "reason": "finder_unavailable",
+      "head": "0101010101010101010101010101010101010101"
+    }
+  ]
+}

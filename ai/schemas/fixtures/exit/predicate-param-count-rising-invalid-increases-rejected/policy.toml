@@ -1,0 +1,34 @@
+schema_version = 2
+default_rigor = "standard"
+rigor_order = ["standard"]
+tier_order = ["standard"]
+
+[convergence]
+converged = { all = [ { predicate = "no_gating_findings" } ] }
+diverging = { any = [ { predicate = "count_rising", increases = 0 } ] }
+
+[rigor.standard]
+rounds = "standard"
+breadth = "standard"
+orchestrator_tier = "standard"
+implementer_tier = "standard"
+challenger_tier = "standard"
+reviewer_tier = "standard"
+integrator_tier = "standard"
+
+[rounds.standard]
+challenge = 1
+review = 1
+integration = 1
+min_rounds = 1
+
+[breadth.standard]
+max_agent_runs = 4
+max_parallel_agents = 1
+
+[gates]
+round_code = "verify"
+round_docs = "check"
+secret_scan = "security:secrets"
+pre_pr = "security"
+docs_only_paths = ["docs/**"]

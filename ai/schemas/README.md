@@ -1177,7 +1177,13 @@ fixture in this corpus uses this path, so the corpus never depends on a real
 git repository); a `--repo-root <dir>` production adapter that derives the
 same shape from real `git diff` between consecutive rounds' `reviewed_head`s
 is scaffolded but intentionally not hardened yet — see
-`## Deferred findings` in the PR that shipped this. A finding not anchored to
+`## Deferred findings` in the PR that shipped this. Passing **neither** flag —
+the advertised no-flags `task devflow:exit` invocation — is `null` (no
+evidence source configured), exactly like `--repo-root` alone, never `[]` (a
+real, merely-empty ledger): the two drive `verifyProvenance` to different
+conclusions for an identical asserted claim, and only a genuinely real ledger
+may verify one. A fixture wanting a real-but-empty ledger supplies an explicit
+`--history` file containing `[]`. A finding not anchored to
 a line (`line: null`), or one whose anchor line's region was touched by an
 intervening round's fix in a way the ledger cannot cleanly attribute, comes
 back `unverified` — keeping its adjudicated priority for gating (a defect of
@@ -1188,7 +1194,17 @@ provenance-dependent predicates, exactly as `specs/dev-flow-v2.md` specifies.
 `count_rising`, `repeat_after_fix`) is pinned by these exact names — a
 `[convergence]` policy naming anything else is rejected at resolution time —
 and evaluated per `specs/dev-flow-v2.md` § "Convergence model v0" verbatim,
-composed with `any`/`all` per predicate list. Precedence is `capped →
+composed with `any`/`all` per predicate list. A list entry may itself be a
+nested `{any:[...]}`/`{all:[...]}` composition node instead of a leaf
+predicate, recursively — the exact grammar `specs/dev-flow-v2.md` normatively
+incorporates by reference ("A policy composes predicates from the anchor
+catalog"); `devflow-policy.mjs`'s resolver validates each leaf's own
+parameters (`provenance_share.min` in `[0, 1]`, `count_rising.increases` a
+positive integer) but only ever tighten-only-checks a **flat** rigor-level
+override — one containing a nested node is refused outright, since
+"which parameter moved which direction" has no defined meaning across a
+whole subtree; nesting inside a base `[convergence]` table with no override
+layered on top of it is unaffected. Precedence is `capped →
 diverging → converged → continue`, computed in `computeVerdict()`. One
 refinement worth stating explicitly because it is easy to miss reading the
 spec prose alone: **an incomplete current-head round (`finder_unavailable` /

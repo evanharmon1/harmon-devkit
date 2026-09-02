@@ -124,7 +124,19 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
   const receipts = Array.isArray(runRecord.receipts) ? runRecord.receipts : [];
   const passSeqByName = new Map();
   receipts.forEach((r, idx) => {
-    if (r.kind === "pass") passSeqByName.set(r.file, idx);
+    if (r.kind !== "pass") return;
+    // A repeated pass filename silently overwrote its earlier sequence
+    // number here (challenge round 3, confirmed): if the duplicate receipt
+    // sits after a later transition back into the pass's claimed stage,
+    // activeStageBefore(seq) below would use the LATER position and accept
+    // a pass that actually arrived under a different active stage,
+    // defeating the chronology boundary. A receipt filename must be unique;
+    // a duplicate makes the whole trajectory untrustworthy rather than
+    // relocating the pass.
+    if (passSeqByName.has(r.file)) {
+      throw new ExitIndeterminate(`run.json receipts contain more than one "pass" entry for file "${r.file}" (seq ${passSeqByName.get(r.file)}, ${idx})`);
+    }
+    passSeqByName.set(r.file, idx);
   });
   // All transitions in receipt order, regardless of stage — used below to
   // find whichever stage was ACTIVE immediately before a given pass arrived
@@ -253,9 +265,23 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
 
 function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage, runRecord) {
   const stagePasses = validPasses.filter((p) => p.payload.stage === stage);
+  // Two individually-valid adjudication files naming the same (stage, round)
+  // may assign conflicting adjudicated priorities — silently keeping
+  // whichever readdirSync happened to list last let filesystem order decide
+  // whether a P1 gates the stage (challenge round 3, confirmed). Reject the
+  // ambiguity outright rather than picking one.
   const adjByRound = new Map();
+  const adjFileByRound = new Map();
   for (const a of adjudications) {
-    if (a.doc.stage === stage) adjByRound.set(a.doc.round, a.doc);
+    if (a.doc.stage !== stage) continue;
+    const prior = adjFileByRound.get(a.doc.round);
+    if (prior) {
+      throw new ExitIndeterminate(
+        `two adjudication documents both name stage "${stage}" round ${a.doc.round}: "${prior}" and "${a.file}" — ambiguous, cannot trust either`,
+      );
+    }
+    adjByRound.set(a.doc.round, a.doc);
+    adjFileByRound.set(a.doc.round, a.file);
   }
   const slotFailures = Array.isArray(runRecord.slot_failures)
     ? runRecord.slot_failures.filter((s) => s.stage === stage)
@@ -416,8 +442,17 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
 // just by asserting the claim a missing ledger cannot contradict.
 function loadLedger({ historyFile, repoRoot }) {
   if (historyFile) return loadJson(historyFile);
-  if (repoRoot) return null; // git adapter deliberately not implemented yet — see ai/schemas/README.md / "## Deferred findings".
-  return [];
+  // Neither an explicit history file nor a repo root was given — including
+  // the advertised no-flags `task devflow:exit` usage — or repoRoot was
+  // given but the git adapter is deliberately not implemented yet (see
+  // ai/schemas/README.md / "## Deferred findings"). Both are "no evidence
+  // source configured", not "a real ledger that happens to be empty"
+  // (challenge round 3, confirmed): returning [] here let verifyProvenance
+  // certify every producer-asserted `original` claim by default, silently
+  // defeating provenance_share divergence detection. A fixture that wants a
+  // genuinely empty-but-real ledger supplies an explicit --history file
+  // containing `[]`.
+  return null;
 }
 
 function resolveOriginPath(pathName, beforeRound, ledger) {
@@ -584,8 +619,29 @@ function evalPredicate(name, params, ctx) {
   }
 }
 
+// Mirrors devflow-policy.mjs's validatePredicateExpr recursion: a list entry
+// is either a leaf (`predicate` string) or a nested `{any:[...]}|{all:[...]}`
+// composition node, evaluated by recursing into evalExpr itself. The resolved
+// policy already validated this shape at resolve time; this only interprets
+// it, matching "every implementation accepts and evaluates the expression
+// with exactly the catalog semantics" (exit-computation spec.md).
 function evalExpr(expr, ctx) {
-  const results = expr.list.map((entry) => ({ name: entry.predicate, hit: evalPredicate(entry.predicate, entry, ctx) }));
+  const results = expr.list.map((entry) => {
+    if (typeof entry.predicate === "string") {
+      return { name: entry.predicate, hit: evalPredicate(entry.predicate, entry, ctx) };
+    }
+    // A nested list entry is stored in its raw `{any:[...]}|{all:[...]}`
+    // TOML/JSON shape (devflow-policy.mjs's validatePredicateExpr leaves
+    // list entries untouched) — normalize to the same {kind, list} shape
+    // evalExpr itself takes before recursing.
+    const nestedKind = entry.all ? "all" : "any";
+    const nested = evalExpr({ kind: nestedKind, list: entry[nestedKind] }, ctx);
+    // For the diverging/converged "reason" field, surface an actual
+    // triggering leaf predicate's name rather than just the composition
+    // operator, when one hit.
+    const innerHit = nested.results.find((r) => r.hit);
+    return { name: innerHit ? innerHit.name : `(${nestedKind})`, hit: nested.overall, nested: nested.results };
+  });
   const overall = expr.kind === "all" ? results.every((r) => r.hit) : results.some((r) => r.hit);
   return { overall, results };
 }
@@ -678,7 +734,13 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
       return { ...base, outcome: "diverging", reason: hitName, action: "fix-delete-or-restructure", next_round: maxRoundNumber + 1 };
     }
 
-    if (retained.length >= minRounds && gatingFindings(latest).length === 0) {
+    // base.rounds_counted (COMPLETE rounds only), not retained.length (which
+    // still includes an incomplete finder_unavailable/breadth_exhausted
+    // attempt kept in `retained` so the incomplete-current-head check above
+    // can find it) — challenge round 3, confirmed: using the raw retained
+    // count let one real complete round plus one stale incomplete attempt
+    // satisfy min_rounds = 2.
+    if (base.rounds_counted >= minRounds && gatingFindings(latest).length === 0) {
       const convergedEval = evalExpr(convergence.converged, ctx);
       if (convergedEval.overall) {
         const isEmptyRound = latest.findings.length === 0;
@@ -851,7 +913,16 @@ function main() {
     }
   }
 
-  const rounds = assembleLogicalRounds(args.stage, validPasses, validAdjudications, resolved.stages[args.stage], runDir.runRecord);
+  let rounds;
+  try {
+    rounds = assembleLogicalRounds(args.stage, validPasses, validAdjudications, resolved.stages[args.stage], runDir.runRecord);
+  } catch (err) {
+    if (err instanceof ExitIndeterminate) {
+      console.error(`dev-flow-exit: indeterminate: ${err.message}`);
+      return EXIT_CODES.indeterminate;
+    }
+    throw err;
+  }
 
   const missingAdjudication = rounds.some((r) => r.status === "complete" && r.findings.length > 0 && r.findings.some((f) => f.adjudicated_priority === null));
   if (missingAdjudication) {

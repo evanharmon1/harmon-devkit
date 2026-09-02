@@ -78,15 +78,27 @@ echo "== dev-flow-exit.mjs: an unavailable ledger fails safe, distinct from a re
 node --input-type=module -e '
 import { loadLedger, verifyProvenance } from "./scripts/dev-flow-exit.mjs";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-// --repo-root names the (unimplemented) production git adapter: it must
-// return null (unavailable), never [] (a real ledger that happens to be
+// --repo-root names the (unimplemented) production git adapter, and passing
+// NEITHER --history nor --repo-root is the advertised no-flags usage: both
+// must return null (unavailable), never [] (a real ledger that happens to be
 // empty) — the two must drive verifyProvenance to different, non-silent
 // conclusions for the identical asserted claim, or an "original" assertion
-// could evade provenance_share divergence just by there being no adapter
-// to catch it.
+// could evade provenance_share divergence just by there being no evidence
+// source configured at all (challenge round 3, confirmed).
 assert.equal(loadLedger({ repoRoot: "." }), null);
-assert.deepEqual(loadLedger({}), []);
+assert.equal(loadLedger({}), null);
+
+// A genuinely real-but-empty ledger is still reachable — explicitly, via
+// --history naming a file that legitimately contains no entries.
+const dir = mkdtempSync(path.join(tmpdir(), "dfe-ledger-"));
+const emptyHistoryFile = path.join(dir, "history.json");
+writeFileSync(emptyHistoryFile, "[]");
+assert.deepEqual(loadLedger({ historyFile: emptyHistoryFile }), []);
+rmSync(dir, { recursive: true, force: true });
 
 const originalClaim = { provenance: "original", line: 10, path: "scripts/example.mjs", round: 2 };
 

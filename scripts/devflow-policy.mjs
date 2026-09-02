@@ -31,6 +31,21 @@ const CONFIDENCE_STAGES = ["challenge", "review"];
 const STAGES = ["implement", "challenge", "review", "integration"];
 const PRE_PR_STAGES = new Set(["implement", "challenge", "review"]);
 const PREDICATES = new Set(["no_gating_findings", "provenance_share", "count_rising", "repeat_after_fix"]);
+// specs/dev-flow-v2.md "Convergence model v0" § Finding fields: `class ∈
+// design | correctness | consistency | hardening | nit` — the same enum
+// ai/schemas/result*.schema.json ships for `finding.class`.
+const FINDING_CLASSES = new Set(["design", "correctness", "consistency", "hardening", "nit"]);
+
+// A cap, floor, or breadth ceiling is read from branch-controlled TOML and
+// used directly as a loop bound (challenge round 3, confirmed): unvalidated
+// it accepts negatives (a negative cap reads as "reached before any round
+// ran"), fractions, NaN, and Infinity. Every numeric policy value that gates
+// a round or a resource ceiling must be a plain non-negative integer.
+function requireNonNegativeInt(value, label, errorPath) {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new PolicyError(`${errorPath}: "${label}" must be a non-negative integer, got ${JSON.stringify(value)}`);
+  }
+}
 
 // Built-in defaults supplied only on the historical merge-base decode path
 // (legacy/v1 → v2), per the 2026-09-02 lane addenda: the decoder's scope is
@@ -232,11 +247,14 @@ function resolveRounds(doc, profile, levelName) {
     if (typeof table[key] !== "number") {
       throw new PolicyError(`[rounds.${policyName}] is missing numeric "${key}"`);
     }
+    requireNonNegativeInt(table[key], key, `[rounds.${policyName}]`);
     rounds[key] = table[key];
   }
   rounds.remediation =
     typeof table.remediation === "number" ? table.remediation : BUILTIN_REMEDIATION_FALLBACK(rounds.integration);
+  requireNonNegativeInt(rounds.remediation, "remediation", `[rounds.${policyName}]`);
   rounds.wall_clock_min = typeof table.wall_clock_min === "number" ? table.wall_clock_min : BUILTIN_WALL_CLOCK_MIN_FALLBACK;
+  requireNonNegativeInt(rounds.wall_clock_min, "wall_clock_min", `[rounds.${policyName}]`);
   return rounds;
 }
 
@@ -254,6 +272,7 @@ function resolveBreadth(doc, profile, levelName) {
     if (typeof table[key] !== "number") {
       throw new PolicyError(`[breadth.${policyName}] is missing numeric "${key}"`);
     }
+    requireNonNegativeInt(table[key], key, `[breadth.${policyName}]`);
     breadth[key] = table[key];
   }
   return breadth;
@@ -305,6 +324,42 @@ function resolveGates(doc, { allowMissing = false, fallback = null } = {}) {
   return resolved;
 }
 
+// specs/dev-flow-v2.md "Convergence model v0" example TOML: `count_rising`
+// takes `increases`, `provenance_share` takes `min` (+ optional
+// `exclude_classes`); `no_gating_findings`/`repeat_after_fix` take none.
+// Unvalidated (challenge round 3, confirmed), a degenerate parameter — e.g.
+// `provenance_share.min = 2` — parses cleanly but can never be satisfied,
+// silently defeating a divergence predicate it was configured to catch, and
+// `count_rising` with a non-positive `increases` drives undefined arithmetic
+// in the evaluator.
+const PREDICATE_PARAM_VALIDATORS = {
+  count_rising(entry, errorPath) {
+    if (!Number.isInteger(entry.increases) || entry.increases < 1) {
+      throw new PolicyError(`${errorPath}: "increases" must be a positive integer, got ${JSON.stringify(entry.increases)}`);
+    }
+  },
+  provenance_share(entry, errorPath) {
+    if (typeof entry.min !== "number" || !Number.isFinite(entry.min) || entry.min < 0 || entry.min > 1) {
+      throw new PolicyError(`${errorPath}: "min" must be a number in [0, 1], got ${JSON.stringify(entry.min)}`);
+    }
+    if (entry.exclude_classes !== undefined) {
+      const bad = !Array.isArray(entry.exclude_classes) || entry.exclude_classes.some((c) => !FINDING_CLASSES.has(c));
+      if (bad) {
+        throw new PolicyError(
+          `${errorPath}: "exclude_classes" must be an array drawn from (${[...FINDING_CLASSES].join(", ")}), got ${JSON.stringify(entry.exclude_classes)}`,
+        );
+      }
+    }
+  },
+};
+
+// Recursive: a composition list entry is either a leaf (`{predicate, ...}`)
+// or a nested `{any: [...]} | {all: [...]}` node — specs/dev-flow-v2.md
+// normatively incorporates "nested any or all composition" (exit-computation
+// spec.md "Scenario: A policy composes predicates from the anchor catalog").
+// Round 3 (confirmed): the prior flat-only shape rejected every nested
+// composition outright, so no policy could actually use the grammar the spec
+// requires every implementation to accept.
 function validatePredicateExpr(expr, errorPath) {
   if (!expr || typeof expr !== "object") throw new PolicyError(`${errorPath} must be an object`);
   const kinds = Object.keys(expr).filter((k) => k === "all" || k === "any");
@@ -313,14 +368,25 @@ function validatePredicateExpr(expr, errorPath) {
   const list = expr[kind];
   if (!Array.isArray(list) || list.length === 0) throw new PolicyError(`${errorPath}.${kind} must be a non-empty array`);
   for (const [i, entry] of list.entries()) {
-    if (!entry || typeof entry !== "object" || typeof entry.predicate !== "string") {
-      throw new PolicyError(`${errorPath}.${kind}[${i}] must be an object with a "predicate" string`);
+    const entryPath = `${errorPath}.${kind}[${i}]`;
+    if (!entry || typeof entry !== "object") {
+      throw new PolicyError(`${entryPath} must be an object`);
+    }
+    const nestedKinds = Object.keys(entry).filter((k) => k === "all" || k === "any");
+    if (nestedKinds.length > 0) {
+      if (typeof entry.predicate === "string") {
+        throw new PolicyError(`${entryPath} must not mix "predicate" with nested "any"/"all" composition`);
+      }
+      validatePredicateExpr(entry, entryPath); // recurse; throws on any nested problem
+      continue;
+    }
+    if (typeof entry.predicate !== "string") {
+      throw new PolicyError(`${entryPath} must be an object with a "predicate" string, or a nested "any"/"all" composition`);
     }
     if (!PREDICATES.has(entry.predicate)) {
-      throw new PolicyError(
-        `${errorPath}.${kind}[${i}].predicate "${entry.predicate}" is not in the v0 catalog (${[...PREDICATES].join(", ")})`,
-      );
+      throw new PolicyError(`${entryPath}.predicate "${entry.predicate}" is not in the v0 catalog (${[...PREDICATES].join(", ")})`);
     }
+    PREDICATE_PARAM_VALIDATORS[entry.predicate]?.(entry, entryPath);
   }
   return { kind, list };
 }
@@ -332,6 +398,19 @@ function checkTightenOnly(base, over, stageName, errorPath) {
     );
   }
   const kind = base.kind;
+  // A nested any/all node has no `.predicate` identity to key a tighten-only
+  // comparison by (every nested node would collide under the same
+  // `undefined` key, and "which parameter moved which direction" has no
+  // defined meaning across a whole subtree) — refuse rather than silently
+  // comparing the wrong things. Nested composition is fully supported in a
+  // base [convergence] table; only layering a per-rigor tightening override
+  // on top of one is out of scope here.
+  const hasNested = (list) => list.some((e) => !e || typeof e !== "object" || typeof e.predicate !== "string");
+  if (hasNested(base.list) || hasNested(over.list)) {
+    throw new PolicyError(
+      `${errorPath}: nested any/all composition inside a rigor-level convergence override is not a supported tightening move`,
+    );
+  }
   const baseByName = new Map(base.list.map((e) => [e.predicate, e]));
   const overByName = new Map(over.list.map((e) => [e.predicate, e]));
   const added = [...overByName.keys()].filter((k) => !baseByName.has(k));
@@ -598,6 +677,7 @@ function decodeLegacyRounds(doc, levelName) {
     if (typeof level[key] !== "number") {
       throw new PolicyError(`merge-base legacy [rigor.${levelName}] is missing numeric "${key}"`);
     }
+    requireNonNegativeInt(level[key], key, `merge-base legacy [rigor.${levelName}]`);
   }
   return {
     policy: `legacy:${levelName}`,
@@ -635,6 +715,7 @@ function decodeV1Rounds(doc, levelName) {
     if (typeof table[key] !== "number") {
       throw new PolicyError(`merge-base v1 [review.${policyName}] is missing numeric "${key}"`);
     }
+    requireNonNegativeInt(table[key], key, `merge-base v1 [review.${policyName}]`);
   }
   return {
     policy: `v1:${policyName}`,
