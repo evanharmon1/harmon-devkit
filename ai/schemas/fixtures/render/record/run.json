@@ -1,0 +1,48 @@
+{
+  "schema": 2,
+  "run_id": "run-637-fixture-0001",
+  "initiated_by": "human",
+  "started_at": "2026-08-30T10:00:00Z",
+  "stage_transitions": [
+    { "stage": "kickoff", "entered_at": "2026-08-30T10:00:00Z", "exit": "claimed" },
+    { "stage": "claim", "entered_at": "2026-08-30T10:05:00Z", "exit": "implementer dispatched" },
+    { "stage": "implement", "entered_at": "2026-08-30T10:10:00Z", "exit": "round 1 pushed" },
+    { "stage": "verify", "entered_at": "2026-08-30T11:00:00Z", "exit": "green" },
+    { "stage": "challenge", "entered_at": "2026-08-30T11:10:00Z", "exit": "converged" },
+    { "stage": "review", "entered_at": "2026-08-30T12:00:00Z", "exit": "capped: 1 adjudicated P1 carried to integration" },
+    { "stage": "integration", "entered_at": "2026-08-30T13:00:00Z" }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": { "number": 123, "url": "https://github.com/owner/repo/pull/123" },
+  "evidence_comments": [
+    {
+      "id": "3000000001",
+      "author_actor_id": 123456,
+      "login": "evanharmon1",
+      "digest": "sha256:1a2b3c4d5e6f00000000000000000000000000000000000000000000000000",
+      "marker": { "run_id": "run-637-fixture-0001", "stage": "challenge", "destination": "issue", "round": 1, "sequence": 1 }
+    }
+  ],
+  "settlements": [
+    {
+      "finding_id": "review-r1-codex-cli-1",
+      "disposition": "fix",
+      "settled_at": "2026-08-30T13:05:00Z",
+      "reference": { "type": "sha", "value": "c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff" }
+    },
+    {
+      "finding_id": "review-r1-codex-cli-3",
+      "disposition": "decline",
+      "settled_at": "2026-08-30T13:06:00Z",
+      "reference": { "type": "comment_id", "value": "2222222222" }
+    },
+    {
+      "finding_id": "review-r2-codex-cli-1",
+      "disposition": "file",
+      "settled_at": "2026-08-30T13:07:00Z",
+      "reference": { "type": "issue_number", "value": "900" }
+    }
+  ],
+  "promotion": null
+}

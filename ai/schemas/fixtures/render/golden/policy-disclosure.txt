@@ -1,0 +1,3 @@
+rigor: `standard` (`default_rigor`) → challenge ≤3, review ≤3, integration 4, remediation 4, min_rounds 1
+
+- off-default: challenge cap raised to 5 via rigor:deep label (operator-confirmed)

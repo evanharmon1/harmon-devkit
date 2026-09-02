@@ -1,0 +1,7 @@
+{
+  "rigor": { "level": "standard", "source": "default_rigor" },
+  "rounds": { "challenge": 3, "review": 3, "integration": 4, "remediation": 4, "min_rounds": 1 },
+  "disclosures": [
+    { "kind": "off-default", "detail": "challenge cap raised to 5 via rigor:deep label (operator-confirmed)" }
+  ]
+}

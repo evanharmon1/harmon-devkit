@@ -1,0 +1,51 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "2222222222222222222222222222222222222222",
+  "produced_at": "2026-08-30T12:45:00Z",
+  "producer": { "harness": "codex-cli", "model": "gpt-5-codex", "tier": "standard" },
+  "run": { "run_id": "run-637-fixture-0001", "initiated_by": "human" },
+  "payload": {
+    "stage": "review",
+    "round": 2,
+    "reviewed_head": "2222222222222222222222222222222222222222",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r2-codex-cli-1",
+        "path": "scripts/render-dev-flow.mjs",
+        "line": 210,
+        "class": "correctness",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "round-1's lock fix narrowed but did not close the concurrent-publish race"
+      },
+      {
+        "id": "review-r2-codex-cli-2",
+        "path": "scripts/render-dev-flow.mjs",
+        "line": 250,
+        "class": "nit",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P3",
+        "recommended_disposition": "restructure",
+        "evidence": "escapeCell and escapeRegExp duplicate similar escaping logic"
+      },
+      {
+        "id": "review-r2-codex-cli-3",
+        "path": "scripts/render-dev-flow.mjs",
+        "line": 320,
+        "class": "hardening",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "defer",
+        "evidence": "mergeSections silently accepts an empty sections object"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 1, "P2": 1, "P3": 1 }
+  }
+}

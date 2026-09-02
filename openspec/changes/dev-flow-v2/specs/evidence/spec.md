@@ -100,12 +100,36 @@ exists, the branch pointer—not the continued existence of deletable evidence
 comments—SHALL anchor run discovery. If an indexed run's evidence chain is
 missing or broken, the harvester SHALL reject it as deleted-entry tampering,
 never reinterpret it as a run that did not happen.
-The run-record author's authority SHALL derive from configured trusted
-orchestrator actor IDs or the trusted kickoff event, never an identity declared
-inside the record. The digest chain defends against non-trusted actors and
+The run-record author's authority SHALL derive solely from configured
+trusted orchestrator actor IDs — the registry's trusted actors, declared in
+`agent-registry.json`, the same finder trust IDs already use — never an
+identity declared inside the record and never a kickoff-shaped event alone,
+which proves nothing about who posted it. The digest chain defends against
+non-trusted actors and
 accidental edits; a compromised trusted-account token is explicitly out of
 scope because it defeats every mechanism in the repository, branch history
-included.
+included. Trust evaluation for a given run SHALL be pinned to an
+authoritative registry revision for that run (its kickoff-time snapshot, or
+an equivalent effective-time binding) rather than whatever the registry
+currently declares — an actor added to the allowlist after a run's evidence
+was posted SHALL NOT retroactively authenticate that evidence, and an actor
+later removed SHALL NOT invalidate evidence that was authenticated while
+they were still trusted.
+
+#### Scenario: A run record's author is not a configured trusted actor
+
+- **WHEN** the run record comment's author is not among the repository's configured trusted-orchestrator actor IDs
+- **THEN** harvesting rejects the run record and its evidence as unauthenticated rather than accepting an unproven identity
+
+#### Scenario: An actor is added to the allowlist after a run's evidence was posted
+
+- **WHEN** a run's evidence was authored by an actor not on the allowlist at kickoff time, and that actor is added to the allowlist later
+- **THEN** harvesting evaluates authenticity against the run's own kickoff-time registry revision and does not retroactively accept that evidence
+
+#### Scenario: A trusted actor is removed from the allowlist after posting
+
+- **WHEN** a run's evidence was authored by an actor trusted at the time it was posted, and that actor is later removed from the allowlist
+- **THEN** harvesting continues to accept that already-authenticated evidence rather than invalidating history that was valid when it was recorded
 
 #### Scenario: An indexed evidence entry is deleted
 
@@ -134,9 +158,43 @@ before computing metrics or exits.
 Every run-record transition, intervention, and terminal-outcome entry SHALL carry
 an immutable timestamp, sequence, previous-entry digest, and canonical digest.
 Appending an entry SHALL extend that chain without editing an earlier entry. An
-`--as-of` read SHALL first validate the complete chain, then reconstruct state
-using only entries whose timestamps are at or before the cutoff. Editing or
-deleting any entry SHALL break sequence or digest validation and fail closed.
+`--as-of` read SHALL first normalize exact-duplicate entries (below), then
+validate the complete chain, then reconstruct state using only entries whose
+timestamps are at or before the cutoff. Editing or deleting any entry SHALL
+break sequence or digest validation and fail closed.
+
+Within one run there is exactly one writer: the orchestrating session,
+appending reserve-first — unlike an evidence comment, a run-record entry is
+not itself a separate GitHub comment with its own comment ID to canonicalize
+by, since every entry lives inside the one run-record comment edited in
+place. Two entries that are byte-identical are a harmless duplicate (a
+resumed writer's own retry re-appending an entry that already landed) and
+SHALL be normalized to one **before** raw sequence/digest chain validation
+runs — a byte-identical retry necessarily repeats both its sequence and
+previous-entry digest, so validating the un-normalized chain first would
+reject it as broken rather than recognize it as the harmless case it is.
+Two entries that instead claim the same previous-entry
+digest but carry *different* content are a **forked** chain, not a
+duplicate — harvesting SHALL fail closed and report the run indeterminate
+rather than choosing either branch as canonical. Concurrent writers from
+more than one orchestrator session are out of scope, the same GitHub
+read-modify-write limitation already disclosed elsewhere in this family:
+nothing here claims to close it. Repeatability SHALL hold for the chain as
+durably observed, not for an event's own self-reported timestamp: an entry
+reserved before a cutoff but not yet landed at read time is not part of any
+chain a reader can see yet, so a later re-read that then includes it
+reflects what has newly landed, never a violation of "the same cutoff over
+the same materialized chain reports the same result."
+
+#### Scenario: The run-record chain forks
+
+- **WHEN** two entries in a run's history both name the same previous-entry digest but carry different content
+- **THEN** harvesting reports the run indeterminate and does not choose either branch as canonical
+
+#### Scenario: An entry lands after an earlier read at the same cutoff
+
+- **WHEN** an entry timestamped at or before cutoff `C` is reserved before a first `--as-of C` read but its run-record write does not durably land until after that read completes
+- **THEN** the first read's result reflects the chain as it was durably observed at that time, and a later `--as-of C` read that now includes the landed entry is not a repeatability violation
 
 #### Scenario: A transition occurs after the scoring cutoff
 

@@ -1,0 +1,48 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "2222222222222222222222222222222222222222",
+  "produced_at": "2026-08-30T13:00:00Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "economy" },
+  "run": { "run_id": "run-637-fixture-0001", "initiated_by": "human" },
+  "payload": {
+    "checks": [
+      { "name": "verify", "bucket": "pass", "run_id": "9000000001", "required": true },
+      { "name": "markdownlint", "bucket": "pass", "run_id": "9000000002", "required": true }
+    ],
+    "codex_cycle": {
+      "head": "2222222222222222222222222222222222222222",
+      "cycle": 1,
+      "attempt": 1,
+      "trigger_comment_id": "IC_trigger0001",
+      "accepted": {
+        "surface": "review",
+        "id": "PRR_review0001",
+        "reviewed_commit": "2222222222222222222222222222222222222222"
+      },
+      "exit_code": 10
+    },
+    "integration_round": 1,
+    "findings": [
+      {
+        "id": "integration-r1-human-1",
+        "body": "Human reviewer: the retry-exhausted blocker never surfaces how many attempts remain to the caller.",
+        "source_id": "IC_kwIarandom0001"
+      },
+      {
+        "id": "integration-r1-human-2",
+        "body": "CI: markdownlint flagged a missing blank line after the Deferred findings heading.",
+        "source_id": "IC_kwIarandom0002"
+      },
+      {
+        "id": "integration-r1-human-3",
+        "body": "Human reviewer: escapeCell and escapeRegExp should be one helper, not two near-duplicates.",
+        "source_id": "IC_kwIarandom0003"
+      }
+    ],
+    "unanswered_thread_roots": ["IC_kwIarandom0001"],
+    "settled_at": "2026-08-30T13:00:00Z",
+    "verdict": "findings"
+  }
+}

@@ -1770,3 +1770,351 @@ same pinned ref, without either implementation reading the other's source.
   the round's own `adjudication.schema.json` document, ever) and at most one
   terminal settlement (`run.schema.json`'s `settlements[]`), and neither
   document is edited to reflect the other.
+
+## Rendering: `scripts/render-dev-flow.mjs`
+
+Deterministic projections from this family's documents — never a second
+source of truth: every rendered fact is read from an `adjudication.schema.json`
+document, `run.schema.json`, or a result envelope, and disposition/priority
+always come from the adjudication record, never re-inferred from a raw
+reviewer/challenger finding ([#637](https://github.com/evanharmon1/harmon-devkit/issues/637),
+`openspec/changes/dev-flow-v2/specs/renderer/spec.md`). Invoke via
+`scripts/render-dev-flow.sh <projection> --record <dir> [options]` (a thin
+wrapper; `render-dev-flow.mjs` is the implementation, same pairing as this
+family's other scripts). Requires `gitleaks` on `PATH` (every rendered
+projection and every `publish` section is secret-scanned before being
+returned — see "Secret scanning" below) and, for `publish`, `gh`
+authenticated against the target repo.
+
+### The record directory
+
+`--record <dir>` holds:
+
+| Path | Contents | Required |
+|---|---|---|
+| `run.json` | One `run.schema.json` document | For `blocker-comment`, `readiness-input`; optional elsewhere |
+| `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
+| `passes/*.json` | Result envelopes (`role: challenger`, `reviewer`, or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location) when no matching pass is supplied. The "Evidence" column is always the adjudication's own `evidence` field — schema-required, never pass-dependent — never a pass's raw finding text (see "Evidence is always the adjudicated record's own" below). **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
+| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines. Shape-validated when present (`outcome` a non-empty string; `reason` a string; `rounds_counted` a non-negative integer; `next_round` a positive integer; `corrections` an array of strings — each only when present) |
+| `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present: `rigor.level`/`rigor.source` non-empty strings; `rounds` and every one of its five caps are **required** whenever `policy.json` exists at all — a partial or omitted `rounds` would let the rendered rigor line silently disclose an incomplete budget — each a non-negative integer, **except `min_rounds`, which must be positive** (AGENTS.md: every rigor level's floor is always `>= 1`; `0` is semantically invalid for that one key, not just a low value); `disclosures[]` stays optional, each entry `{kind, detail}` |
+
+Every file present is schema-validated (structural shape only — this
+family's full receipt suite needs cross-run context, e.g. `--known-ids`, no
+single record directory carries, and stays `validate-result-schemas.mjs`'s
+job upstream of the renderer); a malformed document fails loudly naming the
+file, never a partial render. What IS local to one record directory is also
+checked, before anything renders: a finding id's own `stage`/`round`
+segments (it is built from `<stage>-r<round>-<finder>-<n>`) must agree with
+its containing adjudication document's own declared `stage`/`round` — a
+second, independent encoding that must not disagree with the first; every
+pass's `head`/`run_id`/role must agree with the adjudication document that
+cross-references it by finding id (role: stage `integration` requires an
+`integrator` pass, everything else a `reviewer` pass); for a challenger or
+reviewer pass specifically, its payload's own `stage`/`round`/`finder`/
+`reviewed_head` (fields `result.challenger`/`result.reviewer.schema.json`
+both require) must also agree with that same row — envelope-level
+`head`/`run_id`/role agreement alone would not catch a pass whose *payload*
+claims a different round or stage than the document adjudicating it; an
+integrator pass's own `payload.integration_round` (the one payload
+coordinate its schema declares) must likewise agree; a pass's `run.run_id`
+**and** `run.initiated_by` must both agree with `run.json`'s when supplied
+— `run_id` alone is not the run's full identity, so a pass claiming a
+Foreman-initiated run cannot enrich a human-initiated record merely because
+its free-form `run_id` collided; every pass finding must be consumed by
+exactly one adjudication entry, or it stays invisible to every projection
+with no error at all (`entries[]` is built by walking adjudications, never
+passes, so an un-adjudicated finding — even a P1 — is silently dropped from
+the published ledger otherwise);
+a reviewer/challenge finding's copied `reviewer_priority`
+must still equal its pass's own asserted `priority` (a drifted copy would
+hide the very reviewer-vs-orchestrator disagreement it exists to preserve);
+no finding id may be adjudicated twice across separate adjudication files, and
+no two adjudication documents may claim the same `(stage, round)` (one
+document per round, or `adjudication-record` would render both files' rows
+under each file's collapsed block instead of one round each);
+`disposition: defer` is rejected for stage `integration` (nothing downstream
+would ever settle it); `disposition: defer` is likewise rejected whenever
+`adjudicated_priority` is `P0`/`P1` (AGENTS.md: "only P0/P1 gate the local
+loops" — a P0/P1 finding must be fixed, or adjudicated down, at the stage
+that found it, never carried forward; `adjudicated_priority` is the
+authoritative post-adjudication value, unlike `reviewer_priority`, a copy of
+the raw finding — a downward override to P2/P3 is the sanctioned way to defer
+something a reviewer flagged P0/P1, and that path already requires a
+non-null `override` recording why); every adjudication document's own `run_id` must agree
+with `run.json`'s when `run.json` is supplied, or with each other when it is
+not (`run.json` is optional for several projections, and without this check
+two adjudication documents from genuinely different runs could still combine
+into one PR-body ledger) — finding ids are unique only *within* a run; and
+every `run.json` settlement must name a finding some supplied adjudication
+document actually dispositioned `defer` (an "orphan" settlement is rejected),
+with a `reference.type` *and* value shape that agree with its own
+`disposition` (`fix`→ 40-hex `sha`, `decline`→`comment_id`,
+`file`→ positive-integer `issue_number`); no two settlements may name the
+same finding (checked once, globally, rather than only inside the three
+projections that happen to build a settlement index for their own reasons —
+`adjudication-record`, `round-table`, and `policy-disclosure` benefit too);
+and a resolved `policy.json` cap that a supplied adjudication round already
+contradicts is rejected (`rounds.challenge: 0` alongside an actual challenge
+round 1 would otherwise publish two documents that cannot both be
+true) — renderer/spec.md "Publication
+SHALL validate local sidecar entries against adjudications," applied to
+every projection rather than only `publish`, since an inconsistent record is
+suspect for all of them alike.
+`--verdict <file>` / `--policy <file>` override the record directory's own
+`verdict.json`/`policy.json`. A finding's `class` and `provenance` columns
+read `n/a` when no matching pass supplies them (always true for integration-
+stage findings, which carry neither field at all).
+
+Free-text fields pulled from a finding's evidence, an adjudication's reason,
+or a policy disclosure detail are reviewer- or human-authored prose this
+renderer does not control, and are embedded verbatim into a marked PR-body
+section. Before rendering, every such field has its literal `<!--`/`-->`
+sequences HTML-entity-escaped (`&lt;!--`/`--&gt;`) — visually unchanged in a
+rendered PR, but no longer byte-identical to a real marker on a later parse.
+Without it, evidence that happens to quote a marker token (a real risk when
+reviewing this renderer itself) would forge an extra section boundary the
+next `publish` misreads. The same pass also folds every embedded newline to
+`<br>` — an unfolded newline in a `deferred-findings` task-list item would
+turn a continuation line into a Markdown-parsed SEPARATE list item, a
+fabricated checkbox the human integration stage never actually adjudicated,
+if the continuation happens to look like one.
+
+**A challenge-stage pass may carry `role: challenger` or `role: reviewer`**
+(`#635` shipped `result.challenger.schema.json` and the envelope's
+`role: challenger`, validated the same way as any other pass). Both remain
+legitimate simultaneously: `result.reviewer.schema.json`'s own `stage` enum
+still admits `"challenge"` (unchanged by `#635`), so a pre-`#635` record
+using that path is still schema-valid. Review and integration each accept
+exactly one role (`reviewer`, `integrator`) — a challenger pass never backs
+a review-stage finding, since its own schema fixes `stage` to a `const`.
+Every column that reads from a challenge/review pass's shared finding core
+(`class`, `provenance`, the reviewer_priority-fidelity check) treats
+`challenger` and `reviewer` identically, since `result.challenger.schema.json`
+declares that core field-for-field the same as `result.reviewer.schema.json`.
+
+**Evidence is always the adjudicated record's own.** Every projection's
+"Evidence" column (and `thread-reply-plan`'s `evidence` field) reads the
+adjudication entry's own `evidence` — required and non-empty on every entry
+regardless of whether a matching pass exists — never a matching pass's raw
+finding text. A finding downgraded because the original concern turned out
+to be wrong (or upgraded, or otherwise recontextualized) has its *adjudicated*
+reasoning published, not the possibly-superseded original claim: publishing
+the pass's raw text instead would let the "Evidence" column contradict the
+very disposition sitting next to it in the same row.
+
+### Projections
+
+`deferred-findings`, `adjudication-record`, `round-table` (`--stage` and
+`--round` together, or neither with the sole adjudication document supplied
+— a partial selector, e.g. `--stage` alone, is a usage error rather than
+silently falling back to whichever one document happens to be there),
+`policy-disclosure`,
+`blocker-comment`, `thread-reply-plan`, and `readiness-input` — see the
+module doc comment atop `render-dev-flow.mjs` for what each renders and from
+which inputs. `deferred-findings` renders only `disposition: defer` entries
+(challenge/review's directly-resolved `fix`/`decline`/`file`/`restructure`/
+`delete` findings were never carried forward and so are never "deferred");
+each item is `` - [ ] `<finding_id>` <location> — <summary> `` — the id is
+required alongside location and summary (the renderer spec names all three
+as distinct fields, and `readiness-input`/settlements are keyed by it, so a
+reader needs it to correlate a checkbox with either) — unchecked until a
+matching `run.json` `settlements[]` entry terminalizes it with the
+settlement grammar `- [x] … — fixed in <7-char sha>` / `declined: see
+comment <id>` / `filed as #<n>`. A direct (non-deferred)
+`decline`/`file` disposition has no structural place in this schema family
+to record a decline comment id or filed-issue number the way a
+deferred-then-settled finding does via `settlements[].reference` — a gap
+worth closing on a future revision of this family if that evidence is
+needed for the directly-resolved case too.
+
+`thread-reply-plan` carries only **integration-stage** findings whose
+`source_id` is named in the **current** integration pass's
+`unanswered_thread_roots` — current meaning the supplied `passes/*.json`
+integrator envelope with the highest `payload.integration_round` **among
+those matching the run being rendered** (`run.json`'s `run_id` when
+supplied, else the run_id every adjudication document already agrees on),
+not necessarily the pass that originally reported the finding. The run
+filter matters because "highest round" alone is not enough: a schema-valid
+integrator pass from a genuinely different run has no adjudicated findings
+of its own, so none of the per-row consistency checks ever examine it, and
+without the filter it could still win "latest" by round number and
+silently report every real open thread in the active run as answered.
+"Still open" is a
+property of the latest snapshot: a finding from an earlier round whose
+thread was answered by a later round would otherwise be judged against its
+own originating pass's now-stale root list forever, since a finding id is
+reported by exactly one pass file by construction and never re-reported once
+its thread is settled. A `source_id` can just as easily be a CI-check
+marker or an already-answered thread (the schema permits both), so skipping
+this filter would attempt an invalid reply or duplicate an existing one.
+Challenge/review findings (`result.reviewer.schema.json`) carry no
+`source_id` at all — there is no inline-comment linkage to preserve for them
+in the current schema family, so no reply plan entry is produced for them.
+Each entry carries `root_comment_id`/`reply_text` plus the same
+`head`/`adjudicated_priority`/`classification`/`evidence`/`action` the ledger
+and PR-body projections carry for that finding, so a consumer can verify
+semantic equivalence rather than trust the reply text alone (renderer/spec.md
+"Multi-surface dispositions remain equivalent") and a stale plan naming an
+old `head` can be rejected outright.
+
+### Secret scanning
+
+`openspec/changes/dev-flow-v2/specs/evidence/spec.md` § "Evidence is scanned
+and safely redacted": every free-text evidence projection SHALL pass the
+repository's secret scanner before posting, with a detected span replaced
+by a stable placeholder and rule ID. This is a SHALL, never best-effort, so
+every standalone projection's complete rendered output, and every `publish`
+section's rendered text individually (before merging), is piped through
+`gitleaks detect --pipe` (no git/file context needed — it reads stdin
+directly) and each finding's exact matched `Secret` string is replaced with
+`[REDACTED:<RuleID>]` before the text is returned. Applied once to the
+whole rendered text rather than scattered across individual field
+interpolations: every projection's output can end up posted to GitHub, and
+scanning the complete text cannot miss a field by omission the way
+distributing calls across dozens of call sites can. A scan that cannot run
+at all (`gitleaks` missing, a malformed report) is a hard failure, never a
+silent skip — an environment without `gitleaks` must not be able to
+silently publish unscanned evidence.
+
+### Publishing: marked PR-body sections
+
+`publish --record <dir> --repo <owner/repo> --pr <n> --head <sha> --sections
+<a,b,...>` merges exactly the requested sections — drawn from
+`policy-disclosure`, `deferred-findings`, `adjudication-record` (the three
+that live in the PR body; `round-table`/`blocker-comment` are posted as
+separate issue/PR comments by the caller, and `thread-reply-plan`/
+`readiness-input` are consumed as JSON, never merged into the body) — into
+the PR's current body, each wrapped in a marker pair:
+
+```markdown
+<!-- dev-flow:begin:deferred-findings -->
+## Deferred findings
+...
+<!-- dev-flow:end:deferred-findings -->
+```
+
+An existing marker pair is replaced in place (a duplicated or
+begin/end-mismatched pair for a requested section is refused as a
+`malformed-markers` blocker, never guessed at — as is one KNOWN section's
+marker pair nested inside a different KNOWN section's: a lazy begin...end
+match for the outer, requested section would otherwise span over and
+silently delete the inner, unrequested section's entire block along with
+its content while still reporting success); an absent one is appended,
+in `policy-disclosure`, `deferred-findings`, `adjudication-record` order —
+by adding only however many newlines are needed to reach a one-blank-line
+separation from whatever the body already ends with, never by trimming its
+existing trailing newlines down to a fixed count first. Every byte outside
+a requested section's own marker pair is preserved verbatim from the read
+that immediately precedes the write.
+
+**GitHub provides no compare-and-swap for a PR body**, so this is a
+best-effort transaction, not an atomic one: publish reads the current body,
+merges, writes, then re-reads and compares a SHA-256 fingerprint of the
+merged content against what it wrote. A mismatch (a concurrent edit landed
+in the write window) restarts the merge from a fresh read, bounded by
+`--max-retries` (default 3; total attempts = retries + 1); exhausting it
+reports a `retry-exhausted` blocker. A local reservation
+(`<record dir>/.publish-state.json`) is written before every `gh pr edit`
+call and retired only once a re-read confirms the fingerprint match — so a
+crash between a landed write and that confirmation leaves the reservation in
+place, and the next invocation's own fresh read finds its intended content
+already present and resolves as a no-op rather than duplicating a section.
+Retiring a reservation compares its recorded section set against the current
+invocation's own `--sections` first — an unrelated, still-interrupted publish
+for a *different* section set must not lose its only durable
+still-needs-reconciliation record just because a later invocation for
+different sections happened to find its own target content already
+satisfied. Deliberately not part of that comparison: the reservation's
+`intended_fingerprint`. A same-invocation repair round (attempt N+1, after a
+concurrent edit forced a fresh re-merge) legitimately resolves to a no-op
+against the now-updated body — its own recomputed fingerprint differs from
+what an *earlier* attempt of the very same call recorded, even though the
+reservation is unquestionably still this call's own; gating on fingerprint
+equality would strand that reservation right after a successful repair. The
+section set alone already distinguishes "mine" from "a different invocation
+entirely," which is the only case that needs to be rejected.
+A human edit that lands strictly *after* publish's last read but *before*
+its write is a window this design cannot close — GitHub gives no primitive
+to close it — and is not claimed to be closed. `publish` requires the exact
+pushed `--head`, an `OPEN` PR (`state`), and a draft one (`isDraft: true`);
+any condition failing is a blocker (`head-mismatch`/`not-open`/`not-draft`)
+with no write attempted — `state` is checked separately from `isDraft`
+because a closed PR can still report `isDraft: true` (never marked ready
+before it was closed), so draft-ness alone would let a closed PR's body be
+edited. The post-write verification read checks `headRefOid`, `state`, and
+`isDraft` again, not just the body's fingerprint: the head moving mid-write
+is a `head-changed-during-publish` blocker, the PR closing mid-write is a
+`closed-during-publish` blocker, and the PR leaving draft state mid-write
+(a known external actor can promote a draft outside this transaction — see
+AGENTS.md's Codex-connector signature) is a `promoted-during-publish`
+blocker — the body write may have landed in every case, but reporting
+success would hide that the transaction's own precondition broke partway
+through. A `--pr` that disagrees with `run.json`'s own `pr` (a stale
+terminal, a copy-pasted number) is a `pr-mismatch` blocker, checked before
+any GitHub call — including when `run.json.pr.url` cannot even be parsed as
+a `github.com` pull URL, which blocks rather than silently skipping the
+repo-binding half of the check (a malformed URL disabling its own safety net
+is worse than not having the check), and including when the URL's own
+trailing pull number disagrees with `run.json.pr.number` itself — a second,
+independent encoding of the same PR that `run.json` could otherwise state
+inconsistently (e.g. `{number: 123, url: ".../pull/999"}`) without either
+half of the check alone catching it.
+
+**Two publish calls racing the same PR** is the same GitHub
+read-modify-write limitation wearing a different interloper: `gh pr edit`
+has no compare-and-swap, so each call can read the same original body, write
+independently, and each verify only its OWN write — both report success
+while the later write silently drops the earlier one. `publish` closes the
+most likely real trigger — an accidental double-invocation, or a retry
+firing while a prior attempt is still in flight — with an exclusive,
+`--record`-directory-scoped lock (`<record dir>/.publish-lock`, created with
+`wx` so a second holder fails fast rather than racing) held for the whole
+call and released on every exit path — including a section renderer's
+`fail()`, which exits via `process.exit()` and so skips any pending `finally`
+entirely; the lock is also released from a `process` `'exit'` listener (the
+one hook Node runs on every exit path, `process.exit()` included) so a
+mid-render failure cannot strand it. That listener stays registered past a
+*normal* return too, until `main()` later calls `process.exit()` to set the
+CLI's exit code — during that window a second publisher can legitimately
+acquire the now-vacant lock path, so the listener reads the lock file back
+and removes it only when it still names this process's own PID, rather than
+removing unconditionally and deleting a successor's active lock. A second
+call while one is in flight
+is a `concurrent-publish` blocker. This does **not** — and structurally
+cannot, from a single-process lock — close two publish calls against
+*different* record directories racing the same PR, which remains the same
+disclosed, unclosed race as a concurrent human edit. A lock left behind by a
+crashed process is a stale-lock recovery: remove the file and retry, the
+same operational shape as any other file-based recovery state in this
+family.
+
+### `readiness-input`: JSON for the readiness gate
+
+Emitted by the `readiness-input` projection, for the readiness gate
+([#639](https://github.com/evanharmon1/harmon-devkit/issues/639)) to consume
+instead of parsing the rendered `## Deferred findings` Markdown. `--head` is
+required, never inferred from adjudication order (the same requirement
+`blocker-comment` has, for the same reason): the readiness gate evaluates the
+*current* head, which a fix push can move past every round this record set
+has ever seen.
+
+```json
+{
+  "schema": "dev-flow-render.readiness-input.v1",
+  "run_id": "<run.json run_id>",
+  "head": "<--head, verbatim>",
+  "deferred_findings": {
+    "settled": [
+      { "finding_id": "…", "disposition": "fix|decline|file", "reference": { "type": "…", "value": "…" }, "settled_at": "…" }
+    ],
+    "unsettled": [
+      { "finding_id": "…", "adjudicated_priority": "P0|P1|P2|P3", "stage": "challenge|review", "round": 1 }
+    ]
+  }
+}
+```
+
+`settled`/`unsettled` partition every `disposition: defer` adjudication
+entry across the supplied `adjudications/*.json` by whether `run.json`
+`settlements[]` names its `finding_id`; `reference` is `settlements[]`'s own
+field, carried through unchanged.
