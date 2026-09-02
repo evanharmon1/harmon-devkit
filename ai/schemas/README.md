@@ -1543,6 +1543,92 @@ with no check against the change ledger, unlike `verifyProvenance`'s
 analogous handling of `"original"`
 ([#725](https://github.com/evanharmon1/harmon-devkit/issues/725)).
 
+**A second cloud-review cycle on the round-1 fix commit surfaced 11 more
+findings** (6 P1, 5 P2) — the push moved the head, so this was a fresh
+current-head cycle, not the same review. Two were about round 1's own
+fixes (a provenance-checkpoint case each); the rest were about pre-existing
+code the round-1 diff never touched.
+
+- **The operating-copy resolution round 1 added only covers the v2-
+  merge-base branch** — moved `resolveV2(doc, opts)` to run unconditionally
+  whenever a merge-base is supplied, before branching on the merge-base's
+  own shape, so a legacy/v1 merge-base (the more common migration case)
+  gets the same protection.
+- **`checkTightenOnly`'s predicate-name `Map`s silently kept only the last
+  occurrence of a repeated predicate** in one composition list — a base
+  list naming the same predicate twice could have its override compared
+  against only one occurrence, hiding a real loosening in the one never
+  looked at. `validatePredicateExpr` now rejects any composition list
+  naming the same predicate more than once, closing the gap at the source
+  rather than trying to compare every occurrence.
+- **A lone direct-cap field (`challenge = 99` alone, not the complete
+  four-field set) still wasn't a legacy marker** even after round 1's
+  single-stray-marker fix — `hasDirectCaps` itself required all four
+  fields together; a separate `hasAnyDirectCapField` signal (any one
+  field) now feeds the mixed-with-v2 check specifically, while
+  `hasDirectCaps` (all four) still governs whether the file is genuinely
+  pure legacy.
+- **`verifyProvenance`'s `round:N` branch never consulted `ambiguousTouch`
+  at all**, unlike the `"original"` branch beside it — a later round's
+  edit at-or-above the line could shift what the ledger's round-N
+  coordinate now points at, and this branch verified (or "corrected") it
+  anyway. Fixing that surfaced a second, deeper bug in how
+  `ambiguousTouch` itself was computed: the original single pass
+  considered every ledger entry regardless of whether it came before or
+  after the round that introduced the line, so an EARLIER round's own
+  unrelated edit falsely flagged ambiguity for a line a LATER round
+  introduced. Restructured into two passes — the ambiguity scan now only
+  considers entries strictly after the introducing round (or, for an
+  `"original"` claim with no introducing round, every tracked entry, since
+  `"original"` predates all of them — unchanged from before).
+- **A missing or broken `--validator` couldn't be told apart from a
+  genuinely schema-invalid pass** — `runValidator`'s `status === 0` check
+  treats a Node module-loading crash (spawns fine, then exits non-zero on
+  its own `MODULE_NOT_FOUND`) identically to a real validation failure,
+  silently degrading a valid completed round into what reads as "no
+  passes at all." `--validator` is now preflighted for existence once,
+  before any pass is validated, refusing indeterminate rather than
+  degrading.
+- **The council/orchestrate anchor rule (added earlier this branch)
+  enforced a maintainer-relayed simplification, not
+  `specs/dev-flow-v2.md`'s own precise text**: "Orchestrate requires
+  `max_agent_runs >= min_agents` and, only under parallel coordination,
+  `max_parallel_agents >= min_agents`; sequential dispatch needs only the
+  run coverage... A council with `synthesis = true` requires
+  `max_agent_runs >= N + 1`." The check now reads `coordination` (only
+  `"parallel-when-independent"` triggers the parallel-capacity
+  requirement) and `synthesis` (only `true` requires council's extra run),
+  matching the spec exactly rather than requiring both unconditionally.
+- **`isAncestorOrEqual`'s `--repo-root` branch collapsed every nonzero
+  `git merge-base --is-ancestor` exit status to `false`** — status `1` is
+  the documented, genuine "not an ancestor" answer, but any other status
+  (`128` for a missing/unreachable object in a shallow checkout, among
+  others) or a spawn failure is an execution error, not a valid "no." Now
+  distinguished: `0` → `true`, `1` → `false`, anything else → `"unknown"`
+  (the same three-way result this function's callers already handle).
+- **`resolveSpend` silently accepted an invalid ceiling** — a negative,
+  fractional, or non-finite `max_tokens`, or a string-valued `max_usd`,
+  resolved either as-is (if numeric) or silently became `null` (read as
+  "absent"). `status: "UNENFORCED"` doesn't make this a dead value — it's
+  a shared resolved-policy field later dispatchers already consume — so
+  `max_tokens` now requires a non-negative integer and `max_usd` a finite
+  non-negative number, when present.
+
+Two findings were confirmed but deferred, both narrowly scoped to
+already-lower-priority territory: `assembleLogicalRounds`'s
+historical-decode primary-slot inference considers only completed passes,
+never `slot_failures` records, so a stage whose sole configured finder
+never produced a single pass (only a `finder_unavailable` failure record)
+can leave `primarySlots` empty and the round wrongly assembled as
+"complete" — narrowly scoped to the historical-decode path the maintainer
+has already ruled low-priority for fidelity work. And the
+`missingAdjudication` check is limited to rounds whose AGGREGATE status is
+`"complete"`, so a multi-finder round with one successful, retained pass
+and one failed slot (aggregate status `capped/finder_unavailable`) can
+carry an unadjudicated pass with no diagnostic — closing this correctly
+needs tracing per-pass retention independently of aggregate round status,
+deferred rather than rushed under this round's own time pressure.
+
 ## The Foreman conformance contract
 
 harmon-devkit is the single source of truth for this schema family, vendored

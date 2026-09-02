@@ -523,27 +523,50 @@ function verifyProvenance(finding, ledger) {
   const relevant = ledgerEntriesForOrigin(originPath, finding.round, ledger);
 
   let introducedAtRound = null;
+  for (const entry of relevant) {
+    if ((entry.added_lines || []).includes(finding.line)) introducedAtRound = entry.round;
+  }
+
+  // A later round's insertion or deletion AT OR ABOVE this line shifts
+  // every subsequent line number, so the ledger's recorded coordinate for
+  // an EARLIER round's add no longer equals where that content now sits
+  // (review round 2, confirmed) — a direct `=== finding.line` comparison
+  // would then find no match, fall through, and wrongly verify "original"
+  // for code that actually came from the earlier round, just renumbered.
+  // Only entries STRICTLY AFTER the one that introduced this line (or,
+  // when there is no introducing round at all — an "original" claim,
+  // which predates every tracked round — any entry in `relevant`) can have
+  // shifted ITS coordinate; an entry at or before the introducing round
+  // cannot retroactively shift a position recorded after it. Shepherd-
+  // stage cloud finding (round 2, about pre-existing code), confirmed: the
+  // prior single-pass version considered EVERY entry regardless of
+  // chronological relationship to `introducedAtRound`, so an earlier
+  // round's own unrelated add at a lower line number falsely flagged
+  // ambiguity for a line a LATER round introduced — the earlier add
+  // predates and has no bearing on it.
   let ambiguousTouch = false;
   for (const entry of relevant) {
-    const addedHere = (entry.added_lines || []).includes(finding.line);
-    if (addedHere) introducedAtRound = entry.round;
-    if ((entry.deleted_lines || []).includes(finding.line)) ambiguousTouch = true;
-    // A later round's insertion or deletion AT OR ABOVE this line shifts
-    // every subsequent line number, so the ledger's recorded coordinate for
-    // an EARLIER round's add no longer equals where that content now sits
-    // (review round 2, confirmed) — a direct `=== finding.line` comparison
-    // would then find no match, fall through, and wrongly verify "original"
-    // for code that actually came from the earlier round, just renumbered.
-    // Only a touch outside the entry that itself introduced this exact line
-    // counts — that entry's own multi-line add legitimately shares this
-    // line without implying any shift happened to it.
-    if (!addedHere) {
-      const touchedAtOrAbove = [...(entry.added_lines || []), ...(entry.deleted_lines || [])].some((l) => l <= finding.line);
-      if (touchedAtOrAbove) ambiguousTouch = true;
-    }
+    if (introducedAtRound !== null && entry.round <= introducedAtRound) continue;
+    const touchedAtOrAbove = [...(entry.added_lines || []), ...(entry.deleted_lines || [])].some((l) => l <= finding.line);
+    if (touchedAtOrAbove) ambiguousTouch = true;
   }
 
   if (introducedAtRound !== null) {
+    // Shepherd-stage cloud finding (round 2, about pre-existing code),
+    // confirmed: this branch returned "verified"/"corrected" unconditionally,
+    // never consulting `ambiguousTouch` the way the "original" branch below
+    // already does. A later round's edit at-or-above this line can shift
+    // what the ledger's round-N coordinate now actually points at — the
+    // SAME reasoning that motivated ambiguousTouch in the first place — so
+    // a round:N match found under an ambiguous touch is not safe to
+    // confidently verify or correct either; report it undecidable instead.
+    if (ambiguousTouch) {
+      return {
+        status: "unverified",
+        value: finding.provenance,
+        reason: `line ${finding.line} at ${finding.path} matches round ${introducedAtRound}'s own add, but its region was later modified; mechanical attribution is undecidable`,
+      };
+    }
     const computed = `round:${introducedAtRound}`;
     if (finding.provenance === computed) return { status: "verified", value: computed };
     return {
@@ -742,8 +765,21 @@ function isAncestorOrEqual(candidate, currentHead, { headsMap, repoRoot }) {
     return false;
   }
   if (repoRoot) {
+    // `git merge-base --is-ancestor` documents exactly two meaningful exit
+    // statuses: 0 (is an ancestor) and 1 (is not — a genuine, valid "no").
+    // Any other status (128 for a missing/unreachable object in a shallow
+    // or incomplete checkout, among others) or a spawn failure (`.error`)
+    // is an execution error, not a valid "no" — shepherd-stage cloud
+    // finding (round 2, about pre-existing code), confirmed: collapsing
+    // every nonzero status to `false` mislabeled unavailable ancestry
+    // evidence as definitively invalidated, which could dispatch another
+    // round or escalate at the cap instead of correctly reporting
+    // "unknown".
     const result = spawnSync("git", ["-C", repoRoot, "merge-base", "--is-ancestor", candidate, currentHead]);
-    return result.status === 0;
+    if (result.error || result.status === null) return "unknown";
+    if (result.status === 0) return true;
+    if (result.status === 1) return false;
+    return "unknown";
   }
   return "unknown";
 }
@@ -979,6 +1015,22 @@ function main() {
   }
 
   const validatorPath = args.validator || DEFAULT_VALIDATOR;
+  // Preflight the validator's own existence before ever spawning it.
+  // Shepherd-stage cloud finding (round 2, about pre-existing code),
+  // confirmed: runValidator's `status === 0` check cannot distinguish "the
+  // validator ran and rejected this pass" from "the validator process
+  // itself couldn't even load" (a missing/broken --validator path spawns
+  // node successfully but node then exits non-zero on its own
+  // MODULE_NOT_FOUND) — every pass in the run would fail identically,
+  // silently degrading a valid completed round into what reads as "no
+  // passes at all" (continue/no_rounds_yet) instead of the indeterminate
+  // dependency failure it actually is. Preflighting here, once, before any
+  // pass is validated, closes the gap without needing to sniff error text
+  // per invocation.
+  if (!existsSync(validatorPath)) {
+    console.error(`dev-flow-exit: indeterminate: --validator path does not exist: ${validatorPath}`);
+    return EXIT_CODES.indeterminate;
+  }
   // Scratch space for the --known-ids file validateReceipts() feeds to
   // validate-result-schemas.mjs — deliberately OUTSIDE --run (never written
   // into the run directory, which may be a committed fixture) and cleaned

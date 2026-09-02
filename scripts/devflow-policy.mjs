@@ -171,20 +171,27 @@ export function detectShape(doc) {
   if (hasReviewPointer) v1Markers.push("[rigor.<level>].review pointer");
   const hasV1 = hasRigorOrder && hasReviewTables && hasReviewPointer;
 
+  const directCapFields = ["challenge", "review", "shepherd", "min_rounds"];
   const hasDirectCaps = rigorLevels.some((l) => {
     const level = rigorTable[l];
-    return (
-      level &&
-      typeof level.challenge === "number" &&
-      typeof level.review === "number" &&
-      typeof level.shepherd === "number" &&
-      typeof level.min_rounds === "number"
-    );
+    return level && directCapFields.every((f) => typeof level[f] === "number");
+  });
+  // Any ONE direct-cap field — not only a complete four-field set — is
+  // itself a legacy marker for the mixed-with-v2 check below. Shepherd-
+  // stage cloud finding (round 2, about round 1's own single-stray-marker
+  // fix), confirmed: hasDirectCaps requires all four fields together, so a
+  // lone `challenge = 99` under a v2 [rigor.standard] registered as no
+  // marker at all — an incomplete legacy marker set at the level of
+  // individual fields, exactly what specs/config/spec.md's "incomplete"
+  // text already covers, not only a complete alternate-shape table.
+  const hasAnyDirectCapField = rigorLevels.some((l) => {
+    const level = rigorTable[l];
+    return level && directCapFields.some((f) => typeof level[f] === "number");
   });
   const hasDefaultMethod = typeof doc.default_method === "string";
   const hasMethodTable = !!(doc.method && typeof doc.method === "object");
   const legacyMarkers = [];
-  if (hasDirectCaps) legacyMarkers.push("[rigor.<level>] direct caps (challenge/review/shepherd/min_rounds)");
+  if (hasAnyDirectCapField) legacyMarkers.push("[rigor.<level>] direct cap field(s) (challenge/review/shepherd/min_rounds)");
   if (hasDefaultMethod) legacyMarkers.push("default_method");
   if (hasMethodTable) legacyMarkers.push("[method]");
   const hasLegacy = hasDirectCaps && hasDefaultMethod && hasMethodTable;
@@ -328,6 +335,16 @@ function resolveSpend(doc, profile) {
   if (!table || typeof table !== "object") {
     throw new PolicyError(`[spend.${policyName}] is missing (named by [rigor.*].spend)`);
   }
+  // A present-but-invalid ceiling must not silently become `null` (read as
+  // "absent") or be trusted as-is — shepherd-stage cloud finding (round 2,
+  // about pre-existing code), confirmed: `status: "UNENFORCED"` today does
+  // not make this a dead value; it is a shared resolved-policy field later
+  // dispatchers already consume, so a negative/fractional/non-finite
+  // max_tokens or a string-valued max_usd must be rejected, not disappear.
+  if (table.max_tokens !== undefined) requireNonNegativeInt(table.max_tokens, "max_tokens", `[spend.${policyName}]`);
+  if (table.max_usd !== undefined && !(typeof table.max_usd === "number" && Number.isFinite(table.max_usd) && table.max_usd >= 0)) {
+    throw new PolicyError(`[spend.${policyName}]: "max_usd" must be a finite non-negative number, got ${JSON.stringify(table.max_usd)}`);
+  }
   return {
     policy: policyName,
     max_tokens: typeof table.max_tokens === "number" ? table.max_tokens : null,
@@ -421,6 +438,25 @@ function validatePredicateExpr(expr, errorPath) {
   const kind = kinds[0];
   const list = expr[kind];
   if (!Array.isArray(list) || list.length === 0) throw new PolicyError(`${errorPath}.${kind} must be a non-empty array`);
+  // A predicate name appearing twice in one composition list is rejected
+  // outright, not silently collapsed. Shepherd-stage cloud finding (round
+  // 2, about round 1's own checkTightenOnly rewrite — but the underlying
+  // Map-based `new Map(list.map(e => [e.predicate, e]))` keying predates
+  // it), confirmed: keying by predicate name silently kept only the LAST
+  // occurrence of a repeated predicate, so checkTightenOnly's base/override
+  // comparison never saw the earlier one at all — a base list carrying a
+  // predicate twice with different parameters could have its override
+  // compared against only one of them, hiding a genuine loosening in the
+  // occurrence the comparison never looks at.
+  const seenPredicates = new Set();
+  for (const entry of list) {
+    if (entry && typeof entry === "object" && typeof entry.predicate === "string") {
+      if (seenPredicates.has(entry.predicate)) {
+        throw new PolicyError(`${errorPath}.${kind} lists predicate "${entry.predicate}" more than once — each predicate may appear at most once per composition list`);
+      }
+      seenPredicates.add(entry.predicate);
+    }
+  }
   for (const [i, entry] of list.entries()) {
     const entryPath = `${errorPath}.${kind}[${i}]`;
     if (!entry || typeof entry !== "object") {
@@ -717,29 +753,39 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
     }
   }
 
-  // specs/config/spec.md requires strategy requirements be cross-checked
-  // against breadth: an orchestrate/council strategy whose min_agents the
-  // resolved breadth ceiling cannot satisfy must be refused, not silently
-  // resolved. Registry-independent (only resolved.strategy/resolved.breadth),
-  // so — like the checks above — this runs unconditionally. Anchor rule
-  // (maintainer ruling, 2026-09-02): council needs max_parallel_agents >=
-  // min_agents AND max_agent_runs >= min_agents + 1 (the extra run is the
-  // judge/synthesis pass council's own table declares beyond the min_agents
-  // independent proposals); orchestrate needs both >= min_agents (the lead
-  // is drawn from the same pool, not an extra run). Other strategies (solo,
-  // plan, plan-approved, human-led) declare no min_agents and are unaffected.
+  // specs/dev-flow-v2.md § strategy (verbatim): "Orchestrate requires
+  // max_agent_runs >= min_agents and, only under parallel coordination,
+  // max_parallel_agents >= min_agents; sequential dispatch needs only the
+  // run coverage... A council requiring N distinct families likewise
+  // requires... max_agent_runs >= N, plus max_parallel_agents >= N only
+  // under parallel coordination. A council with synthesis = true requires
+  // max_agent_runs >= N + 1 for the fresh synthesis dispatch." Registry-
+  // independent (only resolved.strategy/resolved.breadth), so — like the
+  // checks above — this runs unconditionally. Shepherd-stage cloud finding
+  // (round 2, about round 1's own anchor-rule check), confirmed: the
+  // original formula — carrying a maintainer-relayed simplification, not
+  // this spec's own precise text — required max_parallel_agents >=
+  // min_agents and (for council) the +1 run UNCONDITIONALLY, rejecting a
+  // valid sequential orchestrate or a non-synthesizing council that the
+  // spec's own topology/synthesis-conditional rule permits. Other
+  // strategies (solo, plan, plan-approved, human-led) declare no
+  // min_agents and are unaffected.
   if (resolved.strategy && (resolved.strategy.name === "orchestrate" || resolved.strategy.name === "council")) {
-    const { name, min_agents: minAgents } = resolved.strategy;
+    const { name, min_agents: minAgents, synthesis, coordination } = resolved.strategy;
     if (!Number.isInteger(minAgents) || minAgents < 1) {
       errors.push(`[strategy.${name}].min_agents must be a positive integer, got ${JSON.stringify(minAgents)}`);
     } else {
-      const requiredRuns = name === "council" ? minAgents + 1 : minAgents;
+      const isParallel = coordination === "parallel-when-independent";
+      const requiredRuns = name === "council" && synthesis === true ? minAgents + 1 : minAgents;
       const { max_parallel_agents: maxParallel, max_agent_runs: maxRuns, policy: breadthPolicy } = resolved.breadth;
-      if (maxParallel < minAgents || maxRuns < requiredRuns) {
+      const unmet = [];
+      if (maxRuns < requiredRuns) unmet.push(`max_agent_runs >= ${requiredRuns}`);
+      if (isParallel && maxParallel < minAgents) unmet.push(`max_parallel_agents >= ${minAgents}`);
+      if (unmet.length > 0) {
         errors.push(
-          `strategy "${name}" (min_agents=${minAgents}) is incompatible with [breadth.${breadthPolicy}] ` +
-            `(max_parallel_agents=${maxParallel}, max_agent_runs=${maxRuns}): needs max_parallel_agents >= ${minAgents} ` +
-            `and max_agent_runs >= ${requiredRuns}`,
+          `strategy "${name}" (min_agents=${minAgents}, coordination=${coordination ?? "sequential"}` +
+            `${name === "council" ? `, synthesis=${synthesis === true}` : ""}) is incompatible with ` +
+            `[breadth.${breadthPolicy}] (max_parallel_agents=${maxParallel}, max_agent_runs=${maxRuns}): needs ${unmet.join(" and ")}`,
         );
       }
     }
@@ -1031,18 +1077,23 @@ export function resolvePolicy(doc, opts = {}) {
     return resolveV2(doc, opts);
   }
 
+  // requireOperatingV2 above only checks doc's SHAPE MARKER, never that it
+  // actually resolves — the merge-base rule protects which VALUES govern
+  // review, not whether the branch's own v2 content is well-formed. A
+  // branch doc carrying nothing but `schema_version = 2` would otherwise
+  // resolve successfully here (borrowing the merge-base's real values) and
+  // then fail every future resolution the moment this PR merges and there
+  // is no more merge-base to fall back to. Resolve doc for its own sake —
+  // the result is discarded, this call exists only to throw if doc itself
+  // is not independently well-formed. Shepherd-stage cloud finding (round
+  // 2, about round 1's own fix), confirmed: this validation must run for
+  // EVERY merge-base branch, not only the v2 one — a legacy/v1 merge-base
+  // (the more common migration shape, since that is what this whole
+  // decoder exists for) skipped it entirely.
+  resolveV2(doc, opts);
+
   const mbDetection = detectShape(opts.mergeBaseDoc);
   if (mbDetection.shape === "v2") {
-    // requireOperatingV2 above only checks doc's SHAPE MARKER, never that it
-    // actually resolves — the merge-base rule protects which VALUES govern
-    // review, not whether the branch's own v2 content is well-formed. A
-    // branch doc carrying nothing but `schema_version = 2` would otherwise
-    // resolve successfully here (borrowing the merge-base's real values) and
-    // then fail every future resolution the moment this PR merges and there
-    // is no more merge-base to fall back to. Resolve doc for its own sake —
-    // the result is discarded, this call exists only to throw if doc itself
-    // is not independently well-formed.
-    resolveV2(doc, opts);
     return { ...resolveV2(opts.mergeBaseDoc, opts), source: "merge-base" };
   }
   if (mbDetection.shape === "legacy" || mbDetection.shape === "v1") {
