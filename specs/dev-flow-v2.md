@@ -66,12 +66,14 @@ converged on a narrower hole than the round before, the same accretion the
 convergence model below names and avoids for the same reason — the fix that
 finally held is narrowing the claim to what is actually true, not a fifth
 attempt at a stronger one. Within one run there is exactly one writer: the
-orchestrating session, appending reserve-first. Two entries that duplicate
-one logical event resolve by the same lowest-committed-ID rule evidence
-comments already use; two entries that instead fork the chain (claiming the
-same previous entry but carrying different content) are **not** resolved by
-that rule — `--as-of` reconstruction SHALL fail closed and report the run
-indeterminate rather than silently choosing a branch. Concurrent writers
+orchestrating session, appending reserve-first — unlike an evidence
+comment, a run-record entry has no comment ID of its own to canonicalize
+by, since every entry lives inside the one run-record comment edited in
+place. Two byte-identical entries are a harmless duplicate (a resumed
+writer's own retry) and collapse to one; two entries that instead fork the
+chain (claiming the same previous entry but carrying *different* content)
+are not a duplicate — `--as-of` reconstruction SHALL fail closed and report
+the run indeterminate rather than silently choosing a branch. Concurrent writers
 from more than one orchestrator session are explicitly out of scope, the
 same GitHub read-modify-write limitation this spec discloses elsewhere
 rather than claims to close. The evidence delta spec's append-only,
@@ -816,7 +818,7 @@ absorbed by the issue that carries their criteria;
 - [ ] The exit script computes `continue | converged | diverging | capped` from adjudicated rounds and `[convergence]`, verifies provenance and fingerprints, and replays omator#397.
 - [ ] The readiness gate accepts only a schema-valid `result.integrator` for the current head as evidence of a Codex verdict — necessary, not sufficient: the gate's own pre/post-promotion content fingerprint over body, reviews, and comments (`readiness-gate.sh`) stays, because a human finding can land without moving the head.
 - [ ] `.devflow.toml` has top-level `default_rigor`, `default_strategy`, `rigor_order`, and `tier_order`, plus `[rounds]`, `[breadth]`, `[gates]`, `[convergence]`, `[role]`, `[stage]`, and `[strategy.*]`; `[spend]` is schema-only and shipped absent; both legacy and v1 shapes are refused.
-- [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (post refused); a stage split across comments (reassembled); a run capped before any PR (stage evidence and run record found on the issue).
+- [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (redacted projection posted, unredacted evidence stays local); a stage split across comments (reassembled); a run capped before any PR (stage evidence and run record found on the issue).
 - [ ] `dev-flow-stats.sh` prints the success metric and replays policies.
 - [ ] AGENTS.md's Dev Loop is the stage table, the constitution rules, and references.
 - [ ] Foreman accepts envelope v2, reads `.devflow.toml`, writes run records, and requires, for each confidence stage, either round artifacts whose recomputed exit is a terminal clean outcome (`converged` or capped-clean) or — for a stage whose cap is 0 — the computed `capped`/`disabled` record alone, since a disabled stage runs no round.

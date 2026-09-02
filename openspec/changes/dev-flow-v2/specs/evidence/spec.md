@@ -147,15 +147,18 @@ using only entries whose timestamps are at or before the cutoff. Editing or
 deleting any entry SHALL break sequence or digest validation and fail closed.
 
 Within one run there is exactly one writer: the orchestrating session,
-appending reserve-first. Two entries that duplicate one logical event
-resolve by the same lowest-committed-ID rule evidence writes already use
-(the later duplicate is superseded and ignored). Two entries that instead
-claim the same previous-entry digest but carry different content are a
-**forked** chain, not a duplicate — harvesting SHALL fail closed and report
-the run indeterminate rather than choosing either branch as canonical.
-Concurrent writers from more than one orchestrator session are out of
-scope, the same GitHub read-modify-write limitation already disclosed
-elsewhere in this family: nothing here claims to close it.
+appending reserve-first — unlike an evidence comment, a run-record entry is
+not itself a separate GitHub comment with its own comment ID to canonicalize
+by, since every entry lives inside the one run-record comment edited in
+place. Two entries that are byte-identical are a harmless duplicate (a
+resumed writer's own retry re-appending an entry that already landed) and
+collapse to one. Two entries that instead claim the same previous-entry
+digest but carry *different* content are a **forked** chain, not a
+duplicate — harvesting SHALL fail closed and report the run indeterminate
+rather than choosing either branch as canonical. Concurrent writers from
+more than one orchestrator session are out of scope, the same GitHub
+read-modify-write limitation already disclosed elsewhere in this family:
+nothing here claims to close it.
 
 #### Scenario: The run-record chain forks
 
