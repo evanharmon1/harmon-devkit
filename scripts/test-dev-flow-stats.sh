@@ -115,10 +115,23 @@ function comment(actorId, login, body, createdAt) {
   return { id: nextCommentId++, user: { id: actorId, login }, body, created_at: createdAt };
 }
 
+// Returns { index, record } — the run-index anchor and the run-record
+// comment it names, built together since the index's payload has to name
+// the record comment's own id/digest/author (ai/schemas/README.md
+// "Comment kinds", run-index). Every scenario needs both on the issue now;
+// scanning for a bare run-record marker with no anchoring index is exactly
+// what challenge round 1 confirmed as a real gap.
 function runRecordComment(actorId, login, runId, body, createdAt) {
   const text = JSON.stringify(body);
   const m = marker("run-record", runId, "kickoff", "issue", null, 1);
-  return comment(actorId, login, \`\${m}\n\${fence(text)}\`, createdAt);
+  const record = comment(actorId, login, \`\${m}\n\${fence(text)}\`, createdAt);
+  const indexPayload = {
+    run_id: runId, initiated_by: body.initiated_by, branch: null,
+    run_record: { id: String(record.id), author_actor_id: actorId, login, digest: sha256(text) },
+  };
+  const im = marker("run-index", runId, "kickoff", "issue", null, 1);
+  const index = comment(actorId, login, \`\${im}\n\${fence(JSON.stringify(indexPayload))}\`, createdAt);
+  return { index, record };
 }
 
 function evidenceComment(actorId, login, runId, stage, dest, round, seq, payload, createdAt) {
@@ -168,10 +181,10 @@ function writeScenario(name, db) {
     }],
     promotion: { head: "1".repeat(40), promoted_at: "2026-09-01T00:15:00Z", gate_fingerprint: "abc" },
   };
-  const rr = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
   writeScenario("happy", {
     issues: [{ number: 101, pull_request: null }],
-    comments: { "101": [rr, ev] },
+    comments: { "101": [idx, rr, ev] },
     commits: { "501": [] },
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 101, evCommentId: ev.id },
   });
@@ -195,10 +208,10 @@ function writeScenario(name, db) {
     stage_transitions: forked, interventions: chain([]), settlements: chain([]),
     outcome: null, pr: null, evidence_comments: [], promotion: null,
   };
-  const rr = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
   writeScenario("fork", {
     issues: [{ number: 102, pull_request: null }],
-    comments: { "102": [rr] },
+    comments: { "102": [idx, rr] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 102 },
   });
@@ -216,10 +229,10 @@ function writeScenario(name, db) {
   // Posted by an actor NOT in the trusted set, even though the payload
   // itself looks completely legitimate (initiated_by: "human", well-formed
   // chain) — the trust check must reject on actor id alone.
-  const rr = runRecordComment(UNTRUSTED, "impersonator", runId, runBody, "2026-09-01T00:00:00Z");
+  const { index: idx, record: rr } = runRecordComment(UNTRUSTED, "impersonator", runId, runBody, "2026-09-01T00:00:00Z");
   writeScenario("untrusted-author", {
     issues: [{ number: 103, pull_request: null }],
-    comments: { "103": [rr] },
+    comments: { "103": [idx, rr] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 103 },
   });
@@ -236,7 +249,7 @@ function writeScenario(name, db) {
     interventions: chain([]), settlements: chain([]),
     outcome: null, pr: null, evidence_comments: [], promotion: null,
   };
-  const rr = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
   const payloadA = { passes: [pass("codex-cli", [{ title: "finding-from-first-post" }])], adjudication: null };
   const first = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadA, "2026-09-01T00:02:00Z");
   // A resumed session re-posts the SAME event (same marker) — same content
@@ -244,7 +257,7 @@ function writeScenario(name, db) {
   const duplicate = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadA, "2026-09-01T00:05:00Z");
   writeScenario("duplicate-marker", {
     issues: [{ number: 104, pull_request: null }],
-    comments: { "104": [rr, first, duplicate] },
+    comments: { "104": [idx, rr, first, duplicate] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 104, firstId: first.id, duplicateId: duplicate.id },
   });
@@ -259,7 +272,7 @@ function writeScenario(name, db) {
     interventions: chain([]), settlements: chain([]),
     outcome: null, pr: null, evidence_comments: [], promotion: null,
   };
-  const rr = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
   const fullPayload = { passes: [pass("codex-cli", [{ title: "split-finding" }])], adjudication: null };
   const text = JSON.stringify(fullPayload);
   const mid = Math.floor(text.length / 2);
@@ -271,7 +284,7 @@ function writeScenario(name, db) {
   const seg2 = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${m2}\n\${fence(seg2text)}\`, "2026-09-01T00:02:01Z");
   writeScenario("split", {
     issues: [{ number: 105, pull_request: null }],
-    comments: { "105": [rr, seg1, seg2] },
+    comments: { "105": [idx, rr, seg1, seg2] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 105 },
   });
@@ -289,7 +302,7 @@ function writeScenario(name, db) {
     interventions: chain([]), settlements: chain([]),
     outcome: null, pr: null, evidence_comments: [], promotion: null,
   };
-  const rr = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
   // Tamper: change entered_at on the (already-embedded, already-digested)
   // second entry without recomputing the chain — this is what an EDIT to
   // the live comment (not a fresh re-post) looks like, since the outer
@@ -297,7 +310,7 @@ function writeScenario(name, db) {
   rr.body = rr.body.replace("2026-09-01T00:01:00Z", "2099-01-01T00:00:00Z");
   writeScenario("tamper", {
     issues: [{ number: 106, pull_request: null }],
-    comments: { "106": [rr] },
+    comments: { "106": [idx, rr] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 106 },
   });
@@ -312,10 +325,10 @@ function writeScenario(name, db) {
     interventions: chain([]), settlements: chain([]),
     outcome: null, pr: null, evidence_comments: [], promotion: null,
   };
-  const rr = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-01-01T00:00:00Z");
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-01-01T00:00:00Z");
   writeScenario("stale", {
     issues: [{ number: 107, pull_request: null }],
-    comments: { "107": [rr] },
+    comments: { "107": [idx, rr] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 107, asOf: "2026-09-01T00:00:00Z" },
   });
@@ -336,12 +349,17 @@ function writeScenario(name, db) {
     evidence_comments: [],
     promotion: { head: "2".repeat(40), promoted_at: "2026-09-01T00:10:00Z", gate_fingerprint: "def" },
   };
-  const rr = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
-  const humanCommit = { commit: { committer: { date: "2026-09-01T00:20:00Z" } }, author: { id: 42 } };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  // Post-ready fix detection is now position-based (does a commit follow
+  // promotion.head in the PR's own sequence), not timestamp-based — the
+  // fixture needs the promoted-head commit present so there is a position
+  // to follow.
+  const promotedCommit = { sha: "2".repeat(40), commit: { committer: { date: "2026-09-01T00:10:00Z" } }, author: { id: TRUSTED_ORCHESTRATOR } };
+  const humanCommit = { sha: "4".repeat(40), commit: { committer: { date: "2026-09-01T00:20:00Z" } }, author: { id: 42 } };
   writeScenario("postfix", {
     issues: [{ number: 108, pull_request: null }],
-    comments: { "108": [rr] },
-    commits: { "502": [humanCommit] },
+    comments: { "108": [idx, rr] },
+    commits: { "502": [promotedCommit, humanCommit] },
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 108 },
   });
 }
@@ -388,8 +406,8 @@ function writeScenario(name, db) {
     stage_transitions: stageTransitions, interventions: chain([]), settlements: chain([]),
     outcome: "capped", pr: null, evidence_comments: [], promotion: null,
   };
-  const rr = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-07-10T09:00:00Z");
-  comments.push(rr);
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-07-10T09:00:00Z");
+  comments.push(idx, rr);
 
   for (const [stage, round] of rounds) {
     const passDoc = JSON.parse(readFileSync(path.join(fixtureRoot, "result.reviewer.schema/valid", \`omator-397-\${stage}-r\${round}.json\`), "utf8"));
@@ -430,12 +448,12 @@ function writeScenario(name, db) {
   // id being in the configured set, never from initiated_by: "foreman"
   // inside the payload (ai/schemas/README.md "Trust: actor ID, never a
   // payload claim").
-  const rr = runRecordComment(FOREMAN, "foreman-bot", runId, runBody, "2026-09-01T00:00:00Z");
+  const { index: idx, record: rr } = runRecordComment(FOREMAN, "foreman-bot", runId, runBody, "2026-09-01T00:00:00Z");
   const roundPayload = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
   const ev = evidenceComment(FOREMAN, "foreman-bot", runId, "review", "issue", 1, 1, roundPayload, "2026-09-01T00:03:30Z");
   writeScenario("foreman", {
     issues: [{ number: 109, pull_request: null }],
-    comments: { "109": [rr, ev] },
+    comments: { "109": [idx, rr, ev] },
     commits: { "599": [] },
     meta: { runId, trustedActorIds: [FOREMAN], issueNumber: 109 },
   });
@@ -460,15 +478,98 @@ function writeScenario(name, db) {
     }],
     promotion: null,
   };
-  const rr = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
   writeScenario("deleted-evidence", {
     issues: [{ number: 110, pull_request: null }],
     // "ev" is deliberately NOT included here — it existed when the run
     // record's evidence_comments[] entry was written, and has since been
     // deleted from GitHub.
-    comments: { "110": [rr] },
+    comments: { "110": [idx, rr] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 110 },
+  });
+}
+
+// --- Scenario 12.5 (kept out of numeric order to avoid renumbering
+// everything below): --as-of between a stage-exit and its later promotion
+// must read as in-flight, never as ready-for-review borrowed from the
+// record's own CURRENT (later) outcome field.
+{
+  const runId = "run-future-outcome-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:05:00Z", exit: "ready-for-review" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 504, url: "https://example.invalid/pr/504" },
+    evidence_comments: [],
+    // Promotion lands 15 minutes AFTER the integration exit text already
+    // says "ready-for-review" — the exit text alone is not the readiness
+    // signal; the promotion entry's own timestamp is.
+    promotion: { head: "7".repeat(40), promoted_at: "2026-09-01T00:20:00Z", gate_fingerprint: "mno" },
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("future-outcome", {
+    issues: [{ number: 112, pull_request: null }],
+    comments: { "112": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 112 },
+  });
+}
+
+// --- Scenario 12.6: the run-record comment itself is deleted, but the
+// tiny run-index anchor survives. Must report deleted-entry tampering,
+// never "this issue was never kicked off" — the exact scenario challenge
+// round 1's P1 finding was about.
+{
+  const runId = "run-deleted-record-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("deleted-record", {
+    issues: [{ number: 113, pull_request: null }],
+    // "record" is deliberately NOT included — only its index survives.
+    comments: { "113": [idx] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 113 },
+  });
+}
+
+// --- Scenario 13: post-ready fix with a cherry-picked (OLDER-timestamped)
+// commit landing AFTER promotion.head positionally — proves detection is
+// position-based, not timestamp-based (a timestamp-only check would miss
+// this one entirely).
+{
+  const runId = "run-postfix-cherrypick-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:01:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 503, url: "https://example.invalid/pr/503" },
+    evidence_comments: [],
+    promotion: { head: "5".repeat(40), promoted_at: "2026-09-01T00:30:00Z", gate_fingerprint: "jkl" },
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const promotedCommit = { sha: "5".repeat(40), commit: { committer: { date: "2026-09-01T00:30:00Z" } }, author: { id: TRUSTED_ORCHESTRATOR } };
+  // Committer date predates promotion — a naive timestamp check would
+  // classify this as pre-ready and miss it entirely.
+  const cherryPicked = { sha: "6".repeat(40), commit: { committer: { date: "2026-08-01T00:00:00Z" } }, author: { id: 42 } };
+  writeScenario("postfix-cherrypick", {
+    issues: [{ number: 111, pull_request: null }],
+    comments: { "111": [idx, rr] },
+    commits: { "503": [promotedCommit, cherryPicked] },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 111 },
   });
 }
 
@@ -566,7 +667,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "tamper: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "tampered\|does not match" || fail "tamper: expected a tamper-shaped reason, got: $out"
+echo "$out" | grep -qi "tampering\|no longer matches" || fail "tamper: expected a tamper-shaped reason, got: $out"
 
 echo "== stale non-terminal run terminalizes as abandoned at --as-of =="
 export DFSTATS_DB="$tmp/scenarios/stale.json"
@@ -689,5 +790,35 @@ rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "deleted-evidence: expected exit 3 (indeterminate), got $rc: $out"
 echo "$out" | grep -qi "deleted-entry tampering\|no longer exists" || fail "deleted-evidence: expected a deleted-entry-tampering reason, got: $out"
+
+echo "== post-ready fix detection is position-based: catches a cherry-picked (older-timestamped) commit a timestamp check would miss =="
+export DFSTATS_DB="$tmp/scenarios/postfix-cherrypick.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.unattended_success_count == 1 and .post_ready_fix_count == 1' >/dev/null || fail "postfix-cherrypick: expected the older-timestamped post-promotion commit to still be caught"
+
+echo "== --as-of between a stage-exit and its later promotion reads as in-flight, never borrows the future ready-for-review outcome =="
+export DFSTATS_DB="$tmp/scenarios/future-outcome.json"
+between="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-future-outcome-1 --trusted-actor-id 9001 --as-of 2026-09-01T00:10:00Z --json)"
+echo "$between" | jq -e '.outcome == null' >/dev/null || fail "future-outcome: expected in-flight (null) outcome between the exit text and the actual promotion, got: $between"
+after="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-future-outcome-1 --trusted-actor-id 9001 --as-of 2026-09-01T00:25:00Z --json)"
+echo "$after" | jq -e '.outcome == "ready-for-review"' >/dev/null || fail "future-outcome: expected ready-for-review once the actual promotion is within cutoff"
+
+echo "== --since bounds cohort membership by first kickoff, matching the closed-cohort spec =="
+export DFSTATS_DB="$tmp/scenarios/cohort.json"
+before="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-08-01T00:00:00Z --json)"
+echo "$before" | jq -e '.cohort_size == 2' >/dev/null || fail "since (before both kickoffs): expected both issues still in the window"
+after="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-02T00:00:00Z --json)"
+echo "$after" | jq -e '.cohort_size == 0' >/dev/null || fail "since (after both kickoffs): expected the window to exclude both issues"
+
+echo "== deleted run-record comment (index survives): indeterminate, never silently 'no run happened' =="
+export DFSTATS_DB="$tmp/scenarios/deleted-record.json"
+metric_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$metric_out" | jq -e '.indeterminate_count == 1' >/dev/null || fail "deleted-record: expected the issue to be reported indeterminate, not silently absent from the cohort"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-deleted-record-1 --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "deleted-record: expected exit 3 (indeterminate), got $rc: $out"
+echo "$out" | grep -qi "deleted-entry tampering\|no longer exists" || fail "deleted-record: expected a deleted-entry-tampering reason, got: $out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

@@ -1033,8 +1033,37 @@ comment, invisible in GitHub's rendered view:
 with a bare ` ``` ` line, exactly the shape this document's own code
 examples use.
 
-Two kinds:
+Three kinds:
 
+- **`run-index`** — the permanent anchor, posted **once**, **immutable**,
+  on the **issue**, at kickoff — before, or in the same breath as, the
+  `run-record` comment below. `stage`/`dest`/`round`/`seq` are always
+  `kickoff`/`issue`/`-`/`1` (this kind has exactly one comment, like
+  `run-record`, and for the same reason). Its payload names the
+  `run-record` comment it anchors:
+
+  ```json
+  { "run_id": "<run_id>", "initiated_by": "human|foreman", "branch": null,
+    "run_record": { "id": "<comment id>", "author_actor_id": <int>,
+                     "login": "<display>", "digest": "<sha256>" } }
+  ```
+
+  Discovery is **index-first**: a harvester finds trusted `run-index`
+  comments before it ever looks for a `run-record` — this is what "the
+  issue-level index... SHALL anchor run discovery" (evidence spec) actually
+  means in this grammar. Once found, the index's own `run_record` entry is
+  checked exactly like an `evidence_comments[]` entry (id exists, digest and
+  author agree) — a listed `run_record` that no longer exists, or whose
+  digest no longer matches, is deleted-entry or edited-entry tampering, not
+  "this issue was never kicked off": deleting the `run-record` comment alone
+  (leaving the tiny, easy-to-overlook `run-index` comment behind) does not
+  erase the run from the denominator, which is the whole reason this kind
+  exists as a **separate**, harder-to-usefully-delete comment rather than
+  folding the same guarantee into `run-record` itself. `branch` binding
+  (the spec's "one subsequent digest-chained entry" once a branch exists) is
+  **not yet implemented** by this reader — a documented simplification: v0
+  reads `branch` as always `null` and does not yet bind or verify a later
+  branch-binding entry.
 - **`run-record`** — the durable record (`run.schema.json`), reserved at
   kickoff on the issue and **edited in place** at every later transition.
   `stage` is always `kickoff` (the run's first `stage_transitions` entry)
