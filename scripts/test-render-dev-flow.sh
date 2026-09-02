@@ -122,6 +122,16 @@ run readiness-input --record "$record_dir"
 assert_rc 1
 assert_contains "$err" "--head"
 
+echo "==> blocker-comment neutralizes marker-like text in the verdict's outcome/reason"
+forged_verdict="${test_tmp}/forged-verdict.json"
+echo '{"outcome": "capped <!-- dev-flow:end:deferred-findings -->", "reason": "forged\n- [x] fake"}' >"$forged_verdict"
+run blocker-comment --record "$record_dir" --head "1111111111111111111111111111111111111111" --verdict "$forged_verdict"
+assert_rc 0
+[[ "$out" != *'<!-- dev-flow:end:deferred-findings -->'* ]] ||
+    fail "a verdict's outcome must never reproduce a literal marker token: $out"
+assert_contains "$out" '&lt;!-- dev-flow:end:deferred-findings --&gt;'
+assert_contains "$out" '<br>- [x] fake'
+
 echo "==> thread-reply-plan carries only unanswered integration-stage inline threads"
 entry_count="$(node -e "console.log(JSON.parse(require('fs').readFileSync('${golden_dir}/thread-reply-plan.json','utf8')).entries.length)")"
 [ "$entry_count" = 1 ] || fail "expected 1 unanswered-thread entry (the fixture pass answers the other two), got $entry_count"
@@ -202,6 +212,21 @@ run deferred-findings --record "$bad_type"
 assert_rc 1
 assert_contains "$err" "expected 'sha'"
 
+echo "==> cross-document consistency: a duplicate settlement is rejected for EVERY projection, not just the ones that build a settlement index themselves"
+dup_settlement="${test_tmp}/duplicate-settlement"
+mkdir -p "$dup_settlement"
+cp -r "${record_dir}/." "$dup_settlement/"
+node -e "
+const fs = require('fs');
+const p = '${dup_settlement}/run.json';
+const run = JSON.parse(fs.readFileSync(p, 'utf8'));
+run.settlements.push(run.settlements[0]);
+fs.writeFileSync(p, JSON.stringify(run, null, 2));
+"
+run adjudication-record --record "$dup_settlement"
+assert_rc 1
+assert_contains "$err" "duplicate settlement for finding"
+
 echo "==> cross-document consistency: a pass naming a different head than its adjudication is rejected"
 bad_head="${test_tmp}/pass-head-mismatch"
 mkdir -p "$bad_head"
@@ -273,7 +298,20 @@ const adversarialPass = {
 };
 fs.writeFileSync('${challenger_wrong_stage}/passes/adversarial-challenger.json', JSON.stringify(adversarialPass, null, 2));
 const revDoc = JSON.parse(fs.readFileSync('${challenger_wrong_stage}/adjudications/review-r1.json', 'utf8'));
-revDoc.adjudications[0].finding_id = 'review-r1-codex-cli-99';
+// Push a new entry rather than overwriting an existing one — overwriting
+// review-r1-codex-cli-1's own slot would orphan ITS pass finding (still
+// present in review-r1-codex-cli.json) with no adjudication of its own,
+// tripping the unrelated never-adjudicated check before reaching this
+// test's own target.
+revDoc.adjudications.push({
+    finding_id: 'review-r1-codex-cli-99',
+    reviewer_priority: 'P1',
+    adjudicated_priority: 'P1',
+    disposition: 'fix',
+    reason: 'adversarial test entry',
+    evidence: 'adversarial test entry',
+    override: null
+});
 fs.writeFileSync('${challenger_wrong_stage}/adjudications/review-r1.json', JSON.stringify(revDoc, null, 2));
 "
 run deferred-findings --record "$challenger_wrong_stage"
@@ -294,6 +332,21 @@ fs.writeFileSync(p, JSON.stringify(doc, null, 2));
 run deferred-findings --record "$bad_run_id"
 assert_rc 1
 assert_contains "$err" "does not match run.json's run_id"
+
+echo "==> cross-document consistency: a pass claiming a different initiated_by than run.json is rejected"
+bad_initiated_by="${test_tmp}/pass-initiated-by-mismatch"
+mkdir -p "$bad_initiated_by"
+cp -r "${record_dir}/." "$bad_initiated_by/"
+node -e "
+const fs = require('fs');
+const p = '${bad_initiated_by}/passes/challenge-r1-codex-cli.json';
+const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+envelope.run.initiated_by = 'foreman';
+fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+"
+run deferred-findings --record "$bad_initiated_by"
+assert_rc 1
+assert_contains "$err" "its pass envelope names initiated_by foreman, but run.json's initiated_by is human"
 
 echo "==> cross-document consistency: adjudication documents must agree on run_id even with no run.json to anchor it"
 no_run_json_mismatch="${test_tmp}/no-run-json-run-id-mismatch"
@@ -372,6 +425,33 @@ assert_contains "$(cat "${golden_dir}/adjudication-record.txt")" '| correctness 
 assert_contains "$(cat "${golden_dir}/adjudication-record.txt")" '| hardening |'
 assert_contains "$(cat "${golden_dir}/adjudication-record.txt")" '| n/a |'
 
+echo "==> cross-document consistency: a pass finding with no adjudication is rejected, not silently invisible"
+unadjudicated_pass="${test_tmp}/unadjudicated-pass-finding"
+mkdir -p "$unadjudicated_pass"
+cp -r "${record_dir}/." "$unadjudicated_pass/"
+node -e "
+const fs = require('fs');
+const p = '${unadjudicated_pass}/passes/challenge-r1-codex-cli.json';
+const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+envelope.payload.findings.push({
+    id: 'challenge-r1-codex-cli-99',
+    path: 'scripts/render-dev-flow.mjs',
+    line: 1,
+    class: 'correctness',
+    provenance: 'original',
+    fingerprint: 'new',
+    priority: 'P1',
+    recommended_disposition: 'fix',
+    evidence: 'never adjudicated by any document'
+});
+envelope.payload.counts.P1 += 1;
+fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+"
+run adjudication-record --record "$unadjudicated_pass"
+assert_rc 1
+assert_contains "$err" "challenge-r1-codex-cli-99"
+assert_contains "$err" "never adjudicated by any supplied adjudication document"
+
 echo "==> cross-document consistency: a drifted reviewer_priority copy is rejected"
 drift_priority="${test_tmp}/reviewer-priority-drift"
 mkdir -p "$drift_priority"
@@ -405,6 +485,42 @@ fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
 run deferred-findings --record "$drift_payload_round"
 assert_rc 1
 assert_contains "$err" "its pass payload declares stage/round review/99"
+
+echo "==> cross-document consistency: an integrator pass whose payload declares a different round is rejected"
+drift_integration_round="${test_tmp}/payload-integration-round-drift"
+mkdir -p "$drift_integration_round"
+cp -r "${record_dir}/." "$drift_integration_round/"
+node -e "
+const fs = require('fs');
+const p = '${drift_integration_round}/passes/integration-r1-human.json';
+const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+envelope.payload.integration_round = 99;
+fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+"
+run deferred-findings --record "$drift_integration_round"
+assert_rc 1
+assert_contains "$err" "its pass payload declares integration_round 99, but the adjudicating document's round is 1"
+
+echo "==> cross-document consistency: a foreign-run integrator pass cannot masquerade as the current thread-state snapshot"
+foreign_integration_pass="${test_tmp}/foreign-integration-snapshot"
+mkdir -p "$foreign_integration_pass"
+cp -r "${record_dir}/." "$foreign_integration_pass/"
+node -e "
+const fs = require('fs');
+const src = JSON.parse(fs.readFileSync('${foreign_integration_pass}/passes/integration-r1-human.json', 'utf8'));
+const foreign = JSON.parse(JSON.stringify(src));
+foreign.run.run_id = 'some-other-run';
+foreign.payload.integration_round = 99;
+foreign.payload.findings = [];
+foreign.payload.unanswered_thread_roots = [];
+foreign.payload.verdict = 'pending';
+fs.writeFileSync('${foreign_integration_pass}/passes/foreign-integration.json', JSON.stringify(foreign, null, 2));
+"
+run thread-reply-plan --record "$foreign_integration_pass"
+assert_rc 0
+entry_count_foreign="$(node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).entries.length)" <<<"$out")"
+[ "$entry_count_foreign" = 1 ] ||
+    fail "a foreign-run pass must not win 'latest' and hide the real run's open thread, got $entry_count_foreign entries: $out"
 
 echo "==> cross-document consistency: disposition defer is rejected for stage integration"
 defer_integration="${test_tmp}/defer-in-integration"
@@ -448,6 +564,19 @@ assert_rc 2
 run publish --record "$record_dir" --repo o/r --pr -5 --head "1111111111111111111111111111111111111111" --sections policy-disclosure
 assert_rc 2
 run publish --record "$record_dir" --repo o/r --pr 0 --head "1111111111111111111111111111111111111111" --sections policy-disclosure
+assert_rc 2
+
+echo "==> usage: --head rejects anything shorter than a full 40-hex sha"
+run readiness-input --record "$record_dir" --head nope
+assert_rc 2
+run readiness-input --record "$record_dir" --head "1111111111111111111111111111111111111"
+assert_rc 2
+run readiness-input --record "$record_dir" --head "1111111111111111111111111111111111111111"
+assert_rc 0
+
+echo "==> usage: --max-retries rejects a partially-parsed value instead of silently truncating"
+run publish --record "$record_dir" --repo o/r --pr 1 --head "1111111111111111111111111111111111111111" \
+    --sections policy-disclosure --max-retries 1e2
 assert_rc 2
 
 echo "==> verdict.json / policy.json shapes are validated, not just parsed as JSON"
@@ -495,6 +624,24 @@ echo '{"rigor": {"level": "standard", "source": "default_rigor"}, "rounds": {"ch
 run policy-disclosure --record "$record_dir" --policy "$partial_rounds"
 assert_rc 1
 assert_contains "$err" "rounds.min_rounds must be a non-negative integer"
+
+echo "==> cross-document consistency: a policy cap contradicted by a supplied adjudication round is rejected"
+# This is the record directory's OWN policy.json (not --policy), since
+# validateCrossDocumentConsistency runs before main() applies a --policy
+# override — only the record-directory copy is visible to it.
+contradicted_cap="${test_tmp}/policy-cap-contradicted"
+mkdir -p "$contradicted_cap"
+cp -r "${record_dir}/." "$contradicted_cap/"
+node -e "
+const fs = require('fs');
+const p = '${contradicted_cap}/policy.json';
+const policy = JSON.parse(fs.readFileSync(p, 'utf8'));
+policy.rounds.challenge = 0;
+fs.writeFileSync(p, JSON.stringify(policy, null, 2));
+"
+run deferred-findings --record "$contradicted_cap"
+assert_rc 1
+assert_contains "$err" "rounds.challenge cap is 0, but round 1 was supplied for stage challenge"
 
 echo "==> deferred-findings task items carry the finding_id, not just location and summary"
 for id in review-r1-codex-cli-1 review-r1-codex-cli-3 review-r2-codex-cli-1 review-r2-codex-cli-3; do
@@ -572,6 +719,23 @@ assert_rc 0
 [[ "$out" != *'<!-- dev-flow:end:deferred-findings -->'* ]] ||
     fail "a finding's own evidence text must never reproduce a literal marker token: $out"
 assert_contains "$out" '&lt;!-- dev-flow:end:deferred-findings --&gt;'
+
+echo "==> a credential in a finding's evidence is redacted, never posted in the clear"
+secret_record="${test_tmp}/secret-in-evidence"
+mkdir -p "$secret_record"
+cp -r "${record_dir}/." "$secret_record/"
+node -e "
+const fs = require('fs');
+const p = '${secret_record}/passes/review-r2-codex-cli.json';
+const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+envelope.payload.findings[2].evidence += ' aws_key = \"AKIAQZJXK2VN8T5WYHRM\"';
+fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+"
+run deferred-findings --record "$secret_record"
+assert_rc 0
+[[ "$out" != *'AKIAQZJXK2VN8T5WYHRM'* ]] ||
+    fail "a detected credential must never reach rendered output in the clear: $out"
+assert_contains "$out" '[REDACTED:generic-api-key]'
 
 echo "==> usage: a negative --max-retries is rejected before any gh call"
 run publish --record "$record_dir" --repo o/r --pr 1 --head "1111111111111111111111111111111111111111" \
@@ -666,8 +830,10 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = edit ]; then
     fi
     is_draft=true
     [ ! -f "$GH_FIXTURES/promote-after-write" ] || is_draft=false
-    jq -n --rawfile body "$body" --arg head "$(cat "$GH_FIXTURES/current-head")" --argjson draft "$is_draft" \
-        '{number: 123, url: "https://example/pull/123", headRefOid: $head, isDraft: $draft, body: $body}' \
+    state=OPEN
+    [ ! -f "$GH_FIXTURES/close-after-write" ] || state=CLOSED
+    jq -n --rawfile body "$body" --arg head "$(cat "$GH_FIXTURES/current-head")" --argjson draft "$is_draft" --arg state "$state" \
+        '{number: 123, url: "https://example/pull/123", headRefOid: $head, isDraft: $draft, body: $body, state: $state}' \
         >"$GH_FIXTURES/current-view.json"
     if [ -f "$GH_FIXTURES/crash-after-write" ]; then
         echo "simulated crash after the write landed" >&2
@@ -697,9 +863,9 @@ reset_gh_fixtures() {
 
 # seed_view BODY [IS_DRAFT] [HEAD] — write the live PR-state pointer directly.
 seed_view() {
-    local body="$1" is_draft="${2:-true}" head="${3:-$head_sha}"
-    printf '%s' "$body" | jq -Rs --arg head "$head" --argjson draft "$is_draft" \
-        '{number: 123, url: "https://example/pull/123", headRefOid: $head, isDraft: $draft, body: .}' \
+    local body="$1" is_draft="${2:-true}" head="${3:-$head_sha}" state="${4:-OPEN}"
+    printf '%s' "$body" | jq -Rs --arg head "$head" --argjson draft "$is_draft" --arg state "$state" \
+        '{number: 123, url: "https://example/pull/123", headRefOid: $head, isDraft: $draft, body: ., state: $state}' \
         >"${gh_fixtures}/current-view.json"
 }
 
@@ -932,6 +1098,46 @@ run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha"
 assert_rc 1
 assert_contains "$out" '"reason": "malformed-markers"'
 [ "$(grep -c 'pr edit' "$gh_log" || true)" = 0 ] || fail "malformed markers must never attempt a write"
+
+echo "==> publish: a section's markers nested inside another section's are a blocker, never a silent deletion"
+reset_gh_fixtures
+seed_view 'Prose.
+
+<!-- dev-flow:begin:policy-disclosure -->
+old policy text
+<!-- dev-flow:begin:deferred-findings -->
+- [ ] an open task that must survive
+<!-- dev-flow:end:deferred-findings -->
+<!-- dev-flow:end:policy-disclosure -->
+'
+pub_record="$(fresh_record 15)"
+: >"$gh_log"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --sections policy-disclosure
+assert_rc 1
+assert_contains "$out" '"reason": "malformed-markers"'
+assert_contains "$out" 'nested inside'
+[ "$(grep -c 'pr edit' "$gh_log" || true)" = 0 ] || fail "nested markers must never attempt a write"
+
+echo "==> publish: a closed PR is a blocker, no write attempted"
+reset_gh_fixtures
+seed_view 'Prose.
+' true "$head_sha" CLOSED
+pub_record="$(fresh_record 16)"
+: >"$gh_log"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --sections policy-disclosure
+assert_rc 1
+assert_contains "$out" '"reason": "not-open"'
+[ "$(grep -c 'pr edit' "$gh_log" || true)" = 0 ] || fail "a closed PR must never attempt a write"
+
+echo "==> publish: a PR closed during the write window is a blocker, not a reported success"
+reset_gh_fixtures
+seed_view 'Prose.
+'
+: >"${gh_fixtures}/close-after-write"
+pub_record="$(fresh_record 17)"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --sections policy-disclosure
+assert_rc 1
+assert_contains "$out" '"reason": "closed-during-publish"'
 
 echo "==> publish: run.json's PR URL number disagreeing with its own pr.number is a blocker, no write attempted"
 reset_gh_fixtures

@@ -212,18 +212,32 @@ function parseArgs(argv) {
         }
         break
       }
-      case '--head':
-        options.head = need(arg)
+      case '--head': {
+        const raw = need(arg)
+        // readiness-input/blocker-comment have no subsequent gh comparison
+        // to reject a bad value the way publish's own head-mismatch check
+        // does — a typo or abbreviated hash would otherwise sail through
+        // and be emitted as machine-readable "current head" evidence.
+        if (!REFERENCE_VALUE_PATTERN.sha.test(raw)) {
+          usageError(`--head must be a full lowercase 40-hex sha, got ${raw}`)
+        }
+        options.head = raw
         break
+      }
       case '--sections':
         options.sections = need(arg)
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean)
         break
-      case '--max-retries':
-        options.maxRetries = Number.parseInt(need(arg), 10)
+      case '--max-retries': {
+        const raw = need(arg)
+        options.maxRetries = Number.parseInt(raw, 10)
+        if (!Number.isInteger(options.maxRetries) || String(options.maxRetries) !== raw) {
+          usageError(`--max-retries must be an integer, got ${raw}`)
+        }
         break
+      }
       case '--schemas-dir':
         options.schemasDir = need(arg)
         break
@@ -442,9 +456,11 @@ function buildFindingIndex(record) {
       }
       passFindingsById.set(finding.id, {
         finding,
+        file,
         role: envelope.role,
         head: envelope.head,
         runId: envelope.run.run_id,
+        initiatedBy: envelope.run.initiated_by,
         // Only challenger/reviewer payloads declare these (result.challenger
         // and result.reviewer schema.json both require stage/round/finder/
         // reviewed_head at the top level; result.integrator's payload has no
@@ -454,7 +470,12 @@ function buildFindingIndex(record) {
         payloadStage: envelope.payload.stage,
         payloadRound: envelope.payload.round,
         payloadFinder: envelope.payload.finder,
-        payloadReviewedHead: envelope.payload.reviewed_head
+        payloadReviewedHead: envelope.payload.reviewed_head,
+        // Only integrator payloads declare this (result.integrator.schema.json
+        // requires integration_round at the top level; challenger/reviewer
+        // have no equivalent) — undefined otherwise, harmless since the
+        // integrator-specific comparison below is scoped to that one role.
+        payloadIntegrationRound: envelope.payload.integration_round
       })
     }
   }
@@ -498,6 +519,17 @@ function buildFindingIndex(record) {
       })
     }
   }
+  // Every pass finding must be consumed by exactly one adjudication entry —
+  // one that was never adjudicated stays in passFindingsById but is never
+  // visited above (entries[] is built by iterating adjudications, never
+  // passes), so it is silently invisible to every projection: a partially
+  // written record can drop even a P1 from the published ledger with no
+  // error at all (AGENTS.md: fail closed rather than under-report).
+  for (const [findingId, pass] of passFindingsById) {
+    if (!seenFindingIds.has(findingId)) {
+      fail(`${pass.file}: finding ${findingId} was never adjudicated by any supplied adjudication document`)
+    }
+  }
   return entries
 }
 
@@ -522,6 +554,36 @@ const REFERENCE_VALUE_PATTERN = { sha: /^[0-9a-f]{40}$/, issue_number: /^[1-9][0
 function validateCrossDocumentConsistency(record) {
   const rows = buildFindingIndex(record)
   const byId = new Map(rows.map((row) => [row.entry.finding_id, row]))
+
+  // buildSettlementIndex() itself rejects a duplicate settlement for one
+  // finding — called here so EVERY projection benefits, not only the three
+  // that happen to call it downstream (deferred-findings, blocker-comment,
+  // readiness-input); adjudication-record, round-table, and
+  // policy-disclosure would otherwise proceed from a run.json that violates
+  // its own "at most one terminal settlement per finding" contract with
+  // nothing to catch it.
+  buildSettlementIndex(record.run)
+
+  // A resolved policy cap that a supplied adjudication round already
+  // contradicts is a self-contradictory disclosure — publishing
+  // "challenge: 0" alongside an actual challenge round 1 adjudication would
+  // present two documents that cannot both be true. Only rounds actually
+  // present are checked; min_rounds is a floor, not a per-stage ceiling, so
+  // it plays no part here.
+  if (record.policy?.rounds) {
+    const maxRoundByStage = new Map()
+    for (const { doc } of record.adjudications) {
+      const current = maxRoundByStage.get(doc.stage) ?? 0
+      if (doc.round > current) maxRoundByStage.set(doc.stage, doc.round)
+    }
+    for (const stage of ['challenge', 'review', 'integration', 'remediation']) {
+      const cap = record.policy.rounds[stage]
+      const maxRound = maxRoundByStage.get(stage)
+      if (cap !== undefined && maxRound !== undefined && maxRound > cap) {
+        fail(`policy.json: rounds.${stage} cap is ${cap}, but round ${maxRound} was supplied for stage ${stage}`)
+      }
+    }
+  }
 
   // Adjudication documents must agree on run_id with EACH OTHER even when
   // there is no run.json to anchor the comparison against — run.json is
@@ -562,6 +624,17 @@ function validateCrossDocumentConsistency(record) {
         `${row.entry.finding_id}: its pass envelope names run_id ${row.pass.runId}, but the adjudicating document's run_id is ${row.run_id}`
       )
     }
+    // run_id alone is not the run's full identity — ai/schemas/README.md
+    // names the pair "run_id AND initiated_by" — so also bind initiated_by
+    // when run.json is supplied (adjudication documents carry no
+    // initiated_by of their own to compare against otherwise): a pass
+    // claiming a Foreman-initiated run must not enrich a human-initiated
+    // record merely because its free-form run_id was copied or collided.
+    if (record.run && row.pass.initiatedBy !== record.run.initiated_by) {
+      fail(
+        `${row.entry.finding_id}: its pass envelope names initiated_by ${row.pass.initiatedBy}, but run.json's initiated_by is ${record.run.initiated_by}`
+      )
+    }
     const allowedRoles = STAGE_ROLES[row.stage] || []
     if (!allowedRoles.includes(row.pass.role)) {
       fail(
@@ -590,6 +663,14 @@ function validateCrossDocumentConsistency(record) {
           `${row.entry.finding_id}: its pass payload declares reviewed_head ${row.pass.payloadReviewedHead}, but the adjudicating document's reviewed_head is ${row.reviewed_head}`
         )
       }
+    } else if (row.pass.role === 'integrator' && row.pass.payloadIntegrationRound !== row.round) {
+      // integrator payloads have no stage/finder/reviewed_head fields to
+      // compare (see the field comment in buildFindingIndex), but they do
+      // declare their own integration_round — the same class of gap as the
+      // reviewer/challenger check above, just for the one role it excludes.
+      fail(
+        `${row.entry.finding_id}: its pass payload declares integration_round ${row.pass.payloadIntegrationRound}, but the adjudicating document's round is ${row.round}`
+      )
     }
     // The adjudication's reviewer_priority is a COPY of the pass finding's
     // own priority, kept so "reviewer-vs-orchestrator disagreement can be
@@ -796,6 +877,32 @@ function wrapSection(section, body) {
 // rather than guessing which block to replace.
 function mergeSections(body, sections) {
   let result = body
+  // Reject nested/overlapping marker pairs before any replacement: a lazy
+  // begin...end match for a requested section spans over whatever sits
+  // between its own markers, so a different, unrequested section's marker
+  // pair nested inside it would be silently deleted along with its content
+  // — e.g. publishing only policy-disclosure could erase a nested
+  // deferred-findings block and its open tasks — while reporting success.
+  // Checked against every KNOWN section, not just the ones being written
+  // this call, since the nesting could involve either side.
+  const spans = {}
+  for (const section of PUBLISHABLE_SECTIONS) {
+    const beginIdx = result.indexOf(beginMarker(section))
+    const endIdx = result.indexOf(endMarker(section))
+    if (beginIdx === -1 || endIdx === -1) continue
+    spans[section] = [beginIdx, endIdx + endMarker(section).length]
+  }
+  const spanNames = Object.keys(spans)
+  for (const outer of spanNames) {
+    for (const inner of spanNames) {
+      if (outer === inner) continue
+      const [outerStart, outerEnd] = spans[outer]
+      const [innerStart] = spans[inner]
+      if (innerStart > outerStart && innerStart < outerEnd) {
+        throw new Error(`section ${inner} is nested inside section ${outer}'s marker pair`)
+      }
+    }
+  }
   const toAppend = []
   for (const section of Object.keys(sections)) {
     const re = new RegExp(
@@ -1012,8 +1119,8 @@ function renderBlockerComment(record, options = {}) {
   if (!options.head) fail('blocker-comment requires --head <sha> (the caller\'s current HEAD, never inferred)')
   const lastTransition = record.run.stage_transitions[record.run.stage_transitions.length - 1]
   const verdict = record.verdict || {}
-  const outcome = verdict.outcome || record.run.outcome || 'unknown'
-  const reason = verdict.reason || lastTransition.exit || 'unresolved'
+  const outcome = neutralizeMarkers(verdict.outcome || record.run.outcome || 'unknown')
+  const reason = neutralizeMarkers(verdict.reason || lastTransition.exit || 'unresolved')
   const rows = buildFindingIndex(record)
   const settlements = buildSettlementIndex(record.run)
   const unresolved = rows.filter((row) => {
@@ -1070,9 +1177,19 @@ function renderBlockerComment(record, options = {}) {
 // (buildFindingIndex's own duplicate-id check) and never re-reported once
 // its thread is settled.
 function currentUnansweredThreadRoots(record) {
+  // "Latest by round" must first be scoped to THIS run — validateCrossDocument
+  // Consistency (already run by the time this executes) guarantees every
+  // supplied adjudication document agrees on one run_id, so that id (or
+  // run.json's, when supplied) is the one reference to filter against.
+  // Without this, a schema-valid integrator pass from an unrelated run (no
+  // adjudicated findings of its own, so none of the per-row checks ever
+  // examine it) could still win "latest" by round number alone and silently
+  // report every genuinely open thread in the active run as answered.
+  const referenceRunId = record.run ? record.run.run_id : record.adjudications[0]?.doc.run_id
   let latest = null
   for (const { envelope } of record.passes) {
     if (envelope.role !== 'integrator') continue
+    if (referenceRunId !== undefined && envelope.run.run_id !== referenceRunId) continue
     if (!latest || envelope.payload.integration_round > latest.payload.integration_round) {
       latest = envelope
     }
@@ -1154,6 +1271,42 @@ function renderReadinessInput(record, options = {}) {
     null,
     2
   )
+}
+
+// specs/dev-flow-v2/specs/evidence/spec.md § "Evidence is scanned and safely
+// redacted": every free-text evidence projection SHALL pass the repository's
+// secret scanner before posting, replacing any detected span with a stable
+// placeholder and rule ID. This is a SHALL, not best-effort, so a scanner
+// that cannot run is a hard failure here — never a silent skip, which would
+// let an environment without gitleaks quietly publish unscanned evidence.
+// Applied once to the whole rendered text (never per-field): every
+// projection's output ultimately becomes something that can be posted to
+// GitHub, and scanning the complete text is simpler and cannot miss a field
+// by omission the way scattering calls across individual interpolations can.
+function secretScanAndRedact(text) {
+  if (!text) return text
+  let raw
+  try {
+    raw = execFileSync(
+      'gitleaks',
+      ['detect', '--pipe', '--no-banner', '--exit-code', '0', '--report-format', 'json', '--report-path', '-'],
+      { input: text, encoding: 'utf8' }
+    )
+  } catch (error) {
+    const stderr = error.stderr ? error.stderr.toString() : error.message
+    fail(`secret scan failed (gitleaks): ${stderr}`)
+  }
+  let findings
+  try {
+    findings = JSON.parse(raw)
+  } catch {
+    fail(`secret scan produced unparseable output: ${raw.slice(0, 200)}`)
+  }
+  let redacted = text
+  for (const finding of findings) {
+    redacted = redacted.split(finding.Secret).join(`[REDACTED:${finding.RuleID}]`)
+  }
+  return redacted
 }
 
 function render(command, record, options) {
@@ -1250,9 +1403,22 @@ function publish(record, options) {
   // fail() terminates via process.exit(), which skips the finally below
   // entirely — Node runs no pending finally block on that path. The 'exit'
   // event is the one hook Node guarantees fires (synchronously) on every
-  // exit, explicit or not, so the lock is released there too; fs.rmSync's
-  // force:true makes running it twice (finally, then here) harmless.
-  process.on('exit', () => fs.rmSync(lock, { force: true }))
+  // exit, explicit or not, so the lock is released there too. On a NORMAL
+  // return this handler stays registered until main() later calls
+  // process.exit() to set the CLI's own exit code — during that window a
+  // second publisher can legitimately acquire the now-vacant lock path, so
+  // an unconditional removal here would delete a successor's active lock
+  // (opening the same race a third publisher could then win). Reading the
+  // lock file back and removing it only when it still names THIS process
+  // makes the cleanup self-verifying regardless of which path fires it.
+  process.on('exit', () => {
+    try {
+      if (fs.readFileSync(lock, 'utf8') === String(process.pid)) fs.rmSync(lock, { force: true })
+    } catch {
+      // Already removed (the normal finally-based path) or unreadable —
+      // nothing of ours left to clean up either way.
+    }
+  })
   try {
     return publishLocked(record, options)
   } finally {
@@ -1302,7 +1468,7 @@ function publishLocked(record, options) {
 
   const sections = {}
   for (const section of options.sections) {
-    sections[section] = SECTION_RENDERERS[section](record)
+    sections[section] = secretScanAndRedact(SECTION_RENDERERS[section](record))
   }
 
   const maxAttempts = options.maxRetries + 1
@@ -1315,9 +1481,17 @@ function publishLocked(record, options) {
   let wroteAny = false
   try {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const view = JSON.parse(gh(['pr', 'view', String(options.pr), '--repo', options.repo, '--json', 'number,url,headRefOid,isDraft,body']))
+      const view = JSON.parse(
+        gh(['pr', 'view', String(options.pr), '--repo', options.repo, '--json', 'number,url,headRefOid,isDraft,body,state'])
+      )
       if (view.headRefOid !== options.head) {
         return blockerResult('head-mismatch', `PR head is ${view.headRefOid}, expected ${options.head}`, { pr: options.pr })
+      }
+      // isDraft alone is not "open and in progress": a closed PR can still
+      // report isDraft: true (closed without ever being marked ready), so
+      // checking only draft state would let this edit a closed PR's body.
+      if (view.state !== 'OPEN') {
+        return blockerResult('not-open', `PR #${options.pr} is ${view.state}, not OPEN`, { pr: options.pr })
       }
       if (!view.isDraft) {
         return blockerResult('not-draft', `PR #${options.pr} is not a draft`, { pr: options.pr })
@@ -1349,10 +1523,15 @@ function publishLocked(record, options) {
       wroteAny = true
 
       const reread = JSON.parse(
-        gh(['pr', 'view', String(options.pr), '--repo', options.repo, '--json', 'headRefOid,isDraft,body'])
+        gh(['pr', 'view', String(options.pr), '--repo', options.repo, '--json', 'headRefOid,isDraft,body,state'])
       )
       if (reread.headRefOid !== options.head) {
         return blockerResult('head-changed-during-publish', `PR head moved to ${reread.headRefOid} mid-write`, { pr: options.pr })
+      }
+      if (reread.state !== 'OPEN') {
+        return blockerResult('closed-during-publish', `PR #${options.pr} left OPEN state during the write (now ${reread.state})`, {
+          pr: options.pr
+        })
       }
       if (!reread.isDraft) {
         // A known external actor (AGENTS.md's Codex-connector signature) can
@@ -1408,7 +1587,7 @@ function main(argv) {
     process.exit(result.status === 'published' ? 0 : 1)
   }
 
-  const output = render(options.command, record, options)
+  const output = secretScanAndRedact(render(options.command, record, options))
   if (options.out) fs.writeFileSync(options.out, `${output}\n`)
   else console.log(output)
 }

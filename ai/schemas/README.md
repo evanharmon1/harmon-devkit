@@ -1052,7 +1052,10 @@ reviewer/challenger finding ([#637](https://github.com/evanharmon1/harmon-devkit
 `openspec/changes/dev-flow-v2/specs/renderer/spec.md`). Invoke via
 `scripts/render-dev-flow.sh <projection> --record <dir> [options]` (a thin
 wrapper; `render-dev-flow.mjs` is the implementation, same pairing as this
-family's other scripts).
+family's other scripts). Requires `gitleaks` on `PATH` (every rendered
+projection and every `publish` section is secret-scanned before being
+returned — see "Secret scanning" below) and, for `publish`, `gh`
+authenticated against the target repo.
 
 ### The record directory
 
@@ -1082,7 +1085,17 @@ reviewer pass specifically, its payload's own `stage`/`round`/`finder`/
 `reviewed_head` (fields `result.challenger`/`result.reviewer.schema.json`
 both require) must also agree with that same row — envelope-level
 `head`/`run_id`/role agreement alone would not catch a pass whose *payload*
-claims a different round or stage than the document adjudicating it;
+claims a different round or stage than the document adjudicating it; an
+integrator pass's own `payload.integration_round` (the one payload
+coordinate its schema declares) must likewise agree; a pass's `run.run_id`
+**and** `run.initiated_by` must both agree with `run.json`'s when supplied
+— `run_id` alone is not the run's full identity, so a pass claiming a
+Foreman-initiated run cannot enrich a human-initiated record merely because
+its free-form `run_id` collided; every pass finding must be consumed by
+exactly one adjudication entry, or it stays invisible to every projection
+with no error at all (`entries[]` is built by walking adjudications, never
+passes, so an un-adjudicated finding — even a P1 — is silently dropped from
+the published ledger otherwise);
 a reviewer/challenge finding's copied `reviewer_priority`
 must still equal its pass's own asserted `priority` (a drifted copy would
 hide the very reviewer-vs-orchestrator disagreement it exists to preserve);
@@ -1100,7 +1113,14 @@ every `run.json` settlement must name a finding some supplied adjudication
 document actually dispositioned `defer` (an "orphan" settlement is rejected),
 with a `reference.type` *and* value shape that agree with its own
 `disposition` (`fix`→ 40-hex `sha`, `decline`→`comment_id`,
-`file`→ positive-integer `issue_number`) — renderer/spec.md "Publication
+`file`→ positive-integer `issue_number`); no two settlements may name the
+same finding (checked once, globally, rather than only inside the three
+projections that happen to build a settlement index for their own reasons —
+`adjudication-record`, `round-table`, and `policy-disclosure` benefit too);
+and a resolved `policy.json` cap that a supplied adjudication round already
+contradicts is rejected (`rounds.challenge: 0` alongside an actual challenge
+round 1 would otherwise publish two documents that cannot both be
+true) — renderer/spec.md "Publication
 SHALL validate local sidecar entries against adjudications," applied to
 every projection rather than only `publish`, since an inconsistent record is
 suspect for all of them alike.
@@ -1164,8 +1184,16 @@ needed for the directly-resolved case too.
 `thread-reply-plan` carries only **integration-stage** findings whose
 `source_id` is named in the **current** integration pass's
 `unanswered_thread_roots` — current meaning the supplied `passes/*.json`
-integrator envelope with the highest `payload.integration_round`, not
-necessarily the pass that originally reported the finding. "Still open" is a
+integrator envelope with the highest `payload.integration_round` **among
+those matching the run being rendered** (`run.json`'s `run_id` when
+supplied, else the run_id every adjudication document already agrees on),
+not necessarily the pass that originally reported the finding. The run
+filter matters because "highest round" alone is not enough: a schema-valid
+integrator pass from a genuinely different run has no adjudicated findings
+of its own, so none of the per-row consistency checks ever examine it, and
+without the filter it could still win "latest" by round number and
+silently report every real open thread in the active run as answered.
+"Still open" is a
 property of the latest snapshot: a finding from an earlier round whose
 thread was answered by a later round would otherwise be judged against its
 own originating pass's now-stale root list forever, since a finding id is
@@ -1182,6 +1210,25 @@ and PR-body projections carry for that finding, so a consumer can verify
 semantic equivalence rather than trust the reply text alone (renderer/spec.md
 "Multi-surface dispositions remain equivalent") and a stale plan naming an
 old `head` can be rejected outright.
+
+### Secret scanning
+
+`openspec/changes/dev-flow-v2/specs/evidence/spec.md` § "Evidence is scanned
+and safely redacted": every free-text evidence projection SHALL pass the
+repository's secret scanner before posting, with a detected span replaced
+by a stable placeholder and rule ID. This is a SHALL, never best-effort, so
+every standalone projection's complete rendered output, and every `publish`
+section's rendered text individually (before merging), is piped through
+`gitleaks detect --pipe` (no git/file context needed — it reads stdin
+directly) and each finding's exact matched `Secret` string is replaced with
+`[REDACTED:<RuleID>]` before the text is returned. Applied once to the
+whole rendered text rather than scattered across individual field
+interpolations: every projection's output can end up posted to GitHub, and
+scanning the complete text cannot miss a field by omission the way
+distributing calls across dozens of call sites can. A scan that cannot run
+at all (`gitleaks` missing, a malformed report) is a hard failure, never a
+silent skip — an environment without `gitleaks` must not be able to
+silently publish unscanned evidence.
 
 ### Publishing: marked PR-body sections
 
@@ -1202,7 +1249,11 @@ the PR's current body, each wrapped in a marker pair:
 
 An existing marker pair is replaced in place (a duplicated or
 begin/end-mismatched pair for a requested section is refused as a
-`malformed-markers` blocker, never guessed at); an absent one is appended,
+`malformed-markers` blocker, never guessed at — as is one KNOWN section's
+marker pair nested inside a different KNOWN section's: a lazy begin...end
+match for the outer, requested section would otherwise span over and
+silently delete the inner, unrequested section's entire block along with
+its content while still reporting success); an absent one is appended,
 in `policy-disclosure`, `deferred-findings`, `adjudication-record` order —
 by adding only however many newlines are needed to reach a one-blank-line
 separation from whatever the body already ends with, never by trimming its
@@ -1225,14 +1276,18 @@ already present and resolves as a no-op rather than duplicating a section.
 A human edit that lands strictly *after* publish's last read but *before*
 its write is a window this design cannot close — GitHub gives no primitive
 to close it — and is not claimed to be closed. `publish` requires the exact
-pushed `--head` and an open draft PR (`isDraft: true`); either condition
-failing is a blocker (`head-mismatch`/`not-draft`) with no write attempted.
-The post-write verification read checks both `headRefOid` and `isDraft`
-again, not just the body's fingerprint: the head moving mid-write is a
-`head-changed-during-publish` blocker, and the PR leaving draft state mid-write
+pushed `--head`, an `OPEN` PR (`state`), and a draft one (`isDraft: true`);
+any condition failing is a blocker (`head-mismatch`/`not-open`/`not-draft`)
+with no write attempted — `state` is checked separately from `isDraft`
+because a closed PR can still report `isDraft: true` (never marked ready
+before it was closed), so draft-ness alone would let a closed PR's body be
+edited. The post-write verification read checks `headRefOid`, `state`, and
+`isDraft` again, not just the body's fingerprint: the head moving mid-write
+is a `head-changed-during-publish` blocker, the PR closing mid-write is a
+`closed-during-publish` blocker, and the PR leaving draft state mid-write
 (a known external actor can promote a draft outside this transaction — see
 AGENTS.md's Codex-connector signature) is a `promoted-during-publish`
-blocker — the body write may have landed in both cases, but reporting
+blocker — the body write may have landed in every case, but reporting
 success would hide that the transaction's own precondition broke partway
 through. A `--pr` that disagrees with `run.json`'s own `pr` (a stale
 terminal, a copy-pasted number) is a `pr-mismatch` blocker, checked before
@@ -1258,7 +1313,13 @@ call and released on every exit path — including a section renderer's
 `fail()`, which exits via `process.exit()` and so skips any pending `finally`
 entirely; the lock is also released from a `process` `'exit'` listener (the
 one hook Node runs on every exit path, `process.exit()` included) so a
-mid-render failure cannot strand it. A second call while one is in flight
+mid-render failure cannot strand it. That listener stays registered past a
+*normal* return too, until `main()` later calls `process.exit()` to set the
+CLI's exit code — during that window a second publisher can legitimately
+acquire the now-vacant lock path, so the listener reads the lock file back
+and removes it only when it still names this process's own PID, rather than
+removing unconditionally and deleting a successor's active lock. A second
+call while one is in flight
 is a `concurrent-publish` blocker. This does **not** — and structurally
 cannot, from a single-process lock — close two publish calls against
 *different* record directories racing the same PR, which remains the same
