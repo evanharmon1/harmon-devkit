@@ -191,6 +191,18 @@ switch (mutation) {
   case 'finder-role-stage-affinity-violation':
     finder('codex-adversarial').stages = ['review']
     break
+  case 'finder-null-role-with-result-schema':
+    // review round 1's own finding: role:null skips the role-bound
+    // result_schema check entirely, so a role-less finder could still
+    // claim a real schema — an internally contradictory pair nothing
+    // caught before the converse check was added.
+    finder('codex-cloud').result_schema = 'ai/schemas/result.integrator.schema.json'
+    break
+  case 'finder-null-role-with-result-schema':
+    // review round 1's own finding: role:null skipped this branch entirely,
+    // so a role-less finder could still name a real result_schema.
+    finder('codex-cloud').result_schema = 'ai/schemas/result.integrator.schema.json'
+    break
   // ── model tier defaults (#635) ─────────────────────────────────────────
   case 'tier-rung-no-default':
     delete modelOf('qwen', 'coder-plus').default
@@ -414,6 +426,12 @@ rejects "a finder whose result_schema disagrees with its declared role" \
 rejects "a finder configured outside its declared role's stage affinity" \
     'finder-role-stage-affinity-violation' \
     "outside that role's own affinity"
+rejects "a role-less finder that still names a real result_schema" \
+    'finder-null-role-with-result-schema' \
+    'a role-less finder has no role to derive an expected schema from'
+rejects "a role-less finder naming a real result_schema" \
+    'finder-null-role-with-result-schema' \
+    'has no role to derive an expected schema from'
 rejects "a multi-model family-tier rung with no default" \
     'tier-rung-no-default' \
     'and none is marked default'

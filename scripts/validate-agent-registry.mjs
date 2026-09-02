@@ -364,7 +364,20 @@ if (errors.length === 0) {
     if (typeof finder.trusted_actor_id === 'string' && !/^[1-9][0-9]*$/.test(finder.trusted_actor_id)) {
       semanticError(`finder ${finder.slug} trusted_actor_id must be a digits-only GitHub actor id: ${finder.trusted_actor_id}`)
     }
-    if (finder.role !== null) {
+    if (finder.role === null) {
+      // The converse of the "own result_schema" binding below: a role-less
+      // finder (a collected review product, never its own enveloped result —
+      // see the field's own description) has no role to derive an expected
+      // result_schema from, so it must declare none either. Without this, a
+      // finder could claim role:null (skipping every role check below)
+      // while still naming a real result_schema, an internally contradictory
+      // pair no check caught.
+      if (finder.result_schema !== null) {
+        semanticError(
+          `finder ${finder.slug} declares role null but names result_schema ${finder.result_schema} — a role-less finder has no role to derive an expected schema from and must declare result_schema null too`
+        )
+      }
+    } else {
       const role = roleBySlug.get(finder.role)
       if (!role) {
         semanticError(`finder ${finder.slug} names unknown role ${finder.role}`)

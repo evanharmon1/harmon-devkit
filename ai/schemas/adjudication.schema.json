@@ -10,7 +10,7 @@
     "schema": { "const": 2 },
     "run_id": { "type": "string", "minLength": 1 },
     "stage": {
-      "description": "challenge/review: adjudicates a reviewer pass's findings (--pass names a reviewer envelope). integration: adjudicates an integrator payload's findings instead (--pass names an integrator envelope) — its findings carry no reviewer-asserted priority, so the validator's pass cross-check skips the reviewer_priority fidelity comparison for this stage (ai/schemas/README.md).",
+      "description": "review: adjudicates a reviewer pass's findings (--pass names a reviewer envelope). challenge: adjudicates a reviewer pass (a pre-#635 trajectory) OR a challenger pass (#635) — --pass may name either envelope, peeked from its own declared role rather than assumed, since every pass making up one round must still agree with the others on that role (ai/schemas/README.md). integration: adjudicates an integrator payload's findings instead (--pass names an integrator envelope) — its findings carry no reviewer-asserted priority, so the validator's pass cross-check skips the reviewer_priority fidelity comparison for this stage.",
       "enum": ["challenge", "review", "integration"]
     },
     "round": { "type": "integer", "minimum": 1 },
