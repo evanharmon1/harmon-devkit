@@ -2,7 +2,7 @@
   "schema": 2,
   "role": "challenger",
   "status": "completed",
-  "head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+  "head": "c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0",
   "produced_at": "2026-08-29T15:04:05Z",
   "producer": {
     "harness": "codex-cli",
@@ -10,13 +10,13 @@
     "tier": "frontier"
   },
   "run": {
-    "run_id": "run-4001-empty-findings",
+    "run_id": "run-4030-completed-with-empty-attack-scenarios",
     "initiated_by": "human"
   },
   "payload": {
     "stage": "challenge",
     "round": 1,
-    "reviewed_head": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+    "reviewed_head": "c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0",
     "finder": "codex-adversarial",
     "findings": [],
     "counts": {
@@ -25,13 +25,6 @@
       "P2": 0,
       "P3": 0
     },
-    "attack_scenarios": [
-      {
-        "id": "as-1",
-        "description": "attempted to find an authorization bypass around the new validation path; the design held",
-        "outcome": "held",
-        "finding_id": null
-      }
-    ]
+    "attack_scenarios": []
   }
 }

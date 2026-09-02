@@ -131,6 +131,13 @@ switch (mutation) {
   case 'role-result-schema-unknown-value':
     role('integrator').result_schema = 'ai/schemas/result.nonexistent.schema.json'
     break
+  case 'role-result-schema-wrong-role':
+    // A schema-legal value (it is one of the four enum members) that names a
+    // DIFFERENT role's own schema — challenge-review#635's own finding: this
+    // used to pass because the check only asked "non-null and exists",
+    // never "matches this role's own slug".
+    role('challenger').result_schema = 'ai/schemas/result.reviewer.schema.json'
+    break
   case 'challenger-with-writes':
     role('challenger').writes = ['something it should never write']
     break
@@ -237,17 +244,6 @@ switch (mutation) {
     registry.schema_version = '😀x'
     schema.properties.schema_version = { type: 'string', minLength: 2 }
     break
-  case 'role-result-schema-enum-widened-to-deleted-file':
-    // The enum is closed over files that exist today, so "a role names a
-    // result_schema that does not exist" needs the SCHEMA's own enum widened
-    // too — simulating a real schema file having been deleted from the repo
-    // without the registry (or its enum) being updated to match.
-    schema.$defs.role.properties.result_schema.enum.push(
-      'ai/schemas/result.deleted.schema.json'
-    )
-    registry.roles.find((r) => r.slug === 'integrator').result_schema =
-      'ai/schemas/result.deleted.schema.json'
-    break
   default:
     throw new Error(`unknown schema mutation: ${mutation}`)
 }
@@ -351,10 +347,13 @@ rejects "orchestrator declaring a result_schema" \
     'role orchestrator returns no result and must have result_schema: null'
 rejects "a non-orchestrator role with no result_schema" \
     'role-missing-result-schema' \
-    'role implementer must name a result_schema'
+    'role implementer must name its own result schema'
 rejects "a role naming a result_schema value outside the closed enum" \
     'role-result-schema-unknown-value' \
     'must be one of'
+rejects "a role naming a different role's own result_schema" \
+    'role-result-schema-wrong-role' \
+    'must name its own result schema'
 rejects "challenger declaring external writes" \
     'challenger-with-writes' \
     'role challenger must declare no external writes'
@@ -543,10 +542,6 @@ rejects_schema_case \
 accepts_schema_case \
     "two Unicode code points at minLength 2" \
     'unicode-min-length-exact'
-rejects_schema_case \
-    "a role naming a result_schema file that has been deleted from the repo" \
-    'role-result-schema-enum-widened-to-deleted-file' \
-    'does not exist'
 
 node --input-type=module - "$schema" "$mutated_schema" <<'NODE'
 import { readFile, writeFile } from 'node:fs/promises'

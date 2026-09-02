@@ -231,8 +231,8 @@
           "enum": ["local-cli", "pr-cloud"]
         },
         "role": {
-          "description": "The registry role this finder implements, when it implements one. null for a finder that is a collected review product rather than a role dispatch (e.g. codex-cloud, whose accepted evidence rides inside the integrator's own result.integrator payload rather than being its own enveloped result) — a finder is never required to implement a role merely because it serves that role's stage. An explicit enum listing null, not type+if/then: see result_schema's own comment below for why.",
-          "enum": ["implementer", "challenger", "reviewer", "integrator", null]
+          "description": "The registry role this finder implements, when it implements one. null for a finder that is a collected review product rather than a role dispatch (e.g. codex-cloud, whose accepted evidence rides inside the integrator's own result.integrator payload rather than being its own enveloped result) — a finder is never required to implement a role merely because it serves that role's stage. Never `implementer`: a finder serves a confidence or integration stage (challenge, review, integration), never the implement stage, so implementer has no finder stage to be valid for at all. An explicit enum listing null, not type+if/then: see result_schema's own comment below for why.",
+          "enum": ["challenger", "reviewer", "integrator", null]
         },
         "stages": {
           "description": "Which stage(s) this finder may be configured for ([stage.<name>].finders in .devflow.toml resolve against this).",

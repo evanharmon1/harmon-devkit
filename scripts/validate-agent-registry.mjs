@@ -233,10 +233,22 @@ if (errors.length === 0) {
       if (role.result_schema !== null) {
         semanticError('role orchestrator returns no result and must have result_schema: null')
       }
-    } else if (role.result_schema === null) {
-      semanticError(`role ${role.slug} must name a result_schema (only orchestrator returns no result)`)
-    } else if (!fs.existsSync(path.join(REPO_ROOT, role.result_schema))) {
-      semanticError(`role ${role.slug} names result_schema ${role.result_schema}, which does not exist`)
+    } else {
+      // Bound to the role's OWN slug, not merely "non-null and some existing
+      // file" — the latter would accept e.g. challenger.result_schema
+      // pointing at result.implementer.schema.json, letting a payload with
+      // no finding core satisfy the challenge stage's own role contract.
+      const expected = `ai/schemas/result.${role.slug}.schema.json`
+      if (role.result_schema !== expected) {
+        semanticError(`role ${role.slug} must name its own result schema (${expected}), found ${role.result_schema}`)
+      } else if (!fs.existsSync(path.join(REPO_ROOT, role.result_schema))) {
+        // Defense in depth, not reachable via a registry-only mutation now
+        // that the branch above pins the value to the role's own slug: every
+        // enum member IS one of today's real files by construction, so this
+        // only fires if a future change deletes/renames that file on disk
+        // without updating the registry to match.
+        semanticError(`role ${role.slug} names result_schema ${role.result_schema}, which does not exist`)
+      }
     }
     // challenger and reviewer write nothing outside their own result:
     // writes must be empty. integrator is ALSO write-restricted (no ambient

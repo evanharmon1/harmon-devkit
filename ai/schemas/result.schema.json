@@ -201,7 +201,7 @@
           }
         },
         "attack_scenarios": {
-          "description": "Adversarial scenarios this pass attempted against the design or approach, independent of whether each one surfaced a finding — the record that the challenger actually attacked the change rather than only reporting what it happened to notice. May be empty (e.g. a blocked pass, see checkChallengerBlockedStatus in scripts/validate-result-schemas.mjs). A scenario whose outcome is `surfaced-finding` names the finding it produced via `finding_id`; the validator cross-checks that id against this same pass's own `findings[]` (a same-document check, no external context needed).",
+          "description": "Adversarial scenarios this pass attempted against the design or approach, independent of whether each one surfaced a finding — the record that the challenger actually attacked the change rather than only reporting what it happened to notice. Required non-empty when the envelope status is completed (a clean pass still records what it attempted) and required empty when blocked (scripts/validate-result-schemas.mjs's checkChallengerAttackScenarios). A scenario whose outcome is `surfaced-finding` names the finding it produced via `finding_id`; the validator cross-checks that id against this same pass's own `findings[]` (a same-document check, no external context needed).",
           "type": "array",
           "items": { "$ref": "#/$defs/challenger/$defs/attackScenario" }
         }

@@ -218,6 +218,8 @@ const SEMANTIC_ONLY = new Set([
   'result.challenger.schema/invalid/blocked-with-findings.json',
   'result.challenger.schema/invalid/attack-scenario-unknown-finding-reference.json',
   'result.challenger.schema/invalid/attack-scenario-duplicate-id.json',
+  'result.challenger.schema/invalid/completed-with-empty-attack-scenarios.json',
+  'result.challenger.schema/invalid/blocked-with-attack-scenarios.json',
   'result.integrator.schema/invalid/accepted-reviewed_commit-mismatch.json',
   'result.integrator.schema/invalid/applied-dispositions-duplicate-finding-id.json',
   'result.integrator.schema/invalid/blocked-with-clean-verdict.json',

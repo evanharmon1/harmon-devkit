@@ -459,6 +459,10 @@ function checkAdjudicationActiveRun(document, options, errors) {
 // content), always runs for role reviewer — and, since result.challenger's
 // pass core is field-for-field identical (findings + counts), reused
 // unchanged for role challenger rather than duplicated as a twin function.
+// attack_scenarios is challenger-only and gets its own status rule in
+// checkChallengerAttackScenarios below, kept apart from this generic
+// findings/counts check the same way that field is kept apart from the
+// shared pass core in the schema itself.
 function checkReviewerBlockedStatus(envelope, errors) {
   if (envelope.status !== 'blocked') return
   const { payload } = envelope
@@ -530,18 +534,31 @@ function checkFindingIds(envelope, options, errors) {
 
 // checkChallengerAttackScenarios — role challenger only. Same-document checks
 // (no external context needed, unlike checkFindingIds' --known-ids cross-run
-// collision case): (a) no duplicate attack_scenarios[].id within this pass —
-// the schema's own description promises "unique within this pass", which is
-// otherwise nowhere enforced; (b) every entry whose outcome is
-// surfaced-finding must name a finding_id that actually appears in THIS
-// pass's own findings[] — a scenario cannot claim to have surfaced a finding
-// this pass never returned. The schema's own if/then already forces
-// finding_id null for outcome:held and a string for outcome:surfaced-finding;
-// this adds the one thing a schema keyword cannot check, that the string
-// names a real sibling finding.
+// collision case): (a) attack_scenarios must be non-empty when the envelope
+// is completed, and empty when blocked — the field exists specifically so a
+// clean round still proves the design was actually attacked rather than
+// merely inspected (ai/schemas/README.md); a completed pass reporting zero
+// scenarios defeats that purpose exactly the way an empty findings[] would
+// not (findings may legitimately be empty on their own). (b) no duplicate
+// attack_scenarios[].id within this pass — the schema's own description
+// promises "unique within this pass", which is otherwise nowhere enforced;
+// (c) every entry whose outcome is surfaced-finding must name a finding_id
+// that actually appears in THIS pass's own findings[] — a scenario cannot
+// claim to have surfaced a finding this pass never returned. The schema's own
+// if/then already forces finding_id null for outcome:held and a string for
+// outcome:surfaced-finding; this adds the one thing a schema keyword cannot
+// check, that the string names a real sibling finding.
 function checkChallengerAttackScenarios(envelope, errors) {
-  const { payload } = envelope
+  const { status, payload } = envelope
   if (!Array.isArray(payload.attack_scenarios)) return
+  if (status === 'completed' && payload.attack_scenarios.length === 0) {
+    errors.push(
+      '$result.payload.attack_scenarios: must be non-empty when the envelope status is completed — a clean pass still records what it attempted'
+    )
+  }
+  if (status === 'blocked' && payload.attack_scenarios.length > 0) {
+    errors.push('$result.payload.attack_scenarios: must be empty when the envelope status is blocked')
+  }
   const findingIds = new Set(
     Array.isArray(payload.findings)
       ? payload.findings.filter((f) => typeof f.id === 'string').map((f) => f.id)
