@@ -107,7 +107,14 @@ frontmatter_description_text() {
                 next
             }
         }
-        /^description:[[:space:]]*[|>]-?[[:space:]]*$/ {
+        {
+            # A trailing YAML comment (whitespace then `#…`) on the block
+            # header (e.g. `description: >- # folded`) must not stop it from
+            # being recognized — strip it before matching.
+            header = $0
+            sub(/[[:space:]]+#.*$/, "", header)
+        }
+        header ~ /^description:[[:space:]]*[|>]-?[[:space:]]*$/ {
             in_desc = 1
             next
         }
@@ -139,6 +146,19 @@ frontmatter_flag_is() {
         }
         END { exit (found ? 0 : 1) }
     ' "$1"
+}
+
+# Return success if description $2 contains "Invoke as /$1" at a command-name
+# boundary: end of the description, or a character that cannot continue a
+# command name (anything outside [A-Za-z0-9_-]). Both directions of the
+# "Invoke as /<name>" check (require it / forbid it) call this, so they agree
+# on what "names this command" means — without it, "Invoke as /demo-other"
+# would satisfy (or trip) a check meant only for "demo".
+desc_names_invoke_as() {
+    case "$2" in
+    *"Invoke as /$1"[!A-Za-z0-9_-]* | *"Invoke as /$1") return 0 ;;
+    *) return 1 ;;
+    esac
 }
 
 # Collect every SKILL.md under the skills root (sorted, newline-delimited).
@@ -227,11 +247,9 @@ while IFS= read -r md; do
             # left unset (model-invocable), it always requires "Use when",
             # whatever user-invocable says.
             if frontmatter_flag_is "$md" "user-invocable" "false"; then
-                case "$desc" in
-                *"Invoke as /$name"*)
+                if desc_names_invoke_as "$name" "$desc"; then
                     err "$md: user-invocable: false but description contains 'Invoke as /$name' (no slash command exists for it)"
-                    ;;
-                esac
+                fi
             fi
             if frontmatter_flag_is "$md" "disable-model-invocation" "true"; then
                 case "$desc" in
@@ -252,12 +270,9 @@ while IFS= read -r md; do
                         ;;
                     esac
                 else
-                    case "$desc" in
-                    *"Invoke as /$name"*) ;;
-                    *)
+                    if ! desc_names_invoke_as "$name" "$desc"; then
                         err "$md: disable-model-invocation: true requires 'Invoke as /$name' in the description"
-                        ;;
-                    esac
+                    fi
                 fi
             else
                 case "$desc" in

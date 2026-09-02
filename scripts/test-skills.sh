@@ -555,6 +555,47 @@ expect_fail_contains "user-invocable:false skill claiming 'Invoke as /<name>' fa
     "ai/skills/universal/victor/SKILL.md" \
     bash -c "cd '$G19' && bash '$SCRIPTS/verify-skills.sh'"
 
+# Shepherd round 2 (Codex cloud-review findings on 9a0752d): a block-scalar
+# header must still be recognized with a trailing YAML comment, and "Invoke
+# as /<name>" needs a command-name boundary so a longer name sharing the
+# prefix doesn't satisfy (or trip) the check.
+
+# `description: >- # folded` is still a valid block-scalar header — the
+# indented body (with "Use when") must still be read, so this compliant
+# model-invocable skill passes.
+G20="$TMPROOT/guard-universal-header-trailing-comment"
+git_init "$G20"
+mkdir -p "$G20/ai/skills/universal/x-ray"
+{
+    echo "---"
+    echo "name: x-ray"
+    echo "description: >- # folded"
+    echo "  Do a thing for the dev loop. Use when the dev loop reaches this"
+    echo "  stage. Invoke as /x-ray."
+    echo "---"
+    echo "# x-ray"
+} >"$G20/ai/skills/universal/x-ray/SKILL.md"
+expect_ok "block-scalar header with a trailing YAML comment is still recognized (body read, 'Use when' found)" \
+    bash -c "cd '$G20' && bash '$SCRIPTS/verify-skills.sh'"
+
+# "Invoke as /whiskey-other." does not name the /whiskey command — the
+# character after the name continues an identifier, so this must fail as
+# if "Invoke as /whiskey" were missing entirely.
+G21="$TMPROOT/guard-universal-invoke-as-name-boundary"
+git_init "$G21"
+mkdir -p "$G21/ai/skills/universal/whiskey"
+{
+    echo "---"
+    echo "name: whiskey"
+    echo "description: Invoke as /whiskey-other."
+    echo "disable-model-invocation: true"
+    echo "---"
+    echo "# whiskey"
+} >"$G21/ai/skills/universal/whiskey/SKILL.md"
+expect_fail_contains "'Invoke as /whiskey-other' does not satisfy the /whiskey command boundary, naming the skill" \
+    "ai/skills/universal/whiskey/SKILL.md" \
+    bash -c "cd '$G21' && bash '$SCRIPTS/verify-skills.sh'"
+
 # ── sync-skills.sh (vendoring engine) ──────────────────────────────────
 echo "==> sync-skills.sh"
 
