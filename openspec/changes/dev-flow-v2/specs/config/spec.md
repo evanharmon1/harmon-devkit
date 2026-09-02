@@ -158,6 +158,11 @@ spend, convergence, gates, roles, stages, strategy, registry roles, write
 boundaries, and trusted actor IDs. An attributable explicit operator
 instruction MAY override the merge-base value.
 
+#### Scenario: The merge base has no policy reader
+
+- **WHEN** a change migrates the policy shape and its merge base contains no policy reader to materialize
+- **THEN** the run refuses to resolve policy from the branch reader and stops with a message that the reader must land in its own change (through the skills sync) before the policy migration, so the reader and the policy never migrate together
+
 #### Scenario: A branch edits the reader's built-in defaults
 
 - **WHEN** a migration branch changes the policy reader or the defaults it supplies for values the older shape never declared
@@ -176,7 +181,7 @@ instruction MAY override the merge-base value.
 #### Scenario: A legacy cap bounds both integration limits
 
 - **WHEN** the merge-base copy is the legacy shape whose `shepherd` cap bounded fix pushes and no-change cycles together
-- **THEN** the decoded policy sets both `integration` and `remediation` to that `shepherd` value and marks them as one shared budget, so the integration stage counts every Codex cycle and every fix push against a single total of `shepherd` rounds, exactly as the legacy contract did; the migration run can neither gain rounds nor cap earlier than the older policy allowed
+- **THEN** the decoded policy sets both `integration` and `remediation` to that `shepherd` value and marks them as one shared budget under legacy accounting: one charge per legacy round, where a round is either one fix push or one no-change cycle, and the cycle whose findings a fix push answers is not charged separately from that push; the migration run can neither gain rounds nor cap earlier than the older policy allowed
 
 #### Scenario: A migration branch edits a value the older shape never declared
 

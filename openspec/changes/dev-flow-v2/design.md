@@ -287,9 +287,10 @@ caps, and floor it is protected by. The reader therefore carries one
 bounded historical decoder used only on the merge-base path when the change
 under review migrates the policy shape: it reads the legacy `[rigor.<level>]`
 caps (`shepherd` decoded as `integration = N`, `remediation = N`, and a
-decoder-only shared-budget marker under which the integration stage counts
-cycles and fix pushes against one total of N, because the legacy cap counted
-either kind as one shepherd round; `min_rounds` as the floor)
+decoder-only shared-budget marker under which the integration stage charges
+one legacy round per fix push or per no-change cycle, never a finding cycle
+and its answering push separately, because that is how the legacy cap
+counted; `min_rounds` as the floor)
 or the v1 `[review.*]` policy the rigor pointer names, maps them onto the v2
 `rounds` values, and supplies the built-in gate defaults (`verify`, `check`,
 `security:secrets`, `security` with the shipped `docs_only_paths`) because
@@ -323,6 +324,15 @@ file: doing so would make the repository's own gate fail by design until the
 sibling milestone ships. Per-script TOML parsing was rejected because shape
 refusal and resolution would drift between consumers, defeating the
 determinism the milestone exists for.
+
+Sequencing follows from that boundary: the reader must exist at the merge
+base before a policy migration can be reviewed, so the reader lands in its
+own change (for DevKit, task 2.3; for generated repositories, the skills
+sync) and the policy migration is a later change. A migration whose merge
+base has no reader is refused rather than bootstrapped from the branch,
+because a branch-supplied reader is exactly what the boundary excludes. A
+pinned external bootstrap copy was rejected as a second trust root that
+would need its own provenance rules.
 
 ### 12. Stage names, skill names, and write ownership are explicit
 
