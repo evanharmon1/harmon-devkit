@@ -36,11 +36,15 @@ const DEFAULT_VALIDATOR = path.join(HERE, "validate-result-schemas.mjs");
 
 const EXIT_CODES = { continue: 0, converged: 20, diverging: 21, capped: 22, indeterminate: 2 };
 
-// Interim: result.challenger.schema.json does not exist yet (lands with
-// lane #635). Until then, challenge-stage passes are authored with envelope
-// role: "reviewer" (the shared finding core the two payloads carry) and
-// validated as such — see ai/schemas/README.md's addendum for this issue.
-const PASS_VALIDATION_KIND = "reviewer";
+// Seam closed (lane #635, PR #713): result.challenger.schema.json now
+// exists, and challenge-stage/review-stage passes are no longer validated
+// under one hardcoded kind. "envelope" self-dispatches on each pass's own
+// declared `role` (validate-result-schemas.mjs: "runs exactly the same
+// payload + receipt checks as invoking the role's own kind name directly"),
+// so a challenger-shaped challenge pass and a reviewer-shaped review pass
+// each validate against their own schema without dev-flow-exit.mjs having
+// to know or assume which role produced a given pass.
+const PASS_VALIDATION_KIND = "envelope";
 
 class ExitIndeterminate extends Error {}
 

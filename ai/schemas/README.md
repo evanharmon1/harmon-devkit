@@ -1159,35 +1159,43 @@ never drift from the real reader. The resolved output is asserted to carry
 the *un-tampered* built-in, proving the poisoned code's own mutation was
 never reached.
 
-**Interim: challenge-stage passes validate as `reviewer`-shaped.**
-`result.challenger.schema.json` does not exist in this repository yet — it
-ships with lane [#635](https://github.com/evanharmon1/harmon-devkit/issues/635)'s
-registry roles. Until then, `dev-flow-exit.mjs` validates every pass it
-consumes — challenge-stage and review-stage alike — as envelope `role:
-"reviewer"` via `scripts/validate-result-schemas.mjs`, matching the "common
-finding core" both confidence-role payloads share
-(`specs/dev-flow-v2.md` § Results). A challenge-stage pass's own
-`payload.stage: "challenge"` is what `dev-flow-exit.mjs` actually keys its
-stage-membership logic on — never the envelope `role` — so this is purely an
-interim schema-validation convenience, not a semantic misclassification. Flip
-`PASS_VALIDATION_KIND` in `dev-flow-exit.mjs` to `"challenger"` once that
-schema ships.
+**Challenge-stage passes validate by their own declared role.**
+`result.challenger.schema.json` shipped with lane
+[#635](https://github.com/evanharmon1/harmon-devkit/issues/635)'s registry
+roles (PR #713); `dev-flow-exit.mjs`'s `PASS_VALIDATION_KIND` is `"envelope"`
+— `scripts/validate-result-schemas.mjs`'s self-dispatching kind, which reads
+each pass's own `role` field and runs exactly the same payload + receipt
+checks as invoking that role's kind name directly. A challenge-stage pass
+authored `role: "challenger"` validates against
+`result.challenger.schema.json`; one still authored `role: "reviewer"`
+(every pre-PR-713 trajectory, and any producer that has not migrated)
+validates against `result.reviewer.schema.json` — legal permanently, not
+just during a migration window, since that schema's `stage` enum admits
+both `"challenge"` and `"review"` on purpose. Either way,
+`dev-flow-exit.mjs`'s own stage-membership logic keys on the pass's
+`payload.stage`, never the envelope `role`, so a trajectory can freely mix
+challenger- and reviewer-shaped challenge passes across rounds without
+changing how logical rounds assemble.
 
-**`slot` and `substitutes_for` on `result.reviewer.schema.json`.**
-`specs/dev-flow-v2.md`'s Results section (updated in the 2026-08-31 config
-redesign) describes every confidence-role pass as carrying `slot` (the
-configured primary finder) and, on a fallback pass, `substitutes_for` (the
-primary it substituted for) — fields the schema shipped by
-[#634](https://github.com/evanharmon1/harmon-devkit/issues/634)/PR #678 predates
-and does not have. `dev-flow-exit.mjs`'s logical-round assembly needs them to
-tell a primary pass from a substitution and to know which primary slot a
-substitute fills, so this issue adds both as **optional** properties to
-`result.reviewer.schema.json` (and its inlined twin in `result.schema.json`)
-— additive only, `required` is unchanged, so every existing fixture and
-producer stays valid without them. `dev-flow-exit.mjs` itself requires `slot`
-on every pass it consumes (falling back to `finder` when absent, correct for
-a single-primary-slot stage since `finder == slot` there) — that is its own
-receipt-level requirement, not a schema one.
+**`slot` and `substitutes_for` on `result.reviewer.schema.json` and
+`result.challenger.schema.json`.** `specs/dev-flow-v2.md`'s Results section
+(updated in the 2026-08-31 config redesign) describes every confidence-role
+pass as carrying `slot` (the configured primary finder) and, on a fallback
+pass, `substitutes_for` (the primary it substituted for) — fields the
+reviewer schema shipped by
+[#634](https://github.com/evanharmon1/harmon-devkit/issues/634)/PR #678 and
+the challenger schema shipped by #635/PR #713 both predate.
+`dev-flow-exit.mjs`'s logical-round assembly needs them to tell a primary
+pass from a substitution and to know which primary slot a substitute fills,
+so this issue adds both as **optional** properties to both schemas (and
+their inlined `$defs.reviewer`/`$defs.challenger` twins in
+`result.schema.json`, kept byte-identical to their standalone originals —
+`scripts/test-result-schemas.sh`'s own drift check enforces this) —
+additive only, `required` is unchanged on either, so every existing fixture
+and producer stays valid without them. `dev-flow-exit.mjs` itself requires
+`slot` on every pass it consumes (falling back to `finder` when absent,
+correct for a single-primary-slot stage since `finder == slot` there) —
+that is its own receipt-level requirement, not a schema one.
 
 **Run directory layout**, the input to `dev-flow-exit.mjs --run <dir>`:
 
