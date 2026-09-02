@@ -112,6 +112,22 @@ grep -q "legacy" "/tmp/dfp-live-$$.err" || {
 rm -f "/tmp/dfp-live-$$.out" "/tmp/dfp-live-$$.err"
 echo "OK: live .devflow.toml (legacy shape) is refused as the operating policy"
 
+echo "== --closure refuses a merge base with no reader (never falls back to the branch copy) =="
+empty_closure="$(mktemp -d)"
+mkdir -p "${empty_closure}/scripts"
+if node scripts/devflow-policy.mjs resolve --policy .devflow.toml --closure "${empty_closure}" \
+    >/dev/null 2>"/tmp/dfp-closure-$$.err"; then
+    rm -rf "${empty_closure}" "/tmp/dfp-closure-$$.err"
+    fail "--closure with no reader in the closure directory unexpectedly succeeded"
+fi
+grep -q "reader must land" "/tmp/dfp-closure-$$.err" || {
+    cat "/tmp/dfp-closure-$$.err" >&2
+    rm -rf "${empty_closure}" "/tmp/dfp-closure-$$.err"
+    fail "refusal message did not explain that the reader must land on the merge base first"
+}
+rm -rf "${empty_closure}" "/tmp/dfp-closure-$$.err"
+echo "OK: a merge base predating the reader itself is refused, not silently satisfied by the branch copy"
+
 echo "== devflow-policy.mjs usage errors =="
 if node scripts/devflow-policy.mjs resolve >/dev/null 2>/tmp/dfp-usage-$$.err; then
     rm -f "/tmp/dfp-usage-$$.err"

@@ -1019,7 +1019,12 @@ tells a downstream consumer (the integrator, #639's readiness gate) that
 `integration` and `remediation` are not two independent N-sized budgets here
 — together, cycles plus fix pushes must never exceed the single legacy
 `shepherd` total N, exactly as AGENTS.md's legacy shepherd cap always meant.
-`min_rounds` maps to the v2 floor unchanged; v1
+**The unit charged against that shared total is one legacy round** — one fix
+push, or one no-change cycle where nothing needed fixing (AGENTS.md's legacy
+shepherd definition, unchanged by this decode) — and a Codex cycle that
+surfaces a finding together with the fix push that answers it is **one**
+round, charged once, never two separate charges for one cycle-then-fix
+sequence. `min_rounds` maps to the v2 floor unchanged; v1
 `[review.<policy>]` via the `[rigor.<level>].review` pointer, same field
 mapping) and supplies built-in `[gates]` defaults (`round_code = "verify"`,
 `round_docs = "check"`, `secret_scan = "security:secrets"`, `pre_pr =

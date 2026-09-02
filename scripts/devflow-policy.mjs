@@ -586,7 +586,12 @@ function decodeLegacyRounds(doc, levelName) {
     // had ONE undifferentiated "shepherd" cap, never two independent ones,
     // so integration and remediation here are not separate budgets that
     // each independently allow N actions — together they must never permit
-    // more than N total.
+    // more than N total. The unit charged against that shared total is one
+    // legacy ROUND: one fix push, or one no-change cycle where nothing
+    // needed fixing (AGENTS.md's legacy shepherd definition, carried
+    // forward unchanged by this decode). A Codex cycle that surfaces a
+    // finding and the fix push that answers it are the SAME round, charged
+    // once — never two separate charges for one cycle-then-fix sequence.
     shared_budget: true,
   };
 }
@@ -876,7 +881,14 @@ function tryDelegateToClosure(argv) {
   }
   const trustedScript = path.join(closureDir, "scripts", "devflow-policy.mjs");
   if (!existsSync(trustedScript)) {
-    console.error(`devflow-policy: --closure directory has no scripts/devflow-policy.mjs: ${closureDir}`);
+    // A merge base that predates this reader's own existence (this change
+    // may be the one introducing it) has no trusted copy to delegate to at
+    // all — refuse outright rather than falling through to the untrusted
+    // branch copy, which is exactly the gate a missing merge-base reader
+    // would otherwise let a self-modifying branch bypass.
+    console.error(
+      `devflow-policy: --closure directory has no scripts/devflow-policy.mjs (${closureDir}) — the reader must land on the merge base before a self-referential check can run; never falling back to the branch copy`,
+    );
     return 1;
   }
   const passthrough = [...argv.slice(0, idx), ...argv.slice(idx + 2)];

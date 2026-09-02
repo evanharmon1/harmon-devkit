@@ -657,7 +657,12 @@ function tryDelegateToClosure(argv) {
   }
   const trustedScript = path.join(closureDir, "scripts", "dev-flow-exit.mjs");
   if (!existsSync(trustedScript)) {
-    console.error(`dev-flow-exit: --closure directory has no scripts/dev-flow-exit.mjs: ${closureDir}`);
+    // Same reasoning as devflow-policy.mjs's tryDelegateToClosure: a merge
+    // base that predates this reader's own existence has no trusted copy to
+    // delegate to — refuse outright, never fall back to the branch copy.
+    console.error(
+      `dev-flow-exit: --closure directory has no scripts/dev-flow-exit.mjs (${closureDir}) — the reader must land on the merge base before a self-referential check can run; never falling back to the branch copy`,
+    );
     return 1;
   }
   const passthrough = [...argv.slice(0, idx), ...argv.slice(idx + 2)];
