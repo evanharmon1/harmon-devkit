@@ -1017,7 +1017,13 @@ decisions):
   instead). Any disposition outside the three-way mapping now rejects a
   reference outright rather than leaving it unconstrained. Covered by
   `adjudication.schema/invalid/reference-type-disposition-mismatch.json`
-  (round 2) and `reference-on-defer-disposition.json` (round 3).
+  (round 2), `reference-on-defer-disposition.json` (round 3), and — closing
+  the last gap review round 1 found, positive coverage for `fix`/`sha` and
+  `decline`/`comment_id` plus negative coverage for `restructure` and
+  `delete` — `adjudication.schema/valid/reference-fix-sha.json`,
+  `reference-decline-comment-id.json`, and
+  `adjudication.schema/invalid/reference-on-restructure-disposition.json`,
+  `reference-on-delete-disposition.json`.
 - **`scripts/test-result-schemas.sh`'s composed-root/envelope parity check
   compares full property definitions, not just property names (#686
   challenge round 2 P2).** The original check compared

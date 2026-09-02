@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "run_id": "run-6804-reference-fix-sha",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "6804a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-verification-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed and fixed this round",
+      "evidence": "verified against the actual implementation before fixing",
+      "override": null,
+      "reference": { "type": "sha", "value": "6804aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+    }
+  ]
+}
