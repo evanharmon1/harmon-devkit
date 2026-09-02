@@ -13,8 +13,11 @@ human control over merge.
   `schema_version = 2`: separate vertical `[rounds.*]`, horizontal
   `[breadth.*]`, optional `[spend.*]`, Taskfile-backed `[gates]`,
   `[convergence]`, per-role preferences, stage actor declarations, and the
-  `cursory` through `forensic` rigor ladder. Older shapes are refused with a
-  migration hint rather than interpreted.
+  `cursory` through `forensic` rigor ladder. An active older shape is refused
+  with a migration hint rather than interpreted; the one exception is the
+  merge-base copy of a change that migrates the policy, which is decoded
+  under its own shape so the migration run keeps the budget it is protected
+  by.
 - **BREAKING** Move model-tier inventory out of `.devflow.toml` and into
   `agent-registry.json`; add explicit orchestrator, implementer, challenger,
   reviewer, and integrator roles plus finder and harness contracts.

@@ -91,6 +91,54 @@ This lets repositories select their own gates without making config an
 arbitrary command-execution surface. Duplicating an allowlist in the skill and
 broker was rejected because they would drift.
 
+The round-push broker and the secret scanner live at stable repository-owned
+script paths (`scripts/round-push.sh`; `scripts/gitleaks-scan.sh` with its
+`.gitleaks.toml` and the `scripts/summarize-gitleaks.mjs` helper it executes
+under `GITHUB_STEP_SUMMARY`; the extracted broker invokes that extracted
+script by explicit path, never through the worktree's `security:secrets`
+Taskfile recipe, which exists for humans and CI) rather than inside a
+skill's assets: the merge-base rule materializes them with
+`git show <merge-base>:<path>`, which needs a path that survives skill renames,
+and stage skills reference the broker by path instead of vendoring a copy that
+would drift. Keeping the broker as a skill asset was rejected because #638
+renames the skill that carried it and the merge-base extraction would then
+point at a path that no longer exists.
+
+The trusted unit is the broker's closure, not its entrypoint. Because the
+broker consumes the policy reader and the secret scan consumes the
+scanner's configuration, a branch that edits only one of those transitive
+files would otherwise steer a merge-base entrypoint from the worktree. The
+merge-base materialization therefore covers the control plane: the broker,
+the policy reader, the secret scanner and its configuration, and their
+control and configuration dependencies, extracted together into one tree
+outside the worktree, with the extracted broker taking its policy, registry,
+and scan inputs as explicit paths into that tree rather than resolving
+anything relative to the worktree. The configured round gate (`task verify`
+or `task check`) is deliberately outside that closure: the merge-base broker
+decides which gate is required and whether the marker is valid, then runs
+that gate from the feature worktree, because a branch that changes a gate
+script must exercise its own version and that result is branch-attested
+rather than authoritative. Extracting only the two entrypoints was rejected
+because it left the policy reader and scanner config branch-controlled;
+sweeping the round gate into the closure was rejected because it would
+contradict the branch-attested rule.
+
+One bootstrap exception is explicit and tested: the change that first creates
+`scripts/round-push.sh` (task 2.2) has no merge-base copy at that path, so
+for that relocation change only, the merge-base broker is the skill asset it
+relocates (`ai/skills/universal/gauntlet/assets/push-round.sh`), materialized
+the same way. Every later change extracts the stable path; a merge base that
+has neither copy refuses the push rather than trusting the branch broker,
+mirroring the reader-before-policy rule in decision 13.
+
+The two brokers coexist until the policy migrates. The new broker reads v2
+policy through the shared reader, and this repository's live policy stays
+legacy until the copier update lands, so the gauntlet asset stays untouched
+and legacy-only for the still-shipped gauntlet procedure and is deleted with
+that skill; no shim delegates the old path to the new one. A delegating shim
+was rejected because it would break every round push between the broker's
+merge and the policy migration.
+
 Merge-base resolution protects the policy that selects target slugs,
 allowlists, and thresholds; it does not attest the feature branch's Taskfile
 recipes, scripts, or push-broker implementation. Evidence produced by those
@@ -123,6 +171,12 @@ to the stage.
 A single reviewer role with a mode flag was rejected because it blurs role
 tiering, instructions, registry permissions, and conformance fixtures. Neither
 role writes externally, fixes code, adjudicates, or decides exit.
+
+The challenger result schema ships with the registry roles rather than with the
+stage skills: a registry role names its result schema, and the exit script
+validates challenger passes before any `/review` skill exists. Shipping it with
+the skills would leave the registry naming a schema that does not exist and the
+exit script validating against a placeholder.
 
 ### 6. Model strata and executable inventory live in the registry
 
@@ -233,6 +287,84 @@ This supports a closed-cohort success metric, immutable `--as-of` scoring,
 per-run inspection, convergence replay, and retros that start from retained
 facts rather than conversation memory.
 
+### 13. One policy reader serves every DevKit consumer
+
+DevKit ships a single v2 policy reader that every script and stage skill uses
+to load `.devflow.toml`: it detects the shape from its controlling markers,
+refuses legacy and v1 shapes with a migration message, resolves rigor into
+rounds, breadth, gates, convergence, role, and stage values, and applies the
+merge-base rule when the change under review edits the policy, the registry,
+or any file in the reader's own trusted closure (the reader, its defaults,
+the historical decoder).
+The exit script is its first consumer and carries it; the push broker,
+integrator, and stage skills consume it rather than parsing TOML themselves.
+
+Refusal applies to the policy a consumer operates under, never to a
+merge-base copy. The anchor requires a historical merge-base policy to be
+interpreted under its own declared schema (v1 by v1 rules, legacy by legacy
+rules), which is what lets a v1-to-v2 migration branch resolve the gates,
+caps, and floor it is protected by. The reader therefore carries one
+bounded historical decoder used only on the merge-base path when the change
+under review migrates the policy shape: it reads the legacy `[rigor.<level>]`
+caps (`shepherd` decoded as `integration = N`, `remediation = N`, and a
+decoder-only shared-budget marker under which the integration stage charges
+one legacy round per fix push or per no-change cycle, never a finding cycle
+and its answering push separately, because that is how the legacy cap
+counted; `min_rounds` as the floor)
+or the v1 `[review.*]` policy the rigor pointer names (whose `shepherd` cap
+receives the same shared-budget marker, since it counted the same way), maps
+them onto the v2 `rounds` values, decodes every other value the older shape
+does declare under that shape's own rules (v1 `[budget.*]` onto `breadth`,
+v1 per-role tiers on the rigor profile, v1 `default_strategy` and
+`[strategy.*]`, and both older shapes' `[tier.*]` family-to-model maps so a
+migration runs under the model the older policy selected; legacy
+`default_tier` and `default_method`), and supplies the
+built-in gate defaults (`verify`, `check`, `security:secrets`, `security`
+with the shipped `docs_only_paths`) because neither older shape declares
+`[gates]`. That decoder is not an operating-mode
+fallback: an active v1 or legacy file is still refused, and the decoder is
+exercised only from the merge-base resolution path with fixtures for both
+migrations. Keeping the two paths distinct is what reconciles "no fallback
+interpreter" with the anchor's merge-base rule.
+
+The decoder's scope is an invariant rather than a field list: on a
+migration branch, every value the merge-base rule protects (defaults,
+rounds, breadth, convergence, gates, roles, stages, strategy, registry
+mappings, trusted actors) resolves either from the older copy's own
+effective semantics or from the consumer's built-in defaults, and never from
+the branch copy. Registry-owned values (finders, roles, write boundaries,
+trusted actor IDs, model tiers) come from the merge-base
+`agent-registry.json`, which exists independently of the policy shape. The
+built-in default is admissible only for a value absent from both the older
+policy copy and the merge-base registry (legacy breadth, and convergence
+predicates under either older shape), because a built-in cannot be edited by
+the branch. Built-in defaults are part of the reader, and the reader is
+part of the gate's trusted closure (decision 3), so the self-modification
+boundary covers it: a change that edits the reader, its defaults, or the
+decoder resolves policy by executing the merge-base reader from the
+materialized closure, never the worktree copy. The fixture for each
+migration asserts the invariant by mutating every protected value in the
+branch policy copy and in the branch reader's defaults, and proving the
+resolved policy is unchanged.
+
+Its tests evaluate fixture policies only. DevKit's own `.devflow.toml` is a
+rendered Harmon Init artifact and stays on its current shape until the copier
+update lands, so no verify-gate target may run a v2 consumer against the live
+file: doing so would make the repository's own gate fail by design until the
+sibling milestone ships. Per-script TOML parsing was rejected because shape
+refusal and resolution would drift between consumers, defeating the
+determinism the milestone exists for.
+
+Sequencing follows from that boundary: the reader must exist at the merge
+base before a policy migration can be reviewed, so the reader lands in its
+own change (for DevKit, task 2.3; for generated repositories, whatever
+distribution their template uses, which harmon-init#1081 decides) and the
+policy migration is a later change. A migration whose merge
+base has no reader is refused rather than bootstrapped from the branch,
+because a branch-supplied reader is exactly what the boundary excludes. A
+pinned external bootstrap copy was rejected as a second trust root that
+would need its own provenance rules.
+
 ### 12. Stage names, skill names, and write ownership are explicit
 
 Lifecycle stages use nouns; invocable skills use verbs (`/implement`,
@@ -273,11 +405,14 @@ and `shepherd` are removed after v2 migration.
 1. Reconcile the anchor spec and decision record to the 2026-08-31 vocabulary,
    then finish single-document schema residue and fixtures.
 2. Extend the registry with roles, finders, model tiers, harness support, and
-   write boundaries; publish versioned conformance fixtures.
+   write boundaries, and ship the challenger result schema; publish versioned
+   conformance fixtures. In parallel, implement the policy reader, trajectory
+   receipt and exit computation, and deterministic rendering against fixture
+   policies, then the repository-owned diff-aware round-push broker.
 3. Ship Harmon Init's v2 config template, schema, gate-slug validation, label
-   vocabulary, and generated-repository migration.
-4. Implement trajectory receipt and exit computation, deterministic rendering,
-   and the diff-aware round-push gate.
+   vocabulary, and generated-repository migration, using the registry tiers
+   and the pinned predicate names from step 2.
+4. (Merged into step 2.)
 5. Publish the role-scoped reviewer/challenger, orchestrator, and integrator
    successor skills as v2-only from their first release; add evidence posting,
    harvesting, metrics, and retro consumption.

@@ -18,7 +18,10 @@ be identified by challenge, review, shepherd, and minimum-round caps directly on
 `[rigor.<level>]` together with `default_method` and `[method]`. A mixed or
 incomplete marker set SHALL be rejected with the markers it actually contains,
 not guessed into either shape. No skill or script SHALL carry a fallback
-interpreter for an older shape.
+interpreter for an older shape as an active policy: the sole permitted reading
+of an older shape is the merge-base path of a change that migrates the policy,
+where the older copy is decoded under its own declared shape and never used
+as the policy a consumer operates under.
 
 #### Scenario: A v1 policy reaches a v2 consumer
 
@@ -29,6 +32,11 @@ interpreter for an older shape.
 
 - **WHEN** a policy has caps directly on `[rigor.*]`, `default_method`, and `[method]` and also contains `[tier.*]`
 - **THEN** the consumer identifies the legacy shape from its rigor and method markers and directs the operator to migrate it
+
+#### Scenario: The tooling's own repository has not migrated
+
+- **WHEN** a v2 consumer's test suite runs in a repository whose live `.devflow.toml` is still legacy or v1
+- **THEN** the suite evaluates shipped fixture policies and passes, while any direct invocation against the live file refuses it with the migration message
 
 ### Requirement: Policy separates rounds, breadth, and spend
 
@@ -141,16 +149,49 @@ rules.
 
 ### Requirement: Self-modified policy resolves from the merge base
 
-When a change edits `.devflow.toml` or `agent-registry.json`, every value that
-can affect its own execution SHALL resolve from the merge-base copy, including
-defaults, rigor profiles, rounds, breadth, spend, convergence, gates, roles,
-stages, strategy, registry roles, write boundaries, and trusted actor IDs. An
-attributable explicit operator instruction MAY override the merge-base value.
+When a change edits `.devflow.toml`, `agent-registry.json`, or any file in
+the policy reader's trusted closure (the reader, its built-in defaults, and
+the historical decoder), every value that can affect its own execution SHALL
+resolve from the merge-base copy by executing the merge-base reader from a
+materialized closure, including defaults, rigor profiles, rounds, breadth,
+spend, convergence, gates, roles, stages, strategy, registry roles, write
+boundaries, and trusted actor IDs. An attributable explicit operator
+instruction MAY override the merge-base value.
+
+#### Scenario: The merge base has no policy reader
+
+- **WHEN** a change migrates the policy shape and its merge base contains no policy reader to materialize
+- **THEN** the run refuses to resolve policy from the branch reader and stops with a message that the reader must land in its own change, by whatever distribution the consuming repository uses, before the policy migration, so the reader and the policy never migrate together
+
+#### Scenario: A branch edits the reader's built-in defaults
+
+- **WHEN** a migration branch changes the policy reader or the defaults it supplies for values the older shape never declared
+- **THEN** resolution executes the merge-base reader from its materialized closure, so the branch's defaults do not take part in the run that reviews them
 
 #### Scenario: A branch lowers its own code gate
 
 - **WHEN** the branch changes `[gates].round_code` or expands `docs_only_paths`
 - **THEN** its Dev flow run uses the merge-base gate and allowlist rather than the branch values
+
+#### Scenario: A branch migrates the policy shape
+
+- **WHEN** the change under review replaces a v1 or legacy `.devflow.toml` with a `schema_version = 2` file
+- **THEN** the run resolves its caps, floor, and gates from the merge-base copy interpreted under that copy's own declared shape, while the branch copy must still validate as version 2 and an active older shape is still refused
+
+#### Scenario: A legacy cap bounds both integration limits
+
+- **WHEN** the merge-base copy is the legacy shape whose `shepherd` cap bounded fix pushes and no-change cycles together
+- **THEN** the decoded policy sets both `integration` and `remediation` to that `shepherd` value and marks them as one shared budget under legacy accounting (a v1 merge base's `[review.*].shepherd` cap decodes the same way): one charge per legacy round, where a round is either one fix push or one no-change cycle, and the cycle whose findings a fix push answers is not charged separately from that push; the migration run can neither gain rounds nor cap earlier than the older policy allowed
+
+#### Scenario: A migration branch edits a value the older shape never declared
+
+- **WHEN** the merge-base policy copy is an older shape and the branch copy sets a value that copy never declared
+- **THEN** the run decodes every value the older copy does declare under its own rules, takes registry-owned values (finders, roles, write boundaries, trusted actor IDs, tiers) from the merge-base registry, uses the consumer's built-in defaults only for values absent from both, and the resolved policy is identical whatever the branch copy declares
+
+#### Scenario: The relocation change has no merge-base broker
+
+- **WHEN** the change under review is the one that first creates the broker's stable path and its merge base holds only the skill-asset copy
+- **THEN** the push materializes and executes that skill-asset copy as the merge-base broker for that change alone, and a merge base holding neither copy refuses the push
 
 ### Requirement: Gate authority separates policy from branch implementation
 
@@ -158,7 +199,17 @@ Merge-base resolution SHALL determine gate policy, including required target
 slugs, allowlists, and thresholds. Before any round push, the orchestrator SHALL
 materialize outside the feature worktree and execute the merge-base
 implementations of both the secret scan and the round-push broker, for example
-by extracting each path with `git show <merge-base>:<path>`. This boundary is
+by extracting each path with `git show <merge-base>:<path>`. Both
+implementations SHALL live at stable repository-owned paths that stage skills
+reference rather than vendor, so the merge-base extraction survives a skill
+rename. The materialized unit SHALL be each implementation's full trusted
+closure: the broker, the policy reader, the secret scanner and its
+configuration, and their control and configuration dependencies, extracted
+from the merge base together and consumed through explicit paths, so that
+no part of the gate-authority decision resolves a worktree-resident file.
+The configured round gate itself (`round_code` or `round_docs`) is not part
+of that closure: the merge-base broker selects it, and then executes it
+from the feature worktree, where its result is branch-attested evidence. This boundary is
 mandatory because a secret is public when the push lands and PR CI is too late.
 A branch that edits either implementation SHALL exercise its changed version in
 required PR CI, but SHALL NOT use that version to authorize its own push. Every
@@ -166,6 +217,11 @@ other local gate SHALL execute its branch implementation and record branch-
 attested evidence. The deterministic readiness authorities SHALL be the merge-
 base-resolved policy and the PR's concluded required CI checks; branch-attested
 local evidence SHALL NOT substitute for a required check conclusion.
+
+#### Scenario: A branch modifies only a gate dependency
+
+- **WHEN** a branch changes only the policy reader or the secret scanner's configuration and leaves the broker and scan entrypoints untouched
+- **THEN** the pre-push gate still executes the merge-base copies of those dependencies, and the branch versions are exercised only by required PR CI
 
 #### Scenario: A branch modifies pre-push enforcement
 
