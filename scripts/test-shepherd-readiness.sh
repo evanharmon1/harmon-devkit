@@ -124,6 +124,7 @@ repos/*/pulls/*/reviews*) file=reviews.pages.json ;;
 repos/*/issues/*/comments*) file=top.pages.json ;;
 repos/*/commits/*/check-runs*) file=check-runs.pages.json ;;
 repos/*/commits/*/statuses*) file=statuses.pages.json ;;
+repos/*/actions/runs*) file=workflow-runs.pages.json ;;
 repos/*/pulls/*) file=pr.json ;;
 *) exit 93 ;;
 esac
@@ -170,7 +171,8 @@ BODY
 write_defaults() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
-          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+          headRefName:"feature-branch"}' \
         >"${fixtures}/pr-view.json"
     jq -cn --arg head "$head_sha" --arg body "$(default_body)" \
         '{number:493,title:"feat: change",body:$body,
@@ -186,6 +188,10 @@ write_defaults() {
     jq -cn '[[{context:"ci/legacy",state:"pending",id:1},
               {context:"ci/legacy",state:"success",id:3}]]' \
         >"${fixtures}/statuses.pages.json"
+    # No GitHub Actions workflow runs for this head by default: check runs
+    # with no matching check_suite_id fall back to their app id (harmon-devkit#714).
+    printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]' \
+        >"${fixtures}/workflow-runs.pages.json"
     jq -cn '{login:"pr-author"}' >"${fixtures}/user.json"
     # A Codex attempt state naming THIS repo, PR, and head — the gate refuses
     # to hand the helper a state file describing anything else.
@@ -293,7 +299,8 @@ echo "==> a closed PR fails as pr-not-open"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"MERGED",isDraft:false,headRefOid:$head,
-      reviewDecision:"",mergeStateStatus:"UNKNOWN"}' >"${fixtures}/pr-view.json"
+      reviewDecision:"",mergeStateStatus:"UNKNOWN",
+      headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
 run_gate --codex-disabled
 assert_gate 1 fail pr-not-open
 
@@ -301,7 +308,8 @@ echo "==> a non-draft PR fails as pr-not-draft"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch"}' \
     >"${fixtures}/pr-view.json"
 run_gate --codex-disabled
 assert_gate 1 fail pr-not-draft
@@ -310,7 +318,8 @@ echo "==> a head other than the adjudicated one fails as head-mismatch"
 write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch"}' \
     >"${fixtures}/pr-view.json"
 run_gate --codex-disabled
 assert_gate 1 fail head-mismatch
@@ -390,6 +399,392 @@ detail_bytes="$(printf '%s' "$gate_out" | wc -c)"
 [ "$detail_bytes" -lt 8192 ] ||
     fail "the failing-checks detail is ${detail_bytes} bytes — unbounded diagnostics reintroduce the argv death one step downstream"
 
+echo "==> a stale failed check suite superseded by a later success passes (harmon-devkit#714)"
+# A workflow triggering on pull_request.edited (this repo's guard jobs) starts
+# a fresh check suite on every PR-body edit against an unchanged head:
+# filter=latest collapses only WITHIN one suite, so an early failure and a
+# later success for the same check name both survive as separate check runs.
+# The gate must collapse them itself, by workflow identity, and keep the
+# later one — "later" by check-run id (delivery order), not started_at,
+# which queuing can reorder relative to delivery.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request"},
+    {check_suite_id:20,workflow_id:100,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 0 pass ready
+
+echo "==> a stale PASSING check suite superseded by a later failure still fails (inverse of the above)"
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:30}},
+    {id:2,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:40}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:30,workflow_id:100,event:"pull_request"},
+    {check_suite_id:40,workflow_id:100,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not name the check whose latest run fails: $gate_out"
+
+echo "==> a suite that started later but was delivered earlier is not mistaken for the latest"
+# started_at reflects when a runner picked the job up, not delivery order;
+# under queuing an EARLIER delivery (the lower check_suite id) can start
+# running AFTER a later one. Suite 80 is still the later delivery even though
+# its run started first (00:00 vs suite 70's 00:05) — the gate must trust
+# check_suite.id, not started_at, so suite 80's failure is the one that
+# counts.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:70}},
+    {id:2,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:80}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:70,workflow_id:100,event:"pull_request"},
+    {check_suite_id:80,workflow_id:100,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+
+echo "==> two distinct workflows whose jobs share a literal name are kept apart, never suite-broken"
+# Same started_at and two different check_suite ids below: collapsing by name
+# alone (the pre-#714 bug) feeds group_by a single group, and picking the
+# latest suite then keeps whichever suite id is higher regardless of which
+# workflow it belongs to — silently hiding this workflow's failure behind the
+# other's success. Keyed on workflow identity, the two never share a group,
+# so the failure cannot be hidden by which suite happens to sort higher.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:50}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:60}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:50,workflow_id:100,event:"pull_request"},
+    {check_suite_id:60,workflow_id:200,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not surface the failing workflow's guard job when a same-named passing job from a different workflow has a higher id: $gate_out"
+
+echo "==> the same workflow answering two different trigger events is kept apart (harmon-devkit#714 round 1)"
+# build.yml here runs on pull_request, push, merge_group, AND workflow_dispatch
+# alike. A later successful manual dispatch of the same workflow/job name is
+# not a supersession of an earlier failed pull_request run — they answer
+# different questions on the same commit. The event must be part of the
+# collapse key, not just the workflow id.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"verify",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:90}},
+    {id:2,name:"verify",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:91}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:90,workflow_id:100,event:"pull_request"},
+    {check_suite_id:91,workflow_id:100,event:"workflow_dispatch"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
+    fail "checks-failing did not surface the failed pull_request run when a later workflow_dispatch of the same workflow/job succeeded: $gate_out"
+
+echo "==> two jobs in one workflow that render the same name are BOTH kept when they coexist in the latest suite (harmon-devkit#714 round 2)"
+# A workflow can define two job blocks that both render as "verify" (a
+# hardcoded name:, or a matrix with no differentiating label). Both check
+# runs land in the SAME latest suite -- collapsing the whole identity group
+# to a single highest-id winner would keep whichever job happened to get the
+# higher id and silently drop the other's failure, even though neither
+# superseded the other. An OLDER suite's run for the same identity must
+# still be dropped as genuinely superseded.
+write_defaults
+jq -cn '[{total_count:3,check_runs:[
+    {id:1,name:"verify",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:100}},
+    {id:2,name:"verify",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:200}},
+    {id:3,name:"verify",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:200}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:200,workflow_id:100,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
+    fail "checks-failing did not surface the failing sibling job when a same-named passing sibling shares its (latest) suite: $gate_out"
+
+echo "==> a same-sha run scoped to a DIFFERENT PR cannot supersede this PR's failure (harmon-devkit#714 round 3)"
+# head_sha alone does not scope to one PR: the same commit can back open PRs
+# against more than one base branch, and actions/runs returns every run for
+# the sha regardless of which PR it belongs to. A newer, higher-suite-id run
+# that is provably for PR 999 (not this gate's PR 493) must not be treated
+# as superseding this PR's own failing suite, even though its check_suite id
+# sorts higher.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493}]},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:999}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive when a higher-suite-id run scoped to a different PR shared the same name/workflow/event: $gate_out"
+
+echo "==> an empty pull_requests association still allows the normal collapse (unscoped, as before)"
+# GitHub is known to leave pull_requests empty even for a run that genuinely
+# belongs to the open PR being gated -- absence must not be read as "wrong
+# PR," or every ordinary same-PR case using this shape would wrongly split
+# into two identities and both survive as false failures.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",pull_requests:[]},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",pull_requests:[]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 0 pass ready
+
+echo "==> a run naming MULTIPLE PRs (a genuinely shared head) cannot clear this PR's own failure (harmon-devkit#714 review r1)"
+# GitHub populates pull_requests with EVERY open PR whose head currently
+# matches, not the one that triggered the run, so a run listing both 493 and
+# 999 does not confidently belong to either -- a same-PR-number membership
+# test alone would wrongly treat it as "ours" and let its later success
+# supersede this PR's own confidently-scoped failure. It must still be kept
+# (dropping it could hide a real failure), just never allowed to collapse
+# against a run this gate IS confident belongs to this PR.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493}]},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493},{number:999}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive when a later run naming multiple PRs (including this one) shared the same name/workflow/event: $gate_out"
+
+echo "==> a failing run that itself names multiple PRs still surfaces (ambiguous is kept, not dropped)"
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493},{number:999}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "a failing run naming multiple PRs (including this one) was dropped instead of surfaced: $gate_out"
+
+echo "==> two ambiguous (multi-PR) suites do not clear one another (harmon-devkit#714 review r2)"
+# There is no more confident basis for "later ambiguous suite supersedes an
+# earlier ambiguous suite" than there was for "supersedes this PR's own
+# confidently-scoped run" -- an ambiguous suite's identity must be
+# permanently distinct so a later ambiguous success cannot hide an earlier
+# ambiguous failure.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493},{number:999}]},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493},{number:999}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive when a later ambiguous suite's success shared its nominal workflow/event with an earlier ambiguous failure: $gate_out"
+
+echo "==> a failing run unambiguously scoped to another PR is dropped outright, not just its metadata (harmon-devkit#714 review r2)"
+# Excluding a run from the workflow lookup alone is not enough: its check
+# run must not survive at all, or it falls to the app-id identity and, if
+# failing, wrongly fails a PR it was never testing.
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:999}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 0 pass ready
+
+echo "==> two different non-Actions apps sharing a check name are never conflated (harmon-devkit#714 review r3)"
+# A check run with no actions/runs match falls back to its own app id. Piping
+# the suite lookup result into a variable changes jq's current input for
+# that branch -- reading .app.id from inside it (instead of capturing the
+# outer run's app id first) silently reads the LOOKUP's non-existent app.id
+# instead, which is always null, so every non-Actions run collapsed into the
+# same "app:0" bucket regardless of which app actually posted it. Two
+# different real app ids sharing a check name must stay in separate
+# identities, or one app's later success can hide an entirely different
+# app's failure.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"lint",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10},app:{id:42}},
+    {id:2,name:"lint",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20},app:{id:77}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
+    fail "checks-failing did not survive when a different non-Actions app's later success shared a check name with an earlier failure: $gate_out"
+
+echo "==> a shared head where BOTH PRs get an empty pull_requests is still told apart by branch name (harmon-devkit#714 shepherd, PR #723)"
+# GitHub can return an empty pull_requests for a run genuinely triggered by a
+# SIBLING PR too, not only for this one -- pull_requests[] membership alone
+# then has nothing to compare. head_branch is available at no extra fetch
+# cost and, when it does not match this PR's own branch (write_defaults sets
+# headRefName to "feature-branch"), is positive evidence the run belongs to
+# a different PR even though pull_requests came back empty on both sides.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[],head_branch:"feature-branch"},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",
+     pull_requests:[],head_branch:"someone-elses-branch"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive when a later run on a DIFFERENT branch (both sides reporting empty pull_requests) shared the same name/workflow/event: $gate_out"
+
+echo "==> a push/workflow_dispatch run on another branch is never excluded by the branch heuristic (harmon-devkit#714 shepherd r2)"
+# The branch-mismatch exclusion only makes sense for pull_request-triggered
+# runs -- a push or workflow_dispatch run has no PR to belong to at all, so
+# judging it against this PR's branch name is a category error. It already
+# gets its own distinct identity via `event`, so a later same-named
+# pull_request success must not hide an earlier push-triggered failure.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"push",
+     pull_requests:[],head_branch:"main"},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",
+     pull_requests:[],head_branch:"feature-branch"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive a push-triggered failure on an unrelated branch, which the branch heuristic must not exclude: $gate_out"
+
+echo "==> a multi-PR run that OMITS this PR entirely is excluded, not treated as ambiguous (harmon-devkit#714 shepherd r2)"
+# A pull_requests list naming two or more OTHER PRs, with this PR's number
+# nowhere in it, is just as conclusive as a singleton naming one other PR --
+# length alone must not decide ambiguity; whether this PR's number appears
+# in the list does.
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:999},{number:1000}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 0 pass ready
+
+echo "==> a push run with a stale PR association naming only a sibling is never excluded (harmon-devkit#714 shepherd r3)"
+# pull_requests[] on a non-pull_request-triggered run is a best-effort
+# historical association GitHub attaches after the fact, not evidence about
+# what the run itself tested -- a push run naming only PR 999 must not be
+# judged "other-pr" and dropped, the same category error as judging it by
+# branch would be.
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"push",
+     pull_requests:[{number:999}],head_branch:"main"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive a push run whose only pull_requests association names a different PR: $gate_out"
+
+echo "==> two push suites on different branches sharing a sha are kept apart by branch (harmon-devkit#714 shepherd r3)"
+# The same tree pushed to two branches produces two independently
+# significant answers -- without the branch in the identity, both would
+# render as the same wf:<id>:push and collapse, letting one branch's later
+# success hide the other's earlier failure.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"push",
+     pull_requests:[],head_branch:"main"},
+    {check_suite_id:20,workflow_id:100,event:"push",
+     pull_requests:[],head_branch:"release"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive when a push suite on a different branch shared the workflow/event but not the branch: $gate_out"
+
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \
@@ -402,7 +797,8 @@ echo "==> CHANGES_REQUESTED fails as changes-requested"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch"}' \
     >"${fixtures}/pr-view.json"
 run_gate --codex-disabled
 assert_gate 1 fail changes-requested
@@ -415,7 +811,8 @@ for pair in "DIRTY 1 fail merge-state-dirty" "BEHIND 1 fail merge-state-behind" 
     write_defaults
     jq -cn --arg head "$head_sha" --arg ms "$1" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
-          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:$ms}' \
+          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:$ms,
+          headRefName:"feature-branch"}' \
         >"${fixtures}/pr-view.json"
     run_gate --codex-disabled
     assert_gate "$2" "$3" "$4"
@@ -714,7 +1111,8 @@ printf '%s\n' "$gate_out" | grep -Fq 'no GNU timeout' ||
 nondraft_pr_view() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:false,headRefOid:$head,
-          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+          headRefName:"feature-branch"}' \
         >"${fixtures}/pr-view.json"
 }
 
