@@ -1,0 +1,14 @@
+### Round
+
+<details>
+<summary>integration round 1 — reviewed 2222222222222222222222222222222222222222</summary>
+
+| Finding | Reviewer | Adjudicated | Classification | Evidence | Action | Provenance |
+| --- | --- | --- | --- | --- | --- | --- |
+| integration-r1-human-1 | n/a | P2 | false positive | Human reviewer: the retry-exhausted blocker never surfaces how many attempts remain to the caller. | decline — already covered by the JSON result's own reason field; Markdown is a convenience, not the contract | n/a |
+| integration-r1-human-2 | n/a | P3 | confirmed | CI: markdownlint flagged a missing blank line after the Deferred findings heading. | fix — added the missing blank line | n/a |
+| integration-r1-human-3 | n/a | P3 | confirmed | Human reviewer: escapeCell and escapeRegExp should be one helper, not two near-duplicates. | delete — removed escapeRegExp, routed its one caller through escapeCell's escaping instead | n/a |
+
+</details>
+
+**Exit:** continue — unresolved integration finding (rounds counted: 1; next round: 2; corrections: review-r2-codex-cli-1 provenance corrected original→round:1 (verified against the round-1 fix diff))

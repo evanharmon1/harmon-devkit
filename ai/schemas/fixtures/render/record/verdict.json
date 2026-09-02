@@ -1,0 +1,7 @@
+{
+  "outcome": "continue",
+  "reason": "unresolved integration finding",
+  "rounds_counted": 1,
+  "next_round": 2,
+  "corrections": ["review-r2-codex-cli-1 provenance corrected original→round:1 (verified against the round-1 fix diff)"]
+}

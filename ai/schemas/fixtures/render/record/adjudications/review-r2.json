@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "run_id": "run-637-fixture-0001",
+  "stage": "review",
+  "round": 2,
+  "reviewed_head": "2222222222222222222222222222222222222222",
+  "adjudications": [
+    {
+      "finding_id": "review-r2-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "defer",
+      "reason": "carrying to integration — needs a live concurrency test this stage cannot run",
+      "evidence": "only reproduced under load, not in the fixture-driven suite",
+      "override": null
+    },
+    {
+      "finding_id": "review-r2-codex-cli-2",
+      "reviewer_priority": "P3",
+      "adjudicated_priority": "P3",
+      "disposition": "restructure",
+      "reason": "extract one shared escaping helper",
+      "evidence": "cosmetic duplication only, no behavioral difference observed",
+      "override": null
+    },
+    {
+      "finding_id": "review-r2-codex-cli-3",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "defer",
+      "reason": "carrying to integration; low risk, worth a follow-up check",
+      "evidence": "only reachable via direct API misuse, not the shipped CLI",
+      "override": null
+    }
+  ]
+}

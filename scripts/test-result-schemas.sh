@@ -106,6 +106,11 @@ invalid_count=0
 for dir in "$fixtures_dir"/*/; do
     [ -d "$dir" ] || continue
     base="$(basename "${dir%/}")"
+    # render/ holds golden fixtures for scripts/render-dev-flow.mjs, a
+    # projection tool rather than one of this family's six schema kinds
+    # (ai/schemas/README.md "Rendering"); scripts/test-render-dev-flow.sh
+    # owns it, so it is not iterated here.
+    [ "$base" = "render" ] && continue
     kind="$(kind_for_dir "$base")"
     fixture_dirs_found=$((fixture_dirs_found + 1))
 

@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "run_id": "run-637-fixture-0001",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "1111111111111111111111111111111111111111",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P2",
+      "disposition": "defer",
+      "reason": "downgraded — append ordering is cosmetic, not a correctness defect; carrying to integration for a second look",
+      "evidence": "append order is stable across runs, just not caller-specified",
+      "override": { "reason": "cosmetic ordering, not a correctness defect" }
+    },
+    {
+      "finding_id": "review-r1-codex-cli-2",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "file",
+      "reason": "tracked as follow-up UX polish, not blocking",
+      "evidence": "usability gap, not a defect",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-3",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "defer",
+      "reason": "carrying to integration; needs a fixture for the unknown reference-type path",
+      "evidence": "the fail() branch in settlementSuffix is currently untested",
+      "override": null
+    }
+  ]
+}

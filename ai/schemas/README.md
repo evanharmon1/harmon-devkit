@@ -1003,3 +1003,140 @@ same pinned ref, without either implementation reading the other's source.
   the round's own `adjudication.schema.json` document, ever) and at most one
   terminal settlement (`run.schema.json`'s `settlements[]`), and neither
   document is edited to reflect the other.
+
+## Rendering: `scripts/render-dev-flow.mjs`
+
+Deterministic projections from this family's documents — never a second
+source of truth: every rendered fact is read from an `adjudication.schema.json`
+document, `run.schema.json`, or a result envelope, and disposition/priority
+always come from the adjudication record, never re-inferred from a raw
+reviewer/challenger finding ([#637](https://github.com/evanharmon1/harmon-devkit/issues/637),
+`openspec/changes/dev-flow-v2/specs/renderer/spec.md`). Invoke via
+`scripts/render-dev-flow.sh <projection> --record <dir> [options]` (a thin
+wrapper; `render-dev-flow.mjs` is the implementation, same pairing as this
+family's other scripts).
+
+### The record directory
+
+`--record <dir>` holds:
+
+| Path | Contents | Required |
+|---|---|---|
+| `run.json` | One `run.schema.json` document | For `blocker-comment`, `readiness-input`; optional elsewhere |
+| `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
+| `passes/*.json` | Result envelopes (`role: reviewer` or `integrator`) the adjudications reference | Optional — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `body`/`source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location, its adjudication's own `evidence`) when no matching pass is supplied |
+| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines |
+| `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure` |
+
+Every file present is schema-validated (structural shape only — this
+family's cross-document receipt checks are `validate-result-schemas.mjs`'s
+job upstream of the renderer, not duplicated here) before anything renders;
+a malformed document fails loudly naming the file, never a partial render.
+`--verdict <file>` / `--policy <file>` override the record directory's own
+`verdict.json`/`policy.json`. A finding's `class` and `provenance` columns
+read `n/a` when no matching pass supplies them (always true for integration-
+stage findings, which carry neither field at all).
+
+**Once `#635` ships `result.challenger.schema.json` and an envelope
+`role: challenger`,** this renderer's pass loader (which currently accepts
+only `role: reviewer | integrator`) needs a one-line extension to accept
+`challenger` too — challenge-stage passes are rendered today under
+`role: reviewer` with `payload.stage: "challenge"`, which is schema-valid
+under the *current* `result.reviewer.schema.json` (`stage` enum
+`["challenge", "review"]`) and will remain so until that split lands.
+
+### Projections
+
+`deferred-findings`, `adjudication-record`, `round-table` (`--stage`
+`--round`, or the sole adjudication document supplied), `policy-disclosure`,
+`blocker-comment`, `thread-reply-plan`, and `readiness-input` — see the
+module doc comment atop `render-dev-flow.mjs` for what each renders and from
+which inputs. `deferred-findings` renders only `disposition: defer` entries
+(challenge/review's directly-resolved `fix`/`decline`/`file`/`restructure`/
+`delete` findings were never carried forward and so are never "deferred");
+each unchecked until a matching `run.json` `settlements[]` entry
+terminalizes it with the settlement grammar `- [x] … — fixed in <7-char sha>`
+/ `declined: see comment <id>` / `filed as #<n>`. A direct (non-deferred)
+`decline`/`file` disposition has no structural place in this schema family
+to record a decline comment id or filed-issue number the way a
+deferred-then-settled finding does via `settlements[].reference` — a gap
+worth closing on a future revision of this family if that evidence is
+needed for the directly-resolved case too.
+
+`thread-reply-plan` carries only **integration-stage** findings: they alone
+have a GitHub-native `source_id` (`result.integrator.schema.json`
+`findings[].source_id`) to use as the reply plan's `root_comment_id`.
+Challenge/review findings (`result.reviewer.schema.json`) carry no such
+field — there is no inline-comment linkage to preserve for them in the
+current schema family, so no reply plan entry is produced.
+
+### Publishing: marked PR-body sections
+
+`publish --record <dir> --repo <owner/repo> --pr <n> --head <sha> --sections
+<a,b,...>` merges exactly the requested sections — drawn from
+`policy-disclosure`, `deferred-findings`, `adjudication-record` (the three
+that live in the PR body; `round-table`/`blocker-comment` are posted as
+separate issue/PR comments by the caller, and `thread-reply-plan`/
+`readiness-input` are consumed as JSON, never merged into the body) — into
+the PR's current body, each wrapped in a marker pair:
+
+```markdown
+<!-- dev-flow:begin:deferred-findings -->
+## Deferred findings
+...
+<!-- dev-flow:end:deferred-findings -->
+```
+
+An existing marker pair is replaced in place (a duplicated or
+begin/end-mismatched pair for a requested section is refused as a
+`malformed-markers` blocker, never guessed at); an absent one is appended,
+in `policy-disclosure`, `deferred-findings`, `adjudication-record` order.
+Every byte outside a requested section's own marker pair is preserved
+verbatim from the read that immediately precedes the write.
+
+**GitHub provides no compare-and-swap for a PR body**, so this is a
+best-effort transaction, not an atomic one: publish reads the current body,
+merges, writes, then re-reads and compares a SHA-256 fingerprint of the
+merged content against what it wrote. A mismatch (a concurrent edit landed
+in the write window) restarts the merge from a fresh read, bounded by
+`--max-retries` (default 3; total attempts = retries + 1); exhausting it
+reports a `retry-exhausted` blocker. A local reservation
+(`<record dir>/.publish-state.json`) is written before every `gh pr edit`
+call and retired only once a re-read confirms the fingerprint match — so a
+crash between a landed write and that confirmation leaves the reservation in
+place, and the next invocation's own fresh read finds its intended content
+already present and resolves as a no-op rather than duplicating a section.
+A human edit that lands strictly *after* publish's last read but *before*
+its write is a window this design cannot close — GitHub gives no primitive
+to close it — and is not claimed to be closed. `publish` requires the exact
+pushed `--head` and an open draft PR (`isDraft: true`); either condition
+failing is a blocker (`head-mismatch`/`not-draft`) with no write attempted,
+and the PR's head moving between publish's own pre- and post-write reads is
+a `head-changed-during-publish` blocker.
+
+### `readiness-input`: JSON for the readiness gate
+
+Emitted by the `readiness-input` projection, for the readiness gate
+([#639](https://github.com/evanharmon1/harmon-devkit/issues/639)) to consume
+instead of parsing the rendered `## Deferred findings` Markdown:
+
+```json
+{
+  "schema": "dev-flow-render.readiness-input.v1",
+  "run_id": "<run.json run_id>",
+  "head": "<--head, else the latest supplied adjudication document's reviewed_head, else null>",
+  "deferred_findings": {
+    "settled": [
+      { "finding_id": "…", "disposition": "fix|decline|file", "reference": { "type": "…", "value": "…" }, "settled_at": "…" }
+    ],
+    "unsettled": [
+      { "finding_id": "…", "adjudicated_priority": "P0|P1|P2|P3", "stage": "challenge|review", "round": 1 }
+    ]
+  }
+}
+```
+
+`settled`/`unsettled` partition every `disposition: defer` adjudication
+entry across the supplied `adjudications/*.json` by whether `run.json`
+`settlements[]` names its `finding_id`; `reference` is `settlements[]`'s own
+field, carried through unchanged.
