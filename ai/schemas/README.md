@@ -1000,20 +1000,24 @@ decisions):
   `reference-whitespace-comment-id.json`.
 - **`adjudication.schema.json`'s `reference.type` is also bound to
   `disposition`, mirroring `checkSettlementReferenceType`'s disposition-to-type
-  mapping, not only the value-format rule above (#686 challenge round 2
-  P2).** Format-validating `reference.value` against whatever `type` it
-  happened to declare left the type itself unconstrained —
+  mapping, not only the value-format rule above (#686 challenge round 2 P2,
+  extended round 3 P2).** Format-validating `reference.value` against
+  whatever `type` it happened to declare left the type itself unconstrained —
   `{disposition: "file", reference: {type: "sha", ...}}` passed despite the
   SHA never confirming a filed issue. `checkAdjudicationEntries` now applies
   the same total mapping `run.schema.json`'s settlement reference already
   enforces for the three dispositions a reference can meaningfully evidence
   at adjudication time (the field's own description: "declined or filed
   directly"): `fix` requires `sha`, `decline` requires `comment_id`, `file`
-  requires `issue_number`. `restructure`/`delete` are left unconstrained —
-  settlement's own disposition enum excludes them, so there is no mapping to
-  mirror — and `defer` is unconstrained by design: its reference lives on the
-  eventual settlement instead (the same description's "never deferred").
-  Covered by `adjudication.schema/invalid/reference-type-disposition-mismatch.json`.
+  requires `issue_number`. Round 2 left `restructure`/`delete`/`defer`
+  unconstrained on the theory that no mapping applied to them; round 3
+  pointed out that permissive default let `defer` silently accept a
+  reference the field's own description already promises it never carries
+  ("never deferred" — that evidence belongs on the eventual settlement
+  instead). Any disposition outside the three-way mapping now rejects a
+  reference outright rather than leaving it unconstrained. Covered by
+  `adjudication.schema/invalid/reference-type-disposition-mismatch.json`
+  (round 2) and `reference-on-defer-disposition.json` (round 3).
 - **`scripts/test-result-schemas.sh`'s composed-root/envelope parity check
   compares full property definitions, not just property names (#686
   challenge round 2 P2).** The original check compared
@@ -1026,6 +1030,24 @@ decisions):
   envelope's copy is a placeholder, the composed copy carries the real
   role-dispatch `allOf`), the same deep-comparison technique the pre-existing
   `$defs.<role>` drift check above already uses.
+- **Three coverage-only additions closing regression gaps challenge round 3
+  found in this lane's own earlier fixtures (#686 challenge round 3 P2,
+  no behavior change):**
+  - The path-safety pattern's `.`/`..`-segment and backslash lookaheads had
+    fixtures for absolute paths and a Windows drive letter, but none for the
+    two branches the description text specifically promises: POSIX
+    traversal and backslash traversal. `result.reviewer.schema/invalid/`
+    gained `finding-path-dotdot-traversal.json` (`../secret`) and
+    `finding-path-backslash-traversal.json` (`..\secret`).
+  - The `evidence_comments[].digest` pattern had every touched fixture
+    changed to *conform* to it, but none testing *rejection* of a malformed
+    one — a regression that weakened or removed the pattern would pass the
+    conformance suite undetected. `run.schema/invalid/` gained
+    `evidence_comments-digest-malformed.json` (uppercase hex).
+  - `checkEvidenceMarkerPrDestinationRequiresPr` (added earlier in this
+    lane) had no fixture at all. `run.schema/invalid/` gained
+    `evidence-marker-pr-destination-without-pr.json` (`pr: null` with a
+    `destination: "pr"` marker).
 - **`scripts/sync-skills.sh`'s two `#686` findings (empty-string
   `schemas.names`/`agents.names` members; `verify` not requiring every
   incoming name to also appear in the recorded managed set) are not fixed

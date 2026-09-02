@@ -1015,15 +1015,21 @@ function checkAdjudicationEntries(document, errors) {
     // "declined or filed directly") map exactly as checkSettlementReferenceType
     // already maps them for a resolved defer's eventual settlement — fix to
     // the commit that fixed it, decline to the comment explaining why, file
-    // to the issue it was filed as (challenge r2). restructure/delete/defer
-    // are left unconstrained here: restructure and delete have no settlement
-    // analogue to mirror, and defer's own reference lives on its eventual
-    // settlement instead (the schema description's "never deferred").
+    // to the issue it was filed as (challenge r2). A reference on any OTHER
+    // disposition is rejected outright rather than left unconstrained
+    // (challenge r3): restructure and delete have no settlement analogue to
+    // evidence with, and defer's own evidence belongs on its eventual
+    // settlement instead — the schema description's own "never deferred"
+    // promise, which was previously only documented, not enforced.
     if (entry.reference && typeof entry.reference === 'object') {
       const { reference } = entry
       const expectedReferenceType = { fix: 'sha', file: 'issue_number', decline: 'comment_id' }
       const expected = expectedReferenceType[entry.disposition]
-      if (expected && reference.type !== expected) {
+      if (!expected) {
+        errors.push(
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference: disposition ${entry.disposition} cannot carry a reference — only fix, decline, and file can be evidenced at adjudication time`
+        )
+      } else if (reference.type !== expected) {
         errors.push(
           `$adjudication.adjudications[finding_id=${entry.finding_id}].reference.type: disposition ${entry.disposition} requires type ${expected}, found ${JSON.stringify(reference.type)}`
         )
