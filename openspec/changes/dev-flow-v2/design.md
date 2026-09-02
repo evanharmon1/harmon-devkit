@@ -104,13 +104,20 @@ The trusted unit is the broker's closure, not its entrypoint. Because the
 broker consumes the policy reader and the secret scan consumes the
 scanner's configuration, a branch that edits only one of those transitive
 files would otherwise steer a merge-base entrypoint from the worktree. The
-merge-base materialization therefore covers every file the broker or scan
-executes or reads as configuration (the broker, the policy reader, the
-scanner config, the gate scripts they invoke), extracted together into one
-tree outside the worktree, and the extracted broker takes its policy,
-registry, and scan inputs as explicit paths into that tree rather than
-resolving anything relative to the worktree. Extracting only the two
-entrypoints was rejected for exactly that reason.
+merge-base materialization therefore covers the control plane: the broker,
+the policy reader, the secret scanner and its configuration, and their
+control and configuration dependencies, extracted together into one tree
+outside the worktree, with the extracted broker taking its policy, registry,
+and scan inputs as explicit paths into that tree rather than resolving
+anything relative to the worktree. The configured round gate (`task verify`
+or `task check`) is deliberately outside that closure: the merge-base broker
+decides which gate is required and whether the marker is valid, then runs
+that gate from the feature worktree, because a branch that changes a gate
+script must exercise its own version and that result is branch-attested
+rather than authoritative. Extracting only the two entrypoints was rejected
+because it left the policy reader and scanner config branch-controlled;
+sweeping the round gate into the closure was rejected because it would
+contradict the branch-attested rule.
 
 Merge-base resolution protects the policy that selects target slugs,
 allowlists, and thresholds; it does not attest the feature branch's Taskfile

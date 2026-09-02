@@ -193,10 +193,13 @@ by extracting each path with `git show <merge-base>:<path>`. Both
 implementations SHALL live at stable repository-owned paths that stage skills
 reference rather than vendor, so the merge-base extraction survives a skill
 rename. The materialized unit SHALL be each implementation's full trusted
-closure: every file it executes or reads as configuration, including the
-policy reader and the secret scanner's configuration, extracted from the
-merge base together and consumed through explicit paths, so that no part of
-the pre-push gate resolves a worktree-resident file. This boundary is
+closure: the broker, the policy reader, the secret scanner and its
+configuration, and their control and configuration dependencies, extracted
+from the merge base together and consumed through explicit paths, so that
+no part of the gate-authority decision resolves a worktree-resident file.
+The configured round gate itself (`round_code` or `round_docs`) is not part
+of that closure: the merge-base broker selects it, and then executes it
+from the feature worktree, where its result is branch-attested evidence. This boundary is
 mandatory because a secret is public when the push lands and PR CI is too late.
 A branch that edits either implementation SHALL exercise its changed version in
 required PR CI, but SHALL NOT use that version to authorize its own push. Every
