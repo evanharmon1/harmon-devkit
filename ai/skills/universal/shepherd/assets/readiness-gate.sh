@@ -440,8 +440,13 @@ evaluate_checks() {
     # and falls back to its app id — an App outside Actions does not
     # multiply suites per edit, so a per-app collapse is a safe, conservative
     # default, not a workaround (deferred P2, harmon-devkit#714 challenge r1
-    # and r2: an App that DID reuse a name across permanently-coexisting,
-    # non-superseding suites would still be conflated by app id alone; no
+    # and r2, re-raised shepherd r2: an App that DID reuse a name across
+    # permanently-coexisting, non-superseding suites would still be
+    # conflated by app id alone — and the same fallback is reached not only
+    # by a genuinely non-Actions App, but also if `actions/runs` ever omits
+    # a suite that a real GitHub Actions workflow produced (no confirmed
+    # trigger for that on this repo; both paths share the one signal
+    # available, `app.id`, and so share the one mitigation); no
     # currently-installed App on this repo produces check-runs at all besides
     # `github-actions`, so the gap is real but unreached, and resolving it
     # generally needs a redesign out of this bounded fix's scope, per #714's
@@ -476,13 +481,17 @@ evaluate_checks() {
     # (harmon-devkit#714 review r1). Three cases, not two: an EMPTY list is
     # not evidence of exclusion (GitHub is known to leave it empty even for
     # a run that genuinely belongs to the PR being gated) and keeps the run
-    # exactly as before this filter existed; a SINGLETON list is unambiguous
-    # either way — naming only this PR confidently includes it, naming only
-    # another PR is positive proof to exclude it; a list naming more than
-    # one PR is genuinely ambiguous and must never be trusted to CLEAR
-    # another run's failure, because a sibling PR's base branch can make the
-    # identical commit behave differently under base-relative workflow
-    # logic (the same reasoning behind scoping runs to a PR at all). Such a
+    # exactly as before this filter existed; whether this PR's own number is
+    # anywhere IN the list is what decides the rest, not the list's length —
+    # a list omitting it entirely is positive proof to exclude, whether it
+    # names exactly one other PR or several (harmon-devkit#714 shepherd,
+    # fixing an earlier version that treated any 2+-PR list as ambiguous
+    # without checking whether this PR was even one of them); a list that
+    # DOES include this PR alongside at least one other is genuinely
+    # ambiguous and must never be trusted to CLEAR another run's failure,
+    # because a sibling PR's base branch can make the identical commit
+    # behave differently under base-relative workflow logic (the same
+    # reasoning behind scoping runs to a PR at all). Such a
     # run is kept, since dropping it could hide a real failure that IS ours
     # — but review round 2 found kept was not enough on its own: (1) two
     # ambiguous suites for the same nominal workflow/event still shared one
@@ -507,9 +516,21 @@ evaluate_checks() {
     # excluded exactly like a positively-other-PR run, even when
     # `pull_requests` is empty. This still isn't complete (two PRs can share
     # one branch against different bases, in which case the names match and
-    # nothing here would catch it), but it costs nothing and narrows the
-    # common case of a differently named sibling branch that happens to
-    # produce an identical tree. A missing `head_branch` (some trigger types
+    # nothing here would catch it — raised again as a P1 the very next
+    # cycle and declined again for the same reason: no further signal is
+    # available from this endpoint, closing it needs a mechanism this
+    # bounded fix doesn't have, and it needs four simultaneous rare
+    # conditions — shared head sha, shared branch, an empty pull_requests
+    # from GitHub on top of that, AND base-relative workflow behavior — none
+    # of which this repo's own workflows exhibit even one of), but it costs
+    # nothing and narrows the common case of a differently named sibling
+    # branch that happens to produce an identical tree. The branch check is
+    # scoped to `pull_request`-triggered runs only: a `push` or
+    # `workflow_dispatch` run has no PR to belong to in the first place, so
+    # judging it against a branch name is a category error, and it keeps its
+    # own distinct identity via `event` regardless (excluding it here would
+    # only ever throw away a legitimate, independently significant check,
+    # never protect anything). A missing `head_branch` (some trigger types
     # never set it) keeps the prior behavior — unscoped, kept — rather than
     # excluding on absence.
     workflow_runs_pages="$(run_gh api --paginate --slurp \
@@ -519,14 +540,15 @@ evaluate_checks() {
         '[.[] | if (.workflow_runs | type) == "array" then .workflow_runs[]
                 else error("page carries no workflow_runs") end]
          | map((.pull_requests // []) as $prs |
-               if ($prs | length) == 0 and
-                  (.head_branch != null and .head_branch != $head_ref_name)
-                 then . + {_scope: "other-pr"}
-               elif ($prs | length) == 0 then . + {_scope: "unscoped"}
-               elif ($prs | length) == 1 and $prs[0].number == $pr
-                 then . + {_scope: "this-pr"}
-               elif ($prs | length) == 1 then . + {_scope: "other-pr"}
-               else . + {_scope: "ambiguous"} end)' \
+               (($prs | length) > 0 and any($prs[]; .number == $pr)) as $includes_us |
+               if ($prs | length) == 0 then
+                 if .event == "pull_request" and .head_branch != null and
+                    .head_branch != $head_ref_name
+                   then . + {_scope: "other-pr"}
+                   else . + {_scope: "unscoped"} end
+               elif $includes_us and ($prs | length) == 1 then . + {_scope: "this-pr"}
+               elif $includes_us then . + {_scope: "ambiguous"}
+               else . + {_scope: "other-pr"} end)' \
         <<<"$workflow_runs_pages" 2>/dev/null)" ||
         indeterminate malformed-data "workflow-runs payload is malformed"
     check_runs="$(jq -ce \

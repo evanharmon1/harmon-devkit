@@ -701,6 +701,47 @@ assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not survive when a later run on a DIFFERENT branch (both sides reporting empty pull_requests) shared the same name/workflow/event: $gate_out"
 
+echo "==> a push/workflow_dispatch run on another branch is never excluded by the branch heuristic (harmon-devkit#714 shepherd r2)"
+# The branch-mismatch exclusion only makes sense for pull_request-triggered
+# runs -- a push or workflow_dispatch run has no PR to belong to at all, so
+# judging it against this PR's branch name is a category error. It already
+# gets its own distinct identity via `event`, so a later same-named
+# pull_request success must not hide an earlier push-triggered failure.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"push",
+     pull_requests:[],head_branch:"main"},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",
+     pull_requests:[],head_branch:"feature-branch"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive a push-triggered failure on an unrelated branch, which the branch heuristic must not exclude: $gate_out"
+
+echo "==> a multi-PR run that OMITS this PR entirely is excluded, not treated as ambiguous (harmon-devkit#714 shepherd r2)"
+# A pull_requests list naming two or more OTHER PRs, with this PR's number
+# nowhere in it, is just as conclusive as a singleton naming one other PR --
+# length alone must not decide ambiguity; whether this PR's number appears
+# in the list does.
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:999},{number:1000}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 0 pass ready
+
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \
