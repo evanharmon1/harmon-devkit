@@ -554,6 +554,44 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
     errors.push("indeterminate: no Taskfile target list was supplied — gate slugs could not be checked");
   }
 
+  // Breadth-sufficiency and stage-has-no-finders use only the
+  // already-resolved policy shape (rounds, breadth, stages) — no registry
+  // needed — so they run UNCONDITIONALLY, independent of whether a
+  // registry was supplied. Review round 1 (confirmed): nesting these under
+  // `if (registryDoc)` meant a caller that never supplies a registry
+  // (dev-flow-exit.mjs, invoked without ever running `devflow-policy.mjs
+  // resolve` first) got no breadth validation at all, letting a policy
+  // whose breadth cannot cover its own configured fallback chain — which
+  // `devflow-policy.mjs resolve` itself would refuse — silently compute
+  // exits anyway (exit-computation spec.md's "Scenario: Breadth cannot
+  // cover a configured fallback chain" requires this rejected "before any
+  // finder is dispatched", not only when a registry happens to be present).
+  for (const stage of CONFIDENCE_STAGES) {
+    const s = resolved.stages[stage];
+    const cap = resolved.rounds[stage];
+    if (cap > 0 && s.finders.length > 0) {
+      // "for every finder slot" (exit-computation spec) is a per-slot
+      // requirement, not an aggregate one: prove the ceiling covers EACH
+      // slot independently attempting its own full primary+retry+fallback
+      // chain, not just one slot's chain plus a fallback list shared
+      // across every slot — the fallback list is preference-ordered per
+      // slot, so the true worst case is every slot separately exhausting
+      // it (finders.length primary+retry pairs, each also paying the
+      // full fallback chain), never the fallback chain amortized once.
+      const worstCase = s.finders.length * (2 + s.finder_fallbacks.length);
+      if (resolved.breadth.max_agent_runs < worstCase) {
+        errors.push(
+          `[breadth.${resolved.breadth.policy}].max_agent_runs (${resolved.breadth.max_agent_runs}) cannot cover ` +
+            `stage "${stage}"'s worst-case primary+retry+fallback chain (${worstCase} attempts across ${s.finders.length} finder slot(s), ` +
+            `${s.finder_fallbacks.length} fallback(s) each)`,
+        );
+      }
+    }
+    if (cap > 0 && s.finders.length === 0) {
+      errors.push(`[stage.${stage}] has no finders configured but [rounds.${resolved.rounds.policy}].${stage} is ${cap} (> 0)`);
+    }
+  }
+
   if (registryDoc) {
     const familySlugs = new Set((registryDoc.families || []).map((f) => f.slug));
     const harnessSlugs = new Set((registryDoc.harnesses || []).map((h) => h.slug));
@@ -591,32 +629,6 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
             errors.push(`[stage.${stage}].pool references unknown harness "${slug}"`);
           }
         }
-      }
-    }
-
-    for (const stage of CONFIDENCE_STAGES) {
-      const s = resolved.stages[stage];
-      const cap = resolved.rounds[stage];
-      if (cap > 0 && s.finders.length > 0) {
-        // "for every finder slot" (exit-computation spec) is a per-slot
-        // requirement, not an aggregate one: prove the ceiling covers EACH
-        // slot independently attempting its own full primary+retry+fallback
-        // chain, not just one slot's chain plus a fallback list shared
-        // across every slot — the fallback list is preference-ordered per
-        // slot, so the true worst case is every slot separately exhausting
-        // it (finders.length primary+retry pairs, each also paying the
-        // full fallback chain), never the fallback chain amortized once.
-        const worstCase = s.finders.length * (2 + s.finder_fallbacks.length);
-        if (resolved.breadth.max_agent_runs < worstCase) {
-          errors.push(
-            `[breadth.${resolved.breadth.policy}].max_agent_runs (${resolved.breadth.max_agent_runs}) cannot cover ` +
-              `stage "${stage}"'s worst-case primary+retry+fallback chain (${worstCase} attempts across ${s.finders.length} finder slot(s), ` +
-              `${s.finder_fallbacks.length} fallback(s) each)`,
-          );
-        }
-      }
-      if (cap > 0 && s.finders.length === 0) {
-        errors.push(`[stage.${stage}] has no finders configured but [rounds.${resolved.rounds.policy}].${stage} is ${cap} (> 0)`);
       }
     }
   } else {

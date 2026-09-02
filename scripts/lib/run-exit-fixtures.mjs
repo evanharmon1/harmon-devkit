@@ -55,7 +55,27 @@ function run(script, args) {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
+// Every key checkVerdict knows how to assert on. Review round 1 (confirmed):
+// four fixtures declared corrections_field/corrections_status/
+// no_corrections_for/verified_provenance_for/no_repeat_relationship
+// expectations that nothing here ever read, so those fixtures passed
+// whether or not the behavior they claimed to cover actually held.
+const VERDICT_EXPECTATION_KEYS = new Set([
+  "outcome",
+  "reason",
+  "rounds_counted",
+  "diagnostic_contains",
+  "corrections_field",
+  "corrections_status",
+  "no_corrections_for",
+  "verified_provenance_for",
+  "no_repeat_relationship",
+]);
+
 function checkVerdict(expected, actual) {
+  const unknown = Object.keys(expected).filter((k) => !VERDICT_EXPECTATION_KEYS.has(k));
+  if (unknown.length > 0) return `expected.json has unsupported key(s): ${unknown.join(", ")}`;
+
   if (expected.outcome !== undefined && actual.outcome !== expected.outcome) {
     return `outcome: expected "${expected.outcome}", got "${actual.outcome}"`;
   }
@@ -69,10 +89,61 @@ function checkVerdict(expected, actual) {
     const found = (actual.diagnostics || []).some((d) => d.reason && d.reason.includes(expected.diagnostic_contains));
     if (!found) return `no diagnostic contains "${expected.diagnostic_contains}" (${JSON.stringify(actual.diagnostics)})`;
   }
+  // corrections_field/corrections_status: at least one verified_findings
+  // entry has that field's status — verdict.corrections[] only records a
+  // MISMATCH (status "corrected"), never "unverified" or a plain
+  // "verified" match, so these two read verified_findings instead.
+  if (expected.corrections_field !== undefined || expected.corrections_status !== undefined) {
+    const field = expected.corrections_field; // "provenance" | "fingerprint"
+    const statusKey = field === "fingerprint" ? "fingerprint_status" : "provenance_status";
+    const found = (actual.verified_findings || []).some((f) => f[statusKey] === expected.corrections_status);
+    if (!found) {
+      return `no verified_findings entry has ${statusKey} === "${expected.corrections_status}" (${JSON.stringify(actual.verified_findings)})`;
+    }
+  }
+  if (expected.no_corrections_for !== undefined) {
+    const found = (actual.corrections || []).some((c) => c.finding_id === expected.no_corrections_for);
+    if (found) return `expected no correction for "${expected.no_corrections_for}", but one exists (${JSON.stringify(actual.corrections)})`;
+  }
+  if (expected.verified_provenance_for !== undefined) {
+    const { id, value } = expected.verified_provenance_for;
+    const entry = (actual.verified_findings || []).find((f) => f.id === id);
+    if (!entry || entry.verified_provenance !== value) {
+      return `verified_findings[id=${id}].verified_provenance: expected "${value}", got ${JSON.stringify(entry)}`;
+    }
+  }
+  if (expected.no_repeat_relationship !== undefined) {
+    // [originId, claimantId]: claimantId must NOT be a verified repeat-of
+    // (or supersedes) originId — a fabricated same-file claim must stay
+    // unverified, not silently confirmed by path coincidence alone.
+    const [originId, claimantId] = expected.no_repeat_relationship;
+    const entry = (actual.verified_findings || []).find((f) => f.id === claimantId);
+    if (entry && entry.fingerprint_status === "verified" && entry.verified_fingerprint === `repeat-of:${originId}`) {
+      return `expected "${claimantId}" to have no verified repeat relationship with "${originId}", but its fingerprint verified as repeat-of:${originId}`;
+    }
+  }
   return null;
 }
 
+// Recognized only once `resolve_fails` has been ruled out by the caller
+// (runPolicyFixture never reaches this function for a resolve_fails case),
+// so "resolve_fails"/"message_contains" are deliberately not members here.
+const POLICY_EXPECTATION_KEYS = new Set([
+  "rigor_level",
+  "rounds",
+  "gates",
+  "decoded_from",
+  "breadth",
+  "convergence_json",
+  "role_tiers",
+  "stage_finders_empty",
+  "cross_validation_error_contains",
+]);
+
 function checkPolicyResolution(expected, actual) {
+  const unknown = Object.keys(expected).filter((k) => !POLICY_EXPECTATION_KEYS.has(k));
+  if (unknown.length > 0) return `expected.json has unsupported key(s): ${unknown.join(", ")}`;
+
   if (expected.rigor_level !== undefined && actual.rigor?.level !== expected.rigor_level) {
     return `rigor.level: expected "${expected.rigor_level}", got "${actual.rigor?.level}"`;
   }

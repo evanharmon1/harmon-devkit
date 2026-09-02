@@ -29,7 +29,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseToml, TomlError } from "./lib/toml-lite.mjs";
-import { resolvePolicy, PolicyError } from "./devflow-policy.mjs";
+import { resolvePolicy, crossValidate, PolicyError } from "./devflow-policy.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_VALIDATOR = path.join(HERE, "validate-result-schemas.mjs");
@@ -390,6 +390,20 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
     // findings or invalidate an otherwise-clean shared head.
     const acceptedPasses = [...bySlot.values()];
     const reviewedHeads = new Set(acceptedPasses.map((p) => p.envelope.head));
+    // Every primary slot filled but the accepted passes disagree on which
+    // head they reviewed is an internally-inconsistent trajectory, not an
+    // ordinary unresolved slot — review round 1, confirmed: this previously
+    // still marked the round "complete" with reviewedHead null, letting it
+    // silently spend the numeric cap (maxRoundNumber counts every round
+    // number regardless of ancestry/retention) rather than being refused
+    // outright as untrustworthy, matching every other internal-consistency
+    // violation in this file (duplicate transitions, duplicate receipts,
+    // duplicate adjudications).
+    if (!unresolvedSlot && reviewedHeads.size > 1) {
+      throw new ExitIndeterminate(
+        `round ${roundNumber} of stage "${stage}" has every primary slot filled but its accepted passes disagree on reviewed_head (${[...reviewedHeads].join(", ")}) — trajectory inconsistent with itself`,
+      );
+    }
     let reviewedHead = reviewedHeads.size === 1 ? [...reviewedHeads][0] : null;
     if (!reviewedHead && unresolvedSlot) {
       const failure = slotFailures.find((s) => s.round === roundNumber && s.slot === unresolvedSlot);
@@ -532,6 +546,28 @@ function verifyFingerprint(finding, allByStageId, ledger) {
   const originB = resolveOriginPath(target.path, target.round, ledger);
   if (originA !== originB && finding.path !== target.path) {
     return { status: "unverified", value: finding.fingerprint, reason: `no rename evidence connects "${finding.path}" back to "${target.path}"` };
+  }
+  // Path (or rename-tracked path) evidence alone connects two DIFFERENT
+  // lines in the same file, which two genuinely unrelated findings in that
+  // file would also satisfy — review round 1, confirmed: two unrelated
+  // findings could be marked a verified repeat merely by sharing a path,
+  // letting a fabricated repeat-of claim falsely trigger repeat_after_fix.
+  // Require the current finding's own line to be one round target.round's
+  // OWN fix actually added at the resolved origin path — the same ledger
+  // entries verifyProvenance's round:N attribution already uses, so a
+  // genuine repeat (the same defect resurfacing on the line the fix
+  // touched) still verifies while a same-file coincidence does not.
+  if (!ledger) {
+    return { status: "unverified", value: finding.fingerprint, reason: "no change ledger is available to verify against" };
+  }
+  const targetsFixEntries = ledgerEntriesForOrigin(originA, finding.round, ledger).filter((e) => e.round === target.round);
+  const lineTracesToTargetsFix = targetsFixEntries.some((e) => (e.added_lines || []).includes(finding.line));
+  if (!lineTracesToTargetsFix) {
+    return {
+      status: "unverified",
+      value: finding.fingerprint,
+      reason: `no ledger evidence connects line ${finding.line} at "${finding.path}" to round ${target.round}'s own fix`,
+    };
   }
   return { status: "verified", value: finding.fingerprint, targetDisposition: target.disposition };
 }
@@ -843,6 +879,20 @@ function main() {
     throw err;
   }
 
+  // No --registry/--task-targets here on purpose (see this file's header
+  // comment) — but the registry/task-target-INDEPENDENT half of
+  // cross-validation (breadth sufficiency, a confidence stage with a
+  // nonzero cap but no configured finders) still has to run here too.
+  // Without it, a policy `devflow-policy.mjs resolve` would refuse (e.g.
+  // breadth too small for its own configured fallback chain) could still
+  // compute exits when this script is invoked directly — review round 1,
+  // confirmed.
+  const crossErrors = crossValidate(resolved, null, null).filter((e) => !e.startsWith("indeterminate:"));
+  if (crossErrors.length > 0) {
+    console.error(`dev-flow-exit: policy fails cross-validation: ${crossErrors[0]}`);
+    return 1;
+  }
+
   let runDir;
   try {
     runDir = loadRunDir(args.run);
@@ -1003,6 +1053,20 @@ function main() {
 
   verdict.corrections = corrections;
   verdict.diagnostics = diagnostics;
+  // applyVerification() already computed these per finding; corrections[]
+  // only records a MISMATCH (asserted != evidence-derived), so a claim that
+  // was simply confirmed as asserted — or left "unverified" because no
+  // evidence could decide it — has no other way to reach a caller (or the
+  // conformance corpus) short of exposing the full verified state here.
+  verdict.verified_findings = rounds.flatMap((r) =>
+    r.findings.map((f) => ({
+      id: f.id,
+      provenance_status: f.provenanceStatus,
+      verified_provenance: f.verifiedProvenance,
+      fingerprint_status: f.fingerprintStatus,
+      verified_fingerprint: f.verifiedFingerprint,
+    })),
+  );
 
   if (args.json) {
     console.log(JSON.stringify(verdict, null, 2));

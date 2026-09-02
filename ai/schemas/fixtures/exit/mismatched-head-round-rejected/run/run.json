@@ -1,5 +1,5 @@
 {
-  "run_id": "run-two-unrelated",
+  "run_id": "run-mismatched-head",
   "initiated_by": "human",
   "receipts": [
     {
@@ -12,7 +12,7 @@
     },
     {
       "kind": "pass",
-      "file": "review-r2-codex-cli"
+      "file": "review-r1-gemini-cli"
     }
   ]
 }

@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "run_id": "run-two-unrelated",
+  "run_id": "run-verified-fingerprint-exposed",
   "stage": "review",
   "round": 1,
   "reviewed_head": "0101010101010101010101010101010101010101",

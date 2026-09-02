@@ -1166,6 +1166,33 @@ distinction a post-hoc reader of already-recorded passes cannot otherwise
 draw, since both look identical from the outside ("no pass exists for this
 slot").
 
+**Every primary slot filled, but the passes disagree on `head`, is
+indeterminate, not a completed round.** A logical round has exactly one
+`reviewed_head` (exit-computation spec.md § "Logical rounds require every
+configured finder"); if every configured slot has an accepted pass yet those
+passes name different `head`s, that is an internally-inconsistent
+trajectory — the same class of problem as a duplicate receipt or a
+duplicate adjudication document — refused outright rather than silently
+excluded from `retained` (ancestry `"unknown"`) while quietly not counting
+toward anything, which would let a broken round be silently re-dispatched
+with no signal that anything was ever wrong.
+
+**`dev-flow-exit.mjs` re-runs the registry/Taskfile-**independent** half of
+cross-validation itself**, even though it takes no `--registry`/
+`--task-targets` (see its own header comment: that dependency belongs
+entirely to `devflow-policy.mjs resolve`, run once before a caller ever
+invokes this script). Breadth sufficiency and "a confidence stage has a
+nonzero cap but no configured finders" need only the already-resolved
+policy shape, not a registry — `devflow-policy.mjs`'s `crossValidate()`
+runs those two checks unconditionally now (previously nested under
+`if (registryDoc)`, so they silently never ran without one), and
+`dev-flow-exit.mjs` calls `crossValidate(resolved, null, null)` and refuses
+(exit `1`) on any hard error before ever reading `--run`. Without this, a
+policy `devflow-policy.mjs resolve` would refuse — e.g. breadth too small
+for its own stage's configured fallback chain — could still compute exits
+when this script was invoked directly, skipping the mandated
+resolve-then-dispatch sequence.
+
 **Provenance/fingerprint evidence: the change ledger.** `specs/dev-flow-v2.md`
 deliberately delegates the verification *mechanism* to this script rather than
 pinning one, since "any concrete mechanism ... accretes edge cases." This
@@ -1189,6 +1216,23 @@ intervening round's fix in a way the ledger cannot cleanly attribute, comes
 back `unverified` — keeping its adjudicated priority for gating (a defect of
 unknown origin is still a defect) while being excluded from the
 provenance-dependent predicates, exactly as `specs/dev-flow-v2.md` specifies.
+A `repeat-of:<id>`/`supersedes:<id>` fingerprint claim needs more than a
+shared (or rename-tracked) path to verify: two genuinely unrelated findings
+in the same file share a path too, so `verifyFingerprint` also requires the
+claiming finding's own `line` to appear among the lines the **target's own
+round's fix** actually added at the resolved origin path (the same
+`added_lines` evidence `verifyProvenance`'s `round:N` attribution uses) — a
+same-file coincidence with no such evidence stays `unverified`, exactly like
+any other undecidable claim, and cannot alone satisfy `repeat_after_fix`.
+`verdict.verified_findings[]` — `{id, provenance_status,
+verified_provenance, fingerprint_status, verified_fingerprint}` per finding
+across every round — exposes what `applyVerification` already computed but
+`corrections[]` alone cannot: `corrections[]` only records a **mismatch**
+(status `"corrected"`), so a claim that was simply confirmed as asserted, or
+left `unverified` because no evidence could decide it, has no other way to
+reach a caller (or the conformance corpus, which checks this field for the
+`corrections_field`/`corrections_status`/`verified_provenance_for`/
+`no_repeat_relationship` fixture expectations).
 
 **The predicate catalog** (`no_gating_findings`, `provenance_share`,
 `count_rising`, `repeat_after_fix`) is pinned by these exact names — a

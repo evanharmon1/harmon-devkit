@@ -158,6 +158,24 @@ grep -q -- "--stage" "/tmp/dfe-usage-$$.err" || fail "usage error did not mentio
 rm -f "/tmp/dfe-usage-$$.err"
 echo "OK: an invalid --stage is a usage error"
 
+echo "== dev-flow-exit.mjs refuses a policy cross-validation would reject, even standalone (no --registry/--task-targets) =="
+empty_run="$(mktemp -d)"
+mkdir -p "${empty_run}/passes" "${empty_run}/adjudications"
+printf '{"run_id":"run-crossval-check","initiated_by":"human","receipts":[]}' >"${empty_run}/run.json"
+if node scripts/dev-flow-exit.mjs --run "${empty_run}" --stage review \
+    --policy ai/schemas/fixtures/exit/breadth-insufficient-for-fallback-chain/policy.toml \
+    --current-head deadbeef --json >/dev/null 2>"/tmp/dfe-crossval-$$.err"; then
+    rm -rf "${empty_run}" "/tmp/dfe-crossval-$$.err"
+    fail "dev-flow-exit against a breadth-insufficient policy unexpectedly succeeded"
+fi
+grep -q "cannot cover" "/tmp/dfe-crossval-$$.err" || {
+    cat "/tmp/dfe-crossval-$$.err" >&2
+    rm -rf "${empty_run}" "/tmp/dfe-crossval-$$.err"
+    fail "refusal message did not explain the breadth shortfall"
+}
+rm -rf "${empty_run}" "/tmp/dfe-crossval-$$.err"
+echo "OK: dev-flow-exit refuses a policy that fails cross-validation before ever reading --run"
+
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="
 [ -d ai/schemas/fixtures/exit ] || fail "missing ai/schemas/fixtures/exit/"
 node scripts/lib/run-exit-fixtures.mjs

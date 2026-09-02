@@ -10,7 +10,7 @@
     "tier": "frontier"
   },
   "run": {
-    "run_id": "run-two-unrelated",
+    "run_id": "run-verified-fingerprint-exposed",
     "initiated_by": "human"
   },
   "payload": {
@@ -22,14 +22,14 @@
     "findings": [
       {
         "id": "review-r1-codex-cli-1",
-        "path": "scripts/multi.mjs",
-        "line": 10,
+        "path": "scripts/a.mjs",
+        "line": 5,
         "class": "correctness",
         "provenance": "original",
         "fingerprint": "new",
         "priority": "P1",
         "recommended_disposition": "fix",
-        "evidence": "issue A"
+        "evidence": "evidence text"
       }
     ],
     "counts": {

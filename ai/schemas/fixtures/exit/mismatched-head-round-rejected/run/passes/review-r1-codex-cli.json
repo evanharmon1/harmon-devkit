@@ -10,7 +10,7 @@
     "tier": "frontier"
   },
   "run": {
-    "run_id": "run-two-unrelated",
+    "run_id": "run-mismatched-head",
     "initiated_by": "human"
   },
   "payload": {
@@ -19,22 +19,10 @@
     "reviewed_head": "0101010101010101010101010101010101010101",
     "slot": "codex-cli",
     "finder": "codex-cli",
-    "findings": [
-      {
-        "id": "review-r1-codex-cli-1",
-        "path": "scripts/multi.mjs",
-        "line": 10,
-        "class": "correctness",
-        "provenance": "original",
-        "fingerprint": "new",
-        "priority": "P1",
-        "recommended_disposition": "fix",
-        "evidence": "issue A"
-      }
-    ],
+    "findings": [],
     "counts": {
       "P0": 0,
-      "P1": 1,
+      "P1": 0,
       "P2": 0,
       "P3": 0
     }
