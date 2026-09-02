@@ -8,7 +8,6 @@ description: >-
   "classify issues", "label the backlog", or "update the triage report".
   Dry-run by default; writes go only through the skill's own scripts. Invoke
   as /triage.
-disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh repo view:*), Bash(gh label list:*), Bash(./ai/skills/universal/triage/assets/triage-scan.sh:*), Bash(./ai/skills/universal/triage/assets/triage-apply.sh:*), Bash(./ai/skills/universal/triage/assets/triage-report.sh:*), Bash(./.agents/skills/triage/assets/triage-scan.sh:*), Bash(./.agents/skills/triage/assets/triage-apply.sh:*), Bash(./.agents/skills/triage/assets/triage-report.sh:*), Bash(./.claude/skills/triage/assets/triage-scan.sh:*), Bash(./.claude/skills/triage/assets/triage-apply.sh:*), Bash(./.claude/skills/triage/assets/triage-report.sh:*)
 ---
 

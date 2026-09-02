@@ -61,8 +61,9 @@ there.
 
 Then, if the repo vendors the shared dev-workflow skills, read
 `.agents/skills/implement/SKILL.md` and follow its inner-loop and
-definition-of-done sections. **Read the file; do not invoke it.** It is
-user-invocable only, and a subagent has no slash commands in any case. If that
+definition-of-done sections. **Read the file; do not invoke it.** You are a
+subagent with no Skill tool and no slash commands, whatever that skill's own
+model-invocation setting allows a session to do. If that
 path does not exist, try `.claude/skills/implement/SKILL.md`, then glob once for
 `**/skills/implement/SKILL.md`; if there is still nothing, work from
 `AGENTS.md` and the brief alone. The skill is an accelerator, not a dependency.
