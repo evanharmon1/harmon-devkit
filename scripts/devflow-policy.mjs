@@ -510,37 +510,45 @@ function checkTightenOnly(base, over, stageName, errorPath) {
   const kind = base.kind;
   // A nested any/all node has no `.predicate` identity to key a tighten-only
   // comparison by (every nested node would collide under the same
-  // `undefined` key, and "which parameter moved which direction" has no
-  // defined meaning across a whole subtree) — refuse rather than silently
-  // comparing the wrong things, but ONLY when a nested subtree is itself
-  // added, removed, or changed. Shepherd-stage cloud finding, confirmed:
-  // the original check refused ANY list containing a nested entry
-  // anywhere, in either base or override, even when the override left
-  // every nested subtree byte-for-byte untouched and just added a new
-  // flat leaf beside it — a well-defined, unambiguous tightening move by
-  // the exact same rule already applied to flat-only lists. Nested
-  // entries are matched between base and override by full structural
-  // identity (no `.predicate` to key by): one present in both lists,
-  // unchanged, contributes nothing to added/removed and is not
-  // ambiguous; one that differs, or that only one side has, still has no
-  // defined tightening direction and is refused exactly as before.
+  // `undefined` key), so it is matched between base and override by full
+  // structural identity instead — specs/dev-flow-v2.md (the recursive
+  // composition section): "adding a whole new nested subtree to a
+  // converged all list or a diverging any list is exactly as well-defined
+  // a tightening move as adding a flat leaf to either", and likewise for
+  // removal; "what has no defined direction, and is refused, is an
+  // override that changes the internal structure of a nested subtree the
+  // base already carries." Shepherd-stage cloud finding, confirmed: this
+  // lane's own earlier fix (round 2, closing the prior blanket "ANY nested
+  // entry anywhere is refused" bug) stopped at "unchanged nested entries
+  // don't count as added/removed" and never wired a genuinely added or
+  // removed nested subtree into the SAME directional addTightens/
+  // removeTightens check flat entries already get below — so it still
+  // refused an added-in-a-tightening-position nested subtree outright.
+  // Folding nested add/remove into the SAME added/removed arrays flat
+  // entries use (keyed by structural identity instead of `.predicate`)
+  // fixes that: a pure add is checked by addTightens like any flat leaf; a
+  // pure remove is checked by removeTightens (never true for either stage
+  // this catalog defines today, so removal stays refused, matching prior
+  // behavior); a CHANGED subtree (present in base, replaced by a
+  // different one in override) decomposes into a remove of the old shape
+  // plus an add of the new one — its remove half is refused by the same
+  // removeTightens=false rule, so it is refused overall without a special
+  // case, matching the spec's "no defined direction" text.
   const isNested = (e) => !e || typeof e !== "object" || typeof e.predicate !== "string";
   const baseFlat = base.list.filter((e) => !isNested(e));
   const overFlat = over.list.filter((e) => !isNested(e));
   const baseNested = base.list.filter(isNested);
   const overNested = over.list.filter(isNested);
-  const baseNestedKeys = new Set(baseNested.map((e) => JSON.stringify(e)));
-  const overNestedKeys = new Set(overNested.map((e) => JSON.stringify(e)));
-  const nestedChanged = baseNested.some((e) => !overNestedKeys.has(JSON.stringify(e))) || overNested.some((e) => !baseNestedKeys.has(JSON.stringify(e)));
-  if (nestedChanged) {
-    throw new PolicyError(
-      `${errorPath}: a nested any/all composition entry was added, removed, or changed by the override — not a supported tightening move`,
-    );
-  }
+  const nestedKey = (e) => `nested:${JSON.stringify(e)}`;
+  const baseNestedKeys = new Set(baseNested.map(nestedKey));
+  const overNestedKeys = new Set(overNested.map(nestedKey));
+  const nestedAdded = [...overNestedKeys].filter((k) => !baseNestedKeys.has(k));
+  const nestedRemoved = [...baseNestedKeys].filter((k) => !overNestedKeys.has(k));
+
   const baseByName = new Map(baseFlat.map((e) => [e.predicate, e]));
   const overByName = new Map(overFlat.map((e) => [e.predicate, e]));
-  const added = [...overByName.keys()].filter((k) => !baseByName.has(k));
-  const removed = [...baseByName.keys()].filter((k) => !overByName.has(k));
+  const added = [...overByName.keys()].filter((k) => !baseByName.has(k)).concat(nestedAdded);
+  const removed = [...baseByName.keys()].filter((k) => !overByName.has(k)).concat(nestedRemoved);
 
   // converged: all-add / any-remove tightens. diverging: any-add / all-remove tightens.
   const addTightens = (stageName === "converged" && kind === "all") || (stageName === "diverging" && kind === "any");
@@ -766,6 +774,23 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
     if (cap > 0 && s.finders.length === 0 && resolved.decodedFrom === undefined) {
       errors.push(`[stage.${stage}] has no finders configured but [rounds.${resolved.rounds.policy}].${stage} is ${cap} (> 0)`);
     }
+  }
+
+  // The same "no finders but nonzero cap" defect the loop above catches for
+  // CONFIDENCE_STAGES, but integration is deliberately not one of those
+  // (it is not a confidence stage — no challenge/review-style primary+
+  // retry+fallback chain claim to breadth-check, so it stays out of the
+  // loop above rather than widening CONFIDENCE_STAGES' own meaning).
+  // Shepherd-stage cloud finding, confirmed: a positive
+  // [rounds.*].integration with no configured [stage.integration] finders
+  // exited 0 — the resolved integration stage then has no configured
+  // source for checks, the Codex cycle, or thread evidence, so it could
+  // never actually obtain the current-head result its own nonzero
+  // allowance requires. Same historical-decode exemption as above, for the
+  // same reason (addendum 6, deferred).
+  const integrationCap = resolved.rounds.integration;
+  if (integrationCap > 0 && resolved.stages.integration.finders.length === 0 && resolved.decodedFrom === undefined) {
+    errors.push(`[stage.integration] has no finders configured but [rounds.${resolved.rounds.policy}].integration is ${integrationCap} (> 0)`);
   }
 
   // specs/dev-flow-v2.md § strategy (verbatim): "Orchestrate requires
@@ -1232,7 +1257,27 @@ function loadTomlFile(filePath) {
 }
 
 function cliDetect(args) {
-  const doc = loadTomlFile(args.policy);
+  // Shepherd-stage cloud finding, confirmed: a missing --policy, a missing
+  // file, or malformed TOML previously threw UNCAUGHT — a raw Node stack
+  // trace to stderr and exit 1, the SAME status this function's own normal
+  // "successfully detected a non-v2 policy" path returns, so nothing could
+  // distinguish the two from the exit code alone. --json produced no
+  // structured result at all in that case either, unlike every other
+  // failure path in this CLI (cliResolve's identical read/parse guard).
+  if (!args.policy) {
+    console.error("devflow-policy detect: --policy <file> is required");
+    return 2;
+  }
+  let doc;
+  try {
+    doc = loadTomlFile(args.policy);
+  } catch (err) {
+    console.error(`devflow-policy: could not read/parse --policy: ${err.message}`);
+    if (args.json) {
+      console.log(JSON.stringify({ shape: null, error: "could not read/parse --policy", message: err.message }));
+    }
+    return 2;
+  }
   const detection = detectShape(doc);
   if (args.json) {
     console.log(JSON.stringify(detection));
@@ -1310,7 +1355,43 @@ function cliResolve(args) {
   const indeterminate = crossErrors.filter((e) => e.startsWith("indeterminate:"));
   const hardErrors = crossErrors.filter((e) => !e.startsWith("indeterminate:"));
 
-  const output = { ...resolved, cross_validation: { errors: hardErrors, indeterminate } };
+  // `resolved` above is always the MERGE-BASE's own resolution when one is
+  // in play (resolvePolicy's own contract) — cross_validation therefore
+  // only ever tells the caller whether the merge-base's values are sound.
+  // The branch's own [stage.*] references are structurally validated
+  // (resolvePolicy calls resolveV2(doc, opts) for its own sake) but never
+  // CROSS-validated against any registry — shepherd-stage cloud finding,
+  // confirmed: a branch stage referencing an unregistered finder exits 0
+  // today, because the valid merge-base finder silently replaces it in the
+  // output, and only fails once this PR merges and there is no more
+  // merge-base fallback to borrow from. Reported here so the problem is at
+  // least VISIBLE to a caller that reads it — deliberately advisory, never
+  // folded into cross_validation/hardErrors or this command's own exit
+  // code: this repo's own merge-base-mutation-invariant fixtures
+  // deliberately poison the branch copy with values no registry could ever
+  // satisfy specifically to prove poisoning it has NO EFFECT on what
+  // actually governs the run, so gating THIS command's exit on the
+  // branch's own validity would falsely fail exactly the scenario those
+  // fixtures exist to prove safe. A caller that wants this to gate CI can
+  // check branch_cross_validation.errors itself.
+  let branchCrossValidation = null;
+  if (mergeBaseDoc && args.registry) {
+    let branchRegistryDoc;
+    try {
+      branchRegistryDoc = JSON.parse(readFileSync(args.registry, "utf8"));
+    } catch (err) {
+      console.error(`devflow-policy: could not read/parse --registry: ${err.message}`);
+      return 2;
+    }
+    const branchResolved = resolveV2(doc, { rigor: args.rigor, strategy: args.strategy });
+    const branchErrors = crossValidate(branchResolved, branchRegistryDoc, taskTargets);
+    branchCrossValidation = {
+      errors: branchErrors.filter((e) => !e.startsWith("indeterminate:")),
+      indeterminate: branchErrors.filter((e) => e.startsWith("indeterminate:")),
+    };
+  }
+
+  const output = { ...resolved, cross_validation: { errors: hardErrors, indeterminate }, branch_cross_validation: branchCrossValidation };
 
   if (args.json) {
     console.log(JSON.stringify(output, null, 2));
@@ -1333,6 +1414,10 @@ function cliResolve(args) {
     if (indeterminate.length > 0) {
       console.log("cross-validation indeterminate:");
       for (const e of indeterminate) console.log(`  - ${e}`);
+    }
+    if (branchCrossValidation && branchCrossValidation.errors.length > 0) {
+      console.log("branch cross-validation errors (branch copy, not the merge-base values this run operates under):");
+      for (const e of branchCrossValidation.errors) console.log(`  - ${e}`);
     }
   }
 

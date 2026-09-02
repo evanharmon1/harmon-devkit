@@ -1,0 +1,3 @@
+{
+  "cross_validation_error_contains": "[stage.integration] has no finders configured"
+}

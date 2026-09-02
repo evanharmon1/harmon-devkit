@@ -1,0 +1,22 @@
+{
+  "run_id": "run-single-round-clean",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    }
+  ],
+  "slot_failures": [
+    {
+      "round": 1,
+      "stage": "review",
+      "slot": "codex-cli",
+      "reason": "finder_unavailable"
+    }
+  ]
+}

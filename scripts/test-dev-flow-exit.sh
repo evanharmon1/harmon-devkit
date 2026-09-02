@@ -150,6 +150,41 @@ grep -q -- "--policy" "/tmp/dfp-usage-$$.err" || fail "usage error did not menti
 rm -f "/tmp/dfp-usage-$$.err"
 echo "OK: resolve without --policy is a usage error"
 
+if node scripts/devflow-policy.mjs detect >/dev/null 2>/tmp/dfp-detect-usage-$$.err; then
+    rm -f "/tmp/dfp-detect-usage-$$.err"
+    fail "detect with no --policy unexpectedly succeeded"
+fi
+grep -q -- "--policy" "/tmp/dfp-detect-usage-$$.err" || fail "detect usage error did not mention --policy"
+rm -f "/tmp/dfp-detect-usage-$$.err"
+echo "OK: detect without --policy is a usage error, not an uncaught exception"
+
+if node scripts/devflow-policy.mjs detect --policy /nonexistent-devflow-policy.toml \
+    >/tmp/dfp-detect-missing-$$.out 2>/tmp/dfp-detect-missing-$$.err; then
+    rm -f "/tmp/dfp-detect-missing-$$.out" "/tmp/dfp-detect-missing-$$.err"
+    fail "detect with a missing --policy file unexpectedly succeeded"
+fi
+grep -q "ENOENT\|could not read/parse" "/tmp/dfp-detect-missing-$$.err" ||
+    fail "detect on a missing --policy file did not report a clean read/parse error"
+grep -q "at readFileSync\|at loadTomlFile" "/tmp/dfp-detect-missing-$$.err" &&
+    fail "detect on a missing --policy file leaked a raw Node stack trace instead of a clean error"
+rm -f "/tmp/dfp-detect-missing-$$.out" "/tmp/dfp-detect-missing-$$.err"
+echo "OK: detect on a missing --policy file fails closed, no uncaught stack trace"
+
+if node scripts/devflow-policy.mjs detect --policy /nonexistent-devflow-policy.toml --json \
+    >/tmp/dfp-detect-json-$$.out 2>/tmp/dfp-detect-json-$$.err; then
+    rm -f "/tmp/dfp-detect-json-$$.out" "/tmp/dfp-detect-json-$$.err"
+    fail "detect --json with a missing --policy file unexpectedly succeeded"
+fi
+node -e '
+const fs = require("fs");
+const body = fs.readFileSync(process.argv[1], "utf8").trim();
+if (!body) { console.error("detect --json emitted no stdout body for a read/parse failure"); process.exit(1); }
+const parsed = JSON.parse(body);
+if (parsed.shape !== null || !parsed.error) { console.error("detect --json body did not report a structured error: " + body); process.exit(1); }
+' "/tmp/dfp-detect-json-$$.out" || fail "detect --json did not emit a structured error body on a read/parse failure"
+rm -f "/tmp/dfp-detect-json-$$.out" "/tmp/dfp-detect-json-$$.err"
+echo "OK: detect --json emits a structured error body (not empty stdout) on a read/parse failure"
+
 echo "== dev-flow-exit.mjs usage errors =="
 if node scripts/dev-flow-exit.mjs --stage nonsense --run /nonexistent --policy /nonexistent >/dev/null 2>/tmp/dfe-usage-$$.err; then
     rm -f "/tmp/dfe-usage-$$.err"

@@ -36,6 +36,23 @@ const DEFAULT_VALIDATOR = path.join(HERE, "validate-result-schemas.mjs");
 
 const EXIT_CODES = { continue: 0, converged: 20, diverging: 21, capped: 22, indeterminate: 2 };
 
+// Every indeterminate exit previously only ever wrote prose to stderr —
+// under --json this left stdout completely EMPTY, unlike every other exit
+// path (the success printer below always emits a structured verdict), even
+// though the machine contract requires a structured indeterminate outcome
+// too and a caller reading only stdout could not distinguish "the run is
+// indeterminate" from "nothing happened, check stderr" without also
+// capturing stderr and hoping the exit code survived the caller's own
+// wrapper. Shepherd-stage cloud finding, confirmed. Centralized here rather
+// than duplicated at each of the nine indeterminate call sites in main().
+function indeterminate(args, reason) {
+  console.error(`dev-flow-exit: indeterminate: ${reason}`);
+  if (args && args.json) {
+    console.log(JSON.stringify({ outcome: "indeterminate", reason, rounds_counted: null, next_round: null }, null, 2));
+  }
+  return EXIT_CODES.indeterminate;
+}
+
 // Seam closed (lane #635, PR #713): result.challenger.schema.json now
 // exists, and challenge-stage/review-stage passes are no longer validated
 // under one hardcoded kind. "envelope" self-dispatches on each pass's own
@@ -142,6 +159,22 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
     }
     passSeqByName.set(r.file, idx);
   });
+  // A receipt names a pass whose JSON artifact is absent from passes/ —
+  // deleted, never written, or simply stale. Everything below this point
+  // iterates only files actually DISCOVERED under passes/ (`passes`, the
+  // parameter), so a receipt-only entry with no backing file was
+  // previously invisible in that direction — shepherd-stage cloud finding,
+  // confirmed: deleting a pass while its receipt survives let the trusted
+  // sequence still claim the slot was filled, silently authorizing
+  // redispatch (continue/no_rounds_yet) despite the receipt saying
+  // otherwise. The opposite direction (a pass with no receipt entry) was
+  // already caught below at "no receipt entry for this pass in run.receipts".
+  const passNamesOnDisk = new Set(passes.map((p) => p.name));
+  for (const [name, seq] of passSeqByName) {
+    if (!passNamesOnDisk.has(name)) {
+      throw new ExitIndeterminate(`run.json receipts name pass "${name}" (seq ${seq}) but no matching file exists under passes/ — receipt without evidence`);
+    }
+  }
   // All transitions in receipt order, regardless of stage — used below to
   // find whichever stage was ACTIVE immediately before a given pass arrived
   // (not merely "some transition into this pass's stage happened earlier",
@@ -393,6 +426,22 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
     for (const slot of primarySlots) {
       if (bySlot.has(slot)) {
         const p = bySlot.get(slot);
+        // An accepted pass AND a slot_failures record for the SAME
+        // (round, slot) directly contradict each other — one says the
+        // slot was filled, the other says the finder was unavailable/
+        // exhausted for it — even when their heads agree, unlike the
+        // reviewedHead-disagreement check below which only fires across
+        // DIFFERENT slots. Shepherd-stage cloud finding, confirmed: this
+        // branch previously never consulted slotFailures at all once a
+        // slot had a valid claim, silently letting the failure record
+        // disappear rather than flagging the trajectory as
+        // internally inconsistent.
+        const contradiction = slotFailures.find((s) => s.round === roundNumber && s.slot === slot);
+        if (contradiction) {
+          throw new ExitIndeterminate(
+            `round ${roundNumber} of stage "${stage}" has both an accepted pass and a slot_failures record for slot "${slot}" — these directly contradict each other`,
+          );
+        }
         if (p.payload.substitutes_for) {
           substitutions.push({ slot, ran: p.payload.finder, round: roundNumber });
         }
@@ -1047,8 +1096,7 @@ function main() {
     runDir = loadRunDir(args.run);
   } catch (err) {
     if (err instanceof ExitIndeterminate) {
-      console.error(`dev-flow-exit: indeterminate: ${err.message}`);
-      return EXIT_CODES.indeterminate;
+      return indeterminate(args, err.message);
     }
     console.error(`dev-flow-exit: could not read --run: ${err.message}`);
     return 1;
@@ -1068,8 +1116,7 @@ function main() {
   // pass is validated, closes the gap without needing to sniff error text
   // per invocation.
   if (!existsSync(validatorPath)) {
-    console.error(`dev-flow-exit: indeterminate: --validator path does not exist: ${validatorPath}`);
-    return EXIT_CODES.indeterminate;
+    return indeterminate(args, `--validator path does not exist: ${validatorPath}`);
   }
   // Scratch space for the --known-ids file validateReceipts() feeds to
   // validate-result-schemas.mjs — deliberately OUTSIDE --run (never written
@@ -1085,8 +1132,7 @@ function main() {
     }));
   } catch (err) {
     if (err instanceof ExitIndeterminate) {
-      console.error(`dev-flow-exit: indeterminate: ${err.message}`);
-      return EXIT_CODES.indeterminate;
+      return indeterminate(args, err.message);
     }
     throw err;
   } finally {
@@ -1133,8 +1179,7 @@ function main() {
     rounds = assembleLogicalRounds(args.stage, validPasses, validAdjudications, resolved.stages[args.stage], runDir.runRecord);
   } catch (err) {
     if (err instanceof ExitIndeterminate) {
-      console.error(`dev-flow-exit: indeterminate: ${err.message}`);
-      return EXIT_CODES.indeterminate;
+      return indeterminate(args, err.message);
     }
     throw err;
   }
@@ -1150,8 +1195,7 @@ function main() {
     (r) => r.status === "complete" && (!r.hasAdjudication || r.findings.some((f) => f.adjudicated_priority === null)),
   );
   if (missingAdjudication) {
-    console.error("dev-flow-exit: indeterminate: a completed round has no adjudication document, or a finding in it has no matching adjudication entry");
-    return EXIT_CODES.indeterminate;
+    return indeterminate(args, "a completed round has no adjudication document, or a finding in it has no matching adjudication entry");
   }
 
   const ledger = loadLedger({ historyFile: args.history, repoRoot: args["repo-root"] });
@@ -1165,8 +1209,7 @@ function main() {
   // simply by being the last one recorded).
   const currentHead = args["current-head"];
   if (!currentHead) {
-    console.error("dev-flow-exit: indeterminate: --current-head is required (an independently captured value, never derived from a round's own reviewed_head)");
-    return EXIT_CODES.indeterminate;
+    return indeterminate(args, "--current-head is required (an independently captured value, never derived from a round's own reviewed_head)");
   }
 
   const ancestryOpts = { headsMap: loadHeadsMap(args.heads), repoRoot: args["repo-root"] };
@@ -1182,16 +1225,10 @@ function main() {
   // with 0 rounds" while ignoring rounds that actually exist.
   const overCapRound = rounds.find((r) => r.round > cap);
   if (overCapRound) {
-    console.error(
-      `dev-flow-exit: indeterminate: round ${overCapRound.round} exceeds the resolved ${args.stage} cap (${cap}) — trajectory inconsistent with its own policy`,
-    );
-    return EXIT_CODES.indeterminate;
+    return indeterminate(args, `round ${overCapRound.round} exceeds the resolved ${args.stage} cap (${cap}) — trajectory inconsistent with its own policy`);
   }
   if (cap === 0 && rounds.length > 0) {
-    console.error(
-      `dev-flow-exit: indeterminate: ${args.stage} cap is 0 (disabled) but the trajectory contains round ${rounds[0].round} — trajectory inconsistent with its own policy`,
-    );
-    return EXIT_CODES.indeterminate;
+    return indeterminate(args, `${args.stage} cap is 0 (disabled) but the trajectory contains round ${rounds[0].round} — trajectory inconsistent with its own policy`);
   }
   // Round numbers must be exactly 1..max with no gaps — trusting the
   // largest producer-supplied round number alone (as capReached/capped-clean
@@ -1203,10 +1240,7 @@ function main() {
   const presentRoundNumbers = [...new Set(rounds.map((r) => r.round))].sort((a, b) => a - b);
   for (let i = 0; i < presentRoundNumbers.length; i++) {
     if (presentRoundNumbers[i] !== i + 1) {
-      console.error(
-        `dev-flow-exit: indeterminate: ${args.stage} rounds are not contiguous from 1 (present: ${presentRoundNumbers.join(", ")}) — trajectory inconsistent with its own policy`,
-      );
-      return EXIT_CODES.indeterminate;
+      return indeterminate(args, `${args.stage} rounds are not contiguous from 1 (present: ${presentRoundNumbers.join(", ")}) — trajectory inconsistent with its own policy`);
     }
   }
 

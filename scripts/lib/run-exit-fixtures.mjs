@@ -72,6 +72,10 @@ const VERDICT_EXPECTATION_KEYS = new Set([
   "no_repeat_relationship",
   "unresolved_slot",
   "next_round",
+  // Route flag only (see runExitFixture's `expected.indeterminate` branch,
+  // which checks exit code 2 and delegates the JSON body itself to this
+  // same function) — not a field checkVerdict compares against `actual`.
+  "indeterminate",
 ]);
 
 function checkVerdict(expected, actual) {
@@ -146,6 +150,8 @@ const POLICY_EXPECTATION_KEYS = new Set([
   "role_tiers",
   "stage_finders_empty",
   "cross_validation_error_contains",
+  "branch_cross_validation_error_contains",
+  "branch_cross_validation_absent",
 ]);
 
 function checkPolicyResolution(expected, actual) {
@@ -193,6 +199,19 @@ function checkPolicyResolution(expected, actual) {
     const found = errs.some((e) => e.includes(expected.cross_validation_error_contains));
     if (!found) return `no cross_validation error contains "${expected.cross_validation_error_contains}" (${JSON.stringify(errs)})`;
   }
+  // branch_cross_validation is populated only when --merge-base-policy and
+  // --registry are BOTH supplied (devflow-policy.mjs cliResolve) — it
+  // reports the BRANCH copy's own cross-validation, deliberately never
+  // gating this command's exit code (the merge-base-mutation-invariant
+  // fixtures poison the branch copy on purpose and must keep exiting 0).
+  if (expected.branch_cross_validation_error_contains) {
+    const errs = (actual.branch_cross_validation && actual.branch_cross_validation.errors) || [];
+    const found = errs.some((e) => e.includes(expected.branch_cross_validation_error_contains));
+    if (!found) return `no branch_cross_validation error contains "${expected.branch_cross_validation_error_contains}" (${JSON.stringify(errs)})`;
+  }
+  if (expected.branch_cross_validation_absent) {
+    if (actual.branch_cross_validation !== null) return `expected branch_cross_validation to be null, got ${JSON.stringify(actual.branch_cross_validation)}`;
+  }
   return null;
 }
 
@@ -221,7 +240,31 @@ function runExitFixture(name, dir) {
   const { status, stdout, stderr } = run(EXIT_SCRIPT, args);
 
   if (expected.indeterminate) {
-    return report(name, status === 2, `expected exit 2 (indeterminate), got ${status}. stderr: ${stderr.trim()}`);
+    if (status !== 2) return report(name, false, `expected exit 2 (indeterminate), got ${status}. stderr: ${stderr.trim()}`);
+    // Exit code alone used to be the whole check here, so a regression
+    // that dropped the structured JSON body on the indeterminate path
+    // (stdout empty, prose only on stderr) passed silently — post-merge
+    // Codex cycle finding on PR#720, confirmed: the machine contract
+    // requires a body on EVERY exit, indeterminate included, and the
+    // Taskfile wrapper's own docs tell callers to read it because it may
+    // not preserve the underlying process exit code.
+    let body;
+    try {
+      body = JSON.parse(stdout);
+    } catch {
+      return report(name, false, `indeterminate exit did not emit a JSON verdict body on stdout (got: ${JSON.stringify(stdout)}). stderr: ${stderr.trim()}`);
+    }
+    if (body.outcome !== "indeterminate") {
+      return report(name, false, `indeterminate JSON body: expected outcome "indeterminate", got ${JSON.stringify(body.outcome)}`);
+    }
+    if (typeof body.reason !== "string" || body.reason.length === 0) {
+      return report(name, false, `indeterminate JSON body missing a non-empty "reason" string (got ${JSON.stringify(body.reason)})`);
+    }
+    if (!("rounds_counted" in body) || !("next_round" in body)) {
+      return report(name, false, `indeterminate JSON body missing rounds_counted/next_round fields (got ${JSON.stringify(body)})`);
+    }
+    const problem = checkVerdict(expected, body);
+    return report(name, !problem, problem);
   }
 
   let actual;

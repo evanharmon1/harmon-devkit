@@ -1,3 +1,4 @@
 {
-  "indeterminate": true
+  "indeterminate": true,
+  "reason": "a completed round has no adjudication document, or a finding in it has no matching adjudication entry"
 }
