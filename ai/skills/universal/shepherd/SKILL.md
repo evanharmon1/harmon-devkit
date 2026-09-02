@@ -4,9 +4,9 @@ description: >-
   Shepherd a draft PR to ready for review — watch CI and incoming bot/human reviews,
   treat findings as hypotheses (verify, fix only what's confirmed, explain
   rejections in per-thread replies), push, and re-watch, under the resolved
-  shepherd cap (0-6, from .devflow.toml's review policy). Invoke as
-  /shepherd [PR # or URL].
-disable-model-invocation: true
+  shepherd cap (0-6, from .devflow.toml's review policy). Use when a draft PR
+  exists and the dev loop calls for shepherding it to ready-for-review. Invoke
+  as /shepherd [PR # or URL].
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*)
 ---
 

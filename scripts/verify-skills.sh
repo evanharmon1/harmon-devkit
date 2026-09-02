@@ -9,6 +9,11 @@
 #   2. The frontmatter `name:` matches the directory name.
 #   3. Skill directory names are UNIQUE across categories (a flattened dest
 #      can't hold backend/foo and frontend/foo at once).
+#   4. Within `universal/` (the category harmon-devkit itself authors and
+#      dogfoods — third-party categories are not ours to police), the
+#      invocation frontmatter is internally consistent with the description:
+#      a description that tells an agent how to invoke the skill must not sit
+#      under a flag that forbids exactly that, and vice versa.
 #
 # Directories without a SKILL.md (drafts, placeholders, empty categories) are
 # not yet skills — they are skipped, not failed, so work-in-progress can live in
@@ -74,6 +79,86 @@ frontmatter_has_description() {
         fence == 1 && /^description:[[:space:]]*/ { found = 1 }
         END { exit (found ? 0 : 1) }
     ' "$1"
+}
+
+# Join the frontmatter `description:` value into one text, whether it is a
+# single-line scalar (`description: foo`) or a folded/literal block scalar
+# (`>-`, `>`, `|-`, `|`) spanning indented continuation lines — the style every
+# universal/ skill uses today. A continuation line is distinguished from the
+# next top-level key by indentation: YAML keys never start in column 1 inside
+# a mapping we've already entered at column 1, so a line starting with
+# `word:` in column 1 always ends the block.
+frontmatter_description_text() {
+    awk '
+        NR == 1 && $0 != "---" { exit }
+        $0 == "---" {
+            fence++
+            if (fence == 2) exit
+            next
+        }
+        fence != 1 { next }
+        in_desc {
+            if ($0 ~ /^[A-Za-z0-9_-]+:/) {
+                in_desc = 0
+            } else {
+                line = $0
+                sub(/^[ \t]+/, "", line)
+                text = text " " line
+                next
+            }
+        }
+        {
+            # A trailing YAML comment (whitespace then `#…`) on the block
+            # header (e.g. `description: >- # folded`) must not stop it from
+            # being recognized — strip it before matching.
+            header = $0
+            sub(/[[:space:]]+#.*$/, "", header)
+        }
+        header ~ /^description:[[:space:]]*[|>]-?[[:space:]]*$/ {
+            in_desc = 1
+            next
+        }
+        /^description:[[:space:]]*/ {
+            line = $0
+            sub(/^description:[[:space:]]*/, "", line)
+            text = text " " line
+        }
+        END {
+            gsub(/^[ \t]+|[ \t]+$/, "", text)
+            print text
+        }
+    ' "$1"
+}
+
+# Return success if the frontmatter has a top-level `<key>: <val>` line, exact
+# scalar match (used for the `true`/`false` invocation flags below). A
+# trailing YAML comment (a `#` preceded by whitespace — YAML requires the
+# whitespace for `#` to start a comment rather than be part of the scalar)
+# is stripped before comparing, so e.g. `key: true # note` still matches.
+frontmatter_flag_is() {
+    awk -v key="$2" -v val="$3" '
+        NR == 1 && $0 != "---" { exit }
+        $0 == "---" { fence++; if (fence == 2) exit; next }
+        fence == 1 {
+            line = $0
+            sub(/[[:space:]]+#.*$/, "", line)
+            if (line ~ ("^" key ":[[:space:]]*" val "[[:space:]]*$")) { found = 1 }
+        }
+        END { exit (found ? 0 : 1) }
+    ' "$1"
+}
+
+# Return success if description $2 contains "Invoke as /$1" at a command-name
+# boundary: end of the description, or a character that cannot continue a
+# command name (anything outside [A-Za-z0-9_-]). Both directions of the
+# "Invoke as /<name>" check (require it / forbid it) call this, so they agree
+# on what "names this command" means — without it, "Invoke as /demo-other"
+# would satisfy (or trip) a check meant only for "demo".
+desc_names_invoke_as() {
+    case "$2" in
+    *"Invoke as /$1"[!A-Za-z0-9_-]* | *"Invoke as /$1") return 0 ;;
+    *) return 1 ;;
+    esac
 }
 
 # Collect every SKILL.md under the skills root (sorted, newline-delimited).
@@ -142,6 +227,62 @@ while IFS= read -r md; do
 
     if ! frontmatter_has_description "$md"; then
         err "$md: frontmatter is missing a 'description:' field"
+    else
+        # --- universal/ invocation consistency (issue #702) -----------------
+        # Third-party categories (matt-pocock/) are not ours to police, so this
+        # is scoped to the category harmon-devkit itself authors and dogfoods.
+        rel="${dir#"$SKILLS_ROOT"/}"
+        category="${rel%%/*}"
+        if [ "$category" = "universal" ]; then
+            desc="$(frontmatter_description_text "$md")"
+            # Two independent axes. `user-invocable` gates whether a human can
+            # type the skill as a slash command at all — checked here on its
+            # own, whatever `disable-model-invocation` says, because a
+            # user-invocable:false skill has no slash command to invoke, so
+            # its description must never claim one. `disable-model-invocation`
+            # separately gates whether a model may trigger the skill: true
+            # always bans "Use when"/"Trigger it" regardless of
+            # user-invocable, then requires "Do not invoke directly" if
+            # user-invocable is also false, or "Invoke as /<name>" otherwise;
+            # left unset (model-invocable), it always requires "Use when",
+            # whatever user-invocable says.
+            if frontmatter_flag_is "$md" "user-invocable" "false"; then
+                if desc_names_invoke_as "$name" "$desc"; then
+                    err "$md: user-invocable: false but description contains 'Invoke as /$name' (no slash command exists for it)"
+                fi
+            fi
+            if frontmatter_flag_is "$md" "disable-model-invocation" "true"; then
+                case "$desc" in
+                *"Use when"*)
+                    err "$md: disable-model-invocation: true but description contains 'Use when' (a user-only skill must not carry model-trigger phrasing)"
+                    ;;
+                esac
+                case "$desc" in
+                *"Trigger it"*)
+                    err "$md: disable-model-invocation: true but description contains 'Trigger it' (a user-only skill must not carry model-trigger phrasing)"
+                    ;;
+                esac
+                if frontmatter_flag_is "$md" "user-invocable" "false"; then
+                    case "$desc" in
+                    *"Do not invoke directly"*) ;;
+                    *)
+                        err "$md: user-invocable: false requires 'Do not invoke directly' in the description"
+                        ;;
+                    esac
+                else
+                    if ! desc_names_invoke_as "$name" "$desc"; then
+                        err "$md: disable-model-invocation: true requires 'Invoke as /$name' in the description"
+                    fi
+                fi
+            else
+                case "$desc" in
+                *"Use when"*) ;;
+                *)
+                    err "$md: model-invocable skill (no disable-model-invocation) must contain 'Use when' in the description"
+                    ;;
+                esac
+            fi
+        fi
     fi
 done <<EOF
 $skill_mds

@@ -46,9 +46,11 @@ ignores the frontmatter.
   vendor, so a space or a capital is a path hazard, the latter colliding
   silently with its lowercase twin on a case-insensitive filesystem.
 - **Reference skills by reading the file, never by invoking one.** A subagent
-  has no slash commands, and the dev-workflow skills are user-invocable only
-  (`disable-model-invocation: true`), so nothing can invoke them on a model's
-  behalf. Prefer `.agents/skills/<name>/SKILL.md`, then fall back to the
+  has no Skill tool and no slash commands, so nothing here can invoke a skill
+  on a model's behalf — regardless of whether that skill itself allows model
+  invocation elsewhere. Where the harness exposes the Skill tool (a session,
+  not a subagent), invoke the skill; where it does not, read the file and
+  follow it. Prefer `.agents/skills/<name>/SKILL.md`, then fall back to the
   harness-specific location or one bounded glob.
 - **Discover the skill, don't require it.** Check the conventional path, fall
   back to a glob, and degrade to `AGENTS.md` plus the brief when there is

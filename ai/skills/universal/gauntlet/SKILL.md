@@ -5,8 +5,9 @@ description: >-
   review, each to convergence under its own resolved cap, then the security gate
   and draft PR. Entry: implementation complete and the definition-of-done gate
   green. Exit: a draft PR is open and the shepherd stage takes over. Convergence
-  is the exit; fixing findings is not. Invoke as /gauntlet.
-disable-model-invocation: true
+  is the exit; fixing findings is not. Use when implementation is complete, the
+  definition-of-done gate is green, and the repo's dev loop calls for the
+  challenge/review stage. Invoke as /gauntlet.
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branch --show-current), Bash(git rev-parse:*), Bash(git merge-base:*), Bash(task --list-all:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh issue view:*), Bash(gh repo view:*)
 ---
 
@@ -924,9 +925,10 @@ the trigger for that stage — whichever creation path produced it — not the
 end of the work: unpolled checks and
 unanswered reviews are its input, and the deferred findings above are still
 open. Where the shepherd skill is vendored, enter it the way the repo's
-policy says — read `.agents/skills/shepherd/SKILL.md` (or
-`.claude/skills/shepherd/SKILL.md`) and follow it; it is user-invocable only,
-so it is read, not called. Where it is not vendored, the repo's `AGENTS.md`
+policy says: where the harness exposes the Skill tool, invoke `shepherd`
+through it; where it does not (a subagent, another harness), read
+`.agents/skills/shepherd/SKILL.md` (or `.claude/skills/shepherd/SKILL.md`)
+and follow it directly. Where it is not vendored, the repo's `AGENTS.md`
 shepherd bullet is the procedure. Either way *this* skill's scope ends here:
 it never promotes a draft, never runs the readiness gate, and never merges —
 and stopping instead of shepherding leaves the PR at an explicitly

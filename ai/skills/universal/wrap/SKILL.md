@@ -3,9 +3,9 @@ name: wrap
 description: >-
   End-of-session ritual — check for uncommitted or unpushed work, release
   any issue claim left standing, list anything dangling, and emit the
-  copy-pasteable /rename done-<session-name> command for the user. Invoke as
-  /wrap.
-disable-model-invocation: true
+  copy-pasteable /rename done-<session-name> command for the user. Use when
+  a working session is ending and needs its loose ends, unpushed work, and
+  claim markers checked. Invoke as /wrap.
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(gh issue view:*), Bash(gh pr list:*)
 ---
 
