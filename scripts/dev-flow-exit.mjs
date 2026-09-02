@@ -786,7 +786,18 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
   // exhaustion be silently overridden.
   const firstIncomplete = retained.find((r) => r.status !== "complete");
   if (firstIncomplete) {
-    return { ...base, outcome: "capped", reason: firstIncomplete.status.replace("capped/", ""), action: "escalate" };
+    // The blocker report a human escalation needs names WHICH slot and
+    // what was already tried, not just the generic reason — review round
+    // 3 (P2, confirmed): this terminal verdict previously dropped
+    // `unresolvedSlot`/`substitutions` entirely.
+    return {
+      ...base,
+      outcome: "capped",
+      reason: firstIncomplete.status.replace("capped/", ""),
+      action: "escalate",
+      unresolved_slot: firstIncomplete.unresolvedSlot,
+      substitutions: firstIncomplete.substitutions,
+    };
   }
 
   if (capReached) {

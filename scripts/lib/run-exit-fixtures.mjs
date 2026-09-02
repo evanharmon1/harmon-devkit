@@ -70,6 +70,7 @@ const VERDICT_EXPECTATION_KEYS = new Set([
   "no_corrections_for",
   "verified_provenance_for",
   "no_repeat_relationship",
+  "unresolved_slot",
 ]);
 
 function checkVerdict(expected, actual) {
@@ -88,6 +89,9 @@ function checkVerdict(expected, actual) {
   if (expected.diagnostic_contains) {
     const found = (actual.diagnostics || []).some((d) => d.reason && d.reason.includes(expected.diagnostic_contains));
     if (!found) return `no diagnostic contains "${expected.diagnostic_contains}" (${JSON.stringify(actual.diagnostics)})`;
+  }
+  if (expected.unresolved_slot !== undefined && actual.unresolved_slot !== expected.unresolved_slot) {
+    return `unresolved_slot: expected "${expected.unresolved_slot}", got ${JSON.stringify(actual.unresolved_slot)}`;
   }
   // corrections_field/corrections_status: at least one verified_findings
   // entry has that field's status — verdict.corrections[] only records a

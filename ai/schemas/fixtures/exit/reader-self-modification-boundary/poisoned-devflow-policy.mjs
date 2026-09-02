@@ -31,6 +31,10 @@ const CONFIDENCE_STAGES = ["challenge", "review"];
 const STAGES = ["implement", "challenge", "review", "integration"];
 const PRE_PR_STAGES = new Set(["implement", "challenge", "review"]);
 const PREDICATES = new Set(["no_gating_findings", "provenance_share", "count_rising", "repeat_after_fix"]);
+// specs/config/spec.md "Rigor uses the revised six-level ladder": rigor_order
+// SHALL be exactly this list, weakest to strongest — not merely a nonempty
+// array containing the selected level (review round 3, confirmed).
+const CANONICAL_RIGOR_ORDER = Object.freeze(["cursory", "light", "standard", "thorough", "deep", "forensic"]);
 // specs/dev-flow-v2.md "Convergence model v0" § Finding fields: `class ∈
 // design | correctness | consistency | hardening | nit` — the same enum
 // ai/schemas/result*.schema.json ships for `finding.class`.
@@ -185,6 +189,15 @@ export function detectShape(doc) {
   if (hasMethodTable) legacyMarkers.push("[method]");
   const hasLegacy = hasDirectCaps && hasDefaultMethod && hasMethodTable;
 
+  // A "mixed marker set SHALL be rejected... not guessed into either shape"
+  // (specs/config/spec.md) applies even when schema_version = 2 is present
+  // — review round 3, confirmed: returning "v2" the moment hasV2 was true
+  // never checked for coexisting v1/legacy markers, so a partially
+  // migrated file (schema_version = 2 plus complete stale legacy or v1
+  // markers never cleaned up) was silently accepted as pure v2.
+  if (hasV2 && (hasV1 || hasLegacy)) {
+    return { shape: "mixed", markers: ["schema_version = 2", ...v1Markers, ...legacyMarkers] };
+  }
   if (hasV2) return { shape: "v2", markers: ["schema_version = 2"] };
   if (hasV1 && hasLegacy) return { shape: "mixed", markers: [...v1Markers, ...legacyMarkers] };
   if (hasV1) return { shape: "v1", markers: v1Markers };
@@ -221,6 +234,15 @@ function resolveRigorLevel(doc, requestedRigor) {
   if (!Array.isArray(order) || order.length === 0) {
     throw new PolicyError("policy has no rigor_order ranking");
   }
+  // The ladder is a FIXED vocabulary and ordering (specs/config/spec.md),
+  // not merely "any nonempty array containing the selected level" — review
+  // round 3, confirmed: an arbitrary subset or reordering resolved
+  // successfully as long as the requested/default level was present,
+  // silently losing the contractually fixed strongest-wins ordering every
+  // downstream tier/strategy/method resolution depends on.
+  if (order.length !== CANONICAL_RIGOR_ORDER.length || order.some((v, i) => v !== CANONICAL_RIGOR_ORDER[i])) {
+    throw new PolicyError(`policy's rigor_order must be exactly [${CANONICAL_RIGOR_ORDER.join(", ")}] (weakest to strongest), got [${order.join(", ")}]`);
+  }
   const level = requestedRigor || doc.default_rigor;
   if (!level) throw new PolicyError("no rigor level given and policy has no default_rigor");
   if (!order.includes(level)) {
@@ -255,6 +277,14 @@ function resolveRounds(doc, profile, levelName) {
   requireNonNegativeInt(rounds.remediation, "remediation", `[rounds.${policyName}]`);
   rounds.wall_clock_min = typeof table.wall_clock_min === "number" ? table.wall_clock_min : BUILTIN_WALL_CLOCK_MIN_FALLBACK;
   requireNonNegativeInt(rounds.wall_clock_min, "wall_clock_min", `[rounds.${policyName}]`);
+  // specs/config/spec.md: "The forensic rounds policy SHALL require at
+  // least two rounds before the empty-round shortcut can end a confidence
+  // stage" — review round 3, confirmed: forensic accepted min_rounds 0 or
+  // 1 like any other level, letting its first empty round exit through the
+  // shortcut the ladder's strongest level is specifically meant to forbid.
+  if (levelName === "forensic" && rounds.min_rounds < 2) {
+    throw new PolicyError(`[rounds.${policyName}]: forensic rigor requires min_rounds >= 2 (got ${rounds.min_rounds})`);
+  }
   return rounds;
 }
 
@@ -511,14 +541,30 @@ function resolveRoles(doc, profile, levelName, tierOrder) {
   return result;
 }
 
+// Present-but-wrong-type SHALL be rejected, never silently widened to the
+// absent-key default — review round 3, confirmed: a malformed
+// `[stage.implement].pool = "local"` (a string, not an array — a plausible
+// typo for a single-entry allowlist) previously became `null` ("no
+// restriction", i.e. every implementer-capable harness eligible), turning
+// a mistaken narrow allowlist into the WIDEST possible one. Absent stays
+// the documented default (`fallback`); present-and-wrong-type is a
+// PolicyError.
+function resolveStageArray(value, label, fallback) {
+  if (value === undefined) return fallback;
+  if (!Array.isArray(value)) {
+    throw new PolicyError(`${label} must be an array, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
 function resolveStages(doc) {
   const result = {};
   for (const stage of STAGES) {
     const table = doc.stage?.[stage];
     result[stage] = {
-      finders: Array.isArray(table?.finders) ? table.finders : [],
-      finder_fallbacks: Array.isArray(table?.finder_fallbacks) ? table.finder_fallbacks : [],
-      pool: Array.isArray(table?.pool) ? table.pool : null,
+      finders: resolveStageArray(table?.finders, `[stage.${stage}].finders`, []),
+      finder_fallbacks: resolveStageArray(table?.finder_fallbacks, `[stage.${stage}].finder_fallbacks`, []),
+      pool: resolveStageArray(table?.pool, `[stage.${stage}].pool`, null),
     };
   }
   return result;

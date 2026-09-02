@@ -1,0 +1,4 @@
+{
+  "resolve_fails": true,
+  "message_contains": "forensic rigor requires min_rounds >= 2"
+}

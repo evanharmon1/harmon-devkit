@@ -1,5 +1,5 @@
 schema_version = 2
-default_rigor = "standard"
+default_rigor = "forensic"
 rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
 tier_order = ["standard"]
 
@@ -10,8 +10,8 @@ diverging = { any = [
   { predicate = "provenance_share", min = 0.5 },
 ] }
 
-[rigor.standard]
-rounds = "standard"
+[rigor.forensic]
+rounds = "forensic"
 breadth = "standard"
 orchestrator_tier = "standard"
 implementer_tier = "standard"
@@ -19,17 +19,16 @@ challenger_tier = "standard"
 reviewer_tier = "standard"
 integrator_tier = "standard"
 
-[rigor.standard.convergence]
-diverging = { any = [
-  { all = [ { predicate = "count_rising", increases = 2 }, { predicate = "repeat_after_fix" } ] },
-  { predicate = "provenance_share", min = 0.5 },
-  { predicate = "count_rising", increases = 1 },
-] }
-
 [rounds.standard]
 challenge = 1
 review = 1
 integration = 1
+min_rounds = 1
+
+[rounds.forensic]
+challenge = 3
+review = 3
+integration = 3
 min_rounds = 1
 
 [breadth.standard]

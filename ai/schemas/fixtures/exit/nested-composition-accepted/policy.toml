@@ -1,6 +1,6 @@
 schema_version = 2
 default_rigor = "standard"
-rigor_order = ["standard"]
+rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
 tier_order = ["standard"]
 
 [convergence]

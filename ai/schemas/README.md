@@ -1047,7 +1047,36 @@ migration, harmon-init#1081) — `scripts/test-dev-flow-exit.sh` asserts that
 `devflow-policy.mjs resolve --policy .devflow.toml` is refused, and every
 other fixture in this corpus resolves a policy under
 `ai/schemas/fixtures/exit/`, never the live file, so this test suite passes
-identically before and after that migration lands.
+identically before and after that migration lands. A "mixed marker set"
+means what it says even when `schema_version = 2` is present — review round
+3 (confirmed): `hasV2` used to short-circuit straight to `"v2"` without
+checking for coexisting v1/legacy markers, so a partially migrated file
+(the new `schema_version = 2` key added without ever cleaning up the old
+direct-cap/`default_method`/`[method]` keys) was silently accepted as pure
+v2 instead of refused as `"mixed"`.
+
+**`rigor_order` is the fixed six-level ladder, not an arbitrary nonempty
+list.** `devflow-policy.mjs` requires it to equal `["cursory", "light",
+"standard", "thorough", "deep", "forensic"]` exactly, weakest to strongest
+— review round 3 (confirmed): only "nonempty and contains the requested/
+default level" was checked before, so a policy with e.g. `rigor_order =
+["standard"]` alone resolved successfully, losing the contractually fixed
+ordering every downstream strongest-wins resolution (tier, strategy,
+method) depends on. `forensic`, the strongest level, additionally requires
+`min_rounds >= 2` in whichever `[rounds.*]` table its profile points to —
+its own floor against the empty-round shortcut ending a confidence stage
+on a single clean round, the one level the ladder is specifically meant to
+hold to a higher bar.
+
+**A `[stage.*]` array field present with the wrong type is a `PolicyError`,
+never silently widened to the absent-key default.** `finders`/
+`finder_fallbacks`/`pool` all reject a present-but-non-array value now —
+review round 3 (confirmed): `Array.isArray(x) ? x : fallback` treated "the
+wrong type" the same as "absent," so `[stage.implement].pool = "local"` (a
+plausible typo for a single-entry allowlist) silently became `null` — no
+restriction, every implementer-capable harness eligible — turning a
+mistaken *narrow* allowlist into the *widest possible* one instead of
+failing closed.
 
 **The merge-base historical decoder is reachable only from the merge-base
 path.** When the change under review touches `.devflow.toml` or
@@ -1380,7 +1409,11 @@ the spec prose alone:
   whenever a later, complete round also existed — itself an illegal
   trajectory shape (`ai/schemas/fixtures/exit/
   incomplete-round-excluded-from-min-rounds-floor/` covers exactly this:
-  round 1 exhausted, round 2 complete and clean, still `capped`).
+  round 1 exhausted, round 2 complete and clean, still `capped`). That
+  verdict also carries `unresolved_slot`/`substitutions` (review round 3,
+  P2) — the blocker report a human escalation needs names *which* slot
+  exhausted and what was already substituted, not only the generic
+  `finder_unavailable`/`breadth_exhausted` reason.
 - **A `capped/clean` verdict requires the round *at* the cap itself —
   not merely some retained round — to review the current head.** If that
   round is on a head incomparable to `currentHead` (excluded from
