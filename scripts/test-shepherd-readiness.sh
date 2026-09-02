@@ -124,6 +124,7 @@ repos/*/pulls/*/reviews*) file=reviews.pages.json ;;
 repos/*/issues/*/comments*) file=top.pages.json ;;
 repos/*/commits/*/check-runs*) file=check-runs.pages.json ;;
 repos/*/commits/*/statuses*) file=statuses.pages.json ;;
+repos/*/actions/runs*) file=workflow-runs.pages.json ;;
 repos/*/pulls/*) file=pr.json ;;
 *) exit 93 ;;
 esac
@@ -186,6 +187,10 @@ write_defaults() {
     jq -cn '[[{context:"ci/legacy",state:"pending",id:1},
               {context:"ci/legacy",state:"success",id:3}]]' \
         >"${fixtures}/statuses.pages.json"
+    # No GitHub Actions workflow runs for this head by default: check runs
+    # with no matching check_suite_id fall back to their app id (harmon-devkit#714).
+    printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]' \
+        >"${fixtures}/workflow-runs.pages.json"
     jq -cn '{login:"pr-author"}' >"${fixtures}/user.json"
     # A Codex attempt state naming THIS repo, PR, and head — the gate refuses
     # to hand the helper a state file describing anything else.
@@ -389,6 +394,66 @@ printf '%s\n' "$gate_out" | grep -Eq 'and 599[0-9]+ more' ||
 detail_bytes="$(printf '%s' "$gate_out" | wc -c)"
 [ "$detail_bytes" -lt 8192 ] ||
     fail "the failing-checks detail is ${detail_bytes} bytes — unbounded diagnostics reintroduce the argv death one step downstream"
+
+echo "==> a stale failed check suite superseded by a later success passes (harmon-devkit#714)"
+# A workflow triggering on pull_request.edited (this repo's guard jobs) starts
+# a fresh check suite on every PR-body edit against an unchanged head:
+# filter=latest collapses only WITHIN one suite, so an early failure and a
+# later success for the same check name both survive as separate check runs.
+# The gate must collapse them itself, by workflow identity, and keep the
+# later one.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100},
+    {check_suite_id:20,workflow_id:100}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 0 pass ready
+
+echo "==> a stale PASSING check suite superseded by a later failure still fails (inverse of the above)"
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:30}},
+    {name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:40}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:30,workflow_id:100},
+    {check_suite_id:40,workflow_id:100}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not name the check whose latest run fails: $gate_out"
+
+echo "==> two distinct workflows whose jobs share a literal name are kept apart, never tie-broken"
+# Same started_at on both: collapsing by name alone (the pre-#714 bug) feeds
+# group_by a tie, and a stable max_by then keeps whichever sorts last —
+# silently hiding this workflow's failure behind the other's success. Keyed
+# on workflow identity, the two never share a group, so there is no tie to
+# break and the failure cannot be hidden by input order.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:50}},
+    {name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:60}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:50,workflow_id:100},
+    {check_suite_id:60,workflow_id:200}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not surface the failing workflow's guard job when a same-named passing job from a different workflow shares its timestamp: $gate_out"
 
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults

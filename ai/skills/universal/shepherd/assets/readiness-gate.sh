@@ -405,6 +405,44 @@ evaluate_checks() {
         <<<"$statuses_pages" 2>/dev/null)" ||
         indeterminate malformed-data "commit-statuses payload is malformed"
 
+    # A workflow triggering on pull_request.edited (this repo's two `guard`
+    # jobs, one apiece in release-content-guard.yml and tracking-guard.yml)
+    # starts a fresh check suite on every PR-body edit against an unchanged
+    # head, so a superseded failure sits in the check-runs list alongside a
+    # later success forever — the `filter=latest` above collapses runs only
+    # WITHIN one check suite, never across the separate suites repeated
+    # `pull_request` deliveries create (harmon-devkit#714, found shepherding
+    # #713). Collapse to the newest run per (name, workflow identity), the
+    # same way the statuses group above collapses per context — but keyed on
+    # the *workflow*, not the bare check-run name: this repo's two guard jobs
+    # are both literally named "guard", and collapsing by name alone would
+    # hide a live failure in one behind a stale success in the other.
+    # Workflow identity comes from joining each run's check_suite.id against
+    # `actions/runs`, which is GitHub-Actions-only; a check run from any
+    # other source (a third-party App) has no entry there and falls back to
+    # its app id — an App outside Actions does not multiply suites per edit,
+    # so a per-app collapse is a safe, conservative default, not a
+    # workaround.
+    workflow_runs_pages="$(run_gh api --paginate --slurp \
+        "repos/$repo/actions/runs?head_sha=$head&per_page=100")" ||
+        indeterminate fetch-failed "cannot fetch workflow runs for the head"
+    workflow_runs="$(jq -ce \
+        '[.[] | if (.workflow_runs | type) == "array" then .workflow_runs[]
+                else error("page carries no workflow_runs") end]' \
+        <<<"$workflow_runs_pages" 2>/dev/null)" ||
+        indeterminate malformed-data "workflow-runs payload is malformed"
+    check_runs="$(jq -ce \
+        --slurpfile wf_sf <(printf '%s' "$workflow_runs") '
+          ($wf_sf[0] | map({key: (.check_suite_id | tostring),
+                            value: .workflow_id}) | from_entries) as $suite_workflow |
+          map(. + {_identity: [.name,
+              ($suite_workflow[(.check_suite.id | tostring)]
+               | if . == null then "app:" + ((.app.id // 0) | tostring)
+                 else "wf:" + (. | tostring) end)]})
+          | group_by(._identity) | map(max_by(.started_at))' \
+        <<<"$check_runs" 2>/dev/null)" ||
+        indeterminate malformed-data "check-runs payload could not be collapsed to latest per workflow"
+
     # An EMPTY list is indeterminate, never a pass: GitHub populates check
     # suites asynchronously, so a read moments after a push reports nothing
     # having run rather than nothing to run. A repo with genuinely no CI
