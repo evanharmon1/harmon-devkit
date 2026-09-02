@@ -742,6 +742,49 @@ jq -cn '[{total_count:1,workflow_runs:[
 run_gate --codex-disabled
 assert_gate 0 pass ready
 
+echo "==> a push run with a stale PR association naming only a sibling is never excluded (harmon-devkit#714 shepherd r3)"
+# pull_requests[] on a non-pull_request-triggered run is a best-effort
+# historical association GitHub attaches after the fact, not evidence about
+# what the run itself tested -- a push run naming only PR 999 must not be
+# judged "other-pr" and dropped, the same category error as judging it by
+# branch would be.
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"push",
+     pull_requests:[{number:999}],head_branch:"main"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive a push run whose only pull_requests association names a different PR: $gate_out"
+
+echo "==> two push suites on different branches sharing a sha are kept apart by branch (harmon-devkit#714 shepherd r3)"
+# The same tree pushed to two branches produces two independently
+# significant answers -- without the branch in the identity, both would
+# render as the same wf:<id>:push and collapse, letting one branch's later
+# success hide the other's earlier failure.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"push",
+     pull_requests:[],head_branch:"main"},
+    {check_suite_id:20,workflow_id:100,event:"push",
+     pull_requests:[],head_branch:"release"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive when a push suite on a different branch shared the workflow/event but not the branch: $gate_out"
+
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \

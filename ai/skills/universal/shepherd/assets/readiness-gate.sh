@@ -524,31 +524,47 @@ evaluate_checks() {
     # from GitHub on top of that, AND base-relative workflow behavior — none
     # of which this repo's own workflows exhibit even one of), but it costs
     # nothing and narrows the common case of a differently named sibling
-    # branch that happens to produce an identical tree. The branch check is
-    # scoped to `pull_request`-triggered runs only: a `push` or
-    # `workflow_dispatch` run has no PR to belong to in the first place, so
-    # judging it against a branch name is a category error, and it keeps its
-    # own distinct identity via `event` regardless (excluding it here would
-    # only ever throw away a legitimate, independently significant check,
-    # never protect anything). A missing `head_branch` (some trigger types
-    # never set it) keeps the prior behavior — unscoped, kept — rather than
-    # excluding on absence.
+    # branch that happens to produce an identical tree. Every PR-ownership
+    # judgment here — the branch check above, and "does pull_requests[]
+    # include this PR" below — applies only to `pull_request`-triggered
+    # runs: a `push` or `workflow_dispatch` run has no PR to belong to in
+    # the first place (its `pull_requests[]`, when non-empty, is a
+    # best-effort historical association GitHub attaches after the fact,
+    # not evidence about what the run itself was testing), so judging it
+    # against a branch name OR a PR number is the same category error
+    # either way — confirmed reachable for the PR-number path too, not just
+    # the branch path (harmon-devkit#714 shepherd r3): a stale
+    # `pull_requests[]` naming only a sibling PR must not make a real
+    # push/workflow_dispatch failure disappear. A missing `head_branch`
+    # (some trigger types never set it) keeps the prior behavior —
+    # unscoped, kept — rather than excluding on absence.
+    #
+    # A non-`pull_request` event's identity includes its own branch, not
+    # just its workflow and event: the same commit pushed to two different
+    # branches produces two independently significant answers, and without
+    # the branch in the key both suites would render as the identical
+    # `wf:<id>:push`, letting one branch's later success hide the other's
+    # earlier failure (harmon-devkit#714 shepherd r3). `pull_request` runs
+    # don't need this — the PR itself is already the scoping unit for those.
     workflow_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/actions/runs?head_sha=$head&per_page=100")" ||
         indeterminate fetch-failed "cannot fetch workflow runs for the head"
     workflow_runs="$(jq -ce --argjson pr "$pr" --arg head_ref_name "$head_ref_name" \
         '[.[] | if (.workflow_runs | type) == "array" then .workflow_runs[]
                 else error("page carries no workflow_runs") end]
-         | map((.pull_requests // []) as $prs |
+         | map(
+             if .event != "pull_request" then . + {_scope: "unscoped"}
+             else
+               (.pull_requests // []) as $prs |
                (($prs | length) > 0 and any($prs[]; .number == $pr)) as $includes_us |
                if ($prs | length) == 0 then
-                 if .event == "pull_request" and .head_branch != null and
-                    .head_branch != $head_ref_name
+                 if .head_branch != null and .head_branch != $head_ref_name
                    then . + {_scope: "other-pr"}
                    else . + {_scope: "unscoped"} end
                elif $includes_us and ($prs | length) == 1 then . + {_scope: "this-pr"}
                elif $includes_us then . + {_scope: "ambiguous"}
-               else . + {_scope: "other-pr"} end)' \
+               else . + {_scope: "other-pr"} end
+             end)' \
         <<<"$workflow_runs_pages" 2>/dev/null)" ||
         indeterminate malformed-data "workflow-runs payload is malformed"
     check_runs="$(jq -ce \
@@ -556,7 +572,7 @@ evaluate_checks() {
           ($wf_sf[0] | map(select(._scope == "other-pr") | (.check_suite_id | tostring))) as $other_pr_suites |
           ($wf_sf[0] | map(select(._scope != "other-pr") |
                            {key: (.check_suite_id | tostring),
-                            value: {workflow_id, event, scope: ._scope}}) | from_entries) as $suite_workflow |
+                            value: {workflow_id, event, head_branch, scope: ._scope}}) | from_entries) as $suite_workflow |
           map(select((((.check_suite.id | tostring) as $s | $other_pr_suites | index($s)) // null) == null))
           | map(
               (.check_suite.id | tostring) as $sid |
@@ -567,6 +583,10 @@ evaluate_checks() {
                          elif .scope == "ambiguous" then
                            "wf:" + (.workflow_id | tostring) + ":" +
                            (.event // "unknown") + ":shared-pr:" + $sid
+                         elif .event != "pull_request" then
+                           "wf:" + (.workflow_id | tostring) + ":" +
+                           (.event // "unknown") + ":branch:" +
+                           (.head_branch // "unknown")
                          else "wf:" + (.workflow_id | tostring) + ":" +
                               (.event // "unknown")
                          end)]})
