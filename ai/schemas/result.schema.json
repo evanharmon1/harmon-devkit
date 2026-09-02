@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/result.schema.json",
   "title": "Dev flow v2 result — native harness entry point",
-  "$comment": "A SELF-CONTAINED composition of result.envelope.schema.json plus the three result.<role>.schema.json payload shapes, for a harness with its own native JSON-Schema validator (Workflow/Agent `schema`) that cannot run scripts/validate-result-schemas.mjs's role dispatch. `payload` is dispatched by role via `allOf` (one {if, then} pair per role — `if` matches `role`, `then` points `payload` at that role's `$defs` entry). The envelope-level `properties` (every key but `payload`, which stays the untyped {type: object} both files already agree on) and `required` above are copied VERBATIM from result.envelope.schema.json, and `$defs.implementer` / `$defs.reviewer` / `$defs.integrator` are their standalone schema files' bodies inlined VERBATIM too (same type/additionalProperties/required/properties/$defs/if/then), minus only $schema/$id/title/$comment, which make no sense on a $defs entry — scripts/test-result-schemas.sh asserts both equalities directly so neither representation can silently drift apart from its source. The one necessary edit anywhere in this file is `$defs.reviewer`'s own internal reference: the standalone file's `#/$defs/finding` becomes `#/$defs/reviewer/$defs/finding` here, since `finding` now lives nested under this file's `$defs.reviewer` rather than at that file's own root — the equality test normalizes exactly this one rewrite before comparing, and nothing else. Two more `allOf` members enforce the implementer completed/blocked REQUIREDNESS AND non-emptiness (payload.summary/handoff/ac_test_map present AND minLength/minItems-non-empty when role=implementer and status=completed; payload.blocked_question present AND non-empty when blocked) — this is expressible HERE, unlike in the standalone result.implementer.schema.json, precisely because `role` and `status` are both envelope-level fields this composed document can see in the same `if` as the `payload` property its `then` reaches into; the standalone payload-only schema never sees `status` at all, so ITS `$defs.implementer.properties.summary` (etc.) stays a bare `type: string` with no `minLength` — Foreman v1 serializes summary as `\"\"` on a BLOCKED result, a shape the shared, unconditional property definition must still accept; only the status-conditional `then` branch here may add `minLength`/`minItems`, and only for the completed/blocked case each actually applies to. Every OTHER receipt-validation semantic check (head agreement, run matching, id/pass/adjudication cross-checks, every integrator cross-field rule) still needs context or sibling fields no single schema-keyword condition can express; scripts/validate-result-schemas.mjs's checkImplementerStatus and friends add all of it on top for any harness that can run them. See ai/schemas/README.md 'Native harness composition (result.schema.json)'. result.envelope.schema.json stays the deliberately envelope-only shape (payload: {type: object}, no dispatch) for whichever purpose only needs to validate the envelope fields themselves.",
+  "$comment": "A SELF-CONTAINED composition of result.envelope.schema.json plus the four result.<role>.schema.json payload shapes, for a harness with its own native JSON-Schema validator (Workflow/Agent `schema`) that cannot run scripts/validate-result-schemas.mjs's role dispatch. `payload` is dispatched by role via `allOf` (one {if, then} pair per role — `if` matches `role`, `then` points `payload` at that role's `$defs` entry). The envelope-level `properties` (every key but `payload`, which stays the untyped {type: object} both files already agree on) and `required` above are copied VERBATIM from result.envelope.schema.json, and `$defs.implementer` / `$defs.challenger` / `$defs.reviewer` / `$defs.integrator` are their standalone schema files' bodies inlined VERBATIM too (same type/additionalProperties/required/properties/$defs/if/then), minus only $schema/$id/title/$comment, which make no sense on a $defs entry — scripts/test-result-schemas.sh asserts both equalities directly so neither representation can silently drift apart from its source. The one necessary edit anywhere in this file is `$defs.reviewer`'s and `$defs.challenger`'s own internal references: each standalone file's `#/$defs/finding` (and, for challenger, `#/$defs/attackScenario`) becomes `#/$defs/reviewer/$defs/finding` or `#/$defs/challenger/$defs/finding` (`#/$defs/challenger/$defs/attackScenario`) here, since those definitions now live nested under this file's own `$defs.<role>` rather than at that file's own root — the equality test normalizes exactly this one rewrite before comparing, and nothing else. Four more `allOf` members enforce status-conditional payload shape: the implementer completed/blocked REQUIREDNESS AND non-emptiness (payload.summary/handoff/ac_test_map present AND minLength/minItems-non-empty when role=implementer and status=completed; payload.blocked_question present AND non-empty when blocked), and the challenger completed/blocked `attack_scenarios` cardinality (minItems:1 when role=challenger and status=completed; maxItems:0 when blocked) — this is expressible HERE, unlike in the standalone result.implementer.schema.json / result.challenger.schema.json, precisely because `role` and `status` are both envelope-level fields this composed document can see in the same `if` as the `payload` property its `then` reaches into; each standalone payload-only schema never sees `status` at all, so ITS OWN property definitions stay unconditional — Foreman v1 serializes implementer's summary as `\"\"` on a BLOCKED result, a shape the shared, unconditional property definition must still accept; only the status-conditional `then` branches here may narrow either role's fields further, and only for the completed/blocked case each actually applies to. Every OTHER receipt-validation semantic check (head agreement, run matching, id/pass/adjudication cross-checks, every integrator cross-field rule, challenger's attack_scenarios/findings cross-reference) still needs context or sibling fields no single schema-keyword condition can express; scripts/validate-result-schemas.mjs's checkImplementerStatus, checkChallengerAttackScenarios, and friends add all of it on top for any harness that can run them. See ai/schemas/README.md 'Native harness composition (result.schema.json)'. result.envelope.schema.json stays the deliberately envelope-only shape (payload: {type: object}, no dispatch) for whichever purpose only needs to validate the envelope fields themselves.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "role", "status", "head", "produced_at", "producer", "run", "payload"],
@@ -104,6 +104,60 @@
           "payload": {
             "required": ["blocked_question"],
             "properties": { "blocked_question": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Same reasoning as the implementer completed/blocked pair above: role and status are both envelope-level fields this composed document can see in the same if as the payload property its then reaches into, which the standalone result.challenger.schema.json (payload-only, never sees status) cannot express. attack_scenarios minItems:1 already exists on the shared property; maxItems:0 for the blocked direction is why this schema-subset engine gained maxItems.",
+      "if": {
+        "properties": { "role": { "const": "challenger" }, "status": { "const": "completed" } },
+        "required": ["role", "status"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": { "attack_scenarios": { "minItems": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "role": { "const": "challenger" }, "status": { "const": "blocked" } },
+        "required": ["role", "status"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": { "attack_scenarios": { "maxItems": 0 } }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Challenger's completed/blocked attack_scenarios conditional, expressible here for the same reason as implementer's completed/blocked pair above: role and status are both envelope-level fields this composed document can see in the same if as the payload property its then reaches into. The standalone result.challenger.schema.json never sees status at all, so scripts/validate-result-schemas.mjs's checkChallengerAttackScenarios still enforces the identical rule for the standalone challenger kind, which never sees this composed schema.",
+      "if": {
+        "properties": { "role": { "const": "challenger" }, "status": { "const": "completed" } },
+        "required": ["role", "status"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": { "attack_scenarios": { "minItems": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "role": { "const": "challenger" }, "status": { "const": "blocked" } },
+        "required": ["role", "status"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": { "attack_scenarios": { "maxItems": 0 } }
           }
         }
       }

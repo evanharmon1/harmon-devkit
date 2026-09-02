@@ -218,8 +218,6 @@ const SEMANTIC_ONLY = new Set([
   'result.challenger.schema/invalid/blocked-with-findings.json',
   'result.challenger.schema/invalid/attack-scenario-unknown-finding-reference.json',
   'result.challenger.schema/invalid/attack-scenario-duplicate-id.json',
-  'result.challenger.schema/invalid/completed-with-empty-attack-scenarios.json',
-  'result.challenger.schema/invalid/blocked-with-attack-scenarios.json',
   'result.integrator.schema/invalid/accepted-reviewed_commit-mismatch.json',
   'result.integrator.schema/invalid/applied-dispositions-duplicate-finding-id.json',
   'result.integrator.schema/invalid/blocked-with-clean-verdict.json',
@@ -368,6 +366,29 @@ function expect(description, condition) {
   expect(
     'minimum/maximum: error message names the bound',
     engine.validate(0, schema, '$x').some((e) => e.includes('>= 1'))
+  )
+}
+
+// maxItems (added for #635's challenger completed/blocked attack_scenarios
+// conditional — minItems already existed for ac_test_map's non-emptiness)
+{
+  const schema = { type: 'array', minItems: 1, maxItems: 2 }
+  const engine = createSchemaValidator(schema)
+  expect('maxItems: rejects an array above it', engine.validate([1, 2, 3], schema, '$x').length > 0)
+  expect('maxItems: accepts the boundary value', engine.validate([1, 2], schema, '$x').length === 0)
+  expect('maxItems of 0: rejects any non-empty array', (() => {
+    const zeroSchema = { type: 'array', maxItems: 0 }
+    const zeroEngine = createSchemaValidator(zeroSchema)
+    return zeroEngine.validate([1], zeroSchema, '$x').length > 0
+  })())
+  expect('maxItems of 0: accepts an empty array', (() => {
+    const zeroSchema = { type: 'array', maxItems: 0 }
+    const zeroEngine = createSchemaValidator(zeroSchema)
+    return zeroEngine.validate([], zeroSchema, '$x').length === 0
+  })())
+  expect(
+    'maxItems: error message names the bound',
+    engine.validate([1, 2, 3], schema, '$x').some((e) => e.includes('at most 2 item(s)'))
   )
 }
 
@@ -685,6 +706,25 @@ accept_context_case \
     adjudication \
     "$fixtures_dir/adjudication.schema/valid/omator-397-challenge-r1-adjudication.json" \
     --pass "$fixtures_dir/result.reviewer.schema/valid/omator-397-challenge-r1.json"
+
+# #635 challenge round 2: a challenge-stage --pass used to be hard-rejected as
+# "expected reviewer, found challenger" regardless of its actual content,
+# because passAllowedRoles/passRole never admitted the new role at all. Proven
+# both ways: a genuine CHALLENGER pass is now accepted (the fix), and a
+# REVIEWER pass for the same stage still is too (a pre-#635 trajectory, e.g.
+# every omator-397 challenge-round fixture above, must keep working).
+accept_context_case \
+    "a challenge-stage adjudication is accepted against a CHALLENGER --pass envelope" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/challenger-pass-adjudication.json" \
+    --pass "$fixtures_dir/result.challenger.schema/valid/single-finding-null-line.json"
+
+run_context_case \
+    "a challenge-stage adjudication rejects an IMPLEMENTER --pass envelope (the role allowlist still excludes it)" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/valid/challenger-pass-adjudication.json" \
+    "expected reviewer or challenger, found" \
+    --pass "$fixtures_dir/result.implementer.schema/valid/completed.json"
 
 accept_context_case \
     "an integration-stage adjudication is checked against an INTEGRATOR --pass envelope, priority fidelity skipped" \

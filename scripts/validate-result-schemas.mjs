@@ -27,11 +27,13 @@
 //                                 guaranteed-mismatch: rejects an envelope
 //                                 whose `run` names a different run.
 //   --pass <envelope.json>        (adjudication only, repeatable) the
-//                                 envelope this document adjudicates: a
-//                                 reviewer envelope for stage challenge/
-//                                 review, or an INTEGRATOR envelope for
-//                                 stage integration (the document's own
-//                                 `stage` decides which — read before
+//                                 envelope this document adjudicates: for
+//                                 stage challenge, a REVIEWER envelope (a
+//                                 pre-#635 trajectory) or a CHALLENGER one
+//                                 (post-#635); stage review is REVIEWER-only
+//                                 (that role never split); stage integration
+//                                 is INTEGRATOR-only (the document's own
+//                                 `stage` decides which set applies — read before
 //                                 parsing the rest of argv, since --pass may
 //                                 appear anywhere). Each file is itself
 //                                 validated in full (envelope schema + its
@@ -213,16 +215,21 @@ function parseArgs(argv) {
     usage()
     process.exit(2)
   }
-  // --pass's own expected role: a reviewer envelope for stage challenge/
-  // review, an integrator envelope for stage integration. --pass is parsed
-  // (and its file validated) as the loop below reaches it, which may be
-  // before OR after this document's own `stage` would otherwise be known —
-  // so peek at it now, from the primary file already in hand, rather than
-  // discovering it mid-parse.
-  let passRole = 'reviewer'
+  // --pass's own expected role(s). --pass is parsed (and its file validated)
+  // as the loop below reaches it, which may be before OR after this
+  // document's own `stage` would otherwise be known — so peek at it now,
+  // from the primary file already in hand, rather than discovering it
+  // mid-parse.
+  // Stage `review` has always been reviewer-only; stage `integration` is
+  // integrator-only. Stage `challenge` now admits EITHER role: `reviewer`
+  // for a pre-#635 trajectory (the single pre-split role covered both
+  // stages) or `challenger` going forward — peeking a fixed single expected
+  // role here would reject every legitimate challenger --pass outright.
+  let passAllowedRoles = ['reviewer']
   if (kind === 'adjudication') {
     const peek = loadJson(file)
-    if (peek && peek.stage === 'integration') passRole = 'integrator'
+    if (peek && peek.stage === 'integration') passAllowedRoles = ['integrator']
+    else if (peek && peek.stage === 'challenge') passAllowedRoles = ['reviewer', 'challenger']
   }
   const options = {
     knownIds: null,
@@ -248,30 +255,46 @@ function parseArgs(argv) {
       case '--pass': {
         const passFile = rest[(i += 1)]
         const data = loadAndValidateContext(passFile, '--pass', (candidate) => {
-          const errors = validateEnvelopeInstance(candidate, passRole, {
+          // Dispatch as `envelope` (self-dispatch on candidate's own role)
+          // rather than asserting one fixed expected role, then separately
+          // confirm that role is one this stage may legitimately produce —
+          // this is what lets a challenge-stage --pass be either a
+          // pre-#635 reviewer pass or a challenger pass without the two
+          // being conflated or one being silently rejected.
+          if (
+            candidate &&
+            typeof candidate.role === 'string' &&
+            !passAllowedRoles.includes(candidate.role)
+          ) {
+            return [
+              `$result.role: expected ${passAllowedRoles.join(' or ')}, found ${JSON.stringify(candidate.role)}`
+            ]
+          }
+          const errors = validateEnvelopeInstance(candidate, 'envelope', {
             knownIds: null,
             runId: null,
             initiatedBy: null
           })
-          // A blocked REVIEWER contributes no pass at all (the orchestrator
-          // retries it once, spec § Configuration) — a status: blocked
-          // reviewer envelope is a perfectly valid standalone result (it
-          // just means the finder produced nothing), but it is never a
-          // legitimate --pass: checkReviewerBlockedStatus already forces
-          // its findings empty, so there is never real content to cross-
-          // check an adjudication against, unconditionally. A blocked
-          // INTEGRATOR is different: checkIntegratorBlockedStatus permits
-          // verdict findings/pending/escalate while blocked (only clean is
-          // forbidden), so a blocked integrator CAN carry real findings —
+          // A blocked confidence-role pass (reviewer OR challenger) contributes
+          // no pass at all (the orchestrator retries it once, spec §
+          // Configuration) — a status: blocked envelope is a perfectly valid
+          // standalone result (it just means the finder produced nothing), but
+          // it is never a legitimate --pass: checkReviewerBlockedStatus already
+          // forces its findings empty for either role, so there is never real
+          // content to cross-check an adjudication against, unconditionally. A
+          // blocked INTEGRATOR is different: checkIntegratorBlockedStatus
+          // permits verdict findings/pending/escalate while blocked (only clean
+          // is forbidden), so a blocked integrator CAN carry real findings —
           // evidence gathered before being cut short — and is accepted as
-          // --pass context precisely when it does; one with none is
-          // rejected for the same "nothing to adjudicate" reason.
+          // --pass context precisely when it does; one with none is rejected
+          // for the same "nothing to adjudicate" reason.
+          const isConfidenceRole = candidate && (candidate.role === 'reviewer' || candidate.role === 'challenger')
           if (errors.length === 0 && candidate.status === 'blocked') {
             const hasFindings =
               candidate.payload &&
               Array.isArray(candidate.payload.findings) &&
               candidate.payload.findings.length > 0
-            if (passRole === 'reviewer' || !hasFindings) {
+            if (isConfidenceRole || !hasFindings) {
               errors.push('$result.status: a blocked pass contributes no findings and cannot be used as --pass context')
             }
           }

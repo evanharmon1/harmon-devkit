@@ -185,11 +185,13 @@ keyword, for every one of these:
   result per configured finder at the same `reviewed_head`"); an
   integration round is exactly one integrator envelope, so more than one
   `--pass` for stage `integration` is rejected outright, naming the extra
-  file, before anything else in this check runs. Which role `--pass`
-  is validated as (reviewer vs. integrator) is decided by the document's
-  own `stage` — `integration` selects an integrator envelope, `challenge`/
-  `review` a reviewer one — read before the rest of argv is even parsed,
-  since `--pass` may appear anywhere on the command line. `--pass` may be
+  file, before anything else in this check runs. Which role(s) `--pass`
+  may be validated as is decided by the document's own `stage` —
+  `integration` selects an integrator envelope; `review` a reviewer one
+  (that role has never split); `challenge` a reviewer one (a pre-#635
+  trajectory) or a challenger one (#635), peeked from each `--pass` file's
+  own declared `role` rather than assumed — read before the rest of argv is
+  even parsed, since `--pass` may appear anywhere on the command line. `--pass` may be
   given once per finder in a challenge/review round; the validator first
   checks every supplied pass agrees with every other on its full run
   identity — `run_id` AND `initiated_by`, the pair that names a run — (and,
