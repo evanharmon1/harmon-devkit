@@ -130,6 +130,48 @@ for field in root_comment_id reply_text head adjudicated_priority classification
     assert_contains "$entry" "\"$field\""
 done
 
+echo "==> thread-reply-plan uses the CURRENT integration pass's open-thread state, not a stale earlier one"
+# integration-r1-human.json (round 1) still lists IC_kwIarandom0001 as
+# unanswered — but a later round-2 pass (added here) says it has since been
+# answered. thread-reply-plan must follow the current pass's view, not
+# round 1's now-stale one, even though the underlying finding was originally
+# reported by round 1's pass.
+stale_thread="${test_tmp}/stale-thread-root"
+mkdir -p "$stale_thread"
+cp -r "${record_dir}/." "$stale_thread/"
+cat >"${stale_thread}/passes/integration-r2-human.json" <<'JSON'
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "2222222222222222222222222222222222222222",
+  "produced_at": "2026-08-30T14:00:00Z",
+  "producer": { "harness": "claude-code", "model": "claude-sonnet-5", "tier": "economy" },
+  "run": { "run_id": "run-637-fixture-0001", "initiated_by": "human" },
+  "payload": {
+    "checks": [{ "name": "verify", "bucket": "pass", "run_id": "9000000003", "required": true }],
+    "codex_cycle": {
+      "head": "2222222222222222222222222222222222222222",
+      "cycle": 2,
+      "attempt": 1,
+      "trigger_comment_id": "IC_trigger0002",
+      "accepted": { "surface": "review", "id": "PRR_review0002", "reviewed_commit": "2222222222222222222222222222222222222222" },
+      "exit_code": 0
+    },
+    "integration_round": 2,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-30T14:00:00Z",
+    "verdict": "pending"
+  }
+}
+JSON
+run thread-reply-plan --record "$stale_thread"
+assert_rc 0
+entries_now="$(node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).entries.length)" <<<"$out")"
+[ "$entries_now" = 0 ] ||
+    fail "expected 0 entries once round 2 reports the thread answered, got $entries_now: $out"
+
 echo "==> cross-document consistency: an orphan settlement (no matching deferred finding) is rejected"
 bad_run="${test_tmp}/orphan-settlement"
 mkdir -p "$bad_run"
@@ -181,17 +223,57 @@ mkdir -p "$challenger_wrong_stage"
 cp -r "${record_dir}/." "$challenger_wrong_stage/"
 node -e "
 const fs = require('fs');
-// Remove the finding from its real (challenge-stage) adjudication first, so
-// only one document claims it, then have review round 1 claim it instead —
-// same head/run_id, reusing the challenger pass's own finding id. STAGE_ROLES
-// must still refuse it: a challenger pass is legitimate for challenge, never
-// for review.
-const chDoc = JSON.parse(fs.readFileSync('${challenger_wrong_stage}/adjudications/challenge-r1.json', 'utf8'));
-chDoc.adjudications = chDoc.adjudications.filter((a) => a.finding_id !== 'challenge-r1-codex-cli-1');
-fs.writeFileSync('${challenger_wrong_stage}/adjudications/challenge-r1.json', JSON.stringify(chDoc, null, 2));
+// A dedicated pass file, isolated from the shared challenge-r1-codex-cli.json
+// (reusing that file's OWN finding here would also change its payload.stage
+// for the OTHER finding it still legitimately backs in challenge-r1.json).
+// result.challenger.schema.json pins payload.stage to the const \"challenge\"
+// — a challenger payload can never itself claim to be review-stage — so the
+// finding id is what is reassigned to review-r1's coordinates (satisfying
+// the finding-id-segment check), while payload.stage/round stay genuinely
+// \"challenge\"/1. That is what isolates STAGE_ROLES' role check: it fires
+// before the payload-coordinate check ever runs for this row (both would
+// fail here, but the role check is earlier in the function), so it is the
+// one actually observed.
+const adversarialPass = {
+  schema: 2,
+  role: 'challenger',
+  status: 'completed',
+  head: '1111111111111111111111111111111111111111',
+  produced_at: '2026-08-30T11:30:00Z',
+  producer: { harness: 'codex-cli', model: 'gpt-5-codex', tier: 'frontier' },
+  run: { run_id: 'run-637-fixture-0001', initiated_by: 'human' },
+  payload: {
+    stage: 'challenge',
+    round: 1,
+    reviewed_head: '1111111111111111111111111111111111111111',
+    finder: 'codex-cli',
+    findings: [
+      {
+        id: 'review-r1-codex-cli-99',
+        path: 'scripts/render-dev-flow.mjs',
+        line: 210,
+        class: 'correctness',
+        provenance: 'original',
+        fingerprint: 'new',
+        priority: 'P1',
+        recommended_disposition: 'fix',
+        evidence: 'adversarial: a genuine challenger pass whose finding id is reassigned to review round 1 coordinates'
+      }
+    ],
+    counts: { P0: 0, P1: 1, P2: 0, P3: 0 },
+    attack_scenarios: [
+      {
+        id: 'as-adversarial-1',
+        description: 'Reassigned a challenger pass finding to review round 1 coordinates via its finding id alone',
+        outcome: 'surfaced-finding',
+        finding_id: 'review-r1-codex-cli-99'
+      }
+    ]
+  }
+};
+fs.writeFileSync('${challenger_wrong_stage}/passes/adversarial-challenger.json', JSON.stringify(adversarialPass, null, 2));
 const revDoc = JSON.parse(fs.readFileSync('${challenger_wrong_stage}/adjudications/review-r1.json', 'utf8'));
-revDoc.reviewed_head = '1111111111111111111111111111111111111111';
-revDoc.adjudications[0].finding_id = 'challenge-r1-codex-cli-1';
+revDoc.adjudications[0].finding_id = 'review-r1-codex-cli-99';
 fs.writeFileSync('${challenger_wrong_stage}/adjudications/review-r1.json', JSON.stringify(revDoc, null, 2));
 "
 run deferred-findings --record "$challenger_wrong_stage"
@@ -213,6 +295,23 @@ run deferred-findings --record "$bad_run_id"
 assert_rc 1
 assert_contains "$err" "does not match run.json's run_id"
 
+echo "==> cross-document consistency: adjudication documents must agree on run_id even with no run.json to anchor it"
+no_run_json_mismatch="${test_tmp}/no-run-json-run-id-mismatch"
+mkdir -p "$no_run_json_mismatch"
+cp -r "${record_dir}/." "$no_run_json_mismatch/"
+rm "${no_run_json_mismatch}/run.json"
+node -e "
+const fs = require('fs');
+const p = '${no_run_json_mismatch}/adjudications/challenge-r1.json';
+const doc = JSON.parse(fs.readFileSync(p, 'utf8'));
+doc.run_id = 'some-other-run';
+fs.writeFileSync(p, JSON.stringify(doc, null, 2));
+"
+run adjudication-record --record "$no_run_json_mismatch"
+assert_rc 1
+assert_contains "$err" "does not match"
+assert_contains "$err" "some-other-run"
+
 echo "==> cross-document consistency: two files claiming the same round are rejected"
 dup_round="${test_tmp}/duplicate-round"
 mkdir -p "$dup_round"
@@ -222,16 +321,22 @@ run deferred-findings --record "$dup_round"
 assert_rc 1
 assert_contains "$err" "is already claimed by"
 
-echo "==> cross-document consistency: a duplicate finding id across DIFFERENT rounds is rejected"
+echo "==> cross-document consistency: a duplicate finding id within the same document is rejected"
+# A duplicate spanning two DIFFERENT (stage, round) documents is no longer
+# constructible: the finding-id-segment check (below) requires an id's own
+# encoded stage/round to match its containing document, and loadRecord
+# already refuses two documents claiming the same (stage, round) — together
+# they mean an id's encoded coordinates pin it to exactly one document. So
+# this now exercises the one remaining shape: the same id appearing twice
+# inside one document's own adjudications[].
 dup_finding="${test_tmp}/duplicate-finding-id"
 mkdir -p "$dup_finding"
 cp -r "${record_dir}/." "$dup_finding/"
 node -e "
 const fs = require('fs');
-const p = '${dup_finding}/adjudications/review-r2.json';
+const p = '${dup_finding}/adjudications/challenge-r1.json';
 const doc = JSON.parse(fs.readFileSync(p, 'utf8'));
-const dupe = JSON.parse(fs.readFileSync('${record_dir}/adjudications/challenge-r1.json', 'utf8')).adjudications[0];
-doc.adjudications.push(dupe);
+doc.adjudications.push(doc.adjudications[0]);
 fs.writeFileSync(p, JSON.stringify(doc, null, 2));
 "
 run deferred-findings --record "$dup_finding"
@@ -282,6 +387,25 @@ run deferred-findings --record "$drift_priority"
 assert_rc 1
 assert_contains "$err" "copies reviewer_priority"
 
+echo "==> cross-document consistency: a pass whose payload declares a different round is rejected"
+# The finding id and the adjudicating document both correctly say round 1 —
+# only the pass's OWN payload.round (a second, independent encoding) drifts,
+# which only the payload-coordinate check (not the finding-id-segment check)
+# can catch.
+drift_payload_round="${test_tmp}/payload-round-drift"
+mkdir -p "$drift_payload_round"
+cp -r "${record_dir}/." "$drift_payload_round/"
+node -e "
+const fs = require('fs');
+const p = '${drift_payload_round}/passes/review-r1-codex-cli.json';
+const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+envelope.payload.round = 99;
+fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+"
+run deferred-findings --record "$drift_payload_round"
+assert_rc 1
+assert_contains "$err" "its pass payload declares stage/round review/99"
+
 echo "==> cross-document consistency: disposition defer is rejected for stage integration"
 defer_integration="${test_tmp}/defer-in-integration"
 mkdir -p "$defer_integration"
@@ -318,12 +442,33 @@ echo "==> usage: --round rejects a non-integer value instead of silently becomin
 run round-table --record "$record_dir" --stage review --round abc
 assert_rc 2
 
+echo "==> usage: --pr rejects a partially-parsed or non-positive value instead of silently truncating"
+run publish --record "$record_dir" --repo o/r --pr 1e2 --head "1111111111111111111111111111111111111111" --sections policy-disclosure
+assert_rc 2
+run publish --record "$record_dir" --repo o/r --pr -5 --head "1111111111111111111111111111111111111111" --sections policy-disclosure
+assert_rc 2
+run publish --record "$record_dir" --repo o/r --pr 0 --head "1111111111111111111111111111111111111111" --sections policy-disclosure
+assert_rc 2
+
 echo "==> verdict.json / policy.json shapes are validated, not just parsed as JSON"
 bad_verdict="${test_tmp}/bad-verdict.json"
 echo '{"outcome": 42}' >"$bad_verdict"
 run round-table --record "$record_dir" --stage review --round 2 --verdict "$bad_verdict"
 assert_rc 1
 assert_contains "$err" "outcome must be a non-empty string"
+
+echo "==> verdict.json's round counters must be non-negative / at-least-1, not just integers"
+negative_rounds_counted="${test_tmp}/negative-rounds-counted.json"
+echo '{"outcome": "capped", "rounds_counted": -1}' >"$negative_rounds_counted"
+run round-table --record "$record_dir" --stage review --round 2 --verdict "$negative_rounds_counted"
+assert_rc 1
+assert_contains "$err" "rounds_counted, if present, must be a non-negative integer"
+
+zero_next_round="${test_tmp}/zero-next-round.json"
+echo '{"outcome": "capped", "next_round": 0}' >"$zero_next_round"
+run round-table --record "$record_dir" --stage review --round 2 --verdict "$zero_next_round"
+assert_rc 1
+assert_contains "$err" "next_round, if present, must be a positive integer"
 
 bad_policy="${test_tmp}/bad-policy.json"
 echo '{"rigor": {"level": "standard"}}' >"$bad_policy"
@@ -336,7 +481,20 @@ bad_cap="${test_tmp}/bad-cap-policy.json"
 echo '{"rigor": {"level": "standard", "source": "default_rigor"}, "rounds": {"challenge": "three"}}' >"$bad_cap"
 run policy-disclosure --record "$record_dir" --policy "$bad_cap"
 assert_rc 1
-assert_contains "$err" "rounds.challenge, if present, must be a non-negative integer"
+assert_contains "$err" "rounds.challenge must be a non-negative integer"
+
+echo "==> policy.json's rounds cannot be omitted or partial — every cap is required"
+missing_rounds="${test_tmp}/missing-rounds-policy.json"
+echo '{"rigor": {"level": "standard", "source": "default_rigor"}}' >"$missing_rounds"
+run policy-disclosure --record "$record_dir" --policy "$missing_rounds"
+assert_rc 1
+assert_contains "$err" "rounds must be an object"
+
+partial_rounds="${test_tmp}/partial-rounds-policy.json"
+echo '{"rigor": {"level": "standard", "source": "default_rigor"}, "rounds": {"challenge": 3, "review": 3, "integration": 4, "remediation": 4}}' >"$partial_rounds"
+run policy-disclosure --record "$record_dir" --policy "$partial_rounds"
+assert_rc 1
+assert_contains "$err" "rounds.min_rounds must be a non-negative integer"
 
 echo "==> deferred-findings task items carry the finding_id, not just location and summary"
 for id in review-r1-codex-cli-1 review-r1-codex-cli-3 review-r2-codex-cli-1 review-r2-codex-cli-3; do

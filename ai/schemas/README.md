@@ -1063,18 +1063,27 @@ family's other scripts).
 | `run.json` | One `run.schema.json` document | For `blocker-comment`, `readiness-input`; optional elsewhere |
 | `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
 | `passes/*.json` | Result envelopes (`role: challenger`, `reviewer`, or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `body`/`source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location, its adjudication's own `evidence`) when no matching pass is supplied. **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
-| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines. Shape-validated when present (`outcome` a non-empty string; `reason` a string; `rounds_counted`/`next_round` integers; `corrections` an array of strings — each only when present) |
-| `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present the same way as `verdict.json`, including each individual `rounds.*` value (a non-negative integer, not just the container) |
+| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines. Shape-validated when present (`outcome` a non-empty string; `reason` a string; `rounds_counted` a non-negative integer; `next_round` a positive integer; `corrections` an array of strings — each only when present) |
+| `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present: `rigor.level`/`rigor.source` non-empty strings; `rounds` and every one of its five caps are **required** whenever `policy.json` exists at all (each a non-negative integer) — a partial or omitted `rounds` would let the rendered rigor line silently disclose an incomplete budget; `disclosures[]` stays optional, each entry `{kind, detail}` |
 
 Every file present is schema-validated (structural shape only — this
 family's full receipt suite needs cross-run context, e.g. `--known-ids`, no
 single record directory carries, and stays `validate-result-schemas.mjs`'s
 job upstream of the renderer); a malformed document fails loudly naming the
 file, never a partial render. What IS local to one record directory is also
-checked, before anything renders: every pass's `head`/`run_id`/role must
-agree with the adjudication document that cross-references it by finding id
-(role: stage `integration` requires an `integrator` pass, everything else a
-`reviewer` pass); a reviewer/challenge finding's copied `reviewer_priority`
+checked, before anything renders: a finding id's own `stage`/`round`
+segments (it is built from `<stage>-r<round>-<finder>-<n>`) must agree with
+its containing adjudication document's own declared `stage`/`round` — a
+second, independent encoding that must not disagree with the first; every
+pass's `head`/`run_id`/role must agree with the adjudication document that
+cross-references it by finding id (role: stage `integration` requires an
+`integrator` pass, everything else a `reviewer` pass); for a challenger or
+reviewer pass specifically, its payload's own `stage`/`round`/`finder`/
+`reviewed_head` (fields `result.challenger`/`result.reviewer.schema.json`
+both require) must also agree with that same row — envelope-level
+`head`/`run_id`/role agreement alone would not catch a pass whose *payload*
+claims a different round or stage than the document adjudicating it;
+a reviewer/challenge finding's copied `reviewer_priority`
 must still equal its pass's own asserted `priority` (a drifted copy would
 hide the very reviewer-vs-orchestrator disagreement it exists to preserve);
 no finding id may be adjudicated twice across separate adjudication files, and
@@ -1082,9 +1091,12 @@ no two adjudication documents may claim the same `(stage, round)` (one
 document per round, or `adjudication-record` would render both files' rows
 under each file's collapsed block instead of one round each);
 `disposition: defer` is rejected for stage `integration` (nothing downstream
-would ever settle it); every adjudication document's own `run_id` must equal
-`run.json`'s (finding ids are unique only *within* a run); and every
-`run.json` settlement must name a finding some supplied adjudication
+would ever settle it); every adjudication document's own `run_id` must agree
+with `run.json`'s when `run.json` is supplied, or with each other when it is
+not (`run.json` is optional for several projections, and without this check
+two adjudication documents from genuinely different runs could still combine
+into one PR-body ledger) — finding ids are unique only *within* a run; and
+every `run.json` settlement must name a finding some supplied adjudication
 document actually dispositioned `defer` (an "orphan" settlement is rejected),
 with a `reference.type` *and* value shape that agree with its own
 `disposition` (`fix`→ 40-hex `sha`, `decline`→`comment_id`,
@@ -1150,10 +1162,15 @@ worth closing on a future revision of this family if that evidence is
 needed for the directly-resolved case too.
 
 `thread-reply-plan` carries only **integration-stage** findings whose
-`source_id` is named in that same pass's own `unanswered_thread_roots` — the
-only findings with both a GitHub-native id to reply to
-(`result.integrator.schema.json` `findings[].source_id`) and confirmation
-that the thread is still open. A `source_id` can just as easily be a CI-check
+`source_id` is named in the **current** integration pass's
+`unanswered_thread_roots` — current meaning the supplied `passes/*.json`
+integrator envelope with the highest `payload.integration_round`, not
+necessarily the pass that originally reported the finding. "Still open" is a
+property of the latest snapshot: a finding from an earlier round whose
+thread was answered by a later round would otherwise be judged against its
+own originating pass's now-stale root list forever, since a finding id is
+reported by exactly one pass file by construction and never re-reported once
+its thread is settled. A `source_id` can just as easily be a CI-check
 marker or an already-answered thread (the schema permits both), so skipping
 this filter would attempt an invalid reply or duplicate an existing one.
 Challenge/review findings (`result.reviewer.schema.json`) carry no
@@ -1222,7 +1239,11 @@ terminal, a copy-pasted number) is a `pr-mismatch` blocker, checked before
 any GitHub call — including when `run.json.pr.url` cannot even be parsed as
 a `github.com` pull URL, which blocks rather than silently skipping the
 repo-binding half of the check (a malformed URL disabling its own safety net
-is worse than not having the check).
+is worse than not having the check), and including when the URL's own
+trailing pull number disagrees with `run.json.pr.number` itself — a second,
+independent encoding of the same PR that `run.json` could otherwise state
+inconsistently (e.g. `{number: 123, url: ".../pull/999"}`) without either
+half of the check alone catching it.
 
 **Two publish calls racing the same PR** is the same GitHub
 read-modify-write limitation wearing a different interloper: `gh pr edit`
@@ -1233,7 +1254,11 @@ most likely real trigger — an accidental double-invocation, or a retry
 firing while a prior attempt is still in flight — with an exclusive,
 `--record`-directory-scoped lock (`<record dir>/.publish-lock`, created with
 `wx` so a second holder fails fast rather than racing) held for the whole
-call and released on every exit path; a second call while one is in flight
+call and released on every exit path — including a section renderer's
+`fail()`, which exits via `process.exit()` and so skips any pending `finally`
+entirely; the lock is also released from a `process` `'exit'` listener (the
+one hook Node runs on every exit path, `process.exit()` included) so a
+mid-render failure cannot strand it. A second call while one is in flight
 is a `concurrent-publish` blocker. This does **not** — and structurally
 cannot, from a single-process lock — close two publish calls against
 *different* record directories racing the same PR, which remains the same

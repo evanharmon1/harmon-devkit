@@ -204,9 +204,14 @@ function parseArgs(argv) {
       case '--repo':
         options.repo = need(arg)
         break
-      case '--pr':
-        options.pr = Number.parseInt(need(arg), 10)
+      case '--pr': {
+        const raw = need(arg)
+        options.pr = Number.parseInt(raw, 10)
+        if (!Number.isInteger(options.pr) || String(options.pr) !== raw || options.pr < 1) {
+          usageError(`--pr must be a positive integer, got ${raw}`)
+        }
         break
+      }
       case '--head':
         options.head = need(arg)
         break
@@ -362,11 +367,16 @@ function validateVerdictShape(verdict, file) {
   if (verdict.reason !== undefined && typeof verdict.reason !== 'string') {
     fail(`${file}: reason, if present, must be a string`)
   }
-  if (verdict.rounds_counted !== undefined && !Number.isInteger(verdict.rounds_counted)) {
-    fail(`${file}: rounds_counted, if present, must be an integer`)
+  // Bounds, not just type: rounds_counted is a count (never negative) and
+  // next_round is 1-based (never zero or negative) — an out-of-range value
+  // is exactly the kind of corrupted-evaluator-result this shape check
+  // exists to catch before it becomes authoritative-looking output like
+  // "Spent: integration -1/4" or "Next action: dispatch round -2".
+  if (verdict.rounds_counted !== undefined && !(Number.isInteger(verdict.rounds_counted) && verdict.rounds_counted >= 0)) {
+    fail(`${file}: rounds_counted, if present, must be a non-negative integer`)
   }
-  if (verdict.next_round !== undefined && !Number.isInteger(verdict.next_round)) {
-    fail(`${file}: next_round, if present, must be an integer`)
+  if (verdict.next_round !== undefined && !(Number.isInteger(verdict.next_round) && verdict.next_round >= 1)) {
+    fail(`${file}: next_round, if present, must be a positive integer`)
   }
   if (verdict.corrections !== undefined) {
     if (!Array.isArray(verdict.corrections) || !verdict.corrections.every((c) => typeof c === 'string')) {
@@ -388,19 +398,20 @@ function validatePolicyShape(policy, file) {
   if (typeof policy.rigor.source !== 'string' || policy.rigor.source === '') {
     fail(`${file}: rigor.source must be a non-empty string`)
   }
-  if (policy.rounds !== undefined) {
-    if (typeof policy.rounds !== 'object' || policy.rounds === null || Array.isArray(policy.rounds)) {
-      fail(`${file}: rounds, if present, must be an object`)
-    }
-    // Each cap is individually validated, not just the container: an
-    // untyped value here (a string, a negative number, a nested object)
-    // would otherwise reach policyLine's template string unexamined and
-    // publish a garbled or nonsensical resolved-policy disclosure.
-    for (const key of ['challenge', 'review', 'integration', 'remediation', 'min_rounds']) {
-      const value = policy.rounds[key]
-      if (value !== undefined && !(Number.isInteger(value) && value >= 0)) {
-        fail(`${file}: rounds.${key}, if present, must be a non-negative integer`)
-      }
+  // rounds and each of its five caps are REQUIRED, not merely validated when
+  // present: AGENTS.md's disclosure mandate is unconditional ("Announce the
+  // resolved caps on entering the loop"), so any policy.json this renderer
+  // sees should already carry the complete set. Treating a cap as optional
+  // would let policyLine() silently publish a partial rigor announcement
+  // (rounds omitted entirely, or missing just one cap) instead of failing
+  // loudly on the incomplete upstream write.
+  if (typeof policy.rounds !== 'object' || policy.rounds === null || Array.isArray(policy.rounds)) {
+    fail(`${file}: rounds must be an object`)
+  }
+  for (const key of ['challenge', 'review', 'integration', 'remediation', 'min_rounds']) {
+    const value = policy.rounds[key]
+    if (!(Number.isInteger(value) && value >= 0)) {
+      fail(`${file}: rounds.${key} must be a non-negative integer`)
     }
   }
   if (policy.disclosures !== undefined) {
@@ -425,8 +436,6 @@ function buildFindingIndex(record) {
   const passFindingsById = new Map()
   for (const { file, envelope } of record.passes) {
     const findings = envelope.payload.findings || []
-    const unansweredThreadRoots =
-      envelope.role === 'integrator' ? new Set(envelope.payload.unanswered_thread_roots || []) : null
     for (const finding of findings) {
       if (passFindingsById.has(finding.id)) {
         fail(`${file}: finding id ${finding.id} also appears in an earlier pass file`)
@@ -436,7 +445,16 @@ function buildFindingIndex(record) {
         role: envelope.role,
         head: envelope.head,
         runId: envelope.run.run_id,
-        unansweredThreadRoots
+        // Only challenger/reviewer payloads declare these (result.challenger
+        // and result.reviewer schema.json both require stage/round/finder/
+        // reviewed_head at the top level; result.integrator's payload has no
+        // equivalent fields) — undefined for an integrator pass, which is
+        // fine since the comparison below is scoped to the two roles that
+        // have them.
+        payloadStage: envelope.payload.stage,
+        payloadRound: envelope.payload.round,
+        payloadFinder: envelope.payload.finder,
+        payloadReviewedHead: envelope.payload.reviewed_head
       })
     }
   }
@@ -447,6 +465,17 @@ function buildFindingIndex(record) {
     for (const entry of doc.adjudications) {
       const idMatch = FINDING_ID.exec(entry.finding_id)
       if (!idMatch) fail(`${file}: malformed finding id ${entry.finding_id}`)
+      // The finding id's own stage/round segments are a second, independent
+      // encoding of where this finding belongs (specs/dev-flow-v2.md: ids
+      // are unique per run by construction, built from stage/round/finder/n)
+      // — they must agree with the document's own declared stage/round, or
+      // a finding id could claim a different round than the very document
+      // adjudicating it.
+      if (idMatch[1] !== doc.stage || Number.parseInt(idMatch[2], 10) !== doc.round) {
+        fail(
+          `${file}: finding id ${entry.finding_id} encodes stage/round ${idMatch[1]}/${idMatch[2]}, but this document's stage/round is ${doc.stage}/${doc.round}`
+        )
+      }
       // A finding is adjudicated in exactly one round document, ever
       // (adjudication.schema.json's own $comment) — two adjudication files
       // naming the same finding_id (a stray copy, or two rounds disagreeing
@@ -494,10 +523,19 @@ function validateCrossDocumentConsistency(record) {
   const rows = buildFindingIndex(record)
   const byId = new Map(rows.map((row) => [row.entry.finding_id, row]))
 
-  if (record.run) {
+  // Adjudication documents must agree on run_id with EACH OTHER even when
+  // there is no run.json to anchor the comparison against — run.json is
+  // optional for several projections (adjudication-record, round-table),
+  // and without this, two adjudication documents from genuinely different
+  // runs could combine into one PR-body ledger that looks like a single
+  // run's coherent history but is not.
+  if (record.adjudications.length > 0) {
+    const anchorIsRunJson = Boolean(record.run)
+    const referenceRunId = anchorIsRunJson ? record.run.run_id : record.adjudications[0].doc.run_id
+    const referenceLabel = anchorIsRunJson ? "run.json's run_id" : `${record.adjudications[0].file}'s run_id`
     for (const { file, doc } of record.adjudications) {
-      if (doc.run_id !== record.run.run_id) {
-        fail(`${file}: its run_id ${doc.run_id} does not match run.json's run_id ${record.run.run_id}`)
+      if (doc.run_id !== referenceRunId) {
+        fail(`${file}: its run_id ${doc.run_id} does not match ${referenceLabel} ${referenceRunId}`)
       }
     }
   }
@@ -529,6 +567,29 @@ function validateCrossDocumentConsistency(record) {
       fail(
         `${row.entry.finding_id}: stage ${row.stage} requires a pass with role ${allowedRoles.join(' or ')}, but its matching pass has role ${row.pass.role}`
       )
+    }
+    // A pass's payload independently declares its own stage/round/finder/
+    // reviewed_head (result.challenger/result.reviewer schema.json) — these
+    // must agree with the adjudicating document's row, or a pass from a
+    // genuinely different round/stage could still enrich this row via the
+    // finding_id join alone (only envelope-level head/run_id/role are
+    // checked above, and none of those catch a payload-level mismatch).
+    if (row.pass.role === 'reviewer' || row.pass.role === 'challenger') {
+      if (row.pass.payloadStage !== row.stage || row.pass.payloadRound !== row.round) {
+        fail(
+          `${row.entry.finding_id}: its pass payload declares stage/round ${row.pass.payloadStage}/${row.pass.payloadRound}, but the adjudicating document's stage/round is ${row.stage}/${row.round}`
+        )
+      }
+      if (row.pass.payloadFinder !== row.finder) {
+        fail(
+          `${row.entry.finding_id}: its pass payload declares finder ${row.pass.payloadFinder}, but the finding id's own finder segment is ${row.finder}`
+        )
+      }
+      if (row.pass.payloadReviewedHead !== row.reviewed_head) {
+        fail(
+          `${row.entry.finding_id}: its pass payload declares reviewed_head ${row.pass.payloadReviewedHead}, but the adjudicating document's reviewed_head is ${row.reviewed_head}`
+        )
+      }
     }
     // The adjudication's reviewer_priority is a COPY of the pass finding's
     // own priority, kept so "reviewer-vs-orchestrator disagreement can be
@@ -918,15 +979,9 @@ function renderRoundTable(record, options) {
 
 function policyLine(policy) {
   const { rigor, rounds } = policy
-  const capParts = []
-  if (rounds) {
-    if ('challenge' in rounds) capParts.push(`challenge ≤${rounds.challenge}`)
-    if ('review' in rounds) capParts.push(`review ≤${rounds.review}`)
-    if ('integration' in rounds) capParts.push(`integration ${rounds.integration}`)
-    if ('remediation' in rounds) capParts.push(`remediation ${rounds.remediation}`)
-    if ('min_rounds' in rounds) capParts.push(`min_rounds ${rounds.min_rounds}`)
-  }
-  const capText = capParts.length > 0 ? ` → ${capParts.join(', ')}` : ''
+  // validatePolicyShape guarantees rounds and all five caps are present by
+  // the time this runs — no defensive branching left to do here.
+  const capText = ` → challenge ≤${rounds.challenge}, review ≤${rounds.review}, integration ${rounds.integration}, remediation ${rounds.remediation}, min_rounds ${rounds.min_rounds}`
   // Backticks make GFM render this literally, but mergeSections' marker
   // scan is a raw byte match with no Markdown awareness — a code span does
   // not stop it from reading a forged marker inside rigor.level/source.
@@ -1006,6 +1061,25 @@ function renderBlockerComment(record, options = {}) {
 // open," so an integration-stage finding with no matching pass is an
 // indeterminate error, never a silent omission — an empty entries[] must
 // mean "confirmed nothing to reply to," not "we couldn't tell."
+// "Still open" is a property of the CURRENT integration snapshot, not of
+// whichever pass first reported a given finding: a finding from an earlier
+// integration round whose thread was answered by a later round would
+// otherwise be judged against its own originating pass's now-stale
+// unanswered_thread_roots forever (risking a duplicate reply), since a
+// finding_id is reported by exactly one pass file by construction
+// (buildFindingIndex's own duplicate-id check) and never re-reported once
+// its thread is settled.
+function currentUnansweredThreadRoots(record) {
+  let latest = null
+  for (const { envelope } of record.passes) {
+    if (envelope.role !== 'integrator') continue
+    if (!latest || envelope.payload.integration_round > latest.payload.integration_round) {
+      latest = envelope
+    }
+  }
+  return latest ? new Set(latest.payload.unanswered_thread_roots || []) : new Set()
+}
+
 function renderThreadReplyPlan(record) {
   const integrationRows = buildFindingIndex(record).filter((row) => row.stage === 'integration')
   for (const row of integrationRows) {
@@ -1015,7 +1089,8 @@ function renderThreadReplyPlan(record) {
       )
     }
   }
-  const rows = integrationRows.filter((row) => row.pass.unansweredThreadRoots.has(row.pass.finding.source_id))
+  const currentRoots = currentUnansweredThreadRoots(record)
+  const rows = integrationRows.filter((row) => currentRoots.has(row.pass.finding.source_id))
   const entries = rows
     .sort(compareRows)
     .map((row) => {
