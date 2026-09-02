@@ -162,6 +162,11 @@ attributable explicit operator instruction MAY override the merge-base value.
 - **WHEN** the change under review replaces a v1 or legacy `.devflow.toml` with a `schema_version = 2` file
 - **THEN** the run resolves its caps, floor, and gates from the merge-base copy interpreted under that copy's own declared shape, while the branch copy must still validate as version 2 and an active older shape is still refused
 
+#### Scenario: A migration branch edits a value the older shape never declared
+
+- **WHEN** the merge-base copy is an older shape with no breadth, convergence, finder, role, or trusted-actor declarations and the branch copy sets any of them
+- **THEN** the run resolves those values from the consumer's built-in defaults, not from the branch copy, and the resolved policy is identical whatever the branch copy declares
+
 ### Requirement: Gate authority separates policy from branch implementation
 
 Merge-base resolution SHALL determine gate policy, including required target
@@ -171,7 +176,11 @@ implementations of both the secret scan and the round-push broker, for example
 by extracting each path with `git show <merge-base>:<path>`. Both
 implementations SHALL live at stable repository-owned paths that stage skills
 reference rather than vendor, so the merge-base extraction survives a skill
-rename. This boundary is
+rename. The materialized unit SHALL be each implementation's full trusted
+closure: every file it executes or reads as configuration, including the
+policy reader and the secret scanner's configuration, extracted from the
+merge base together and consumed through explicit paths, so that no part of
+the pre-push gate resolves a worktree-resident file. This boundary is
 mandatory because a secret is public when the push lands and PR CI is too late.
 A branch that edits either implementation SHALL exercise its changed version in
 required PR CI, but SHALL NOT use that version to authorize its own push. Every
@@ -179,6 +188,11 @@ other local gate SHALL execute its branch implementation and record branch-
 attested evidence. The deterministic readiness authorities SHALL be the merge-
 base-resolved policy and the PR's concluded required CI checks; branch-attested
 local evidence SHALL NOT substitute for a required check conclusion.
+
+#### Scenario: A branch modifies only a gate dependency
+
+- **WHEN** a branch changes only the policy reader or the secret scanner's configuration and leaves the broker and scan entrypoints untouched
+- **THEN** the pre-push gate still executes the merge-base copies of those dependencies, and the branch versions are exercised only by required PR CI
 
 #### Scenario: A branch modifies pre-push enforcement
 

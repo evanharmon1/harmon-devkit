@@ -14,12 +14,23 @@ issue state, never by a DevKit PR.
 
 Execution order (2026-09-02 orchestration plan). A subwave starts only after
 every task its lanes are declared `after` has merged to `main`; each subwave
-holds at most three worktrees. Wave 1: 2.1, 2.3, and 2.4 in parallel, then
-1.3 and 1.1 as lanes free. Wave 2a (after wave 1): 2.2, 3.2, and 4.1.
-Wave 2b (after 2.2): 3.1. Wave 3a (after wave 2): 6.1, 6.2, and 4.2.
-Wave 3b (after 6.1): 5.1. Lanes that share a file (Taskfile targets, schema
-README) merge through the feature branch's single writer rather than editing
-concurrently.
+holds at most three worktrees. Every task below is scheduled exactly once.
+
+- Wave 1 (concurrent lanes, ordered merge): 2.1, 2.3, and 2.4 start
+  together; 1.3 and then 1.1 start as lanes free. Recommended merge order
+  is 1.3, 1.1, 2.1, 2.4, 2.3. Because 2.3 validates challenger passes
+  against 2.1's schema and 2.3 and 2.4 consume the validator 1.3 finishes,
+  each of 2.3 and 2.4 rebases onto the merged 1.3 and 2.1 and re-runs its
+  full suite before it leaves draft; until then its PR body records the
+  seam as an unsettled deferred finding. 1.2 follows 1.1 (maintainer ticks).
+- Wave 2a (after wave 1): 2.2, 3.2, and 4.1.
+- Wave 2b (after 2.2): 3.1, and 3.3 as an audit lane once 2.3 and 3.2 have
+  merged (it adds any receipt case those two did not land and closes #685).
+- Wave 3a (after wave 2): 6.1, 6.2, and 4.2.
+- Wave 3b (after 6.1): 5.1.
+
+Lanes that share a file (Taskfile targets, schema README) merge through the
+feature branch's single writer rather than editing concurrently.
 
 ## 1. Reconcile the contract and schema foundation
 

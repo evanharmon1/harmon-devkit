@@ -100,6 +100,18 @@ would drift. Keeping the broker as a skill asset was rejected because #638
 renames the skill that carried it and the merge-base extraction would then
 point at a path that no longer exists.
 
+The trusted unit is the broker's closure, not its entrypoint. Because the
+broker consumes the policy reader and the secret scan consumes the
+scanner's configuration, a branch that edits only one of those transitive
+files would otherwise steer a merge-base entrypoint from the worktree. The
+merge-base materialization therefore covers every file the broker or scan
+executes or reads as configuration (the broker, the policy reader, the
+scanner config, the gate scripts they invoke), extracted together into one
+tree outside the worktree, and the extracted broker takes its policy,
+registry, and scan inputs as explicit paths into that tree rather than
+resolving anything relative to the worktree. Extracting only the two
+entrypoints was rejected for exactly that reason.
+
 Merge-base resolution protects the policy that selects target slugs,
 allowlists, and thresholds; it does not attest the feature branch's Taskfile
 recipes, scripts, or push-broker implementation. Evidence produced by those
@@ -274,6 +286,18 @@ fallback: an active v1 or legacy file is still refused, and the decoder is
 exercised only from the merge-base resolution path with fixtures for both
 migrations. Keeping the two paths distinct is what reconciles "no fallback
 interpreter" with the anchor's merge-base rule.
+
+The decoder's scope is an invariant rather than a field list: on a
+migration branch, every value the merge-base rule protects (defaults,
+rounds, breadth, convergence, gates, roles, stages, strategy, registry
+mappings, trusted actors) resolves either from the older copy's own
+effective semantics or from the consumer's built-in defaults, and never from
+the branch copy. Where the older shape has no equivalent (breadth,
+convergence predicates, finders, roles, trusted actors), the built-in
+default is the only admissible source, because a built-in cannot be edited
+by the branch. The fixture for each migration asserts that invariant by
+mutating every protected value in the branch copy and proving the resolved
+policy is unchanged.
 
 Its tests evaluate fixture policies only. DevKit's own `.devflow.toml` is a
 rendered Harmon Init artifact and stays on its current shape until the copier
