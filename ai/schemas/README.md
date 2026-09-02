@@ -982,8 +982,20 @@ confidence-stage exit computation, implementing
 corpus under `ai/schemas/fixtures/exit/<case>/`, run by
 `scripts/test-dev-flow-exit.sh` (`task test:dev-flow-exit`, wired into
 `task verify`). Both are usable as a CLI or imported as a library (notably,
-`dev-flow-exit.mjs` imports `resolvePolicy`/`PolicyError` from
-`devflow-policy.mjs` directly rather than shelling out to it).
+`dev-flow-exit.mjs` imports `resolvePolicy`/`crossValidate`/`PolicyError`
+from `devflow-policy.mjs` directly rather than shelling out to it), and both
+have thin Taskfile passthroughs — `task devflow:policy -- resolve|detect
+...` and `task devflow:exit -- ...` — for a human or another tool that
+would rather not spell out `node scripts/devflow-policy.mjs` /
+`scripts/dev-flow-exit.sh` directly. Two caveats for a caller parsing
+`--json` output through either Task target rather than the bare
+script/`.sh` wrapper: `Taskfile.yml`'s repo-wide `output: group` setting
+wraps EVERY task's stdout in `::group::<task>/::endgroup::` marker lines
+(strip them before parsing), and `task` does not reliably propagate a
+command's own exit code (`dev-flow-exit.mjs`'s verdict-carrying `20`/`21`/
+`22` were observed to arrive at the shell as a different `task`-assigned
+code) — read the verdict from the JSON body, not from `task`'s own exit
+status, or call the bare script when the precise exit code matters.
 
 **Shape detection and refusal.** `devflow-policy.mjs` detects `.devflow.toml`'s
 shape from controlling markers only (`schema_version = 2` for v2; `rigor_order`

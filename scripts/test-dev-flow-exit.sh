@@ -20,6 +20,7 @@ fail() {
 }
 
 command -v node >/dev/null 2>&1 || fail "node is required"
+command -v task >/dev/null 2>&1 || fail "task is required"
 [ -f scripts/devflow-policy.mjs ] || fail "missing required asset: scripts/devflow-policy.mjs"
 [ -f scripts/dev-flow-exit.mjs ] || fail "missing required asset: scripts/dev-flow-exit.mjs"
 [ -x scripts/dev-flow-exit.sh ] || fail "scripts/dev-flow-exit.sh must exist and be executable"
@@ -175,6 +176,87 @@ grep -q "cannot cover" "/tmp/dfe-crossval-$$.err" || {
 }
 rm -rf "${empty_run}" "/tmp/dfe-crossval-$$.err"
 echo "OK: dev-flow-exit refuses a policy that fails cross-validation before ever reading --run"
+
+echo "== task devflow:policy -- detect reports v2 for a v2 policy =="
+if ! task devflow:policy -- detect --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
+    >"/tmp/dfp-detect-v2-$$.out" 2>"/tmp/dfp-detect-v2-$$.err"; then
+    cat "/tmp/dfp-detect-v2-$$.out" "/tmp/dfp-detect-v2-$$.err" >&2
+    rm -f "/tmp/dfp-detect-v2-$$.out" "/tmp/dfp-detect-v2-$$.err"
+    fail "task devflow:policy -- detect on a v2 policy unexpectedly failed (exit 0 means v2)"
+fi
+grep -q "shape: v2" "/tmp/dfp-detect-v2-$$.out" || {
+    cat "/tmp/dfp-detect-v2-$$.out" >&2
+    rm -f "/tmp/dfp-detect-v2-$$.out" "/tmp/dfp-detect-v2-$$.err"
+    fail "detect did not report shape: v2"
+}
+rm -f "/tmp/dfp-detect-v2-$$.out" "/tmp/dfp-detect-v2-$$.err"
+echo "OK: task devflow:policy -- detect reports v2 through the Taskfile wrapper"
+
+echo "== task devflow:policy -- detect reports legacy for this repo's own .devflow.toml =="
+if task devflow:policy -- detect --policy .devflow.toml \
+    >"/tmp/dfp-detect-legacy-$$.out" 2>"/tmp/dfp-detect-legacy-$$.err"; then
+    cat "/tmp/dfp-detect-legacy-$$.out" "/tmp/dfp-detect-legacy-$$.err" >&2
+    rm -f "/tmp/dfp-detect-legacy-$$.out" "/tmp/dfp-detect-legacy-$$.err"
+    fail "task devflow:policy -- detect on this repo's own legacy policy unexpectedly reported v2 (exit 0)"
+fi
+grep -q "shape: legacy" "/tmp/dfp-detect-legacy-$$.out" || {
+    cat "/tmp/dfp-detect-legacy-$$.out" >&2
+    rm -f "/tmp/dfp-detect-legacy-$$.out" "/tmp/dfp-detect-legacy-$$.err"
+    fail "detect did not report shape: legacy for this repo's own .devflow.toml"
+}
+rm -f "/tmp/dfp-detect-legacy-$$.out" "/tmp/dfp-detect-legacy-$$.err"
+echo "OK: task devflow:policy -- detect reports legacy through the Taskfile wrapper"
+echo "   (detect only classifies shape — it never resolves — so reading the live"
+echo "   .devflow.toml here is the same sanctioned exception as the refusal check above)"
+
+echo "== task devflow:policy -- resolve works through the Taskfile wrapper, not just the bare script =="
+if ! task devflow:policy -- resolve --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
+    --registry ai/schemas/fixtures/exit/single-round-clean-converge/registry.json \
+    --task-targets ai/schemas/fixtures/exit/single-round-clean-converge/task-targets.json --json \
+    >"/tmp/dfp-task-resolve-$$.out" 2>"/tmp/dfp-task-resolve-$$.err"; then
+    cat "/tmp/dfp-task-resolve-$$.out" "/tmp/dfp-task-resolve-$$.err" >&2
+    rm -f "/tmp/dfp-task-resolve-$$.out" "/tmp/dfp-task-resolve-$$.err"
+    fail "task devflow:policy -- resolve unexpectedly failed"
+fi
+grep -v -e '^::group::' -e '^::endgroup::' "/tmp/dfp-task-resolve-$$.out" |
+    node -e 'JSON.parse(require("node:fs").readFileSync(0, "utf8"))' || {
+    cat "/tmp/dfp-task-resolve-$$.out" >&2
+    rm -f "/tmp/dfp-task-resolve-$$.out" "/tmp/dfp-task-resolve-$$.err"
+    fail "task devflow:policy -- resolve --json (its Taskfile ::group::/::endgroup:: wrapper stripped) did not produce valid JSON"
+}
+rm -f "/tmp/dfp-task-resolve-$$.out" "/tmp/dfp-task-resolve-$$.err"
+echo "OK: task devflow:policy -- resolve produces valid JSON through the Taskfile wrapper"
+echo "   (Taskfile.yml's global output: group wraps every task's stdout in"
+echo "   ::group::<task>/::endgroup:: markers — a caller parsing --json through"
+echo "   'task ... --' must strip those two lines first, or call the bare script)"
+
+echo "== task devflow:exit works through the Taskfile wrapper, not just the bare script =="
+# dev-flow-exit.mjs's exit code IS its verdict (0 continue, 20 converged, 21
+# diverging, 22 capped) — this fixture converges, so a non-zero exit here is
+# expected. Task itself does not propagate that exact code (observed 201
+# regardless of the underlying script's real 20) — a caller wanting the
+# precise verdict code, not just its JSON, should call the bare script/
+# dev-flow-exit.sh directly, so this checks the JSON content instead of any
+# particular shell exit status.
+task devflow:exit -- --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
+    --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
+    --current-head 0101010101010101010101010101010101010101 --json \
+    >"/tmp/dfe-task-$$.out" 2>"/tmp/dfe-task-$$.err" || true
+outcome="$(grep -v -e '^::group::' -e '^::endgroup::' "/tmp/dfe-task-$$.out" | node -e '
+  const body = require("node:fs").readFileSync(0, "utf8");
+  console.log(JSON.parse(body).outcome);
+')" || {
+    cat "/tmp/dfe-task-$$.out" "/tmp/dfe-task-$$.err" >&2
+    rm -f "/tmp/dfe-task-$$.out" "/tmp/dfe-task-$$.err"
+    fail "task devflow:exit --json (its Taskfile ::group::/::endgroup:: wrapper stripped) did not produce valid JSON"
+}
+[ "${outcome}" = "converged" ] || {
+    cat "/tmp/dfe-task-$$.out" >&2
+    rm -f "/tmp/dfe-task-$$.out" "/tmp/dfe-task-$$.err"
+    fail "task devflow:exit: expected outcome \"converged\" for this fixture, got \"${outcome}\""
+}
+rm -f "/tmp/dfe-task-$$.out" "/tmp/dfe-task-$$.err"
+echo "OK: task devflow:exit produces the correct verdict JSON through the Taskfile wrapper"
 
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="
 [ -d ai/schemas/fixtures/exit ] || fail "missing ai/schemas/fixtures/exit/"
