@@ -124,12 +124,19 @@ frontmatter_description_text() {
 }
 
 # Return success if the frontmatter has a top-level `<key>: <val>` line, exact
-# scalar match (used for the `true`/`false` invocation flags below).
+# scalar match (used for the `true`/`false` invocation flags below). A
+# trailing YAML comment (a `#` preceded by whitespace — YAML requires the
+# whitespace for `#` to start a comment rather than be part of the scalar)
+# is stripped before comparing, so e.g. `key: true # note` still matches.
 frontmatter_flag_is() {
     awk -v key="$2" -v val="$3" '
         NR == 1 && $0 != "---" { exit }
         $0 == "---" { fence++; if (fence == 2) exit; next }
-        fence == 1 && $0 ~ ("^" key ":[[:space:]]*" val "[[:space:]]*$") { found = 1 }
+        fence == 1 {
+            line = $0
+            sub(/[[:space:]]+#.*$/, "", line)
+            if (line ~ ("^" key ":[[:space:]]*" val "[[:space:]]*$")) { found = 1 }
+        }
         END { exit (found ? 0 : 1) }
     ' "$1"
 }
@@ -208,15 +215,24 @@ while IFS= read -r md; do
         category="${rel%%/*}"
         if [ "$category" = "universal" ]; then
             desc="$(frontmatter_description_text "$md")"
-            # The two flags are independent axes: `disable-model-invocation`
-            # gates whether a model may trigger the skill at all, and
-            # `user-invocable` (checked only inside that branch) picks which
-            # invocation phrase the description must carry instead. Checking
-            # model-invocation first means the "Use when"/"Trigger it" ban
-            # below always applies to a disable-model-invocation:true skill,
-            # whatever user-invocable says — and a skill that leaves
-            # disable-model-invocation unset always requires "Use when", even
-            # if it also sets user-invocable: false.
+            # Two independent axes. `user-invocable` gates whether a human can
+            # type the skill as a slash command at all — checked here on its
+            # own, whatever `disable-model-invocation` says, because a
+            # user-invocable:false skill has no slash command to invoke, so
+            # its description must never claim one. `disable-model-invocation`
+            # separately gates whether a model may trigger the skill: true
+            # always bans "Use when"/"Trigger it" regardless of
+            # user-invocable, then requires "Do not invoke directly" if
+            # user-invocable is also false, or "Invoke as /<name>" otherwise;
+            # left unset (model-invocable), it always requires "Use when",
+            # whatever user-invocable says.
+            if frontmatter_flag_is "$md" "user-invocable" "false"; then
+                case "$desc" in
+                *"Invoke as /$name"*)
+                    err "$md: user-invocable: false but description contains 'Invoke as /$name' (no slash command exists for it)"
+                    ;;
+                esac
+            fi
             if frontmatter_flag_is "$md" "disable-model-invocation" "true"; then
                 case "$desc" in
                 *"Use when"*)

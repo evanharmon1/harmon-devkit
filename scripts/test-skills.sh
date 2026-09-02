@@ -513,6 +513,48 @@ expect_fail_contains "both-flags universal skill missing 'Do not invoke directly
     "ai/skills/universal/tango/SKILL.md" \
     bash -c "cd '$G17' && bash '$SCRIPTS/verify-skills.sh'"
 
+# Shepherd round 1 (PR #710 deferred findings): an inline YAML comment on a
+# flag line must not hide the flag, and user-invocable:false must forbid
+# claiming a slash command that doesn't exist, independent of
+# disable-model-invocation.
+
+# A trailing " # comment" on the disable-model-invocation line must not hide
+# the flag — the skill still fails on "Use when" as if uncommented.
+G18="$TMPROOT/guard-universal-flag-inline-comment"
+git_init "$G18"
+mkdir -p "$G18/ai/skills/universal/uniform"
+{
+    echo "---"
+    echo "name: uniform"
+    echo "description: >-"
+    echo "  A user-only ritual annotated with an inline comment. Use when the"
+    echo "  agent decides to run it. Invoke as /uniform."
+    echo "disable-model-invocation: true # user-only"
+    echo "---"
+    echo "# uniform"
+} >"$G18/ai/skills/universal/uniform/SKILL.md"
+expect_fail_contains "disable-model-invocation with a trailing YAML comment still catches 'Use when', naming the skill" \
+    "ai/skills/universal/uniform/SKILL.md" \
+    bash -c "cd '$G18' && bash '$SCRIPTS/verify-skills.sh'"
+
+# user-invocable:false alone (no disable-model-invocation) must not claim
+# "Invoke as /<name>" — there is no slash command for it to invoke.
+G19="$TMPROOT/guard-universal-userinvocable-claims-slash"
+git_init "$G19"
+mkdir -p "$G19/ai/skills/universal/victor"
+{
+    echo "---"
+    echo "name: victor"
+    echo "description: >-"
+    echo "  Use when another skill needs this helper. Invoke as /victor."
+    echo "user-invocable: false"
+    echo "---"
+    echo "# victor"
+} >"$G19/ai/skills/universal/victor/SKILL.md"
+expect_fail_contains "user-invocable:false skill claiming 'Invoke as /<name>' fails, naming the skill" \
+    "ai/skills/universal/victor/SKILL.md" \
+    bash -c "cd '$G19' && bash '$SCRIPTS/verify-skills.sh'"
+
 # ── sync-skills.sh (vendoring engine) ──────────────────────────────────
 echo "==> sync-skills.sh"
 
