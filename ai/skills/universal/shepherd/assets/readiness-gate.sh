@@ -428,12 +428,31 @@ evaluate_checks() {
     # check run from any other source (a third-party App) has no entry there
     # and falls back to its app id — an App outside Actions does not
     # multiply suites per edit, so a per-app collapse is a safe, conservative
-    # default, not a workaround. "Newest" is by check-run id, not
-    # `started_at`: id is assigned in delivery order and strictly increasing,
-    # while `started_at` is when a runner picked the job up, which queuing
-    # can reorder relative to delivery (and ties outright on two runs started
-    # in the same second) — the exact trap the statuses dedup above already
-    # avoids by sorting on id rather than a timestamp.
+    # default, not a workaround (deferred P2, harmon-devkit#714 challenge r1
+    # and r2: an App that DID reuse a name across permanently-coexisting,
+    # non-superseding suites would still be conflated by app id alone; no
+    # currently-installed App on this repo produces check-runs at all besides
+    # `github-actions`, so the gap is real but unreached, and resolving it
+    # generally needs a redesign out of this bounded fix's scope, per #714's
+    # own "out of scope" note pointing at #639).
+    #
+    # "Newest" is resolved per SUITE, by check_suite.id, not `started_at` and
+    # not by picking a single highest-id run directly. check_suite.id is
+    # assigned in delivery order and strictly increasing, while `started_at`
+    # is when a runner picked the job up, which queuing can reorder relative
+    # to delivery (and ties outright on two runs started in the same second)
+    # — the exact trap the statuses dedup above already avoids by sorting on
+    # id rather than a timestamp. Once the newest suite for an identity is
+    # found, EVERY run belonging to it is kept, not just one: a workflow can
+    # define two jobs that render the same display name (a matrix job with
+    # no differentiating `name:`, or simply two job blocks that both
+    # hard-code one), and both then land in the same suite under the same
+    # _identity. Picking a single highest-id winner across the whole
+    # identity group would keep one sibling and silently drop the other's
+    # failure even though neither superseded the other — they are
+    # simultaneous facts about the same delivery, not a history to collapse.
+    # Every run from an older, truly superseded suite for that identity is
+    # still dropped (harmon-devkit#714 challenge r2).
     workflow_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/actions/runs?head_sha=$head&per_page=100")" ||
         indeterminate fetch-failed "cannot fetch workflow runs for the head"
@@ -451,7 +470,9 @@ evaluate_checks() {
                | if . == null then "app:" + ((.app.id // 0) | tostring)
                  else "wf:" + (.workflow_id | tostring) + ":" +
                       (.event // "unknown") end)]})
-          | group_by(._identity) | map(max_by(.id))' \
+          | group_by(._identity)
+          | map(. as $group | ($group | max_by(.check_suite.id) | .check_suite.id) as $latest_suite |
+                $group[] | select(.check_suite.id == $latest_suite))' \
         <<<"$check_runs" 2>/dev/null)" ||
         indeterminate malformed-data "check-runs payload could not be collapsed to latest per workflow"
 

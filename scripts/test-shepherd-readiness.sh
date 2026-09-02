@@ -434,17 +434,19 @@ assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not name the check whose latest run fails: $gate_out"
 
-echo "==> a run that started later but was delivered earlier is not mistaken for the latest"
+echo "==> a suite that started later but was delivered earlier is not mistaken for the latest"
 # started_at reflects when a runner picked the job up, not delivery order;
-# under queuing an EARLIER delivery can start running AFTER a later one. The
-# higher check-run id is still the later delivery (id 2, a failure) even
-# though it started first — the gate must trust id, not started_at.
+# under queuing an EARLIER delivery (the lower check_suite id) can start
+# running AFTER a later one. Suite 80 is still the later delivery even though
+# its run started first (00:00 vs suite 70's 00:05) — the gate must trust
+# check_suite.id, not started_at, so suite 80's failure is the one that
+# counts.
 write_defaults
 jq -cn '[{total_count:2,check_runs:[
-    {id:2,name:"guard",status:"completed",conclusion:"failure",
-     started_at:"2026-01-01T00:00:00Z",check_suite:{id:70}},
     {id:1,name:"guard",status:"completed",conclusion:"success",
-     started_at:"2026-01-01T00:05:00Z",check_suite:{id:80}}]}]' \
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:70}},
+    {id:2,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:80}}]}]' \
     >"${fixtures}/check-runs.pages.json"
 jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:70,workflow_id:100,event:"pull_request"},
@@ -453,13 +455,13 @@ jq -cn '[{total_count:2,workflow_runs:[
 run_gate --codex-disabled
 assert_gate 1 fail checks-failing
 
-echo "==> two distinct workflows whose jobs share a literal name are kept apart, never id-broken"
-# id 1 vs id 2 on the two suites below: collapsing by name alone (the
-# pre-#714 bug) feeds group_by a single group, and max_by(.id) then keeps
-# whichever has the higher id regardless of which workflow it belongs to —
-# silently hiding this workflow's failure behind the other's success. Keyed
-# on workflow identity, the two never share a group, so the failure cannot
-# be hidden by which one happens to sort higher.
+echo "==> two distinct workflows whose jobs share a literal name are kept apart, never suite-broken"
+# Same started_at and two different check_suite ids below: collapsing by name
+# alone (the pre-#714 bug) feeds group_by a single group, and picking the
+# latest suite then keeps whichever suite id is higher regardless of which
+# workflow it belongs to — silently hiding this workflow's failure behind the
+# other's success. Keyed on workflow identity, the two never share a group,
+# so the failure cannot be hidden by which suite happens to sort higher.
 write_defaults
 jq -cn '[{total_count:2,check_runs:[
     {id:1,name:"guard",status:"completed",conclusion:"failure",
@@ -497,6 +499,31 @@ run_gate --codex-disabled
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
     fail "checks-failing did not surface the failed pull_request run when a later workflow_dispatch of the same workflow/job succeeded: $gate_out"
+
+echo "==> two jobs in one workflow that render the same name are BOTH kept when they coexist in the latest suite (harmon-devkit#714 round 2)"
+# A workflow can define two job blocks that both render as "verify" (a
+# hardcoded name:, or a matrix with no differentiating label). Both check
+# runs land in the SAME latest suite -- collapsing the whole identity group
+# to a single highest-id winner would keep whichever job happened to get the
+# higher id and silently drop the other's failure, even though neither
+# superseded the other. An OLDER suite's run for the same identity must
+# still be dropped as genuinely superseded.
+write_defaults
+jq -cn '[{total_count:3,check_runs:[
+    {id:1,name:"verify",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:100}},
+    {id:2,name:"verify",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:200}},
+    {id:3,name:"verify",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:200}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:200,workflow_id:100,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
+    fail "checks-failing did not surface the failing sibling job when a same-named passing sibling shares its (latest) suite: $gate_out"
 
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
