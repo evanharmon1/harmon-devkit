@@ -67,7 +67,7 @@ feature branch's single writer rather than editing concurrently.
 
 ## 4. Make evidence measurable and retrospective
 
-- [ ] 4.1 Complete [#663](https://github.com/evanharmon1/harmon-devkit/issues/663): implement read-only run harvesting, append-only digest-chained history, closed-cohort unattended-success metrics, per-run JSON/table output, immutable `--as-of` reconstruction, and convergence-policy replay; verify cutoff reconstruction, edited/deleted-entry rejection, and omator/Foreman trajectory fixtures pass.
+- [ ] 4.1 Complete [#663](https://github.com/evanharmon1/harmon-devkit/issues/663): implement read-only run harvesting, append-only digest-chained history, closed-cohort unattended-success metrics, per-run JSON/table output, immutable `--as-of` reconstruction, and convergence-policy replay; verify cutoff reconstruction, concurrent-writer replay stability (duplicate transition/intervention/outcome entries resolve by lowest committed ID, and a fixed cutoff reconstructs identically across repeated reads), evidence trust-root authentication (configured trusted-orchestrator actor IDs from `agent-registry.json`, or the trusted kickoff event — never an identity declared inside the record), edited/deleted-entry rejection, and omator/Foreman trajectory fixtures pass.
 - [ ] 4.2 Complete [#664](https://github.com/evanharmon1/harmon-devkit/issues/664): make `/retro` consume per-run evidence when present, report fixed per-stage measurements, and carry run provenance into tracked improvements while retaining the no-record fallback; verify skill validation passes.
 
 ## 5. Ship v2-only successor skills

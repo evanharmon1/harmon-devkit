@@ -101,8 +101,10 @@ comments—SHALL anchor run discovery. If an indexed run's evidence chain is
 missing or broken, the harvester SHALL reject it as deleted-entry tampering,
 never reinterpret it as a run that did not happen.
 The run-record author's authority SHALL derive from configured trusted
-orchestrator actor IDs or the trusted kickoff event, never an identity declared
-inside the record. The digest chain defends against non-trusted actors and
+orchestrator actor IDs — declared in `agent-registry.json`, the same registry
+finder trust IDs already use — or the trusted kickoff event, never an
+identity declared inside the record. The digest chain defends against
+non-trusted actors and
 accidental edits; a compromised trusted-account token is explicitly out of
 scope because it defeats every mechanism in the repository, branch history
 included.
@@ -137,6 +139,18 @@ Appending an entry SHALL extend that chain without editing an earlier entry. An
 `--as-of` read SHALL first validate the complete chain, then reconstruct state
 using only entries whose timestamps are at or before the cutoff. Editing or
 deleting any entry SHALL break sequence or digest validation and fail closed.
+Appending a transition, intervention, or terminal-outcome entry SHALL follow
+the same reserve-first, lowest-ID-canonical protocol evidence writes use:
+when concurrent or resumed writers each post an entry for the same logical
+event, the lowest committed ID is canonical and every later duplicate is
+superseded and ignored by every reader. A `--as-of` read over that resolved,
+deduplicated chain SHALL report the same reconstructed state for a given
+cutoff regardless of how many times, or how much later, it is computed.
+
+#### Scenario: Two writers append during the same window
+
+- **WHEN** two resumed or concurrent writers each post a competing entry for the same transition before either observes the other's write
+- **THEN** the lowest committed ID is canonical, the later duplicate is superseded and ignored, and the state reconstructed at any fixed cutoff is identical however many times the read is repeated
 
 #### Scenario: A transition occurs after the scoring cutoff
 
