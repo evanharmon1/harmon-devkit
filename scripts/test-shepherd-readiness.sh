@@ -401,17 +401,18 @@ echo "==> a stale failed check suite superseded by a later success passes (harmo
 # filter=latest collapses only WITHIN one suite, so an early failure and a
 # later success for the same check name both survive as separate check runs.
 # The gate must collapse them itself, by workflow identity, and keep the
-# later one.
+# later one — "later" by check-run id (delivery order), not started_at,
+# which queuing can reorder relative to delivery.
 write_defaults
 jq -cn '[{total_count:2,check_runs:[
-    {name:"guard",status:"completed",conclusion:"failure",
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
      started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
-    {name:"guard",status:"completed",conclusion:"success",
+    {id:2,name:"guard",status:"completed",conclusion:"success",
      started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
     >"${fixtures}/check-runs.pages.json"
 jq -cn '[{total_count:2,workflow_runs:[
-    {check_suite_id:10,workflow_id:100},
-    {check_suite_id:20,workflow_id:100}]}]' \
+    {check_suite_id:10,workflow_id:100,event:"pull_request"},
+    {check_suite_id:20,workflow_id:100,event:"pull_request"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
 run_gate --codex-disabled
 assert_gate 0 pass ready
@@ -419,41 +420,83 @@ assert_gate 0 pass ready
 echo "==> a stale PASSING check suite superseded by a later failure still fails (inverse of the above)"
 write_defaults
 jq -cn '[{total_count:2,check_runs:[
-    {name:"guard",status:"completed",conclusion:"success",
+    {id:1,name:"guard",status:"completed",conclusion:"success",
      started_at:"2026-01-01T00:00:00Z",check_suite:{id:30}},
-    {name:"guard",status:"completed",conclusion:"failure",
+    {id:2,name:"guard",status:"completed",conclusion:"failure",
      started_at:"2026-01-01T00:05:00Z",check_suite:{id:40}}]}]' \
     >"${fixtures}/check-runs.pages.json"
 jq -cn '[{total_count:2,workflow_runs:[
-    {check_suite_id:30,workflow_id:100},
-    {check_suite_id:40,workflow_id:100}]}]' \
+    {check_suite_id:30,workflow_id:100,event:"pull_request"},
+    {check_suite_id:40,workflow_id:100,event:"pull_request"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
 run_gate --codex-disabled
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not name the check whose latest run fails: $gate_out"
 
-echo "==> two distinct workflows whose jobs share a literal name are kept apart, never tie-broken"
-# Same started_at on both: collapsing by name alone (the pre-#714 bug) feeds
-# group_by a tie, and a stable max_by then keeps whichever sorts last —
-# silently hiding this workflow's failure behind the other's success. Keyed
-# on workflow identity, the two never share a group, so there is no tie to
-# break and the failure cannot be hidden by input order.
+echo "==> a run that started later but was delivered earlier is not mistaken for the latest"
+# started_at reflects when a runner picked the job up, not delivery order;
+# under queuing an EARLIER delivery can start running AFTER a later one. The
+# higher check-run id is still the later delivery (id 2, a failure) even
+# though it started first — the gate must trust id, not started_at.
 write_defaults
 jq -cn '[{total_count:2,check_runs:[
-    {name:"guard",status:"completed",conclusion:"failure",
+    {id:2,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:70}},
+    {id:1,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:80}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:70,workflow_id:100,event:"pull_request"},
+    {check_suite_id:80,workflow_id:100,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+
+echo "==> two distinct workflows whose jobs share a literal name are kept apart, never id-broken"
+# id 1 vs id 2 on the two suites below: collapsing by name alone (the
+# pre-#714 bug) feeds group_by a single group, and max_by(.id) then keeps
+# whichever has the higher id regardless of which workflow it belongs to —
+# silently hiding this workflow's failure behind the other's success. Keyed
+# on workflow identity, the two never share a group, so the failure cannot
+# be hidden by which one happens to sort higher.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
      started_at:"2026-01-01T00:00:00Z",check_suite:{id:50}},
-    {name:"guard",status:"completed",conclusion:"success",
+    {id:2,name:"guard",status:"completed",conclusion:"success",
      started_at:"2026-01-01T00:00:00Z",check_suite:{id:60}}]}]' \
     >"${fixtures}/check-runs.pages.json"
 jq -cn '[{total_count:2,workflow_runs:[
-    {check_suite_id:50,workflow_id:100},
-    {check_suite_id:60,workflow_id:200}]}]' \
+    {check_suite_id:50,workflow_id:100,event:"pull_request"},
+    {check_suite_id:60,workflow_id:200,event:"pull_request"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
 run_gate --codex-disabled
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
-    fail "checks-failing did not surface the failing workflow's guard job when a same-named passing job from a different workflow shares its timestamp: $gate_out"
+    fail "checks-failing did not surface the failing workflow's guard job when a same-named passing job from a different workflow has a higher id: $gate_out"
+
+echo "==> the same workflow answering two different trigger events is kept apart (harmon-devkit#714 round 1)"
+# build.yml here runs on pull_request, push, merge_group, AND workflow_dispatch
+# alike. A later successful manual dispatch of the same workflow/job name is
+# not a supersession of an earlier failed pull_request run — they answer
+# different questions on the same commit. The event must be part of the
+# collapse key, not just the workflow id.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"verify",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:90}},
+    {id:2,name:"verify",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:91}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:90,workflow_id:100,event:"pull_request"},
+    {check_suite_id:91,workflow_id:100,event:"workflow_dispatch"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
+    fail "checks-failing did not surface the failed pull_request run when a later workflow_dispatch of the same workflow/job succeeded: $gate_out"
 
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults

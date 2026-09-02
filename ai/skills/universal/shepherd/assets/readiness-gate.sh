@@ -412,17 +412,28 @@ evaluate_checks() {
     # later success forever — the `filter=latest` above collapses runs only
     # WITHIN one check suite, never across the separate suites repeated
     # `pull_request` deliveries create (harmon-devkit#714, found shepherding
-    # #713). Collapse to the newest run per (name, workflow identity), the
-    # same way the statuses group above collapses per context — but keyed on
-    # the *workflow*, not the bare check-run name: this repo's two guard jobs
-    # are both literally named "guard", and collapsing by name alone would
-    # hide a live failure in one behind a stale success in the other.
-    # Workflow identity comes from joining each run's check_suite.id against
-    # `actions/runs`, which is GitHub-Actions-only; a check run from any
-    # other source (a third-party App) has no entry there and falls back to
-    # its app id — an App outside Actions does not multiply suites per edit,
-    # so a per-app collapse is a safe, conservative default, not a
-    # workaround.
+    # #713). Collapse to the newest run per (name, workflow, triggering
+    # event), the same way the statuses group above collapses per context —
+    # but keyed on the *workflow*, not the bare check-run name: this repo's
+    # two guard jobs are both literally named "guard", and collapsing by name
+    # alone would hide a live failure in one behind a stale success in the
+    # other. The event is part of the key, not just the workflow, because a
+    # workflow can answer more than one question on the same commit — this
+    # repo's build.yml runs on `pull_request`, `push`, `merge_group`, AND
+    # `workflow_dispatch` alike, and a manually dispatched success is not a
+    # supersession of a failed PR-triggered run of the same job name; only
+    # repeated deliveries of the SAME event genuinely re-ask the same
+    # question. Workflow/event identity comes from joining each run's
+    # check_suite.id against `actions/runs`, which is GitHub-Actions-only; a
+    # check run from any other source (a third-party App) has no entry there
+    # and falls back to its app id — an App outside Actions does not
+    # multiply suites per edit, so a per-app collapse is a safe, conservative
+    # default, not a workaround. "Newest" is by check-run id, not
+    # `started_at`: id is assigned in delivery order and strictly increasing,
+    # while `started_at` is when a runner picked the job up, which queuing
+    # can reorder relative to delivery (and ties outright on two runs started
+    # in the same second) — the exact trap the statuses dedup above already
+    # avoids by sorting on id rather than a timestamp.
     workflow_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/actions/runs?head_sha=$head&per_page=100")" ||
         indeterminate fetch-failed "cannot fetch workflow runs for the head"
@@ -434,12 +445,13 @@ evaluate_checks() {
     check_runs="$(jq -ce \
         --slurpfile wf_sf <(printf '%s' "$workflow_runs") '
           ($wf_sf[0] | map({key: (.check_suite_id | tostring),
-                            value: .workflow_id}) | from_entries) as $suite_workflow |
+                            value: {workflow_id, event}}) | from_entries) as $suite_workflow |
           map(. + {_identity: [.name,
               ($suite_workflow[(.check_suite.id | tostring)]
                | if . == null then "app:" + ((.app.id // 0) | tostring)
-                 else "wf:" + (. | tostring) end)]})
-          | group_by(._identity) | map(max_by(.started_at))' \
+                 else "wf:" + (.workflow_id | tostring) + ":" +
+                      (.event // "unknown") end)]})
+          | group_by(._identity) | map(max_by(.id))' \
         <<<"$check_runs" 2>/dev/null)" ||
         indeterminate malformed-data "check-runs payload could not be collapsed to latest per workflow"
 
