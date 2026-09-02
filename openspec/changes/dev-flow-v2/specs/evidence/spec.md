@@ -100,14 +100,20 @@ exists, the branch pointer—not the continued existence of deletable evidence
 comments—SHALL anchor run discovery. If an indexed run's evidence chain is
 missing or broken, the harvester SHALL reject it as deleted-entry tampering,
 never reinterpret it as a run that did not happen.
-The run-record author's authority SHALL derive from configured trusted
-orchestrator actor IDs — declared in `agent-registry.json`, the same registry
-finder trust IDs already use — or the trusted kickoff event, never an
-identity declared inside the record. The digest chain defends against
+The run-record author's authority SHALL derive solely from configured
+trusted orchestrator actor IDs — the registry's trusted actors, declared in
+`agent-registry.json`, the same finder trust IDs already use — never an
+identity declared inside the record and never a kickoff-shaped event alone,
+which proves nothing about who posted it. The digest chain defends against
 non-trusted actors and
 accidental edits; a compromised trusted-account token is explicitly out of
 scope because it defeats every mechanism in the repository, branch history
 included.
+
+#### Scenario: A run record's author is not a configured trusted actor
+
+- **WHEN** the run record comment's author is not among the repository's configured trusted-orchestrator actor IDs
+- **THEN** harvesting rejects the run record and its evidence as unauthenticated rather than accepting an unproven identity
 
 #### Scenario: An indexed evidence entry is deleted
 
@@ -139,18 +145,22 @@ Appending an entry SHALL extend that chain without editing an earlier entry. An
 `--as-of` read SHALL first validate the complete chain, then reconstruct state
 using only entries whose timestamps are at or before the cutoff. Editing or
 deleting any entry SHALL break sequence or digest validation and fail closed.
-Appending a transition, intervention, or terminal-outcome entry SHALL follow
-the same reserve-first, lowest-ID-canonical protocol evidence writes use:
-when concurrent or resumed writers each post an entry for the same logical
-event, the lowest committed ID is canonical and every later duplicate is
-superseded and ignored by every reader. A `--as-of` read over that resolved,
-deduplicated chain SHALL report the same reconstructed state for a given
-cutoff regardless of how many times, or how much later, it is computed.
 
-#### Scenario: Two writers append during the same window
+Within one run there is exactly one writer: the orchestrating session,
+appending reserve-first. Two entries that duplicate one logical event
+resolve by the same lowest-committed-ID rule evidence writes already use
+(the later duplicate is superseded and ignored). Two entries that instead
+claim the same previous-entry digest but carry different content are a
+**forked** chain, not a duplicate — harvesting SHALL fail closed and report
+the run indeterminate rather than choosing either branch as canonical.
+Concurrent writers from more than one orchestrator session are out of
+scope, the same GitHub read-modify-write limitation already disclosed
+elsewhere in this family: nothing here claims to close it.
 
-- **WHEN** two resumed or concurrent writers each post a competing entry for the same transition before either observes the other's write
-- **THEN** the lowest committed ID is canonical, the later duplicate is superseded and ignored, and the state reconstructed at any fixed cutoff is identical however many times the read is repeated
+#### Scenario: The run-record chain forks
+
+- **WHEN** two entries in a run's history both name the same previous-entry digest but carry different content
+- **THEN** harvesting reports the run indeterminate and does not choose either branch as canonical
 
 #### Scenario: A transition occurs after the scoring cutoff
 

@@ -60,23 +60,26 @@ cutoff** (`--as-of`, default: now): an issue belongs to the cohort by its
 first kickoff inside the window, and it is scored on the runs that existed
 at the cutoff — a run started after the cutoff neither removes the issue nor
 changes its score — so the same window and cutoff always report the same
-share. **Reconstruction is a property, not a procedure here either**: three
-review rounds of drafting the mechanism directly into this paragraph (a
-digest chain, then a reserve-then-verify append protocol) each converged on
-a narrower hole than the round before, the same accretion the convergence
-model below names and avoids for the same reason. This spec states the
-invariant and delegates the mechanism, exactly as it does there: `--as-of`
-reconstruction SHALL be reproducible under replay (the same cutoff always
-reports the same share, from any read, any number of times) and SHALL NOT
-silently lose or reorder an event under concurrent or resumed writers. The
-evidence delta spec's append-only, digest-chained history
+share. **Reconstruction is a property, not a procedure here either**: four
+review rounds of drafting the mechanism directly into this paragraph each
+converged on a narrower hole than the round before, the same accretion the
+convergence model below names and avoids for the same reason — the fix that
+finally held is narrowing the claim to what is actually true, not a fifth
+attempt at a stronger one. Within one run there is exactly one writer: the
+orchestrating session, appending reserve-first. Two entries that duplicate
+one logical event resolve by the same lowest-committed-ID rule evidence
+comments already use; two entries that instead fork the chain (claiming the
+same previous entry but carrying different content) are **not** resolved by
+that rule — `--as-of` reconstruction SHALL fail closed and report the run
+indeterminate rather than silently choosing a branch. Concurrent writers
+from more than one orchestrator session are explicitly out of scope, the
+same GitHub read-modify-write limitation this spec discloses elsewhere
+rather than claims to close. The evidence delta spec's append-only,
+digest-chained history
 ([§ Run history is append-only and as-of reconstructable](../openspec/changes/dev-flow-v2/specs/evidence/spec.md))
-states this property in testable form, including the concurrent-writer case
-this anchor's own review added: duplicate transition/intervention/outcome
-entries resolve by the same lowest-committed-ID rule evidence comments
-already use, so a `--as-of` read is stable under replay whatever writers
-raced to append. #663 owns the mechanism, its fixtures, and every attack
-scenario these rounds raised.
+states this property — and the fork/indeterminate case — in testable form,
+and #663 owns the mechanism, its fixtures, and every attack scenario these
+rounds raised.
 "Reached ready-for-review" means the run record carries the orchestrator's
 own promotion entry — the readiness-gate pass fingerprint and the
 `gh pr ready` it issued. A ready transition on the PR **without** that entry
@@ -760,24 +763,23 @@ Two rules make the posted evidence trustworthy on a public repository:
   hashes to the recorded digest — so an edited, deleted, or impostor comment
   is reported as tampered evidence, never silently replayed. "The run's
   orchestrator" is never a value the record's own JSON body declares — that
-  would let a forged record vouch for its own evidence. Its authority instead
-  derives from configured trusted-orchestrator actor IDs, or the trusted
-  kickoff event — the same two sources the evidence delta spec names
-  ([§ Harvested evidence is authenticated](../openspec/changes/dev-flow-v2/specs/evidence/spec.md)),
-  matched here rather than re-derived: two earlier drafts of this paragraph
-  tried to define a kickoff-based fallback from scratch (matching the
-  kickoff actor's identity; matching identity plus a locally-asserted
-  permission claim) and both were broken the same way an adversarial review
-  found twice — an actor able to forge the kickoff-shaped event can equally
-  forge whatever the fallback checks inside it, because nothing outside the
-  record itself backed the claim. The configured list lives in
-  `agent-registry.json` — the same registry finder trust IDs already use —
-  per the evidence delta spec's own update; the schema field itself is
+  would let a forged record vouch for its own evidence. Its authority
+  derives **solely** from configured trusted-orchestrator actor IDs — the
+  registry's trusted actors, declared in `agent-registry.json`, the same
+  finder trust IDs already use — matched here rather than re-derived, the
+  same source the evidence delta spec names
+  ([§ Harvested evidence is authenticated](../openspec/changes/dev-flow-v2/specs/evidence/spec.md)).
+  There is no kickoff-event fallback: three earlier drafts of this paragraph
+  each tried to define one (matching the kickoff actor's identity; matching
+  identity plus a locally-asserted permission claim; naming it "the trusted
+  kickoff event" without saying what makes it trusted) and all three were
+  broken the same way — a kickoff-shaped event proves nothing about who
+  posted it, so an actor able to forge one can equally forge whatever the
+  fallback checks inside it. The schema field for the configured list is
   [#634](https://github.com/evanharmon1/harmon-devkit/issues/634)'s to add,
-  not a mechanism this anchor re-derives. Until a repository configures
-  that list (or the trusted-kickoff-event path is independently specified),
-  a run record has no authority to validate against and its evidence is
-  reported unauthenticated rather than silently accepted on an unproven
+  not a mechanism this anchor re-derives. Until a repository configures that
+  list, a run record has no authority to validate against and its evidence
+  is reported unauthenticated rather than silently accepted on an unproven
   identity.
   The run record comment is subject to the **same author check** against
   that trust root, so a stranger cannot forge a record that vouches
