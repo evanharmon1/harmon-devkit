@@ -385,11 +385,20 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
       if (failure) {
         unresolvedSlot = slot;
         unresolvedReason = failure.reason === "breadth_exhausted" ? "breadth_exhausted" : "finder_unavailable";
-      } else {
-        unresolvedSlot = slot;
-        unresolvedReason = "finder_unavailable";
+        break;
       }
-      break;
+      // No accepted pass AND no matching slot_failures record for this
+      // slot — shepherd-stage cloud finding (round 3), confirmed:
+      // synthesizing finder_unavailable here has no actual evidence of
+      // exhaustion behind it; it is equally consistent with "still
+      // pending" (another finder in this round has not reported back
+      // either) or "a pass was rejected but no failure record was ever
+      // written." Neither is a confirmed terminal outcome, so this round
+      // cannot be safely assembled at all rather than confidently
+      // escalated on synthesized evidence.
+      throw new ExitIndeterminate(
+        `round ${roundNumber} of stage "${stage}" has no accepted pass and no slot_failures record for slot "${slot}" — cannot determine whether it is still pending or genuinely exhausted`,
+      );
     }
 
     // Evidence (reviewedHead, findings) is drawn ONLY from the ACCEPTED
@@ -798,7 +807,21 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
     ancestry: r.reviewedHead ? isAncestorOrEqual(r.reviewedHead, currentHead, ancestryOpts) : "unknown",
   }));
 
-  const retained = withAncestry.filter((r) => r.ancestry === true);
+  // An incomplete round (capped/finder_unavailable or
+  // capped/breadth_exhausted) with NO recorded reviewedHead at all — a
+  // slot_failures entry is permitted to omit `head` — must still be
+  // retained: its terminal nature is inherent to the exhausted slot
+  // itself, never contingent on comparing a head that does not exist.
+  // Shepherd-stage cloud finding (round 3), confirmed: `ancestry === true`
+  // alone excluded it (reviewedHead null always computes ancestry
+  // "unknown"), so the round-2 "any incomplete round anywhere in retained
+  // is immediately terminal" check never even saw it, and the trajectory
+  // fell through to continue/no_rounds_yet below the cap instead of the
+  // recorded terminal outcome. Scoped narrowly to reviewedHead === null
+  // specifically (not "any unknown ancestry") — a round that DOES carry a
+  // head but whose ancestry could not be verified (no --heads/--repo-root
+  // supplied at all) stays correctly excluded, unchanged from before.
+  const retained = withAncestry.filter((r) => r.ancestry === true || (r.status !== "complete" && r.reviewedHead === null));
   retained.sort((a, b) => a.round - b.round);
 
   const maxRoundNumber = withAncestry.reduce((m, r) => Math.max(m, r.round), 0);

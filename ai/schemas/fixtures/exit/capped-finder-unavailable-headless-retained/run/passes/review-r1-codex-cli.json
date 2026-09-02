@@ -1,0 +1,42 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "0101010101010101010101010101010101010101",
+  "produced_at": "2026-08-29T15:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "model-x",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-headless-finder-unavailable",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "review",
+    "round": 1,
+    "reviewed_head": "0101010101010101010101010101010101010101",
+    "slot": "codex-cli",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r1-codex-cli-1",
+        "path": "scripts/example.mjs",
+        "line": 10,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "evidence text"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 1,
+      "P2": 0,
+      "P3": 0
+    }
+  }
+}

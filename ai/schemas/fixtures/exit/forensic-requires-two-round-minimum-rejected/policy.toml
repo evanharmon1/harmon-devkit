@@ -23,13 +23,17 @@ integrator_tier = "standard"
 challenge = 1
 review = 1
 integration = 1
+remediation = 1
 min_rounds = 1
+wall_clock_min = 240
 
 [rounds.forensic]
 challenge = 3
 review = 3
 integration = 3
+remediation = 3
 min_rounds = 1
+wall_clock_min = 240
 
 [breadth.standard]
 max_agent_runs = 4

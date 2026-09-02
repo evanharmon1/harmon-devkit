@@ -282,6 +282,20 @@ function runPolicyFixture(name, dir) {
     args.push("--closure", closureDir);
   }
   args.push(...buildArgs(restInvoke, dir));
+  // devflow-policy.mjs resolve now refuses to fall back to --registry when
+  // a merge-base policy is in play (review round 3, confirmed — mixing
+  // trust revisions). A fixture invoking --merge-base-policy without
+  // explicitly naming its own --merge-base-registry gets one auto-wired
+  // here: registry.merge-base.json when the fixture supplies a distinct
+  // one (proving the mismatch-protection itself), else the same
+  // registry.json every other fixture already uses (preserving existing
+  // merge-base fixtures' behavior without touching each one's invoke.json).
+  if (restInvoke["merge-base-policy"] && !restInvoke["merge-base-registry"]) {
+    const distinct = path.join(dir, "registry.merge-base.json");
+    const shared = path.join(dir, "registry.json");
+    if (existsSync(distinct)) args.push("--merge-base-registry", distinct);
+    else if (existsSync(shared)) args.push("--merge-base-registry", shared);
+  }
 
   let result;
   try {

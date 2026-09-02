@@ -1629,6 +1629,80 @@ carry an unadjudicated pass with no diagnostic — closing this correctly
 needs tracing per-pass retention independently of aggregate round status,
 deferred rather than rushed under this round's own time pressure.
 
+**A third cloud-review cycle** (queued behind concurrent PRs on Codex's
+side — a genuine ~15-minute delay, not an outage; see the PR's own
+shepherd-stage history for that lesson) surfaced 13 more inline findings
+(9 P1, 4 P2 — 10 distinct issues, 2 exact duplicate pairs) against the
+round-2 fix commit.
+
+- **`devflow-policy.mjs resolve`'s `--merge-base-registry` no longer falls
+  back to the branch's own `--registry`** when a merge-base policy is in
+  play — silently validating merge-base-resolved values against the
+  BRANCH's registry mixed trust revisions exactly where the merge-base
+  rule exists to prevent it (a branch could change a finder's registry
+  entry and have that change govern validation of the merge-base policy's
+  own references). Existing merge-base fixtures needed no changes — the
+  test runner now auto-wires `--merge-base-registry` to the same
+  `registry.json` file whenever a fixture doesn't name a distinct one.
+- **A `[strategy.*]` table's `coordination`/`synthesis` fields are now
+  validated before use** — a malformed value (a coordination typo, a
+  string `"true"` for synthesis) previously fell through to the
+  safer-looking default (sequential / no extra run) under strict `===`
+  comparison, silently letting a required breadth check be bypassed by a
+  typo rather than the value the author actually wrote.
+- **A council's `distinct_families` requirement is now checked against
+  the implement-stage pool's actual family diversity**, not just that
+  each pool harness slug exists — only "fixed" `family_constraint`
+  harnesses count toward the guaranteed-distinct set (a "broker"
+  harness's family is chosen at runtime and can't be statically proven
+  distinct from another broker's choice, so counting it would risk
+  silently accepting an unsatisfiable pool).
+- **A present-but-empty `[stage.*].pool = []` is now rejected** — `[]` is
+  truthy in JS, so it was never treated as the documented "unrestricted"
+  default (that's absent/`null`); it silently meant "no harness at all,"
+  a stage that could never dispatch, with no validation error naming it.
+- **A `capped` round assembled from a headless `slot_failures` entry
+  (the schema permits omitting `head`) is now retained and reported**,
+  not silently dropped — `reviewedHead === null` always computes ancestry
+  `"unknown"`, and the retained filter excluded that identically to a
+  confirmed non-ancestor, so the terminal-exhaustion check added earlier
+  this branch never even saw it. Scoped narrowly (an incomplete round
+  with no head at all, not "any unknown ancestry") so a complete round's
+  existing, correct exclusion-when-unverifiable behavior is unchanged.
+- **A configured slot with no accepted pass and no matching
+  `slot_failures` record is no longer synthesized as `finder_unavailable`**
+  — that has no actual evidence of exhaustion behind it (equally
+  consistent with "still pending" as with a rejected pass that left no
+  failure record); it now throws indeterminate instead of confidently
+  escalating a terminal outcome nothing supports.
+- **`remediation`/`wall_clock_min` are required v2 `[rounds.*]` fields**,
+  not optional-with-a-historical-decoder-fallback — `resolveRounds` has
+  exactly one call site (`resolveV2`, the operating-v2-only path); the
+  historical decoder builds its own `rounds` object with its own explicit
+  fallback constants and never reaches this function at all, so the
+  fallback here was never actually serving its documented purpose.
+
+Two findings were confirmed but deferred as P2, both because a correct fix
+has a wide ripple this round's own time budget shouldn't rush: `resolveV2`
+coerces any missing or non-boolean `tier_escalation` to `false` via strict
+`=== true` comparison rather than requiring it as a declared boolean —
+correct, but would require adding an explicit `tier_escalation` line to
+every one of the ~20 fixtures currently relying on the default; and
+`assembleLogicalRounds`'s round-number enumeration is built only from
+passes and `slot_failures`, so an orphan adjudication document (naming a
+round neither references) is invisible to later cap/contiguity checks —
+narrow in practice (only matters for a malformed or adversarial
+adjudication document) but needs careful tracing to close without
+disturbing the existing cap/contiguity logic. One more, P1, is deferred
+alongside the already-tracked `--repo-root` git-adapter scope:
+`isAncestorOrEqual`'s `"unknown"` result (round 2's own fix) is still
+discarded identically to a confirmed non-ancestor by the `retained` filter
+— distinguishing "ancestry verification was actively attempted via
+`--repo-root` and failed" from "it was never attempted at all" (the far
+more common case, and the one this round's own headless-round fix above
+correctly still excludes) needs a new signal threaded through
+`isAncestorOrEqual`'s return value, not a quick patch.
+
 ## The Foreman conformance contract
 
 harmon-devkit is the single source of truth for this schema family, vendored

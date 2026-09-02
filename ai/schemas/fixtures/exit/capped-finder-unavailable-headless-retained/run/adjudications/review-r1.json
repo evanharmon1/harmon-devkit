@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-headless-finder-unavailable",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "0101010101010101010101010101010101010101",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "confirmed by orchestrator",
+      "override": null
+    }
+  ]
+}

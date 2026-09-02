@@ -283,18 +283,24 @@ function resolveRounds(doc, profile, levelName) {
     throw new PolicyError(`[rounds.${policyName}] is missing (pointed to by [rigor.${levelName}])`);
   }
   const rounds = { policy: policyName };
-  for (const key of ["challenge", "review", "integration", "min_rounds"]) {
+  // remediation/wall_clock_min are required v2 fields here, not optional —
+  // BUILTIN_REMEDIATION_FALLBACK/BUILTIN_WALL_CLOCK_MIN_FALLBACK exist for
+  // decodeLegacyRounds/decodeV1Rounds's OWN separately-constructed rounds
+  // object (neither of which calls this function at all), not for this,
+  // the operating-v2-only path — this function has exactly one call site,
+  // resolveV2. Shepherd-stage cloud finding (round 3), confirmed: the
+  // comment's stated intent (fallback for historical decoding) never
+  // matched the actual call graph, so a v2 rounds table missing either
+  // field silently got a historical-decoder default instead of being
+  // rejected, letting a typo change how many fixes or how much runtime is
+  // permitted with no validation error.
+  for (const key of ["challenge", "review", "integration", "min_rounds", "remediation", "wall_clock_min"]) {
     if (typeof table[key] !== "number") {
       throw new PolicyError(`[rounds.${policyName}] is missing numeric "${key}"`);
     }
     requireNonNegativeInt(table[key], key, `[rounds.${policyName}]`);
     rounds[key] = table[key];
   }
-  rounds.remediation =
-    typeof table.remediation === "number" ? table.remediation : BUILTIN_REMEDIATION_FALLBACK(rounds.integration);
-  requireNonNegativeInt(rounds.remediation, "remediation", `[rounds.${policyName}]`);
-  rounds.wall_clock_min = typeof table.wall_clock_min === "number" ? table.wall_clock_min : BUILTIN_WALL_CLOCK_MIN_FALLBACK;
-  requireNonNegativeInt(rounds.wall_clock_min, "wall_clock_min", `[rounds.${policyName}]`);
   // specs/config/spec.md: "The forensic rounds policy SHALL require at
   // least two rounds before the empty-round shortcut can end a confidence
   // stage" — review round 3, confirmed: forensic accepted min_rounds 0 or
@@ -772,6 +778,21 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
   // min_agents and are unaffected.
   if (resolved.strategy && (resolved.strategy.name === "orchestrate" || resolved.strategy.name === "council")) {
     const { name, min_agents: minAgents, synthesis, coordination } = resolved.strategy;
+    // `coordination`/`synthesis` decide which anchor-rule constraints apply
+    // — a malformed value must be REJECTED, never silently read as the
+    // absent/default case. Shepherd-stage cloud finding (round 3),
+    // confirmed: resolveStrategy spreads a [strategy.*] table with zero
+    // validation, so a typo'd `coordination = "parallel-when-indpendent"`
+    // or a string `synthesis = "true"` compared with strict `===` silently
+    // fell through to "sequential"/"no extra run needed" — the SAFER-
+    // LOOKING branch, not the one the author's malformed value actually
+    // asked for — letting a required breadth check be bypassed by a typo.
+    if (coordination !== undefined && coordination !== "parallel-when-independent") {
+      errors.push(`[strategy.${name}].coordination must be "parallel-when-independent" or absent, got ${JSON.stringify(coordination)}`);
+    }
+    if (name === "council" && synthesis !== undefined && typeof synthesis !== "boolean") {
+      errors.push(`[strategy.council].synthesis must be a boolean, got ${JSON.stringify(synthesis)}`);
+    }
     if (!Number.isInteger(minAgents) || minAgents < 1) {
       errors.push(`[strategy.${name}].min_agents must be a positive integer, got ${JSON.stringify(minAgents)}`);
     } else {
@@ -882,11 +903,54 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
         }
       }
       if (s.pool) {
+        // Present-but-empty is not the documented "unrestricted" default
+        // (that's absent/null) — it is a narrower-than-anything allowlist
+        // admitting NO harness at all, so dispatch for this stage can never
+        // succeed. Shepherd-stage cloud finding (round 3), confirmed: `[]`
+        // is truthy in JS, so `if (s.pool)` already entered this branch,
+        // but the loop below trivially passes over zero entries and raises
+        // nothing — the stage's dispatch deadlock was never reported as a
+        // policy validation error.
+        if (s.pool.length === 0) {
+          errors.push(`[stage.${stage}].pool is present but empty — no harness could ever implement this stage; omit it for "every eligible harness" or list at least one`);
+        }
         for (const slug of s.pool) {
           if (!harnessSlugs.has(slug)) {
             errors.push(`[stage.${stage}].pool references unknown harness "${slug}"`);
           }
         }
+      }
+    }
+
+    // specs/dev-flow-v2.md: "A council requiring N distinct families...
+    // requires at least N eligible families in the implement-stage pool."
+    // Shepherd-stage cloud finding (round 3), confirmed: the pool-harness
+    // loop above only proves each slug EXISTS, never how many DISTINCT
+    // families the eligible harnesses collectively span — a council
+    // requiring 3 distinct families could resolve successfully against a
+    // pool of harnesses all fixed to the SAME family, which can never
+    // actually dispatch 3 distinct-family proposals. Only "fixed"
+    // family_constraint harnesses count toward the guaranteed-distinct set
+    // — a "broker" harness's actual family is chosen at runtime and cannot
+    // be statically proven distinct from another broker's choice, so
+    // counting it here would risk silently accepting an unsatisfiable
+    // pool, the opposite of what this check exists to catch.
+    if (resolved.strategy?.name === "council" && resolved.strategy.distinct_families === true && Number.isInteger(resolved.strategy.min_agents)) {
+      const requiredFamilies = resolved.strategy.min_agents;
+      const configuredPool = resolved.stages.implement.pool;
+      const eligibleSlugs = Array.isArray(configuredPool)
+        ? configuredPool.filter((slug) => harnessSlugs.has(slug))
+        : (registryDoc.harnesses || []).filter((h) => Array.isArray(h.roles) && h.roles.includes("implementer")).map((h) => h.slug);
+      const eligibleFamilies = new Set();
+      for (const slug of eligibleSlugs) {
+        const harness = harnessBySlug.get(slug);
+        if (harness?.family_constraint?.kind === "fixed") eligibleFamilies.add(harness.family_constraint.family);
+      }
+      if (eligibleFamilies.size < requiredFamilies) {
+        errors.push(
+          `[strategy.council].distinct_families requires ${requiredFamilies} distinct eligible families in the implement-stage pool, ` +
+            `but only ${eligibleFamilies.size} (${[...eligibleFamilies].join(", ") || "none"}) are available from fixed-family harnesses`,
+        );
       }
     }
   } else {
@@ -1211,7 +1275,17 @@ function cliResolve(args) {
   // Runs even against a historical-decode result: its roles/stages are the
   // built-in defaults (empty families, empty finders), so cross-validation
   // honestly reports them as unresolvable rather than skipping the check.
-  const registryPath = args["merge-base-registry"] || args.registry;
+  // When a merge-base policy is in play, ONLY --merge-base-registry may
+  // supply the registry — never fall back to the branch's own --registry.
+  // Shepherd-stage cloud finding (round 3), confirmed: silently validating
+  // merge-base-resolved values against the BRANCH's registry mixes trust
+  // revisions exactly the way the merge-base rule exists to prevent — a
+  // branch could change a finder's registry entry (e.g. surface from
+  // "pr-cloud" to "local") and have that change govern validation of the
+  // merge-base policy's own finder references, even though the merge-base
+  // rule's whole point is that branch-controlled data must never affect
+  // what a self-modifying diff resolves to.
+  const registryPath = mergeBaseDoc ? args["merge-base-registry"] : args.registry;
   let registryDoc = null;
   if (registryPath) {
     try {
