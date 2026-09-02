@@ -91,8 +91,17 @@ function validatePassSchema(validatorPath, passFile, { runId, initiatedBy, known
   return { ok: status === 0, message: (stdout + stderr).trim() };
 }
 
-function validateAdjudicationSchema(validatorPath, adjFile) {
-  const { status, stdout, stderr } = runValidator(validatorPath, ["adjudication", adjFile]);
+// passFiles binds the adjudication to the pass(es) it actually adjudicates
+// (one per configured finder for its own stage/round) via the validator's
+// own --pass cross-check, which proves — among other things — that the
+// adjudication's run_id agrees with the (already run-id-verified) pass, so
+// a stale adjudication document from a DIFFERENT run cannot supply a
+// downgraded priority or disposition for a finding id that happens to
+// collide. See ai/schemas/README.md "Adjudication ↔ source pass agreement".
+function validateAdjudicationSchema(validatorPath, adjFile, passFiles) {
+  const args = ["adjudication", adjFile];
+  for (const p of passFiles) args.push("--pass", p);
+  const { status, stdout, stderr } = runValidator(validatorPath, args);
   return { ok: status === 0, message: (stdout + stderr).trim() };
 }
 
@@ -100,7 +109,17 @@ function validateAdjudicationSchema(validatorPath, adjFile) {
 // Receipt validation: run binding, chronology, finding-id uniqueness
 // ---------------------------------------------------------------------------
 
-function validateReceipts(runRecord, passes, { validatorPath, requireSchemaValidation = true, tmpDir }) {
+function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
+  // A run record with no trusted identity of its own cannot bind anything
+  // to it — every pass's run/initiated_by check below would otherwise
+  // silently short-circuit to "nothing to compare against, so accept",
+  // which is exactly the untrusted-identity gap this check exists to close.
+  if (typeof runRecord.run_id !== "string" || !runRecord.run_id) {
+    throw new ExitIndeterminate("run.json has no run_id — cannot bind any pass to an active run identity");
+  }
+  if (typeof runRecord.initiated_by !== "string" || !runRecord.initiated_by) {
+    throw new ExitIndeterminate("run.json has no initiated_by — cannot bind any pass to an active run identity");
+  }
   const diagnostics = [];
   const receipts = Array.isArray(runRecord.receipts) ? runRecord.receipts : [];
   const passSeqByName = new Map();
@@ -116,6 +135,26 @@ function validateReceipts(runRecord, passes, { validatorPath, requireSchemaValid
     .map((r, idx) => ({ ...r, seq: idx }))
     .filter((r) => r.kind === "transition");
 
+  // Full lifecycle-edge legality (which stage-to-stage transitions are ever
+  // structurally legal — matching run.schema.json's own ALLOWED_EDGES) is
+  // deliberately NOT implemented here: this repo's own stage-regression
+  // valve (AGENTS.md) makes review -> challenge a LEGITIMATE re-entry, so a
+  // naive "no backward transition" rule would reject real trajectories, and
+  // getting the full graph right needs docs/product/domain.md's exact
+  // edges — out of scope for this pass; deferred as a P2 (see the PR's
+  // deferred findings). What IS caught here, cheaply and unambiguously
+  // regardless of which edges are legal: two transitions into the exact
+  // same stage with nothing between them is never meaningful (there is
+  // nothing a repeated "we are now in stage X" transition could legitimately
+  // record that the first one did not already).
+  for (let i = 1; i < transitionsInOrder.length; i++) {
+    if (transitionsInOrder[i].stage === transitionsInOrder[i - 1].stage) {
+      throw new ExitIndeterminate(
+        `run.json receipts contain two consecutive transitions into stage "${transitionsInOrder[i].stage}" (seq ${transitionsInOrder[i - 1].seq}, ${transitionsInOrder[i].seq}) with no transition between them`,
+      );
+    }
+  }
+
   function activeStageBefore(seq) {
     let active = null;
     for (const t of transitionsInOrder) {
@@ -127,10 +166,7 @@ function validateReceipts(runRecord, passes, { validatorPath, requireSchemaValid
 
   const decorated = [];
   const seenIds = new Set();
-  let knownIdsFile = null;
-  if (requireSchemaValidation && tmpDir) {
-    knownIdsFile = path.join(tmpDir, "known-ids.json");
-  }
+  const knownIdsFile = tmpDir ? path.join(tmpDir, "known-ids.json") : null;
 
   // Process in trusted receipt order (passes without a receipt entry sort
   // last, in file-listing order, and are flagged).
@@ -174,27 +210,26 @@ function validateReceipts(runRecord, passes, { validatorPath, requireSchemaValid
       continue;
     }
 
-    if (requireSchemaValidation) {
-      if (knownIdsFile) {
-        writeFileSync(knownIdsFile, JSON.stringify([...seenIds]));
-      }
-      const { ok, message } = validatePassSchema(validatorPath, pass.file, {
-        runId: runRecord.run_id,
-        initiatedBy: runRecord.initiated_by,
-        knownIdsFile,
-      });
-      if (!ok) {
-        diagnostics.push({ pass: pass.name, level: "reject", reason: `schema/receipt validation failed: ${message}` });
-        continue;
-      }
+    if (knownIdsFile) {
+      writeFileSync(knownIdsFile, JSON.stringify([...seenIds]));
+    }
+    const { ok, message } = validatePassSchema(validatorPath, pass.file, {
+      runId: runRecord.run_id,
+      initiatedBy: runRecord.initiated_by,
+      knownIdsFile,
+    });
+    if (!ok) {
+      diagnostics.push({ pass: pass.name, level: "reject", reason: `schema/receipt validation failed: ${message}` });
+      continue;
     }
 
     // A duplicate rejects the WHOLE pass, not just the colliding finding —
     // "receipt validation rejects the result and it contributes no pass or
-    // finding" (specs/dev-flow-v2.md § Results). In normal operation the
-    // schema validator's --known-ids check above already catches this
-    // (its rejection reason differs and is what fixtures assert on); this
-    // loop is what still enforces it when --no-schema-validation is set.
+    // finding" (specs/dev-flow-v2.md § Results). The schema validator's
+    // --known-ids check above already catches this in practice (its
+    // rejection reason differs and is what fixtures assert on); this loop
+    // is defense in depth, never the only thing standing between a
+    // duplicate id and being trusted.
     const duplicateIds = (payload.findings || []).filter((f) => seenIds.has(f.id)).map((f) => f.id);
     if (duplicateIds.length > 0) {
       diagnostics.push({
@@ -260,8 +295,14 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
     // overwritten or trusted), which naturally falls through to
     // finder_unavailable/breadth_exhausted handling below exactly as if no
     // pass had arrived for that slot.
-    const bySlot = new Map();
-    const claimedByFinder = new Set();
+    // Pass 1: group every STRUCTURALLY valid claim by the slot it names
+    // (finder == slot for a primary, substitutes_for == slot and
+    // finder != slot for a fallback, and the slot must actually be
+    // configured). A slot with more than one valid claim is exactly as
+    // untrusted as one with zero — resolving the conflict by picking
+    // whichever pass happened to be enumerated first would let a
+    // duplicate claim silently win, so BOTH are dropped in pass 2 below.
+    const validClaimsBySlot = new Map();
     for (const p of passesThisRound) {
       const slot = p.payload.slot || p.payload.finder;
       const finder = p.payload.finder;
@@ -269,10 +310,26 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
       const validPrimary = isPrimaryClaim && finder === slot;
       const validFallback = !isPrimaryClaim && p.payload.substitutes_for === slot && finder !== slot;
       if (!primarySlots.includes(slot) || !(validPrimary || validFallback)) continue;
-      if (bySlot.has(slot)) continue; // duplicate claim on one slot: neither is trusted
-      if (claimedByFinder.has(finder)) continue; // one finder cannot fill two slots this round
+      const list = validClaimsBySlot.get(slot) || [];
+      list.push(p);
+      validClaimsBySlot.set(slot, list);
+    }
+    // Pass 2: a slot is filled only by a claim that is the SOLE valid claim
+    // for that slot AND whose finder is not already filling another slot
+    // this round (spec: "an actor already serving as a primary or
+    // substitute in the round cannot satisfy a second slot"). Iterated in
+    // primarySlots' own (configuration) order so a finder-reuse conflict
+    // resolves deterministically rather than depending on pass enumeration
+    // order.
+    const bySlot = new Map();
+    const claimedByFinder = new Set();
+    for (const slot of primarySlots) {
+      const claims = validClaimsBySlot.get(slot) || [];
+      if (claims.length !== 1) continue; // zero or duplicate claims: slot unresolved either way
+      const p = claims[0];
+      if (claimedByFinder.has(p.payload.finder)) continue;
       bySlot.set(slot, p);
-      claimedByFinder.add(finder);
+      claimedByFinder.add(p.payload.finder);
     }
 
     const substitutions = [];
@@ -297,7 +354,16 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
       break;
     }
 
-    const reviewedHeads = new Set(passesThisRound.map((p) => p.envelope.head));
+    // Evidence (reviewedHead, findings) is drawn ONLY from the ACCEPTED
+    // (bySlot) passes — a pass a slot claim rejected above (invalid slot,
+    // duplicate claim, reused finder) contributes no pass or finding, per
+    // "receipt validation rejects the result and it contributes no pass or
+    // finding" (specs/dev-flow-v2.md § Results). Using passesThisRound
+    // (every pass that merely NAMED this round, regardless of whether its
+    // slot claim survived) here would let a rejected pass still inject
+    // findings or invalidate an otherwise-clean shared head.
+    const acceptedPasses = [...bySlot.values()];
+    const reviewedHeads = new Set(acceptedPasses.map((p) => p.envelope.head));
     let reviewedHead = reviewedHeads.size === 1 ? [...reviewedHeads][0] : null;
     if (!reviewedHead && unresolvedSlot) {
       const failure = slotFailures.find((s) => s.round === roundNumber && s.slot === unresolvedSlot);
@@ -306,7 +372,7 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
 
     const adjudication = adjByRound.get(roundNumber) || null;
     const findings = [];
-    for (const p of passesThisRound) {
+    for (const p of acceptedPasses) {
       for (const f of p.payload.findings || []) {
         const entry = adjudication ? adjudication.adjudications.find((a) => a.finding_id === f.id) : null;
         findings.push({
@@ -574,7 +640,13 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
   const latest = retained.length > 0 ? retained[retained.length - 1] : null;
   const isCurrentHeadRound = !!latest && latest.reviewedHead === currentHead;
 
-  const base = { stage, rounds_counted: retained.length, next_round: null };
+  // rounds_counted is the count of COMPLETE logical rounds only — an
+  // incomplete attempt (finder_unavailable / breadth_exhausted) counts no
+  // logical round at all (exit-computation spec: "no logical round is
+  // counted"). `retained` (and `latest` from it) still needs to include an
+  // incomplete round so the incomplete-current-head-round check above can
+  // find it; only the REPORTED metric excludes it.
+  const base = { stage, rounds_counted: retained.filter((r) => r.status === "complete").length, next_round: null };
 
   // An incomplete current-head round (finder_unavailable / breadth_exhausted)
   // is always capped: exhausting the finder or breadth resource for a slot
@@ -732,9 +804,14 @@ function main() {
   try {
     ({ validPasses, diagnostics } = validateReceipts(runDir.runRecord, runDir.passes, {
       validatorPath,
-      requireSchemaValidation: !args["no-schema-validation"],
       tmpDir,
     }));
+  } catch (err) {
+    if (err instanceof ExitIndeterminate) {
+      console.error(`dev-flow-exit: indeterminate: ${err.message}`);
+      return EXIT_CODES.indeterminate;
+    }
+    throw err;
   } finally {
     if (!args.tmp) rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -750,7 +827,23 @@ function main() {
       validAdjudications.push(adj);
       continue;
     }
-    const { ok, message } = validateAdjudicationSchema(validatorPath, adj.file);
+    // Manual run_id check as a floor even when no matching pass survives
+    // to bind --pass against below (every pass for this round rejected,
+    // or genuinely none exists yet) — --pass's own cross-check covers the
+    // common case more thoroughly (reviewed_head and finding-completeness
+    // too), but only when at least one pass is available to supply it.
+    if (adj.doc.run_id !== runDir.runRecord.run_id) {
+      diagnostics.push({
+        pass: adj.name,
+        level: "reject",
+        reason: `adjudication run_id "${adj.doc.run_id}" does not match the active run "${runDir.runRecord.run_id}"`,
+      });
+      continue;
+    }
+    const matchingPasses = validPasses
+      .filter((p) => p.payload.stage === adj.doc.stage && p.payload.round === adj.doc.round)
+      .map((p) => p.file);
+    const { ok, message } = validateAdjudicationSchema(validatorPath, adj.file, matchingPasses);
     if (ok) {
       validAdjudications.push(adj);
     } else {
@@ -804,6 +897,22 @@ function main() {
       `dev-flow-exit: indeterminate: ${args.stage} cap is 0 (disabled) but the trajectory contains round ${rounds[0].round} — trajectory inconsistent with its own policy`,
     );
     return EXIT_CODES.indeterminate;
+  }
+  // Round numbers must be exactly 1..max with no gaps — trusting the
+  // largest producer-supplied round number alone (as capReached/capped-clean
+  // do) would let a missing earlier round (never received, or rejected by
+  // receipt validation) silently spend the cap as if every round up to it
+  // had actually happened. A gap of any kind — including one created by an
+  // earlier round's pass being rejected above — means the trajectory cannot
+  // be trusted to represent what it claims.
+  const presentRoundNumbers = [...new Set(rounds.map((r) => r.round))].sort((a, b) => a - b);
+  for (let i = 0; i < presentRoundNumbers.length; i++) {
+    if (presentRoundNumbers[i] !== i + 1) {
+      console.error(
+        `dev-flow-exit: indeterminate: ${args.stage} rounds are not contiguous from 1 (present: ${presentRoundNumbers.join(", ")}) — trajectory inconsistent with its own policy`,
+      );
+      return EXIT_CODES.indeterminate;
+    }
   }
 
   let verdict;

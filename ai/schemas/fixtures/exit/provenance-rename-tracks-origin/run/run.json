@@ -8,6 +8,10 @@
     },
     {
       "kind": "pass",
+      "file": "review-r1-codex-cli"
+    },
+    {
+      "kind": "pass",
       "file": "review-r2-codex-cli"
     }
   ]

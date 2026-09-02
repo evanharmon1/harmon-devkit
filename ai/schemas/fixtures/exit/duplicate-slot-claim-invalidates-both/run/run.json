@@ -1,5 +1,5 @@
 {
-  "run_id": "run-slot-claim-mismatch",
+  "run_id": "run-duplicate-slot-claim",
   "initiated_by": "human",
   "slot_failures": [
     {
@@ -17,7 +17,11 @@
     },
     {
       "kind": "pass",
-      "file": "review-r1-gemini-cli"
+      "file": "review-r1-codex-cli-a"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli-b"
     }
   ]
 }

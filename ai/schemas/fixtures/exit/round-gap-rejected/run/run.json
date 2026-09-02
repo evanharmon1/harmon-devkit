@@ -1,14 +1,10 @@
 {
-  "run_id": "run-unchanged-helper",
+  "run_id": "run-round-gap",
   "initiated_by": "human",
   "receipts": [
     {
       "kind": "transition",
       "stage": "review"
-    },
-    {
-      "kind": "pass",
-      "file": "review-r1-codex-cli"
     },
     {
       "kind": "pass",

@@ -348,19 +348,36 @@ function checkTightenOnly(base, over, stageName, errorPath) {
     throw new PolicyError(`${errorPath}: removing ${removed.join(", ")} from a "${kind}"-composed ${stageName} list loosens it`);
   }
 
+  // Per-parameter comparison for entries present in BOTH lists. Only a
+  // verified numeric raise (converged) or lower (diverging) is a
+  // recognized tightening move; every other kind of change — dropping a
+  // parameter the base declared, adding one the base never had, or
+  // changing a non-numeric value (e.g. widening exclude_classes) — has no
+  // provably-safe direction, and "anything else is loosening" (the anchor
+  // spec's own rule) means it is refused rather than silently accepted.
+  // The comparison walks the UNION of base and override keys, not just the
+  // override's own — a dropped key is otherwise invisible to a loop that
+  // only iterates what the override still declares.
   for (const [name, overEntry] of overByName) {
     const baseEntry = baseByName.get(name);
     if (!baseEntry) continue;
-    for (const key of Object.keys(overEntry)) {
+    const allKeys = new Set([...Object.keys(baseEntry), ...Object.keys(overEntry)]);
+    for (const key of allKeys) {
       if (key === "predicate") continue;
       const bv = baseEntry[key];
       const ov = overEntry[key];
-      if (typeof bv !== "number" || typeof ov !== "number" || ov === bv) continue;
-      const raises = ov > bv;
-      const wantsRaise = stageName === "converged";
-      if (raises !== wantsRaise) {
+      if (JSON.stringify(bv) === JSON.stringify(ov)) continue;
+      if (typeof bv === "number" && typeof ov === "number") {
+        const raises = ov > bv;
+        const wantsRaise = stageName === "converged";
+        if (raises === wantsRaise) continue;
         throw new PolicyError(`${errorPath}: ${name}.${key} moved from ${bv} to ${ov}, which loosens ${stageName}`);
       }
+      throw new PolicyError(
+        `${errorPath}: ${name}.${key} changed from ${JSON.stringify(bv)} to ${JSON.stringify(ov)} — only a verified numeric ${
+          stageName === "converged" ? "raise" : "lower"
+        } is a recognized tightening move for a non-identical parameter`,
+      );
     }
   }
 }
@@ -502,12 +519,20 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
       const s = resolved.stages[stage];
       const cap = resolved.rounds[stage];
       if (cap > 0 && s.finders.length > 0) {
-        const worstCase = s.finders.length * 2 + s.finder_fallbacks.length;
+        // "for every finder slot" (exit-computation spec) is a per-slot
+        // requirement, not an aggregate one: prove the ceiling covers EACH
+        // slot independently attempting its own full primary+retry+fallback
+        // chain, not just one slot's chain plus a fallback list shared
+        // across every slot — the fallback list is preference-ordered per
+        // slot, so the true worst case is every slot separately exhausting
+        // it (finders.length primary+retry pairs, each also paying the
+        // full fallback chain), never the fallback chain amortized once.
+        const worstCase = s.finders.length * (2 + s.finder_fallbacks.length);
         if (resolved.breadth.max_agent_runs < worstCase) {
           errors.push(
             `[breadth.${resolved.breadth.policy}].max_agent_runs (${resolved.breadth.max_agent_runs}) cannot cover ` +
               `stage "${stage}"'s worst-case primary+retry+fallback chain (${worstCase} attempts across ${s.finders.length} finder slot(s), ` +
-              `${s.finder_fallbacks.length} shared fallback(s))`,
+              `${s.finder_fallbacks.length} fallback(s) each)`,
           );
         }
       }

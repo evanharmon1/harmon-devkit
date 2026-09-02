@@ -1,5 +1,5 @@
 {
-  "run_id": "run-unchanged-helper",
+  "run_id": "run-duplicate-transition",
   "initiated_by": "human",
   "receipts": [
     {
@@ -7,12 +7,12 @@
       "stage": "review"
     },
     {
-      "kind": "pass",
-      "file": "review-r1-codex-cli"
+      "kind": "transition",
+      "stage": "review"
     },
     {
       "kind": "pass",
-      "file": "review-r2-codex-cli"
+      "file": "review-r1-codex-cli"
     }
   ]
 }
