@@ -60,7 +60,38 @@ cutoff** (`--as-of`, default: now): an issue belongs to the cohort by its
 first kickoff inside the window, and it is scored on the runs that existed
 at the cutoff — a run started after the cutoff neither removes the issue nor
 changes its score — so the same window and cutoff always report the same
-share.
+share. **Reconstruction is a property, not a procedure here either**: four
+review rounds of drafting the mechanism directly into this paragraph each
+converged on a narrower hole than the round before, the same accretion the
+convergence model below names and avoids for the same reason — the fix that
+finally held is narrowing the claim to what is actually true, not a fifth
+attempt at a stronger one. Within one run there is exactly one writer: the
+orchestrating session, appending reserve-first — unlike an evidence
+comment, a run-record entry has no comment ID of its own to canonicalize
+by, since every entry lives inside the one run-record comment edited in
+place. Two byte-identical entries are a harmless duplicate (a resumed
+writer's own retry) and are normalized to one *before* chain validation runs
+— validating the un-normalized chain first would reject a byte-identical
+retry as broken (it necessarily repeats both its sequence and
+previous-entry digest), rather than recognize it as the harmless case it
+is; two entries that instead fork the chain (claiming the same previous
+entry but carrying *different* content) are not a duplicate — `--as-of`
+reconstruction SHALL fail closed and report
+the run indeterminate rather than silently choosing a branch. Concurrent writers
+from more than one orchestrator session are explicitly out of scope, the
+same GitHub read-modify-write limitation this spec discloses elsewhere
+rather than claims to close. Repeatability is a property of the chain as
+**durably observed**, not of an event's own self-reported timestamp: an
+entry reserved before a cutoff but not yet landed at read time is simply
+not part of any chain a reader can see yet, so a later re-read that then
+includes it is a difference in what has durably landed, never a violation
+of "the same cutoff over the same materialized chain reports the same
+share." The evidence delta spec's append-only,
+digest-chained history
+([§ Run history is append-only and as-of reconstructable](../openspec/changes/dev-flow-v2/specs/evidence/spec.md))
+states this property — and the fork/indeterminate case — in testable form,
+and #663 owns the mechanism, its fixtures, and every attack scenario these
+rounds raised.
 "Reached ready-for-review" means the run record carries the orchestrator's
 own promotion entry — the readiness-gate pass fingerprint and the
 `gh pr ready` it issued. A ready transition on the PR **without** that entry
@@ -110,9 +141,12 @@ integration → merge → deployment* / release*/ smoke* → retro*→ wrap
 The orchestrator-driven span is implement → integration; that span is what
 "unattended" means in the metric. `merge` is always a human.
 
-`gauntlet` and `shepherd` are retired names. Skills are named for stages
-(`/implement`, `/challenge`, `/review`, `/integrate`); agents for roles
-(`implementer`, `challenger`, `reviewer`, `integrator`). `/orchestrator` is the
+`gauntlet` and `shepherd` are retired names. Skills are named with a **verb**
+for the stage they run (`/implement`, `/challenge`, `/review`, `/integrate`);
+agents for roles (`implementer`, `challenger`, `reviewer`, `integrator`). A
+skill's verb need not match its stage's noun letter-for-letter — `/integrate`
+names the `integration` stage the same way `/review` names `review` — so
+this is the documented naming rule, never a drift between the two vocabularies. `/orchestrator` is the
 session's standing operating mode, not a stage. Each stage skill owns its own
 procedure and ends by naming the next stage; there is no skill that restates
 the walk.
@@ -433,12 +467,54 @@ file with a migration hint, and v2 consumers refuse both the legacy and v1
 shapes rather than carrying multiple interpretations. Shape refusal applies
 only to the file a consumer operates under; a historical merge-base copy is
 interpreted under its own declared `schema_version` — v1 by v1 rules and legacy
-by legacy rules.
+by legacy rules. Per that ADR's own pattern (v1's incompatibility bump shipped
+`.devflow-conformance-v1.json`), this v2 bump — carrying the `[review.*]` →
+`[caps.*]` → `[rounds.*]` rename among its incompatible changes — ships
+`.devflow-conformance-v2.json` as the v2 fixture corpus.
 The composed predicate catalog in this spec is normative for `[convergence]`;
-the draft's flat keys are illustrative placeholders until the exit script
-[#636](https://github.com/evanharmon1/harmon-devkit/issues/636) pins predicate
-names, as the [2026-09-01 correction](https://github.com/evanharmon1/harmon-init/issues/1081#issuecomment-5489563184)
-records.
+the draft's flat keys are illustrative placeholders, superseded by the
+predicate names [#636](https://github.com/evanharmon1/harmon-devkit/issues/636)'s
+branch (`feat/636-dev-flow-exit`, PR #720, not yet merged) pins and
+range-validates — confirmed directly against that branch, matching this
+spec's own catalog byte-for-byte. A catalog entry may itself be a nested `{ any = [...] }` /
+`{ all = [...] }` node, recursively; a per-rigor `[rigor.<level>.convergence]`
+override tightens by the same structural rules above whether an entry is
+flat or itself a nested subtree (the reader matches nested entries between
+base and override by full structural identity, not by a `.predicate` key):
+adding a whole new nested subtree to a `converged` `all` list or a
+`diverging` `any` list is exactly as well-defined a tightening move as
+adding a flat leaf to either, and refusing it would forbid a case the
+general rule above already permits. What has **no** defined direction, and
+is refused, is an override that changes the **internal structure** of a
+nested subtree the base already carries — whether that sub-formula got
+stricter or looser needs recursively evaluating a composed predicate this
+rule does not define. One present unchanged in both base and override
+contributes nothing to added/removed either way.
+
+`#636`'s branch also carries the one bounded historical decoder the
+merge-base rule below requires: on a migration branch, it maps the legacy
+`[rigor.<level>]` `shepherd` cap onto v2's `integration`/`remediation` pair
+(and a decoder-only `rounds.shared_budget` marker recording that the legacy
+cap charged one round per fix push or no-change cycle, never a finding cycle
+and its answering push separately — that marker never appears in an actual
+v2 file) and decodes the v1 `[review.*]` policy the same way — this part
+verified directly against that branch. **Every other axis (`breadth`,
+`spend`, `convergence`, `tier_order`, `roles`, `stages`, `strategy`) is filled
+from the reader's own built-in defaults, not decoded from the older shape's
+declared values, as of the current #636 branch** — narrower than this
+decision's own design (`openspec/changes/dev-flow-v2/design.md` decision 13)
+describes, and a real gap against the merge-base rule below: a migration
+branch that also edits, say, `[tier.*]` or `[budget.*]` on a self-modifying
+change resolves those axes from built-ins rather than the merge-base's own
+declared values, which the merge-base rule requires. Closing that gap
+belongs to #636's own scope, not this lane's; noted here so the anchor
+states what is actually true of that branch's reader today, before it
+merges, rather than the fuller decode the design intends. Task 2.3's own
+fixture requirement now names this precisely: a mutate-and-prove-unchanged
+fixture alone cannot force the fuller decode (a built-ins-only decoder
+that ignores the merge-base's declared values passes it trivially), so the
+task additionally proves a decoded value equals what the merge-base itself
+declares whenever that value is non-default.
 
 Every array key declares one of five semantics:
 
@@ -498,7 +574,10 @@ The v2 shape is:
   0 waives the readiness gate's Codex condition entirely, never the obligation
   to answer human or CI findings. The post-fix unreviewed-head blocker applies
   only when `integration > 0`: a fix after the last permitted cycle stops with
-  a blocker naming that head and leaves the PR draft. `remediation`
+  a blocker naming that head and leaves the PR draft. The only ways forward
+  from there are a maintainer-granted additional cycle or the block standing;
+  promotion never substitutes for the missing current-head verdict, whatever
+  the cap says. `remediation`
   independently bounds integration-stage fix pushes, including when
   `integration = 0`; at its ceiling, or at the first fix when it is 0, the run
   escalates with unresolved findings rather than abandoning or promoting past
@@ -682,6 +761,12 @@ Two rules make the posted evidence trustworthy on a public repository:
   can quote the very credential a reviewer found. Every evidence post runs
   the repo's secret scanner over the JSON first and fails closed; the branch
   scan never sees git-directory files, so this is a separate obligation.
+  Failing closed does not mean the round is lost: the renderer
+  ([#637](https://github.com/evanharmon1/harmon-devkit/issues/637)) replaces
+  each detected span with a stable `[REDACTED:<rule-id>]` placeholder and
+  posts that sanitized projection instead of the blocked original, so
+  durability survives a real credential without ever disclosing it; the
+  unredacted JSON stays in the git directory, never posted.
 - **Reserved before posted.** Each evidence comment carries a
   **deterministic** marker — `run_id`, stage, sequence — computable from the
   run record alone, and is reserved in the run directory before the GitHub
@@ -698,9 +783,36 @@ Two rules make the posted evidence trustworthy on a public repository:
   stored for display only, since a rename would otherwise turn valid
   evidence into "tampered"), and its current body
   hashes to the recorded digest — so an edited, deleted, or impostor comment
-  is reported as tampered evidence, never silently replayed. The run record
-  comment is subject to the **same author check**, so a stranger cannot
-  forge a record that vouches for their own evidence; an orchestrator that
+  is reported as tampered evidence, never silently replayed. "The run's
+  orchestrator" is never a value the record's own JSON body declares — that
+  would let a forged record vouch for its own evidence. Its authority
+  derives **solely** from configured trusted-orchestrator actor IDs — the
+  registry's trusted actors, declared in `agent-registry.json`, the same
+  finder trust IDs already use — matched here rather than re-derived, the
+  same source the evidence delta spec names
+  ([§ Harvested evidence is authenticated](../openspec/changes/dev-flow-v2/specs/evidence/spec.md)).
+  There is no kickoff-event fallback: three earlier drafts of this paragraph
+  each tried to define one (matching the kickoff actor's identity; matching
+  identity plus a locally-asserted permission claim; naming it "the trusted
+  kickoff event" without saying what makes it trusted) and all three were
+  broken the same way — a kickoff-shaped event proves nothing about who
+  posted it, so an actor able to forge one can equally forge whatever the
+  fallback checks inside it. The schema field for the configured list is
+  [#741](https://github.com/evanharmon1/harmon-devkit/issues/741)'s to add
+  — a dedicated follow-up, after both #634 (result schemas) and #635
+  (registry roles/finders) closed without adding it — not a mechanism this
+  anchor re-derives. Trust evaluation for a given run is pinned to an
+  authoritative registry revision for that run (its own kickoff-time
+  snapshot), never the registry's current content: an actor added to the
+  list later does not retroactively authenticate that run's older evidence,
+  and an actor later removed does not invalidate evidence authenticated
+  while they were still trusted. Until a repository configures that
+  list, a run record has no authority to validate against and its evidence
+  is reported unauthenticated rather than silently accepted on an unproven
+  identity.
+  The run record comment is subject to the **same author check** against
+  that trust root, so a stranger cannot forge a record that vouches
+  for their own evidence; an orchestrator that
   rewrites its own record is outside the threat model — it could equally have
   lied in the first place, and the challenger/reviewer raw output on the same
   comments is what the retro compares against.
@@ -733,7 +845,7 @@ absorbed by the issue that carries their criteria;
 - [ ] The exit script computes `continue | converged | diverging | capped` from adjudicated rounds and `[convergence]`, verifies provenance and fingerprints, and replays omator#397.
 - [ ] The readiness gate accepts only a schema-valid `result.integrator` for the current head as evidence of a Codex verdict — necessary, not sufficient: the gate's own pre/post-promotion content fingerprint over body, reviews, and comments (`readiness-gate.sh`) stays, because a human finding can land without moving the head.
 - [ ] `.devflow.toml` has top-level `default_rigor`, `default_strategy`, `rigor_order`, and `tier_order`, plus `[rounds]`, `[breadth]`, `[gates]`, `[convergence]`, `[role]`, `[stage]`, and `[strategy.*]`; `[spend]` is schema-only and shipped absent; both legacy and v1 shapes are refused.
-- [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (post refused); a stage split across comments (reassembled); a run capped before any PR (stage evidence and run record found on the issue).
+- [ ] Round evidence survives PR open and is harvestable with `gh api`; the evidence protocol ships regression fixtures for: interruption after the post but before the id is recorded (marker adoption, no duplicate); a forged-author comment; an edited payload (digest mismatch → tampered); a secret in finding text (redacted projection posted, unredacted evidence stays local); a stage split across comments (reassembled); a run capped before any PR (stage evidence and run record found on the issue).
 - [ ] `dev-flow-stats.sh` prints the success metric and replays policies.
 - [ ] AGENTS.md's Dev Loop is the stage table, the constitution rules, and references.
 - [ ] Foreman accepts envelope v2, reads `.devflow.toml`, writes run records, and requires, for each confidence stage, either round artifacts whose recomputed exit is a terminal clean outcome (`converged` or capped-clean) or — for a stage whose cap is 0 — the computed `capped`/`disabled` record alone, since a disabled stage runs no round.
