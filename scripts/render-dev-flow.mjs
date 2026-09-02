@@ -324,10 +324,21 @@ function buildFindingIndex(record) {
   }
 
   const entries = []
+  const seenFindingIds = new Map()
   for (const { file, doc } of record.adjudications) {
     for (const entry of doc.adjudications) {
       const idMatch = FINDING_ID.exec(entry.finding_id)
       if (!idMatch) fail(`${file}: malformed finding id ${entry.finding_id}`)
+      // A finding is adjudicated in exactly one round document, ever
+      // (adjudication.schema.json's own $comment) — two adjudication files
+      // naming the same finding_id (a stray copy, or two rounds disagreeing
+      // about who owns it) must not silently render twice or let a Map
+      // keyed by finding_id keep only the last one during settlement
+      // validation.
+      if (seenFindingIds.has(entry.finding_id)) {
+        fail(`${file}: finding id ${entry.finding_id} was already adjudicated in ${seenFindingIds.get(entry.finding_id)}`)
+      }
+      seenFindingIds.set(entry.finding_id, file)
       entries.push({
         entry,
         stage: doc.stage,
@@ -344,21 +355,34 @@ function buildFindingIndex(record) {
 }
 
 const EXPECTED_REFERENCE_TYPE = { fix: 'sha', decline: 'comment_id', file: 'issue_number' }
+const REFERENCE_VALUE_PATTERN = { sha: /^[0-9a-f]{40}$/, issue_number: /^[1-9][0-9]*$/ }
 
 // validateCrossDocumentConsistency — the local (single-record-directory)
 // checks renderer/spec.md requires before publication, and that every
 // projection benefits from: a settlement naming a finding this record set
 // never adjudicated ("orphan"), settling a finding that was never deferred,
-// or pairing a disposition with the wrong reference shape, are all
-// indistinguishable from a real settlement by JSON Schema alone (schema
-// validates each settlement/adjudication document on its own; these
-// invariants span two documents). A pass envelope naming a different
-// head/run_id than the adjudication it was cross-referenced by would
-// otherwise let a stale or foreign pass silently enrich a finding it does
-// not actually belong to.
+// pairing a disposition with the wrong reference shape or a malformed
+// reference value, or an adjudication document naming a different run
+// entirely, are all indistinguishable from a real, in-run settlement by
+// JSON Schema alone (schema validates each document on its own; these
+// invariants span two or three documents). A pass envelope naming a
+// different head/run_id than the adjudication it was cross-referenced by
+// would otherwise let a stale or foreign pass silently enrich a finding it
+// does not actually belong to; an adjudication document from a foreign run
+// would otherwise let a same-run_id-looking-but-actually-different finding
+// id (ids are unique only WITHIN a run, per specs/dev-flow-v2.md) satisfy a
+// settlement that was never really adjudicated by this run.
 function validateCrossDocumentConsistency(record) {
   const rows = buildFindingIndex(record)
   const byId = new Map(rows.map((row) => [row.entry.finding_id, row]))
+
+  if (record.run) {
+    for (const { file, doc } of record.adjudications) {
+      if (doc.run_id !== record.run.run_id) {
+        fail(`${file}: its run_id ${doc.run_id} does not match run.json's run_id ${record.run.run_id}`)
+      }
+    }
+  }
 
   for (const row of rows) {
     if (!row.pass) continue
@@ -370,6 +394,12 @@ function validateCrossDocumentConsistency(record) {
     if (row.pass.runId !== row.run_id) {
       fail(
         `${row.entry.finding_id}: its pass envelope names run_id ${row.pass.runId}, but the adjudicating document's run_id is ${row.run_id}`
+      )
+    }
+    const expectedRole = row.stage === 'integration' ? 'integrator' : 'reviewer'
+    if (row.pass.role !== expectedRole) {
+      fail(
+        `${row.entry.finding_id}: stage ${row.stage} requires a ${expectedRole} pass, but its matching pass has role ${row.pass.role}`
       )
     }
   }
@@ -393,6 +423,12 @@ function validateCrossDocumentConsistency(record) {
         `run.json: settlement for ${settlement.finding_id} has disposition '${settlement.disposition}' but reference.type '${settlement.reference.type}' (expected '${expectedType}')`
       )
     }
+    const valuePattern = REFERENCE_VALUE_PATTERN[settlement.reference.type]
+    if (valuePattern && !valuePattern.test(settlement.reference.value)) {
+      fail(
+        `run.json: settlement for ${settlement.finding_id} has reference.type '${settlement.reference.type}' but value '${settlement.reference.value}' does not match the expected shape`
+      )
+    }
   }
 }
 
@@ -410,8 +446,21 @@ function compareRows(a, b) {
   return 0
 }
 
-function classification(disposition) {
-  return disposition === 'decline' ? 'false positive' : 'confirmed'
+// Sourced from the originating pass's own `class` (design/correctness/
+// consistency/hardening/nit) — never derived from `disposition`. Disposition
+// and classification are independent workflow decisions (AGENTS.md's
+// confirmed/plausible-but-unproven/false-positive taxonomy): a finding can be
+// uncertain and still get `defer`red or `file`d, so "non-decline therefore
+// confirmed" was a fabricated certainty the record never actually claimed.
+// adjudication.schema.json carries no classification field of its own
+// (additionalProperties: false, and it is not this renderer's schema to
+// extend), so `class` — the one real, schema-backed categorical judgment a
+// pass provides — is what this column actually reflects; 'n/a' without a
+// matching pass or for an integration-stage finding (result.integrator
+// findings carry no `class` either), same graceful-degradation rule
+// `provenance()` already follows.
+function classification(row) {
+  return row.pass && row.pass.role === 'reviewer' ? row.pass.finding.class : 'n/a'
 }
 
 function shortSha(sha) {
@@ -563,7 +612,7 @@ function tableRow(row) {
       : `${entry.adjudicated_priority} (override: ${escapeCell(entry.override.reason)})`
   const action = `${entry.disposition} — ${escapeCell(entry.reason)}`
   return `| ${entry.finding_id} | ${entry.reviewer_priority ?? 'n/a'} | ${adjudicated} | ${classification(
-    entry.disposition
+    row
   )} | ${escapeCell(summary(row))} | ${action} | ${provenance(row)} |`
 }
 
@@ -660,7 +709,10 @@ function policyLine(policy) {
     if ('min_rounds' in rounds) capParts.push(`min_rounds ${rounds.min_rounds}`)
   }
   const capText = capParts.length > 0 ? ` → ${capParts.join(', ')}` : ''
-  return `rigor: \`${rigor.level}\` (\`${rigor.source}\`)${capText}`
+  // Backticks make GFM render this literally, but mergeSections' marker
+  // scan is a raw byte match with no Markdown awareness — a code span does
+  // not stop it from reading a forged marker inside rigor.level/source.
+  return `rigor: \`${neutralizeMarkers(rigor.level)}\` (\`${neutralizeMarkers(rigor.source)}\`)${capText}`
 }
 
 function renderPolicyDisclosure(record) {
@@ -728,14 +780,24 @@ function renderBlockerComment(record, options = {}) {
 // a genuine thread may already carry its reply. Emitting a plan entry for
 // any of those would attempt an invalid API reply or duplicate an existing
 // one.
+//
+// passes/ is optional for every OTHER projection — a finding with no
+// matching pass still renders, just with reduced fidelity. That degradation
+// is wrong here specifically: without the pass, this renderer cannot tell
+// "already answered" from "not a thread at all" from "genuinely still
+// open," so an integration-stage finding with no matching pass is an
+// indeterminate error, never a silent omission — an empty entries[] must
+// mean "confirmed nothing to reply to," not "we couldn't tell."
 function renderThreadReplyPlan(record) {
-  const rows = buildFindingIndex(record).filter(
-    (row) =>
-      row.stage === 'integration' &&
-      row.pass &&
-      row.pass.unansweredThreadRoots &&
-      row.pass.unansweredThreadRoots.has(row.pass.finding.source_id)
-  )
+  const integrationRows = buildFindingIndex(record).filter((row) => row.stage === 'integration')
+  for (const row of integrationRows) {
+    if (!row.pass) {
+      fail(
+        `${row.entry.finding_id}: no matching integrator pass supplied — cannot determine whether its thread is still unanswered`
+      )
+    }
+  }
+  const rows = integrationRows.filter((row) => row.pass.unansweredThreadRoots.has(row.pass.finding.source_id))
   const entries = rows
     .sort(compareRows)
     .map((row) => {
@@ -753,7 +815,7 @@ function renderThreadReplyPlan(record) {
         // (renderer/spec.md "Multi-surface dispositions remain equivalent").
         head: row.reviewed_head,
         adjudicated_priority: entry.adjudicated_priority,
-        classification: classification(entry.disposition),
+        classification: classification(row),
         evidence: summary(row),
         action: `${entry.disposition} — ${entry.reason}`
       }

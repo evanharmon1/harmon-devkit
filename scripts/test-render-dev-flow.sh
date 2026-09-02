@@ -175,6 +175,59 @@ run deferred-findings --record "$bad_head"
 assert_rc 1
 assert_contains "$err" "its pass envelope names head"
 
+echo "==> cross-document consistency: an adjudication document from a foreign run is rejected"
+bad_run_id="${test_tmp}/adjudication-run-mismatch"
+mkdir -p "$bad_run_id"
+cp -r "${record_dir}/." "$bad_run_id/"
+node -e "
+const fs = require('fs');
+const p = '${bad_run_id}/adjudications/challenge-r1.json';
+const doc = JSON.parse(fs.readFileSync(p, 'utf8'));
+doc.run_id = 'some-other-run';
+fs.writeFileSync(p, JSON.stringify(doc, null, 2));
+"
+run deferred-findings --record "$bad_run_id"
+assert_rc 1
+assert_contains "$err" "does not match run.json's run_id"
+
+echo "==> cross-document consistency: a duplicate finding id across adjudication files is rejected"
+dup_finding="${test_tmp}/duplicate-finding-id"
+mkdir -p "$dup_finding"
+cp -r "${record_dir}/." "$dup_finding/"
+cp "${record_dir}/adjudications/challenge-r1.json" "${dup_finding}/adjudications/challenge-r1-copy.json"
+run deferred-findings --record "$dup_finding"
+assert_rc 1
+assert_contains "$err" "was already adjudicated in"
+
+echo "==> cross-document consistency: a malformed settlement reference value (not 40-hex) is rejected"
+bad_sha="${test_tmp}/settlement-value-malformed"
+mkdir -p "$bad_sha"
+cp -r "${record_dir}/." "$bad_sha/"
+node -e "
+const fs = require('fs');
+const p = '${bad_sha}/run.json';
+const run = JSON.parse(fs.readFileSync(p, 'utf8'));
+run.settlements[0].reference.value = 'not-a-sha';
+fs.writeFileSync(p, JSON.stringify(run, null, 2));
+"
+run deferred-findings --record "$bad_sha"
+assert_rc 1
+assert_contains "$err" "does not match the expected shape"
+
+echo "==> thread-reply-plan requires the matching integrator pass, never a silent omission"
+no_pass="${test_tmp}/integration-no-pass"
+mkdir -p "$no_pass"
+cp -r "${record_dir}/." "$no_pass/"
+rm "${no_pass}/passes/integration-r1-human.json"
+run thread-reply-plan --record "$no_pass"
+assert_rc 1
+assert_contains "$err" "cannot determine whether its thread is still unanswered"
+
+echo "==> adjudication-record's Classification column reflects the pass's real class, never a fabricated confirmed/false-positive"
+assert_contains "$(cat "${golden_dir}/adjudication-record.txt")" '| correctness |'
+assert_contains "$(cat "${golden_dir}/adjudication-record.txt")" '| hardening |'
+assert_contains "$(cat "${golden_dir}/adjudication-record.txt")" '| n/a |'
+
 echo "==> marker-like text in a finding's evidence cannot forge a section boundary"
 marker_record="${test_tmp}/marker-forgery"
 mkdir -p "$marker_record"

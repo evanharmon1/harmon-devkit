@@ -7,7 +7,7 @@
       "reply_text": "Declined: already covered by the JSON result's own reason field; Markdown is a convenience, not the contract",
       "head": "2222222222222222222222222222222222222222",
       "adjudicated_priority": "P2",
-      "classification": "false positive",
+      "classification": "n/a",
       "evidence": "Human reviewer: the retry-exhausted blocker never surfaces how many attempts remain to the caller.",
       "action": "decline — already covered by the JSON result's own reason field; Markdown is a convenience, not the contract"
     }
