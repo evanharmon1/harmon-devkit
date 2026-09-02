@@ -61,16 +61,20 @@ first kickoff inside the window, and it is scored on the runs that existed
 at the cutoff — a run started after the cutoff neither removes the issue nor
 changes its score — so the same window and cutoff always report the same
 share. GitHub exposes no edit history for an issue comment, so this cannot
-mean re-reading the run record comment as it looked at the cutoff; the run
-record's `interventions[]` and stage transitions are themselves
-append-only — a new entry is added, never an existing one edited or
-removed, even though the wrapping comment's body is replaced whole on every
-write — and each entry carries its own timestamp. `--as-of` scoring reads
-those arrays **filtered to entries at or before the cutoff** and computes
-the run's cutoff-time state from that filtered view, never from the
-record's current summary fields directly; a later transition changes what
-the array contains after the cutoff, never what a fixed cutoff computes from
-it.
+mean re-reading the run record comment as it looked at the cutoff. Every
+transition, intervention, and terminal-outcome event instead carries its own
+immutable timestamp, sequence number, and digest chained to the previous
+event's digest — appending one extends the chain without editing an earlier
+entry, so a stage's own exit is a **new** chained event, never a field added
+to its existing entry (a single mutable entered/exited object could not
+distinguish "not yet exited" from "exited after the cutoff," which is
+exactly what a snapshot needs to tell apart). `--as-of` scoring first
+validates the complete chain, then reconstructs state from only the events
+at or before the cutoff — never from the record's current summary fields
+directly — so a later event changes what a later cutoff sees, never what an
+earlier, already-computed one does. See
+[evidence delta spec § Run history is append-only and as-of reconstructable](../openspec/changes/dev-flow-v2/specs/evidence/spec.md)
+for the full chain contract and its fixtures.
 "Reached ready-for-review" means the run record carries the orchestrator's
 own promotion entry — the readiness-gate pass fingerprint and the
 `gh pr ready` it issued. A ready transition on the PR **without** that entry
@@ -456,9 +460,14 @@ script [#636](https://github.com/evanharmon1/harmon-devkit/issues/636) pinned
 and range-validated the predicate names, confirming this spec's own catalog
 byte-for-byte. A catalog entry may itself be a nested `{ any = [...] }` /
 `{ all = [...] }` node, recursively; a per-rigor `[rigor.<level>.convergence]`
-override may only tighten a **flat** list (the structural rules above), so an
-override is refused wherever the base table it would tighten already nests —
-keep per-rigor overrides flat even where the base catalog does not.
+override may only tighten a **flat** entry the structural rules above (the
+reader matches nested entries between base and override by full structural
+identity, not by a `.predicate` key). A nested subtree the override adds,
+removes, or changes has no defined tightening direction and is refused; one
+present unchanged in both base and override contributes nothing to
+added/removed and tightening the base's own flat siblings around it is a
+normal, permitted tightening move — refusing every override merely because
+the base nests anywhere would forbid that well-defined case too.
 
 The reader that #636 built also carries the one bounded historical decoder the
 merge-base rule below requires: on a migration branch, it maps the legacy
@@ -746,7 +755,13 @@ Two rules make the posted evidence trustworthy on a public repository:
   actor ID of whoever authored the run record comment at kickoff, validated
   against the repository's configured trusted-orchestrator actor IDs (the
   same trust list evidence comments already check against) or, absent that
-  configuration, the kickoff event's own independently authenticated actor.
+  configuration, an actor independently verified to hold write access to the
+  repository at kickoff time. Matching the kickoff event's own actor alone is
+  not authority: on a public repository, a stranger able to trigger a
+  kickoff-shaped event can equally author the matching run record comment,
+  satisfying same-actor equality without ever holding real orchestrator
+  standing — the fallback needs an independently checked permission, not
+  merely that the two events agree on who performed them.
   The run record comment is subject to the **same author check** against
   that external trust root, so a stranger cannot forge a record that vouches
   for their own evidence; an orchestrator that
