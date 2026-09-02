@@ -279,9 +279,18 @@ function findRunRecord(issueComments, { trustedActorIds }) {
       if (commentActorId(recordComment) !== named.author_actor_id) {
         throw new EvidenceError(`run-index ${runId} names run-record author ${named.author_actor_id}, but comment ${named.id}'s current author is ${commentActorId(recordComment)} — edited-entry tampering`);
       }
+      // No digest check here: the run-record is explicitly edited in
+      // place at every transition, so a digest captured once at kickoff
+      // would stop matching after the run's very first legitimate edit —
+      // challenge round 2, confirmed as a P0 in an earlier version of this
+      // check. The index authenticates the comment's IDENTITY (id +
+      // author, both checked above); the record's own CONTENT integrity
+      // comes from its internal append-only chains (verifyRunRecordChains
+      // below), not from an outer digest pinned to a moment its content
+      // is designed to outgrow.
       const recordPayloadText = fencedPayloadText(recordComment.body || "");
-      if (recordPayloadText === null || sha256(recordPayloadText) !== named.digest) {
-        throw new EvidenceError(`run-index ${runId} names run-record comment ${named.id}, whose current body no longer matches the indexed digest — edited-entry tampering`);
+      if (recordPayloadText === null) {
+        throw new EvidenceError(`run-index ${runId} names run-record comment ${named.id}, which no longer carries a fenced payload — edited-entry tampering`);
       }
       const recordMarker = parseMarker(recordComment.body || "");
       if (!recordMarker || recordMarker.kind !== "run-record" || recordMarker.runId !== runId) {
@@ -314,35 +323,39 @@ function findRunRecord(issueComments, { trustedActorIds }) {
 }
 
 // The run record's own evidence_comments[] is the authoritative index of
-// every evidence comment that should exist (evidence spec: "the issue-level
-// index... SHALL anchor run discovery... SHALL reject deleted-entry
-// tampering, never reinterpret it as a run that did not happen"). Cross-
-// checked here against the actual comments fetched (issue + PR merged) —
-// a listed entry with no matching comment id, or one whose current digest
-// no longer matches, is deleted-entry or edited-entry tampering: the whole
-// run is untrustworthy, not just the one missing round, for the same
-// reason a broken append-only chain untrusts the record past the break.
-function verifyEvidenceCommentsListed(runRecord, allComments) {
+// every evidence comment that exists — discovery is LIST-DRIVEN, not
+// marker-scan-driven (evidence spec: "the harvester SHALL accept only
+// comments named by the trusted run record"; "the issue-level index...
+// SHALL anchor run discovery... SHALL reject deleted-entry tampering,
+// never reinterpret it as a run that did not happen"). Scanning for
+// matching markers and trusting anything the author's own actor id could
+// have posted (the prior design) accepted an ORPHAN evidence comment the
+// author posted but never indexed — challenge round 2, confirmed — which
+// is exactly backwards from "accept only comments NAMED by the record".
+// withinCutoff scopes which VERIFIED entries are assembled into rounds
+// (an --as-of reconstruction should not see a round posted after the
+// cutoff) — but every listed entry is still verified for tampering
+// against the full, unfiltered comment set regardless of cutoff, for the
+// same reason findRunRecord's own cutoff filtering only ever applies to
+// discovery, never to whether a listed entry was deleted or edited.
+function assembleListedEvidence(runRecord, allComments, withinCutoff) {
   const byId = new Map(allComments.map((c) => [c.id, c]));
+  const verified = [];
   for (const entry of runRecord.evidence_comments || []) {
     const id = Number(entry.id);
     const comment = byId.get(id);
     if (!comment) {
       throw new EvidenceError(`evidence_comments[] names comment ${entry.id} (marker ${JSON.stringify(entry.marker)}), which no longer exists — deleted-entry tampering`);
     }
-    const payloadText = fencedPayloadText(comment.body || "");
-    if (payloadText === null || sha256(payloadText) !== entry.digest) {
-      throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} no longer matches its recorded digest — edited-entry tampering`);
-    }
     if (commentActorId(comment) !== entry.author_actor_id) {
       throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} names author ${entry.author_actor_id} but the comment's current author is ${commentActorId(comment)}`);
     }
     // The payload can be untouched while only the marker line changes —
-    // digest+author alone would miss that, and the later marker-scan
-    // discovery would then attribute this SAME indexed comment to a
-    // different run/stage/round/destination than the one it was actually
-    // indexed for, defeating the sequence the marker exists to authenticate
-    // — challenge round 1, confirmed.
+    // author agreement alone would miss that, and grouping-by-marker below
+    // would then attribute this SAME indexed comment to a different
+    // run/stage/round/destination/sequence than the one it was actually
+    // indexed for, defeating the sequence the marker exists to
+    // authenticate — challenge round 1, confirmed.
     const currentMarker = parseMarker(comment.body || "");
     const listed = entry.marker || {};
     const markersAgree =
@@ -355,7 +368,58 @@ function verifyEvidenceCommentsListed(runRecord, allComments) {
     if (!markersAgree) {
       throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} no longer matches its recorded marker (listed ${JSON.stringify(listed)}, current ${JSON.stringify(currentMarker)}) — edited-entry tampering`);
     }
+    const payloadText = fencedPayloadText(comment.body || "");
+    if (payloadText === null) {
+      throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} no longer carries a fenced payload — edited-entry tampering`);
+    }
+    verified.push({ marker: listed, entryDigest: entry.digest, comment, payloadText });
   }
+
+  // Group by (stage, destination, round) — ignoring sequence, since a
+  // split payload's segments share every marker field except that one
+  // (ai/schemas/README.md "Segment reassembly"). Cutoff-filtered here,
+  // AFTER every entry above was already verified unconditionally.
+  const groups = new Map();
+  for (const v of verified) {
+    if (!withinCutoff(v.comment)) continue;
+    const key = `${v.marker.stage} ${v.marker.destination} ${v.marker.round}`;
+    const list = groups.get(key) || [];
+    list.push(v);
+    groups.set(key, list);
+  }
+
+  const rounds = [];
+  for (const [key, entries] of groups) {
+    entries.sort((a, b) => a.marker.sequence - b.marker.sequence);
+    for (let i = 0; i < entries.length; i++) {
+      if (entries[i].marker.sequence !== i + 1) {
+        throw new EvidenceError(`${key}: segment sequence has a gap or does not start at 1 (present: ${entries.map((e) => e.marker.sequence).join(",")})`);
+      }
+    }
+    // Every segment in a split payload carries the digest of the FULL
+    // reassembled text (ai/schemas/README.md "Digest") — not its own
+    // individual segment text. Hashing each segment against its own
+    // indexed digest (the prior code, inherited from the pre-list-driven
+    // design) fails authentication for every real split payload even
+    // though reassembly itself succeeds — challenge round 2, confirmed.
+    const digests = new Set(entries.map((e) => e.entryDigest));
+    if (digests.size > 1) {
+      throw new EvidenceError(`${key}: segments disagree on the reassembled-payload digest they were indexed with — tampering`);
+    }
+    const fullText = entries.map((e) => e.payloadText).join("");
+    if (sha256(fullText) !== entries[0].entryDigest) {
+      throw new EvidenceError(`${key}: reassembled payload does not match its indexed digest — edited-entry tampering`);
+    }
+    let payload;
+    try {
+      payload = JSON.parse(fullText);
+    } catch (err) {
+      throw new EvidenceError(`${key}: reassembled segments are not valid JSON: ${err.message}`);
+    }
+    const { stage, destination: dest, round } = entries[0].marker;
+    rounds.push({ stage, dest, round, payload, commentIds: entries.map((e) => e.comment.id) });
+  }
+  return rounds;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,29 +509,29 @@ function reconstructAsOf(body, cutoffIso) {
     body.promotion && Date.parse(body.promotion.promoted_at) <= cutoff ? body.promotion : null;
   // outcome is terminal-only in the live record; "as of" a cutoff before
   // the recorded outcome's own effective time, the run reads as still
-  // in-flight (null) rather than inheriting a future terminal state.
-  // The record does not carry an explicit outcome timestamp, so outcome is
-  // DERIVED from timestamped evidence available by the cutoff — never
-  // copied from the record's own CURRENT top-level `outcome` field, which
-  // can already reflect something that happened after the cutoff.
-  // "ready-for-review" specifically requires `promotion` (itself
-  // cutoff-checked above): a last transition's own exit text is never
-  // trusted to mean readiness on its own — challenge round 1, confirmed
-  // (an integration-stage exit at 10:00 does not mean ready-for-review by
-  // 10:10 if promotion did not land until 10:15). The other terminal
-  // states are read directly off the transition's own exit text (e.g.
-  // "capped: 1 adjudicated P1 remaining"), which — unlike readiness — IS a
-  // reliable, already-timestamped signal on its own.
+  // in-flight (null) rather than inheriting a future terminal state. The
+  // record does not carry an explicit outcome timestamp, so trust the
+  // live `outcome` field only once every transition (including any that
+  // exist strictly after this reconstruction's own filtered set) is also
+  // within the cutoff AND the last transition itself already carries an
+  // exit — together these mean the run's own edit history shows nothing
+  // happened after the cutoff, so whatever `outcome` currently says was
+  // already true then. The ONE exception is "ready-for-review": that
+  // specific value requires `promotion` (itself cutoff-checked above,
+  // properly timestamped) — a transition's own exit text is never trusted
+  // to mean readiness on its own, challenge round 1 confirmed (an
+  // integration-stage exit at 10:00 does not mean ready-for-review by
+  // 10:10 if promotion did not land until 10:15). Parsing the exit text
+  // for a specific magic word (an earlier version of this fix) is exactly
+  // as fragile as it sounds — challenge round 2, confirmed: run.schema.json
+  // only gives EXAMPLE exit text ("e.g. 'capped: ...'"), never a fixed
+  // format, so a legitimately different phrasing for the same terminal
+  // outcome was silently read as still in-flight.
   let outcome = null;
   if (promotion) {
     outcome = "ready-for-review";
   } else if (lastTransition && lastTransition.exit && filtered.stage_transitions.length === chains.stage_transitions.length) {
-    // Only trust the last transition's exit when every transition
-    // (including any that exist strictly after this reconstruction's own
-    // filtered set) is also within the cutoff — otherwise a later
-    // transition might be the one that actually produced this exit.
-    const word = lastTransition.exit.split(/[\s:]/, 1)[0];
-    if (word === "capped" || word === "escalated" || word === "abandoned") outcome = word;
+    outcome = body.outcome === "ready-for-review" ? null : body.outcome;
   }
   return {
     run_id: body.run_id,
@@ -483,56 +547,17 @@ function reconstructAsOf(body, cutoffIso) {
 }
 
 // ---------------------------------------------------------------------------
-// Round evidence: segment reassembly, then the reassembled payload is
-// {passes: [envelope...], adjudication: {...}} — one comment (or split
-// sequence) per stage/round, posted to the issue (ai/schemas/README.md
-// "Comment kinds"). Stage rollups on the PR are not consulted for replay:
-// the issue's per-round comments are the spec's own source of truth
-// ("each round's evidence is posted to the issue" unconditionally).
+// Orphan detection (reporting only — never trusted, never assembled): a
+// comment shaped like evidence for this run, posted by an actor who could
+// legitimately author it, but never added to evidence_comments[]. Kept
+// visible in trajectory output as a signal something may have failed to
+// index (a crash between posting and updating the list) — assembleListedEvidence
+// above never accepts it regardless.
 // ---------------------------------------------------------------------------
 
-function collectEvidenceEntries(comments, { runId, runRecordAuthorId }) {
+function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds }) {
   const marked = markedComments(comments).filter((e) => e.marker.kind === "evidence" && e.marker.runId === runId);
-  const trusted = marked.filter((e) => isTrustedFor(e.comment, { runRecordAuthorId }));
-  const untrusted = marked.filter((e) => !isTrustedFor(e.comment, { runRecordAuthorId }));
-  const canonical = resolveCanonical(trusted);
-  return { canonical, untrusted };
-}
-
-// Groups canonical evidence entries by (stage, dest, round), reassembles
-// each group's segments in seq order (requiring 1..N with no gap), and
-// parses the concatenated text once.
-function reassembleRoundEvidence(canonicalMap) {
-  const groups = new Map();
-  for (const entry of canonicalMap.values()) {
-    const key = `${entry.marker.stage} ${entry.marker.dest} ${entry.marker.round}`;
-    const list = groups.get(key) || [];
-    list.push(entry);
-    groups.set(key, list);
-  }
-  const rounds = [];
-  const errors = [];
-  for (const [key, entries] of groups) {
-    entries.sort((a, b) => a.marker.seq - b.marker.seq);
-    for (let i = 0; i < entries.length; i++) {
-      if (entries[i].marker.seq !== i + 1) {
-        errors.push({ key, reason: `segment sequence has a gap or does not start at 1 (present: ${entries.map((e) => e.marker.seq).join(",")})` });
-        continue;
-      }
-    }
-    if (errors.some((e) => e.key === key)) continue;
-    const text = entries.map((e) => e.payloadText).join("");
-    let payload;
-    try {
-      payload = JSON.parse(text);
-    } catch (err) {
-      errors.push({ key, reason: `reassembled segments are not valid JSON: ${err.message}` });
-      continue;
-    }
-    const { stage, dest, round } = entries[0].marker;
-    rounds.push({ stage, dest, round, payload, commentIds: entries.map((e) => e.comment.id) });
-  }
-  return { rounds, errors };
+  return marked.filter((e) => isTrustedFor(e.comment, { runRecordAuthorId }) && !listedIds.has(e.comment.id));
 }
 
 // ---------------------------------------------------------------------------
@@ -602,39 +627,24 @@ function buildRunDirectory(runRecord, roundEvidence, destDir) {
 // record disqualifies only THAT one run — never the whole harvest. Every
 // return here carries `status: "ok" | "indeterminate"`; a caller iterating
 // many issues keeps going past an indeterminate one rather than aborting.
-function harvestOneRunRecord(repo, issueNumber, record, { trustedActorIds, asOf, issueComments, withinCutoff }) {
+function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, withinCutoff }) {
   try {
     const state = reconstructAsOf(record.body, asOf);
-    // evidence_comments[] is checked against every comment that exists NOW
-    // (unfiltered by --as-of) — a listed entry either genuinely exists or
-    // it was deleted; whether it also happens to predate a requested
-    // cutoff is a SEPARATE question, decided below by the same withinCutoff
-    // filter every other round-discovery input already goes through. Using
-    // the cutoff-filtered set here would misreport a comment that is only
-    // temporally out of scope as tampering.
     const allPrComments = state.pr ? fetchPrComments(repo, state.pr.number) : [];
-    verifyEvidenceCommentsListed(record.body, [...issueComments, ...allPrComments]);
-
-    const { canonical: issueCanonical, untrusted: issueUntrusted } = collectEvidenceEntries(
-      issueComments.filter(withinCutoff),
-      { runId: record.runId, runRecordAuthorId: record.authorActorId },
-    );
-    const { canonical: prCanonical, untrusted: prUntrusted } = collectEvidenceEntries(
-      allPrComments.filter(withinCutoff),
-      { runId: record.runId, runRecordAuthorId: record.authorActorId },
-    );
-    const merged = new Map([...issueCanonical, ...prCanonical]);
-    const { rounds, errors } = reassembleRoundEvidence(merged);
-    // A reassembly error (a segment gap, or segments that don't parse) is
-    // incomplete evidence, not partial evidence — the evidence spec
-    // requires "indeterminate rather than a partial trajectory" (§ "Split
-    // evidence reassembles deterministically"). Retaining the rounds that
-    // DID reassemble and silently dropping the rest — the prior
-    // behavior — let metrics and replay operate on a trajectory the
-    // producer never actually emitted. Challenge round 1, confirmed.
-    if (errors.length > 0) {
-      throw new EvidenceError(`round evidence reassembly failed: ${errors.map((e) => `${e.key}: ${e.reason}`).join("; ")}`);
-    }
+    const allComments = [...issueComments, ...allPrComments];
+    // List-driven: verifies every evidence_comments[] entry (unconditionally
+    // — a listed comment either genuinely exists, unedited, or it's
+    // tampering, regardless of --as-of) and assembles only the entries
+    // whose own comment predates the cutoff into rounds. A reassembly-time
+    // error (missing segment, malformed JSON, digest mismatch) throws —
+    // the evidence spec requires "indeterminate rather than a partial
+    // trajectory" (§ "Split evidence reassembles deterministically");
+    // silently keeping whatever DID reassemble (an earlier version of this
+    // function) let metrics and replay operate on a trajectory the
+    // producer never actually emitted — challenge round 1, confirmed.
+    const rounds = assembleListedEvidence(record.body, allComments, withinCutoff);
+    const listedIds = new Set((record.body.evidence_comments || []).map((e) => Number(e.id)));
+    const orphans = findOrphanEvidence(allComments, { runId: record.runId, runRecordAuthorId: record.authorActorId, listedIds });
     return {
       status: "ok",
       runId: record.runId,
@@ -642,7 +652,7 @@ function harvestOneRunRecord(repo, issueNumber, record, { trustedActorIds, asOf,
       record,
       state,
       rounds,
-      untrusted: [...issueUntrusted, ...prUntrusted],
+      untrusted: orphans,
     };
   } catch (err) {
     if (err instanceof EvidenceError) {
@@ -682,7 +692,7 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf }) {
   return records.map((record) =>
     record.status === "indeterminate"
       ? { status: "indeterminate", runId: record.runId, issueNumber, reason: record.reason }
-      : harvestOneRunRecord(repo, issueNumber, record, { trustedActorIds, asOf, issueComments, withinCutoff }),
+      : harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, withinCutoff }),
   );
 }
 
@@ -814,11 +824,16 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
     }
     closedCount++;
     askedTotal += verdict.asked;
-    if (verdict.success) {
-      successCount++;
-      const readyRun = verdict.runs.find((r) => r.state.outcome === "ready-for-review");
-      if (computePostReadyFix(repo, readyRun)) postReadyFixCount++;
-    }
+    if (verdict.success) successCount++;
+    // Post-ready fixes are a SECOND, independent failure measure
+    // (specs/dev-flow-v2.md § Success metric) — evaluated for any issue
+    // that reached ready-for-review at all, not only ones that also had
+    // zero pre-ready interventions. Gating this on verdict.success (the
+    // prior code) meant an issue with a pre-ready intervention that still
+    // reached ready-for-review, then needed a post-ready fix too, was
+    // never even checked — challenge round 2, confirmed.
+    const readyRun = verdict.runs.find((r) => r.state.outcome === "ready-for-review");
+    if (readyRun && computePostReadyFix(repo, readyRun)) postReadyFixCount++;
     perIssue.push({ issueNumber, closed: true, success: verdict.success, interventions: verdict.interventions, asked: verdict.asked });
   }
   return {
@@ -956,14 +971,38 @@ function recordedOutcome(exitText) {
   return OUTCOME_ENUM.includes(word) ? word : null;
 }
 
+// dev-flow-exit.mjs's --current-head must be "an independently captured
+// value" of the head actually under evaluation. A promoted run has one
+// (promotion.head), but a capped/escalated run — the trajectory replay
+// most needs (specs/dev-flow-v2.md § Evidence) — never got promoted, so
+// there is no promotion to read. Using an invented all-zero placeholder
+// (the prior code) fails dev-flow-exit.mjs's own head-ancestry checks and
+// misclassifies exactly the rounds replay exists to re-examine — challenge
+// round 2, confirmed. The stage's own latest retained round already
+// carries the real reviewed head on every pass envelope; use that.
+function currentHeadForStage(run, stage) {
+  if (run.state.promotion) return run.state.promotion.head;
+  const stageRounds = run.rounds
+    .filter((r) => r.stage === stage && r.dest === "issue" && r.round !== null)
+    .sort((a, b) => b.round - a.round);
+  for (const round of stageRounds) {
+    const passes = Array.isArray(round.payload.passes) ? round.payload.passes : [];
+    for (const pass of passes) {
+      const head = pass.payload && pass.payload.reviewed_head;
+      if (head) return head;
+    }
+  }
+  return "0".repeat(40);
+}
+
 function replayOneRun(run, { policyPath, exitScriptPath, tmpRoot }) {
   const runDir = path.join(tmpRoot, run.runId);
   buildRunDirectory(run.record.body, run.rounds, runDir);
-  const currentHead = run.state.promotion ? run.state.promotion.head : "0".repeat(40);
   const diffs = [];
   for (const stage of ["challenge", "review"]) {
     const hasRounds = run.rounds.some((r) => r.stage === stage && r.dest === "issue" && r.round !== null);
     if (!hasRounds) continue;
+    const currentHead = currentHeadForStage(run, stage);
     const { verdict, error } = invokeExitScript(exitScriptPath, { runDir, stage, policyPath, currentHead });
     const recordedText = recordedExitFor(run.state, stage);
     const recorded = recordedOutcome(recordedText);
@@ -1007,8 +1046,8 @@ export {
   verifyChain,
   verifyRunRecordChains,
   reconstructAsOf,
-  collectEvidenceEntries,
-  reassembleRoundEvidence,
+  assembleListedEvidence,
+  findOrphanEvidence,
   buildRunDirectory,
   CHAIN_FIELDS,
   GENESIS,
@@ -1029,7 +1068,6 @@ export {
   markerKey,
   resolveCanonical,
   findRunRecord,
-  verifyEvidenceCommentsListed,
   EvidenceError,
   RUN_STAGES,
 };
@@ -1115,12 +1153,42 @@ function groupRunsByIssue(runs) {
 
 const DEFAULT_STALE_AFTER_DAYS = 7;
 
+// An invalid date string silently becomes NaN through Date.parse, which
+// every cutoff/window comparison in this file treats as "excludes
+// everything" rather than an error — the command would exit 0 with a
+// plausible-looking, silently wrong empty metric instead of refusing bad
+// input. Challenge round 2, confirmed (P2).
+function parseIsoDateArg(flagName, value) {
+  if (value === null) return { ok: true, value: null };
+  if (Number.isNaN(Date.parse(value))) {
+    return { ok: false, error: `dev-flow-stats: --${flagName} is not a valid ISO-8601 timestamp: ${JSON.stringify(value)}` };
+  }
+  return { ok: true, value };
+}
+
 function cliMetrics(args) {
   const trustedActorIds = requireTrustedActorIds(args);
   if (!trustedActorIds) return 2;
-  const asOf = typeof args["as-of"] === "string" ? args["as-of"] : null;
-  const since = typeof args.since === "string" ? args.since : null;
-  const staleAfterDays = args["stale-after-days"] ? Number(args["stale-after-days"]) : DEFAULT_STALE_AFTER_DAYS;
+  const asOfArg = parseIsoDateArg("as-of", typeof args["as-of"] === "string" ? args["as-of"] : null);
+  if (!asOfArg.ok) {
+    console.error(asOfArg.error);
+    return 2;
+  }
+  const sinceArg = parseIsoDateArg("since", typeof args.since === "string" ? args.since : null);
+  if (!sinceArg.ok) {
+    console.error(sinceArg.error);
+    return 2;
+  }
+  const asOf = asOfArg.value;
+  const since = sinceArg.value;
+  let staleAfterDays = DEFAULT_STALE_AFTER_DAYS;
+  if (args["stale-after-days"]) {
+    staleAfterDays = Number(args["stale-after-days"]);
+    if (!Number.isFinite(staleAfterDays) || staleAfterDays <= 0) {
+      console.error(`dev-flow-stats: --stale-after-days must be a positive number, got ${JSON.stringify(args["stale-after-days"])}`);
+      return 2;
+    }
+  }
 
   let runs;
   try {
@@ -1159,7 +1227,12 @@ function cliMetrics(args) {
 function cliRun(args) {
   const trustedActorIds = requireTrustedActorIds(args);
   if (!trustedActorIds) return 2;
-  const asOf = typeof args["as-of"] === "string" ? args["as-of"] : null;
+  const asOfArg = parseIsoDateArg("as-of", typeof args["as-of"] === "string" ? args["as-of"] : null);
+  if (!asOfArg.ok) {
+    console.error(asOfArg.error);
+    return 2;
+  }
+  const asOf = asOfArg.value;
 
   let runs;
   try {

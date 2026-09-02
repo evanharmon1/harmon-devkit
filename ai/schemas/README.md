@@ -1045,25 +1045,43 @@ Three kinds:
   ```json
   { "run_id": "<run_id>", "initiated_by": "human|foreman", "branch": null,
     "run_record": { "id": "<comment id>", "author_actor_id": <int>,
-                     "login": "<display>", "digest": "<sha256>" } }
+                     "login": "<display>" } }
   ```
 
   Discovery is **index-first**: a harvester finds trusted `run-index`
   comments before it ever looks for a `run-record` — this is what "the
   issue-level index... SHALL anchor run discovery" (evidence spec) actually
-  means in this grammar. Once found, the index's own `run_record` entry is
-  checked exactly like an `evidence_comments[]` entry (id exists, digest and
-  author agree) — a listed `run_record` that no longer exists, or whose
-  digest no longer matches, is deleted-entry or edited-entry tampering, not
-  "this issue was never kicked off": deleting the `run-record` comment alone
-  (leaving the tiny, easy-to-overlook `run-index` comment behind) does not
-  erase the run from the denominator, which is the whole reason this kind
-  exists as a **separate**, harder-to-usefully-delete comment rather than
-  folding the same guarantee into `run-record` itself. `branch` binding
-  (the spec's "one subsequent digest-chained entry" once a branch exists) is
-  **not yet implemented** by this reader — a documented simplification: v0
-  reads `branch` as always `null` and does not yet bind or verify a later
-  branch-binding entry.
+  means in this grammar. Once found, the index's `run_record` entry
+  authenticates the record comment's **identity** — id exists, author
+  agrees — never its **content**: unlike an `evidence_comments[]` entry
+  (immutable evidence, so content agreement is exactly what "still the
+  same event" means), the run record is explicitly **edited in place** at
+  every transition, so a `digest` captured once at kickoff would stop
+  matching after the run's very first legitimate edit — challenge round 2,
+  confirmed as a P0 in an earlier draft of this grammar that carried one.
+  The record's own content integrity comes from its internal append-only
+  chains (below), not from an outer digest pinned to a moment the content
+  is designed to outgrow. A listed `run_record` id that no longer exists,
+  or whose current author no longer matches, is deleted-entry or
+  impersonation tampering, not "this issue was never kicked off": deleting
+  the `run-record` comment alone (leaving the tiny, easy-to-overlook
+  `run-index` comment behind) does not erase the run from the denominator,
+  which is the whole reason this kind exists as a **separate**,
+  harder-to-usefully-delete comment rather than folding the same guarantee
+  into `run-record` itself. `branch` binding (the spec's "one subsequent
+  digest-chained entry" once a branch exists) is **not yet implemented** by
+  this reader — a documented simplification: v0 reads `branch` as always
+  `null` and does not yet bind or verify a later branch-binding entry.
+  Publication order and atomicity (the record must exist before the index
+  can name its id) are a **writer**-side obligation, not this reader's:
+  the evidence spec's own reserve-first protocol ("persist a deterministic
+  reservation locally... before any GitHub evidence write") is what makes
+  an interrupted two-comment publication resumable rather than
+  permanently lost — a writer that reserves locally before posting either
+  comment, and resumes from that reservation, never leaves an orphaned
+  record with no index. A writer that never resumes is an operational
+  failure no read-only harvester can compensate for from GitHub state
+  alone.
 - **`run-record`** — the durable record (`run.schema.json`), reserved at
   kickoff on the issue and **edited in place** at every later transition.
   `stage` is always `kickoff` (the run's first `stage_transitions` entry)

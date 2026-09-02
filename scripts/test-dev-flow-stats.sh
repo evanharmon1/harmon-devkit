@@ -127,7 +127,7 @@ function runRecordComment(actorId, login, runId, body, createdAt) {
   const record = comment(actorId, login, \`\${m}\n\${fence(text)}\`, createdAt);
   const indexPayload = {
     run_id: runId, initiated_by: body.initiated_by, branch: null,
-    run_record: { id: String(record.id), author_actor_id: actorId, login, digest: sha256(text) },
+    run_record: { id: String(record.id), author_actor_id: actorId, login },
   };
   const im = marker("run-index", runId, "kickoff", "issue", null, 1);
   const index = comment(actorId, login, \`\${im}\n\${fence(JSON.stringify(indexPayload))}\`, createdAt);
@@ -138,6 +138,20 @@ function evidenceComment(actorId, login, runId, stage, dest, round, seq, payload
   const text = JSON.stringify(payload);
   const m = marker("evidence", runId, stage, dest, round, seq);
   return comment(actorId, login, \`\${m}\n\${fence(text)}\`, createdAt);
+}
+
+// Builds the evidence_comments[] entry naming a comment created by
+// evidenceComment() above — discovery is list-driven now, so every real
+// round comment in a fixture needs a matching entry or it is simply never
+// found. digest is the digest of the FULL reassembled payload (the same
+// value across every segment of a split round, not each segment's own
+// text) — pass it explicitly rather than recomputing per-segment.
+function evidenceIndexEntry(evComment, actorId, login, runId, stage, dest, round, seq, digest) {
+  return {
+    id: String(evComment.id), author_actor_id: actorId, login,
+    digest,
+    marker: { run_id: runId, stage, destination: dest, round, sequence: seq },
+  };
 }
 
 function pass(finder, findings) {
@@ -243,18 +257,25 @@ function writeScenario(name, db) {
 // harvester happens to read first ---
 {
   const runId = "run-dup-1";
+  const payloadA = { passes: [pass("codex-cli", [{ title: "finding-from-first-post" }])], adjudication: null };
+  const first = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadA, "2026-09-01T00:02:00Z");
+  // A resumed session re-posts the SAME event (same marker, same content —
+  // a genuine duplicate of the identical event, not a fork) before
+  // realizing it already succeeded. A writer that then updates
+  // evidence_comments[] names only the CANONICAL (lowest-id) comment —
+  // list-driven discovery means the duplicate is simply never listed, so
+  // there is nothing to "resolve" at read time; it is an unlisted orphan,
+  // correctly ignored.
+  const duplicate = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadA, "2026-09-01T00:05:00Z");
   const runBody = {
     schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
     stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" }, { stage: "claim", entered_at: "2026-09-01T00:01:00Z" }]),
     interventions: chain([]), settlements: chain([]),
-    outcome: null, pr: null, evidence_comments: [], promotion: null,
+    outcome: null, pr: null,
+    evidence_comments: [evidenceIndexEntry(first, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, sha256(JSON.stringify(payloadA)))],
+    promotion: null,
   };
   const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
-  const payloadA = { passes: [pass("codex-cli", [{ title: "finding-from-first-post" }])], adjudication: null };
-  const first = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadA, "2026-09-01T00:02:00Z");
-  // A resumed session re-posts the SAME event (same marker) — same content
-  // this time (a genuine duplicate of the identical event, not a fork).
-  const duplicate = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadA, "2026-09-01T00:05:00Z");
   writeScenario("duplicate-marker", {
     issues: [{ number: 104, pull_request: null }],
     comments: { "104": [idx, rr, first, duplicate] },
@@ -266,13 +287,6 @@ function writeScenario(name, db) {
 // --- Scenario 5: split segments (oversized payload) ---
 {
   const runId = "run-split-1";
-  const runBody = {
-    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
-    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
-    interventions: chain([]), settlements: chain([]),
-    outcome: null, pr: null, evidence_comments: [], promotion: null,
-  };
-  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
   const fullPayload = { passes: [pass("codex-cli", [{ title: "split-finding" }])], adjudication: null };
   const text = JSON.stringify(fullPayload);
   const mid = Math.floor(text.length / 2);
@@ -282,6 +296,22 @@ function writeScenario(name, db) {
   const m2 = marker("evidence", runId, "challenge", "issue", 1, 2);
   const seg1 = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${m1}\n\${fence(seg1text)}\`, "2026-09-01T00:02:00Z");
   const seg2 = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${m2}\n\${fence(seg2text)}\`, "2026-09-01T00:02:01Z");
+  // Every segment of a split payload is indexed with the digest of the
+  // FULL reassembled text (ai/schemas/README.md "Digest") — the same
+  // value on both entries, not each segment's own partial-text digest.
+  const fullDigest = sha256(text);
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    evidence_comments: [
+      evidenceIndexEntry(seg1, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, fullDigest),
+      evidenceIndexEntry(seg2, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 2, fullDigest),
+    ],
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
   writeScenario("split", {
     issues: [{ number: 105, pull_request: null }],
     comments: { "105": [idx, rr, seg1, seg2] },
@@ -364,6 +394,35 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 8b: post-ready fix on a run that ALSO had a pre-ready
+// intervention — proves the check runs independently of unattended
+// success, not only when success is true (challenge round 2, P1).
+{
+  const runId = "run-postfix-with-intervention-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:05:00Z" },
+    ]),
+    interventions: chain([{ kind: "other", at: "2026-09-01T00:02:00Z", note: "human nudged the stuck round" }]),
+    settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 505, url: "https://example.invalid/pr/505" },
+    evidence_comments: [],
+    promotion: { head: "8".repeat(40), promoted_at: "2026-09-01T00:10:00Z", gate_fingerprint: "pqr" },
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const promotedCommit = { sha: "8".repeat(40), commit: { committer: { date: "2026-09-01T00:10:00Z" } }, author: { id: TRUSTED_ORCHESTRATOR } };
+  const humanCommit = { sha: "9".repeat(40), commit: { committer: { date: "2026-09-01T00:20:00Z" } }, author: { id: 42 } };
+  writeScenario("postfix-with-intervention", {
+    issues: [{ number: 116, pull_request: null }],
+    comments: { "116": [idx, rr] },
+    commits: { "505": [promotedCommit, humanCommit] },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 116 },
+  });
+}
+
 // --- Scenario 9: multiple issues combined, for --repo cohort math ---
 {
   const dbs = ["happy", "postfix"].map((n) => JSON.parse(readFileSync(path.join("${tmp}/scenarios", \`\${n}.json\`), "utf8")));
@@ -390,7 +449,8 @@ function writeScenario(name, db) {
     ["review", 1], ["review", 2], ["review", 3],
   ];
   const fixtureRoot = "${repo}/ai/schemas/fixtures";
-  const comments = [];
+  const evComments = [];
+  const evIndexEntries = [];
   let t = 0;
   const at = () => \`2026-07-10T\${String(9 + t++).padStart(2, "0")}:00:00Z\`;
 
@@ -401,25 +461,27 @@ function writeScenario(name, db) {
     { stage: "challenge", entered_at: at(), exit: "capped: 1 adjudicated P1 remaining" },
     { stage: "review", entered_at: at(), exit: "capped: 1 adjudicated P1 remaining" },
   ]);
-  const runBody = {
-    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-07-10T09:00:00Z",
-    stage_transitions: stageTransitions, interventions: chain([]), settlements: chain([]),
-    outcome: "capped", pr: null, evidence_comments: [], promotion: null,
-  };
-  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-07-10T09:00:00Z");
-  comments.push(idx, rr);
 
   for (const [stage, round] of rounds) {
     const passDoc = JSON.parse(readFileSync(path.join(fixtureRoot, "result.reviewer.schema/valid", \`omator-397-\${stage}-r\${round}.json\`), "utf8"));
     const adjDoc = JSON.parse(readFileSync(path.join(fixtureRoot, "adjudication.schema/valid", \`omator-397-\${stage}-r\${round}-adjudication.json\`), "utf8"));
     const envelope = { ...passDoc, run: { run_id: runId, initiated_by: "human" } };
     const roundPayload = { passes: [envelope], adjudication: adjDoc };
-    comments.push(evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, stage, "issue", round, 1, roundPayload, at()));
+    const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, stage, "issue", round, 1, roundPayload, at());
+    evComments.push(ev);
+    evIndexEntries.push(evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", runId, stage, "issue", round, 1, sha256(JSON.stringify(roundPayload))));
   }
+
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-07-10T09:00:00Z",
+    stage_transitions: stageTransitions, interventions: chain([]), settlements: chain([]),
+    outcome: "capped", pr: null, evidence_comments: evIndexEntries, promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-07-10T09:00:00Z");
 
   writeScenario("omator-397", {
     issues: [{ number: 397, pull_request: null }],
-    comments: { "397": comments },
+    comments: { "397": [idx, rr, ...evComments] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 397, head },
   });
@@ -429,6 +491,8 @@ function writeScenario(name, db) {
 {
   const runId = "run-foreman-1";
   const FOREMAN = 9099;
+  const roundPayload = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
+  const ev = evidenceComment(FOREMAN, "foreman-bot", runId, "review", "issue", 1, 1, roundPayload, "2026-09-01T00:03:30Z");
   const runBody = {
     schema: 2, run_id: runId, initiated_by: "foreman", started_at: "2026-09-01T00:00:00Z",
     stage_transitions: chain([
@@ -441,7 +505,7 @@ function writeScenario(name, db) {
     interventions: chain([]), settlements: chain([]),
     outcome: "ready-for-review",
     pr: { number: 599, url: "https://example.invalid/pr/599" },
-    evidence_comments: [],
+    evidence_comments: [evidenceIndexEntry(ev, FOREMAN, "foreman-bot", runId, "review", "issue", 1, 1, sha256(JSON.stringify(roundPayload)))],
     promotion: { head: "3".repeat(40), promoted_at: "2026-09-01T00:15:00Z", gate_fingerprint: "ghi" },
   };
   // Posted by the Foreman service account — trust derives from that actor
@@ -449,8 +513,6 @@ function writeScenario(name, db) {
   // inside the payload (ai/schemas/README.md "Trust: actor ID, never a
   // payload claim").
   const { index: idx, record: rr } = runRecordComment(FOREMAN, "foreman-bot", runId, runBody, "2026-09-01T00:00:00Z");
-  const roundPayload = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
-  const ev = evidenceComment(FOREMAN, "foreman-bot", runId, "review", "issue", 1, 1, roundPayload, "2026-09-01T00:03:30Z");
   writeScenario("foreman", {
     issues: [{ number: 109, pull_request: null }],
     comments: { "109": [idx, rr, ev] },
@@ -517,6 +579,66 @@ function writeScenario(name, db) {
     comments: { "112": [idx, rr] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 112 },
+  });
+}
+
+// --- Scenario 12.5b: terminal outcome derivation must not depend on the
+// exit text starting with a specific "magic word" — run.schema.json's
+// exit field is free text, only ever exemplified, never a fixed format.
+{
+  const runId = "run-freetext-exit-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      // Deliberately does NOT start with "escalated" even though this run
+      // IS escalated (body.outcome says so) — a phrasing choice, not a
+      // violation of any format the schema actually requires.
+      { stage: "review", entered_at: "2026-09-01T00:05:00Z", exit: "blocked pending a maintainer decision" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "escalated", pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("freetext-exit", {
+    issues: [{ number: 115, pull_request: null }],
+    comments: { "115": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 115 },
+  });
+}
+
+// --- Scenario 12.55: the run-record comment is EDITED after the index
+// was created — the exact scenario the P0 (challenge round 2) was about.
+// Every other fixture here builds the record's FINAL body directly and
+// never actually simulates a temporal edit, which is exactly how that bug
+// stayed invisible to the round-1 test suite.
+{
+  const runId = "run-edited-record-1";
+  const kickoffOnly = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  // Index is minted from the KICKOFF-only body — this is what "the index
+  // captures the record's identity at creation" actually means; it must
+  // never be asked to also vouch for content the record does not have yet.
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, kickoffOnly, "2026-09-01T00:00:00Z");
+  // Now edit the SAME comment in place, as the real protocol requires —
+  // extends the chain with a real transition, a real digest, a real link.
+  const editedTransitions = chain([
+    { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+    { stage: "claim", entered_at: "2026-09-01T00:05:00Z", exit: "implementing" },
+  ]);
+  const editedBody = { ...kickoffOnly, stage_transitions: editedTransitions };
+  const m = marker("run-record", runId, "kickoff", "issue", null, 1);
+  rr.body = \`\${m}\n\${fence(JSON.stringify(editedBody))}\`;
+  writeScenario("edited-record", {
+    issues: [{ number: 114, pull_request: null }],
+    comments: { "114": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 114 },
   });
 }
 
@@ -651,6 +773,9 @@ after_cutoff="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --tru
 echo "$before_cutoff" | jq -e '.rounds | length == 1' >/dev/null || fail "duplicate-marker: expected exactly one round (duplicate resolved, not double-counted)"
 echo "$after_cutoff" | jq -e '.rounds | length == 1' >/dev/null || fail "duplicate-marker: still exactly one round after the duplicate's own timestamp"
 [ "$(echo "$before_cutoff" | jq -c .rounds)" = "$(echo "$after_cutoff" | jq -c .rounds)" ] || fail "duplicate-marker: reconstruction must be identical at both cutoffs (concurrent-writer stability)"
+duplicate_id="$(meta duplicate-marker .meta.duplicateId)"
+echo "$after_cutoff" | jq -e --argjson id "$duplicate_id" '[.untrusted_comments[].id] | index($id) != null' >/dev/null ||
+    fail "duplicate-marker: expected the unlisted duplicate to surface as an orphan, not silently vanish"
 
 echo "== split segments reassemble in sequence order =="
 export DFSTATS_DB="$tmp/scenarios/split.json"
@@ -667,7 +792,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "tamper: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "tampering\|no longer matches" || fail "tamper: expected a tamper-shaped reason, got: $out"
+echo "$out" | grep -qi "tamper" || fail "tamper: expected a tamper-shaped reason, got: $out"
 
 echo "== stale non-terminal run terminalizes as abandoned at --as-of =="
 export DFSTATS_DB="$tmp/scenarios/stale.json"
@@ -730,7 +855,7 @@ cat >"$tmp/fake-exit-script.mjs" <<'FAKE'
 // arguments, the run directory, and the verdict JSON through correctly,
 // without depending on the real exit-computation logic (#720, not yet on
 // main — see ai/schemas/README.md and this lane's PR body).
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 import path from "node:path";
 
 function parseArgs(argv) {
@@ -743,6 +868,16 @@ function parseArgs(argv) {
   return a;
 }
 const args = parseArgs(process.argv.slice(2));
+// Records every --current-head this fake was invoked with, keyed by
+// stage, so the bash test can assert on it afterward — proving
+// dev-flow-stats.mjs derives a real head for a non-promoted (capped) run
+// instead of an invented all-zero placeholder (challenge round 2, P1).
+const headLogPath = process.env.FAKE_EXIT_HEAD_LOG;
+if (headLogPath) {
+  const prior = existsSync(headLogPath) ? JSON.parse(readFileSync(headLogPath, "utf8")) : {};
+  prior[args.stage] = args["current-head"];
+  writeFileSync(headLogPath, JSON.stringify(prior));
+}
 const passesDir = path.join(args.run, "passes");
 const files = existsSync(passesDir) ? readdirSync(passesDir) : [];
 const rounds = new Set(
@@ -761,8 +896,21 @@ challenge_cap = 4
 review_cap = 3
 TOML
 export DFSTATS_DB="$tmp/scenarios/omator-397.json"
+export FAKE_EXIT_HEAD_LOG="$tmp/fake-exit-heads.json"
+rm -f "$FAKE_EXIT_HEAD_LOG"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.[0].diffs | length == 0' >/dev/null || fail "replay (matching policy): expected no diffs, got: $out"
+
+echo "== replay derives a real current-head for a capped (never-promoted) run, not an all-zero placeholder =="
+[ -f "$FAKE_EXIT_HEAD_LOG" ] || fail "replay head log was never written — the fake exit script was never invoked"
+# Each stage's OWN latest round has its own reviewed_head in the real
+# omator#397 data (the code moved between rounds) — challenge round 4 and
+# review round 3 are genuinely different heads.
+challenge_head="$(jq -r '.challenge' "$FAKE_EXIT_HEAD_LOG")"
+review_head="$(jq -r '.review' "$FAKE_EXIT_HEAD_LOG")"
+[ "$challenge_head" = "416d69fabeb3ad1589f706e9079ca87a12727950" ] || fail "expected challenge r4's real reviewed_head, got: $challenge_head"
+[ "$review_head" = "cf2ab8402f14a0337ca6e905deae58ceb86a0785" ] || fail "expected review r3's real reviewed_head, got: $review_head"
+unset FAKE_EXIT_HEAD_LOG
 
 echo "== --replay: fake exit-script, looser candidate policy -> reports the diff =="
 cat >"$tmp/policy-looser.toml" <<'TOML'
@@ -820,5 +968,30 @@ rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "deleted-record: expected exit 3 (indeterminate), got $rc: $out"
 echo "$out" | grep -qi "deleted-entry tampering\|no longer exists" || fail "deleted-record: expected a deleted-entry-tampering reason, got: $out"
+
+echo "== a legitimately edited run-record (content changed after the index was created) still authenticates — the P0 regression =="
+export DFSTATS_DB="$tmp/scenarios/edited-record.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-edited-record-1 --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.stage_transitions | length == 2' >/dev/null || fail "edited-record: expected the post-edit chain (2 transitions) to be visible, got: $out"
+
+echo "== terminal outcome derivation trusts body.outcome directly, not a magic-word prefix on the exit text =="
+export DFSTATS_DB="$tmp/scenarios/freetext-exit.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-freetext-exit-1 --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.outcome == "escalated"' >/dev/null || fail "freetext-exit: expected escalated outcome despite non-magic-word exit text, got: $out"
+
+echo "== post-ready fix is checked independently of pre-ready interventions (a second, separate failure measure) =="
+export DFSTATS_DB="$tmp/scenarios/postfix-with-intervention.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.unattended_success_count == 0 and .post_ready_fix_count == 1' >/dev/null || fail "postfix-with-intervention: expected success=0 (intervention present) but post_ready_fix_count still 1, got: $out"
+
+echo "== invalid --as-of / --since / --stale-after-days are usage errors, not silent NaN comparisons =="
+export DFSTATS_DB="$tmp/scenarios/happy.json"
+for flag_args in "--as-of not-a-date" "--since not-a-date" "--stale-after-days not-a-number" "--stale-after-days -5"; do
+    set +e
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "invalid arg ($flag_args): expected exit 2, got $rc: $out"
+done
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"
