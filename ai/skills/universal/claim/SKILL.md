@@ -3,9 +3,9 @@ name: claim
 description: >-
   Pre-implementation sanity check — verify the latest state of the target
   issue, related PRs, and recent merges against the live repo, surface
-  blockers, then claim the issue (assign, label, comment). Invoke as /claim
-  [issue #].
-disable-model-invocation: true
+  blockers, then claim the issue (assign, label, comment). Use when a
+  session is about to start implementing a specific issue and needs it
+  verified and claimed first. Invoke as /claim [issue #].
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git rev-list:*), Bash(git remote), Bash(git remote get-url:*), Bash(git branch --show-current), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr checks:*), Bash(gh label list:*), Bash(gh repo view:*)
 ---
 
@@ -23,9 +23,11 @@ execution); and `git symbolic-ref` because it accepts the write form even
 with `--short` present; expect a permission prompt when you run them. The
 step 5 claim writes are not pre-approved either and go through that same
 prompt — but **invoking `/claim` is the approval for them**, so do not ask
-for a separate go-ahead in conversation. This skill is
-`disable-model-invocation: true`: it runs only when the user types `/claim`,
-and every write targets exactly the issue they named. A conversational
+for a separate go-ahead in conversation. This skill is model-invocable: an
+invocation — by the user, or by an agent that has been told to work a
+specific issue or is about to implement one — is the approval for the step 5
+writes, provided the target issue was named explicitly or confirmed under
+step 1, and every write targets exactly that issue. A conversational
 confirmation re-asks what the invocation already answered.
 
 That reasoning holds only where the user actually **named** the target. §1 may
@@ -143,9 +145,9 @@ Verify claims against the code — do not speculate. First, the issue's own
 state: if it is **closed**, **assigned to someone else**, or has an open
 linked PR already implementing it, that is a `blocker` — do not claim without
 explicit confirmation from the user. This is the first of the three
-escalations the preamble exempts from approval-by-invocation: typing `/claim`
-approves *claiming* the issue, not overriding somebody else's ownership of it
-or reopening settled work. Then look for:
+escalations the preamble exempts from approval-by-invocation: invoking
+`/claim` approves *claiming* the issue, not overriding somebody else's
+ownership of it or reopening settled work. Then look for:
 
 - **Stale references** — files, APIs, or docs the issue mentions that no
   longer match the live tree.

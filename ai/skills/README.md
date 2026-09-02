@@ -33,20 +33,22 @@ ai/skills/
 ```
 
 `universal/` ships the dev-workflow session suite, split on whether invoking
-the skill is itself the thing that authorizes what it does. Four stay
-user-only (`disable-model-invocation: true`): `/claim` and `/breakdown`,
-because invoking them **is** the human consent for the GitHub writes they
-make (claiming the issue; proposing a decomposition for one human approval),
-so a model triggering either on its own would be writing to a shared system
-with nobody having agreed to it; and `/wrap` and `/retro`, because they are
-human-timed session rituals — only the person at the keyboard knows a session
-is actually ending. The rest are model-invocable, so an agent following the
-repo's own dev loop (`AGENTS.md`) can enter a stage through the Skill tool
-instead of waiting for a human to type the command: `/kickoff`, `/implement`,
-`/gauntlet`, and `/shepherd` cover orienting at the start of a session through
-driving a claimed issue to a shepherded PR, and `/triage` (also run by
-`task triage` with a cheap headless model, or interactively) classifies the
-backlog. `track-work` is model-invocable too, and deliberately **not**
+the skill is itself the thing that authorizes what it does. Two stay
+user-only (`disable-model-invocation: true`): `/breakdown`, because invoking
+it **is** the human consent for a bulk decomposition written to GitHub, so a
+model triggering it on its own would file a batch of issues nobody agreed
+to; and `/retro`, a human-timed session ritual — only the person at the
+keyboard knows a session is actually ending. The rest are model-invocable,
+so an agent following the repo's own dev loop (`AGENTS.md`) can enter a
+stage through the Skill tool instead of waiting for a human to type the
+command: `/claim` (the invocation still names and confirms the target issue
+before any write, exactly as it does when a human types it; its writes are
+idempotent and released by the ordinary lifecycle, not gated behind a
+standing human-only rule) and `/wrap` join `/kickoff`, `/implement`,
+`/gauntlet`, and `/shepherd` covering orienting at the start of a session
+through driving a claimed issue to a shepherded PR, and `/triage` (also run
+by `task triage` with a cheap headless model, or interactively) classifies
+the backlog. `track-work` is model-invocable too, and deliberately **not**
 slash-only. Tracking
 mistakes happen mid-flow, while a PR body is being written and nobody is typing
 a command, so it must be model-invocable to fire at all. It also bundles
