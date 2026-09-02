@@ -903,6 +903,76 @@ decisions):
   selects WHICH kind of rule (an exact match for some codes, a small
   exclusion set for others) is itself data the schema's single
   conditional-per-node shape cannot encode as one rule.
+- **A clean integrator verdict rejects `defer` anywhere in
+  `applied_dispositions`, including entries that reference a `--known-ids`
+  finding, not only this payload's own `findings[]` (#686).**
+  `checkIntegratorCleanVerdict`'s per-current-finding loop already caught a
+  current finding disposed `defer`; a second pass over the full
+  `applied_dispositions` array closes the gap for an entry naming a prior
+  cycle's finding instead — a clean verdict claims nothing outstanding, and
+  `defer` explicitly carries a finding forward regardless of which universe
+  its `finding_id` belongs to.
+- **`run.schema.json`'s `stage_transitions` description names the permitted
+  lifecycle *edges*, not a linear order (#686).** The actual coherence check
+  (`checkStageTransitionsOrder`) walks `ALLOWED_EDGES`, a directed graph
+  transcribed from docs/product/domain.md's Dev-flow diagram, and legitimate
+  remediation loops let a stage recur later in the array once a loop-back
+  edge has been taken (e.g. `challenge -> implement -> verify -> challenge`)
+  — the schema's own field description used to say stages "strictly follow
+  enum order with no repetition," which was simply wrong about what the
+  validator it defers to actually enforces.
+- **A `destination: "pr"` evidence marker requires a non-null `run.pr`
+  (#686).** `checkEvidenceMarkerPrDestinationRequiresPr` is a same-document,
+  context-free check (like `checkEvidenceMarkerStageVisited` beside it): the
+  marker's own description says the PR rollup comment is posted "once the
+  draft PR exists," and `pr` is this run record's own sibling field for
+  whether that is true yet.
+- **`evidence_comments[].digest` has a canonical format,
+  `sha256:<64 lowercase hex>` (#686).** Enforced by `pattern`, not
+  `minLength` alone: independent producers and harvesters must compute and
+  compare the same representation, and a `pattern` is what stops something
+  like `"x"` from being receipt-valid.
+- **Reviewer and challenger findings' `path` rejects absolute paths and `.`
+  / `..` segments (#686).** `^(?!/)(?!.*(?:^|/)\.\.?(?:/|$)).+$` on both
+  schemas (kept in the field-for-field parity #635 established) — a path
+  that escapes the repo root, or claims to already be rooted elsewhere,
+  cannot be reliably resolved by provenance, fingerprinting, or rendering
+  consumers.
+- **`adjudication.schema.json`'s `reason`/`evidence` are trimmed-non-empty,
+  matching `override.reason` (#686).** `minLength: 1` alone accepts a
+  whitespace-only string; `checkAdjudicationEntries` now applies the same
+  `.trim() === ''` rejection already used for `override.reason` to both
+  top-level fields, since every adjudication explains itself, not only an
+  override.
+- **`adjudication.schema.json` gained two optional, backward-compatible
+  fields (#686, interface gaps lane #637 found building the renderer):
+  `classification` (`confirmed | plausible | false-positive`, AGENTS.md's
+  own Codex-findings taxonomy) so a renderer can show the real
+  classification instead of sourcing it from a pass's own asserted `class`;
+  and `reference` (the same `{type: sha|comment_id|issue_number, value}`
+  shape as `run.schema.json`'s `settlements[].reference`) for a finding
+  declined or filed directly at adjudication time, which — unlike a
+  deferred finding's eventual settlement — previously had nowhere in this
+  schema family to record its evidence. Neither field is required; every
+  existing adjudication document remains valid.
+- **The native-composition test in `scripts/test-result-schemas.sh` also
+  runs the standalone envelope-invalid fixtures against `result.schema.json`
+  and compares the composed root's `required`/`properties` (minus
+  `payload`) with `result.envelope.schema.json` (#686).** The pre-existing
+  `$defs.<role>` drift check only ever proved the four role payload shapes
+  stayed in sync; it never proved the composed ROOT (the envelope fields
+  copied onto that same document) did. Two envelope-invalid fixtures need a
+  `SEMANTIC_ONLY`-style exception for the identical reason role fixtures
+  sometimes do: `produced_at-impossible-date` is a calendar-validity check
+  no `pattern` can express, and `run-mismatch` needs external "which run is
+  active" context no single document carries.
+- **`scripts/sync-skills.sh`'s two `#686` findings (empty-string
+  `schemas.names`/`agents.names` members; `verify` not requiring every
+  incoming name to also appear in the recorded managed set) are not fixed
+  in this repo.** The script's own header is explicit: "Canonical home:
+  harmon-init's template... Change it there, not in a generated repo —
+  local edits are overwritten on the next `copier update`." Tracked at
+  harmon-init#1117.
 
 ## Fixture layout
 

@@ -331,6 +331,90 @@ for (const role of Object.keys(ROLE_DIRS)) {
   }
 }
 
+// The role-fixture loop above proves the composed schema accepts/rejects
+// role-PAYLOAD-shaped violations, but exercises only the four role fixture
+// directories — it never runs the standalone envelope-invalid fixtures
+// (missing/malformed schema, role, status, head, produced_at, producer,
+// run) against the composed root, so an envelope-level regression there
+// (e.g. a required envelope field silently dropped from result.schema.json's
+// own root) would slip through this test file untouched. Every
+// envelope-invalid fixture is a violation of a field the composed root
+// ALSO carries directly (this file's own $comment: the composed root is
+// copied from result.envelope.schema.json, payload aside), so each one
+// must be schema-level rejectable by `composed` too — except the two named
+// below, whose violations need reasoning no JSON-Schema keyword (in either
+// copy of the field) can express at all, the same category as SEMANTIC_ONLY
+// above: produced_at-impossible-date is a calendar-validity check (the
+// pattern matches the STRING SHAPE of "2026-02-30T10:00:00Z"; only a real
+// date parse knows February has no 30th), and run-mismatch needs external
+// context (which run is "active") no single document carries.
+const ENVELOPE_SEMANTIC_ONLY = new Set(['produced_at-impossible-date.json', 'run-mismatch.json'])
+const envelopeInvalidDir = path.join(fixturesDir, 'result.envelope.schema', 'invalid')
+let envelopeChecked = 0
+const envelopeSemanticOnlySeen = new Set()
+for (const entry of readdirSync(envelopeInvalidDir)) {
+  if (!entry.endsWith('.json')) continue
+  if (ENVELOPE_SEMANTIC_ONLY.has(entry)) {
+    envelopeSemanticOnlySeen.add(entry)
+    continue
+  }
+  const file = path.join(envelopeInvalidDir, entry)
+  const instance = JSON.parse(readFileSync(file, 'utf8'))
+  const errors = engine.validate(instance, composed, '$result')
+  envelopeChecked += 1
+  if (errors.length === 0) {
+    console.error(
+      `FAIL: envelope-invalid fixture accepted by result.schema.json, expected a schema-level rejection: ${file}`
+    )
+    failures += 1
+  }
+}
+for (const name of ENVELOPE_SEMANTIC_ONLY) {
+  if (!envelopeSemanticOnlySeen.has(name)) {
+    console.error(`FAIL: ENVELOPE_SEMANTIC_ONLY names a fixture that no longer exists: ${name}`)
+    failures += 1
+  }
+}
+if (envelopeChecked === 0) {
+  console.error(`FAIL: no envelope-invalid fixtures found under ${envelopeInvalidDir} — the composed-root check ran nothing`)
+  failures += 1
+} else if (failures === 0) {
+  console.log(
+    `PASS: result.schema.json rejects all ${envelopeChecked} envelope-level invalid fixtures (${envelopeSemanticOnlySeen.size} left to the validator script)`
+  )
+}
+
+// $defs.<role> drift is checked above; the composed ROOT itself (everything
+// but the role-dispatched payload, which has no independent schema of its
+// own at this level) must never drift from result.envelope.schema.json
+// either — this is what actually caught the finding: removing `head` from
+// result.schema.json.required left every role-fixture and envelope-invalid
+// check above green, because none of those fixtures happens to omit head
+// AND rely on the composed root (rather than $defs) to reject it.
+{
+  const envelopeSchema = JSON.parse(
+    readFileSync(path.join(schemasDir, 'result.envelope.schema.json'), 'utf8')
+  )
+  const withoutPayload = (list) => (list ?? []).filter((name) => name !== 'payload')
+  const composedRequired = withoutPayload(composed.required).sort()
+  const envelopeRequired = withoutPayload(envelopeSchema.required).sort()
+  const composedProperties = withoutPayload(Object.keys(composed.properties ?? {})).sort()
+  const envelopeProperties = withoutPayload(Object.keys(envelopeSchema.properties ?? {})).sort()
+  if (
+    canonicalJson(composedRequired) !== canonicalJson(envelopeRequired) ||
+    canonicalJson(composedProperties) !== canonicalJson(envelopeProperties)
+  ) {
+    console.error(
+      'FAIL: result.schema.json\'s root (required/properties, minus payload) has drifted from result.envelope.schema.json ' +
+        `(composed required=${JSON.stringify(composedRequired)} vs envelope required=${JSON.stringify(envelopeRequired)}; ` +
+        `composed properties=${JSON.stringify(composedProperties)} vs envelope properties=${JSON.stringify(envelopeProperties)})`
+    )
+    failures += 1
+  } else {
+    console.log('PASS: result.schema.json\'s root (required/properties, minus payload) matches result.envelope.schema.json')
+  }
+}
+
 process.exit(failures === 0 ? 0 : 1)
 NODE
 

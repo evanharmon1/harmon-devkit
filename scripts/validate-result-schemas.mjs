@@ -880,6 +880,9 @@ function checkIntegratorCleanVerdict(payload, errors) {
   // delete all change code (so the changed code has never itself been
   // through a cycle), and defer explicitly carries the finding forward —
   // none of the four is compatible with "nothing outstanding."
+  const currentFindingIds = new Set(
+    (payload.findings ?? []).filter((finding) => typeof finding.id === 'string').map((finding) => finding.id)
+  )
   for (const finding of payload.findings ?? []) {
     if (typeof finding.id !== 'string') continue
     const disposition = appliedTo.get(finding.id)
@@ -890,6 +893,25 @@ function checkIntegratorCleanVerdict(payload, errors) {
     } else if (disposition !== 'decline' && disposition !== 'file') {
       errors.push(
         `$result.payload.applied_dispositions: finding ${finding.id}'s disposition ${disposition} is incompatible with verdict clean (only decline or file leave the head unchanged — fix/restructure/delete change code the next cycle would need to review, and defer carries the finding forward)`
+      )
+    }
+  }
+  // The loop above only reaches applied_dispositions entries for THIS
+  // payload's own findings[]. An entry can also reference a finding
+  // supplied via --known-ids (a prior cycle's finding this run is now
+  // resolving) — checkAppliedDispositionsKnownFindingIds allows that
+  // reference to exist, but never examines ITS disposition, so a clean
+  // verdict could carry a known-id's defer forward unexamined. Every
+  // applied_dispositions entry gets the same defer check here, regardless
+  // of which universe its finding_id belongs to.
+  for (const entry of payload.applied_dispositions ?? []) {
+    if (
+      entry.disposition === 'defer' &&
+      typeof entry.finding_id === 'string' &&
+      !currentFindingIds.has(entry.finding_id)
+    ) {
+      errors.push(
+        `$result.payload.applied_dispositions: finding ${entry.finding_id}'s disposition defer is incompatible with verdict clean, even when supplied via --known-ids rather than raised by this payload — a clean verdict claims nothing is outstanding, and defer explicitly carries the finding forward`
       )
     }
   }
@@ -963,6 +985,21 @@ function checkAdjudicationEntries(document, errors) {
         errors.push(`$adjudication.adjudications: duplicate finding_id ${entry.finding_id}`)
       }
       seen.add(entry.finding_id)
+    }
+    // Every adjudication explains itself (the schema's own required-field
+    // description for `reason`) and cites evidence — minLength:1 alone
+    // accepts a whitespace-only string, leaving the durable orchestrator
+    // verdict without a usable rationale despite passing the schema. Same
+    // trimmed-non-empty rule already applied to override.reason below.
+    if (typeof entry.reason !== 'string' || entry.reason.trim() === '') {
+      errors.push(
+        `$adjudication.adjudications[finding_id=${entry.finding_id}].reason: required (non-empty after trimming whitespace)`
+      )
+    }
+    if (typeof entry.evidence !== 'string' || entry.evidence.trim() === '') {
+      errors.push(
+        `$adjudication.adjudications[finding_id=${entry.finding_id}].evidence: required (non-empty after trimming whitespace)`
+      )
     }
     if (isIntegration) {
       if (entry.reviewer_priority !== null) {
@@ -1623,6 +1660,28 @@ function checkEvidenceMarkerStageVisited(document, errors) {
   }
 }
 
+// checkEvidenceMarkerPrDestinationRequiresPr — a marker.destination of "pr"
+// claims the per-stage rollup comment was posted to the draft PR, which the
+// same run document says happens only "once the draft PR exists" (the
+// marker.destination description above). A sibling field in the SAME
+// document, `pr`, is exactly the run's own record of whether that PR
+// exists yet (null until it does) — so a "pr"-destination marker alongside
+// a null `pr` claims evidence at a destination the document's own other
+// half says has not been created, context-free like
+// checkEvidenceMarkerStageVisited above.
+function checkEvidenceMarkerPrDestinationRequiresPr(document, errors) {
+  if (!Array.isArray(document.evidence_comments)) return
+  if (document.pr !== null && document.pr !== undefined) return
+  for (const [index, comment] of document.evidence_comments.entries()) {
+    const marker = comment.marker
+    if (marker && marker.destination === 'pr') {
+      errors.push(
+        `$run.evidence_comments[${index}].marker.destination: "pr" requires a non-null $run.pr — this run has no PR yet`
+      )
+    }
+  }
+}
+
 // checkEvidenceMarkerSequenceContiguity — spec § Evidence: sequence is
 // "the Nth comment continuing this stage's evidence when GitHub's size
 // limit forces a split" — which only makes sense counting from 1 with no
@@ -1866,6 +1925,7 @@ function main() {
       checkSettlements(instance, errors)
       checkEvidenceMarkerRunId(instance, errors)
       checkEvidenceMarkerStageVisited(instance, errors)
+      checkEvidenceMarkerPrDestinationRequiresPr(instance, errors)
       checkEvidenceMarkerSequenceContiguity(instance, errors)
       checkEvidenceCommentsUniqueness(instance, errors)
       checkRunPromotionOutcome(instance, errors)

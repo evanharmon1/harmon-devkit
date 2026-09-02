@@ -14,7 +14,7 @@
       "id": "2000000009",
       "author_actor_id": 12345678,
       "login": "evanharmon1",
-      "digest": "sha256:abcdef0123456789",
+      "digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
       "marker": { "run_id": "run-6054-marker-bad-stage-enum", "stage": "escalate", "destination": "issue", "round": 1, "sequence": 1 }
     }
   ],

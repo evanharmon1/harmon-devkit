@@ -12,7 +12,7 @@
       "id": "2000000005",
       "author_actor_id": 12345678,
       "login": "evanharmon1",
-      "digest": "sha256:abcdef0123456789"
+      "digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
     }
   ],
   "settlements": [],

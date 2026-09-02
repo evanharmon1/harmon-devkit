@@ -71,9 +71,9 @@
           "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
         },
         "path": {
-          "description": "Repo-relative path the finding is about.",
+          "description": "Repo-relative path the finding is about. Never absolute and never containing a `.` or `..` segment — provenance, fingerprinting, and rendering consumers all resolve this against the repo root, and a path that escapes it (or claims to be one already rooted elsewhere) cannot be reliably resolved as the claimed location.",
           "type": "string",
-          "minLength": 1
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$)).+$"
         },
         "line": {
           "description": "1-based line number, or null when the finding is not line-bound (e.g. a whole-file or cross-file design finding — the challenger's own contract, so this is common here). Design decision: null rather than 0 or omission, so 'not line-bound' is an explicit, typed value instead of a sentinel integer or an absent key a consumer could forget to check for.",
