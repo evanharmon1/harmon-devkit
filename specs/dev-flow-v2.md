@@ -60,31 +60,24 @@ cutoff** (`--as-of`, default: now): an issue belongs to the cohort by its
 first kickoff inside the window, and it is scored on the runs that existed
 at the cutoff — a run started after the cutoff neither removes the issue nor
 changes its score — so the same window and cutoff always report the same
-share. GitHub exposes no edit history for an issue comment, so this cannot
-mean re-reading the run record comment as it looked at the cutoff. Every
-transition, intervention, and terminal-outcome event instead carries its own
-immutable timestamp, sequence number, and digest chained to the previous
-event's digest — appending one extends the chain without editing an earlier
-entry, so a stage's own exit is a **new** chained event, never a field added
-to its existing entry (a single mutable entered/exited object could not
-distinguish "not yet exited" from "exited after the cutoff," which is
-exactly what a snapshot needs to tell apart). `--as-of` scoring first
-validates the complete chain, then reconstructs state from only the events
-at or before the cutoff — never from the record's current summary fields
-directly — so a later event changes what a later cutoff sees, never what an
-earlier, already-computed one does. See
-[evidence delta spec § Run history is append-only and as-of reconstructable](../openspec/changes/dev-flow-v2/specs/evidence/spec.md)
-for the full chain contract and its fixtures. GitHub's own comment update has
-no compare-and-swap, so two resumed or concurrent writers reading the same
-chain and each appending independently is a real race the chain's own
-validity cannot detect — both extensions still validate on their own, and
-the last write silently drops the other's event. Appending therefore follows
-the same reserve-then-verify discipline the evidence comments below already
-use: the writer reserves the next sequence number locally before writing,
-then re-reads the posted comment to confirm its own event is the visible
-tail before treating the append as durable; discovering a different tail
-means another writer's append landed first, and this one reconciles against
-that new tail rather than overwriting it.
+share. **Reconstruction is a property, not a procedure here either**: three
+review rounds of drafting the mechanism directly into this paragraph (a
+digest chain, then a reserve-then-verify append protocol) each converged on
+a narrower hole than the round before — durable ordering that still can't
+prove *when* an entry became visible in a repeatedly-replaced comment,
+concurrent writers that can still silently drop each other's event under a
+plausible interleaving — the same accretion the convergence model below
+names and avoids for the same reason. This spec states the invariant and
+delegates the mechanism, exactly as it does there: `--as-of` reconstruction
+SHALL be reproducible under replay (the same cutoff always reports the same
+share, from any read, any number of times) and SHALL NOT silently lose or
+reorder an event under concurrent or resumed writers. The evidence delta
+spec's append-only, digest-chained history
+([§ Run history is append-only and as-of reconstructable](../openspec/changes/dev-flow-v2/specs/evidence/spec.md))
+states that property in testable form; #663 owns the mechanism, its
+fixtures, and every attack scenario these three rounds raised as required
+test cases — concurrent-append loss, delayed-write cutoff drift, and replay
+stability chief among them.
 "Reached ready-for-review" means the run record carries the orchestrator's
 own promotion entry — the readiness-gate pass fingerprint and the
 `gh pr ready` it issued. A ready transition on the PR **without** that entry
@@ -770,25 +763,25 @@ Two rules make the posted evidence trustworthy on a public repository:
   orchestrator" is never a value the record's own JSON body declares — that
   would let a forged record vouch for its own evidence. It is the immutable
   actor ID of whoever authored the run record comment at kickoff, validated
-  against the repository's configured trusted-orchestrator actor IDs (the
-  same trust list evidence comments already check against) or, absent that
-  configuration, an actor independently verified — **at kickoff time, with
-  that verification persisted as part of the kickoff event itself** — to
-  hold repository write access. Matching the kickoff event's own actor alone
-  is not authority: on a public repository, a stranger able to trigger a
-  kickoff-shaped event can equally author the matching run record comment,
-  satisfying same-actor equality without ever holding real orchestrator
-  standing — the fallback needs an independently checked permission, not
-  merely that the two events agree on who performed them. Persisting the
-  check at kickoff time is not optional: GitHub exposes only a collaborator's
-  **current** permission, and a harvester reading long after kickoff has no
-  other way to ask "did this actor hold write access *then*" — permissions
-  can be granted or revoked in either direction afterward, so checking
-  current state at read time would falsely accept a since-authorized
-  stranger's old forgery and falsely reject a legitimate kickoff by someone
-  since removed.
+  against the repository's configured trusted-orchestrator actor IDs — the
+  same trust list evidence comments already check against, and the **only**
+  source of authority. **There is no fallback for an unconfigured
+  repository.** Two review rounds tried to define one from the kickoff
+  event's own actor (matching identity, then matching identity plus a
+  persisted permission claim) and both were broken the same way: whatever
+  the fallback checks, an actor able to forge the kickoff-shaped event can
+  equally forge whatever the check demands inside it, because nothing
+  outside the record itself backs the claim. A permission that can only be
+  read at write time (GitHub exposes no historical grant) cannot be proven
+  true at an earlier kickoff without an external signer this spec does not
+  have. Absent the trusted-actor configuration, the run record and every
+  evidence comment it names are unauthenticatable and the harvester treats
+  them as untrusted — the run is excluded from the success metric and its
+  replay corpus rather than counted on an unproven identity; a repository
+  that wants counted evidence configures the trust list, and there is no
+  weaker substitute.
   The run record comment is subject to the **same author check** against
-  that external trust root, so a stranger cannot forge a record that vouches
+  that trust root, so a stranger cannot forge a record that vouches
   for their own evidence; an orchestrator that
   rewrites its own record is outside the threat model — it could equally have
   lied in the first place, and the challenger/reviewer raw output on the same
