@@ -1078,6 +1078,22 @@ restriction, every implementer-capable harness eligible — turning a
 mistaken *narrow* allowlist into the *widest possible* one instead of
 failing closed.
 
+**A strategy's own requirements are cross-checked against breadth, not just
+resolved and left unchecked.** `[strategy.orchestrate]` and
+`[strategy.council]` declare `min_agents`; `crossValidate()` enforces the
+anchor rule pinning what breadth must provide for each: council needs
+`max_parallel_agents >= min_agents` **and** `max_agent_runs >= min_agents +
+1` (the extra run is the judge/synthesis pass `[strategy.council]`'s own
+`selection`/`synthesis` fields declare, beyond the `min_agents` independent
+proposals); orchestrate needs both `>= min_agents` (its lead is drawn from
+the same pool, not an extra run). Any other pairing is a cross-validation
+error, e.g. a `cursory`-rigor breadth of `1/1` cannot satisfy
+`[strategy.council]`'s `min_agents = 2`
+(`strategy-breadth-incompatible-council-cursory-refused/`). Registry-
+independent (only `resolved.strategy`/`resolved.breadth`), so — like the
+stage/breadth checks above — it runs unconditionally; strategies with no
+`min_agents` (`solo`, `plan`, `plan-approved`, `human-led`) are unaffected.
+
 **The merge-base historical decoder is reachable only from the merge-base
 path.** When the change under review touches `.devflow.toml` or
 `agent-registry.json`, AGENTS.md's merge-base rule applies: resolution must

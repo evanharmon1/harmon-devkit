@@ -651,6 +651,34 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
     }
   }
 
+  // specs/config/spec.md requires strategy requirements be cross-checked
+  // against breadth: an orchestrate/council strategy whose min_agents the
+  // resolved breadth ceiling cannot satisfy must be refused, not silently
+  // resolved. Registry-independent (only resolved.strategy/resolved.breadth),
+  // so — like the checks above — this runs unconditionally. Anchor rule
+  // (maintainer ruling, 2026-09-02): council needs max_parallel_agents >=
+  // min_agents AND max_agent_runs >= min_agents + 1 (the extra run is the
+  // judge/synthesis pass council's own table declares beyond the min_agents
+  // independent proposals); orchestrate needs both >= min_agents (the lead
+  // is drawn from the same pool, not an extra run). Other strategies (solo,
+  // plan, plan-approved, human-led) declare no min_agents and are unaffected.
+  if (resolved.strategy && (resolved.strategy.name === "orchestrate" || resolved.strategy.name === "council")) {
+    const { name, min_agents: minAgents } = resolved.strategy;
+    if (!Number.isInteger(minAgents) || minAgents < 1) {
+      errors.push(`[strategy.${name}].min_agents must be a positive integer, got ${JSON.stringify(minAgents)}`);
+    } else {
+      const requiredRuns = name === "council" ? minAgents + 1 : minAgents;
+      const { max_parallel_agents: maxParallel, max_agent_runs: maxRuns, policy: breadthPolicy } = resolved.breadth;
+      if (maxParallel < minAgents || maxRuns < requiredRuns) {
+        errors.push(
+          `strategy "${name}" (min_agents=${minAgents}) is incompatible with [breadth.${breadthPolicy}] ` +
+            `(max_parallel_agents=${maxParallel}, max_agent_runs=${maxRuns}): needs max_parallel_agents >= ${minAgents} ` +
+            `and max_agent_runs >= ${requiredRuns}`,
+        );
+      }
+    }
+  }
+
   if (registryDoc) {
     const familySlugs = new Set((registryDoc.families || []).map((f) => f.slug));
     const harnessSlugs = new Set((registryDoc.harnesses || []).map((h) => h.slug));
