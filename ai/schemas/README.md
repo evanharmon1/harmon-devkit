@@ -1033,15 +1033,24 @@ family's full receipt suite needs cross-run context, e.g. `--known-ids`, no
 single record directory carries, and stays `validate-result-schemas.mjs`'s
 job upstream of the renderer); a malformed document fails loudly naming the
 file, never a partial render. What IS local to one record directory is also
-checked, before anything renders: every pass's `head`/`run_id` must agree
-with the adjudication document that cross-references it by finding id, and
-every `run.json` settlement must name a finding some supplied adjudication
+checked, before anything renders: every pass's `head`/`run_id`/role must
+agree with the adjudication document that cross-references it by finding id
+(role: stage `integration` requires an `integrator` pass, everything else a
+`reviewer` pass); a reviewer/challenge finding's copied `reviewer_priority`
+must still equal its pass's own asserted `priority` (a drifted copy would
+hide the very reviewer-vs-orchestrator disagreement it exists to preserve);
+no finding id may be adjudicated twice across separate adjudication files;
+`disposition: defer` is rejected for stage `integration` (nothing downstream
+would ever settle it); every adjudication document's own `run_id` must equal
+`run.json`'s (finding ids are unique only *within* a run); and every
+`run.json` settlement must name a finding some supplied adjudication
 document actually dispositioned `defer` (an "orphan" settlement is rejected),
-with a `reference.type` that agrees with its own `disposition` (`fix`→`sha`,
-`decline`→`comment_id`, `file`→`issue_number`) — renderer/spec.md
-"Publication SHALL validate local sidecar entries against adjudications,"
-applied to every projection rather than only `publish`, since an
-inconsistent record is suspect for all of them alike.
+with a `reference.type` *and* value shape that agree with its own
+`disposition` (`fix`→ 40-hex `sha`, `decline`→`comment_id`,
+`file`→ positive-integer `issue_number`) — renderer/spec.md "Publication
+SHALL validate local sidecar entries against adjudications," applied to
+every projection rather than only `publish`, since an inconsistent record is
+suspect for all of them alike.
 `--verdict <file>` / `--policy <file>` override the record directory's own
 `verdict.json`/`policy.json`. A finding's `class` and `provenance` columns
 read `n/a` when no matching pass supplies them (always true for integration-
@@ -1148,7 +1157,27 @@ again, not just the body's fingerprint: the head moving mid-write is a
 AGENTS.md's Codex-connector signature) is a `promoted-during-publish`
 blocker — the body write may have landed in both cases, but reporting
 success would hide that the transaction's own precondition broke partway
-through.
+through. A `--pr` that disagrees with `run.json`'s own `pr` (a stale
+terminal, a copy-pasted number) is a `pr-mismatch` blocker, checked before
+any GitHub call.
+
+**Two publish calls racing the same PR** is the same GitHub
+read-modify-write limitation wearing a different interloper: `gh pr edit`
+has no compare-and-swap, so each call can read the same original body, write
+independently, and each verify only its OWN write — both report success
+while the later write silently drops the earlier one. `publish` closes the
+most likely real trigger — an accidental double-invocation, or a retry
+firing while a prior attempt is still in flight — with an exclusive,
+`--record`-directory-scoped lock (`<record dir>/.publish-lock`, created with
+`wx` so a second holder fails fast rather than racing) held for the whole
+call and released on every exit path; a second call while one is in flight
+is a `concurrent-publish` blocker. This does **not** — and structurally
+cannot, from a single-process lock — close two publish calls against
+*different* record directories racing the same PR, which remains the same
+disclosed, unclosed race as a concurrent human edit. A lock left behind by a
+crashed process is a stale-lock recovery: remove the file and retry, the
+same operational shape as any other file-based recovery state in this
+family.
 
 ### `readiness-input`: JSON for the readiness gate
 

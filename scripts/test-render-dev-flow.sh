@@ -228,6 +228,36 @@ assert_contains "$(cat "${golden_dir}/adjudication-record.txt")" '| correctness 
 assert_contains "$(cat "${golden_dir}/adjudication-record.txt")" '| hardening |'
 assert_contains "$(cat "${golden_dir}/adjudication-record.txt")" '| n/a |'
 
+echo "==> cross-document consistency: a drifted reviewer_priority copy is rejected"
+drift_priority="${test_tmp}/reviewer-priority-drift"
+mkdir -p "$drift_priority"
+cp -r "${record_dir}/." "$drift_priority/"
+node -e "
+const fs = require('fs');
+const p = '${drift_priority}/passes/challenge-r1-codex-cli.json';
+const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+envelope.payload.findings[0].priority = 'P0';
+fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+"
+run deferred-findings --record "$drift_priority"
+assert_rc 1
+assert_contains "$err" "copies reviewer_priority"
+
+echo "==> cross-document consistency: disposition defer is rejected for stage integration"
+defer_integration="${test_tmp}/defer-in-integration"
+mkdir -p "$defer_integration"
+cp -r "${record_dir}/." "$defer_integration/"
+node -e "
+const fs = require('fs');
+const p = '${defer_integration}/adjudications/integration-r1.json';
+const doc = JSON.parse(fs.readFileSync(p, 'utf8'));
+doc.adjudications[0].disposition = 'defer';
+fs.writeFileSync(p, JSON.stringify(doc, null, 2));
+"
+run deferred-findings --record "$defer_integration"
+assert_rc 1
+assert_contains "$err" "is not valid for stage integration"
+
 echo "==> marker-like text in a finding's evidence cannot forge a section boundary"
 marker_record="${test_tmp}/marker-forgery"
 mkdir -p "$marker_record"
@@ -530,6 +560,33 @@ run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha"
 assert_rc 1
 assert_contains "$out" '"reason": "not-draft"'
 [ "$(grep -c 'pr edit' "$gh_log" || true)" = 0 ] || fail "a non-draft PR must never attempt a write"
+
+echo "==> publish: run.json naming a different PR is a blocker, no write attempted"
+reset_gh_fixtures
+seed_view 'Prose.
+'
+pub_record="$(fresh_record 9)"
+: >"$gh_log"
+run publish --record "$pub_record" --repo owner/repo --pr 999 --head "$head_sha" --sections policy-disclosure
+assert_rc 1
+assert_contains "$out" '"reason": "pr-mismatch"'
+[ "$(grep -c 'pr view\|pr edit' "$gh_log" || true)" = 0 ] || fail "a run/PR mismatch must be caught before any gh call"
+
+echo "==> publish: a second concurrent publish against the same record directory is a blocker, not a race"
+reset_gh_fixtures
+seed_view 'Prose.
+'
+pub_record="$(fresh_record 10)"
+: >"${pub_record}/.publish-lock"
+: >"$gh_log"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --sections policy-disclosure
+assert_rc 1
+assert_contains "$out" '"reason": "concurrent-publish"'
+[ "$(wc -l <"$gh_log" | tr -d ' ')" = 0 ] || fail "a held lock must be checked before any gh call"
+rm -f "${pub_record}/.publish-lock"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --sections policy-disclosure
+assert_rc 0
+[ ! -f "${pub_record}/.publish-lock" ] || fail "the lock must be released once the call completes"
 
 echo "==> publish: malformed markers (mismatched begin/end) are a blocker, not a guess"
 reset_gh_fixtures

@@ -74,17 +74,24 @@
 // naming a different head/run_id than the adjudication that references it,
 // a settlement naming a finding absent from every supplied adjudication
 // document, a settlement for a finding never dispositioned `defer`, or a
-// settlement whose reference shape disagrees with its own disposition are
-// all rejected (renderer/spec.md "Publication SHALL validate local sidecar
-// entries against adjudications" — applied to every projection, not only
-// publish, since an inconsistent record is suspect for all of them).
+// settlement whose reference shape (type AND value) disagrees with its own
+// disposition are all rejected, as is a copied reviewer_priority that has
+// drifted from its source pass, an adjudication document from a foreign
+// run, a duplicate finding id across adjudication files, a pass whose role
+// does not match the stage that cross-references it, and a `defer`
+// disposition on an integration-stage finding (renderer/spec.md
+// "Publication SHALL validate local sidecar entries against adjudications"
+// — applied to every projection, not only publish, since an inconsistent
+// record is suspect for all of them).
 //
 // publish additionally requires --repo, --pr, --head, and --sections (a
 // comma list drawn from policy-disclosure, deferred-findings,
 // adjudication-record — the three sections that live in the PR body; the
 // caller states explicitly which ones this call updates, so a section is
-// never silently republished or silently skipped). See "Publish algorithm"
-// below.
+// never silently republished or silently skipped), and rejects a --pr that
+// disagrees with run.json's own `pr` (a `pr-mismatch` blocker) and a second
+// concurrent invocation against the same --record directory (a
+// `concurrent-publish` blocker; see "Publish algorithm" below).
 //
 // Exit 0 on success (rendered output on stdout, or --out). Exit 1 on a
 // rendering error (malformed record, e.g. a settlement referencing an
@@ -385,6 +392,16 @@ function validateCrossDocumentConsistency(record) {
   }
 
   for (const row of rows) {
+    // "disposition: defer is rejected for stage integration" is a receipt
+    // check in the schema family's own validator (adjudication.schema.json's
+    // $comment; ai/schemas/README.md "Field-shape decisions"), not a
+    // structural enum restriction the schema itself expresses — a
+    // single-document violation could otherwise reach this renderer intact
+    // and crash a projection (thread-reply-plan) with a confusing "unknown
+    // disposition" error instead of a clear, attributed one.
+    if (row.stage === 'integration' && row.entry.disposition === 'defer') {
+      fail(`${row.entry.finding_id}: disposition 'defer' is not valid for stage integration (nothing downstream would ever settle it)`)
+    }
     if (!row.pass) continue
     if (row.pass.head !== row.reviewed_head) {
       fail(
@@ -400,6 +417,18 @@ function validateCrossDocumentConsistency(record) {
     if (row.pass.role !== expectedRole) {
       fail(
         `${row.entry.finding_id}: stage ${row.stage} requires a ${expectedRole} pass, but its matching pass has role ${row.pass.role}`
+      )
+    }
+    // The adjudication's reviewer_priority is a COPY of the pass finding's
+    // own priority, kept so "reviewer-vs-orchestrator disagreement can be
+    // measured" (specs/dev-flow-v2.md) from the adjudication document alone.
+    // A copy that has drifted from its source is worse than no copy: it
+    // would publish a reviewer priority the actual pass no longer asserts,
+    // silently hiding the very disagreement it exists to preserve. Mirrors
+    // validate-result-schemas.mjs's own cross-check for the same reason.
+    if (row.pass.role === 'reviewer' && row.entry.reviewer_priority !== row.pass.finding.priority) {
+      fail(
+        `${row.entry.finding_id}: its adjudication copies reviewer_priority ${row.entry.reviewer_priority}, but the matching pass finding's own priority is ${row.pass.finding.priority}`
       )
     }
   }
@@ -467,10 +496,14 @@ function shortSha(sha) {
   return typeof sha === 'string' ? sha.slice(0, 7) : sha
 }
 
+// The reviewer schema permits any non-empty string for `path` — free text a
+// malformed or adversarial model output could shape into a marker token,
+// same reasoning as summary()/reason. Every caller embeds this in Markdown,
+// so it is neutralized here rather than at each call site.
 function location(row) {
   if (row.pass && row.pass.finding.path) {
     const { path: p, line } = row.pass.finding
-    return line === null || line === undefined ? p : `${p}:${line}`
+    return neutralizeMarkers(line === null || line === undefined ? p : `${p}:${line}`)
   }
   return row.entry.finding_id
 }
@@ -921,14 +954,66 @@ function blockerResult(reason, detail, extra = {}) {
   return { status: 'blocker', reason, detail, ...extra }
 }
 
-// publish: see the module doc comment's "Publish algorithm". Every attempt
-// re-reads the PR fresh; nothing here trusts a cached body across attempts,
-// so a concurrent human edit is repaired from a fresh read rather than
-// clobbered, and a crash between a landed write and this process recording
-// success is safe to resume — the fresh read on the next invocation already
-// matches the intended content and short-circuits to success without a
-// second write (renderer/spec.md "Remote handoff is idempotent").
+function lockPath(recordDir) {
+  return path.join(recordDir, '.publish-lock')
+}
+
+// publish: see the module doc comment's "Publish algorithm". Acquires an
+// exclusive, record-directory-scoped lock first: `gh pr edit` has no
+// compare-and-swap, so two publish() calls racing the same PR can each read
+// the same original body, write independently, and each verify their OWN
+// write before the other's lands — both report success while the
+// last-writer body silently drops the first. A same-record-directory lock
+// closes the most likely real trigger (an accidental double-invocation, a
+// caller retrying while a prior attempt is still in flight); it does not —
+// and cannot, from one process alone — close two publish calls against
+// DIFFERENT record directories racing the SAME PR, which stays the same
+// disclosed GitHub read-modify-write limitation as a concurrent human edit.
+// A lock left behind by a crashed process is a stale-lock recovery: remove
+// it and retry, the same operational shape as any other file-based recovery
+// state in this family.
 function publish(record, options) {
+  try {
+    fs.writeFileSync(lockPath(options.record), String(process.pid), { flag: 'wx' })
+  } catch (error) {
+    if (error.code === 'EEXIST') {
+      return blockerResult(
+        'concurrent-publish',
+        `another publish is already in flight for this record directory (${lockPath(options.record)}); if left behind by a crashed process, remove it and retry`
+      )
+    }
+    throw error
+  }
+  try {
+    return publishLocked(record, options)
+  } finally {
+    fs.rmSync(lockPath(options.record), { force: true })
+  }
+}
+
+function publishLocked(record, options) {
+  // A schema-valid but wrong PR: the caller's --pr/--repo happen to name a
+  // draft at the expected head, but run.json's own pr identifies a
+  // DIFFERENT PR entirely (a stale terminal, a copy-pasted number, a
+  // stacked/cross-repo mistake). headRefOid/isDraft alone cannot catch
+  // this — only the run record knows which PR this run's adjudications
+  // actually belong to.
+  if (record.run && record.run.pr) {
+    if (record.run.pr.number !== options.pr) {
+      return blockerResult(
+        'pr-mismatch',
+        `run.json names PR #${record.run.pr.number}, but publish was invoked for PR #${options.pr}`
+      )
+    }
+    const urlMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+$/.exec(record.run.pr.url)
+    if (urlMatch && urlMatch[1] !== options.repo) {
+      return blockerResult(
+        'pr-mismatch',
+        `run.json's PR URL names repo ${urlMatch[1]}, but publish was invoked for --repo ${options.repo}`
+      )
+    }
+  }
+
   const sections = {}
   for (const section of options.sections) {
     sections[section] = SECTION_RENDERERS[section](record)

@@ -14,7 +14,7 @@
   ],
   "interventions": [],
   "outcome": null,
-  "pr": { "number": 123, "url": "https://github.com/evanharmon1/harmon-devkit/pull/123" },
+  "pr": { "number": 123, "url": "https://github.com/owner/repo/pull/123" },
   "evidence_comments": [
     {
       "id": "3000000001",
