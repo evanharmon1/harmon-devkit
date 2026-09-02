@@ -962,7 +962,10 @@ decisions):
   whitespace-only string; `checkAdjudicationEntries` now applies the same
   `.trim() === ''` rejection already used for `override.reason` to both
   top-level fields, since every adjudication explains itself, not only an
-  override.
+  override. Covered by `adjudication.schema/invalid/whitespace-only-reason.json`
+  and `whitespace-only-evidence.json` (#686 review round 2 P2 — no invalid
+  fixture had exercised either trim guard, so removing one would leave the
+  suite green).
 - **`adjudication.schema.json` gained two optional, backward-compatible
   fields (#686, interface gaps lane #637 found building the renderer):
   `classification` (`confirmed | plausible | false-positive`, AGENTS.md's
