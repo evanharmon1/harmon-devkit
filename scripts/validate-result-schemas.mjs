@@ -1131,6 +1131,19 @@ function checkAdjudicationAgainstPass(document, passes, options, errors) {
         `$adjudication: --pass ${other.file} has reviewed_head ${other.data.payload.reviewed_head}, disagreeing with ${reference.file}'s ${reference.data.payload.reviewed_head}`
       )
     }
+    // A confidence round aggregates passes from ONE stage role (challenge ->
+    // challenger, review -> reviewer) — never a mix. This only bites for
+    // stage challenge, where a --pass may now be EITHER role (a pre-#635
+    // reviewer trajectory or a #635 challenger one, see passAllowedRoles
+    // above): allowing that per-file is correct, but the passes making up
+    // ONE round must still all agree with each other, or a round could
+    // combine two different evidence contracts (result.challenger findings
+    // alongside result.reviewer ones) into one adjudication.
+    if (!isIntegration && other.data.role !== reference.data.role) {
+      errors.push(
+        `$adjudication: --pass ${other.file} has role ${other.data.role}, disagreeing with ${reference.file}'s ${reference.data.role} — a round aggregates passes from one role, never a mix`
+      )
+    }
   }
 
   // A challenge/review round is one pass per configured finder (spec §

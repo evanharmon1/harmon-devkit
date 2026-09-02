@@ -61,6 +61,7 @@ is_context_only_fixture() {
     */adjudication.schema/invalid/pass-cross-check-missing-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-extra-entry.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-reviewer-priority-drift.json) return 0 ;;
+    */adjudication.schema/invalid/mixed-role-union-adjudication.json) return 0 ;;
     */adjudication.schema/invalid/pass-cross-check-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/integration-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/integration-round-mismatch.json) return 0 ;;
@@ -766,6 +767,19 @@ accept_context_case \
     "$two_finder_dir/two-finder-union-adjudication.json" \
     --pass "$two_finder_dir/two-finder-a.pass.json" \
     --pass "$two_finder_dir/two-finder-b.pass.json"
+
+# #635 challenge round 2: a challenge-stage round can now legitimately mix a
+# pre-#635 reviewer pass with a #635 challenger one ACROSS DIFFERENT rounds
+# (each stays internally single-role), but never WITHIN one round's own
+# union — that would combine two different evidence contracts (challenger's
+# attack_scenarios vs reviewer's absence of them) into one adjudication.
+run_context_case \
+    "a union adjudication mixing a reviewer pass and a challenger pass in one round is rejected" \
+    adjudication \
+    "$fixtures_dir/adjudication.schema/invalid/mixed-role-union-adjudication.json" \
+    "a round aggregates passes from one role, never a mix" \
+    --pass "$fixtures_dir/adjudication.schema/valid/mixed-role-reviewer.pass.json" \
+    --pass "$fixtures_dir/adjudication.schema/valid/mixed-role-challenger.pass.json"
 
 accept_context_case \
     "a settlement of a genuinely deferred finding is accepted" \

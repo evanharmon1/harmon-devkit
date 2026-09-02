@@ -220,6 +220,27 @@ if (errors.length === 0) {
   // ── roles[] (specs/dev-flow-v2.md 'Roles and authority', #635) ──────────
   const WRITE_RESTRICTED_ROLES = new Set(['challenger', 'reviewer', 'integrator'])
   const REQUIRED_ROLE_SLUGS = ['orchestrator', 'implementer', 'challenger', 'reviewer', 'integrator']
+  // The exact writes[] set each role must declare — verbatim from
+  // specs/dev-flow-v2.md's 'Roles and authority' table. challenger/reviewer
+  // are omitted (checked separately above: must be empty).
+  const EXPECTED_ROLE_WRITES = {
+    orchestrator: [
+      'dispositions',
+      'the adjudication record',
+      'gh pr create --draft',
+      'the PR body',
+      'evidence and run-record comments',
+      'gh pr ready'
+    ],
+    implementer: [
+      'commits on the branch its dispatch names',
+      'feature-branch round pushes through the round-push broker'
+    ],
+    integrator: [
+      'the brokered Codex trigger comment',
+      'brokered thread replies containing text supplied by the orchestrator'
+    ]
+  }
   const roleBySlug = new Map(registry.roles.map((role) => [role.slug, role]))
 
   for (const required of REQUIRED_ROLE_SLUGS) {
@@ -262,6 +283,26 @@ if (errors.length === 0) {
     if (!mustBeEmpty && role.writes.length === 0) {
       semanticError(`role ${role.slug} must declare its permitted external writes (writes must be non-empty)`)
     }
+    // The schema's enum bounds writes[] to the fixed vocabulary the anchor
+    // spec's table uses at all, but a subset or a mixed-role write (e.g.
+    // orchestrator declaring only "gh pr ready", or integrator borrowing
+    // orchestrator's "the PR body") is still a false claim about that SPECIFIC
+    // role's own authority — so the set for each non-empty-writes role must
+    // match its own expected set exactly, not merely draw from the shared pool.
+    const expectedWrites = EXPECTED_ROLE_WRITES[role.slug]
+    if (expectedWrites && Array.isArray(role.writes)) {
+      const actual = new Set(role.writes)
+      const expected = new Set(expectedWrites)
+      const missing = expectedWrites.filter((w) => !actual.has(w))
+      const extra = role.writes.filter((w) => !expected.has(w))
+      if (missing.length > 0 || extra.length > 0) {
+        semanticError(
+          `role ${role.slug} writes must exactly match its own expected set` +
+            (missing.length > 0 ? `; missing: ${missing.join(', ')}` : '') +
+            (extra.length > 0 ? `; unexpected: ${extra.join(', ')}` : '')
+        )
+      }
+    }
   }
 
   // ── finders[] (docs/glossary.md 'finder', #635) ──────────────────────────
@@ -300,6 +341,20 @@ if (errors.length === 0) {
     }
     if ((finder.trusted_actor_id === null) !== (finder.trusted_actor_login === null)) {
       semanticError(`finder ${finder.slug} must set trusted_actor_id and trusted_actor_login together (both null or both present)`)
+    }
+    // A pre-PR confidence stage (challenge/review) has no "collected,
+    // role-less" concept the way integration's codex-cloud does — the ONLY
+    // way to produce evidence for those stages in this contract is a real
+    // challenger/reviewer dispatch returning its own enveloped result, so a
+    // finder configured for one must declare that role. Without this, a
+    // role:null finder skipped every role/schema/stage-affinity check below
+    // entirely (they all live inside `if (finder.role !== null)`) and could
+    // be selected for a confidence stage with no schema-bound contract at
+    // all — the reverse half of role dispatch (finder -> role), unchecked.
+    if (finder.role === null && finder.stages.some((stage) => PRE_PR_STAGES.has(stage))) {
+      semanticError(
+        `finder ${finder.slug} serves a pre-PR confidence stage (${finder.stages.filter((s) => PRE_PR_STAGES.has(s)).join(', ')}) but declares no role — challenge/review has no collected, role-less finder concept; every such finder must be a real challenger or reviewer dispatch`
+      )
     }
     // Digits-only shape, checked here rather than a schema `pattern`: the
     // breakdown skill's independent, more restrictive schema-subset engine

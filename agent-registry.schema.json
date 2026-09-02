@@ -201,9 +201,22 @@
           ]
         },
         "writes": {
-          "description": "Permitted external writes, in the vocabulary of the anchor spec's 'Roles and authority' table (e.g. 'commits on the branch its dispatch names'). Empty for challenger and reviewer, which write nothing outside their own result — cross-file validation enforces both non-empty for implementer/integrator/orchestrator and empty for challenger/reviewer.",
+          "description": "Permitted external writes. A closed enum, not free text — specs/dev-flow-v2.md's 'Roles and authority' table names an EXACT, fixed set of permitted actions per role, so a role's writes[] is bound to that same fixed vocabulary rather than merely required to be non-empty (which would still accept e.g. orchestrator.writes = [\"merge main\"], a materially different and false claim about its authority). Empty for challenger and reviewer, which write nothing outside their own result — cross-file validation enforces both non-empty for implementer/integrator/orchestrator and empty for challenger/reviewer.",
           "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "enum": [
+              "dispositions",
+              "the adjudication record",
+              "gh pr create --draft",
+              "the PR body",
+              "evidence and run-record comments",
+              "gh pr ready",
+              "commits on the branch its dispatch names",
+              "feature-branch round pushes through the round-push broker",
+              "the brokered Codex trigger comment",
+              "brokered thread replies containing text supplied by the orchestrator"
+            ]
+          }
         }
       }
     },

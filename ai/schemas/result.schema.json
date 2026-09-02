@@ -109,33 +109,6 @@
       }
     },
     {
-      "$comment": "Same reasoning as the implementer completed/blocked pair above: role and status are both envelope-level fields this composed document can see in the same if as the payload property its then reaches into, which the standalone result.challenger.schema.json (payload-only, never sees status) cannot express. attack_scenarios minItems:1 already exists on the shared property; maxItems:0 for the blocked direction is why this schema-subset engine gained maxItems.",
-      "if": {
-        "properties": { "role": { "const": "challenger" }, "status": { "const": "completed" } },
-        "required": ["role", "status"]
-      },
-      "then": {
-        "properties": {
-          "payload": {
-            "properties": { "attack_scenarios": { "minItems": 1 } }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": { "role": { "const": "challenger" }, "status": { "const": "blocked" } },
-        "required": ["role", "status"]
-      },
-      "then": {
-        "properties": {
-          "payload": {
-            "properties": { "attack_scenarios": { "maxItems": 0 } }
-          }
-        }
-      }
-    },
-    {
       "$comment": "Challenger's completed/blocked attack_scenarios conditional, expressible here for the same reason as implementer's completed/blocked pair above: role and status are both envelope-level fields this composed document can see in the same if as the payload property its then reaches into. The standalone result.challenger.schema.json never sees status at all, so scripts/validate-result-schemas.mjs's checkChallengerAttackScenarios still enforces the identical rule for the standalone challenger kind, which never sees this composed schema.",
       "if": {
         "properties": { "role": { "const": "challenger" }, "status": { "const": "completed" } },

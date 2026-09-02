@@ -1,0 +1,44 @@
+{
+  "schema": 2,
+  "role": "challenger",
+  "status": "completed",
+  "head": "3020a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "produced_at": "2026-08-29T20:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-3020-mixed-role",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "3020a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+    "finder": "codex-adversarial",
+    "findings": [
+      {
+        "id": "challenge-r1-codex-adversarial-1",
+        "path": "some/other-file.md",
+        "line": 20,
+        "class": "hardening",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "a #635 challenger pass in what is otherwise a mixed round"
+      }
+    ],
+    "counts": { "P0": 0, "P1": 0, "P2": 1, "P3": 0 },
+    "attack_scenarios": [
+      {
+        "id": "as-1",
+        "description": "attempted to find an authorization bypass",
+        "outcome": "surfaced-finding",
+        "finding_id": "challenge-r1-codex-adversarial-1"
+      }
+    ]
+  }
+}

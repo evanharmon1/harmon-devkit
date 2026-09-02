@@ -18,10 +18,22 @@ const ROLE_TIER_LABEL = /^tier:([a-z0-9-]+):([a-z0-9-]+)$/
 // execution-control label (AGENTS.md's "tier:orchestrator:* / tier:implementer:*
 // / tier:reviewer:*" family) and resolves both segments against the registry's
 // own vocabulary: <role> against registry.roles[].slug, <tier> against
-// TIER_ORDER. specs/dev-flow-v2.md 'Labels resolve role names through the
-// registry': an unknown role or tier is rejected rather than silently
-// accepted or guessed at. This is the one place that resolution lives, so
-// every consumer (this test suite now, the orchestrator later) agrees on it.
+// TIER_ORDER. This implements ONLY specs/dev-flow-v2.md's registry delta
+// spec Requirement "Labels resolve role names through the registry" (an
+// unknown role or tier is rejected rather than silently accepted or guessed
+// at) — a pure VOCABULARY lookup with no session, no actor, and no clock.
+//
+// It deliberately does NOT implement the spec's separate Requirement
+// "Execution-control labels require attributable provenance" (interactive
+// operator confirmation for an off-default resolution; an unattended
+// consumer re-reading its trusted-actor configuration immediately before
+// acting) — that requirement is about WHO is invoking the orchestrator and
+// HOW that gets authenticated, which has no registry or vocabulary
+// component and cannot be answered by a `(label, registry) => result`
+// function with no session context to interrogate. `ok: true` here means
+// "this label names a real role and tier," never "this label is authorized
+// to act on." The provenance requirement belongs to `/orchestrator` (#638),
+// the actual session-runtime consumer of a resolved label.
 export function resolveRoleTierLabel(label, registry) {
   const match = ROLE_TIER_LABEL.exec(label)
   if (!match) return { ok: false, error: `not a tier:<role>:<tier> label: ${label}` }

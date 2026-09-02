@@ -139,10 +139,28 @@ switch (mutation) {
     role('challenger').result_schema = 'ai/schemas/result.reviewer.schema.json'
     break
   case 'challenger-with-writes':
-    role('challenger').writes = ['something it should never write']
+    // A schema-legal value (borrowed from another role's own enum member) —
+    // isolates the "challenger must be empty" semantic rule from the
+    // separate closed-vocabulary enum check an arbitrary string would hit
+    // instead.
+    role('challenger').writes = ['gh pr ready']
     break
   case 'role-empty-writes':
     role('implementer').writes = []
+    break
+  case 'role-writes-wrong-content':
+    // Schema-legal (every value is in the shared enum) but not THIS role's
+    // own expected set — challenge round 3's own finding: non-emptiness
+    // alone let a role borrow another role's write, or narrow its own.
+    role('orchestrator').writes = ['gh pr ready']
+    break
+  case 'role-writes-borrowed-from-another-role':
+    role('integrator').writes = ['the PR body', 'gh pr ready']
+    break
+  case 'role-writes-arbitrary-string':
+    // Codex round 3's own example: an arbitrary string outside the shared
+    // enum entirely (not merely another role's legitimate write).
+    role('integrator').writes = ['merge main']
     break
   // ── finders[] (#635) ───────────────────────────────────────────────────
   case 'duplicate-finder-slug':
@@ -360,6 +378,15 @@ rejects "challenger declaring external writes" \
 rejects "a non-write-restricted role with empty writes" \
     'role-empty-writes' \
     'role implementer must declare its permitted external writes'
+rejects "a role's writes narrowed to a subset of its own expected set" \
+    'role-writes-wrong-content' \
+    'writes must exactly match its own expected set'
+rejects "a role's writes containing another role's own write" \
+    'role-writes-borrowed-from-another-role' \
+    'writes must exactly match its own expected set'
+rejects "a role's writes containing a string outside the shared vocabulary entirely" \
+    'role-writes-arbitrary-string' \
+    'must be one of'
 rejects "duplicate finder slugs" \
     'duplicate-finder-slug' \
     'duplicate finder slug'
