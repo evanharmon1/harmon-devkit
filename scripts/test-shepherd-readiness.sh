@@ -569,6 +569,47 @@ jq -cn '[{total_count:2,workflow_runs:[
 run_gate --codex-disabled
 assert_gate 0 pass ready
 
+echo "==> a run naming MULTIPLE PRs (a genuinely shared head) cannot clear this PR's own failure (harmon-devkit#714 review r1)"
+# GitHub populates pull_requests with EVERY open PR whose head currently
+# matches, not the one that triggered the run, so a run listing both 493 and
+# 999 does not confidently belong to either -- a same-PR-number membership
+# test alone would wrongly treat it as "ours" and let its later success
+# supersede this PR's own confidently-scoped failure. It must still be kept
+# (dropping it could hide a real failure), just never allowed to collapse
+# against a run this gate IS confident belongs to this PR.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493}]},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493},{number:999}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive when a later run naming multiple PRs (including this one) shared the same name/workflow/event: $gate_out"
+
+echo "==> a failing run that itself names multiple PRs still surfaces (ambiguous is kept, not dropped)"
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493},{number:999}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "a failing run naming multiple PRs (including this one) was dropped instead of surfaced: $gate_out"
+
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \

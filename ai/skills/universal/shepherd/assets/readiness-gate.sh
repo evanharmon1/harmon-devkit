@@ -457,30 +457,51 @@ evaluate_checks() {
     # open PRs against more than one base branch, and this endpoint returns
     # every workflow run for the sha regardless of which PR it ran under
     # (harmon-devkit#714 challenge r3). A run's own `pull_requests[]`
-    # narrows that — but GitHub is known to leave it empty even for a run
-    # that genuinely belongs to an open PR, so absence is not evidence of
-    # exclusion: only a NON-empty list that omits this PR's number is
-    # positive proof the run belongs elsewhere. An empty list keeps the run,
-    # same as before this filter existed.
+    # narrows that, but not cleanly: GitHub populates it with EVERY currently
+    # open PR whose head matches this sha, not the one that triggered the
+    # run, so a run genuinely triggered by a sibling PR still lists ours
+    # whenever both share the head — a same-PR-number membership test alone
+    # cannot tell "definitely ours" from "shared, and this run might not be"
+    # (harmon-devkit#714 review r1). Three cases, not two: an EMPTY list is
+    # not evidence of exclusion (GitHub is known to leave it empty even for
+    # a run that genuinely belongs to the PR being gated) and keeps the run
+    # exactly as before this filter existed; a SINGLETON list is unambiguous
+    # either way — naming only this PR confidently includes it, naming only
+    # another PR is positive proof to exclude it; a list naming more than
+    # one PR is genuinely ambiguous and must never be trusted to CLEAR
+    # another run's failure, because a sibling PR's base branch can make the
+    # identical commit behave differently under base-relative workflow
+    # logic (the same reasoning behind scoping runs to a PR at all). Such a
+    # run is kept, since dropping it could hide a real failure that IS ours,
+    # but tagged into its own identity so it can only ever compete with
+    # itself across suites, never supersede (or be superseded by) a run this
+    # gate is confident belongs to this PR.
     workflow_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/actions/runs?head_sha=$head&per_page=100")" ||
         indeterminate fetch-failed "cannot fetch workflow runs for the head"
     workflow_runs="$(jq -ce --argjson pr "$pr" \
         '[.[] | if (.workflow_runs | type) == "array" then .workflow_runs[]
                 else error("page carries no workflow_runs") end]
-         | [.[] | select(((.pull_requests // []) | length) == 0 or
-                          any(.pull_requests[]; .number == $pr))]' \
+         | map((.pull_requests // []) as $prs |
+               if ($prs | length) == 0 then . + {_scope: "unscoped"}
+               elif ($prs | length) == 1 and $prs[0].number == $pr
+                 then . + {_scope: "this-pr"}
+               elif ($prs | length) == 1 then . + {_scope: "other-pr"}
+               else . + {_scope: "ambiguous"} end)
+         | map(select(._scope != "other-pr"))' \
         <<<"$workflow_runs_pages" 2>/dev/null)" ||
         indeterminate malformed-data "workflow-runs payload is malformed"
     check_runs="$(jq -ce \
         --slurpfile wf_sf <(printf '%s' "$workflow_runs") '
           ($wf_sf[0] | map({key: (.check_suite_id | tostring),
-                            value: {workflow_id, event}}) | from_entries) as $suite_workflow |
+                            value: {workflow_id, event, scope: ._scope}}) | from_entries) as $suite_workflow |
           map(. + {_identity: [.name,
               ($suite_workflow[(.check_suite.id | tostring)]
                | if . == null then "app:" + ((.app.id // 0) | tostring)
                  else "wf:" + (.workflow_id | tostring) + ":" +
-                      (.event // "unknown") end)]})
+                      (.event // "unknown") +
+                      (if .scope == "ambiguous" then ":shared-pr" else "" end)
+                 end)]})
           | group_by(._identity)
           | map(. as $group | ($group | max_by(.check_suite.id) | .check_suite.id) as $latest_suite |
                 $group[] | select(.check_suite.id == $latest_suite))' \
