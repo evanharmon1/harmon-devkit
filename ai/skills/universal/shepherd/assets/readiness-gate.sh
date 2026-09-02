@@ -453,12 +453,23 @@ evaluate_checks() {
     # simultaneous facts about the same delivery, not a history to collapse.
     # Every run from an older, truly superseded suite for that identity is
     # still dropped (harmon-devkit#714 challenge r2).
+    # head_sha alone does not scope to THIS pr: the same commit can back
+    # open PRs against more than one base branch, and this endpoint returns
+    # every workflow run for the sha regardless of which PR it ran under
+    # (harmon-devkit#714 challenge r3). A run's own `pull_requests[]`
+    # narrows that — but GitHub is known to leave it empty even for a run
+    # that genuinely belongs to an open PR, so absence is not evidence of
+    # exclusion: only a NON-empty list that omits this PR's number is
+    # positive proof the run belongs elsewhere. An empty list keeps the run,
+    # same as before this filter existed.
     workflow_runs_pages="$(run_gh api --paginate --slurp \
         "repos/$repo/actions/runs?head_sha=$head&per_page=100")" ||
         indeterminate fetch-failed "cannot fetch workflow runs for the head"
-    workflow_runs="$(jq -ce \
+    workflow_runs="$(jq -ce --argjson pr "$pr" \
         '[.[] | if (.workflow_runs | type) == "array" then .workflow_runs[]
-                else error("page carries no workflow_runs") end]' \
+                else error("page carries no workflow_runs") end]
+         | [.[] | select(((.pull_requests // []) | length) == 0 or
+                          any(.pull_requests[]; .number == $pr))]' \
         <<<"$workflow_runs_pages" 2>/dev/null)" ||
         indeterminate malformed-data "workflow-runs payload is malformed"
     check_runs="$(jq -ce \

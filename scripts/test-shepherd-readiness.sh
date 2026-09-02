@@ -525,6 +525,50 @@ assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
     fail "checks-failing did not surface the failing sibling job when a same-named passing sibling shares its (latest) suite: $gate_out"
 
+echo "==> a same-sha run scoped to a DIFFERENT PR cannot supersede this PR's failure (harmon-devkit#714 round 3)"
+# head_sha alone does not scope to one PR: the same commit can back open PRs
+# against more than one base branch, and actions/runs returns every run for
+# the sha regardless of which PR it belongs to. A newer, higher-suite-id run
+# that is provably for PR 999 (not this gate's PR 493) must not be treated
+# as superseding this PR's own failing suite, even though its check_suite id
+# sorts higher.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:493}]},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",
+     pull_requests:[{number:999}]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not survive when a higher-suite-id run scoped to a different PR shared the same name/workflow/event: $gate_out"
+
+echo "==> an empty pull_requests association still allows the normal collapse (unscoped, as before)"
+# GitHub is known to leave pull_requests empty even for a run that genuinely
+# belongs to the open PR being gated -- absence must not be read as "wrong
+# PR," or every ordinary same-PR case using this shape would wrongly split
+# into two identities and both survive as false failures.
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"failure",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:10}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:20}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:10,workflow_id:100,event:"pull_request",pull_requests:[]},
+    {check_suite_id:20,workflow_id:100,event:"pull_request",pull_requests:[]}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate --codex-disabled
+assert_gate 0 pass ready
+
 echo "==> an EMPTY check list is indeterminate, never a pass"
 write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \
