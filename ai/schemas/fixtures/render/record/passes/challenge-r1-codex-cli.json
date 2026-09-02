@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "role": "reviewer",
+  "role": "challenger",
   "status": "completed",
   "head": "1111111111111111111111111111111111111111",
   "produced_at": "2026-08-30T11:30:00Z",
@@ -35,6 +35,26 @@
         "evidence": "the argv parser silently accepts --record given twice, keeping only the last value"
       }
     ],
-    "counts": { "P0": 0, "P1": 1, "P2": 1, "P3": 0 }
+    "counts": { "P0": 0, "P1": 1, "P2": 1, "P3": 0 },
+    "attack_scenarios": [
+      {
+        "id": "as-1",
+        "description": "Ran two concurrent publish() invocations against the same PR to look for a lost write",
+        "outcome": "surfaced-finding",
+        "finding_id": "challenge-r1-codex-cli-1"
+      },
+      {
+        "id": "as-2",
+        "description": "Passed --record twice to see whether the second value silently wins with no diagnostic",
+        "outcome": "surfaced-finding",
+        "finding_id": "challenge-r1-codex-cli-2"
+      },
+      {
+        "id": "as-3",
+        "description": "Attempted to publish a section neither begin- nor end-marked in the existing body, expecting a clean append",
+        "outcome": "held",
+        "finding_id": null
+      }
+    ]
   }
 }

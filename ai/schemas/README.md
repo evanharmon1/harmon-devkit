@@ -1062,7 +1062,7 @@ family's other scripts).
 |---|---|---|
 | `run.json` | One `run.schema.json` document | For `blocker-comment`, `readiness-input`; optional elsewhere |
 | `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
-| `passes/*.json` | Result envelopes (`role: reviewer` or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `body`/`source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location, its adjudication's own `evidence`) when no matching pass is supplied. **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
+| `passes/*.json` | Result envelopes (`role: challenger`, `reviewer`, or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `body`/`source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location, its adjudication's own `evidence`) when no matching pass is supplied. **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
 | `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines. Shape-validated when present (`outcome` a non-empty string; `reason` a string; `rounds_counted`/`next_round` integers; `corrections` an array of strings — each only when present) |
 | `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present the same way as `verdict.json`, including each individual `rounds.*` value (a non-negative integer, not just the container) |
 
@@ -1111,13 +1111,18 @@ turn a continuation line into a Markdown-parsed SEPARATE list item, a
 fabricated checkbox the human integration stage never actually adjudicated,
 if the continuation happens to look like one.
 
-**Once `#635` ships `result.challenger.schema.json` and an envelope
-`role: challenger`,** this renderer's pass loader (which currently accepts
-only `role: reviewer | integrator`) needs a one-line extension to accept
-`challenger` too — challenge-stage passes are rendered today under
-`role: reviewer` with `payload.stage: "challenge"`, which is schema-valid
-under the *current* `result.reviewer.schema.json` (`stage` enum
-`["challenge", "review"]`) and will remain so until that split lands.
+**A challenge-stage pass may carry `role: challenger` or `role: reviewer`**
+(`#635` shipped `result.challenger.schema.json` and the envelope's
+`role: challenger`, validated the same way as any other pass). Both remain
+legitimate simultaneously: `result.reviewer.schema.json`'s own `stage` enum
+still admits `"challenge"` (unchanged by `#635`), so a pre-`#635` record
+using that path is still schema-valid. Review and integration each accept
+exactly one role (`reviewer`, `integrator`) — a challenger pass never backs
+a review-stage finding, since its own schema fixes `stage` to a `const`.
+Every column that reads from a challenge/review pass's shared finding core
+(`class`, `provenance`, the reviewer_priority-fidelity check) treats
+`challenger` and `reviewer` identically, since `result.challenger.schema.json`
+declares that core field-for-field the same as `result.reviewer.schema.json`.
 
 ### Projections
 

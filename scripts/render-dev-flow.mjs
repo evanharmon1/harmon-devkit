@@ -53,7 +53,7 @@
 //                         (one per round). Every *.json file in the
 //                         directory is read; order is irrelevant, output
 //                         order is always recomputed from content.
-//   passes/*.json         Result envelopes (role reviewer/integrator) that
+//   passes/*.json         Result envelopes (role challenger/reviewer/integrator) that
 //                         the adjudications reference, enriching a finding
 //                         with path/line/class/provenance/fingerprint/finder
 //                         (challenge/review) or body/source_id (integration).
@@ -127,6 +127,14 @@ const PROJECTIONS = [
 const PUBLISHABLE_SECTIONS = ['policy-disclosure', 'deferred-findings', 'adjudication-record']
 const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-([a-z0-9-]+)-([1-9][0-9]*)$/
 const STAGE_ORDER = { challenge: 0, review: 1, integration: 2 }
+// Which pass role(s) may legitimately back a finding at each stage. Challenge
+// accepts both: result.challenger.schema.json (#635) is the current role for
+// a challenge-stage pass, but result.reviewer.schema.json's own `stage` enum
+// still admits "challenge" too (unchanged by #635) for a pre-#635 record
+// still using that role — both remain schema-valid simultaneously. Review and
+// integration accept exactly one role each; a challenger pass never carries a
+// review-stage finding (its own schema fixes `stage` to a `const`).
+const STAGE_ROLES = { challenge: ['challenger', 'reviewer'], review: ['reviewer'], integration: ['integrator'] }
 const SETTLEMENT_GRAMMAR = { fix: 'fixed in', decline: 'declined:', file: 'filed as' }
 const REPLY_VERB = { fix: 'Fixed', restructure: 'Restructured', delete: 'Removed', decline: 'Declined', file: 'Filed' }
 
@@ -315,8 +323,8 @@ function loadRecord(dir, schemasDir) {
   for (const file of listJsonFiles(path.join(dir, 'passes'))) {
     const envelope = loadJson(file)
     validateAgainst(schemasDir, 'result.envelope.schema.json', envelope, file)
-    if (envelope.role !== 'reviewer' && envelope.role !== 'integrator') {
-      fail(`${file}: passes/ may only hold reviewer or integrator envelopes, got role ${envelope.role}`)
+    if (envelope.role !== 'reviewer' && envelope.role !== 'integrator' && envelope.role !== 'challenger') {
+      fail(`${file}: passes/ may only hold challenger, reviewer, or integrator envelopes, got role ${envelope.role}`)
     }
     validateAgainst(schemasDir, `result.${envelope.role}.schema.json`, envelope.payload, `${file}#/payload`)
     record.passes.push({ file, envelope })
@@ -516,10 +524,10 @@ function validateCrossDocumentConsistency(record) {
         `${row.entry.finding_id}: its pass envelope names run_id ${row.pass.runId}, but the adjudicating document's run_id is ${row.run_id}`
       )
     }
-    const expectedRole = row.stage === 'integration' ? 'integrator' : 'reviewer'
-    if (row.pass.role !== expectedRole) {
+    const allowedRoles = STAGE_ROLES[row.stage] || []
+    if (!allowedRoles.includes(row.pass.role)) {
       fail(
-        `${row.entry.finding_id}: stage ${row.stage} requires a ${expectedRole} pass, but its matching pass has role ${row.pass.role}`
+        `${row.entry.finding_id}: stage ${row.stage} requires a pass with role ${allowedRoles.join(' or ')}, but its matching pass has role ${row.pass.role}`
       )
     }
     // The adjudication's reviewer_priority is a COPY of the pass finding's
@@ -529,7 +537,13 @@ function validateCrossDocumentConsistency(record) {
     // would publish a reviewer priority the actual pass no longer asserts,
     // silently hiding the very disagreement it exists to preserve. Mirrors
     // validate-result-schemas.mjs's own cross-check for the same reason.
-    if (row.pass.role === 'reviewer' && row.entry.reviewer_priority !== row.pass.finding.priority) {
+    // Applies to challenger passes too — result.challenger.schema.json's
+    // finding.priority is the same field under the same name, just from a
+    // different role.
+    if (
+      (row.pass.role === 'reviewer' || row.pass.role === 'challenger') &&
+      row.entry.reviewer_priority !== row.pass.finding.priority
+    ) {
       fail(
         `${row.entry.finding_id}: its adjudication copies reviewer_priority ${row.entry.reviewer_priority}, but the matching pass finding's own priority is ${row.pass.finding.priority}`
       )
@@ -579,6 +593,17 @@ function compareRows(a, b) {
 }
 
 // Sourced from the originating pass's own `class` (design/correctness/
+// hasFindingCore — true for a pass whose finding shares the challenge/review
+// "finding core" (path/line/class/provenance/fingerprint/priority/
+// recommended_disposition/evidence): result.reviewer.schema.json and
+// result.challenger.schema.json declare it field-for-field identically
+// (agent-registry.json #635 calls this the shared finding core, so #636's
+// exit script can compute over both with no role-specific branch); an
+// integrator finding has none of it.
+function hasFindingCore(pass) {
+  return Boolean(pass) && (pass.role === 'reviewer' || pass.role === 'challenger')
+}
+
 // consistency/hardening/nit) — never derived from `disposition`. Disposition
 // and classification are independent workflow decisions (AGENTS.md's
 // confirmed/plausible-but-unproven/false-positive taxonomy): a finding can be
@@ -592,7 +617,7 @@ function compareRows(a, b) {
 // findings carry no `class` either), same graceful-degradation rule
 // `provenance()` already follows.
 function classification(row) {
-  return row.pass && row.pass.role === 'reviewer' ? row.pass.finding.class : 'n/a'
+  return hasFindingCore(row.pass) ? row.pass.finding.class : 'n/a'
 }
 
 function shortSha(sha) {
@@ -619,7 +644,7 @@ function summary(row) {
 }
 
 function provenance(row) {
-  return row.pass && row.pass.role === 'reviewer' ? row.pass.finding.provenance : 'n/a'
+  return hasFindingCore(row.pass) ? row.pass.finding.provenance : 'n/a'
 }
 
 // neutralizeMarkers — free text (a finding's own evidence/reason, a policy

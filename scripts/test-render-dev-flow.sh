@@ -175,6 +175,29 @@ run deferred-findings --record "$bad_head"
 assert_rc 1
 assert_contains "$err" "its pass envelope names head"
 
+echo "==> cross-document consistency: a challenger pass may back a challenge-stage finding, but not a review-stage one"
+challenger_wrong_stage="${test_tmp}/challenger-wrong-stage"
+mkdir -p "$challenger_wrong_stage"
+cp -r "${record_dir}/." "$challenger_wrong_stage/"
+node -e "
+const fs = require('fs');
+// Remove the finding from its real (challenge-stage) adjudication first, so
+// only one document claims it, then have review round 1 claim it instead —
+// same head/run_id, reusing the challenger pass's own finding id. STAGE_ROLES
+// must still refuse it: a challenger pass is legitimate for challenge, never
+// for review.
+const chDoc = JSON.parse(fs.readFileSync('${challenger_wrong_stage}/adjudications/challenge-r1.json', 'utf8'));
+chDoc.adjudications = chDoc.adjudications.filter((a) => a.finding_id !== 'challenge-r1-codex-cli-1');
+fs.writeFileSync('${challenger_wrong_stage}/adjudications/challenge-r1.json', JSON.stringify(chDoc, null, 2));
+const revDoc = JSON.parse(fs.readFileSync('${challenger_wrong_stage}/adjudications/review-r1.json', 'utf8'));
+revDoc.reviewed_head = '1111111111111111111111111111111111111111';
+revDoc.adjudications[0].finding_id = 'challenge-r1-codex-cli-1';
+fs.writeFileSync('${challenger_wrong_stage}/adjudications/review-r1.json', JSON.stringify(revDoc, null, 2));
+"
+run deferred-findings --record "$challenger_wrong_stage"
+assert_rc 1
+assert_contains "$err" "requires a pass with role reviewer, but its matching pass has role challenger"
+
 echo "==> cross-document consistency: an adjudication document from a foreign run is rejected"
 bad_run_id="${test_tmp}/adjudication-run-mismatch"
 mkdir -p "$bad_run_id"
