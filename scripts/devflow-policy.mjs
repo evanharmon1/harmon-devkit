@@ -184,9 +184,18 @@ export function detectShape(doc) {
   // marker at all — an incomplete legacy marker set at the level of
   // individual fields, exactly what specs/config/spec.md's "incomplete"
   // text already covers, not only a complete alternate-shape table.
+  // Presence, not value type: a wrong-typed legacy cap (`challenge = "3"`)
+  // is exactly as much a marker as a correctly-typed one — shepherd-stage
+  // cloud finding (round 4), confirmed: requiring `typeof === "number"`
+  // here meant `detect` reported pure v2 for a partially-migrated file
+  // whose stray legacy field happened to be malformed, silently ignoring
+  // it rather than refusing the file as mixed/incomplete. Value-type
+  // validation for a GENUINE v2 field is a separate, already-enforced
+  // concern (resolveRounds's own numeric-type checks); this is only about
+  // whether the marker is present at all.
   const hasAnyDirectCapField = rigorLevels.some((l) => {
     const level = rigorTable[l];
-    return level && directCapFields.some((f) => typeof level[f] === "number");
+    return level && directCapFields.some((f) => f in level);
   });
   const hasDefaultMethod = typeof doc.default_method === "string";
   const hasMethodTable = !!(doc.method && typeof doc.method === "object");

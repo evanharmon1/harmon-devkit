@@ -1,0 +1,27 @@
+{
+  "run_id": "run-blocked-pass",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r2-codex-cli"
+    }
+  ],
+  "slot_failures": [
+    {
+      "stage": "review",
+      "round": 2,
+      "slot": "codex-cli",
+      "reason": "finder_unavailable",
+      "head": "0202020202020202020202020202020202020202"
+    }
+  ]
+}

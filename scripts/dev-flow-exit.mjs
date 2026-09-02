@@ -201,6 +201,23 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
       diagnostics.push({ pass: pass.name, level: "reject", reason: "no receipt entry for this pass in run.receipts" });
       continue;
     }
+    // result.schema.json's own status enum ("completed"|"blocked") documents
+    // blocked as "the role could not [produce its full payload] (e.g. ... a
+    // finder that failed and will be retried once)" — schema-valid is not
+    // the same as semantically complete. Shepherd-stage cloud finding
+    // (round 4), confirmed: nothing here checked env.status at all, so a
+    // blocked envelope entered validPasses/logical-round assembly exactly
+    // like a genuine completed contribution — in the retry/fallback path,
+    // retaining a blocked primary alongside a successful fallback creates
+    // two claims for one slot; if the chain instead exhausts, the blocked
+    // result can suppress the terminal capped/finder_unavailable outcome
+    // that should fire. Confidence-stage assembly only ever wants completed
+    // envelopes; a blocked one is evidence the retry/fallback path must
+    // continue, not itself a claim on a slot.
+    if (env.status !== "completed") {
+      diagnostics.push({ pass: pass.name, level: "reject", reason: `envelope status is "${env.status}", not "completed" — a blocked result is not a completed slot claim` });
+      continue;
+    }
     if (runRecord.run_id && env.run && env.run.run_id !== runRecord.run_id) {
       diagnostics.push({ pass: pass.name, level: "reject", reason: `run_id "${env.run.run_id}" does not match the active run "${runRecord.run_id}"` });
       continue;

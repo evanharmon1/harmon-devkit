@@ -1703,6 +1703,41 @@ more common case, and the one this round's own headless-round fix above
 correctly still excludes) needs a new signal threaded through
 `isAncestorOrEqual`'s return value, not a quick patch.
 
+**A fourth cloud-review cycle** (the final round under the resolved
+shepherd cap of 4) surfaced 4 more findings against the round-3 fix
+commit.
+
+- **A blocked envelope (`status: "blocked"` — `result.schema.json`'s own
+  documented "the role could not produce its full payload... a finder
+  that failed and will be retried once") is now excluded from logical-
+  round assembly**, not treated as a completed slot claim identically to
+  a genuine one — schema-valid is not the same as semantically complete,
+  and nothing checked `env.status` at all before this.
+- **A direct-cap field's mere presence — not its value type — is what
+  makes it a legacy marker** for the mixed-with-v2 check: a wrong-typed
+  `challenge = "3"` previously registered as no marker at all, since the
+  round-2/round-3 fix still required `typeof === "number"` to count a
+  field as present. Value-type validation for a genuine v2 field stays a
+  separate, already-enforced concern (`resolveRounds`'s own checks).
+
+Two findings were confirmed but filed as follow-ups rather than resolved
+in this final round, both requiring cross-lane coordination this lane
+cannot resolve unilaterally: the canonical `ai/schemas/run.schema.json`
+has `additionalProperties: false` and defines neither `receipts` nor
+`slot_failures` — the exact fields `dev-flow-exit.mjs`'s `validateReceipts`
+requires — so a schema-valid production `run.json` cannot actually supply
+the evidence this reader needs, and this reader's own fixture `run.json`
+files would themselves fail validation against the canonical schema as it
+stands today
+([#727](https://github.com/evanharmon1/harmon-devkit/issues/727)). And a
+request to validate the complete strategy vocabulary (noncanonical
+strategy names, malformed `topology`/`planning`/`delegation` values, not
+only the `coordination`/`synthesis` fields the anchor-rule check actually
+reads) was declined rather than filed — round 3 already made this an
+explicit, reasoned scope decision (validate only the fields a
+demonstrated exploit path reads, not the full vocabulary), and re-raising
+the same boundary a round later doesn't change that reasoning.
+
 ## The Foreman conformance contract
 
 harmon-devkit is the single source of truth for this schema family, vendored
