@@ -108,12 +108,28 @@ which proves nothing about who posted it. The digest chain defends against
 non-trusted actors and
 accidental edits; a compromised trusted-account token is explicitly out of
 scope because it defeats every mechanism in the repository, branch history
-included.
+included. Trust evaluation for a given run SHALL be pinned to an
+authoritative registry revision for that run (its kickoff-time snapshot, or
+an equivalent effective-time binding) rather than whatever the registry
+currently declares — an actor added to the allowlist after a run's evidence
+was posted SHALL NOT retroactively authenticate that evidence, and an actor
+later removed SHALL NOT invalidate evidence that was authenticated while
+they were still trusted.
 
 #### Scenario: A run record's author is not a configured trusted actor
 
 - **WHEN** the run record comment's author is not among the repository's configured trusted-orchestrator actor IDs
 - **THEN** harvesting rejects the run record and its evidence as unauthenticated rather than accepting an unproven identity
+
+#### Scenario: An actor is added to the allowlist after a run's evidence was posted
+
+- **WHEN** a run's evidence was authored by an actor not on the allowlist at kickoff time, and that actor is added to the allowlist later
+- **THEN** harvesting evaluates authenticity against the run's own kickoff-time registry revision and does not retroactively accept that evidence
+
+#### Scenario: A trusted actor is removed from the allowlist after posting
+
+- **WHEN** a run's evidence was authored by an actor trusted at the time it was posted, and that actor is later removed from the allowlist
+- **THEN** harvesting continues to accept that already-authenticated evidence rather than invalidating history that was valid when it was recorded
 
 #### Scenario: An indexed evidence entry is deleted
 
@@ -142,9 +158,10 @@ before computing metrics or exits.
 Every run-record transition, intervention, and terminal-outcome entry SHALL carry
 an immutable timestamp, sequence, previous-entry digest, and canonical digest.
 Appending an entry SHALL extend that chain without editing an earlier entry. An
-`--as-of` read SHALL first validate the complete chain, then reconstruct state
-using only entries whose timestamps are at or before the cutoff. Editing or
-deleting any entry SHALL break sequence or digest validation and fail closed.
+`--as-of` read SHALL first normalize exact-duplicate entries (below), then
+validate the complete chain, then reconstruct state using only entries whose
+timestamps are at or before the cutoff. Editing or deleting any entry SHALL
+break sequence or digest validation and fail closed.
 
 Within one run there is exactly one writer: the orchestrating session,
 appending reserve-first — unlike an evidence comment, a run-record entry is
@@ -152,7 +169,11 @@ not itself a separate GitHub comment with its own comment ID to canonicalize
 by, since every entry lives inside the one run-record comment edited in
 place. Two entries that are byte-identical are a harmless duplicate (a
 resumed writer's own retry re-appending an entry that already landed) and
-collapse to one. Two entries that instead claim the same previous-entry
+SHALL be normalized to one **before** raw sequence/digest chain validation
+runs — a byte-identical retry necessarily repeats both its sequence and
+previous-entry digest, so validating the un-normalized chain first would
+reject it as broken rather than recognize it as the harmless case it is.
+Two entries that instead claim the same previous-entry
 digest but carry *different* content are a **forked** chain, not a
 duplicate — harvesting SHALL fail closed and report the run indeterminate
 rather than choosing either branch as canonical. Concurrent writers from

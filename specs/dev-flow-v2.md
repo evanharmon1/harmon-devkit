@@ -70,9 +70,13 @@ orchestrating session, appending reserve-first — unlike an evidence
 comment, a run-record entry has no comment ID of its own to canonicalize
 by, since every entry lives inside the one run-record comment edited in
 place. Two byte-identical entries are a harmless duplicate (a resumed
-writer's own retry) and collapse to one; two entries that instead fork the
-chain (claiming the same previous entry but carrying *different* content)
-are not a duplicate — `--as-of` reconstruction SHALL fail closed and report
+writer's own retry) and are normalized to one *before* chain validation runs
+— validating the un-normalized chain first would reject a byte-identical
+retry as broken (it necessarily repeats both its sequence and
+previous-entry digest), rather than recognize it as the harmless case it
+is; two entries that instead fork the chain (claiming the same previous
+entry but carrying *different* content) are not a duplicate — `--as-of`
+reconstruction SHALL fail closed and report
 the run indeterminate rather than silently choosing a branch. Concurrent writers
 from more than one orchestrator session are explicitly out of scope, the
 same GitHub read-modify-write limitation this spec discloses elsewhere
@@ -468,10 +472,11 @@ by legacy rules. Per that ADR's own pattern (v1's incompatibility bump shipped
 `[caps.*]` → `[rounds.*]` rename among its incompatible changes — ships
 `.devflow-conformance-v2.json` as the v2 fixture corpus.
 The composed predicate catalog in this spec is normative for `[convergence]`;
-the draft's flat keys were illustrative placeholders superseded once the exit
-script [#636](https://github.com/evanharmon1/harmon-devkit/issues/636) pinned
-and range-validated the predicate names, confirming this spec's own catalog
-byte-for-byte. A catalog entry may itself be a nested `{ any = [...] }` /
+the draft's flat keys are illustrative placeholders, superseded by the
+predicate names [#636](https://github.com/evanharmon1/harmon-devkit/issues/636)'s
+branch (`feat/636-dev-flow-exit`, PR #720, not yet merged) pins and
+range-validates — confirmed directly against that branch, matching this
+spec's own catalog byte-for-byte. A catalog entry may itself be a nested `{ any = [...] }` /
 `{ all = [...] }` node, recursively; a per-rigor `[rigor.<level>.convergence]`
 override may only tighten a **flat** entry the structural rules above (the
 reader matches nested entries between base and override by full structural
@@ -482,14 +487,14 @@ added/removed and tightening the base's own flat siblings around it is a
 normal, permitted tightening move — refusing every override merely because
 the base nests anywhere would forbid that well-defined case too.
 
-The reader that #636 built also carries the one bounded historical decoder the
+`#636`'s branch also carries the one bounded historical decoder the
 merge-base rule below requires: on a migration branch, it maps the legacy
 `[rigor.<level>]` `shepherd` cap onto v2's `integration`/`remediation` pair
 (and a decoder-only `rounds.shared_budget` marker recording that the legacy
 cap charged one round per fix push or no-change cycle, never a finding cycle
 and its answering push separately — that marker never appears in an actual
 v2 file) and decodes the v1 `[review.*]` policy the same way — this part
-verified directly against the shipped reader. **Every other axis (`breadth`,
+verified directly against that branch. **Every other axis (`breadth`,
 `spend`, `convergence`, `tier_order`, `roles`, `stages`, `strategy`) is filled
 from the reader's own built-in defaults, not decoded from the older shape's
 declared values, as of the current #636 branch** — narrower than this
@@ -499,8 +504,8 @@ branch that also edits, say, `[tier.*]` or `[budget.*]` on a self-modifying
 change resolves those axes from built-ins rather than the merge-base's own
 declared values, which the merge-base rule requires. Closing that gap
 belongs to #636's own scope, not this lane's; noted here so the anchor
-states what is actually true of the shipped reader today rather than the
-fuller decode the design intends.
+states what is actually true of that branch's reader today, before it
+merges, rather than the fuller decode the design intends.
 
 Every array key declares one of five semantics:
 
@@ -783,11 +788,16 @@ Two rules make the posted evidence trustworthy on a public repository:
   kickoff event" without saying what makes it trusted) and all three were
   broken the same way — a kickoff-shaped event proves nothing about who
   posted it, so an actor able to forge one can equally forge whatever the
-  fallback checks inside it. The schema field for the configured list belongs
-  to the registry's own cross-file validation work
-  ([#635](https://github.com/evanharmon1/harmon-devkit/issues/635) task
-  2.1 — #634 shipped the result schemas and does not own this list), not a
-  mechanism this anchor re-derives. Until a repository configures that
+  fallback checks inside it. The schema field for the configured list is
+  [#741](https://github.com/evanharmon1/harmon-devkit/issues/741)'s to add
+  — a dedicated follow-up, after both #634 (result schemas) and #635
+  (registry roles/finders) closed without adding it — not a mechanism this
+  anchor re-derives. Trust evaluation for a given run is pinned to an
+  authoritative registry revision for that run (its own kickoff-time
+  snapshot), never the registry's current content: an actor added to the
+  list later does not retroactively authenticate that run's older evidence,
+  and an actor later removed does not invalidate evidence authenticated
+  while they were still trusted. Until a repository configures that
   list, a run record has no authority to validate against and its evidence
   is reported unauthenticated rather than silently accepted on an unproven
   identity.

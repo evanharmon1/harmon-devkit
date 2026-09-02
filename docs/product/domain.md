@@ -45,10 +45,15 @@ The states a key entity moves through, and what triggers each transition.
 
 The stages a change moves through from an issue to a merged, released change.
 Optional stages are marked; the rest run on every change. Stage names are the
-canonical vocabulary — skills, config keys, and round records use the stage
-name, never a synonym (`gauntlet` is retired; see the glossary). **Agents are
-named for roles, not stages** (`implementer`, `challenger`, `reviewer`,
-`integrator`): challenger serves challenge, and reviewer serves review.
+canonical vocabulary — config keys and round records use the stage name,
+never a synonym (`gauntlet` is retired; see the glossary). Skills are named
+with a **verb** for the stage they run (`/implement`, `/challenge`,
+`/review`, `/integrate`) — `/integrate` naming the `integration` stage is
+that verb-for-noun convention, not a synonym for some other stage; a skill's
+verb form is not itself a second name for the stage the way a retired
+synonym like `gauntlet` was. **Agents are named for roles, not stages**
+(`implementer`, `challenger`, `reviewer`, `integrator`): challenger serves
+challenge, and reviewer serves review.
 
 | # | Stage | What happens | Optional |
 |---|---|---|---|
