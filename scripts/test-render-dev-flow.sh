@@ -190,11 +190,27 @@ run deferred-findings --record "$bad_run_id"
 assert_rc 1
 assert_contains "$err" "does not match run.json's run_id"
 
-echo "==> cross-document consistency: a duplicate finding id across adjudication files is rejected"
+echo "==> cross-document consistency: two files claiming the same round are rejected"
+dup_round="${test_tmp}/duplicate-round"
+mkdir -p "$dup_round"
+cp -r "${record_dir}/." "$dup_round/"
+cp "${record_dir}/adjudications/challenge-r1.json" "${dup_round}/adjudications/challenge-r1-copy.json"
+run deferred-findings --record "$dup_round"
+assert_rc 1
+assert_contains "$err" "is already claimed by"
+
+echo "==> cross-document consistency: a duplicate finding id across DIFFERENT rounds is rejected"
 dup_finding="${test_tmp}/duplicate-finding-id"
 mkdir -p "$dup_finding"
 cp -r "${record_dir}/." "$dup_finding/"
-cp "${record_dir}/adjudications/challenge-r1.json" "${dup_finding}/adjudications/challenge-r1-copy.json"
+node -e "
+const fs = require('fs');
+const p = '${dup_finding}/adjudications/review-r2.json';
+const doc = JSON.parse(fs.readFileSync(p, 'utf8'));
+const dupe = JSON.parse(fs.readFileSync('${record_dir}/adjudications/challenge-r1.json', 'utf8')).adjudications[0];
+doc.adjudications.push(dupe);
+fs.writeFileSync(p, JSON.stringify(doc, null, 2));
+"
 run deferred-findings --record "$dup_finding"
 assert_rc 1
 assert_contains "$err" "was already adjudicated in"
@@ -257,6 +273,40 @@ fs.writeFileSync(p, JSON.stringify(doc, null, 2));
 run deferred-findings --record "$defer_integration"
 assert_rc 1
 assert_contains "$err" "is not valid for stage integration"
+
+echo "==> deferred-findings requires the matching pass for a deferred finding (never a bare finding_id as its location)"
+no_pass_deferred="${test_tmp}/deferred-no-pass"
+mkdir -p "$no_pass_deferred"
+cp -r "${record_dir}/." "$no_pass_deferred/"
+rm "${no_pass_deferred}/passes/review-r1-codex-cli.json"
+run deferred-findings --record "$no_pass_deferred"
+assert_rc 1
+assert_contains "$err" "no matching pass supplied"
+
+echo "==> round-table rejects a partial --stage/--round selector instead of guessing"
+run round-table --record "$record_dir" --stage review
+assert_rc 1
+assert_contains "$err" "--stage and --round together"
+run round-table --record "$record_dir" --round 2
+assert_rc 1
+assert_contains "$err" "--stage and --round together"
+
+echo "==> usage: --round rejects a non-integer value instead of silently becoming NaN"
+run round-table --record "$record_dir" --stage review --round abc
+assert_rc 2
+
+echo "==> verdict.json / policy.json shapes are validated, not just parsed as JSON"
+bad_verdict="${test_tmp}/bad-verdict.json"
+echo '{"outcome": 42}' >"$bad_verdict"
+run round-table --record "$record_dir" --stage review --round 2 --verdict "$bad_verdict"
+assert_rc 1
+assert_contains "$err" "outcome must be a non-empty string"
+
+bad_policy="${test_tmp}/bad-policy.json"
+echo '{"rigor": {"level": "standard"}}' >"$bad_policy"
+run policy-disclosure --record "$record_dir" --policy "$bad_policy"
+assert_rc 1
+assert_contains "$err" "rigor.source must be a non-empty string"
 
 echo "==> marker-like text in a finding's evidence cannot forge a section boundary"
 marker_record="${test_tmp}/marker-forgery"
@@ -571,6 +621,24 @@ run publish --record "$pub_record" --repo owner/repo --pr 999 --head "$head_sha"
 assert_rc 1
 assert_contains "$out" '"reason": "pr-mismatch"'
 [ "$(grep -c 'pr view\|pr edit' "$gh_log" || true)" = 0 ] || fail "a run/PR mismatch must be caught before any gh call"
+
+echo "==> publish: an unparseable run.json PR URL blocks rather than silently skipping the check"
+reset_gh_fixtures
+seed_view 'Prose.
+'
+pub_record="$(fresh_record 11)"
+node -e "
+const fs = require('fs');
+const p = '${pub_record}/run.json';
+const run = JSON.parse(fs.readFileSync(p, 'utf8'));
+run.pr.url = 'not-a-github-url';
+fs.writeFileSync(p, JSON.stringify(run, null, 2));
+"
+: >"$gh_log"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --sections policy-disclosure
+assert_rc 1
+assert_contains "$out" '"reason": "pr-mismatch"'
+[ "$(grep -c 'pr view\|pr edit' "$gh_log" || true)" = 0 ] || fail "an unparseable PR URL must be caught before any gh call"
 
 echo "==> publish: a second concurrent publish against the same record directory is a blocker, not a race"
 reset_gh_fixtures

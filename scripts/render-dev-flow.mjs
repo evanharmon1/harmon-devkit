@@ -56,9 +56,17 @@
 //                         the adjudications reference, enriching a finding
 //                         with path/line/class/provenance/fingerprint/finder
 //                         (challenge/review) or body/source_id (integration).
-//                         Optional: a finding_id with no matching pass still
-//                         renders, using only what the adjudication entry
-//                         itself carries.
+//                         Optional for most projections: a finding_id with no
+//                         matching pass still renders, using only what the
+//                         adjudication entry itself carries. deferred-findings
+//                         and thread-reply-plan are the exceptions — both
+//                         REQUIRE the matching pass for every finding they
+//                         touch (a missing one is an indeterminate error, not
+//                         a reduced-fidelity render), since both feed a
+//                         downstream action (a PR-body task list, a GitHub
+//                         reply) where "identity doubling as location" or "we
+//                         couldn't tell if this thread is answered" would be
+//                         silently wrong rather than merely thin.
 //   verdict.json          Optional. The exit-computation verdict (#636):
 //                         {outcome, reason, rounds_counted, next_round,
 //                         corrections[]}, consumed as-is.
@@ -170,9 +178,14 @@ function parseArgs(argv) {
       case '--stage':
         options.stage = need(arg)
         break
-      case '--round':
-        options.round = Number.parseInt(need(arg), 10)
+      case '--round': {
+        const raw = need(arg)
+        options.round = Number.parseInt(raw, 10)
+        if (!Number.isInteger(options.round) || String(options.round) !== raw) {
+          usageError(`--round must be an integer, got ${raw}`)
+        }
         break
+      }
       case '--verdict':
         options.verdictFile = need(arg)
         break
@@ -277,9 +290,24 @@ function loadRecord(dir, schemasDir) {
     validateAgainst(schemasDir, 'run.schema.json', record.run, runFile)
   }
 
+  const seenStageRound = new Map()
   for (const file of listJsonFiles(path.join(dir, 'adjudications'))) {
     const doc = loadJson(file)
     validateAgainst(schemasDir, 'adjudication.schema.json', doc, file)
+    // The record-directory contract is one adjudication document per round
+    // (this README's own "adjudications/*.json ... one per round"; a round
+    // is one document because a round's evidence is posted as one comment,
+    // docs/decisions/0002). Two files both claiming the same (stage, round)
+    // with non-overlapping finding ids would not trip the duplicate-
+    // finding-id check below, but adjudication-record would then render
+    // BOTH files' rows under EACH file's <details> block (the row filter
+    // matches by stage+round, not by source file) — the same table
+    // duplicated, not two distinct rounds.
+    const stageRoundKey = `${doc.stage}-r${doc.round}`
+    if (seenStageRound.has(stageRoundKey)) {
+      fail(`${file}: ${doc.stage} round ${doc.round} is already claimed by ${seenStageRound.get(stageRoundKey)} — one adjudication document per round`)
+    }
+    seenStageRound.set(stageRoundKey, file)
     record.adjudications.push({ file, doc })
   }
 
@@ -294,12 +322,74 @@ function loadRecord(dir, schemasDir) {
   }
 
   const verdictFile = path.join(dir, 'verdict.json')
-  if (fs.existsSync(verdictFile)) record.verdict = loadJson(verdictFile)
+  if (fs.existsSync(verdictFile)) {
+    record.verdict = loadJson(verdictFile)
+    validateVerdictShape(record.verdict, verdictFile)
+  }
 
   const policyFile = path.join(dir, 'policy.json')
-  if (fs.existsSync(policyFile)) record.policy = loadJson(policyFile)
+  if (fs.existsSync(policyFile)) {
+    record.policy = loadJson(policyFile)
+    validatePolicyShape(record.policy, policyFile)
+  }
 
   return record
+}
+
+// verdict.json and policy.json are this renderer's OWN contracts (no
+// upstream ai/schemas/*.schema.json family owns them, so there is no
+// createSchemaValidator schema to hand off to) — but they are still
+// "present, so validated" like every other document here: a valid-JSON file
+// that violates the documented shape must fail loudly naming the file, not
+// silently render an incomplete disclosure or throw an uncaught TypeError
+// reading a field that turned out to be the wrong type.
+function validateVerdictShape(verdict, file) {
+  if (typeof verdict !== 'object' || verdict === null || Array.isArray(verdict)) {
+    fail(`${file}: must be a JSON object`)
+  }
+  if (typeof verdict.outcome !== 'string' || verdict.outcome === '') {
+    fail(`${file}: outcome must be a non-empty string`)
+  }
+  if (verdict.reason !== undefined && typeof verdict.reason !== 'string') {
+    fail(`${file}: reason, if present, must be a string`)
+  }
+  if (verdict.rounds_counted !== undefined && !Number.isInteger(verdict.rounds_counted)) {
+    fail(`${file}: rounds_counted, if present, must be an integer`)
+  }
+  if (verdict.next_round !== undefined && !Number.isInteger(verdict.next_round)) {
+    fail(`${file}: next_round, if present, must be an integer`)
+  }
+  if (verdict.corrections !== undefined) {
+    if (!Array.isArray(verdict.corrections) || !verdict.corrections.every((c) => typeof c === 'string')) {
+      fail(`${file}: corrections, if present, must be an array of strings`)
+    }
+  }
+}
+
+function validatePolicyShape(policy, file) {
+  if (typeof policy !== 'object' || policy === null || Array.isArray(policy)) {
+    fail(`${file}: must be a JSON object`)
+  }
+  if (typeof policy.rigor !== 'object' || policy.rigor === null || Array.isArray(policy.rigor)) {
+    fail(`${file}: rigor must be an object`)
+  }
+  if (typeof policy.rigor.level !== 'string' || policy.rigor.level === '') {
+    fail(`${file}: rigor.level must be a non-empty string`)
+  }
+  if (typeof policy.rigor.source !== 'string' || policy.rigor.source === '') {
+    fail(`${file}: rigor.source must be a non-empty string`)
+  }
+  if (policy.rounds !== undefined && (typeof policy.rounds !== 'object' || policy.rounds === null || Array.isArray(policy.rounds))) {
+    fail(`${file}: rounds, if present, must be an object`)
+  }
+  if (policy.disclosures !== undefined) {
+    if (!Array.isArray(policy.disclosures)) fail(`${file}: disclosures, if present, must be an array`)
+    for (const d of policy.disclosures) {
+      if (typeof d !== 'object' || d === null || typeof d.kind !== 'string' || typeof d.detail !== 'string') {
+        fail(`${file}: each disclosures[] entry must be {kind: string, detail: string}`)
+      }
+    }
+  }
 }
 
 // ── finding index ──────────────────────────────────────────────────────
@@ -649,10 +739,26 @@ function tableRow(row) {
   )} | ${escapeCell(summary(row))} | ${action} | ${provenance(row)} |`
 }
 
+// Unlike adjudication-record/blocker-comment (audit trails that still carry
+// value at reduced fidelity), a deferred-findings entry with no matching
+// pass collapses "location" into a copy of "identity" (both become the bare
+// finding_id) and "summary" into the adjudication's OWN evidence rather than
+// the reviewer's — silently failing the renderer spec's own requirement
+// that every deferred finding render with distinct identity, location, and
+// summary. This is the PR-body task list a human or the integration stage
+// acts on directly, so a missing pass here is an indeterminate error, the
+// same treatment thread-reply-plan already gives a missing integrator pass.
 function renderDeferredFindings(record) {
   const rows = buildFindingIndex(record)
     .filter((row) => row.entry.disposition === 'defer')
     .sort(compareRows)
+  for (const row of rows) {
+    if (!row.pass) {
+      fail(
+        `${row.entry.finding_id}: no matching pass supplied — deferred-findings requires the source pass for a real location and summary, not just the adjudication's own fields`
+      )
+    }
+  }
   const settlements = buildSettlementIndex(record.run)
   const lines = ['## Deferred findings', '']
   if (rows.length === 0) {
@@ -715,8 +821,16 @@ function verdictLine(verdict) {
 
 function renderRoundTable(record, options) {
   const allRows = buildFindingIndex(record)
+  // --stage/--round must be given together or not at all: a PARTIAL
+  // selector (e.g. --stage only) previously fell through to "the sole
+  // document" whenever exactly one was supplied, silently ignoring a
+  // selector that might not even match it — a mistyped command would then
+  // publish the wrong round with no error at all.
+  if ((options.stage === undefined) !== (options.round === undefined)) {
+    fail('round-table requires --stage and --round together, never only one')
+  }
   let target
-  if (options.stage && Number.isInteger(options.round)) {
+  if (options.stage !== undefined && Number.isInteger(options.round)) {
     target = record.adjudications.find((a) => a.doc.stage === options.stage && a.doc.round === options.round)
     if (!target) fail(`no adjudication document for stage ${options.stage} round ${options.round}`)
   } else if (record.adjudications.length === 1) {
@@ -1006,7 +1120,14 @@ function publishLocked(record, options) {
       )
     }
     const urlMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+$/.exec(record.run.pr.url)
-    if (urlMatch && urlMatch[1] !== options.repo) {
+    // An unparseable or unexpected-host URL must BLOCK, not silently skip
+    // the check it was meant to feed: the same repo/number can otherwise
+    // collide across a fork, and a malformed URL disabling the very safety
+    // check that exists to catch this is worse than not having the check.
+    if (!urlMatch) {
+      return blockerResult('pr-mismatch', `run.json's PR URL is not a recognized github.com pull URL: ${record.run.pr.url}`)
+    }
+    if (urlMatch[1] !== options.repo) {
       return blockerResult(
         'pr-mismatch',
         `run.json's PR URL names repo ${urlMatch[1]}, but publish was invoked for --repo ${options.repo}`
@@ -1105,8 +1226,14 @@ function main(argv) {
   const schemasDir = options.schemasDir || process.env.RESULT_SCHEMAS_DIR || DEFAULT_SCHEMAS_DIR
   const record = loadRecord(options.record, schemasDir)
   validateCrossDocumentConsistency(record)
-  if (options.verdictFile) record.verdict = loadJson(options.verdictFile)
-  if (options.policyFile) record.policy = loadJson(options.policyFile)
+  if (options.verdictFile) {
+    record.verdict = loadJson(options.verdictFile)
+    validateVerdictShape(record.verdict, options.verdictFile)
+  }
+  if (options.policyFile) {
+    record.policy = loadJson(options.policyFile)
+    validatePolicyShape(record.policy, options.policyFile)
+  }
 
   if (options.command === 'publish') {
     const result = publish(record, options)

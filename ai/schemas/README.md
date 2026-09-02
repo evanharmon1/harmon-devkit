@@ -1024,9 +1024,9 @@ family's other scripts).
 |---|---|---|
 | `run.json` | One `run.schema.json` document | For `blocker-comment`, `readiness-input`; optional elsewhere |
 | `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
-| `passes/*.json` | Result envelopes (`role: reviewer` or `integrator`) the adjudications reference | Optional — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `body`/`source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location, its adjudication's own `evidence`) when no matching pass is supplied |
-| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines |
-| `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure` |
+| `passes/*.json` | Result envelopes (`role: reviewer` or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `body`/`source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location, its adjudication's own `evidence`) when no matching pass is supplied. **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
+| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines. Shape-validated when present (`outcome` a non-empty string; `reason` a string; `rounds_counted`/`next_round` integers; `corrections` an array of strings — each only when present) |
+| `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present the same way as `verdict.json` |
 
 Every file present is schema-validated (structural shape only — this
 family's full receipt suite needs cross-run context, e.g. `--known-ids`, no
@@ -1039,7 +1039,10 @@ agree with the adjudication document that cross-references it by finding id
 `reviewer` pass); a reviewer/challenge finding's copied `reviewer_priority`
 must still equal its pass's own asserted `priority` (a drifted copy would
 hide the very reviewer-vs-orchestrator disagreement it exists to preserve);
-no finding id may be adjudicated twice across separate adjudication files;
+no finding id may be adjudicated twice across separate adjudication files, and
+no two adjudication documents may claim the same `(stage, round)` (one
+document per round, or `adjudication-record` would render both files' rows
+under each file's collapsed block instead of one round each);
 `disposition: defer` is rejected for stage `integration` (nothing downstream
 would ever settle it); every adjudication document's own `run_id` must equal
 `run.json`'s (finding ids are unique only *within* a run); and every
@@ -1076,8 +1079,11 @@ under the *current* `result.reviewer.schema.json` (`stage` enum
 
 ### Projections
 
-`deferred-findings`, `adjudication-record`, `round-table` (`--stage`
-`--round`, or the sole adjudication document supplied), `policy-disclosure`,
+`deferred-findings`, `adjudication-record`, `round-table` (`--stage` and
+`--round` together, or neither with the sole adjudication document supplied
+— a partial selector, e.g. `--stage` alone, is a usage error rather than
+silently falling back to whichever one document happens to be there),
+`policy-disclosure`,
 `blocker-comment`, `thread-reply-plan`, and `readiness-input` — see the
 module doc comment atop `render-dev-flow.mjs` for what each renders and from
 which inputs. `deferred-findings` renders only `disposition: defer` entries
@@ -1159,7 +1165,10 @@ blocker — the body write may have landed in both cases, but reporting
 success would hide that the transaction's own precondition broke partway
 through. A `--pr` that disagrees with `run.json`'s own `pr` (a stale
 terminal, a copy-pasted number) is a `pr-mismatch` blocker, checked before
-any GitHub call.
+any GitHub call — including when `run.json.pr.url` cannot even be parsed as
+a `github.com` pull URL, which blocks rather than silently skipping the
+repo-binding half of the check (a malformed URL disabling its own safety net
+is worse than not having the check).
 
 **Two publish calls racing the same PR** is the same GitHub
 read-modify-write limitation wearing a different interloper: `gh pr edit`
