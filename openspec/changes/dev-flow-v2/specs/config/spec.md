@@ -18,7 +18,10 @@ be identified by challenge, review, shepherd, and minimum-round caps directly on
 `[rigor.<level>]` together with `default_method` and `[method]`. A mixed or
 incomplete marker set SHALL be rejected with the markers it actually contains,
 not guessed into either shape. No skill or script SHALL carry a fallback
-interpreter for an older shape.
+interpreter for an older shape as an active policy: the sole permitted reading
+of an older shape is the merge-base path of a change that migrates the policy,
+where the older copy is decoded under its own declared shape and never used
+as the policy a consumer operates under.
 
 #### Scenario: A v1 policy reaches a v2 consumer
 
@@ -146,11 +149,19 @@ rules.
 
 ### Requirement: Self-modified policy resolves from the merge base
 
-When a change edits `.devflow.toml` or `agent-registry.json`, every value that
-can affect its own execution SHALL resolve from the merge-base copy, including
-defaults, rigor profiles, rounds, breadth, spend, convergence, gates, roles,
-stages, strategy, registry roles, write boundaries, and trusted actor IDs. An
-attributable explicit operator instruction MAY override the merge-base value.
+When a change edits `.devflow.toml`, `agent-registry.json`, or any file in
+the policy reader's trusted closure (the reader, its built-in defaults, and
+the historical decoder), every value that can affect its own execution SHALL
+resolve from the merge-base copy by executing the merge-base reader from a
+materialized closure, including defaults, rigor profiles, rounds, breadth,
+spend, convergence, gates, roles, stages, strategy, registry roles, write
+boundaries, and trusted actor IDs. An attributable explicit operator
+instruction MAY override the merge-base value.
+
+#### Scenario: A branch edits the reader's built-in defaults
+
+- **WHEN** a migration branch changes the policy reader or the defaults it supplies for values the older shape never declared
+- **THEN** resolution executes the merge-base reader from its materialized closure, so the branch's defaults do not take part in the run that reviews them
 
 #### Scenario: A branch lowers its own code gate
 
@@ -161,6 +172,11 @@ attributable explicit operator instruction MAY override the merge-base value.
 
 - **WHEN** the change under review replaces a v1 or legacy `.devflow.toml` with a `schema_version = 2` file
 - **THEN** the run resolves its caps, floor, and gates from the merge-base copy interpreted under that copy's own declared shape, while the branch copy must still validate as version 2 and an active older shape is still refused
+
+#### Scenario: A legacy cap bounds both integration limits
+
+- **WHEN** the merge-base copy is the legacy shape whose `shepherd` cap bounded fix pushes and no-change cycles together
+- **THEN** the decoded policy sets both `integration` and `remediation` to that `shepherd` value, so the migration run can neither gain fix pushes nor cap earlier than the older policy allowed
 
 #### Scenario: A migration branch edits a value the older shape never declared
 

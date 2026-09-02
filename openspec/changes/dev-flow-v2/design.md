@@ -277,7 +277,9 @@ rules), which is what lets a v1-to-v2 migration branch resolve the gates,
 caps, and floor it is protected by. The reader therefore carries one
 bounded historical decoder used only on the merge-base path when the change
 under review migrates the policy shape: it reads the legacy `[rigor.<level>]`
-caps (`shepherd` as the integration cycle limit, `min_rounds` as the floor)
+caps (`shepherd` as both the integration cycle limit and the remediation
+limit, since the legacy cap bounded fix pushes and no-change cycles together;
+`min_rounds` as the floor)
 or the v1 `[review.*]` policy the rigor pointer names, maps them onto the v2
 `rounds` values, and supplies the built-in gate defaults (`verify`, `check`,
 `security:secrets`, `security` with the shipped `docs_only_paths`) because
@@ -295,9 +297,14 @@ effective semantics or from the consumer's built-in defaults, and never from
 the branch copy. Where the older shape has no equivalent (breadth,
 convergence predicates, finders, roles, trusted actors), the built-in
 default is the only admissible source, because a built-in cannot be edited
-by the branch. The fixture for each migration asserts that invariant by
-mutating every protected value in the branch copy and proving the resolved
-policy is unchanged.
+by the branch. Built-in defaults are part of the reader, and the reader is
+part of the gate's trusted closure (decision 3), so the self-modification
+boundary covers it: a change that edits the reader, its defaults, or the
+decoder resolves policy by executing the merge-base reader from the
+materialized closure, never the worktree copy. The fixture for each
+migration asserts the invariant by mutating every protected value in the
+branch policy copy and in the branch reader's defaults, and proving the
+resolved policy is unchanged.
 
 Its tests evaluate fixture policies only. DevKit's own `.devflow.toml` is a
 rendered Harmon Init artifact and stays on its current shape until the copier
