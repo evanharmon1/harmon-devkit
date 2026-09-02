@@ -338,8 +338,19 @@ fi
 # 1. PR scalars. `gh pr view` is a single-object read (pagination does not
 # apply); the list surfaces below all go through --paginate --slurp.
 scalars="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName)" ||
     indeterminate fetch-failed "cannot fetch the PR state"
+
+# This PR's own branch name — an extra signal `evaluate_checks` uses below to
+# narrow the case actions/runs' own `pull_requests[]` cannot: two open PRs
+# sharing a head sha where GitHub returns an EMPTY pull_requests for BOTH
+# workflow runs (harmon-devkit#714 shepherd, PR #723's own current-head
+# cycle). Not a full answer — two PRs can also share the same branch name
+# against different bases — but it costs nothing extra (already part of this
+# same `gh pr view` call) and catches the more common case of a differently
+# named sibling branch that happens to produce an identical tree.
+head_ref_name="$(jq -er '.headRefName | select(type == "string")' <<<"$scalars")" ||
+    indeterminate malformed-data "PR payload carries no head branch name"
 
 pr_state="$(jq -er '.state | select(type == "string")' <<<"$scalars")" ||
     indeterminate malformed-data "PR payload carries no state"
@@ -404,6 +415,186 @@ evaluate_checks() {
         'add // [] | group_by(.context) | map(max_by(.id))' \
         <<<"$statuses_pages" 2>/dev/null)" ||
         indeterminate malformed-data "commit-statuses payload is malformed"
+
+    # A workflow triggering on pull_request.edited (this repo's two `guard`
+    # jobs, one apiece in release-content-guard.yml and tracking-guard.yml)
+    # starts a fresh check suite on every PR-body edit against an unchanged
+    # head, so a superseded failure sits in the check-runs list alongside a
+    # later success forever — the `filter=latest` above collapses runs only
+    # WITHIN one check suite, never across the separate suites repeated
+    # `pull_request` deliveries create (harmon-devkit#714, found shepherding
+    # #713). Collapse to the newest run per (name, workflow, triggering
+    # event), the same way the statuses group above collapses per context —
+    # but keyed on the *workflow*, not the bare check-run name: this repo's
+    # two guard jobs are both literally named "guard", and collapsing by name
+    # alone would hide a live failure in one behind a stale success in the
+    # other. The event is part of the key, not just the workflow, because a
+    # workflow can answer more than one question on the same commit — this
+    # repo's build.yml runs on `pull_request`, `push`, `merge_group`, AND
+    # `workflow_dispatch` alike, and a manually dispatched success is not a
+    # supersession of a failed PR-triggered run of the same job name; only
+    # repeated deliveries of the SAME event genuinely re-ask the same
+    # question. Workflow/event identity comes from joining each run's
+    # check_suite.id against `actions/runs`, which is GitHub-Actions-only; a
+    # check run from any other source (a third-party App) has no entry there
+    # and falls back to its app id — an App outside Actions does not
+    # multiply suites per edit, so a per-app collapse is a safe, conservative
+    # default, not a workaround (deferred P2, harmon-devkit#714 challenge r1
+    # and r2, re-raised shepherd r2: an App that DID reuse a name across
+    # permanently-coexisting, non-superseding suites would still be
+    # conflated by app id alone — and the same fallback is reached not only
+    # by a genuinely non-Actions App, but also if `actions/runs` ever omits
+    # a suite that a real GitHub Actions workflow produced (no confirmed
+    # trigger for that on this repo; both paths share the one signal
+    # available, `app.id`, and so share the one mitigation); no
+    # currently-installed App on this repo produces check-runs at all besides
+    # `github-actions`, so the gap is real but unreached, and resolving it
+    # generally needs a redesign out of this bounded fix's scope, per #714's
+    # own "out of scope" note pointing at #639).
+    #
+    # "Newest" is resolved per SUITE, by check_suite.id, not `started_at` and
+    # not by picking a single highest-id run directly. check_suite.id is
+    # assigned in delivery order and strictly increasing, while `started_at`
+    # is when a runner picked the job up, which queuing can reorder relative
+    # to delivery (and ties outright on two runs started in the same second)
+    # — the exact trap the statuses dedup above already avoids by sorting on
+    # id rather than a timestamp. Once the newest suite for an identity is
+    # found, EVERY run belonging to it is kept, not just one: a workflow can
+    # define two jobs that render the same display name (a matrix job with
+    # no differentiating `name:`, or simply two job blocks that both
+    # hard-code one), and both then land in the same suite under the same
+    # _identity. Picking a single highest-id winner across the whole
+    # identity group would keep one sibling and silently drop the other's
+    # failure even though neither superseded the other — they are
+    # simultaneous facts about the same delivery, not a history to collapse.
+    # Every run from an older, truly superseded suite for that identity is
+    # still dropped (harmon-devkit#714 challenge r2).
+    # head_sha alone does not scope to THIS pr: the same commit can back
+    # open PRs against more than one base branch, and this endpoint returns
+    # every workflow run for the sha regardless of which PR it ran under
+    # (harmon-devkit#714 challenge r3). A run's own `pull_requests[]`
+    # narrows that, but not cleanly: GitHub populates it with EVERY currently
+    # open PR whose head matches this sha, not the one that triggered the
+    # run, so a run genuinely triggered by a sibling PR still lists ours
+    # whenever both share the head — a same-PR-number membership test alone
+    # cannot tell "definitely ours" from "shared, and this run might not be"
+    # (harmon-devkit#714 review r1). Three cases, not two: an EMPTY list is
+    # not evidence of exclusion (GitHub is known to leave it empty even for
+    # a run that genuinely belongs to the PR being gated) and keeps the run
+    # exactly as before this filter existed; whether this PR's own number is
+    # anywhere IN the list is what decides the rest, not the list's length —
+    # a list omitting it entirely is positive proof to exclude, whether it
+    # names exactly one other PR or several (harmon-devkit#714 shepherd,
+    # fixing an earlier version that treated any 2+-PR list as ambiguous
+    # without checking whether this PR was even one of them); a list that
+    # DOES include this PR alongside at least one other is genuinely
+    # ambiguous and must never be trusted to CLEAR another run's failure,
+    # because a sibling PR's base branch can make the identical commit
+    # behave differently under base-relative workflow logic (the same
+    # reasoning behind scoping runs to a PR at all). Such a
+    # run is kept, since dropping it could hide a real failure that IS ours
+    # — but review round 2 found kept was not enough on its own: (1) two
+    # ambiguous suites for the same nominal workflow/event still shared one
+    # `:shared-pr` identity, so a later ambiguous suite could still supersede
+    # an earlier one — there is no confident basis for "later ambiguous
+    # supersedes earlier ambiguous" any more than there was for "supersedes
+    # this PR's own run", so an ambiguous run's identity now folds in its own
+    # check_suite.id, making it permanently distinct from every other suite,
+    # ambiguous or not; and (2) "other-pr" was excluded only from the
+    # workflow-run lookup, not from `check_runs` itself, so its check run
+    # still fell through to the app-id identity and — if it happened to be a
+    # FAILURE — could still fail a PR it was never really testing. A
+    # positively-other-PR check run is now dropped outright, before any
+    # identity is computed, not merely disconnected from its metadata. The
+    # current-head Codex cycle then found a further gap in the empty-list
+    # case itself: TWO open PRs sharing a head sha can both get an empty
+    # `pull_requests` from GitHub, in which case both runs read as
+    # "unscoped" and collapse together with nothing to tell them apart
+    # (harmon-devkit#714 shepherd, PR #723). `pull_requests[]` isn't the only
+    # signal available, though — a run's own `head_branch` is, at no extra
+    # fetch cost, and a run whose branch is NOT this PR's own branch is
+    # excluded exactly like a positively-other-PR run, even when
+    # `pull_requests` is empty. This still isn't complete (two PRs can share
+    # one branch against different bases, in which case the names match and
+    # nothing here would catch it — raised again as a P1 the very next
+    # cycle and declined again for the same reason: no further signal is
+    # available from this endpoint, closing it needs a mechanism this
+    # bounded fix doesn't have, and it needs four simultaneous rare
+    # conditions — shared head sha, shared branch, an empty pull_requests
+    # from GitHub on top of that, AND base-relative workflow behavior — none
+    # of which this repo's own workflows exhibit even one of), but it costs
+    # nothing and narrows the common case of a differently named sibling
+    # branch that happens to produce an identical tree. Every PR-ownership
+    # judgment here — the branch check above, and "does pull_requests[]
+    # include this PR" below — applies only to `pull_request`-triggered
+    # runs: a `push` or `workflow_dispatch` run has no PR to belong to in
+    # the first place (its `pull_requests[]`, when non-empty, is a
+    # best-effort historical association GitHub attaches after the fact,
+    # not evidence about what the run itself was testing), so judging it
+    # against a branch name OR a PR number is the same category error
+    # either way — confirmed reachable for the PR-number path too, not just
+    # the branch path (harmon-devkit#714 shepherd r3): a stale
+    # `pull_requests[]` naming only a sibling PR must not make a real
+    # push/workflow_dispatch failure disappear. A missing `head_branch`
+    # (some trigger types never set it) keeps the prior behavior —
+    # unscoped, kept — rather than excluding on absence.
+    #
+    # A non-`pull_request` event's identity includes its own branch, not
+    # just its workflow and event: the same commit pushed to two different
+    # branches produces two independently significant answers, and without
+    # the branch in the key both suites would render as the identical
+    # `wf:<id>:push`, letting one branch's later success hide the other's
+    # earlier failure (harmon-devkit#714 shepherd r3). `pull_request` runs
+    # don't need this — the PR itself is already the scoping unit for those.
+    workflow_runs_pages="$(run_gh api --paginate --slurp \
+        "repos/$repo/actions/runs?head_sha=$head&per_page=100")" ||
+        indeterminate fetch-failed "cannot fetch workflow runs for the head"
+    workflow_runs="$(jq -ce --argjson pr "$pr" --arg head_ref_name "$head_ref_name" \
+        '[.[] | if (.workflow_runs | type) == "array" then .workflow_runs[]
+                else error("page carries no workflow_runs") end]
+         | map(
+             if .event != "pull_request" then . + {_scope: "unscoped"}
+             else
+               (.pull_requests // []) as $prs |
+               (($prs | length) > 0 and any($prs[]; .number == $pr)) as $includes_us |
+               if ($prs | length) == 0 then
+                 if .head_branch != null and .head_branch != $head_ref_name
+                   then . + {_scope: "other-pr"}
+                   else . + {_scope: "unscoped"} end
+               elif $includes_us and ($prs | length) == 1 then . + {_scope: "this-pr"}
+               elif $includes_us then . + {_scope: "ambiguous"}
+               else . + {_scope: "other-pr"} end
+             end)' \
+        <<<"$workflow_runs_pages" 2>/dev/null)" ||
+        indeterminate malformed-data "workflow-runs payload is malformed"
+    check_runs="$(jq -ce \
+        --slurpfile wf_sf <(printf '%s' "$workflow_runs") '
+          ($wf_sf[0] | map(select(._scope == "other-pr") | (.check_suite_id | tostring))) as $other_pr_suites |
+          ($wf_sf[0] | map(select(._scope != "other-pr") |
+                           {key: (.check_suite_id | tostring),
+                            value: {workflow_id, event, head_branch, scope: ._scope}}) | from_entries) as $suite_workflow |
+          map(select((((.check_suite.id | tostring) as $s | $other_pr_suites | index($s)) // null) == null))
+          | map(
+              (.check_suite.id | tostring) as $sid |
+              (.app.id // 0) as $app_id |
+              ($suite_workflow[$sid]) as $sw |
+              . + {_identity: [.name,
+                  ($sw | if . == null then "app:" + ($app_id | tostring)
+                         elif .scope == "ambiguous" then
+                           "wf:" + (.workflow_id | tostring) + ":" +
+                           (.event // "unknown") + ":shared-pr:" + $sid
+                         elif .event != "pull_request" then
+                           "wf:" + (.workflow_id | tostring) + ":" +
+                           (.event // "unknown") + ":branch:" +
+                           (.head_branch // "unknown")
+                         else "wf:" + (.workflow_id | tostring) + ":" +
+                              (.event // "unknown")
+                         end)]})
+          | group_by(._identity)
+          | map(. as $group | ($group | max_by(.check_suite.id) | .check_suite.id) as $latest_suite |
+                $group[] | select(.check_suite.id == $latest_suite))' \
+        <<<"$check_runs" 2>/dev/null)" ||
+        indeterminate malformed-data "check-runs payload could not be collapsed to latest per workflow"
 
     # An EMPTY list is indeterminate, never a pass: GitHub populates check
     # suites asynchronously, so a read moments after a push reports nothing
