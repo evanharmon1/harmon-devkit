@@ -1181,38 +1181,49 @@ A comment whose marker matches but whose author fails this check is a
 **forged-author** comment: reported, ignored, and never allowed to
 suppress or shadow a legitimate trusted comment carrying the same marker.
 
-### Duplicate markers: lowest id is canonical — never a chain fork
+### Duplicate markers: lowest id is canonical, unconditionally
 
 There is exactly **one** writer per run (the orchestrating session; see
 "Trust" above — nothing outside that one configured, run-specific identity
 is ever a source of evidence for this run at all). Because GitHub comment
 creation has no idempotency key, *that one writer* can still end up
-posting the same marker twice — a resumed session, after a crash, that
-lost track of a comment id it already created and re-posts the identical
-event. Among every **trusted** comment sharing one marker, the **lowest
-comment id** is canonical; every other is a superseded duplicate, ignored
-by every reader. This rule is what makes `--as-of` reconstruction stable:
-canonical-comment selection depends only on which trusted comments **exist
-by the cutoff**, never on read order, poll timing, or which one a
-harvester happened to see first — two harvesters reading the same marker
-at the same cutoff, in any order, on any machine, resolve to the same
-canonical comment. A duplicate discovered **after** the cutoff (a
-resume that lands later) does not retroactively change a reconstruction
-already computed at an earlier cutoff, for the same reason `--as-of`
-excludes any entry timestamped after it (see "Append-only entry chaining"
-below).
+posting the same marker twice — most simply, a resumed session, after a
+crash, that lost track of a comment id it already created and re-posts
+the identical event, but the evidence spec's own text is broader than
+that single case: "GitHub comment creation has no idempotency key,
+**concurrent writers can still double-post**; the trusted comment with
+the lowest ID is canonical, and every reader SHALL treat later duplicates
+as superseded and ignore them... **Harvesting SHALL resolve duplicate
+markers by this rule rather than report them as ambiguous.**" Among every
+**trusted** comment sharing one marker, the **lowest comment id** is
+canonical — **unconditionally, regardless of whether the payloads
+agree** — every other is a superseded duplicate, ignored by every reader.
+Requiring payload agreement before applying this rule (an earlier version
+of this document, and of the harvester) is a real, confirmed
+over-generalization: it borrowed the append-only chain's "never pick a
+branch" posture (below) and applied it somewhere the spec explicitly
+rules the other way — challenge round 3, confirmed as a regression this
+lane introduced in round 1. This rule is what makes `--as-of`
+reconstruction stable: canonical-comment selection depends only on which
+trusted comments **exist by the cutoff**, never on read order, poll
+timing, payload content, or which one a harvester happened to see first —
+two harvesters reading the same marker at the same cutoff, in any order,
+on any machine, resolve to the same canonical comment. A duplicate
+discovered **after** the cutoff (a resume that lands later) does not
+retroactively change a reconstruction already computed at an earlier
+cutoff, for the same reason `--as-of` excludes any entry timestamped
+after it (see "Append-only entry chaining" below).
 
-This rule applies **only** to a duplicate post of the identical event — two
-trusted comments whose full marker (including `seq`) and content agree.
-It never applies inside the run record's own append-only arrays: two
-chain entries that both name the **same** `prev_digest` (a fork — two
-different next-events both claiming to extend the same parent) is not a
-"pick the lowest something" situation, because there is only one writer
-and a legitimate single writer never produces one. A fork found in the
-data means the record is corrupt, or a second identity somehow satisfied
-the trust check, or the data was tampered with after the fact — the
-harvester rejects the whole run as indeterminate rather than choosing a
-branch (see "Append-only entry chaining").
+This rule is about **separate GitHub comments** and does not apply
+inside the run record's own append-only arrays: two chain entries that
+both name the **same** `prev_digest` (a fork — two different next-events
+both claiming to extend the same parent) is not a "pick the lowest
+something" situation, because a single comment is edited **sequentially**
+by one writer, never raced the way separate comment creation can be. A
+fork found in the data means the record is corrupt, or a second identity
+somehow satisfied the trust check, or the data was tampered with after
+the fact — the harvester rejects the whole run as indeterminate rather
+than choosing a branch (see "Append-only entry chaining").
 
 ### Append-only entry chaining (`--as-of` reconstruction)
 
@@ -1258,6 +1269,29 @@ writer-side obligation the spec already states and has no reader-visible
 shape beyond "a redaction placeholder and rule id may appear in place of a
 span" — a harvester treats a redacted span as ordinary text, not as a
 schema or grammar concern.
+
+**Open design question, escalated rather than resolved here (challenge
+round 3, confirmed real, deliberately not fixed under time/round
+pressure):** `evidence_comments[]`, `outcome`, and `pr` are top-level
+run-record fields with **no** append-only chain protection of their own —
+unlike `stage_transitions[]`/`interventions[]`/`settlements[]` (see
+"Append-only entry chaining" below), nothing detects an entry silently
+disappearing from `evidence_comments[]`, or `outcome` changing without a
+corresponding, chain-verified transition to justify it. The identity-only
+run-index check (above) intentionally stopped trying to protect *content*
+at all — trying to re-add protection narrowly, under this stage's
+capped-round pressure, is exactly the kind of hasty change that produced
+the P0 this section already documents once. Two directions worth
+weighing, neither attempted here: extend the SAME append-only-chain
+pattern to `evidence_comments[]` as a fourth chained array (distinguishing
+its existing per-entry `digest`, which authenticates the referenced
+evidence *payload*, from a new chain digest that would authenticate the
+entry's own position in the array); or accept that `evidence_comments[]`
+entries are provably real once listed (id/author/marker all verified) and
+rely on human/CODEOWNERS review of run-record edits for the "entry quietly
+removed" case, the way an ordinary GitHub edit history already would if
+anyone looked. This needs a design decision, not a quick patch, from
+whoever picks up the harvester's next round of work.
 
 ## The Foreman conformance contract
 

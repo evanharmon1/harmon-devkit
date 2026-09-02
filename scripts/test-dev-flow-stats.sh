@@ -664,6 +664,105 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 12.7: a listed evidence entry whose OWN marker names a
+// DIFFERENT run_id than the run record it's listed on (challenge round 3,
+// "Bind listed evidence to the current run") ---
+{
+  const runId = "run-foreign-evidence-1";
+  const otherRunId = "run-other-victim-1";
+  // The comment's marker genuinely says otherRunId — a copy-paste/stale
+  // index bug listing it under THIS run's evidence_comments[] anyway.
+  const roundPayload = { passes: [pass("codex-cli", [{ title: "belongs-to-a-different-run" }])], adjudication: null };
+  const foreignEv = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", otherRunId, "review", "issue", 1, 1, roundPayload, "2026-09-01T00:02:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    evidence_comments: [{
+      id: String(foreignEv.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
+      digest: sha256(JSON.stringify(roundPayload)),
+      // The list entry's OWN marker claims THIS run — but the comment's
+      // actual, current marker (in its body) says otherRunId. A bug that
+      // copies an index entry across runs would produce exactly this
+      // mismatch.
+      marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
+    }],
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("foreign-evidence", {
+    issues: [{ number: 117, pull_request: null }],
+    comments: { "117": [idx, rr, foreignEv] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 117 },
+  });
+}
+
+// --- Scenario 12.8: conflicting payloads under one marker still resolve
+// by lowest id, UNCONDITIONALLY — the reverted round-1 regression
+// (challenge round 3, "Honor the lowest-ID rule for conflicting
+// duplicates") ---
+{
+  const runId = "run-conflicting-dup-1";
+  const payloadA = { passes: [pass("codex-cli", [{ title: "snapshot-A" }])], adjudication: null };
+  const payloadB = { passes: [pass("codex-cli", [{ title: "snapshot-B-different-content" }])], adjudication: null };
+  const first = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadA, "2026-09-01T00:02:00Z");
+  // A genuinely CONCURRENT writer race — same marker, DIFFERENT payload
+  // snapshot (not a resume re-posting the identical event).
+  const second = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadB, "2026-09-01T00:02:05Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    // The writer's own resolution (after the race) lists the LOWER id —
+    // "first" — with ITS OWN digest.
+    evidence_comments: [evidenceIndexEntry(first, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, sha256(JSON.stringify(payloadA)))],
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("conflicting-dup", {
+    issues: [{ number: 118, pull_request: null }],
+    comments: { "118": [idx, rr, first, second] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 118 },
+  });
+}
+
+// --- Scenario 12.9: a PROMOTED run whose challenge stage's latest round
+// reviewed an EARLIER head than the final promotion (review/integration
+// added commits afterward) — replay must use challenge's OWN head, not
+// promotion.head, for the challenge stage (challenge round 3, "Replay
+// each stage against its reviewed head") ---
+{
+  const runId = "run-stage-heads-1";
+  const challengeHead = "a".repeat(40);
+  const finalHead = "b".repeat(40);
+  const challengePayload = { passes: [{ schema: 2, role: "reviewer", status: "completed", head: challengeHead, produced_at: "2026-09-01T00:01:00Z", producer: { harness: "codex-cli" }, run: { run_id: runId, initiated_by: "human" }, payload: { stage: "challenge", round: 1, reviewed_head: challengeHead, finder: "codex-cli", findings: [] } }], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 1, adjudications: [] } };
+  const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, challengePayload, "2026-09-01T00:02:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:10:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 506, url: "https://example.invalid/pr/506" },
+    evidence_comments: [evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, sha256(JSON.stringify(challengePayload)))],
+    // Promoted at a LATER head than challenge's own reviewed_head.
+    promotion: { head: finalHead, promoted_at: "2026-09-01T00:15:00Z", gate_fingerprint: "stu" },
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("stage-heads", {
+    issues: [{ number: 119, pull_request: null }],
+    comments: { "119": [idx, rr, ev] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 119, challengeHead, finalHead },
+  });
+}
+
 // --- Scenario 13: post-ready fix with a cherry-picked (OLDER-timestamped)
 // commit landing AFTER promotion.head positionally — proves detection is
 // position-based, not timestamp-based (a timestamp-only check would miss
@@ -993,5 +1092,36 @@ for flag_args in "--as-of not-a-date" "--since not-a-date" "--stale-after-days n
     set -e
     [ "$rc" -eq 2 ] || fail "invalid arg ($flag_args): expected exit 2, got $rc: $out"
 done
+
+echo "== a listed evidence entry naming a foreign run_id in its own marker is rejected, not silently merged =="
+export DFSTATS_DB="$tmp/scenarios/foreign-evidence.json"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-foreign-evidence-1 --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "foreign-evidence: expected exit 3 (indeterminate), got $rc: $out"
+echo "$out" | grep -qi "does not bind to run\|tamper" || fail "foreign-evidence: expected a binding-mismatch reason, got: $out"
+
+echo "== conflicting payloads under one marker resolve by lowest id, unconditionally (reverted round-1 regression) =="
+export DFSTATS_DB="$tmp/scenarios/conflicting-dup.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-conflicting-dup-1 --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds | length == 1' >/dev/null || fail "conflicting-dup: expected the round to resolve (not indeterminate), got: $out"
+echo "$out" | jq -e '.rounds[0].finding_count == 1' >/dev/null || fail "conflicting-dup: expected the lowest-id (first) comment's own finding to win"
+
+echo "== replay uses each stage's OWN reviewed head, even for a promoted run whose final head is later =="
+export DFSTATS_DB="$tmp/scenarios/stage-heads.json"
+export FAKE_EXIT_HEAD_LOG="$tmp/fake-exit-heads-2.json"
+rm -f "$FAKE_EXIT_HEAD_LOG"
+node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json >/dev/null
+recorded_challenge_head="$(jq -r '.challenge' "$FAKE_EXIT_HEAD_LOG")"
+[ "$recorded_challenge_head" = "$(printf 'a%.0s' $(seq 1 40))" ] || fail "stage-heads: expected challenge's own reviewed_head, got: $recorded_challenge_head (not the later promotion.head)"
+unset FAKE_EXIT_HEAD_LOG
+
+echo "== post-ready fix count respects --as-of: a later commit does not retroactively change an earlier cutoff's result =="
+export DFSTATS_DB="$tmp/scenarios/postfix.json"
+early="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:15:00Z --json)"
+echo "$early" | jq -e '.post_ready_fix_count == 0' >/dev/null || fail "postfix as-of before the fix commit: expected post_ready_fix_count 0, got: $early"
+late="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:25:00Z --json)"
+echo "$late" | jq -e '.post_ready_fix_count == 1' >/dev/null || fail "postfix as-of after the fix commit: expected post_ready_fix_count 1, got: $late"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

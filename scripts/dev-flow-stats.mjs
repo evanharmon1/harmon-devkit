@@ -186,25 +186,26 @@ function markerKey(m) {
 // text says so explicitly, but the prior code picked the lowest id
 // regardless of content, silently resolving genuine inconsistent data as
 // an ordinary retry — challenge round 1, confirmed (P2).
+// Lowest-id wins UNCONDITIONALLY, even when concurrent duplicates carry
+// different payload snapshots — the evidence spec's own text (§ "Evidence
+// writes are reserve-first and idempotent") does not condition this on
+// content agreement: "Harvesting SHALL resolve duplicate markers by this
+// rule RATHER THAN report them as ambiguous." Requiring payload agreement
+// (an earlier version of this function) was this lane's own
+// over-generalization of the chain-fork rule (ai/schemas/README.md
+// "Duplicate markers" — which is about the run record's OWN internal
+// append-only arrays, a single-writer, single-comment, sequentially-edited
+// context) onto SEPARATE GitHub comments, where the spec explicitly
+// expects and tolerates a race between concurrent writers — challenge
+// round 3, confirmed as a regression this lane introduced in round 1.
 function resolveCanonical(markedTrusted) {
   const byKey = new Map();
   for (const entry of markedTrusted) {
     const key = markerKey(entry.marker);
-    const list = byKey.get(key) || [];
-    list.push(entry);
-    byKey.set(key, list);
+    const existing = byKey.get(key);
+    if (!existing || entry.comment.id < existing.comment.id) byKey.set(key, entry);
   }
-  const canonical = new Map();
-  for (const [key, entries] of byKey) {
-    const distinctPayloads = new Set(entries.map((e) => e.payloadText));
-    if (distinctPayloads.size > 1) {
-      const ids = entries.map((e) => e.comment.id).sort((a, b) => a - b);
-      throw new EvidenceError(`marker ${key} has ${distinctPayloads.size} conflicting payloads across comments ${ids.join(", ")} — not a duplicate post of one event`);
-    }
-    entries.sort((a, b) => a.comment.id - b.comment.id);
-    canonical.set(key, entries[0]);
-  }
-  return canonical;
+  return byKey;
 }
 
 // ---------------------------------------------------------------------------
@@ -358,15 +359,26 @@ function assembleListedEvidence(runRecord, allComments, withinCutoff) {
     // authenticate — challenge round 1, confirmed.
     const currentMarker = parseMarker(comment.body || "");
     const listed = entry.marker || {};
+    // Bound to the run being harvested, not just internally self-consistent
+    // with the list entry: a stale or buggy record could list an entry
+    // whose OWN marker names a DIFFERENT run_id than runRecord.run_id
+    // (e.g. copy-paste across a retry's two run records) and the check
+    // above would still pass, since it only compares the comment's current
+    // marker against the list entry — never against the run actually being
+    // harvested. `kind` is checked for the same reason: nothing before this
+    // point requires the referenced comment to BE an evidence comment at
+    // all. Both — challenge round 3, confirmed.
     const markersAgree =
       currentMarker &&
+      currentMarker.kind === "evidence" &&
+      currentMarker.runId === runRecord.run_id &&
       currentMarker.runId === listed.run_id &&
       currentMarker.stage === listed.stage &&
       currentMarker.dest === listed.destination &&
       currentMarker.round === listed.round &&
       currentMarker.seq === listed.sequence;
     if (!markersAgree) {
-      throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} no longer matches its recorded marker (listed ${JSON.stringify(listed)}, current ${JSON.stringify(currentMarker)}) — edited-entry tampering`);
+      throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} no longer matches its recorded marker or does not bind to run ${runRecord.run_id} (listed ${JSON.stringify(listed)}, current ${JSON.stringify(currentMarker)}) — edited-entry tampering`);
     }
     const payloadText = fencedPayloadText(comment.body || "");
     if (payloadText === null) {
@@ -767,7 +779,7 @@ function computeIssueVerdict(issueRuns, { staleAfterDays, asOfEpoch }) {
   return { closed: true, success, interventions: totalInterventions, asked: totalAsked, runs: terminalized };
 }
 
-function computePostReadyFix(repo, readyRun) {
+function computePostReadyFix(repo, readyRun, cutoffEpoch) {
   const promotion = readyRun.state.promotion;
   if (!promotion) return false;
   const commits = ghApiPaginated(`repos/${repo}/pulls/${readyRun.state.pr.number}/commits?per_page=100`);
@@ -782,7 +794,17 @@ function computePostReadyFix(repo, readyRun) {
   // determination.
   const headIndex = commits.findIndex((c) => c.sha === promotion.head);
   if (headIndex === -1) return false;
-  return headIndex < commits.length - 1;
+  // The commits API is always live — fetching "now" and never checking
+  // --as-of meant re-running the SAME historical cutoff could report a
+  // DIFFERENT post_ready_fix_count as new commits landed later, violating
+  // the closed immutable cohort requirement (the same window and cutoff
+  // must always report the same share) — challenge round 3, confirmed.
+  // Position still decides WHETHER a commit is a genuine post-promotion
+  // fix (unaffected by rebases/cherry-picks); committer date additionally
+  // bounds WHICH of those were already visible as of the requested cutoff.
+  return commits
+    .slice(headIndex + 1)
+    .some((c) => Date.parse(c.commit.committer.date) <= cutoffEpoch);
 }
 
 // First kickoff = the earliest started_at among an issue's successfully
@@ -833,7 +855,7 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
     // reached ready-for-review, then needed a post-ready fix too, was
     // never even checked — challenge round 2, confirmed.
     const readyRun = verdict.runs.find((r) => r.state.outcome === "ready-for-review");
-    if (readyRun && computePostReadyFix(repo, readyRun)) postReadyFixCount++;
+    if (readyRun && computePostReadyFix(repo, readyRun, asOfEpoch)) postReadyFixCount++;
     perIssue.push({ issueNumber, closed: true, success: verdict.success, interventions: verdict.interventions, asked: verdict.asked });
   }
   return {
@@ -981,7 +1003,15 @@ function recordedOutcome(exitText) {
 // round 2, confirmed. The stage's own latest retained round already
 // carries the real reviewed head on every pass envelope; use that.
 function currentHeadForStage(run, stage) {
-  if (run.state.promotion) return run.state.promotion.head;
+  // Always prefer THIS stage's own latest round — even for a promoted run.
+  // Using promotion.head unconditionally for every stage (an earlier
+  // version of this function) is wrong whenever review or integration
+  // added commits after challenge's own final round: challenge's real
+  // reviewed head is then an ANCESTOR of promotion.head, and replaying
+  // challenge against the later head can misreport an unchanged policy as
+  // invalidated or different — challenge round 3, confirmed. promotion.head
+  // is only the right fallback when a stage genuinely has no retained
+  // round of its own to read a head from.
   const stageRounds = run.rounds
     .filter((r) => r.stage === stage && r.dest === "issue" && r.round !== null)
     .sort((a, b) => b.round - a.round);
@@ -992,6 +1022,7 @@ function currentHeadForStage(run, stage) {
       if (head) return head;
     }
   }
+  if (run.state.promotion) return run.state.promotion.head;
   return "0".repeat(40);
 }
 
