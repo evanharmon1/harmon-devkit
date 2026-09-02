@@ -734,7 +734,15 @@ function mergeSections(body, sections) {
   if (toAppend.length > 0) {
     const ordered = PUBLISHABLE_SECTIONS.filter((s) => toAppend.includes(s))
     const appended = ordered.map((s) => wrapSection(s, sections[s])).join('\n\n')
-    result = `${result.replace(/\n+$/, '')}\n\n${appended}\n`
+    // Every byte outside a marked section must survive verbatim — including
+    // the existing body's own trailing newlines, which stripping-then-
+    // re-adding a fixed separator would silently rewrite (3 trailing
+    // newlines becoming exactly 2, say). Add only however many MORE
+    // newlines are needed to reach a one-blank-line separation; never
+    // remove what is already there.
+    const trailingNewlines = (result.match(/\n*$/) || [''])[0].length
+    const separator = '\n'.repeat(Math.max(0, 2 - trailingNewlines))
+    result = `${result}${separator}${appended}\n`
   }
   return result
 }

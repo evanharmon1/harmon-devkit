@@ -1143,9 +1143,12 @@ the PR's current body, each wrapped in a marker pair:
 An existing marker pair is replaced in place (a duplicated or
 begin/end-mismatched pair for a requested section is refused as a
 `malformed-markers` blocker, never guessed at); an absent one is appended,
-in `policy-disclosure`, `deferred-findings`, `adjudication-record` order.
-Every byte outside a requested section's own marker pair is preserved
-verbatim from the read that immediately precedes the write.
+in `policy-disclosure`, `deferred-findings`, `adjudication-record` order —
+by adding only however many newlines are needed to reach a one-blank-line
+separation from whatever the body already ends with, never by trimming its
+existing trailing newlines down to a fixed count first. Every byte outside
+a requested section's own marker pair is preserved verbatim from the read
+that immediately precedes the write.
 
 **GitHub provides no compare-and-swap for a PR body**, so this is a
 best-effort transaction, not an atomic one: publish reads the current body,

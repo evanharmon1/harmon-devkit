@@ -686,6 +686,21 @@ run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha"
 assert_rc 0
 [ ! -f "${pub_record}/.publish-lock" ] || fail "the lock must be released once the call completes"
 
+echo "==> publish: appending a section preserves the existing body's own trailing newlines exactly"
+reset_gh_fixtures
+seed_view 'Trailing blank lines follow.
+
+
+
+'
+pub_record="$(fresh_record 12)"
+run publish --record "$pub_record" --repo owner/repo --pr 123 --head "$head_sha" --sections policy-disclosure
+assert_rc 0
+preserved_prefix="$(current_view_body | sed -n '/<!-- dev-flow:begin/q;p')"
+expected_prefix="$(printf 'Trailing blank lines follow.\n\n\n\n')"
+[ "$preserved_prefix" = "$expected_prefix" ] ||
+    fail "existing trailing newlines must survive byte-for-byte, got: $(printf '%s' "$preserved_prefix" | cat -A)"
+
 echo "==> publish: malformed markers (mismatched begin/end) are a blocker, not a guess"
 reset_gh_fixtures
 seed_view 'Prose.
