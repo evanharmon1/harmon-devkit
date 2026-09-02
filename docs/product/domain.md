@@ -96,6 +96,7 @@ stateDiagram-v2
     integration --> merge : ready-for-review, human decision
     merge --> deployment
     merge --> release
+    merge --> retro : deployment, release, and smoke all skipped
     deployment --> release : later rolling release PR
     deployment --> smoke
     smoke --> release : later rolling release PR
