@@ -1,0 +1,1 @@
+$result.payload.attack_scenarios: must be non-empty when the envelope status is completed

@@ -1,0 +1,1 @@
+$result.payload.findings[0].line: must be >= 1

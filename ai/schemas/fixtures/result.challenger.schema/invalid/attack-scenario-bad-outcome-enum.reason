@@ -1,0 +1,1 @@
+$result.payload.attack_scenarios[0].outcome: must be one of "held", "surfaced-finding"

@@ -1,0 +1,1 @@
+$result.payload.attack_scenarios[0].finding_id: expected string, found null

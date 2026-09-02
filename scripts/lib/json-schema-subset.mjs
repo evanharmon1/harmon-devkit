@@ -30,6 +30,14 @@
 //     each `then` pointing `payload` at that role's `$defs` entry via
 //     `$ref`, so a native JSON-Schema validator (no separate dispatch
 //     script) can validate a full envelope+payload in one document.
+//   - maxItems — the array-length upper bound `minItems` already had a
+//     lower one for. Added alongside a challenger-specific `allOf`
+//     conditional in result.schema.json (role: challenger, status: blocked
+//     requires `attack_scenarios` empty) — the sibling `status: completed`
+//     conditional (requires it non-empty) needed only `minItems`, already
+//     present, but the schema-subset engine has no "forbidden otherwise"
+//     keyword, so expressing both directions of one field's status-
+//     conditional shape needs both bounds.
 export const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   '$schema',
   '$id',
@@ -45,6 +53,7 @@ export const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   'maxLength',
   'pattern',
   'minItems',
+  'maxItems',
   'uniqueItems',
   'items',
   'required',
@@ -151,7 +160,7 @@ function assertSchemaKeywordValues(rule, location) {
     }
   }
 
-  for (const keyword of ['minLength', 'maxLength', 'minItems']) {
+  for (const keyword of ['minLength', 'maxLength', 'minItems', 'maxItems']) {
     if (Object.hasOwn(rule, keyword) && (!Number.isInteger(rule[keyword]) || rule[keyword] < 0)) {
       schemaError(location, keyword, 'must be a non-negative integer')
     }
@@ -162,6 +171,13 @@ function assertSchemaKeywordValues(rule, location) {
     rule.maxLength < rule.minLength
   ) {
     schemaError(location, 'maxLength', 'must be >= minLength')
+  }
+  if (
+    Object.hasOwn(rule, 'minItems') &&
+    Object.hasOwn(rule, 'maxItems') &&
+    rule.maxItems < rule.minItems
+  ) {
+    schemaError(location, 'maxItems', 'must be >= minItems')
   }
   for (const keyword of ['minimum', 'maximum']) {
     if (Object.hasOwn(rule, keyword) && typeof rule[keyword] !== 'number') {
@@ -338,6 +354,9 @@ export function createSchemaValidator(rootSchema) {
     if (Array.isArray(value)) {
       if (rule.minItems !== undefined && value.length < rule.minItems) {
         errors.push(`${location}: must contain at least ${rule.minItems} item(s)`)
+      }
+      if (rule.maxItems !== undefined && value.length > rule.maxItems) {
+        errors.push(`${location}: must contain at most ${rule.maxItems} item(s)`)
       }
       if (rule.uniqueItems) {
         const canonicalItems = value.map(canonicalJson)

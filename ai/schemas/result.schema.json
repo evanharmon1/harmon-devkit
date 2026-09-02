@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/result.schema.json",
   "title": "Dev flow v2 result — native harness entry point",
-  "$comment": "A SELF-CONTAINED composition of result.envelope.schema.json plus the three result.<role>.schema.json payload shapes, for a harness with its own native JSON-Schema validator (Workflow/Agent `schema`) that cannot run scripts/validate-result-schemas.mjs's role dispatch. `payload` is dispatched by role via `allOf` (one {if, then} pair per role — `if` matches `role`, `then` points `payload` at that role's `$defs` entry). The envelope-level `properties` (every key but `payload`, which stays the untyped {type: object} both files already agree on) and `required` above are copied VERBATIM from result.envelope.schema.json, and `$defs.implementer` / `$defs.reviewer` / `$defs.integrator` are their standalone schema files' bodies inlined VERBATIM too (same type/additionalProperties/required/properties/$defs/if/then), minus only $schema/$id/title/$comment, which make no sense on a $defs entry — scripts/test-result-schemas.sh asserts both equalities directly so neither representation can silently drift apart from its source. The one necessary edit anywhere in this file is `$defs.reviewer`'s own internal reference: the standalone file's `#/$defs/finding` becomes `#/$defs/reviewer/$defs/finding` here, since `finding` now lives nested under this file's `$defs.reviewer` rather than at that file's own root — the equality test normalizes exactly this one rewrite before comparing, and nothing else. Two more `allOf` members enforce the implementer completed/blocked REQUIREDNESS AND non-emptiness (payload.summary/handoff/ac_test_map present AND minLength/minItems-non-empty when role=implementer and status=completed; payload.blocked_question present AND non-empty when blocked) — this is expressible HERE, unlike in the standalone result.implementer.schema.json, precisely because `role` and `status` are both envelope-level fields this composed document can see in the same `if` as the `payload` property its `then` reaches into; the standalone payload-only schema never sees `status` at all, so ITS `$defs.implementer.properties.summary` (etc.) stays a bare `type: string` with no `minLength` — Foreman v1 serializes summary as `\"\"` on a BLOCKED result, a shape the shared, unconditional property definition must still accept; only the status-conditional `then` branch here may add `minLength`/`minItems`, and only for the completed/blocked case each actually applies to. Every OTHER receipt-validation semantic check (head agreement, run matching, id/pass/adjudication cross-checks, every integrator cross-field rule) still needs context or sibling fields no single schema-keyword condition can express; scripts/validate-result-schemas.mjs's checkImplementerStatus and friends add all of it on top for any harness that can run them. See ai/schemas/README.md 'Native harness composition (result.schema.json)'. result.envelope.schema.json stays the deliberately envelope-only shape (payload: {type: object}, no dispatch) for whichever purpose only needs to validate the envelope fields themselves.",
+  "$comment": "A SELF-CONTAINED composition of result.envelope.schema.json plus the four result.<role>.schema.json payload shapes, for a harness with its own native JSON-Schema validator (Workflow/Agent `schema`) that cannot run scripts/validate-result-schemas.mjs's role dispatch. `payload` is dispatched by role via `allOf` (one {if, then} pair per role — `if` matches `role`, `then` points `payload` at that role's `$defs` entry). The envelope-level `properties` (every key but `payload`, which stays the untyped {type: object} both files already agree on) and `required` above are copied VERBATIM from result.envelope.schema.json, and `$defs.implementer` / `$defs.challenger` / `$defs.reviewer` / `$defs.integrator` are their standalone schema files' bodies inlined VERBATIM too (same type/additionalProperties/required/properties/$defs/if/then), minus only $schema/$id/title/$comment, which make no sense on a $defs entry — scripts/test-result-schemas.sh asserts both equalities directly so neither representation can silently drift apart from its source. The one necessary edit anywhere in this file is `$defs.reviewer`'s and `$defs.challenger`'s own internal references: each standalone file's `#/$defs/finding` (and, for challenger, `#/$defs/attackScenario`) becomes `#/$defs/reviewer/$defs/finding` or `#/$defs/challenger/$defs/finding` (`#/$defs/challenger/$defs/attackScenario`) here, since those definitions now live nested under this file's own `$defs.<role>` rather than at that file's own root — the equality test normalizes exactly this one rewrite before comparing, and nothing else. Four more `allOf` members enforce status-conditional payload shape: the implementer completed/blocked REQUIREDNESS AND non-emptiness (payload.summary/handoff/ac_test_map present AND minLength/minItems-non-empty when role=implementer and status=completed; payload.blocked_question present AND non-empty when blocked), and the challenger completed/blocked `attack_scenarios` cardinality (minItems:1 when role=challenger and status=completed; maxItems:0 when blocked) — this is expressible HERE, unlike in the standalone result.implementer.schema.json / result.challenger.schema.json, precisely because `role` and `status` are both envelope-level fields this composed document can see in the same `if` as the `payload` property its `then` reaches into; each standalone payload-only schema never sees `status` at all, so ITS OWN property definitions stay unconditional — Foreman v1 serializes implementer's summary as `\"\"` on a BLOCKED result, a shape the shared, unconditional property definition must still accept; only the status-conditional `then` branches here may narrow either role's fields further, and only for the completed/blocked case each actually applies to. Every OTHER receipt-validation semantic check (head agreement, run matching, id/pass/adjudication cross-checks, every integrator cross-field rule, challenger's attack_scenarios/findings cross-reference) still needs context or sibling fields no single schema-keyword condition can express; scripts/validate-result-schemas.mjs's checkImplementerStatus, checkChallengerAttackScenarios, and friends add all of it on top for any harness that can run them. See ai/schemas/README.md 'Native harness composition (result.schema.json)'. result.envelope.schema.json stays the deliberately envelope-only shape (payload: {type: object}, no dispatch) for whichever purpose only needs to validate the envelope fields themselves.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "role", "status", "head", "produced_at", "producer", "run", "payload"],
@@ -13,7 +13,7 @@
     },
     "role": {
       "description": "Which role produced this result -- selects the payload schema (result.<role>.schema.json). The orchestrator is not a role that returns a result: it authors adjudication.schema.json and run.schema.json documents directly, never through this envelope.",
-      "enum": ["implementer", "reviewer", "integrator"]
+      "enum": ["implementer", "challenger", "reviewer", "integrator"]
     },
     "status": {
       "description": "completed: the role produced its full payload. blocked: the role could not (e.g. an implementer escalating a genuinely ambiguous spec per Foreman's v1 contract, or a finder that failed and will be retried once). See result.implementer.schema.json for the completed/blocked conditional fields it enforces via a receipt-validation semantic check, not a structural keyword, because the deciding field (this one) lives on the envelope while the conditioned fields live in payload.",
@@ -65,6 +65,10 @@
       "then": { "properties": { "payload": { "$ref": "#/$defs/implementer" } } }
     },
     {
+      "if": { "properties": { "role": { "const": "challenger" } }, "required": ["role"] },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/challenger" } } }
+    },
+    {
       "if": { "properties": { "role": { "const": "reviewer" } }, "required": ["role"] },
       "then": { "properties": { "payload": { "$ref": "#/$defs/reviewer" } } }
     },
@@ -100,6 +104,33 @@
           "payload": {
             "required": ["blocked_question"],
             "properties": { "blocked_question": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Challenger's completed/blocked attack_scenarios conditional, expressible here for the same reason as implementer's completed/blocked pair above: role and status are both envelope-level fields this composed document can see in the same if as the payload property its then reaches into. The standalone result.challenger.schema.json never sees status at all, so scripts/validate-result-schemas.mjs's checkChallengerAttackScenarios still enforces the identical rule for the standalone challenger kind, which never sees this composed schema.",
+      "if": {
+        "properties": { "role": { "const": "challenger" }, "status": { "const": "completed" } },
+        "required": ["role", "status"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": { "attack_scenarios": { "minItems": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "role": { "const": "challenger" }, "status": { "const": "blocked" } },
+        "required": ["role", "status"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": { "attack_scenarios": { "maxItems": 0 } }
           }
         }
       }
@@ -152,6 +183,149 @@
           "description": "Optional at every status, exactly as in v1.",
           "type": "string",
           "minLength": 1
+        }
+      }
+    },
+    "challenger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "round", "reviewed_head", "finder", "findings", "counts", "attack_scenarios"],
+      "properties": {
+        "stage": {
+          "description": "Always challenge — the challenger role never produces a review-stage pass (that is the reviewer role's contract, result.reviewer.schema.json). A single legal value is expressed as const, not a one-member enum, matching this family's convention for fields with exactly one valid value (e.g. the envelope's `schema: const 2`).",
+          "const": "challenge"
+        },
+        "round": {
+          "description": "This pass's round number within the challenge stage, 1-based. Rounds are numbered independently per stage — see docs/product/domain.md 'A fix round returns to the stage that produced the findings; challenge and review keep separate round counts and caps.'",
+          "type": "integer",
+          "minimum": 1
+        },
+        "reviewed_head": {
+          "description": "Must equal the envelope's `head` — enforced by the validator's receipt-validation pass (schemas cannot see sibling fields outside their own instance).",
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "finder": {
+          "description": "The external review product that produced this pass (e.g. codex-adversarial). Free string here — the finder catalog and its stage affinity are agent-registry.json's concern (#635), not this schema's. Must match the finder segment embedded in every finding id below (checked by the validator, not this schema).",
+          "type": "string",
+          "minLength": 1
+        },
+        "findings": {
+          "description": "May be empty — a challenge round returning zero findings is a normal, schema-valid pass (specs/dev-flow-v2.md Acceptance criteria: a confidence role cannot end a stage on its own recommendation, including an empty findings list). A design-level finding is one with `class: design`; a de-scaffolding recommendation is one whose `recommended_disposition` is `delete` or `restructure` — both are ordinary entries in this same array, not a separate field.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/challenger/$defs/finding" }
+        },
+        "counts": {
+          "description": "Per-priority finding counts for this pass. The validator cross-checks these against the actual `findings` tally.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["P0", "P1", "P2", "P3"],
+          "properties": {
+            "P0": { "type": "integer", "minimum": 0 },
+            "P1": { "type": "integer", "minimum": 0 },
+            "P2": { "type": "integer", "minimum": 0 },
+            "P3": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "attack_scenarios": {
+          "description": "Adversarial scenarios this pass attempted against the design or approach, independent of whether each one surfaced a finding — the record that the challenger actually attacked the change rather than only reporting what it happened to notice. Required non-empty when the envelope status is completed (a clean pass still records what it attempted) and required empty when blocked (scripts/validate-result-schemas.mjs's checkChallengerAttackScenarios). A scenario whose outcome is `surfaced-finding` names the finding it produced via `finding_id`; the validator cross-checks that id against this same pass's own `findings[]` (a same-document check, no external context needed).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/challenger/$defs/attackScenario" }
+        }
+      },
+      "$defs": {
+        "finding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "path",
+            "line",
+            "class",
+            "provenance",
+            "fingerprint",
+            "priority",
+            "recommended_disposition",
+            "evidence"
+          ],
+          "properties": {
+            "id": {
+              "description": "Unique within the run by construction: <stage>-r<round>-<finder>-<n>. The validator checks the stage/round/finder segments match this pass's own stage/round/finder, and (given prior-run context) that the id collides with neither an earlier finding in this pass nor any finding already in the run.",
+              "type": "string",
+              "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+            },
+            "path": {
+              "description": "Repo-relative path the finding is about.",
+              "type": "string",
+              "minLength": 1
+            },
+            "line": {
+              "description": "1-based line number, or null when the finding is not line-bound (e.g. a whole-file or cross-file design finding — the challenger's own contract, so this is common here). Design decision: null rather than 0 or omission, so 'not line-bound' is an explicit, typed value instead of a sentinel integer or an absent key a consumer could forget to check for.",
+              "type": ["integer", "null"],
+              "minimum": 1
+            },
+            "class": {
+              "enum": ["design", "correctness", "consistency", "hardening", "nit"]
+            },
+            "provenance": {
+              "description": "original: about the change under review. round:N: about round N's fix, where N is a round of THIS SAME STAGE (challenge's round:N never refers to a review round). Asserted by the challenger; the exit script (#636) verifies it against the diff and may downgrade original to round:N with recorded evidence, never the reverse.",
+              "type": "string",
+              "pattern": "^(original|round:[1-9][0-9]*)$"
+            },
+            "fingerprint": {
+              "description": "new: not seen before. repeat-of:<id> / supersedes:<id>: this finding is the same defect recurring, or a stronger restatement of an earlier one, where <id> is an earlier finding id in this run. Asserted by the challenger (which has prior rounds' findings in its brief); the exit script (#636) verifies it.",
+              "type": "string",
+              "pattern": "^(new|repeat-of:(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*|supersedes:(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*)$"
+            },
+            "priority": {
+              "description": "The challenger's own label. The orchestrator's adjudicated priority (which may differ) lives in adjudication.schema.json, never here.",
+              "enum": ["P0", "P1", "P2", "P3"]
+            },
+            "recommended_disposition": {
+              "description": "The challenger's recommendation only — never binding. `delete` and `restructure` are the two de-scaffolding recommendations (AGENTS.md 'Deleting the added code is a legitimate way to converge' / 'Restructuring to invariants'); the orchestrator's actual disposition lives in adjudication.schema.json.",
+              "enum": ["fix", "restructure", "delete", "decline", "defer", "file"]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "attackScenario": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "description", "outcome", "finding_id"],
+          "properties": {
+            "id": {
+              "description": "Unique within this pass. Free-form (e.g. as-1) — unlike a finding id, an attack scenario is never adjudicated or cross-referenced from another document, so it carries no run-wide grammar.",
+              "type": "string",
+              "minLength": 1
+            },
+            "description": {
+              "description": "What was attempted (the attack, failure scenario, or de-scaffolding angle explored).",
+              "type": "string",
+              "minLength": 1
+            },
+            "outcome": {
+              "description": "held: the design withstood this scenario — no finding resulted. surfaced-finding: this scenario produced a finding, named by finding_id.",
+              "enum": ["held", "surfaced-finding"]
+            },
+            "finding_id": {
+              "description": "Required key at every outcome; null when outcome is held (nothing to name), and a finding id from this same pass's findings[] when outcome is surfaced-finding — enforced by the if/then below and, for same-pass membership, by the validator (checkChallengerAttackScenarios).",
+              "type": ["string", "null"],
+              "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+            }
+          },
+          "if": {
+            "properties": { "outcome": { "const": "surfaced-finding" } },
+            "required": ["outcome"]
+          },
+          "then": {
+            "properties": { "finding_id": { "type": "string" } }
+          },
+          "else": {
+            "properties": { "finding_id": { "const": null } }
+          }
         }
       }
     },

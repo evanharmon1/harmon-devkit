@@ -1,0 +1,43 @@
+{
+  "schema": 2,
+  "role": "challenger",
+  "status": "completed",
+  "head": "b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7",
+  "produced_at": "2026-08-29T15:04:05Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-4020-attack-scenario-duplicate-id",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7",
+    "finder": "codex-adversarial",
+    "findings": [],
+    "counts": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 0,
+      "P3": 0
+    },
+    "attack_scenarios": [
+      {
+        "id": "as-1",
+        "description": "first attempt",
+        "outcome": "held",
+        "finding_id": null
+      },
+      {
+        "id": "as-1",
+        "description": "second attempt, same id by mistake",
+        "outcome": "held",
+        "finding_id": null
+      }
+    ]
+  }
+}
