@@ -1026,7 +1026,7 @@ family's other scripts).
 | `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
 | `passes/*.json` | Result envelopes (`role: reviewer` or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `body`/`source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location, its adjudication's own `evidence`) when no matching pass is supplied. **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
 | `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines. Shape-validated when present (`outcome` a non-empty string; `reason` a string; `rounds_counted`/`next_round` integers; `corrections` an array of strings — each only when present) |
-| `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present the same way as `verdict.json` |
+| `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present the same way as `verdict.json`, including each individual `rounds.*` value (a non-negative integer, not just the container) |
 
 Every file present is schema-validated (structural shape only — this
 family's full receipt suite needs cross-run context, e.g. `--known-ids`, no
@@ -1067,7 +1067,11 @@ sequences HTML-entity-escaped (`&lt;!--`/`--&gt;`) — visually unchanged in a
 rendered PR, but no longer byte-identical to a real marker on a later parse.
 Without it, evidence that happens to quote a marker token (a real risk when
 reviewing this renderer itself) would forge an extra section boundary the
-next `publish` misreads.
+next `publish` misreads. The same pass also folds every embedded newline to
+`<br>` — an unfolded newline in a `deferred-findings` task-list item would
+turn a continuation line into a Markdown-parsed SEPARATE list item, a
+fabricated checkbox the human integration stage never actually adjudicated,
+if the continuation happens to look like one.
 
 **Once `#635` ships `result.challenger.schema.json` and an envelope
 `role: challenger`,** this renderer's pass loader (which currently accepts
@@ -1089,9 +1093,13 @@ module doc comment atop `render-dev-flow.mjs` for what each renders and from
 which inputs. `deferred-findings` renders only `disposition: defer` entries
 (challenge/review's directly-resolved `fix`/`decline`/`file`/`restructure`/
 `delete` findings were never carried forward and so are never "deferred");
-each unchecked until a matching `run.json` `settlements[]` entry
-terminalizes it with the settlement grammar `- [x] … — fixed in <7-char sha>`
-/ `declined: see comment <id>` / `filed as #<n>`. A direct (non-deferred)
+each item is `` - [ ] `<finding_id>` <location> — <summary> `` — the id is
+required alongside location and summary (the renderer spec names all three
+as distinct fields, and `readiness-input`/settlements are keyed by it, so a
+reader needs it to correlate a checkbox with either) — unchecked until a
+matching `run.json` `settlements[]` entry terminalizes it with the
+settlement grammar `- [x] … — fixed in <7-char sha>` / `declined: see
+comment <id>` / `filed as #<n>`. A direct (non-deferred)
 `decline`/`file` disposition has no structural place in this schema family
 to record a decline comment id or filed-issue number the way a
 deferred-then-settled finding does via `settlements[].reference` — a gap

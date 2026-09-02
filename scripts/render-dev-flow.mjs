@@ -14,8 +14,9 @@
 //
 // Projections:
 //   deferred-findings     Markdown task list of every `defer`-dispositioned
-//                         finding, unchecked until a run.json settlement
-//                         terminalizes it (fix/decline/file grammar below).
+//                         finding — `` `<finding_id>` <location> — <summary> ``,
+//                         unchecked until a run.json settlement terminalizes
+//                         it (fix/decline/file grammar below).
 //   adjudication-record   Markdown: one collapsed <details> table per
 //                         supplied adjudication document (round), columns
 //                         finding/reviewer-priority/adjudicated-priority/
@@ -379,8 +380,20 @@ function validatePolicyShape(policy, file) {
   if (typeof policy.rigor.source !== 'string' || policy.rigor.source === '') {
     fail(`${file}: rigor.source must be a non-empty string`)
   }
-  if (policy.rounds !== undefined && (typeof policy.rounds !== 'object' || policy.rounds === null || Array.isArray(policy.rounds))) {
-    fail(`${file}: rounds, if present, must be an object`)
+  if (policy.rounds !== undefined) {
+    if (typeof policy.rounds !== 'object' || policy.rounds === null || Array.isArray(policy.rounds)) {
+      fail(`${file}: rounds, if present, must be an object`)
+    }
+    // Each cap is individually validated, not just the container: an
+    // untyped value here (a string, a negative number, a nested object)
+    // would otherwise reach policyLine's template string unexamined and
+    // publish a garbled or nonsensical resolved-policy disclosure.
+    for (const key of ['challenge', 'review', 'integration', 'remediation', 'min_rounds']) {
+      const value = policy.rounds[key]
+      if (value !== undefined && !(Number.isInteger(value) && value >= 0)) {
+        fail(`${file}: rounds.${key}, if present, must be a non-negative integer`)
+      }
+    }
   }
   if (policy.disclosures !== undefined) {
     if (!Array.isArray(policy.disclosures)) fail(`${file}: disclosures, if present, must be an array`)
@@ -612,21 +625,37 @@ function provenance(row) {
 // neutralizeMarkers — free text (a finding's own evidence/reason, a policy
 // disclosure detail) is reviewer- or human-authored prose that this renderer
 // does not control, and it is embedded verbatim inside a marked PR-body
-// section. Left unescaped, text that happens to quote
-// "<!-- dev-flow:end:deferred-findings -->" — a plausible thing to write
-// when reviewing THIS renderer, and exactly how this finding was raised —
-// forges an extra marker: mergeSections' regex has no way to tell a
-// legitimate boundary from one sitting inside a rendered sentence. HTML-
-// entity-escaping just the comment delimiters (not full HTML-escaping, which
-// would mangle unrelated `<`/`>` in ordinary prose) keeps the text
-// human-readable — a browser or GFM renderer still shows `<!--` — while
-// making it byte-distinct from a real marker on every later parse.
+// section or a Markdown task-list item. Two independent hazards, both fixed
+// here so every plain-text (non-table) call site gets both for free:
+//
+// 1. Text that happens to quote "<!-- dev-flow:end:deferred-findings -->" —
+//    a plausible thing to write when reviewing THIS renderer, and exactly
+//    how one earlier finding here was raised — forges an extra marker:
+//    mergeSections' regex has no way to tell a legitimate boundary from one
+//    sitting inside a rendered sentence. HTML-entity-escaping just the
+//    comment delimiters (not full HTML-escaping, which would mangle
+//    unrelated `<`/`>` in ordinary prose) keeps the text human-readable — a
+//    browser or GFM renderer still shows `<!--` — while making it
+//    byte-distinct from a real marker on every later parse.
+// 2. An embedded newline in a `- [ ] <location> — <summary>` task-list item
+//    (schema-legal: `path`/`evidence` are unconstrained strings) turns a
+//    continuation line into what Markdown parses as a SEPARATE list item —
+//    a fabricated checkbox the human integration stage never adjudicated,
+//    if the continuation happens to start with something list-item-shaped.
+//    Folding every newline to `<br>` keeps the visual line break GFM
+//    renders while keeping the raw source on one physical line, so there is
+//    no line boundary left for a second `- [ ]`/`- [x]` to start on.
 function neutralizeMarkers(text) {
-  return String(text).replaceAll('<!--', '&lt;!--').replaceAll('-->', '--&gt;')
+  return String(text)
+    .replaceAll('<!--', '&lt;!--')
+    .replaceAll('-->', '--&gt;')
+    .replaceAll('\r\n', '<br>')
+    .replaceAll('\n', '<br>')
+    .replaceAll('\r', '<br>')
 }
 
 function escapeCell(text) {
-  return neutralizeMarkers(text).replaceAll('|', '\\|').replaceAll('\r\n', ' ').replaceAll('\n', '<br>')
+  return neutralizeMarkers(text).replaceAll('|', '\\|')
 }
 
 // ── settlements ─────────────────────────────────────────────────────────
@@ -766,12 +795,21 @@ function renderDeferredFindings(record) {
   } else {
     for (const row of rows) {
       const settlement = settlements.get(row.entry.finding_id)
+      // finding_id is required alongside location/summary — the renderer
+      // spec names identity, location, and summary as three distinct
+      // fields, and readiness-input/settlements are keyed by this id, so a
+      // reader (or the integration stage) needs it visible here to
+      // correlate a checkbox with either, especially when two findings
+      // share a location or summary text. The id's own grammar
+      // (^(challenge|review|integration)-r\d+-[a-z0-9-]+-\d+$) cannot
+      // contain a marker or newline, so it needs no neutralization.
+      const id = row.entry.finding_id
       const loc = location(row)
       const text = neutralizeMarkers(summary(row))
       if (settlement) {
-        lines.push(`- [x] ${loc} — ${text} — ${settlementSuffix(settlement)}`)
+        lines.push(`- [x] \`${id}\` ${loc} — ${text} — ${settlementSuffix(settlement)}`)
       } else {
-        lines.push(`- [ ] ${loc} — ${text}`)
+        lines.push(`- [ ] \`${id}\` ${loc} — ${text}`)
       }
     }
   }

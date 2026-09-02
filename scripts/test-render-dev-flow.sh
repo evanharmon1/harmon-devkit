@@ -105,8 +105,8 @@ run readiness-input --record "$record_dir" --head "$render_head"
 [ "$out" = "$first" ] || fail "readiness-input is not deterministic across identical runs"
 
 echo "==> unsettled deferred findings stay unchecked; settled ones carry their disposition"
-assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [ ] scripts/render-dev-flow.mjs:320'
-assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [x] scripts/render-dev-flow.mjs:300'
+assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [ ] `review-r2-codex-cli-3` scripts/render-dev-flow.mjs:320'
+assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [x] `review-r1-codex-cli-1` scripts/render-dev-flow.mjs:300'
 
 echo "==> readiness-input separates settled from unsettled deferred findings"
 settled_count="$(node -e "console.log(JSON.parse(require('fs').readFileSync('${golden_dir}/readiness-input.json','utf8')).deferred_findings.settled.length)")"
@@ -307,6 +307,36 @@ echo '{"rigor": {"level": "standard"}}' >"$bad_policy"
 run policy-disclosure --record "$record_dir" --policy "$bad_policy"
 assert_rc 1
 assert_contains "$err" "rigor.source must be a non-empty string"
+
+echo "==> policy.json's individual round-cap values are validated, not just the container"
+bad_cap="${test_tmp}/bad-cap-policy.json"
+echo '{"rigor": {"level": "standard", "source": "default_rigor"}, "rounds": {"challenge": "three"}}' >"$bad_cap"
+run policy-disclosure --record "$record_dir" --policy "$bad_cap"
+assert_rc 1
+assert_contains "$err" "rounds.challenge, if present, must be a non-negative integer"
+
+echo "==> deferred-findings task items carry the finding_id, not just location and summary"
+for id in review-r1-codex-cli-1 review-r1-codex-cli-3 review-r2-codex-cli-1 review-r2-codex-cli-3; do
+    assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" "\`${id}\`"
+done
+
+echo "==> multiline evidence folds into one task-list item instead of fabricating a checkbox"
+multiline_record="${test_tmp}/multiline-evidence"
+mkdir -p "$multiline_record"
+cp -r "${record_dir}/." "$multiline_record/"
+node -e "
+const fs = require('fs');
+const p = '${multiline_record}/passes/review-r2-codex-cli.json';
+const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
+envelope.payload.findings[2].evidence += '\n- [x] forged entry — not a real adjudicated finding';
+fs.writeFileSync(p, JSON.stringify(envelope, null, 2));
+"
+run deferred-findings --record "$multiline_record"
+assert_rc 0
+line_count="$(printf '%s\n' "$out" | grep -c '^- \[')"
+[ "$line_count" = 4 ] || fail "expected exactly 4 task-list items (one per deferred finding), got $line_count:
+$out"
+assert_contains "$out" '<br>- [x] forged entry'
 
 echo "==> marker-like text in a finding's evidence cannot forge a section boundary"
 marker_record="${test_tmp}/marker-forgery"
