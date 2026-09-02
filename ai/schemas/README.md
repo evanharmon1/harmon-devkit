@@ -1121,8 +1121,25 @@ without a `[stage.*]` table to check against.
 `merge-base-v1-mutation-invariant/` prove this end to end: the branch copy
 mutates every one of those values to something obviously wrong (`challenge =
 99`, an inverted `any`/`all` convergence, `tier = "local"` on every role, a
-`poisoned-finder` in every stage, ...) and the resolved policy is asserted
-identical to the unpoisoned case.
+`poisoned-finder` in every stage, ...) — and, since addendum 8, the branch
+`agent-registry.json` too (poisoned families/harnesses/finders — the only
+registry-shaped fields this decoder's `crossValidate()` reads, since
+addendum 6's registry-sourced roles/tiers is still deferred) — and the
+resolved policy is asserted identical to the unpoisoned case either way.
+`crossValidate()`'s "a confidence stage has a nonzero cap but no configured
+finders" and "a role has no resolvable family" checks (both added review
+round 1, to close a gap where they only ran when a registry happened to be
+supplied) are the reason a historical decode needs its OWN exemption from
+them: `resolved.decodedFrom` is set **only** by `decodeHistoricalPolicy()`,
+so both checks skip specifically when it is present — the empty
+finders/families they'd otherwise flag are this decoder's own documented,
+deferred limitation, not a genuine `[stage.*]`/`[role.*]` misconfiguration
+on the operating path (or a v2-shaped merge-base, which resolves its own
+real values via `resolveV2` and is *not* exempted). Review round 2
+(confirmed): without this, the very fix that closed the no-registry gap
+made every historical-decode resolution with a nonzero cap fail
+cross-validation outright whenever a registry *was* supplied — the normal,
+intended case — a regression introduced while fixing an unrelated gap.
 
 **Nothing here resolves relative to the caller's working directory.**
 `--policy`, `--registry`, `--merge-base-policy`, and `--merge-base-registry`
@@ -1206,6 +1223,24 @@ that is its own receipt-level requirement, not a schema one.
   adjudications/<stage>-r<round>.json     — one adjudication document per round
 ```
 
+Every **complete** round needs its own adjudication document, even a
+clean, zero-finding one (`adjudications: []` is schema-valid — no
+`minItems`) — review round 2, confirmed: checking only "does every
+*finding* have a matching entry" is vacuously true for a round with no
+findings to check, so a clean round with no adjudication document at all
+could previously certify convergence with nothing ever having reviewed it.
+`ai/schemas/fixtures/exit/clean-round-without-adjudication-rejected/` is
+the fixture; every other clean-round fixture in this corpus supplies one.
+
+**A fallback pass's `finder` must be a member of its slot's own configured
+`finder_fallbacks`** — asserting `substitutes_for == slot` and naming a
+different finder than the primary is necessary but not sufficient; the
+named finder must actually be in that slot's own configured fallback chain
+(review round 2, confirmed: an unconfigured, unauthorized finder could
+otherwise fill a slot merely by claiming to substitute for it, bypassing
+the fallback chain the exit-computation spec requires "attempted in
+order").
+
 `run.json`'s `receipts` array is the **trusted receipt sequence**
 (`specs/dev-flow-v2.md`'s "Producer-supplied `produced_at` SHALL be only a
 bounded sanity check ... never an ordering ... boundary" — ordering is the
@@ -1249,7 +1284,15 @@ runs those two checks unconditionally now (previously nested under
 policy `devflow-policy.mjs resolve` would refuse — e.g. breadth too small
 for its own stage's configured fallback chain — could still compute exits
 when this script was invoked directly, skipping the mandated
-resolve-then-dispatch sequence.
+resolve-then-dispatch sequence. `crossValidate()` also checks a finder's
+own registry entry for a `stages` restriction (`agent-registry.json`'s
+`finder.stages`, shipped by lane 635/PR #713), when present — a finder configured for
+`[stage.review]` whose registry entry permits only `["challenge"]` is
+rejected the same way an unknown finder or a pre-PR `pr-cloud` finder is
+(review round 2, confirmed: existence and the `pr-cloud` check alone didn't
+catch a finder dispatched to a stage its own registry entry doesn't
+permit). Absent `stages` (registries predating this field) means
+unrestricted, matching every other additive field in this schema family.
 
 **Provenance/fingerprint evidence: the change ledger.** `specs/dev-flow-v2.md`
 deliberately delegates the verification *mechanism* to this script rather than
@@ -1274,6 +1317,20 @@ intervening round's fix in a way the ledger cannot cleanly attribute, comes
 back `unverified` — keeping its adjudicated priority for gating (a defect of
 unknown origin is still a defect) while being excluded from the
 provenance-dependent predicates, exactly as `specs/dev-flow-v2.md` specifies.
+A later round's insertion or deletion **at or above** a finding's own line
+also marks it ambiguous (unverified), even when that line itself was never
+directly touched — review round 2, confirmed: an intervening edit shifts
+every subsequent line number, so a direct `=== finding.line` comparison
+against an earlier round's recorded coordinate silently stops matching once
+something is inserted above it, falling through to a false "verified
+original" for code that actually came from that earlier round, just
+renumbered (`provenance-line-shift-not-falsely-verified-original/`). A
+`corrected` provenance status (the ledger proved a producer's `original`
+claim was actually `round:N`) counts as evidence-backed exactly like a
+`verified` one for `count_rising`'s own guard — excluding it let a
+strictly-rising, evidence-corrected self-feeding trajectory evade the
+predicate merely because the producer itself never asserted `round:N`
+(`count-rising-accepts-corrected-provenance/`).
 A `repeat-of:<id>`/`supersedes:<id>` fingerprint claim needs more than a
 shared (or rename-tracked) path to verify: two genuinely unrelated findings
 in the same file share a path too, so `verifyFingerprint` also requires the
@@ -1307,14 +1364,30 @@ override — one containing a nested node is refused outright, since
 "which parameter moved which direction" has no defined meaning across a
 whole subtree; nesting inside a base `[convergence]` table with no override
 layered on top of it is unaffected. Precedence is `capped →
-diverging → converged → continue`, computed in `computeVerdict()`. One
-refinement worth stating explicitly because it is easy to miss reading the
-spec prose alone: **an incomplete current-head round (`finder_unavailable` /
-`breadth_exhausted`) is `capped` immediately**, independent of whether the
-round-number ceiling has also been reached — exhausting the finder or breadth
-resource for a slot is a hard stop on its own terms (re-dispatching the same
-round would not help, since the retry and full fallback chain are already
-spent), not conditional on the numeric cap.
+diverging → converged → continue`, computed in `computeVerdict()`. Two
+refinements worth stating explicitly because they are easy to miss reading
+the spec prose alone:
+
+- **Any incomplete round (`finder_unavailable` / `breadth_exhausted`)
+  anywhere in the retained trajectory is `capped` immediately**, independent
+  of whether the round-number ceiling has also been reached, and independent
+  of whether it happens to be the *latest* retained round by number —
+  exhausting the finder or breadth resource for a slot is a hard stop on its
+  own terms (re-dispatching the same round would not help, since the retry
+  and full fallback chain are already spent) that no later round can
+  override. Review round 2 (confirmed): checking only the latest retained
+  round let a malformed or resumed trajectory bypass an earlier exhaustion
+  whenever a later, complete round also existed — itself an illegal
+  trajectory shape (`ai/schemas/fixtures/exit/
+  incomplete-round-excluded-from-min-rounds-floor/` covers exactly this:
+  round 1 exhausted, round 2 complete and clean, still `capped`).
+- **A `capped/clean` verdict requires the round *at* the cap itself —
+  not merely some retained round — to review the current head.** If that
+  round is on a head incomparable to `currentHead` (excluded from
+  `retained`) while an *earlier* round coincidentally equals it exactly,
+  the earlier round must not be mistaken for the qualifying final one —
+  review round 2 (confirmed), covered by
+  `capped-clean-requires-final-round-at-current-head/`.
 
 **Two fixtures replay the [ponderousdev/omator#397](https://github.com/ponderousdev/omator/pull/397)
 retro** (`omator-397-challenge-diverging-at-r2/`, `omator-397-review-capped-at-r3/`)

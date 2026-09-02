@@ -1,0 +1,64 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "0303030303030303030303030303030303030303",
+  "produced_at": "2026-08-29T15:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "model-x",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-count-rising-corrected",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 3,
+    "reviewed_head": "0303030303030303030303030303030303030303",
+    "slot": "codex-cli",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r3-codex-cli-1",
+        "path": "scripts/b.mjs",
+        "line": 3,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "evidence text"
+      },
+      {
+        "id": "challenge-r3-codex-cli-2",
+        "path": "scripts/b.mjs",
+        "line": 21,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "evidence text"
+      },
+      {
+        "id": "challenge-r3-codex-cli-3",
+        "path": "scripts/c.mjs",
+        "line": 1,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "evidence text"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 3,
+      "P2": 0,
+      "P3": 0
+    }
+  }
+}

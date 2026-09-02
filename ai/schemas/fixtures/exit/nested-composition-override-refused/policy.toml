@@ -42,3 +42,21 @@ round_docs = "check"
 secret_scan = "security:secrets"
 pre_pr = "security"
 docs_only_paths = ["docs/**"]
+
+[role.orchestrator]
+families = ["claude"]
+[role.implementer]
+families = ["claude"]
+[role.challenger]
+families = ["gpt"]
+[role.reviewer]
+families = ["gpt"]
+[role.integrator]
+families = ["claude"]
+
+[stage.challenge]
+finders = ["codex-cli"]
+[stage.review]
+finders = ["codex-cli"]
+[stage.integration]
+finders = ["codex-cli"]

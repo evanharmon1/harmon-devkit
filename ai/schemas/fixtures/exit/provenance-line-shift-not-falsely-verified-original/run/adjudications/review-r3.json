@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "run_id": "run-line-shift",
+  "stage": "review",
+  "round": 3,
+  "reviewed_head": "0303030303030303030303030303030303030303",
+  "adjudications": [
+    {
+      "finding_id": "review-r3-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "confirmed by orchestrator",
+      "override": null
+    },
+    {
+      "finding_id": "review-r3-codex-cli-2",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed",
+      "evidence": "confirmed by orchestrator",
+      "override": null
+    }
+  ]
+}

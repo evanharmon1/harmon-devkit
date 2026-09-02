@@ -587,7 +587,20 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
         );
       }
     }
-    if (cap > 0 && s.finders.length === 0) {
+    // A merge-base HISTORICAL DECODE (decodeHistoricalPolicy, the only
+    // source that sets `decodedFrom`) always reports built-in-default empty
+    // stage finders by construction — addendum 6 (registry-sourced finders/
+    // roles/tiers for the decode path) is deliberately deferred, low
+    // priority. That is a documented, deferred LIMITATION, not the kind of
+    // genuine "[stage.*] misconfigured" mistake this check exists to catch
+    // on the operating v2 path (or a v2-shaped merge-base, which resolves
+    // its OWN real stages via resolveV2 and is not exempted here) — review
+    // round 2, confirmed: without this exemption, the breadth/finders check
+    // this same round's fix made unconditional (see the comment above) made
+    // EVERY historical-decode resolution with a nonzero cap fail cross-
+    // validation outright, a regression this fix introduced while closing
+    // that gap.
+    if (cap > 0 && s.finders.length === 0 && resolved.decodedFrom === undefined) {
       errors.push(`[stage.${stage}] has no finders configured but [rounds.${resolved.rounds.policy}].${stage} is ${cap} (> 0)`);
     }
   }
@@ -598,7 +611,12 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
     const finderBySlug = new Map((registryDoc.finders || []).map((f) => [f.slug, f]));
 
     for (const [role, r] of Object.entries(resolved.roles)) {
-      if (r.families.length === 0) {
+      // Same historical-decode exemption as the stage-finders check above,
+      // for the same reason: builtinRolesDefault() always reports empty
+      // families on that path by construction (addendum 6's registry-
+      // sourced roles is deferred) — a documented, deferred limitation,
+      // not a genuine [role.*] misconfiguration on the operating path.
+      if (r.families.length === 0 && resolved.decodedFrom === undefined) {
         errors.push(`[role.${role}] has no resolvable family: "families" is empty`);
       }
       for (const fam of r.families) {
@@ -621,6 +639,16 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
           errors.push(
             `[stage.${stage}] finders/finder_fallbacks includes "${slug}", whose surface is pr-cloud, on a pre-PR stage`,
           );
+        }
+        // A finder's own registry entry may restrict which stages it may
+        // serve (agent-registry.json #635/PR #713's finder.stages) — review
+        // round 2, confirmed: existence and the pr-cloud check alone let a
+        // finder configured for a DIFFERENT stage (e.g. challenge-only) be
+        // dispatched here anyway. Absent (registries predating this field)
+        // means unrestricted, matching every other additive field in this
+        // family.
+        if (Array.isArray(finder.stages) && !finder.stages.includes(stage)) {
+          errors.push(`[stage.${stage}] finders/finder_fallbacks includes "${slug}", whose registry entry permits only stage(s) ${finder.stages.join(", ")}`);
         }
       }
       if (s.pool) {

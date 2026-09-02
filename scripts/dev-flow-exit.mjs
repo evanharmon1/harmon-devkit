@@ -338,7 +338,15 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
       const finder = p.payload.finder;
       const isPrimaryClaim = !p.payload.substitutes_for;
       const validPrimary = isPrimaryClaim && finder === slot;
-      const validFallback = !isPrimaryClaim && p.payload.substitutes_for === slot && finder !== slot;
+      // A fallback claim's finder must be one this slot's OWN configured
+      // finder_fallbacks chain actually names — review round 2, confirmed:
+      // checking only substitutes_for === slot && finder !== slot let any
+      // arbitrary, unauthorized finder fill a slot by merely claiming to
+      // substitute for it, bypassing the configured fallback chain entirely
+      // (exit-computation spec: only "the configured finder_fallbacks chain
+      // for that slot" may fill it after the primary's retry).
+      const validFallback =
+        !isPrimaryClaim && p.payload.substitutes_for === slot && finder !== slot && resolvedStage.finder_fallbacks.includes(finder);
       if (!primarySlots.includes(slot) || !(validPrimary || validFallback)) continue;
       const list = validClaimsBySlot.get(slot) || [];
       list.push(p);
@@ -438,6 +446,7 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
       unresolvedSlot,
       substitutions,
       findings,
+      hasAdjudication: !!adjudication,
     });
   }
 
@@ -511,8 +520,22 @@ function verifyProvenance(finding, ledger) {
   let introducedAtRound = null;
   let ambiguousTouch = false;
   for (const entry of relevant) {
-    if ((entry.added_lines || []).includes(finding.line)) introducedAtRound = entry.round;
+    const addedHere = (entry.added_lines || []).includes(finding.line);
+    if (addedHere) introducedAtRound = entry.round;
     if ((entry.deleted_lines || []).includes(finding.line)) ambiguousTouch = true;
+    // A later round's insertion or deletion AT OR ABOVE this line shifts
+    // every subsequent line number, so the ledger's recorded coordinate for
+    // an EARLIER round's add no longer equals where that content now sits
+    // (review round 2, confirmed) — a direct `=== finding.line` comparison
+    // would then find no match, fall through, and wrongly verify "original"
+    // for code that actually came from the earlier round, just renumbered.
+    // Only a touch outside the entry that itself introduced this exact line
+    // counts — that entry's own multi-line add legitimately shares this
+    // line without implying any shift happened to it.
+    if (!addedHere) {
+      const touchedAtOrAbove = [...(entry.added_lines || []), ...(entry.deleted_lines || [])].some((l) => l <= finding.line);
+      if (touchedAtOrAbove) ambiguousTouch = true;
+    }
   }
 
   if (introducedAtRound !== null) {
@@ -630,8 +653,14 @@ function predicate_count_rising(retainedRoundsAsc, currentIndex, params) {
     if (gatingFindings(window[i]).length <= gatingFindings(window[i - 1]).length) return false;
   }
   const currentRound = retainedRoundsAsc[currentIndex];
+  // "corrected" is evidence-backed exactly like "verified" — it is what a
+  // producer's own "original" claim becomes once the ledger PROVES the line
+  // was actually introduced by an earlier round's fix (verifyProvenance);
+  // excluding it here (review round 2, confirmed) let a strictly-rising,
+  // evidence-corrected self-feeding trajectory evade count_rising's guard
+  // merely because the producer itself never asserted round:N.
   const hasVerifiedRoundProvenance = gatingFindings(currentRound).some(
-    (f) => f.provenanceStatus === "verified" && f.verifiedProvenance.startsWith("round:"),
+    (f) => (f.provenanceStatus === "verified" || f.provenanceStatus === "corrected") && f.verifiedProvenance.startsWith("round:"),
   );
   return hasVerifiedRoundProvenance;
 }
@@ -744,19 +773,31 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
   // find it; only the REPORTED metric excludes it.
   const base = { stage, rounds_counted: retained.filter((r) => r.status === "complete").length, next_round: null };
 
-  // An incomplete current-head round (finder_unavailable / breadth_exhausted)
-  // is always capped: exhausting the finder or breadth resource for a slot
-  // is a hard stop independent of whether the round-number ceiling was also
-  // reached — re-dispatching the same round would not help, since retry and
-  // the full fallback chain are already spent (exit-computation spec
-  // "Logical rounds require every configured finder": "ends the run
-  // capped/finder_unavailable, never silently one pass short").
-  if (isCurrentHeadRound && latest.status !== "complete") {
-    return { ...base, outcome: "capped", reason: latest.status.replace("capped/", ""), action: "escalate" };
+  // ANY incomplete round (finder_unavailable / breadth_exhausted) among the
+  // retained trajectory is always terminal — "no later round is legal" once
+  // a slot's retry and full fallback chain are exhausted (exit-computation
+  // spec "Logical rounds require every configured finder"), independent of
+  // whether the round-number ceiling was also reached, and independent of
+  // whether it happens to be `latest` by round number. Checking only
+  // `latest` (review round 2, confirmed) let a malformed or resumed
+  // trajectory bypass an earlier exhaustion entirely whenever a LATER,
+  // complete round also exists — re-dispatching a round at all after an
+  // exhaustion is itself illegal, so its presence must never let the
+  // exhaustion be silently overridden.
+  const firstIncomplete = retained.find((r) => r.status !== "complete");
+  if (firstIncomplete) {
+    return { ...base, outcome: "capped", reason: firstIncomplete.status.replace("capped/", ""), action: "escalate" };
   }
 
   if (capReached) {
-    if (!latest || !isCurrentHeadRound) {
+    // The spec requires the FINAL PERMITTED ROUND ITSELF to review the
+    // current head — not merely "some retained round does." If the round
+    // actually at/beyond the cap (maxRoundNumber) got excluded from
+    // `retained` (ancestry false/unknown) while an EARLIER round coincides
+    // with currentHead, `latest` would point at that earlier round instead
+    // — review round 2, confirmed: this must be invalidated/escalate, never
+    // treated as if the earlier round were the qualifying final one.
+    if (!latest || !isCurrentHeadRound || latest.round !== maxRoundNumber) {
       return { ...base, outcome: "capped", reason: "invalidated", action: "escalate" };
     }
     if (gatingFindings(latest).length === 0) {
@@ -978,9 +1019,18 @@ function main() {
     throw err;
   }
 
-  const missingAdjudication = rounds.some((r) => r.status === "complete" && r.findings.length > 0 && r.findings.some((f) => f.adjudicated_priority === null));
+  // Every retained COMPLETE round needs its own adjudication document,
+  // including a clean, zero-finding one — review round 2, confirmed: the
+  // prior `findings.length > 0` guard meant a completed round with no
+  // findings at all bypassed this check entirely, so a clean round could
+  // certify convergence with no adjudication document ever having existed
+  // for it (exit-computation spec: "every retained pass to have exactly
+  // one adjudication document").
+  const missingAdjudication = rounds.some(
+    (r) => r.status === "complete" && (!r.hasAdjudication || r.findings.some((f) => f.adjudicated_priority === null)),
+  );
   if (missingAdjudication) {
-    console.error("dev-flow-exit: indeterminate: at least one finding in a completed round has no matching adjudication entry");
+    console.error("dev-flow-exit: indeterminate: a completed round has no adjudication document, or a finding in it has no matching adjudication entry");
     return EXIT_CODES.indeterminate;
   }
 

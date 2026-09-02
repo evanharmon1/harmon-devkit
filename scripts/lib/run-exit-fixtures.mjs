@@ -222,8 +222,24 @@ function runExitFixture(name, dir) {
   } catch {
     return report(name, false, `could not parse stdout as JSON (exit ${status}). stderr: ${stderr.trim()}`);
   }
-  const problem = checkVerdict(expected, actual);
+  const problem = checkVerdict(expected, actual) || checkExitCode(expected, actual, status);
   report(name, !problem, problem);
+}
+
+// dev-flow-exit.mjs's exit code IS part of its documented machine contract
+// (continue 0, converged 20, diverging 21, capped 22) — review round 2
+// (confirmed): the runner previously only parsed and checked stdout,
+// leaving a verdict whose JSON was correct but whose process exit code
+// disagreed with it (a real regression risk in computeVerdict's own
+// return-value plumbing) completely unasserted.
+const OUTCOME_EXIT_CODES = { continue: 0, converged: 20, diverging: 21, capped: 22 };
+
+function checkExitCode(expected, actual, status) {
+  if (expected.outcome === undefined) return null;
+  const wanted = OUTCOME_EXIT_CODES[actual.outcome];
+  if (wanted === undefined) return `outcome "${actual.outcome}" has no known exit code mapping`;
+  if (status !== wanted) return `exit code: outcome "${actual.outcome}" documents exit ${wanted}, process actually exited ${status}`;
+  return null;
 }
 
 // Builds the TRUSTED closure a --closure fixture re-execs into, from
@@ -278,6 +294,21 @@ function runPolicyFixture(name, dir) {
     actual = JSON.parse(stdout);
   } catch {
     return report(name, false, `could not parse stdout as JSON (exit ${status}). stderr: ${stderr.trim()}`);
+  }
+  // A fixture that declares neither resolve_fails nor
+  // cross_validation_error_contains is implicitly claiming resolution
+  // succeeds well enough to trust — review round 2 (confirmed):
+  // devflow-policy.mjs still emits its resolved JSON on stdout even when
+  // cross-validation produced HARD errors (exit 1), so parsing stdout alone
+  // let a fixture's field assertions pass while masking a hard failure the
+  // fixture never opted into (status 0 clean, or 3 indeterminate-only
+  // cross-validation warnings, both remain acceptable).
+  // cross_validation_error_contains fixtures deliberately want the JSON
+  // body too (to read actual.cross_validation.errors), so they use this
+  // path rather than the short-circuiting resolve_fails one above — their
+  // own expectation is itself the acknowledgment that exit 1 is legitimate.
+  if (status === 1 && !expected.cross_validation_error_contains) {
+    return report(name, false, `resolve exited 1 (hard cross-validation error) but expected.json does not declare resolve_fails or cross_validation_error_contains: ${JSON.stringify(actual.cross_validation)}`);
   }
   const problem = checkPolicyResolution(expected, actual);
   report(name, !problem, problem);

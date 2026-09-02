@@ -1,5 +1,5 @@
 {
-  "outcome": "continue",
-  "reason": "below_threshold",
+  "outcome": "capped",
+  "reason": "finder_unavailable",
   "rounds_counted": 1
 }
