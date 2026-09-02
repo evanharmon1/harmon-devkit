@@ -161,7 +161,7 @@ instruction MAY override the merge-base value.
 #### Scenario: The merge base has no policy reader
 
 - **WHEN** a change migrates the policy shape and its merge base contains no policy reader to materialize
-- **THEN** the run refuses to resolve policy from the branch reader and stops with a message that the reader must land in its own change (through the skills sync) before the policy migration, so the reader and the policy never migrate together
+- **THEN** the run refuses to resolve policy from the branch reader and stops with a message that the reader must land in its own change, by whatever distribution the consuming repository uses, before the policy migration, so the reader and the policy never migrate together
 
 #### Scenario: A branch edits the reader's built-in defaults
 

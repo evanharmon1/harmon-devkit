@@ -93,8 +93,9 @@ broker was rejected because they would drift.
 
 The round-push broker and the secret scanner live at stable repository-owned
 script paths (`scripts/round-push.sh`; `scripts/gitleaks-scan.sh` with its
-`.gitleaks.toml`, which the `security:secrets` target already wraps) rather
-than inside a skill's assets: the merge-base rule materializes them with
+`.gitleaks.toml` and the `scripts/summarize-gitleaks.mjs` helper it executes
+under `GITHUB_STEP_SUMMARY`, which the `security:secrets` target already
+wraps) rather than inside a skill's assets: the merge-base rule materializes them with
 `git show <merge-base>:<path>`, which needs a path that survives skill renames,
 and stage skills reference the broker by path instead of vendoring a copy that
 would drift. Keeping the broker as a skill asset was rejected because #638
