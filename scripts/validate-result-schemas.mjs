@@ -1001,6 +1001,36 @@ function checkAdjudicationEntries(document, errors) {
         `$adjudication.adjudications[finding_id=${entry.finding_id}].evidence: required (non-empty after trimming whitespace)`
       )
     }
+    // reference's shape (type/value both present) is a schema keyword; a
+    // VALUE that cannot actually identify the declared resource is not —
+    // the same reasoning checkSettlementReferenceType already applies to
+    // run.settlements[].reference, reused verbatim here (challenge r1) so
+    // durable adjudication evidence cannot be structurally valid but
+    // unusable ({type:"sha", value:"x"}, {type:"issue_number", value:"0"}).
+    if (entry.reference && typeof entry.reference === 'object') {
+      const { reference } = entry
+      if (reference.type === 'sha' && typeof reference.value === 'string' && !SHA_PATTERN.test(reference.value)) {
+        errors.push(
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference.value: type sha requires a 40-hex value`
+        )
+      } else if (
+        reference.type === 'issue_number' &&
+        typeof reference.value === 'string' &&
+        !ISSUE_NUMBER_PATTERN.test(reference.value)
+      ) {
+        errors.push(
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference.value: type issue_number requires a positive integer string`
+        )
+      } else if (
+        reference.type === 'comment_id' &&
+        typeof reference.value === 'string' &&
+        reference.value.trim() === ''
+      ) {
+        errors.push(
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference.value: type comment_id requires a non-empty value`
+        )
+      }
+    }
     if (isIntegration) {
       if (entry.reviewer_priority !== null) {
         errors.push(

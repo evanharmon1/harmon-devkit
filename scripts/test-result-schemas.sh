@@ -234,6 +234,7 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/findings-wrong-cycle.json',
   'result.integrator.schema/invalid/known-ids-collision.json',
   'result.integrator.schema/invalid/clean-with-fix-disposition.json',
+  'result.integrator.schema/invalid/clean-verdict-known-id-defer.json',
   'result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json',
   'result.integrator.schema/invalid/exit-code-13-with-pending.json',
   'result.integrator.schema/invalid/exit-code-14-with-clean.json',
@@ -1095,6 +1096,13 @@ accept_context_case \
     integrator \
     "$fixtures_dir/result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json" \
     --known-ids "$fixtures_dir/result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.known-ids.json"
+
+run_context_case \
+    "a clean-verdict defer on a --known-ids finding is rejected exactly like a defer on the payload's own findings" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/invalid/clean-verdict-known-id-defer.json" \
+    "incompatible with verdict clean, even when supplied via --known-ids" \
+    --known-ids "$fixtures_dir/result.integrator.schema/invalid/clean-verdict-known-id-defer.known-ids.json"
 
 usage_error_case \
     "--no-adjudications and --adjudication together are a usage error" \

@@ -911,7 +911,15 @@ decisions):
   `applied_dispositions` array closes the gap for an entry naming a prior
   cycle's finding instead — a clean verdict claims nothing outstanding, and
   `defer` explicitly carries a finding forward regardless of which universe
-  its `finding_id` belongs to.
+  its `finding_id` belongs to. Covered by
+  `result.integrator.schema/invalid/clean-verdict-known-id-defer.json`
+  (exercised both by the generic per-directory loop, since the rejection
+  fires whether or not `--known-ids` is even supplied, and by a named
+  `run_context_case` that supplies it — pinning the `--known-ids` branch
+  specifically, since only that document proves the check doesn't quietly
+  depend on the flag; `SEMANTIC_ONLY`-listed, since a cross-field
+  verdict/disposition rule is not something `result.schema.json` alone can
+  express) (challenge round 1 P2).
 - **`run.schema.json`'s `stage_transitions` description names the permitted
   lifecycle *edges*, not a linear order (#686).** The actual coherence check
   (`checkStageTransitionsOrder`) walks `ALLOWED_EDGES`, a directed graph
@@ -932,12 +940,23 @@ decisions):
   `minLength` alone: independent producers and harvesters must compute and
   compare the same representation, and a `pattern` is what stops something
   like `"x"` from being receipt-valid.
-- **Reviewer and challenger findings' `path` rejects absolute paths and `.`
-  / `..` segments (#686).** `^(?!/)(?!.*(?:^|/)\.\.?(?:/|$)).+$` on both
-  schemas (kept in the field-for-field parity #635 established) — a path
-  that escapes the repo root, or claims to already be rooted elsewhere,
-  cannot be reliably resolved by provenance, fingerprinting, or rendering
-  consumers.
+- **Reviewer and challenger findings' `path` rejects absolute paths, `.` /
+  `..` segments, Windows drive letters, and any backslash (#686, extended in
+  challenge round 1).** `^(?!/)(?![A-Za-z]:)(?!.*\\)(?!.*(?:^|/)\.\.?(?:/|$)).+$`
+  on both schemas' own copies and both inlined `$defs.reviewer`/
+  `$defs.challenger` copies in `result.schema.json` (kept in the
+  field-for-field parity #635 established) — a path that escapes the repo
+  root, or claims to already be rooted elsewhere, cannot be reliably
+  resolved by provenance, fingerprinting, or rendering consumers. The
+  initial fix only rejected POSIX-style traversal; round 1 confirmed
+  `C:/secret` and `..\secret` both still slipped through, since neither is a
+  POSIX absolute path or a `/`-delimited `..` segment. Rather than parsing
+  backslash-delimited segments separately, the fix rejects any backslash
+  outright — this repo's own paths are always POSIX-written, so a
+  backslash is never legitimate content here, only a Windows-path or
+  UNC-path smuggling attempt. Covered by
+  `result.reviewer.schema/invalid/finding-path-absolute.json` and
+  `finding-path-windows-drive.json`.
 - **`adjudication.schema.json`'s `reason`/`evidence` are trimmed-non-empty,
   matching `override.reason` (#686).** `minLength: 1` alone accepts a
   whitespace-only string; `checkAdjudicationEntries` now applies the same
@@ -966,6 +985,19 @@ decisions):
   sometimes do: `produced_at-impossible-date` is a calendar-validity check
   no `pattern` can express, and `run-mismatch` needs external "which run is
   active" context no single document carries.
+- **`adjudication.schema.json`'s `reference.value` is format-validated
+  against `reference.type`, mirroring `checkSettlementReferenceType`
+  exactly (#686 challenge round 1 P1).** The initial cut added the field's
+  shape (above) but validated it only structurally — `checkAdjudicationEntries`
+  now applies the same per-type rule `run.schema.json`'s settlement
+  reference already enforces: `type: "sha"` requires a 40-hex value,
+  `type: "issue_number"` requires a positive-integer string, `type:
+  "comment_id"` requires a non-empty-after-trim value. Without this, a
+  `reference` claiming to be a commit SHA could carry any string at all,
+  silently breaking any consumer that dereferences it. Covered by
+  `adjudication.schema/invalid/reference-bad-sha-value.json`,
+  `reference-bad-issue-number-value.json`, and
+  `reference-whitespace-comment-id.json`.
 - **`scripts/sync-skills.sh`'s two `#686` findings (empty-string
   `schemas.names`/`agents.names` members; `verify` not requiring every
   incoming name to also appear in the recorded managed set) are not fixed
