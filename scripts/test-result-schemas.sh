@@ -399,8 +399,19 @@ if (envelopeChecked === 0) {
   const withoutPayload = (list) => (list ?? []).filter((name) => name !== 'payload')
   const composedRequired = withoutPayload(composed.required).sort()
   const envelopeRequired = withoutPayload(envelopeSchema.required).sort()
-  const composedProperties = withoutPayload(Object.keys(composed.properties ?? {})).sort()
-  const envelopeProperties = withoutPayload(Object.keys(envelopeSchema.properties ?? {})).sort()
+  // Comparing Object.keys(...) alone (challenge r2 P2) proves only that the
+  // same NAMES exist on both sides — weakening just the composed copy's
+  // head.pattern to accept a 39-character SHA leaves the key lists equal and
+  // passes here, exactly the drift this check exists to catch. Compare the
+  // full property DEFINITION objects instead, canonicalized the same way the
+  // $defs.<role> drift check above already does, so a changed pattern/type/
+  // enum on either copy is caught, not only an added or removed key.
+  const withoutPayloadProps = (properties) => {
+    const { payload, ...rest } = properties ?? {}
+    return rest
+  }
+  const composedProperties = withoutPayloadProps(composed.properties)
+  const envelopeProperties = withoutPayloadProps(envelopeSchema.properties)
   if (
     canonicalJson(composedRequired) !== canonicalJson(envelopeRequired) ||
     canonicalJson(composedProperties) !== canonicalJson(envelopeProperties)

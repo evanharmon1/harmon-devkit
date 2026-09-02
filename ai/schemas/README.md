@@ -998,6 +998,34 @@ decisions):
   `adjudication.schema/invalid/reference-bad-sha-value.json`,
   `reference-bad-issue-number-value.json`, and
   `reference-whitespace-comment-id.json`.
+- **`adjudication.schema.json`'s `reference.type` is also bound to
+  `disposition`, mirroring `checkSettlementReferenceType`'s disposition-to-type
+  mapping, not only the value-format rule above (#686 challenge round 2
+  P2).** Format-validating `reference.value` against whatever `type` it
+  happened to declare left the type itself unconstrained —
+  `{disposition: "file", reference: {type: "sha", ...}}` passed despite the
+  SHA never confirming a filed issue. `checkAdjudicationEntries` now applies
+  the same total mapping `run.schema.json`'s settlement reference already
+  enforces for the three dispositions a reference can meaningfully evidence
+  at adjudication time (the field's own description: "declined or filed
+  directly"): `fix` requires `sha`, `decline` requires `comment_id`, `file`
+  requires `issue_number`. `restructure`/`delete` are left unconstrained —
+  settlement's own disposition enum excludes them, so there is no mapping to
+  mirror — and `defer` is unconstrained by design: its reference lives on the
+  eventual settlement instead (the same description's "never deferred").
+  Covered by `adjudication.schema/invalid/reference-type-disposition-mismatch.json`.
+- **`scripts/test-result-schemas.sh`'s composed-root/envelope parity check
+  compares full property definitions, not just property names (#686
+  challenge round 2 P2).** The original check compared
+  `Object.keys(composed.properties)` against
+  `Object.keys(envelopeSchema.properties)` — proving the same names exist on
+  both sides, not that their definitions still match. Weakening only the
+  composed copy's `head.pattern` (e.g. to accept a 39-character SHA) left the
+  key lists equal and passed. The check now canonicalizes and compares the
+  full property objects (minus `payload`, which is expected to differ — the
+  envelope's copy is a placeholder, the composed copy carries the real
+  role-dispatch `allOf`), the same deep-comparison technique the pre-existing
+  `$defs.<role>` drift check above already uses.
 - **`scripts/sync-skills.sh`'s two `#686` findings (empty-string
   `schemas.names`/`agents.names` members; `verify` not requiring every
   incoming name to also appear in the recorded managed set) are not fixed

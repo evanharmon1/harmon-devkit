@@ -1007,9 +1007,27 @@ function checkAdjudicationEntries(document, errors) {
     // run.settlements[].reference, reused verbatim here (challenge r1) so
     // durable adjudication evidence cannot be structurally valid but
     // unusable ({type:"sha", value:"x"}, {type:"issue_number", value:"0"}).
+    // Type-value shape alone does not bind the reference to the disposition
+    // it is meant to evidence: {disposition:"file", reference:{type:"sha"}}
+    // passed schema and value-format checks alike despite the SHA never
+    // confirming a filed issue. The three dispositions a reference can
+    // meaningfully evidence at adjudication time (schema description above:
+    // "declined or filed directly") map exactly as checkSettlementReferenceType
+    // already maps them for a resolved defer's eventual settlement — fix to
+    // the commit that fixed it, decline to the comment explaining why, file
+    // to the issue it was filed as (challenge r2). restructure/delete/defer
+    // are left unconstrained here: restructure and delete have no settlement
+    // analogue to mirror, and defer's own reference lives on its eventual
+    // settlement instead (the schema description's "never deferred").
     if (entry.reference && typeof entry.reference === 'object') {
       const { reference } = entry
-      if (reference.type === 'sha' && typeof reference.value === 'string' && !SHA_PATTERN.test(reference.value)) {
+      const expectedReferenceType = { fix: 'sha', file: 'issue_number', decline: 'comment_id' }
+      const expected = expectedReferenceType[entry.disposition]
+      if (expected && reference.type !== expected) {
+        errors.push(
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference.type: disposition ${entry.disposition} requires type ${expected}, found ${JSON.stringify(reference.type)}`
+        )
+      } else if (reference.type === 'sha' && typeof reference.value === 'string' && !SHA_PATTERN.test(reference.value)) {
         errors.push(
           `$adjudication.adjudications[finding_id=${entry.finding_id}].reference.value: type sha requires a 40-hex value`
         )
