@@ -74,7 +74,17 @@ at or before the cutoff — never from the record's current summary fields
 directly — so a later event changes what a later cutoff sees, never what an
 earlier, already-computed one does. See
 [evidence delta spec § Run history is append-only and as-of reconstructable](../openspec/changes/dev-flow-v2/specs/evidence/spec.md)
-for the full chain contract and its fixtures.
+for the full chain contract and its fixtures. GitHub's own comment update has
+no compare-and-swap, so two resumed or concurrent writers reading the same
+chain and each appending independently is a real race the chain's own
+validity cannot detect — both extensions still validate on their own, and
+the last write silently drops the other's event. Appending therefore follows
+the same reserve-then-verify discipline the evidence comments below already
+use: the writer reserves the next sequence number locally before writing,
+then re-reads the posted comment to confirm its own event is the visible
+tail before treating the append as durable; discovering a different tail
+means another writer's append landed first, and this one reconciles against
+that new tail rather than overwriting it.
 "Reached ready-for-review" means the run record carries the orchestrator's
 own promotion entry — the readiness-gate pass fingerprint and the
 `gh pr ready` it issued. A ready transition on the PR **without** that entry
@@ -475,12 +485,19 @@ merge-base rule below requires: on a migration branch, it maps the legacy
 (and a decoder-only `rounds.shared_budget` marker recording that the legacy
 cap charged one round per fix push or no-change cycle, never a finding cycle
 and its answering push separately — that marker never appears in an actual
-v2 file), decodes the v1 `[review.*]` policy the same way, and otherwise maps
-each older shape's declared values (`[budget.*]`, per-role tiers,
-`[strategy.*]`, `[tier.*]` family-to-model maps) onto their v2 equivalents
-under that shape's own rules — never the branch's v2 copy. See
-[design.md decision 13](../openspec/changes/dev-flow-v2/design.md) for the
-full mechanism and its fixtures.
+v2 file) and decodes the v1 `[review.*]` policy the same way — this part
+verified directly against the shipped reader. **Every other axis (`breadth`,
+`spend`, `convergence`, `tier_order`, `roles`, `stages`, `strategy`) is filled
+from the reader's own built-in defaults, not decoded from the older shape's
+declared values, as of the current #636 branch** — narrower than this
+decision's own design (`openspec/changes/dev-flow-v2/design.md` decision 13)
+describes, and a real gap against the merge-base rule below: a migration
+branch that also edits, say, `[tier.*]` or `[budget.*]` on a self-modifying
+change resolves those axes from built-ins rather than the merge-base's own
+declared values, which the merge-base rule requires. Closing that gap
+belongs to #636's own scope, not this lane's; noted here so the anchor
+states what is actually true of the shipped reader today rather than the
+fuller decode the design intends.
 
 Every array key declares one of five semantics:
 
@@ -755,13 +772,21 @@ Two rules make the posted evidence trustworthy on a public repository:
   actor ID of whoever authored the run record comment at kickoff, validated
   against the repository's configured trusted-orchestrator actor IDs (the
   same trust list evidence comments already check against) or, absent that
-  configuration, an actor independently verified to hold write access to the
-  repository at kickoff time. Matching the kickoff event's own actor alone is
-  not authority: on a public repository, a stranger able to trigger a
+  configuration, an actor independently verified — **at kickoff time, with
+  that verification persisted as part of the kickoff event itself** — to
+  hold repository write access. Matching the kickoff event's own actor alone
+  is not authority: on a public repository, a stranger able to trigger a
   kickoff-shaped event can equally author the matching run record comment,
   satisfying same-actor equality without ever holding real orchestrator
   standing — the fallback needs an independently checked permission, not
-  merely that the two events agree on who performed them.
+  merely that the two events agree on who performed them. Persisting the
+  check at kickoff time is not optional: GitHub exposes only a collaborator's
+  **current** permission, and a harvester reading long after kickoff has no
+  other way to ask "did this actor hold write access *then*" — permissions
+  can be granted or revoked in either direction afterward, so checking
+  current state at read time would falsely accept a since-authorized
+  stranger's old forgery and falsely reject a legitimate kickoff by someone
+  since removed.
   The run record comment is subject to the **same author check** against
   that external trust root, so a stranger cannot forge a record that vouches
   for their own evidence; an orchestrator that
