@@ -12,8 +12,7 @@
       "disposition": "decline",
       "reason": "false positive: the flagged behavior is intentional",
       "evidence": "   ",
-      "override": null,
-      "reference": null
+      "override": null
     }
   ]
 }

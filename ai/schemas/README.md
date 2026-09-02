@@ -976,7 +976,15 @@ decisions):
   declined or filed directly at adjudication time, which — unlike a
   deferred finding's eventual settlement — previously had nowhere in this
   schema family to record its evidence. Neither field is required; every
-  existing adjudication document remains valid.
+  existing adjudication document remains valid. `reference` is
+  **object-only, never nullable** (#686 shepherd round 1 P2) — unlike
+  `override`, whose `null` is itself a required, meaningful answer
+  ("no override" is a fact every adjudication states), `reference` is
+  genuinely optional: omitting it already means "no reference," so an
+  explicit `"reference": null` was only ever a second, redundant way to
+  say the same thing, and `checkAdjudicationEntries` silently skipped
+  validating it either way. Covered by
+  `adjudication.schema/invalid/reference-explicit-null.json`.
 - **The native-composition test in `scripts/test-result-schemas.sh` also
   runs the standalone envelope-invalid fixtures against `result.schema.json`
   and compares the composed root's `required`/`properties` (minus

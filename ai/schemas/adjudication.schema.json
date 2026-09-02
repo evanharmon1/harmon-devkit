@@ -78,8 +78,8 @@
           "enum": ["confirmed", "plausible", "false-positive"]
         },
         "reference": {
-          "description": "Optional — the evidence a human or CI can follow to confirm a disposition decided HERE, at adjudication time, rather than later via run.schema.json's settlements[] (which exists only for a `defer` disposition's eventual fix/decline/file outcome). Same shape as settlements[].reference: without this, a finding declined or filed directly — never deferred — has nowhere in this schema family to record the comment id or issue number a human would need to confirm it. Never required, so this addition is backward compatible with every existing adjudication document.",
-          "type": ["object", "null"],
+          "description": "Optional — the evidence a human or CI can follow to confirm a disposition decided HERE, at adjudication time, rather than later via run.schema.json's settlements[] (which exists only for a `defer` disposition's eventual fix/decline/file outcome). Same shape as settlements[].reference: without this, a finding declined or filed directly — never deferred — has nowhere in this schema family to record the comment id or issue number a human would need to confirm it. Never required, so this addition is backward compatible with every existing adjudication document. Object-only, unlike override below: this field is genuinely optional (omission already means \"no reference\"), so an explicit null would only be a second, redundant way to say the same thing — never nullable the way override is, where null is itself a required, meaningful answer.",
+          "type": "object",
           "additionalProperties": false,
           "required": ["type", "value"],
           "properties": {
