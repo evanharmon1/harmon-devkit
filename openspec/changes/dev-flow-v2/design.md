@@ -128,6 +128,14 @@ the same way. Every later change extracts the stable path; a merge base that
 has neither copy refuses the push rather than trusting the branch broker,
 mirroring the reader-before-policy rule in decision 13.
 
+The two brokers coexist until the policy migrates. The new broker reads v2
+policy through the shared reader, and this repository's live policy stays
+legacy until the copier update lands, so the gauntlet asset stays untouched
+and legacy-only for the still-shipped gauntlet procedure and is deleted with
+that skill; no shim delegates the old path to the new one. A delegating shim
+was rejected because it would break every round push between the broker's
+merge and the policy migration.
+
 Merge-base resolution protects the policy that selects target slugs,
 allowlists, and thresholds; it does not attest the feature branch's Taskfile
 recipes, scripts, or push-broker implementation. Evidence produced by those
@@ -305,7 +313,9 @@ receives the same shared-budget marker, since it counted the same way), maps
 them onto the v2 `rounds` values, decodes every other value the older shape
 does declare under that shape's own rules (v1 `[budget.*]` onto `breadth`,
 v1 per-role tiers on the rigor profile, v1 `default_strategy` and
-`[strategy.*]`; legacy `default_tier` and `default_method`), and supplies the
+`[strategy.*]`, and both older shapes' `[tier.*]` family-to-model maps so a
+migration runs under the model the older policy selected; legacy
+`default_tier` and `default_method`), and supplies the
 built-in gate defaults (`verify`, `check`, `security:secrets`, `security`
 with the shipped `docs_only_paths`) because neither older shape declares
 `[gates]`. That decoder is not an operating-mode
