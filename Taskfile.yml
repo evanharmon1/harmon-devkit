@@ -460,11 +460,6 @@ tasks:
     cmds:
       - ./scripts/test-shepherd-readiness.sh
 
-  test:gauntlet-push:
-    desc: Unit-test gauntlet's gated round-push helper (offline, local bare remotes)
-    cmds:
-      - ./scripts/test-gauntlet-push.sh
-
   test:round-push:
     desc: Unit-test the dev-flow-v2 diff-aware round-push broker (offline, local bare remotes)
     cmds:
