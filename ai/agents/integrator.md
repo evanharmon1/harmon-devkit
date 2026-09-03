@@ -34,6 +34,13 @@ A workable brief names:
   re-read head produces evidence about the wrong commit.
 - **`integration_round`** — the run-wide ordinal for this pass, stamped
   verbatim into your result. You do not invent or increment it.
+- **`run_id` and `initiated_by`** — the dev-flow-v2 run's own identity
+  (`human` or `foreman`), stamped verbatim into the envelope's `run` object.
+  This is run-level bookkeeping only the orchestrator holds; never guess it.
+- **`producer`** — the `{harness, model, tier}` triple identifying you, for
+  the envelope's own `producer` object. The orchestrator dispatched you and
+  knows which harness and model it invoked; you have no reliable way to
+  introspect that yourself, so treat it as brief-supplied, not self-derived.
 - **the resolved `[rounds].integration` cap and this pass's cycle number** —
   or that the cap is 0, in which case you skip the whole Codex cycle (§4) and
   report `codex_cycle: null`.
@@ -97,7 +104,41 @@ checks="$(gh pr checks <n> --repo "$repo" --json bucket,name,workflow,event,link
     echo 'checks absent, unconcluded, or not green — report pending, do not reserve or trigger'
     exit 1
 }
+required_names="$(gh pr checks <n> --repo "$repo" --json name --required \
+    --jq '[.[].name]' 2>/dev/null)" || required_names='[]'
 ```
+
+`$checks` decides pass/fail here; it is not `checks[]`'s schema shape
+(`name`, `bucket`, `run_id`, `required` — no `workflow`/`event`/`link`, and
+`gh pr checks` has no `run_id` field at all). Derive the schema-shaped array
+separately, from the check-runs REST endpoint, which is where a genuine
+numeric id per check actually lives — the same endpoint
+`readiness-gate.sh` itself reads, so this is not a second contract to keep
+in sync:
+
+```sh
+check_runs_pages="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp \
+    "repos/$repo/commits/<head>/check-runs?per_page=100&filter=latest")" || {
+    echo 'cannot fetch check-runs — do not reserve or trigger'
+    exit 1
+}
+checks_json="$(jq -c --argjson required "$required_names" '
+    [.[] | .check_runs[]? | . as $c | {
+        name: $c.name,
+        bucket: (if $c.status != "completed" then "pending"
+                 elif $c.conclusion == "success" then "pass"
+                 elif ($c.conclusion == "skipped" or $c.conclusion == "neutral") then "skipping"
+                 elif $c.conclusion == "cancelled" then "cancel"
+                 else "fail" end),
+        run_id: ($c.id | tostring),
+        required: ($required | index($c.name) != null)
+    }]' <<<"$check_runs_pages")" || checks_json='[]'
+```
+
+`--slurp` wraps every paginated page into one array first, so `.[]` walks
+pages and `.check_runs[]?` walks each page's own array — the same two-step
+shape `readiness-gate.sh`'s own `evaluate_checks` reads, not a bare
+`.check_runs[]` assuming a single unpaginated page.
 
 An **empty** check list is indeterminate, not evidence of "no CI" — GitHub
 populates check suites asynchronously. If your brief tells you this repo
@@ -231,12 +272,18 @@ review, or check-run id) so the orchestrator can trace it back.
 ## 6. Post only what you were handed
 
 If your brief supplied exact reply text with target comment IDs, post each
-one now, verbatim — never edited, summarized, or extended:
+one now, verbatim — never edited, summarized, or extended. This text is
+contributor-controlled review content relayed through your brief, so never
+pass it through a heredoc: a body that happens to contain a line equal to
+whatever fixed delimiter you picked terminates the heredoc early and hands
+the remaining lines to the shell. Write it to a file instead and reference
+that:
 
 ```sh
-gh api repos/"$repo"/pulls/<n>/comments/<comment-id>/replies -F body=@- <<'REPLY_BODY'
-<the exact text your brief gave you for this comment ID>
-REPLY_BODY
+reply_file="$(mktemp)"
+trap 'rm -f "$reply_file"' EXIT
+printf '%s' "<the exact text your brief gave you for this comment ID>" >"$reply_file"
+gh api repos/"$repo"/pulls/<n>/comments/<comment-id>/replies -F body=@"$reply_file"
 ```
 
 A `top-level` target posts to the PR conversation instead
@@ -245,11 +292,24 @@ skip this step entirely — silence is correct, not a gap to fill.
 
 ## 7. Assemble and validate the result
 
-Build `result.integrator`'s shape with `jq -n` rather than hand-typing JSON —
-this is a mechanical composition step, not a place to improvise the schema:
+Your deliverable is a full `result.envelope` — `{schema, role, status, head,
+produced_at, producer, run, payload}` — not the bare payload alone. The
+orchestrator's own tooling (`validate-result-schemas.mjs`, the readiness
+gate) reads `.role`, `.head`, and `.payload.*` off exactly this envelope
+shape; a payload-only document has no `.head` or `.role` for either to read
+and is rejected before your evidence is even looked at. Build it with
+`jq -n` rather than hand-typing JSON — this is a mechanical composition
+step, not a place to improvise the schema:
 
 ```sh
 jq -n \
+    --arg head "<head>" \
+    --arg produced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg harness "<producer.harness from your brief>" \
+    --arg model "<producer.model from your brief>" \
+    --arg tier "<producer.tier from your brief>" \
+    --arg run_id "<run_id from your brief>" \
+    --arg initiated_by "<initiated_by from your brief>" \
     --argjson checks "$checks_json" \
     --argjson codex_cycle "$codex_cycle_json_or_null" \
     --argjson integration_round "$integration_round" \
@@ -258,12 +318,22 @@ jq -n \
     --arg settled_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg verdict "$verdict" \
     --argjson applied_dispositions "$applied_dispositions_json" \
-    '{checks: $checks, codex_cycle: $codex_cycle, integration_round: $integration_round,
-      findings: $findings, unanswered_thread_roots: $unanswered_thread_roots,
-      settled_at: $settled_at, verdict: $verdict}
-     + (if $verdict == "clean" then {applied_dispositions: $applied_dispositions} else {} end)' \
+    '{schema: 2, role: "integrator", status: "completed", head: $head,
+      produced_at: $produced_at,
+      producer: {harness: $harness, model: $model, tier: $tier},
+      run: {run_id: $run_id, initiated_by: $initiated_by},
+      payload: ({checks: $checks, codex_cycle: $codex_cycle,
+                 integration_round: $integration_round, findings: $findings,
+                 unanswered_thread_roots: $unanswered_thread_roots,
+                 settled_at: $settled_at, verdict: $verdict}
+        + (if $verdict == "clean" then {applied_dispositions: $applied_dispositions} else {} end))}' \
     >"$out_file"
 ```
+
+`head` here is the SAME head your brief named throughout — the envelope's
+own `head`, `payload.codex_cycle.head` (when non-null), and
+`payload.codex_cycle.accepted.reviewed_commit` (when present) must all be
+identical, never three separate reads of "the current head".
 
 Derive `$verdict` mechanically, never by feel: `clean` only when every
 required check is `pass` (or non-required and `skipping`), the Codex cycle
@@ -276,10 +346,11 @@ already spent and something still needs a code fix — you do not decide the
 cap is spent yourself. `codex_cycle` carries `accepted` only when its
 `exit_code` is 0 or 10 (omit the key otherwise, never null).
 
-Validate before reporting it:
+Validate before reporting it — as the full envelope, the same `envelope` kind
+the readiness gate itself validates, not the bare `integrator` payload kind:
 
 ```sh
-node scripts/validate-result-schemas.mjs integrator "$out_file"
+node scripts/validate-result-schemas.mjs envelope "$out_file"
 ```
 
 A nonzero exit means fix the document and re-validate — never report an

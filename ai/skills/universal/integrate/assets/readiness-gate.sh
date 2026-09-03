@@ -16,10 +16,10 @@
 # Usage:
 #   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
 #       --record DIR --integrator-result FILE [--integration-cap N]
-#       [--allow-edited-root ID]...
+#       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
 #       --record DIR --integrator-result FILE [--integration-cap N]
-#       [--allow-edited-root ID]...
+#       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 #
 # `check` evaluates the gate for the adjudicated 40-hex head SHA and, on full
@@ -54,7 +54,7 @@
 #   codex-not-clean, disposition-unsettled                  (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
-#   usage                                                   (indeterminate)
+#   codex-stale, usage                                      (indeterminate)
 #
 # Two readiness conditions are deliberately NOT verified here, because no
 # API answers them — the caller must hold them as prose prerequisites:
@@ -77,11 +77,34 @@
 # Toward the local filesystem and GitHub alike, the gate itself writes
 # nothing: --integrator-result is a FILE the caller already has (the
 # dispatched integrator agent's own schema-valid result.envelope, role
-# integrator — see ai/agents/integrator.md and result.integrator.schema.json),
-# never a live state file this script pokes at or a helper it re-invokes.
+# integrator — see ai/agents/integrator.md and result.integrator.schema.json).
 # --record DIR is the dev-flow-v2 record directory render-dev-flow.mjs reads
 # to project current deferred-finding settlement (readiness-input), also
 # read-only.
+#
+# --codex-recheck STATE_FILE is the one place this script re-invokes a
+# helper against live state: a cached codex_cycle can go stale between the
+# dispatched integrator pass that produced --integrator-result and this gate
+# running — a badged Codex finding posted as a top-level comment or review
+# body in that window has no reply linkage and outranks a cached clean
+# result on the same head (AGENTS.md's terminal-result contract), yet
+# nothing about --integrator-result's own schema validity changes when that
+# happens. Rather than re-deriving that classification here — the file's own
+# stance a few paragraphs up ("classification belongs to the agent and the
+# checker it runs") — a clean exit_code 0 is reconfirmed by re-invoking
+# check-codex-cloud-review.sh's own `check` subcommand, read-only, against
+# STATE_FILE: the same sibling asset and the same on-disk state the
+# dispatched integrator agent itself drove (ai/agents/integrator.md §4),
+# never a state file this script creates or owns. `check` takes only a
+# transient advisory lock beside STATE_FILE (mkdir/rmdir, non-blocking) and,
+# for a state file already carrying a persisted timeout_min — every state
+# file a current integrator run produces — writes nothing else; it is not
+# exempt from the "gate writes nothing" claim above, only the one caller
+# that legitimately re-runs another script's read path instead of reading a
+# file directly. Omitting the flag skips this one extra guard, exactly like
+# --integration-cap below, rather than assuming freshness of any particular
+# kind — but every real caller (ai/skills/universal/integrate/SKILL.md's own
+# §6) always supplies it.
 
 set -euo pipefail
 
@@ -90,10 +113,10 @@ usage() {
 Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE [--integration-cap N]
-      [--allow-edited-root ID]...
+      [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE [--integration-cap N]
-      [--allow-edited-root ID]...
+      [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
@@ -119,6 +142,12 @@ codex_cycle.cycle never exceeds it — the resolved value is the caller's
 (this script does not read .devflow.toml), so omitting the flag simply
 skips this one extra guard rather than assuming a cap of any particular
 value.
+--codex-recheck STATE_FILE is optional and, when codex_cycle reports a clean
+exit_code 0, re-confirms it read-only by re-running check-codex-cloud-
+review.sh's own `check` against STATE_FILE (the same on-disk state the
+dispatched integrator agent drove) rather than trusting a result that may
+have gone stale since. Omitting it skips this one extra guard, the same way
+omitting --integration-cap does; every real caller supplies it.
 --allow-edited-root ID clears an edited-since-reply line for that thread
 root only — the named-exception rule: the caller's report must say why the
 edit needs no reply.
@@ -151,6 +180,20 @@ validate_result_schemas="$repo_root/scripts/validate-result-schemas.mjs"
 [ -f "$validate_result_schemas" ] ||
     die "$validate_result_schemas is missing"
 
+# check-codex-cloud-review.sh is THIS script's own sibling asset (both move
+# together under skills-sync), unlike render_dev_flow/validate_result_schemas
+# above which live outside the vendored skill package — so it is resolved
+# relative to this script's own directory instead. Only checked for
+# executability where --codex-recheck actually needs it, in
+# recheck_codex_freshness below, since the flag is optional.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+codex_checker="$script_dir/check-codex-cloud-review.sh"
+# The current-head Codex actor is a fixed platform constant (AGENTS.md's
+# current-head Codex cycle contract), not a per-repo or per-call setting —
+# hardcoded here exactly as ai/agents/integrator.md hardcodes it at its own
+# check-codex-cloud-review.sh call site.
+codex_actor_id=199175422
+
 # Bounded network calls where GNU timeout exists; a loud, unbounded fallback
 # where it does not (stock macOS ships neither `timeout` nor `gtimeout`).
 # This gate is mandatory for every promotion, so unlike the optional Codex
@@ -174,11 +217,12 @@ head=
 record_dir=
 integrator_result=
 integration_cap=
+codex_recheck_state=
 allowed_edited_roots='[]'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --allow-edited-root)
+    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --codex-recheck | --allow-edited-root)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
@@ -187,6 +231,7 @@ while [ "$#" -gt 0 ]; do
         --record) record_dir=$2 ;;
         --integrator-result) integrator_result=$2 ;;
         --integration-cap) integration_cap=$2 ;;
+        --codex-recheck) codex_recheck_state=$2 ;;
         --allow-edited-root)
             printf '%s' "$2" | grep -Eq '^[1-9][0-9]*$' ||
                 die "--allow-edited-root must be a thread root comment ID"
@@ -355,6 +400,31 @@ compute_fingerprint() {
     fingerprint="${fingerprint%% *}"
     [ -n "$fingerprint" ] ||
         indeterminate malformed-data "hashing produced an empty fingerprint"
+}
+
+# Re-confirms a cached codex_cycle.exit_code 0 against live GitHub state,
+# read-only, rather than trusting it unconditionally — see the --codex-recheck
+# paragraph in the header comment for why. Called only for exit_code 0
+# (harmon-devkit#639 gauntlet challenge round 1, finding 3): 10/11/12/13
+# already fail or stay non-terminal on their own, and a null codex_cycle has
+# nothing cached to go stale.
+recheck_codex_freshness() {
+    [ -n "$codex_recheck_state" ] ||
+        indeterminate codex-stale "codex_cycle reports a clean exit_code 0 but no --codex-recheck was given to reconfirm it against current GitHub state — a clean result can go stale between the integrator pass and this gate"
+    [ -x "$codex_checker" ] ||
+        die "$codex_checker is missing or not executable — cannot honor --codex-recheck"
+    [ -f "$codex_recheck_state" ] ||
+        indeterminate codex-stale "--codex-recheck $codex_recheck_state does not exist — cannot reconfirm the cached clean result"
+    state_repo="$(jq -r '.repo // empty' "$codex_recheck_state" 2>/dev/null)"
+    state_pr="$(jq -r '.pr // empty' "$codex_recheck_state" 2>/dev/null)"
+    state_head="$(jq -r '.head // empty' "$codex_recheck_state" 2>/dev/null)"
+    [ "$state_repo" = "$repo" ] && [ "$state_pr" = "$pr" ] && [ "$state_head" = "$head" ] ||
+        indeterminate codex-stale "--codex-recheck $codex_recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}, not the gated $repo#$pr@$head"
+    codex_recheck_exit=0
+    codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" 2>&1)" ||
+        codex_recheck_exit=$?
+    [ "$codex_recheck_exit" -eq 0 ] ||
+        indeterminate codex-stale "recheck of the cached clean Codex cycle no longer confirms it (check-codex-cloud-review.sh exited $codex_recheck_exit) — evidence went stale between the integrator pass and this gate; dispatch a fresh integrator pass rather than trusting the cached result: $codex_recheck_output"
 }
 
 if [ "$command_name" = fingerprint ]; then
@@ -838,7 +908,7 @@ if [ "$codex_cycle" != null ]; then
             indeterminate codex-cap-mismatch "codex_cycle.cycle $cycle_number exceeds --integration-cap $integration_cap"
     fi
     case "$codex_exit" in
-    0) ;;
+    0) recheck_codex_freshness ;;
     10 | 11 | 12 | 13)
         fail_condition codex-not-clean "the current-head Codex cycle exited $codex_exit, not terminal-clean"
         ;;

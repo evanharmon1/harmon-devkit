@@ -225,9 +225,12 @@ Only write-incapable reads are pre-approved (`git log`/`diff`/`show` accept
 `--output=<file>`, `git fetch` accepts `--upload-pack=<cmd>` — those prompt),
 plus exactly two of this skill's asset scripts by skill-directory path:
 `assets/gh-ro.sh`, the GET-only front door for the raw `gh api` reads below,
-and `assets/readiness-gate.sh`, which reads GitHub and — beyond the
-classifier's transient advisory lock beside an `--integrator-result` file it
-first proves is this PR's own — writes nothing. Dispatching the integrator
+and `assets/readiness-gate.sh`, which reads GitHub and — beyond the transient
+advisory lock its own `--codex-recheck` path takes beside that flag's state
+file, by re-invoking `check-codex-cloud-review.sh`'s own `check` subcommand
+read-only to reconfirm a clean codex_cycle is not stale — writes nothing.
+`--integrator-result` itself is a plain file the gate only ever reads, never
+locks. Dispatching the integrator
 agent is not one of these grants either: it is a separate trust boundary with
 its own, much narrower write allowance (the brokered trigger comment and
 orchestrator-supplied reply text — see `ai/agents/integrator.md`), not
@@ -1008,7 +1011,10 @@ that loops indefinitely:
    ```sh
    "${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check \
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
-     --integrator-result <file>   # the LAST dispatched integrator agent's
+     --record <dir> \             # the same dev-flow-v2 record directory
+                                  # §5's render-dev-flow.sh calls read —
+                                  # required, never skippable
+     --integrator-result <file> \ # the LAST dispatched integrator agent's
                                   # validated result.integrator for this
                                   # exact head — never a stale or a
                                   # different-head result. A null
@@ -1019,6 +1025,19 @@ that loops indefinitely:
                                   # flag to pass or avoid, so the condition
                                   # can never be skipped by silence nor by a
                                   # false claim
+     --integration-cap <n> \      # harmon-devkit#685: the resolved
+                                  # integration cap, cross-checked against
+                                  # codex_cycle's own cap-0/cycle-ceiling
+                                  # invariants
+     --codex-recheck <state file> # the integrator's own check-codex-cloud-
+                                  # review.sh state file for this repo/PR —
+                                  # `git rev-parse --git-path
+                                  # "integrate-codex/$repo/<n>.json"`, the
+                                  # same path §2's settle recipe resolves.
+                                  # Re-confirms a clean codex_cycle against
+                                  # live GitHub state before trusting it,
+                                  # since a cached clean result can go stale
+                                  # between the dispatched pass and this gate
    ```
 
    `--head` is the head whose CI, Codex result, comments, and deferred

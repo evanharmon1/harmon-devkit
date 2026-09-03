@@ -15,7 +15,7 @@ ai/skills/
 │   ├── kickoff/SKILL.md     # /kickoff — get oriented + name the session
 │   ├── breakdown/SKILL.md   # /breakdown — decompose work into session-sized issues
 │   ├── claim/SKILL.md       # /claim — sanity-check + claim the issue
-│   ├── implement/SKILL.md   # /implement — claimed issue → ready-for-review PR via the dev loop
+│   ├── implement/SKILL.md   # /implement — claimed issue → draft PR via the dev loop, then hands off
 │   ├── gauntlet/SKILL.md    # /gauntlet — second-model review to convergence → draft PR
 │   ├── integrate/SKILL.md   # /integrate — integrate a draft PR to ready for review
 │   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables

@@ -304,6 +304,47 @@ run_audit() {
     check_watchdog "$gate_rc" run_audit "$gate_out"
 }
 
+# --codex-recheck's target is resolved as readiness-gate.sh's own sibling
+# (script_dir/check-codex-cloud-review.sh), so proving a clean recheck
+# actually unblocks the gate means giving it a REAL sibling — a copy of the
+# gate beside a fake checker stub scripted via $RECHECK_FAKE_EXIT — rather
+# than driving the real checker's full GitHub call sequence end to end
+# (scripts/test-integrate-codex.sh owns that coverage; this file only proves
+# the wiring). The stub is #!/bin/sh with no external calls, so it execs
+# correctly even under the restricted-PATH fixture further down.
+recheck_dir="${test_tmp}/recheck-gate"
+mkdir -p "$recheck_dir"
+cp "$gate" "${recheck_dir}/readiness-gate.sh"
+chmod +x "${recheck_dir}/readiness-gate.sh"
+cat >"${recheck_dir}/check-codex-cloud-review.sh" <<'STUB'
+#!/bin/sh
+exit "${RECHECK_FAKE_EXIT:-0}"
+STUB
+chmod +x "${recheck_dir}/check-codex-cloud-review.sh"
+recheck_gate="${recheck_dir}/readiness-gate.sh"
+
+# recheck_codex_freshness checks repo/pr/head against the gate's own before
+# ever invoking the checker, so these three fields are the only ones that
+# matter here — a real check-codex-cloud-review.sh state file carries much
+# more (phase, trigger, timestamps), but the fake stub above never reads it.
+recheck_state="${fixtures}/codex-recheck-state.json"
+jq -cn --arg repo example/repo --argjson pr 493 --arg head "$head_sha" \
+    '{repo:$repo, pr:$pr, head:$head}' >"$recheck_state"
+
+# Runs $recheck_gate (the copy with the fake checker sibling) in place of the
+# real gate for exactly one run_gate call, with the fake checker scripted to
+# exit clean — for the handful of "codex_cycle exit_code 0" tests elsewhere
+# in this file that need --codex-recheck to actually confirm freshness
+# rather than merely be present.
+run_gate_recheck_clean() {
+    local saved_gate="$gate"
+    gate="$recheck_gate"
+    export RECHECK_FAKE_EXIT=0
+    run_gate --codex-recheck "$recheck_state" "$@"
+    unset RECHECK_FAKE_EXIT
+    gate="$saved_gate"
+}
+
 # The gate emits its verdict as the final line; earlier lines are incidental
 # stderr from the tools it drives.
 gate_field() {
@@ -327,13 +368,13 @@ assert_gate() {
 echo "==> full pass (Codex cycle terminal-clean) prints a fingerprint, stable across two runs on identical data"
 write_defaults
 clean_result="$(write_integrator_result clean "$(codex_cycle_json 0)")"
-run_gate --integrator-result "$clean_result"
+run_gate_recheck_clean --integrator-result "$clean_result"
 assert_gate 0 pass ready
 first_fingerprint="$(gate_field fingerprint)"
 [ -n "$first_fingerprint" ] && [ "$first_fingerprint" != "null" ] ||
     fail "pass did not print a fingerprint: $gate_out"
 rm -f "${fixtures}/pr-view-count"
-run_gate --integrator-result "$clean_result"
+run_gate_recheck_clean --integrator-result "$clean_result"
 assert_gate 0 pass ready
 second_fingerprint="$(gate_field fingerprint)"
 [ "$first_fingerprint" = "$second_fingerprint" ] ||
@@ -1097,7 +1138,7 @@ assert_gate 2 indeterminate codex-indeterminate
 echo "==> --integration-cap is advisory: omitting it skips the cap checks entirely"
 write_defaults
 clean_result="$(write_integrator_result cap-omitted "$(codex_cycle_json 0)")"
-run_gate --integrator-result "$clean_result"
+run_gate_recheck_clean --integrator-result "$clean_result"
 assert_gate 0 pass ready
 
 echo "==> a non-null codex_cycle against --integration-cap 0 is codex-cap-mismatch"
@@ -1120,7 +1161,7 @@ echo "==> codex_cycle.cycle within --integration-cap passes"
 write_defaults
 cycle_two="$(jq -c '.cycle = 2' <<<"$(codex_cycle_json 0)")"
 clean_result="$(write_integrator_result cap-cycle-ok "$cycle_two")"
-run_gate --integrator-result "$clean_result" --integration-cap 2
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 2
 assert_gate 0 pass ready
 
 echo "==> codex_cycle.cycle exceeding --integration-cap is codex-cap-mismatch"
@@ -1129,6 +1170,52 @@ cycle_three="$(jq -c '.cycle = 3' <<<"$(codex_cycle_json 0)")"
 clean_result="$(write_integrator_result cap-cycle-exceeded "$cycle_three")"
 run_gate --integrator-result "$clean_result" --integration-cap 2
 assert_gate 2 indeterminate codex-cap-mismatch
+
+# --codex-recheck (harmon-devkit#639 gauntlet challenge round 1, finding 3):
+# a cached codex_cycle.exit_code 0 can go stale between the dispatched
+# integrator pass and this gate, so a clean exit_code 0 reconfirms itself
+# against live state rather than being trusted unconditionally. All four
+# cases below are cap-agnostic — no --integration-cap involved — since the
+# recheck applies whenever codex_cycle reports exit_code 0, independent of
+# whether a cap was given at all.
+
+echo "==> a clean codex_cycle with no --codex-recheck is codex-stale"
+write_defaults
+recheck_missing_result="$(write_integrator_result recheck-missing "$(codex_cycle_json 0)")"
+run_gate --integrator-result "$recheck_missing_result"
+assert_gate 2 indeterminate codex-stale
+
+echo "==> --codex-recheck naming a file that does not exist is codex-stale"
+write_defaults
+recheck_absent_result="$(write_integrator_result recheck-absent "$(codex_cycle_json 0)")"
+run_gate --integrator-result "$recheck_absent_result" \
+    --codex-recheck "${fixtures}/does-not-exist.json"
+assert_gate 2 indeterminate codex-stale
+
+echo "==> --codex-recheck naming a state file for a different repo/pr/head is codex-stale"
+write_defaults
+recheck_mismatch_result="$(write_integrator_result recheck-mismatch "$(codex_cycle_json 0)")"
+mismatched_state="${fixtures}/codex-recheck-state-mismatched.json"
+jq -cn --arg repo other/repo --argjson pr 1 --arg head "$moved_sha" \
+    '{repo:$repo, pr:$pr, head:$head}' >"$mismatched_state"
+run_gate --integrator-result "$recheck_mismatch_result" \
+    --codex-recheck "$mismatched_state"
+assert_gate 2 indeterminate codex-stale
+
+echo "==> --codex-recheck against a real but not-yet-attached state is codex-stale (the real checker, exit 2)"
+write_defaults
+recheck_disagree_result="$(write_integrator_result recheck-disagrees "$(codex_cycle_json 0)")"
+not_attached_state="${fixtures}/codex-recheck-state-not-attached.json"
+jq -cn --arg repo example/repo --argjson pr 493 --arg head "$head_sha" \
+    '{version:2, repo:$repo, pr:$pr, head:$head, attempt:1, phase:"reserved",
+      settled:null, cycle_requested_at:null,
+      previous_trigger_comment_id:null, timeout_min:15}' \
+    >"$not_attached_state"
+run_gate --integrator-result "$recheck_disagree_result" \
+    --codex-recheck "$not_attached_state"
+assert_gate 2 indeterminate codex-stale
+printf '%s\n' "$gate_out" | grep -Fq 'not attached' ||
+    fail "codex-stale did not surface the real checker's own complaint: $gate_out"
 
 # promotion.head equals the final integrator result's head AND its
 # accepted-cycle reviewed commit; a stale pass cannot certify a newer head.
@@ -1306,10 +1393,16 @@ for hasher in sha256sum shasum; do
     [ -z "$hasher_path" ] || ln -s "$hasher_path" "${restricted_bin}/$hasher"
 done
 ln -s "${bin_dir}/gh" "${restricted_bin}/gh"
+# $recheck_gate (not $gate) and RECHECK_FAKE_EXIT=0: codex_cycle here is
+# exit_code 0, so recheck_codex_freshness runs and needs its fake checker
+# sibling to confirm clean — see run_gate_recheck_clean's comment above. The
+# fake stub is #!/bin/sh with no external calls, so it execs fine under this
+# restricted PATH too.
 set +e
-gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" env PATH="$restricted_bin" \
-    "$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --record "$record_dir" --integrator-result "$clean_result" 2>&1)"
+gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" env PATH="$restricted_bin" RECHECK_FAKE_EXIT=0 \
+    "$recheck_gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" --integrator-result "$clean_result" \
+    --codex-recheck "$recheck_state" 2>&1)"
 gate_rc=$?
 set -e
 check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
