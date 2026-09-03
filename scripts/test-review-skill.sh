@@ -91,6 +91,26 @@ set -e
 grep -Fq 'only the feature-branch owner' "$tmp/lane-push.out" ||
     fail "single-writer rejection was not reported"
 
+echo "==> monitor rejects out-of-order and stale reconciliation"
+ordered_state="$tmp/ordered-monitor.json"
+"$monitor" reserve --state "$ordered_state" --event e1 --action comment \
+    --expected-head "$head" --writer feature-owner >/dev/null
+"$monitor" reserve --state "$ordered_state" --event e2 --action comment \
+    --expected-head "$head" --writer feature-owner >/dev/null
+jq -n --arg head "$head" '{status: "landed", event: "e2", action: "comment", head: $head}' >"$tmp/e2.json"
+set +e
+"$monitor" reconcile --state "$ordered_state" --event e2 --observed "$tmp/e2.json" >"$tmp/e2.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "out-of-order action advanced the monitor cursor"
+grep -Fq 'out of reservation order' "$tmp/e2.out" || fail "out-of-order refusal was not reported"
+jq -n --arg head "$head" '{status: "landed", event: "e1", action: "comment", head: $head}' >"$tmp/e1.json"
+"$monitor" reconcile --state "$ordered_state" --event e1 --observed "$tmp/e1.json" >/dev/null
+"$monitor" reconcile --state "$ordered_state" --event e2 --observed "$tmp/e2.json" >/dev/null
+jq -n '{status: "absent"}' >"$tmp/stale.json"
+"$monitor" reconcile --state "$ordered_state" --event e2 --observed "$tmp/stale.json" |
+    grep -Fq 'adopt e2' || fail "adopted action was retryable"
+
 echo "==> monitor serializes concurrent reservations"
 concurrent_state="$tmp/concurrent-monitor.json"
 for number in $(seq 1 20); do

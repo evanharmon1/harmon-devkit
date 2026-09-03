@@ -23,11 +23,13 @@ describe a new tree.
 ## Dispatch and receipt
 
 The dispatcher is a capability boundary: dispatch a challenger or reviewer
-only through a harness that denies shell, workspace, git, `gh`, network write,
-and external credentials, except for the result-return channel. If that cannot
-be installed and verified, refuse the dispatch and record a blocker; prose in
-the agent file is never a substitute for this boundary. Give every pass the
-captured base/head, run identity, prior finding ids, policy, and finder slot.
+only through a harness that provides a read-only reviewed snapshot (the
+captured diff, source content, and applicable design record) while denying
+shell, git, `gh`, network write, and external credentials, except for the
+result-return channel. If that read/write split cannot be installed and
+verified, refuse the dispatch and record a blocker; prose in the agent file is
+never a substitute for this boundary. Give every pass the captured base/head,
+run identity, prior finding ids, policy, finder slot, and that snapshot.
 
 For `challenge`, dispatch every primary finder in `[stage.challenge].finders`
 to the `challenger` role. For `review`, do the same for

@@ -99,9 +99,25 @@ reconcile)
     jq -e '.version == 1 and (.actions | type == "array")' "$state" >/dev/null || die "invalid state"
     reservation="$(jq -c --arg event "$event" '.actions[] | select(.event == $event)' "$state")"
     [ -n "$reservation" ] || die "unknown reservation $event"
+    reservation_state="$(jq -r '.state' <<<"$reservation")"
+    case "$reservation_state" in
+    adopted)
+        # A stale re-arm must adopt the durable result, not retry a write
+        # already known to have landed.
+        printf 'adopt %s\n' "$event"
+        exit 0
+        ;;
+    reserved) ;;
+    *) die "reservation $event is not actionable" ;;
+    esac
     status="$(jq -r '.status // empty' "$observed")"
     case "$status" in
     landed)
+        jq -e --arg event "$event" '
+            . as $state |
+            [$state.actions[].event] | index($event) as $index |
+            [$state.actions[0:$index][] | select(.state != "adopted")] | length == 0
+        ' "$state" >/dev/null || die "cannot adopt $event out of reservation order"
         expected_action="$(jq -r '.action' <<<"$reservation")"
         expected_head_value="$(jq -r '.expected_head' <<<"$reservation")"
         jq -e --arg event "$event" --arg action "$expected_action" --arg head "$expected_head_value" '

@@ -1429,7 +1429,12 @@ async function main() {
       reason: "pre_adjudication",
       action: "adjudicate",
       corrections,
-      verified_findings: rounds.flatMap((r) =>
+      // Do not offer an adjudication target from an incomplete or
+      // ancestry-invalidated round. applyVerification still receives the
+      // full retained ancestry above so repeat/fingerprint facts can be
+      // checked, while this projection exposes only the complete trajectory
+      // the caller may now adjudicate.
+      verified_findings: ancestryRetainedForVerification.filter((r) => r.status === "complete").flatMap((r) =>
         r.findings.map((f) => ({
           id: f.id,
           provenance_status: f.provenanceStatus,
