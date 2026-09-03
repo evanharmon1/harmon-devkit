@@ -11,7 +11,8 @@ Usage:
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh active-path --branch BRANCH [--repo-root DIR]
   dev-flow-monitor.sh activate --active-state FILE --run-id ID --branch BRANCH \
-    --expected-generation N --writer feature-owner [--repo-root DIR]
+    --expected-generation N --registry-revision SHA --writer feature-owner \
+    [--repo-root DIR]
   dev-flow-monitor.sh reserve --state FILE --event ID --action assembly|push|comment \
     --expected-head SHA --writer feature-owner --active-state FILE --run-id ID \
     --branch BRANCH --generation N [--repo-root DIR] \
@@ -37,6 +38,41 @@ die() {
     printf 'dev-flow-monitor: %s\n' "$*" >&2
     exit 2
 }
+
+sha256_stream() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        die "sha256sum or shasum is required"
+    fi
+}
+
+held_lock_dir=""
+release_lock() {
+    if [ -n "$held_lock_dir" ]; then
+        rmdir "$held_lock_dir" 2>/dev/null || true
+        held_lock_dir=""
+    fi
+}
+
+acquire_lock() {
+    candidate_lock_dir="${1}.lock"
+    lock_attempts=0
+    while ! mkdir "$candidate_lock_dir" 2>/dev/null; do
+        if [ -e "$candidate_lock_dir" ] && [ ! -d "$candidate_lock_dir" ]; then
+            die "cannot create monitor lock $candidate_lock_dir"
+        fi
+        lock_attempts=$((lock_attempts + 1))
+        [ "$lock_attempts" -lt 600 ] ||
+            die "monitor state remains locked; inspect $candidate_lock_dir before retrying"
+        sleep 0.1
+    done
+    held_lock_dir="$candidate_lock_dir"
+}
+
+trap release_lock EXIT
 
 command_name="${1:-}"
 shift || true
@@ -127,11 +163,15 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ "$command_name" = "state-path" ]; then
+state_path() {
     [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "run id is missing or unsafe"
     common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
         die "could not resolve git common directory"
     printf '%s/dev-flow-v2/runs/%s/monitor.json\n' "$common_dir" "$run_id"
+}
+
+if [ "$command_name" = "state-path" ]; then
+    state_path
     exit 0
 fi
 
@@ -139,7 +179,7 @@ active_path() {
     local common_dir branch_key
     common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
         die "could not resolve git common directory"
-    branch_key="$(printf '%s' "$branch" | sha256sum | awk '{print $1}')"
+    branch_key="$(printf '%s' "$branch" | sha256_stream)"
     printf '%s/dev-flow-v2/active/%s.json\n' "$common_dir" "$branch_key"
 }
 
@@ -150,19 +190,23 @@ if [ "$command_name" = "active-path" ]; then
 fi
 
 if [ "$command_name" = "activate" ]; then
-    command -v flock >/dev/null 2>&1 || die "flock is required"
     [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "run id is missing or unsafe"
     [ -n "$branch" ] && [ -n "$active_state" ] && [ "$writer" = "feature-owner" ] || usage
     [[ "$expected_generation" =~ ^(0|[1-9][0-9]*)$ ]] || die "expected generation must be a non-negative integer"
+    [[ "$registry_revision" =~ ^[0-9a-f]{40}$ ]] ||
+        die "activation requires a full kickoff-pinned registry revision"
+    git -C "$repo_root" show "${registry_revision}:agent-registry.json" >/dev/null 2>&1 ||
+        die "could not read agent-registry.json at the kickoff-pinned revision"
     [ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
     mkdir -p "$(dirname "$active_state")"
-    exec 8>"${active_state}.lock"
-    flock -x 8
+    acquire_lock "$active_state"
     if [ -e "$active_state" ]; then
         # Re-arm after a crash that landed the activation: adopt the exact
         # already-active generation instead of superseding it a second time.
-        if jq -e --arg run "$run_id" --arg branch "$branch" --argjson next "$((expected_generation + 1))" '
-            .version == 1 and .run_id == $run and .branch == $branch and .generation == $next
+        if jq -e --arg run "$run_id" --arg branch "$branch" --arg registry "$registry_revision" \
+            --argjson next "$((expected_generation + 1))" '
+            .version == 1 and .run_id == $run and .branch == $branch and
+            .generation == $next and .registry_revision == $registry
         ' "$active_state" >/dev/null; then
             printf '%s\n' "$((expected_generation + 1))"
             exit 0
@@ -176,29 +220,29 @@ if [ "$command_name" = "activate" ]; then
         die "active run generation changed (expected $expected_generation, found $current_generation)"
     next_generation=$((expected_generation + 1))
     active_tmp="${active_state}.tmp.$$"
-    jq -n --arg run "$run_id" --arg branch "$branch" --argjson generation "$next_generation" \
-        '{version: 1, run_id: $run, branch: $branch, generation: $generation}' >"$active_tmp"
+    jq -n --arg run "$run_id" --arg branch "$branch" --arg registry "$registry_revision" \
+        --argjson generation "$next_generation" \
+        '{version: 1, run_id: $run, branch: $branch, generation: $generation,
+          registry_revision: $registry}' >"$active_tmp"
     mv "$active_tmp" "$active_state"
     printf '%s\n' "$next_generation"
     exit 0
 fi
 
 [ -n "$state" ] && [ -n "$event" ] || usage
-command -v flock >/dev/null 2>&1 || die "flock is required"
 [ -n "$active_state" ] && [ -n "$run_id" ] && [ -n "$branch" ] || usage
+[[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "run id is missing or unsafe"
 [[ "$generation" =~ ^[1-9][0-9]*$ ]] || die "generation must be a positive integer"
 [ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
-exec 8>"${active_state}.lock"
-flock -x 8
+expected_state="$(state_path)"
+[ "$state" = "$expected_state" ] || die "monitor state path is not canonical for this run"
+acquire_lock "$active_state"
 jq -e --arg run "$run_id" --arg branch "$branch" --argjson generation "$generation" '
-    .version == 1 and .run_id == $run and .branch == $branch and .generation == $generation
+    .version == 1 and .run_id == $run and .branch == $branch and
+    .generation == $generation and
+    (.registry_revision | type == "string" and test("^[0-9a-f]{40}$"))
 ' "$active_state" >/dev/null || die "run is no longer active for this branch generation"
 mkdir -p "$(dirname "$state")"
-# The state is a read-modify-write record shared by monitor re-arms. Keep the
-# lock beside it so callers with the same durable state serialize both reserve
-# and reconciliation; a temp-file rename alone cannot prevent lost updates.
-exec 9>"${state}.lock"
-flock -x 9
 case "$command_name" in
 reserve)
     [ -n "$action" ] && [ -n "$expected_head" ] && [ -n "$writer" ] || usage
@@ -208,6 +252,9 @@ reserve)
         [[ "$trusted_actor_id" =~ ^[1-9][0-9]*$ ]] || die "comment reservation requires a trusted actor id"
         [[ "$registry_revision" =~ ^[0-9a-f]{40}$ ]] ||
             die "comment reservation requires a full run-pinned registry revision"
+        active_registry_revision="$(jq -r '.registry_revision' "$active_state")"
+        [ "$registry_revision" = "$active_registry_revision" ] ||
+            die "registry revision does not match the active run"
         [ -n "$marker" ] || die "comment reservation requires a deterministic marker"
         [[ "$payload_digest" =~ ^[0-9a-f]{64}$ ]] || die "comment reservation requires a SHA-256 payload digest"
         # The actor ID is evidence, not authority. Resolve authority from the
@@ -302,7 +349,7 @@ reconcile)
                 ' "$observed")"
             while IFS= read -r candidate; do
                 [ -n "$candidate" ] || continue
-                actual_digest="$(jq -j '.body' <<<"$candidate" | sha256sum | awk '{print $1}')"
+                actual_digest="$(jq -j '.body' <<<"$candidate" | sha256_stream)"
                 [ "$actual_digest" = "$expected_digest" ] || continue
                 comment_id="$(jq -r '.comment_id' <<<"$candidate")"
                 break

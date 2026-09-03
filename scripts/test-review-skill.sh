@@ -9,6 +9,13 @@ fail() {
     echo "FAIL: $*" >&2
     exit 1
 }
+sha256_stream() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    else
+        shasum -a 256 | awk '{print $1}'
+    fi
+}
 skill="ai/skills/universal/review/SKILL.md"
 fixture="ai/schemas/fixtures/exit/single-round-clean-converge"
 render_record="ai/schemas/fixtures/render/record"
@@ -24,6 +31,14 @@ for text in '[stage.challenge].finders' '[stage.review].finders' challenger revi
 done
 grep -Fq 'synthesis_of' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not preserve council synthesis provenance"
+for model_skill in "$skill" ai/skills/universal/orchestrator/SKILL.md; do
+    ! grep -Fq 'disable-model-invocation: true' "$model_skill" ||
+        fail "$model_skill is not model-invocable"
+    grep -Fq 'Use when' "$model_skill" || fail "$model_skill has no model discovery trigger"
+done
+! grep -Eq '(^|[[:space:]])flock([[:space:]]|$)' "$monitor" ||
+    fail "monitor depends on non-portable flock"
+grep -Fq 'shasum -a 256' "$monitor" || fail "monitor has no stock-macOS SHA-256 fallback"
 
 echo "==> fixture-driven review-stage dry run converges"
 set +e
@@ -91,7 +106,6 @@ common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
 resolved_state="$("$monitor" state-path --run-id fixture-run)"
 [ "$resolved_state" = "$common_dir/dev-flow-v2/runs/fixture-run/monitor.json" ] ||
     fail "monitor state did not resolve through the git common directory"
-state="$tmp/monitor.json"
 trusted_actor_id="199175422"
 trust_repo="$tmp/trust-repo"
 git init -q "$trust_repo"
@@ -109,7 +123,11 @@ registry_revision="$(git -C "$trust_repo" rev-parse HEAD)"
 branch="feat/fixture-run"
 active_state="$("$monitor" active-path --branch "$branch" --repo-root "$trust_repo")"
 generation="$("$monitor" activate --active-state "$active_state" --run-id fixture-run \
-    --branch "$branch" --expected-generation 0 --writer feature-owner --repo-root "$trust_repo")"
+    --branch "$branch" --expected-generation 0 --registry-revision "$registry_revision" \
+    --writer feature-owner --repo-root "$trust_repo")"
+jq -e --arg registry "$registry_revision" '.registry_revision == $registry' "$active_state" >/dev/null ||
+    fail "active run did not pin its registry revision"
+state="$("$monitor" state-path --run-id fixture-run --repo-root "$trust_repo")"
 active_args=(--active-state "$active_state" --run-id fixture-run --branch "$branch"
     --generation "$generation" --repo-root "$trust_repo")
 monitor_reserve() {
@@ -120,17 +138,35 @@ monitor_reconcile() {
 }
 comment_marker="dev-flow:fixture-run:challenge:1"
 comment_body="<!-- $comment_marker --> fixture evidence"
-comment_digest="$(printf '%s' "$comment_body" | sha256sum | awk '{print $1}')"
+comment_digest="$(printf '%s' "$comment_body" | sha256_stream)"
 set +e
-monitor_reserve --state "$tmp/untrusted-reservation.json" --event forged-trust --action comment \
-    --expected-head "$head" --writer feature-owner --trusted-actor-id 1 \
+monitor_reserve --state "$state" --event forged-revision --action comment \
+    --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
     --registry-revision "$untrusted_registry_revision" \
+    --marker "$comment_marker" --payload-digest "$comment_digest" >"$tmp/forged-revision.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "caller-selected registry revision bypassed the active run"
+grep -Fq 'registry revision does not match the active run' "$tmp/forged-revision.out" ||
+    fail "active-run registry-revision rejection was not reported"
+set +e
+monitor_reserve --state "$state" --event forged-trust --action comment \
+    --expected-head "$head" --writer feature-owner --trusted-actor-id 1 \
+    --registry-revision "$registry_revision" \
     --marker "$comment_marker" --payload-digest "$comment_digest" >"$tmp/forged-trust.out" 2>&1
 status=$?
 set -e
 [ "$status" -eq 2 ] || fail "caller-declared actor bypassed the run-pinned registry trust root"
 grep -Fq 'not trusted by the run-pinned registry revision' "$tmp/forged-trust.out" ||
     fail "registry-rooted actor rejection was not reported"
+set +e
+monitor_reserve --state "$tmp/noncanonical-monitor.json" --event split-ledger --action assembly \
+    --expected-head "$head" --writer feature-owner >"$tmp/noncanonical.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "non-canonical monitor state path was accepted"
+grep -Fq 'monitor state path is not canonical for this run' "$tmp/noncanonical.out" ||
+    fail "non-canonical monitor state rejection was not reported"
 monitor_reserve --state "$state" --event crash-write --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
     --registry-revision "$registry_revision" \
@@ -189,41 +225,64 @@ grep -Fq 'only the feature-branch owner' "$tmp/lane-push.out" ||
     fail "single-writer rejection was not reported"
 
 echo "==> monitor rejects out-of-order and stale reconciliation"
-ordered_state="$tmp/ordered-monitor.json"
-monitor_reserve --state "$ordered_state" --event e1 --action assembly \
+ordered_run_id="ordered-run"
+ordered_branch="feat/ordered-run"
+ordered_active_state="$("$monitor" active-path --branch "$ordered_branch" --repo-root "$trust_repo")"
+ordered_generation="$("$monitor" activate --active-state "$ordered_active_state" \
+    --run-id "$ordered_run_id" --branch "$ordered_branch" --expected-generation 0 \
+    --registry-revision "$registry_revision" --writer feature-owner --repo-root "$trust_repo")"
+ordered_state="$("$monitor" state-path --run-id "$ordered_run_id" --repo-root "$trust_repo")"
+ordered_args=(--active-state "$ordered_active_state" --run-id "$ordered_run_id"
+    --branch "$ordered_branch" --generation "$ordered_generation" --repo-root "$trust_repo")
+"$monitor" reserve "${ordered_args[@]}" --state "$ordered_state" --event e1 --action assembly \
     --expected-head "$head" --writer feature-owner >/dev/null
-monitor_reserve --state "$ordered_state" --event e2 --action assembly \
+"$monitor" reserve "${ordered_args[@]}" --state "$ordered_state" --event e2 --action assembly \
     --expected-head "$head" --writer feature-owner >/dev/null
 jq -n --arg head "$head" '{status: "landed", event: "e2", action: "assembly", head: $head}' >"$tmp/e2.json"
 set +e
-monitor_reconcile --state "$ordered_state" --event e2 --observed "$tmp/e2.json" >"$tmp/e2.out" 2>&1
+"$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
+    --observed "$tmp/e2.json" >"$tmp/e2.out" 2>&1
 status=$?
 set -e
 [ "$status" -eq 2 ] || fail "out-of-order action advanced the monitor cursor"
 grep -Fq 'out of reservation order' "$tmp/e2.out" || fail "out-of-order refusal was not reported"
 jq -n --arg head "$head" '{status: "landed", event: "e1", action: "assembly", head: $head}' >"$tmp/e1.json"
-monitor_reconcile --state "$ordered_state" --event e1 --observed "$tmp/e1.json" >/dev/null
-monitor_reconcile --state "$ordered_state" --event e2 --observed "$tmp/e2.json" >/dev/null
+"$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e1 \
+    --observed "$tmp/e1.json" >/dev/null
+"$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
+    --observed "$tmp/e2.json" >/dev/null
 jq -n '{status: "absent"}' >"$tmp/stale.json"
-monitor_reconcile --state "$ordered_state" --event e2 --observed "$tmp/stale.json" |
+"$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
+    --observed "$tmp/stale.json" |
     grep -Fq 'adopt e2' || fail "adopted action was retryable"
 
 echo "==> monitor serializes concurrent reservations"
-concurrent_state="$tmp/concurrent-monitor.json"
+concurrent_run_id="concurrent-run"
+concurrent_branch="feat/concurrent-run"
+concurrent_active_state="$("$monitor" active-path --branch "$concurrent_branch" --repo-root "$trust_repo")"
+concurrent_generation="$("$monitor" activate --active-state "$concurrent_active_state" \
+    --run-id "$concurrent_run_id" --branch "$concurrent_branch" --expected-generation 0 \
+    --registry-revision "$registry_revision" --writer feature-owner --repo-root "$trust_repo")"
+concurrent_state="$("$monitor" state-path --run-id "$concurrent_run_id" --repo-root "$trust_repo")"
+concurrent_args=(--active-state "$concurrent_active_state" --run-id "$concurrent_run_id"
+    --branch "$concurrent_branch" --generation "$concurrent_generation" --repo-root "$trust_repo")
 for number in $(seq 1 20); do
-    monitor_reserve --state "$concurrent_state" --event "concurrent-$number" --action assembly \
+    "$monitor" reserve "${concurrent_args[@]}" --state "$concurrent_state" \
+        --event "concurrent-$number" --action assembly \
         --expected-head "$head" --writer feature-owner >"$tmp/concurrent-$number.out" &
 done
 wait
 jq -e '[.actions[] | select(.state == "reserved")] | length == 20' "$concurrent_state" >/dev/null ||
     fail "concurrent reservations lost monitor state"
+[ ! -e "${concurrent_active_state}.lock" ] || fail "monitor left its portable lock behind"
 
 echo "==> monitor rejects a superseded run at the same head"
 replacement_generation="$("$monitor" activate --active-state "$active_state" --run-id replacement-run \
-    --branch "$branch" --expected-generation "$generation" --writer feature-owner --repo-root "$trust_repo")"
+    --branch "$branch" --expected-generation "$generation" --registry-revision "$registry_revision" \
+    --writer feature-owner --repo-root "$trust_repo")"
 [ "$replacement_generation" -eq $((generation + 1)) ] || fail "replacement run did not advance generation"
 set +e
-monitor_reserve --state "$tmp/stale-run.json" --event stale-run --action push \
+monitor_reserve --state "$state" --event stale-run --action push \
     --expected-head "$head" --writer feature-owner >"$tmp/stale-run.out" 2>&1
 status=$?
 set -e

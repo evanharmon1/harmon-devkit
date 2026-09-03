@@ -30,10 +30,13 @@ appending to a worktree's `.git` path (which is a file in linked worktrees).
 `<git-common-dir>/dev-flow-v2/runs/<run-id>/monitor.json` path. Keep
 the schema-valid `run.json` beside it. Resolve the branch's shared active pointer
 with `active-path`, and activate a new run by compare-and-swap from the prior
-generation. Every `reserve` and `reconcile` supplies that canonical active path,
-run ID, branch, and generation; a superseded run blocks even when it presents
-the same expected head. Before assembly, push, or comment, first reserve an
-event/action/expected-head in monitor state; never reserve or replay a merge.
+generation while passing the kickoff-pinned registry revision; the resulting
+active pointer is the run's immutable registry binding. Every `reserve` and
+`reconcile` supplies that canonical active path, run ID, branch, and generation,
+and derives the canonical monitor-state path from the run ID; a superseded run
+blocks even when it presents the same expected head. Before assembly, push, or
+comment, first reserve an event/action/expected-head in monitor state; never
+reserve or replay a merge.
 For comments, also reserve the trusted immutable actor ID, deterministic marker,
 SHA-256 digest of the exact body, and kickoff-pinned registry revision; the
 monitor must resolve actor trust from that immutable registry snapshot, never

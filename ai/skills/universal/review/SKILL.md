@@ -34,6 +34,11 @@ For `challenge`, dispatch every primary finder in `[stage.challenge].finders`
 to the `challenger` role. For `review`, do the same for
 `[stage.review].finders` using the `reviewer` role. Retry a failed finder only
 through its configured `finder_fallbacks`; do not silently reduce coverage.
+The registry invocation is the role's evidence source, not itself a result
+envelope: the dispatched role binds that output to the supplied run, scope,
+round, slot, and producer identity and returns `result.challenger` or
+`result.reviewer`. A harness that cannot enforce that binding makes the finder
+unavailable; the orchestrator never fabricates runtime-attested envelope data.
 Reject a result until `scripts/validate-result-schemas.mjs envelope` validates
 it and its run, base, head, stage, round, finder, and previously seen ids match
 the captured scope. Persist each immutable accepted result in `passes/` before
@@ -67,7 +72,8 @@ exact replayable body before posting; the rendered table alone is never the
 durable evidence. Before any GitHub write, compute the exact body digest and
 reserve the comment through `scripts/dev-flow-monitor.sh reserve`, binding the
 active run generation, expected head, deterministic run/stage/round/sequence
-marker, actor ID, and the run's kickoff-pinned registry revision. Only then
+marker, actor ID, and the registry revision pinned into the active run at
+kickoff. Only then
 post. On re-arm, fetch the complete bounded comment candidate set and pass it to
 `reconcile`; the monitor validates the actor against that pinned registry,
 hashes each candidate body, and adopts the lowest authenticated matching
