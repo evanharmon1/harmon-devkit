@@ -2641,4 +2641,10 @@ set -e
 [ "$rc" -eq 3 ] || fail "registry-trust-record-before-index: expected indeterminate (untrusted at record-post time, even though a later registry revision would trust it by index-post time), got rc=$rc: $out"
 echo "$out" | grep -qi "not a configured trusted actor" || fail "registry-trust-record-before-index: expected an untrusted-author reason, got: $out"
 
+echo "== shepherd round 3: an indeterminate run's --since cohort time is the RECORD's own created_at, not the later run-index post time (same fixture, isolates the catch-block fallback from the trust check above) =="
+since_excluded="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-01T00:15:00Z --json)"
+echo "$since_excluded" | jq -e '.indeterminate_count == 0 and (.per_issue | length) == 0' >/dev/null || fail "registry-trust-record-before-index: expected --since 00:15 to exclude the issue entirely (record posted 00:10, before the cutoff), got: $since_excluded"
+since_included="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-01T00:05:00Z --json)"
+echo "$since_included" | jq -e '.indeterminate_count == 1 and (.per_issue | length) == 1' >/dev/null || fail "registry-trust-record-before-index: expected --since 00:05 to include the issue as indeterminate (record posted 00:10, on/after the cutoff), got: $since_included"
+
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"
