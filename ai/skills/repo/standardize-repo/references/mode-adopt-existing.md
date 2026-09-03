@@ -86,7 +86,7 @@ Defaults worth knowing so you only override what's wrong (from `copier.yml`):
   maintainer deliberately opts into the Codex GitHub integration, has suitable
   plan availability, grants explicit connector access for a private repo, and
   also selects `use_skills_sync=true` with `universal` in `skill_categories` so
-  the required shepherd classifier is installed (a skills-source repo that
+  the required `integrate` classifier is installed (a skills-source repo that
   already ships that classifier natively is exempt from the sync/`universal`
   pair — see the update guard and G4 audit). The maintainer must also
   disable Codex Automatic reviews — review **Trigger** knob included; the

@@ -25,6 +25,24 @@ session free to do the work only it can do — adjudicate findings, compose
 reply text, settle dispositions, evaluate readiness — instead of burning its
 own turn on a wait loop.
 
+**A note for whoever dispatches you, not for you to act on mid-run.**
+specs/dev-flow-v2.md's role-write contract says this role "must not run with
+ambient write credentials" and that a harness unable to restrict a
+dispatched subagent's tools "may not dispatch" it. This file carries no
+`tools:`/`allowed-tools:` frontmatter and cannot — shared agents under
+`ai/agents/` carry `name`+`description` only (`ai/agents/README.md`'s
+portability contract, enforced by `scripts/verify-agents.sh`), because a
+harness-specific tool restriction baked into the portable file would ship to
+every consumer as a decision only the dispatching session can actually make.
+The two writes below (§4's trigger, §6's replies) go through
+`gh-write-broker.sh`, which validates that what leaves is exactly the
+trigger string or exactly the file content you were handed — real,
+mechanical narrowing regardless of what tools you nominally have — but it is
+not the same guarantee as a harness that structurally cannot call `gh api`
+raw at all. Closing that gap for good is the dispatching mechanism's job
+(`/orchestrator`, `/integrate`, Foreman, or whatever invokes this file), not
+something this file can resolve by itself.
+
 ## 1. Read the brief before touching anything
 
 A workable brief names:
@@ -72,9 +90,14 @@ resolve, relative to it:
 
 - `check-codex-cloud-review.sh` — the Codex-cycle state machine (§4).
 - `gh-ro.sh` — the GET-only wrapper for paginated GitHub reads.
+- `gh-write-broker.sh` — the only door for the two writes you are ever
+  allowed to make (§4's `@codex review` trigger, §6's reply/top-level
+  posts). Never call `gh api` directly for either — the broker validates
+  that what leaves is exactly the trigger string or exactly the file
+  content you were handed, nothing else configurable.
 
 Resolve `scripts/validate-result-schemas.mjs` from the repository root for
-§7. If any of the three is missing, say so and stop — do not hand-roll their
+§7. If any of the four is missing, say so and stop — do not hand-roll their
 behavior; a hand-rolled substitute is exactly the failure mode
 `check-codex-cloud-review.sh`'s own header warns about (a poller that misses
 a clean top-level result and reports an already-green attempt incomplete).
@@ -108,13 +131,21 @@ required_names="$(gh pr checks <n> --repo "$repo" --json name --required \
     --jq '[.[].name]' 2>/dev/null)" || required_names='[]'
 ```
 
-`$checks` decides pass/fail here; it is not `checks[]`'s schema shape
-(`name`, `bucket`, `run_id`, `required` — no `workflow`/`event`/`link`, and
-`gh pr checks` has no `run_id` field at all). Derive the schema-shaped array
-separately, from the check-runs REST endpoint, which is where a genuine
-numeric id per check actually lives — the same endpoint
-`readiness-gate.sh` itself reads, so this is not a second contract to keep
-in sync:
+`$checks` decides pass/fail here, and **stays the source of `checks[]`'s own
+`bucket` in your result too** — `gh pr checks` reads the same server-side
+rollup GitHub's Checks tab shows, already collapsed across reruns. The raw
+check-runs REST endpoint's `filter=latest` collapses only WITHIN one check
+suite, so a rerun (a required workflow re-triggered on the same head) leaves
+a superseded failure sitting beside the later success — this is exactly the
+GitHub behavior `readiness-gate.sh`'s own `evaluate_checks` carries dozens of
+hard-won lines to collapse correctly (harmon-devkit#714), and building
+`checks[]`'s pass/fail classification from that raw endpoint a second,
+simpler way reintroduces the bug those rounds closed: a stale rerun failure
+would sit in your result and could stall an otherwise-clean pass. `checks[]`
+is schema-shaped `{name, bucket, run_id, required}` — no
+`workflow`/`event`/`link` — but only `run_id` is missing from `$checks`
+outright (`gh pr checks` has no such field at all); everything else comes
+from data you already trust:
 
 ```sh
 check_runs_pages="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp \
@@ -122,23 +153,39 @@ check_runs_pages="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp \
     echo 'cannot fetch check-runs — do not reserve or trigger'
     exit 1
 }
-checks_json="$(jq -c --argjson required "$required_names" '
-    [.[] | .check_runs[]? | . as $c | {
+statuses_pages="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp \
+    "repos/$repo/commits/<head>/statuses?per_page=100")" || {
+    echo 'cannot fetch commit statuses — do not reserve or trigger'
+    exit 1
+}
+checks_json="$(jq -c --argjson required "$required_names" \
+    --slurpfile runs_sf <(printf '%s' "$check_runs_pages") \
+    --slurpfile statuses_sf <(printf '%s' "$statuses_pages") '
+    ($runs_sf[0] | [.[] | .check_runs[]?]
+        | group_by(.name) | map({key: .[0].name, value: (max_by(.id) | .id | tostring)})
+        | from_entries) as $run_ids |
+    ($statuses_sf[0] | add // []
+        | group_by(.context) | map({key: .[0].context, value: (max_by(.id) | .id | tostring)})
+        | from_entries) as $status_ids |
+    [.[] | . as $c | {
         name: $c.name,
-        bucket: (if $c.status != "completed" then "pending"
-                 elif $c.conclusion == "success" then "pass"
-                 elif ($c.conclusion == "skipped" or $c.conclusion == "neutral") then "skipping"
-                 elif $c.conclusion == "cancelled" then "cancel"
-                 else "fail" end),
-        run_id: ($c.id | tostring),
+        bucket: $c.bucket,
+        run_id: ($run_ids[$c.name] // $status_ids[$c.name] // "0"),
         required: ($required | index($c.name) != null)
-    }]' <<<"$check_runs_pages")" || checks_json='[]'
+    }]' <<<"$checks")" || checks_json='[]'
 ```
 
-`--slurp` wraps every paginated page into one array first, so `.[]` walks
-pages and `.check_runs[]?` walks each page's own array — the same two-step
-shape `readiness-gate.sh`'s own `evaluate_checks` reads, not a bare
-`.check_runs[]` assuming a single unpaginated page.
+`run_id` is only ever traceability metadata here — nothing downstream
+branches on which specific id a same-named rerun's check reports — so where
+two same-named check-runs or statuses both exist (the rerun case itself),
+`max_by(.id)` deterministically prefers the newer, and the `"0"` fallback
+(genuinely unreachable if `$checks` and the two raw sources agree, which they
+should for every check GitHub actually ran) never gates anything — it only
+means the id could not be traced back, not that the check's own bucket is in
+doubt. `--slurp` wraps every paginated page into one array first, so `.[]`
+walks pages and `.check_runs[]?`/`add` walks each page's own array — the
+same two-step shape `readiness-gate.sh`'s own `evaluate_checks` reads, not a
+bare flatten assuming a single unpaginated page.
 
 An **empty** check list is indeterminate, not evidence of "no CI" — GitHub
 populates check suites asynchronously. If your brief tells you this repo
@@ -166,33 +213,81 @@ collapse them into one `&&`/`;` chain. A chain that fails partway hides which
 link broke, and a `;`-separated tail keeps running after a failure and
 reports on a cycle that never happened.
 
-```bash
-"$helper" reserve --state "$state" --repo "$repo" --pr <n> \
-    --head "<head>" --attempt <1 or 2> || exit
+**Inspect the state file yourself before calling `reserve` — do not call it
+unconditionally and branch on what it reports.** `reserve --attempt 1`
+**dies** (nonzero, no distinguishing message your `|| exit` could branch on)
+whenever state already exists for this exact head, and dies just as hard
+when existing state for *any* head is stuck at `phase:"reserved"` — it never
+returns a graceful "already attached" or "unresolved reservation" report for
+you to read. Resuming is therefore a decision you make by reading the file
+directly, before your first external write of this cycle:
+
+```sh
+if [ -f "$state" ]; then
+    st_head="$(jq -r '.head // empty' "$state")"
+    st_phase="$(jq -r '.phase // empty' "$state")"
+else
+    st_head=
+    st_phase=
+fi
 ```
 
-If `reserve` reports state already attached for this head, **resume**:
-proceed straight to `check` below — do not trigger again. If it reports
-reserved-without-a-trigger-ID, that is the interrupted-after-reserve case:
-reconcile by checking whether the trigger comment was actually posted
-(`gh-ro.sh --paginate repos/"$repo"/issues/<n>/comments`, looking for your own
-prior `@codex review`) before deciding whether to trigger. This is what
-"resume existing state after interruption" means in practice — adopt what is
-already there rather than risk a second trigger.
+Three cases, mutually exclusive:
 
-Post the trigger **only** when `reserve` returned a fresh reservation with no
-existing trigger:
+- **No state file, or state for a different head.** This is a fresh cycle.
+  Reserve, trigger, and attach in sequence:
 
-```bash
-trigger_id="$(gh api "repos/$repo/issues/<n>/comments" -f body='@codex review' --jq .id)" || exit
-"$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
-```
+  ```bash
+  "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
+      --head "<head>" --attempt 1 || exit
+  trigger_id="$("$skill_dir"/assets/gh-write-broker.sh trigger --repo "$repo" --pr <n>)" || exit
+  "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
+  ```
 
-This is the one piece of finding-independent, brief-independent text you are
-always allowed to post: the literal string `@codex review`, and only as part
-of this exact reserve→attach sequence. It is not the "exact reply text" your
-brief may separately hand you (§6) — this trigger has no composed content to
-get wrong.
+  This is the one piece of finding-independent, brief-independent text you
+  are always allowed to post: the literal `@codex review` string the broker
+  itself hardcodes, and only as part of this exact reserve→attach sequence.
+  It is not the "exact reply text" your brief may separately hand you (§6) —
+  this trigger has no composed content to get wrong, and the broker gives
+  you no flag to make it one.
+
+- **`st_head` equals this head and `st_phase` is `attached`.** Already
+  triggered — **resume**: skip reserve/trigger/attach entirely and go
+  straight to `check` below. Calling `reserve --attempt 1` here is exactly
+  the call that dies; do not make it. (`--attempt 2` is a *different*,
+  later decision — see "On 12 (retry)" below, made only after `check`
+  itself asks for one, never pre-emptively here.)
+
+- **`st_head` equals this head and `st_phase` is `reserved`.** Interrupted
+  between reserve and attach — reconcile rather than reserve again (a second
+  `reserve` for this head dies regardless of attempt number while a
+  reservation sits unresolved). Find out whether the trigger was actually
+  posted before this process died:
+
+  ```sh
+  reserved_at="$(jq -r '.reserved_at' "$state")"
+  top_level="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp "repos/$repo/issues/<n>/comments")" || exit
+  candidates="$(jq -c --arg since "$reserved_at" '
+      add | map(select(
+          ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "@codex review"
+          and .created_at >= $since))' <<<"$top_level")"
+  ```
+
+  `jq -r 'length' <<<"$candidates"` decides which of three ways this goes.
+  **Exactly one** means that comment is the trigger this reservation already
+  posted — attach it directly, never call `reserve`:
+
+  ```bash
+  trigger_id="$(jq -r '.[0].id' <<<"$candidates")"
+  "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
+  ```
+
+  **Zero** means the process died before posting — post the trigger now and
+  attach it, exactly as the fresh-cycle case above does, still without
+  calling `reserve` (the reservation already exists; posting a second one is
+  what `reserve` itself would refuse). **More than one** is an anomaly this
+  brief did not anticipate — stop and report it rather than guessing which
+  one to attach.
 
 ```bash
 "$helper" check --state "$state" --actor-id 199175422
@@ -283,12 +378,23 @@ that:
 reply_file="$(mktemp)"
 trap 'rm -f "$reply_file"' EXIT
 printf '%s' "<the exact text your brief gave you for this comment ID>" >"$reply_file"
-gh api repos/"$repo"/pulls/<n>/comments/<comment-id>/replies -F body=@"$reply_file"
+"$skill_dir"/assets/gh-write-broker.sh reply --repo "$repo" --pr <n> \
+    --comment-id <comment-id> --body-file "$reply_file"
 ```
 
-A `top-level` target posts to the PR conversation instead
-(`repos/"$repo"/issues/<n>/comments`). If the brief gave you no reply text,
-skip this step entirely — silence is correct, not a gap to fill.
+A `top-level` target posts to the PR conversation instead — the same broker,
+its `top-level` subcommand, no `--comment-id`:
+
+```sh
+"$skill_dir"/assets/gh-write-broker.sh top-level --repo "$repo" --pr <n> \
+    --body-file "$reply_file"
+```
+
+Never call `gh api` directly for either target — the broker refuses a body
+that is not a file, an endpoint that is not one of these two, and a
+`--comment-id` on a `top-level` post, so it cannot be turned into a write
+this section did not intend. If the brief gave you no reply text, skip this
+step entirely — silence is correct, not a gap to fill.
 
 ## 7. Assemble and validate the result
 

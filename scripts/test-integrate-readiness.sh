@@ -24,6 +24,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 assets="${repo_root}/ai/skills/universal/integrate/assets"
 gate="${assets}/readiness-gate.sh"
 ghro="${assets}/gh-ro.sh"
+ghwb="${assets}/gh-write-broker.sh"
 validator="${repo_root}/scripts/validate-result-schemas.mjs"
 test_tmp="$(mktemp -d -t integrate-readiness-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
@@ -1128,6 +1129,19 @@ printf '%s\n' '{"not":"a valid envelope"}' >"$malformed_result"
 run_gate --integrator-result "$malformed_result"
 assert_gate 2 indeterminate codex-indeterminate
 
+echo "==> an integrator result from a different run (same head) is refused — the run-identity invariant"
+write_defaults
+stale_run_result="$(write_integrator_result stale-run null)"
+# write_integrator_result always stamps run:{run_id:"test-run",
+# initiated_by:"human"}, matching write_default_record's own run.json — this
+# is the one fixture in the suite that deliberately makes them disagree,
+# simulating a superseded/resumed run's evidence surviving on disk with the
+# SAME head as the active run (specs/dev-flow-v2.md:177-185).
+jq -c '.run.run_id = "a-different-run"' "$stale_run_result" >"${stale_run_result}.tmp"
+mv "${stale_run_result}.tmp" "$stale_run_result"
+run_gate --integrator-result "$stale_run_result"
+assert_gate 2 indeterminate codex-indeterminate
+
 # ── harmon-devkit#685 criteria owned by #639 ────────────────────────────────
 # codex_cycle.cycle <= [rounds.<policy>].integration; cap 0 <=> null cycle; a
 # clean verdict with a null cycle under a positive cap is not clean.
@@ -1549,4 +1563,73 @@ set -e
 [ "$ro_rc" -eq 7 ] ||
     fail "gh-ro should propagate gh's exit 7, got $ro_rc"
 
-echo "integration readiness gate + gh-ro: PASS"
+# ------------------------------ gh-write-broker -----------------------------
+
+wb_refuse_case() {
+    label=$1
+    shift
+    set +e
+    wb_out="$("$ghwb" "$@" 2>&1)"
+    wb_rc=$?
+    set -e
+    [ "$wb_rc" -eq 2 ] ||
+        fail "gh-write-broker $label: expected refusal rc 2, got $wb_rc: $wb_out"
+    printf '%s\n' "$wb_out" | grep -qE 'refused|Usage:' ||
+        fail "gh-write-broker $label: refusal did not say refused or print usage: $wb_out"
+    if grep -q '^api ' "$log"; then
+        fail "gh-write-broker $label: a refused invocation still reached gh: $(cat "$log")"
+    fi
+}
+
+echo "==> gh-write-broker refuses a malformed or mismatched call before reaching gh"
+write_defaults
+reply_body="${fixtures}/reply-body.txt"
+printf 'exact reply text' >"$reply_body"
+empty_body="${fixtures}/empty-body.txt"
+: >"$empty_body"
+wb_refuse_case "trigger with --comment-id" trigger --repo example/repo --pr 493 --comment-id 900
+wb_refuse_case "trigger with --body-file" trigger --repo example/repo --pr 493 --body-file "$reply_body"
+wb_refuse_case "reply missing --comment-id" reply --repo example/repo --pr 493 --body-file "$reply_body"
+wb_refuse_case "reply missing --body-file" reply --repo example/repo --pr 493 --comment-id 900
+wb_refuse_case "reply with nonexistent --body-file" reply --repo example/repo --pr 493 --comment-id 900 --body-file "${fixtures}/does-not-exist.txt"
+wb_refuse_case "reply with empty --body-file" reply --repo example/repo --pr 493 --comment-id 900 --body-file "$empty_body"
+wb_refuse_case "reply with non-numeric --comment-id" reply --repo example/repo --pr 493 --comment-id abc --body-file "$reply_body"
+wb_refuse_case "top-level with --comment-id" top-level --repo example/repo --pr 493 --comment-id 900 --body-file "$reply_body"
+wb_refuse_case "top-level missing --body-file" top-level --repo example/repo --pr 493
+wb_refuse_case "invalid repo" trigger --repo not-a-repo --pr 493
+wb_refuse_case "invalid pr" trigger --repo example/repo --pr abc
+wb_refuse_case "unknown subcommand" delete --repo example/repo --pr 493
+wb_refuse_case "no subcommand"
+
+echo "==> gh-write-broker trigger posts exactly the hardcoded body, nothing else"
+write_defaults
+printf '0\n' >"${fixtures}/ro-exit"
+"$ghwb" trigger --repo example/repo --pr 493 >/dev/null
+grep -Fxq "api repos/example/repo/issues/493/comments -f body=@codex review --jq .id" "$log" ||
+    fail "gh-write-broker trigger forwarded unexpected arguments: $(cat "$log")"
+
+echo "==> gh-write-broker reply posts exactly the given file to exactly that comment's replies"
+write_defaults
+printf '0\n' >"${fixtures}/ro-exit"
+"$ghwb" reply --repo example/repo --pr 493 --comment-id 900 --body-file "$reply_body" >/dev/null
+grep -Fxq "api repos/example/repo/pulls/493/comments/900/replies -F body=@${reply_body}" "$log" ||
+    fail "gh-write-broker reply forwarded unexpected arguments: $(cat "$log")"
+
+echo "==> gh-write-broker top-level posts exactly the given file to the PR conversation"
+write_defaults
+printf '0\n' >"${fixtures}/ro-exit"
+"$ghwb" top-level --repo example/repo --pr 493 --body-file "$reply_body" >/dev/null
+grep -Fxq "api repos/example/repo/issues/493/comments -F body=@${reply_body}" "$log" ||
+    fail "gh-write-broker top-level forwarded unexpected arguments: $(cat "$log")"
+
+echo "==> gh-write-broker propagates gh's own exit code"
+write_defaults
+printf '7\n' >"${fixtures}/ro-exit"
+set +e
+"$ghwb" trigger --repo example/repo --pr 493 >/dev/null 2>&1
+wb_rc=$?
+set -e
+[ "$wb_rc" -eq 7 ] ||
+    fail "gh-write-broker should propagate gh's exit 7, got $wb_rc"
+
+echo "integration readiness gate + gh-ro + gh-write-broker: PASS"

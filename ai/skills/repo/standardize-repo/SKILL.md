@@ -248,18 +248,20 @@ the generated target's `AGENTS.md`. Use the draft-workbench lifecycle only when
 that authoritative file defines draft publication and ready-for-review as the
 human handoff. If it still defines an ordinary PR or stop-at-green handoff, the
 selected harmon-init release predates this lifecycle. Do not let a newer
-vendored shepherd override it: select a compatible harmon-init release, or
+vendored `integrate` (or `shepherd`, in a target that has not yet migrated)
+override it: select a compatible harmon-init release, or
 follow the target policy and report that lifecycle adoption remains blocked.
 When `.coderabbit.yaml` is present, also require
 `reviews.auto_review.drafts: true` before relying on CodeRabbit as a gate; an
 older generated `false` value is the same upgrade blocker, not permission to
 promote early.
 
-On a compatible target, open a draft PR. When the target has a vendored shepherd,
+On a compatible target, open a draft PR. When the target has a vendored
+`integrate` (or `shepherd`, in a target that has not yet migrated) skill,
 follow that procedure through its complete
 draft-time checks/review gate and final promotion.
 
-If the target has no vendored shepherd, use this fallback instead: keep the PR
+If the target has no vendored `integrate`/`shepherd` skill, use this fallback instead: keep the PR
 draft while work is active; after each push, bounded-poll every required check
 to a terminal result and inspect reviews, top-level comments, and every inline
 thread. Settle every finding and deferred PR-body checkbox, run the target's
@@ -276,12 +278,15 @@ automation available only through `pull_request.ready_for_review` as a
 configuration blocker: ready can notify human reviewers immediately and is not
 a reversible automation probe. Freeze one final snapshot of the head, draft
 state, checks, reviews, mergeability, deferred findings, and unanswered threads.
-For the content half of that snapshot, use the shepherd skill's readiness-gate
-script (`shepherd/assets/readiness-gate.sh`, per `shepherd/SKILL.md` §6 —
+For the content half of that snapshot, use the `integrate` skill's readiness-gate
+script (`integrate/assets/readiness-gate.sh`, per `integrate/SKILL.md` §6 — or
+the equivalent `shepherd/assets/readiness-gate.sh` per `shepherd/SKILL.md` §6
+in a target that has not yet migrated —
 `check` prints the fingerprint on a pass, `fingerprint` recomputes it after
 promotion) whenever that skill
 is installed alongside this one — one implementation, not a re-derivation. When it is
-not (this fallback exists precisely for targets without a vendored shepherd,
+not (this fallback exists precisely for targets without a vendored
+`integrate`/`shepherd` skill,
 and this skill can be installed without it), construct the fingerprint to the
 same contract, which is stated here in full because the file may be absent:
 fetch each component (PR title/body, reviews, top-level comments, inline
@@ -296,7 +301,7 @@ review states and `submitted_at`, thread `isResolved`), in stable order
 which promotion itself mutates. A locally constructed fingerprint is only
 ever compared against itself within this session — pre-promotion against
 post-promotion — so satisfying the contract, not byte-identity with the
-shepherd recipe's hash, is what correctness requires. A failed component
+integrate skill's own recipe's hash, is what correctness requires. A failed component
 means the fingerprint is unknown, and unknown cannot promote: the PR stays
 draft.
 Promote that head with `gh pr ready`, confirm it is still the same open head and

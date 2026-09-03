@@ -768,23 +768,23 @@ install the Renovate GitHub App on the repo. Conventions:
   and `infra` when Terraform/Ansible or the iac type applies. The generated
   `use_codex_cloud_review=true` option overrides that ordinary freedom: it
   requires skills sync and the `universal` category because that category ships
-  the mandatory current-head shepherd classifier — except on a skills-source
+  the mandatory current-head `integrate` classifier — except on a skills-source
   repo (harmon-devkit) that already ships that classifier natively as a
   git-tracked, non-symlink executable regular file at
-  `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, alongside a
-  tracked `ai/skills/universal/shepherd/SKILL.md` entry point that is itself a
+  `ai/skills/universal/integrate/assets/check-codex-cloud-review.sh`, alongside a
+  tracked `ai/skills/universal/integrate/SKILL.md` entry point that is itself a
   regular file (index mode `100644`/`100755`; a `120000` symlink fails however
   valid its target) and whose frontmatter
   is valid — a **closed** `---` block (checked statically) whose values are
   resolved by **yq**, already a hard prerequisite of the guarded update:
-  `name` must resolve to the string `shepherd` and `description` to a non-empty
+  `name` must resolve to the string `integrate` and `description` to a non-empty
   string, so quoted scalars, block scalars, comments, the null spellings
   (`null`, `~`), empty quotes, and empty flow forms are all decided by the
   parser rather than by patterns, and unparseable YAML means "not a valid
   skills source". `scripts/verify-skills.sh` stays canonical for layout — with that
   helper's **executable body** carrying the five dispatch `case` arms
   (`reserve)`, `attach)`, `check)`, `show)`, `reap)`) and the exit contract
-  shepherd reads — `emit pending`/`exit 11` and `emit escalate`/`exit 13` —
+  `integrate` reads — `emit pending`/`exit 11` and `emit escalate`/`exit 13` —
   which together satisfy the requirement directly and so may keep
   `use_skills_sync=false` (the update guard and G4 audit both waive
   sync/`universal` on exactly those tests, so a `100755` stub, a missing,
@@ -904,7 +904,7 @@ install the Renovate GitHub App on the repo. Conventions:
   to main.** **[manual]** to actually cut a release.
 - Other root files: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`
   (mit/private), `<slug>.code-workspace`, `.vscode/{settings,extensions}.json`,
-  the current-head Codex cloud shepherd contract only when
+  the current-head Codex cloud review contract (the `integrate` stage) only when
   `use_codex_cloud_review=true` (requires `use_codex_review=true`,
   `use_skills_sync=true`, and `universal` in `skill_categories` — the sync and
   `universal` requirements waived for a skills-source repo that ships the
@@ -1043,7 +1043,7 @@ artifacts; the prose rules are guidance, not lint):
   `suggest:<family>[:<model>]` for human-authored, advisory triage and
   `claim:<family>[:<model>]` for agent-authored live ownership. Both accept a
   family-level label; add the optional model segment only when it is known and
-  useful. Interactive session claims are released at wrap or shepherd completion;
+  useful. Interactive session claims are released at wrap or integrate completion;
   Claude Action claims are released by an unconditional `if: always()` cleanup
   step, so an ordinary failure or step timeout still releases. The exception is a
   run that never reaches that step at all — a job-cap kill, a lost runner, or a

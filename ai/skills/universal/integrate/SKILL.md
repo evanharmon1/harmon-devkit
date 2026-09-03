@@ -145,11 +145,22 @@ this skill before its file has migrated.
   legacy-decode contract states — so a repo cannot gain rounds, or cap
   earlier, merely because this stage now counts two things instead of one. A
   label conflict resolves **per stage, to the highest cap present**.
-- **Where a merge-base-resolving config reader
-  (`scripts/devflow-policy.mjs`) exists in this checkout, use it** rather
-  than hand-decoding either shape — it is the one place this resolution is
-  implemented once. Where it does not exist yet, apply the rules above
-  directly; do not block on the reader landing.
+- **Where a merge-base-resolving config reader (`scripts/devflow-policy.mjs`)
+  exists in this checkout, try it first** — `task devflow:policy -- resolve
+  --policy .devflow.toml --json` (add `--rigor <level>` for an explicit
+  override) — rather than hand-decoding either shape yourself; it is the one
+  place this resolution is implemented once, and once the operating
+  `.devflow.toml` is schema_version 2 its JSON names the two caps directly as
+  `rounds.integration` and `rounds.remediation`. **The reader's own shape
+  detection, not merely its presence, decides which path applies**: it
+  refuses non-zero on a legacy-shaped file rather than resolving one (the
+  legacy rules above are exactly its own documented legacy-decode contract,
+  hand-applied), so "the reader exists but refuses" and "the reader does not
+  exist yet" both mean the same thing here — apply the legacy-shape rules
+  above directly, and do not block on either the file migrating or the
+  reader landing. The legacy path is temporary: harmon-devkit#604 tracks
+  dropping it once every consumer has migrated, at which point this bullet's
+  fallback becomes dead code to delete, not a shape to keep detecting.
 
 Either way, an edit to `.devflow.toml` itself resolves every parameter from
 the merge-base copy. Announce both resolved values the way gauntlet announces

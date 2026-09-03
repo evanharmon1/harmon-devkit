@@ -538,21 +538,22 @@ important for a feature with a material footprint or an external capability:
   retaining CodeRabbit. The false path removes `.coderabbit.yaml` and bot trust,
   but a human must also remove the repository from the CodeRabbit App
   installation because deleting repository files does not revoke App access.
-- `use_codex_cloud_review` adds a required external shepherd signal and defaults
-  off. It is active only when `use_codex_review=true` — the sole precondition
-  Copier's own validator enforces. When active, a *consumer* repo must also set
-  `use_skills_sync=true` and include `universal` in `skill_categories`, because
-  there the classifier (`check-codex-cloud-review.sh`) reaches the repo only by
-  syncing the shepherd skill from the `universal` category. A skills-*source*
-  repo — one that authors the shepherd skill under `ai/skills/` rather than
+- `use_codex_cloud_review` adds a required external Codex cloud-review signal
+  and defaults off. It is active only when `use_codex_review=true` — the sole
+  precondition Copier's own validator enforces. When active, a *consumer* repo
+  must also set `use_skills_sync=true` and include `universal` in
+  `skill_categories`, because there the classifier
+  (`check-codex-cloud-review.sh`) reaches the repo only by syncing the
+  `integrate` skill from the `universal` category. A skills-*source* repo —
+  one that authors the `integrate` skill under `ai/skills/` rather than
   vendoring a released copy of it (harmon-devkit is the canonical case, and may
   therefore keep `use_skills_sync=false` since self-vendoring its own
   `ai/skills/` would be circular) — ships that classifier natively in its own
-  tree at `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, so
-  it already satisfies that intent. The guard detects a usable classifier there
-  and waives both the skills-sync and universal-category requirements for it
-  while keeping them for every other repo. This carve-out is mirrored in
-  `mode-audit.md` (G4) and `standards-catalog.md` so audit mode does not then
+  tree at `ai/skills/universal/integrate/assets/check-codex-cloud-review.sh`,
+  so it already satisfies that intent. The guard detects a usable classifier
+  there and waives both the skills-sync and universal-category requirements
+  for it while keeping them for every other repo. This carve-out is mirrored
+  in `mode-audit.md` (G4) and `standards-catalog.md` so audit mode does not then
   report the same configuration as drift. Review it
   explicitly and keep it false unless the maintainer has
   connected Codex cloud review, accepts plan-dependent availability/quotas, and

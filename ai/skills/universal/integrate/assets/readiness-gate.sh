@@ -80,7 +80,11 @@
 # integrator — see ai/agents/integrator.md and result.integrator.schema.json).
 # --record DIR is the dev-flow-v2 record directory render-dev-flow.mjs reads
 # to project current deferred-finding settlement (readiness-input), also
-# read-only.
+# read-only — and the source of the active run's own identity: this script
+# reads --record's run.json for run_id/initiated_by and binds the envelope
+# to them (specs/dev-flow-v2.md:177-185), so evidence produced by a
+# superseded or resumed run that happens to present the same head is refused
+# rather than accepted on head equality alone.
 #
 # --codex-recheck STATE_FILE is the one place this script re-invokes a
 # helper against live state: a cached codex_cycle can go stale between the
@@ -134,7 +138,13 @@ codex_cycle carries the current-head Codex verdict when the resolved
 integration cap is not 0, or is null when it is — a null codex_cycle is how
 the Codex condition is waived, so there is no separate disabled flag. Both
 --record and --integrator-result are always required; there is no mode
-where either is skippable.
+where either is skippable. The envelope is also bound to the active run
+before anything else about it is trusted (specs/dev-flow-v2.md:177-185): this
+script reads --record's own run.json for run_id/initiated_by and passes them
+to the schema validator as --run-id/--initiated-by, so a schema-valid
+envelope whose own .run disagrees — evidence from a superseded or resumed
+run that happens to present the same head — is refused exactly like a
+malformed one, never silently accepted on head equality alone.
 --integration-cap N is optional context (harmon-devkit#685): when given, it
 additionally enforces that a cap of 0 pairs only with a null codex_cycle,
 that a positive cap pairs only with a non-null one, and that
@@ -867,8 +877,24 @@ fetch_fingerprint_surfaces
 # fingerprint, and activity landing after that pass sits outside it, where
 # the post-promotion compare flags it. Classification belongs to the agent
 # and the checker it runs — never re-derived here, only validated and read.
-node "$validate_result_schemas" envelope "$integrator_result" >/dev/null 2>&1 ||
-    indeterminate codex-indeterminate "--integrator-result $integrator_result is not a schema-valid result.envelope"
+#
+# Bind the evidence to the active run before trusting it (specs/dev-flow-
+# v2.md:177-185's run-identity invariant): a superseded or resumed run can
+# present the SAME head as the active one, so a bare envelope_head == $head
+# compare below is not enough to prove --integrator-result belongs to this
+# run rather than an earlier one that happened to reach the same commit.
+# run.json's own run_id/initiated_by are the active run's identity; passing
+# them lets the validator's own receipt check reject a mismatched .run.
+run_json="${record_dir}/run.json"
+[ -f "$run_json" ] ||
+    indeterminate malformed-data "no run.json in --record $record_dir to bind the active run identity"
+active_run_id="$(jq -er '.run_id | select(type == "string")' "$run_json" 2>/dev/null)" ||
+    indeterminate malformed-data "run.json carries no run_id"
+active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_json" 2>/dev/null)" ||
+    indeterminate malformed-data "run.json carries no initiated_by"
+node "$validate_result_schemas" envelope "$integrator_result" \
+    --run-id "$active_run_id" --initiated-by "$active_initiated_by" >/dev/null 2>&1 ||
+    indeterminate codex-indeterminate "--integrator-result $integrator_result is not a schema-valid result.envelope for the active run ($active_run_id/$active_initiated_by)"
 integrator_role="$(jq -er '.role | select(type == "string")' \
     "$integrator_result" 2>/dev/null)" ||
     indeterminate malformed-data "integrator result carries no role"
@@ -942,9 +968,8 @@ applied_dispositions="$(jq -c '.payload.applied_dispositions // []' \
 settleable_ids="$(jq -r '.[] | select(.disposition == "fix" or .disposition == "decline" or .disposition == "file") | .finding_id' \
     <<<"$applied_dispositions" 2>/dev/null)"
 if [ -n "$settleable_ids" ]; then
-    run_json="${record_dir}/run.json"
-    [ -f "$run_json" ] ||
-        indeterminate malformed-data "no run.json in --record $record_dir to verify settlements against"
+    # $run_json is already resolved and proven to exist above, for the
+    # active-run binding — reused here rather than re-checked.
     settlements="$(jq -c '.settlements // []' "$run_json" 2>/dev/null)" ||
         indeterminate malformed-data "run.json's settlements could not be read"
     while IFS= read -r finding_id; do

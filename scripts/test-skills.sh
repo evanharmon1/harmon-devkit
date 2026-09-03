@@ -2349,7 +2349,7 @@ expect_ok "standards catalog keeps claim cleanup transition-compatible" \
     grep -qF 'Transition-compatible consumers also recognize documented legacy' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog scopes session claim cleanup to lifecycle completion" \
-    grep -qF 'Interactive session claims are released at wrap or shepherd completion' \
+    grep -qF 'Interactive session claims are released at wrap or integrate completion' \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog guarantees failure cleanup only for Claude Actions" \
     grep -qF 'Claude Action claims are released by an unconditional `if: always()` cleanup' \
@@ -3529,8 +3529,8 @@ expect_ok "audit G4 waives sync/universal for the native skills-source classifie
 # The audit prose has to describe the same three probes the update guard runs,
 # or a repo passes one mode and is reported as drift by the other.
 expect_ok "audit G4 names the entry-point and dispatch-structure requirements" \
-    sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
-        grep -qF "resolve to the string \`shepherd\`" "$1" &&
+    sh -c 'grep -qF "ai/skills/universal/integrate/SKILL.md" "$1" &&
+        grep -qF "resolve to the string \`integrate\`" "$1" &&
         grep -qF "dispatch \`case\` arms" "$1" &&
         grep -qF "emit escalate" "$1" &&
         grep -qF "exit 13" "$1" &&
@@ -3548,8 +3548,8 @@ expect_ok "standards catalog waives cloud-review sync/universal for the skills s
         grep -qF "check-codex-cloud-review.sh" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "standards catalog names the entry-point and dispatch-structure requirements" \
-    sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
-        grep -qF "resolve to the string \`shepherd\`" "$1" &&
+    sh -c 'grep -qF "ai/skills/universal/integrate/SKILL.md" "$1" &&
+        grep -qF "resolve to the string \`integrate\`" "$1" &&
         grep -qF "dispatch \`case\` arms" "$1" &&
         grep -qF "emit escalate" "$1" &&
         grep -qF "exit 13" "$1" &&
@@ -3561,7 +3561,7 @@ expect_ok "standards catalog names the entry-point and dispatch-structure requir
         grep -qF "canonical for layout" "$1"' sh \
     "$STANDARDIZE_REFS/standards-catalog.md"
 expect_ok "new-repo and adopt guidance note the skills-source waiver" \
-    sh -c 'grep -qF "waived only for a skills-source repo already shipping the shepherd classifier" "$1" &&
+    sh -c 'grep -qF "waived only for a skills-source repo already shipping the \`integrate\` classifier" "$1" &&
         grep -qF "already ships that classifier natively is exempt" "$2"' sh \
     "$STANDARDIZE_REFS/mode-new-repo.md" \
     "$STANDARDIZE_REFS/mode-adopt-existing.md"
@@ -3633,7 +3633,7 @@ expect_ok "standardization hands off only a ready-for-review PR" \
         grep -qF "Gate the staged rollout against the target policy" "$1" &&
         grep -qF "reviews.auto_review.drafts: true" "$1" &&
         grep -qF "draft-time checks/review gate and final promotion" "$1" &&
-        grep -qF "If the target has no vendored shepherd" "$1" &&
+        grep -qF "If the target has no vendored \`integrate\`/\`shepherd\` skill" "$1" &&
         grep -qF "or four rounds when it states none" "$1" &&
         grep -qF "ready on an unverified head" "$1" &&
         grep -qF "final ready promotion is confirmed" "$1"' sh \

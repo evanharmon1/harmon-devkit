@@ -4,10 +4,10 @@ description: >-
   Run the second-model review gauntlet — adversarial challenge, then verification
   review, each to convergence under its own resolved cap, then the security gate
   and draft PR. Entry: implementation complete and the definition-of-done gate
-  green. Exit: a draft PR is open and the shepherd stage takes over. Convergence
-  is the exit; fixing findings is not. Use when implementation is complete, the
-  definition-of-done gate is green, and the repo's dev loop calls for the
-  challenge/review stage. Invoke as /gauntlet.
+  green. Exit: a draft PR is open, ready for the integration stage's human
+  handoff. Convergence is the exit; fixing findings is not. Use when
+  implementation is complete, the definition-of-done gate is green, and the
+  repo's dev loop calls for the challenge/review stage. Invoke as /gauntlet.
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branch --show-current), Bash(git rev-parse:*), Bash(git merge-base:*), Bash(task --list-all:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh issue view:*), Bash(gh repo view:*)
 ---
 
@@ -18,7 +18,9 @@ allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branc
 The stage between "the implementation is done and the definition-of-done gate
 is green" and "a draft PR exists". It runs the adversarial second-model review
 to convergence, then the verification review to convergence, then the security
-gate and PR-open ritual — and hands the draft to `/shepherd`.
+gate and PR-open ritual — and stops there. The next stage, `integrate` (or,
+in a repo that has not yet migrated off the retired name, `shepherd`), is a
+human-triggered handoff this skill does not make on its own — see §10.
 
 **The central rule: convergence is the exit, fixes are not.** A stage does not
 end because you fixed everything the reviewer said. It ends when the rounds
@@ -586,7 +588,8 @@ it against the current head first, because a repeat can also mean the fix was
 incomplete or a later edit reintroduced the defect. Only when the code the
 disposition rests on is unchanged is the finding answered from the record
 rather than re-litigated. This applies across all three passes — challenge rounds, review
-rounds, **and the PR's cloud-review rounds under `/shepherd`** — which is why
+rounds, **and the PR's cloud-review rounds under `/integrate` (or `/shepherd`
+in a repo that has not yet migrated)** — which is why
 the ledger outlives the stage and why §10 hands it forward before deleting it.
 
 A finding raised **once and never re-raised by any later pass** is a **noise
@@ -920,16 +923,24 @@ push over a commit that has been pushed. The shepherd's `--force-with-lease`
 is not that: it binds a fast-forward push to the head it just observed, and
 the lease is what makes the push refuse rather than clobber.
 
-**Then enter the shepherd stage.** The verified draft existing (step 7) is
-the trigger for that stage — whichever creation path produced it — not the
-end of the work: unpolled checks and
-unanswered reviews are its input, and the deferred findings above are still
-open. Where the shepherd skill is vendored, enter it the way the repo's
-policy says: where the harness exposes the Skill tool, invoke `shepherd`
-through it; where it does not (a subagent, another harness), read
-`.agents/skills/shepherd/SKILL.md` (or `.claude/skills/shepherd/SKILL.md`)
-and follow it directly. Where it is not vendored, the repo's `AGENTS.md`
-shepherd bullet is the procedure. Either way *this* skill's scope ends here:
-it never promotes a draft, never runs the readiness gate, and never merges —
-and stopping instead of shepherding leaves the PR at an explicitly
-non-terminal state.
+**Then stop at the human handoff.** The verified draft existing (step 7) is
+this skill's own finish line, not a milestone to continue past: unpolled
+checks and unanswered reviews are real, unfinished work, and the deferred
+findings above are still open — but they are the *next* stage's work, not
+this one's. Some repos still ship the retired shepherd stage under that
+name; where the vendored successor is instead named `integrate` (or
+`shepherd`, in a repo that has not yet migrated — read what is actually
+vendored rather than assuming either name), do **not** invoke it yourself,
+through the Skill tool or by reading its `SKILL.md` and following it by
+hand: `integrate` (unlike the shepherd stage it replaces) is a
+human-triggered stage — promoting a draft to ready-for-review is the dev
+loop's human-handoff point, and its own `disable-model-invocation` flag
+means no model session, this one included, may enter it on its own. Report
+the draft PR, confirm the deferred findings above are recorded in its body,
+and name the next step plainly: a human running `/integrate <PR#>` (or a
+still-unmigrated repo's `/shepherd <PR#>`, or its `AGENTS.md`'s own bullet
+where neither is vendored) when they are ready. *This* skill's scope has
+always ended here — it never promotes a draft, never runs the readiness
+gate, and never merges — the one thing that changes under `integrate` is
+that the handoff is now explicitly to a human, not to the next stage
+starting itself.
