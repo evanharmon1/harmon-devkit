@@ -903,6 +903,175 @@ decisions):
   selects WHICH kind of rule (an exact match for some codes, a small
   exclusion set for others) is itself data the schema's single
   conditional-per-node shape cannot encode as one rule.
+- **A clean integrator verdict rejects `defer` anywhere in
+  `applied_dispositions`, including entries that reference a `--known-ids`
+  finding, not only this payload's own `findings[]` (#686).**
+  `checkIntegratorCleanVerdict`'s per-current-finding loop already caught a
+  current finding disposed `defer`; a second pass over the full
+  `applied_dispositions` array closes the gap for an entry naming a prior
+  cycle's finding instead — a clean verdict claims nothing outstanding, and
+  `defer` explicitly carries a finding forward regardless of which universe
+  its `finding_id` belongs to. Covered by
+  `result.integrator.schema/invalid/clean-verdict-known-id-defer.json`
+  (exercised both by the generic per-directory loop, since the rejection
+  fires whether or not `--known-ids` is even supplied, and by a named
+  `run_context_case` that supplies it — pinning the `--known-ids` branch
+  specifically, since only that document proves the check doesn't quietly
+  depend on the flag; `SEMANTIC_ONLY`-listed, since a cross-field
+  verdict/disposition rule is not something `result.schema.json` alone can
+  express) (challenge round 1 P2).
+- **`run.schema.json`'s `stage_transitions` description names the permitted
+  lifecycle *edges*, not a linear order (#686).** The actual coherence check
+  (`checkStageTransitionsOrder`) walks `ALLOWED_EDGES`, a directed graph
+  transcribed from docs/product/domain.md's Dev-flow diagram, and legitimate
+  remediation loops let a stage recur later in the array once a loop-back
+  edge has been taken (e.g. `challenge -> implement -> verify -> challenge`)
+  — the schema's own field description used to say stages "strictly follow
+  enum order with no repetition," which was simply wrong about what the
+  validator it defers to actually enforces.
+- **A `destination: "pr"` evidence marker requires a non-null `run.pr`
+  (#686).** `checkEvidenceMarkerPrDestinationRequiresPr` is a same-document,
+  context-free check (like `checkEvidenceMarkerStageVisited` beside it): the
+  marker's own description says the PR rollup comment is posted "once the
+  draft PR exists," and `pr` is this run record's own sibling field for
+  whether that is true yet.
+- **`evidence_comments[].digest` has a canonical format,
+  `sha256:<64 lowercase hex>` (#686).** Enforced by `pattern`, not
+  `minLength` alone: independent producers and harvesters must compute and
+  compare the same representation, and a `pattern` is what stops something
+  like `"x"` from being receipt-valid.
+- **Reviewer and challenger findings' `path` rejects absolute paths, `.` /
+  `..` segments, Windows drive letters, and any backslash (#686, extended in
+  challenge round 1).** `^(?!/)(?![A-Za-z]:)(?!.*\\)(?!.*(?:^|/)\.\.?(?:/|$)).+$`
+  on both schemas' own copies and both inlined `$defs.reviewer`/
+  `$defs.challenger` copies in `result.schema.json` (kept in the
+  field-for-field parity #635 established) — a path that escapes the repo
+  root, or claims to already be rooted elsewhere, cannot be reliably
+  resolved by provenance, fingerprinting, or rendering consumers. The
+  initial fix only rejected POSIX-style traversal; round 1 confirmed
+  `C:/secret` and `..\secret` both still slipped through, since neither is a
+  POSIX absolute path or a `/`-delimited `..` segment. Rather than parsing
+  backslash-delimited segments separately, the fix rejects any backslash
+  outright — this repo's own paths are always POSIX-written, so a
+  backslash is never legitimate content here, only a Windows-path or
+  UNC-path smuggling attempt. Covered by
+  `result.reviewer.schema/invalid/finding-path-absolute.json` and
+  `finding-path-windows-drive.json`.
+- **`adjudication.schema.json`'s `reason`/`evidence` are trimmed-non-empty,
+  matching `override.reason` (#686).** `minLength: 1` alone accepts a
+  whitespace-only string; `checkAdjudicationEntries` now applies the same
+  `.trim() === ''` rejection already used for `override.reason` to both
+  top-level fields, since every adjudication explains itself, not only an
+  override. Covered by `adjudication.schema/invalid/whitespace-only-reason.json`
+  and `whitespace-only-evidence.json` (#686 review round 2 P2 — no invalid
+  fixture had exercised either trim guard, so removing one would leave the
+  suite green).
+- **`adjudication.schema.json` gained two optional, backward-compatible
+  fields (#686, interface gaps lane #637 found building the renderer):
+  `classification` (`confirmed | plausible | false-positive`, AGENTS.md's
+  own Codex-findings taxonomy) so a renderer can show the real
+  classification instead of sourcing it from a pass's own asserted `class`;
+  and `reference` (the same `{type: sha|comment_id|issue_number, value}`
+  shape as `run.schema.json`'s `settlements[].reference`) for a finding
+  declined or filed directly at adjudication time, which — unlike a
+  deferred finding's eventual settlement — previously had nowhere in this
+  schema family to record its evidence. Neither field is required; every
+  existing adjudication document remains valid. `reference` is
+  **object-only, never nullable** (#686 shepherd round 1 P2) — unlike
+  `override`, whose `null` is itself a required, meaningful answer
+  ("no override" is a fact every adjudication states), `reference` is
+  genuinely optional: omitting it already means "no reference," so an
+  explicit `"reference": null` was only ever a second, redundant way to
+  say the same thing, and `checkAdjudicationEntries` silently skipped
+  validating it either way. Covered by
+  `adjudication.schema/invalid/reference-explicit-null.json`.
+- **The native-composition test in `scripts/test-result-schemas.sh` also
+  runs the standalone envelope-invalid fixtures against `result.schema.json`
+  and compares the composed root's `required`/`properties` (minus
+  `payload`) with `result.envelope.schema.json` (#686).** The pre-existing
+  `$defs.<role>` drift check only ever proved the four role payload shapes
+  stayed in sync; it never proved the composed ROOT (the envelope fields
+  copied onto that same document) did. Two envelope-invalid fixtures need a
+  `SEMANTIC_ONLY`-style exception for the identical reason role fixtures
+  sometimes do: `produced_at-impossible-date` is a calendar-validity check
+  no `pattern` can express, and `run-mismatch` needs external "which run is
+  active" context no single document carries.
+- **`adjudication.schema.json`'s `reference.value` is format-validated
+  against `reference.type`, mirroring `checkSettlementReferenceType`
+  exactly (#686 challenge round 1 P1).** The initial cut added the field's
+  shape (above) but validated it only structurally — `checkAdjudicationEntries`
+  now applies the same per-type rule `run.schema.json`'s settlement
+  reference already enforces: `type: "sha"` requires a 40-hex value,
+  `type: "issue_number"` requires a positive-integer string, `type:
+  "comment_id"` requires a non-empty-after-trim value. Without this, a
+  `reference` claiming to be a commit SHA could carry any string at all,
+  silently breaking any consumer that dereferences it. Covered by
+  `adjudication.schema/invalid/reference-bad-sha-value.json`,
+  `reference-bad-issue-number-value.json`, and
+  `reference-whitespace-comment-id.json`.
+- **`adjudication.schema.json`'s `reference.type` is also bound to
+  `disposition`, mirroring `checkSettlementReferenceType`'s disposition-to-type
+  mapping, not only the value-format rule above (#686 challenge round 2 P2,
+  extended round 3 P2).** Format-validating `reference.value` against
+  whatever `type` it happened to declare left the type itself unconstrained —
+  `{disposition: "file", reference: {type: "sha", ...}}` passed despite the
+  SHA never confirming a filed issue. `checkAdjudicationEntries` now applies
+  the same total mapping `run.schema.json`'s settlement reference already
+  enforces for the three dispositions a reference can meaningfully evidence
+  at adjudication time (the field's own description: "declined or filed
+  directly"): `fix` requires `sha`, `decline` requires `comment_id`, `file`
+  requires `issue_number`. Round 2 left `restructure`/`delete`/`defer`
+  unconstrained on the theory that no mapping applied to them; round 3
+  pointed out that permissive default let `defer` silently accept a
+  reference the field's own description already promises it never carries
+  ("never deferred" — that evidence belongs on the eventual settlement
+  instead). Any disposition outside the three-way mapping now rejects a
+  reference outright rather than leaving it unconstrained. Covered by
+  `adjudication.schema/invalid/reference-type-disposition-mismatch.json`
+  (round 2), `reference-on-defer-disposition.json` (round 3), and — closing
+  the last gap review round 1 found, positive coverage for `fix`/`sha` and
+  `decline`/`comment_id` plus negative coverage for `restructure` and
+  `delete` — `adjudication.schema/valid/reference-fix-sha.json`,
+  `reference-decline-comment-id.json`, and
+  `adjudication.schema/invalid/reference-on-restructure-disposition.json`,
+  `reference-on-delete-disposition.json`.
+- **`scripts/test-result-schemas.sh`'s composed-root/envelope parity check
+  compares full property definitions, not just property names (#686
+  challenge round 2 P2).** The original check compared
+  `Object.keys(composed.properties)` against
+  `Object.keys(envelopeSchema.properties)` — proving the same names exist on
+  both sides, not that their definitions still match. Weakening only the
+  composed copy's `head.pattern` (e.g. to accept a 39-character SHA) left the
+  key lists equal and passed. The check now canonicalizes and compares the
+  full property objects (minus `payload`, which is expected to differ — the
+  envelope's copy is a placeholder, the composed copy carries the real
+  role-dispatch `allOf`), the same deep-comparison technique the pre-existing
+  `$defs.<role>` drift check above already uses.
+- **Three coverage-only additions closing regression gaps challenge round 3
+  found in this lane's own earlier fixtures (#686 challenge round 3 P2,
+  no behavior change):**
+  - The path-safety pattern's `.`/`..`-segment and backslash lookaheads had
+    fixtures for absolute paths and a Windows drive letter, but none for the
+    two branches the description text specifically promises: POSIX
+    traversal and backslash traversal. `result.reviewer.schema/invalid/`
+    gained `finding-path-dotdot-traversal.json` (`../secret`) and
+    `finding-path-backslash-traversal.json` (`..\secret`).
+  - The `evidence_comments[].digest` pattern had every touched fixture
+    changed to *conform* to it, but none testing *rejection* of a malformed
+    one — a regression that weakened or removed the pattern would pass the
+    conformance suite undetected. `run.schema/invalid/` gained
+    `evidence_comments-digest-malformed.json` (uppercase hex).
+  - `checkEvidenceMarkerPrDestinationRequiresPr` (added earlier in this
+    lane) had no fixture at all. `run.schema/invalid/` gained
+    `evidence-marker-pr-destination-without-pr.json` (`pr: null` with a
+    `destination: "pr"` marker).
+- **`scripts/sync-skills.sh`'s two `#686` findings (empty-string
+  `schemas.names`/`agents.names` members; `verify` not requiring every
+  incoming name to also appear in the recorded managed set) are not fixed
+  in this repo.** The script's own header is explicit: "Canonical home:
+  harmon-init's template... Change it there, not in a generated repo —
+  local edits are overwritten on the next `copier update`." Tracked at
+  harmon-init#1117.
 
 ## Fixture layout
 

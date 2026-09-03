@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "run_id": "run-6808-reference-whitespace-comment-id",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "6808a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-verification-1",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "decline",
+      "reason": "not a real defect",
+      "evidence": "the cited behavior is intentional",
+      "override": null,
+      "reference": { "type": "comment_id", "value": "   " }
+    }
+  ]
+}

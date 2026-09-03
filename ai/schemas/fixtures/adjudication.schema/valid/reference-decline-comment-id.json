@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "run_id": "run-6805-reference-decline-comment-id",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "6805a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-verification-1",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "decline",
+      "reason": "false positive: the flagged behavior is intentional and documented",
+      "evidence": "verified against ai/schemas/README.md's field-shape decisions section",
+      "override": null,
+      "reference": { "type": "comment_id", "value": "2000000099" }
+    }
+  ]
+}
