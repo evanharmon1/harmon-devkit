@@ -4,7 +4,10 @@
   "initiated_by": "human",
   "started_at": "2026-08-29T09:00:00Z",
   "stage_transitions": [
-    { "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z" }
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-08-29T09:00:00Z"
+    }
   ],
   "interventions": [],
   "outcome": null,
@@ -15,9 +18,17 @@
       "author_actor_id": 12345678,
       "login": "evanharmon1",
       "digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-      "marker": { "run_id": "run-6074-marker-missing-destination", "stage": "challenge", "round": 1, "sequence": 1 }
+      "marker": {
+        "run_id": "run-6074-marker-missing-destination",
+        "stage": "challenge",
+        "round": 1,
+        "sequence": 1
+      }
     }
   ],
   "settlements": [],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }

@@ -15,5 +15,8 @@
       "settled_at": "2026-08-29T12:00:00Z"
     }
   ],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }

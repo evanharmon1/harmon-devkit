@@ -8,5 +8,8 @@
   "outcome": null,
   "pr": null,
   "evidence_comments": [],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }

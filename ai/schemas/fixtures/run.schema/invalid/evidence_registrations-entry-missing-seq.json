@@ -1,0 +1,37 @@
+{
+  "schema": 2,
+  "run_id": "run-evreg-missing-seq",
+  "initiated_by": "human",
+  "started_at": "2026-09-03T09:00:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-09-03T09:00:00Z"
+    }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null,
+  "evidence_registrations": [
+    {
+      "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "prev_digest": "genesis",
+      "id": "3000000001",
+      "author_actor_id": 12345678,
+      "login": "evanharmon1",
+      "payload_digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "marker": {
+        "run_id": "run-evreg-missing-seq",
+        "stage": "challenge",
+        "destination": "issue",
+        "round": 1,
+        "sequence": 1
+      }
+    }
+  ],
+  "pr_bindings": [],
+  "outcome_transitions": []
+}

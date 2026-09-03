@@ -3,11 +3,19 @@
   "run_id": "run-6061-ready-outcome-without-promotion",
   "initiated_by": "human",
   "started_at": "2026-08-29T09:00:00Z",
-  "stage_transitions": [{ "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z" }],
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-08-29T09:00:00Z"
+    }
+  ],
   "interventions": [],
   "outcome": "ready-for-review",
   "pr": null,
   "evidence_comments": [],
   "settlements": [],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }

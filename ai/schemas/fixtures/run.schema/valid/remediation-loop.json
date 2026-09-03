@@ -4,20 +4,58 @@
   "initiated_by": "human",
   "started_at": "2026-08-29T09:00:00Z",
   "stage_transitions": [
-    { "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z", "exit": "claimed" },
-    { "stage": "claim", "entered_at": "2026-08-29T09:02:00Z", "exit": "planned" },
-    { "stage": "plan", "entered_at": "2026-08-29T09:04:00Z", "exit": "briefed" },
-    { "stage": "implement", "entered_at": "2026-08-29T09:06:00Z", "exit": "verified" },
-    { "stage": "verify", "entered_at": "2026-08-29T09:08:00Z", "exit": "green" },
-    { "stage": "challenge", "entered_at": "2026-08-29T09:10:00Z", "exit": "P1 found, back to implement" },
-    { "stage": "implement", "entered_at": "2026-08-29T09:12:00Z", "exit": "fix applied" },
-    { "stage": "verify", "entered_at": "2026-08-29T09:14:00Z", "exit": "green" },
-    { "stage": "challenge", "entered_at": "2026-08-29T09:16:00Z" }
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-08-29T09:00:00Z",
+      "exit": "claimed"
+    },
+    {
+      "stage": "claim",
+      "entered_at": "2026-08-29T09:02:00Z",
+      "exit": "planned"
+    },
+    {
+      "stage": "plan",
+      "entered_at": "2026-08-29T09:04:00Z",
+      "exit": "briefed"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-08-29T09:06:00Z",
+      "exit": "verified"
+    },
+    {
+      "stage": "verify",
+      "entered_at": "2026-08-29T09:08:00Z",
+      "exit": "green"
+    },
+    {
+      "stage": "challenge",
+      "entered_at": "2026-08-29T09:10:00Z",
+      "exit": "P1 found, back to implement"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-08-29T09:12:00Z",
+      "exit": "fix applied"
+    },
+    {
+      "stage": "verify",
+      "entered_at": "2026-08-29T09:14:00Z",
+      "exit": "green"
+    },
+    {
+      "stage": "challenge",
+      "entered_at": "2026-08-29T09:16:00Z"
+    }
   ],
   "interventions": [],
   "outcome": null,
   "pr": null,
   "evidence_comments": [],
   "settlements": [],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }

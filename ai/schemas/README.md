@@ -1309,18 +1309,34 @@ parses.
 
 ### Digest
 
-`digest` (in `run.schema.json`'s `evidence_comments[].digest` and each
-run-record append-only entry's `digest`) is the lowercase hex SHA-256 of
-the **exact bytes** of the payload as posted — for a single-segment
-comment, the fenced JSON text; for a split comment, the full reassembled
-text before parsing, not a re-serialization. Compute it once at post time
-over the string that is about to be written, and verify it by re-hashing
-the string actually read back — never a round-tripped
-`JSON.stringify(JSON.parse(...))` of it, which is not guaranteed
-byte-stable (key order, numeric formatting) across two implementations
-(devkit's writer, Foreman's Python writer, this repo's harvester). A digest
-mismatch is tampered evidence (edited or corrupted), reported as such, and
-never silently replayed.
+Two different things share the name "digest" in this family, and
+`evidence_registrations[]` entries (below) are the one place both appear on
+the same object — worth naming precisely rather than conflating:
+
+- **Payload digest** (`run.schema.json`'s `evidence_comments[].digest`, and
+  `evidence_registrations[].payload_digest`) is the lowercase hex SHA-256 of
+  the **exact bytes** of the evidence payload as posted — for a
+  single-segment comment, the fenced JSON text; for a split comment, the
+  full reassembled text before parsing, not a re-serialization. Compute it
+  once at post time over the string that is about to be written, and verify
+  it by re-hashing the string actually read back — never a round-tripped
+  `JSON.stringify(JSON.parse(...))` of it, which is not guaranteed
+  byte-stable (key order, numeric formatting) across two implementations
+  (devkit's writer, Foreman's Python writer, this repo's harvester). A
+  mismatch is tampered evidence (edited or corrupted), reported as such,
+  and never silently replayed. Canonical format `sha256:<64 lowercase
+  hex>` (with the algorithm prefix).
+- **Chain digest** (every run-record append-only entry's own `digest`,
+  including `evidence_registrations[]`/`pr_bindings[]`/
+  `outcome_transitions[]`'s) authenticates the entry's own position and
+  content in ITS chain — see "Append-only entry chaining" below. Bare
+  64-lowercase-hex, no algorithm prefix (distinguishing it on sight from a
+  payload digest). An `evidence_registrations[]` entry's `payload_digest`
+  says "the comment this entry names still has this exact posted content";
+  that same entry's `digest` instead says "this entry has not been edited
+  or removed from the chain since it was appended" — two independent
+  claims, verified independently, and conflating them was the mistake
+  round 3 flagged as a design question rather than fix under pressure.
 
 ### Trust: actor ID, never a payload claim
 
@@ -1396,14 +1412,16 @@ than choosing a branch (see "Append-only entry chaining").
 
 ### Append-only entry chaining (`--as-of` reconstruction)
 
-`stage_transitions[]`, `interventions[]`, and `settlements[]` inside the
-run record are each append-only: every entry the harvester trusts (see
-above) carries `seq` (0-based, per array, extending the array — not a
-global counter), `digest` (SHA-256 of that entry's own canonical JSON,
-`JSON.stringify` with sorted keys — this one entry, unlike the outer
-comment digest above, IS reproducible cross-implementation because it is
-freshly computed from parsed, already-trusted structured data, not
-re-hashing free text), and `prev_digest` (the previous entry's `digest`,
+`stage_transitions[]`, `interventions[]`, `settlements[]`,
+`evidence_registrations[]`, `pr_bindings[]`, and `outcome_transitions[]`
+inside the run record are each append-only: every entry the harvester
+trusts (see above) carries `seq` (0-based, per array, extending the array
+— not a global counter), a chain `digest` (SHA-256 of that entry's own
+canonical JSON, `JSON.stringify` with sorted keys — this one entry, unlike
+the outer comment digest above, IS reproducible cross-implementation
+because it is freshly computed from parsed, already-trusted structured
+data, not re-hashing free text — see "Digest" above for how this differs
+from a payload digest), and `prev_digest` (the previous entry's `digest`,
 or the fixed string `"genesis"` for `seq: 0`). Appending extends the chain;
 editing or deleting any entry changes a later entry's expected
 `prev_digest` and breaks validation from that point forward — a broken
@@ -1412,22 +1430,59 @@ entry. `--as-of <cutoff>` first validates the complete chain (every entry,
 regardless of cutoff — a chain broken *after* the cutoff still proves
 nothing *before* it can be trusted either, since the break could be a
 rewrite of history that also touches earlier entries), then reconstructs
-state using only entries whose own timestamp is at or before the cutoff.
+state using only entries whose own timestamp is at or before the cutoff —
+except `evidence_registrations[]`, which carries no independent per-entry
+post timestamp of its own (a registration's real-world time is the
+evidence comment's own `created_at`, already governed by the separate
+comment-level cutoff filtering "Discovery" above describes) and is never
+cutoff-filtered: its role is tamper-protecting the *current*
+`evidence_comments[]` projection, not supplying its own as-of view.
+
+**`evidence_registrations[]`/`pr_bindings[]`/`outcome_transitions[]` chain
+what were previously bare mutable fields** (`evidence_comments[]`, `pr`,
+`outcome` — round 4 of #663, closing the design question challenge round 3
+raised and deliberately left open rather than rush). Each flat field is
+now a **derived projection**: `evidence_comments[]` is
+`evidence_registrations[]` mapped back to its public shape (`payload_digest`
+renamed to `digest`, chain fields dropped); `pr` is the last `pr_bindings[]`
+entry's `{number, url}` (or `null` if the chain is empty); `outcome` is the
+last `outcome_transitions[]` entry's `outcome` (or `null` if empty). The
+flat fields stay in the schema and stay required — `scripts/
+render-dev-flow.mjs` reads `record.run.pr.number`/`.url` directly, so
+dropping them was rejected in favor of keeping them but no longer trusting
+them blindly — the harvester verifies each flat field against its chain's
+derived value on every read (`verifyProjections` in
+`scripts/dev-flow-stats.mjs`) and rejects the whole record as
+indeterminate on a mismatch, whether that mismatch comes from a broken
+chain (an edited or deleted registration — the chain's own digest no
+longer matches its content) or an internally-valid chain whose derived
+value simply disagrees with the flat field next to it (the flat field was
+overwritten independently of its chain — a "swapped comment id" is this
+second case: the chain still names the real comment, but
+`evidence_comments[]` now claims a different one). One invariant survives
+unchanged from before this chain existed: an `outcome_transitions[]` entry
+claiming `"ready-for-review"` is still not sufficient on its own —
+`promotion` (cutoff-checked the same way) must also be present, exactly as
+when this file's only signal for outcome was a transition's own exit text.
 
 `seq`/`digest`/`prev_digest` are **not yet part of the shipped
-`run.schema.json`** — that schema's `stage_transitions`/`interventions`/
-`settlements` items have `additionalProperties: false` with no such
-fields, and its fixture corpus (~100 files) is substantial, pre-existing,
-shared work this section does not touch. The harvester
-(`scripts/dev-flow-stats.mjs`, issue evanharmon1/harmon-devkit#663)
-verifies the chain by its own field-presence and hash checks against
-this documented shape — the same way `dev-flow-exit.mjs`'s `loadRunDir`
-already reads its local `run.json` without a formal schema gate (#727) —
-rather than by invoking the strict JSON-Schema validator against
-`run.schema.json` for this document. Formally extending `run.schema.json`
-to require these three fields is a follow-up
+`run.schema.json`** for the *original three* arrays —
+`stage_transitions`/`interventions`/`settlements` items have
+`additionalProperties: false` with no such fields, and its fixture corpus
+(~100 files) is substantial, pre-existing, shared work round 4 does not
+touch. The harvester verifies those three chains by its own
+field-presence and hash checks against this documented shape — the same
+way `dev-flow-exit.mjs`'s `loadRunDir` already reads its local `run.json`
+without a formal schema gate (#727) — rather than by invoking the strict
+JSON-Schema validator against `run.schema.json` for those three documents.
+Formally extending `run.schema.json` to require their `seq`/`digest`/
+`prev_digest` too is a follow-up
 ([#738](https://github.com/evanharmon1/harmon-devkit/issues/738)) for
-whoever next touches that schema's evolution, not a change made here.
+whoever next touches that schema's evolution — round 4's own three NEW
+arrays, by contrast, **are** part of the shipped schema from the start
+(`ai/schemas/fixtures/run.schema/` has full required/enum coverage for
+all three), since introducing an unenforced field on a brand-new array
+would just recreate #738's own gap on day one.
 
 ### What this section does not cover
 
@@ -1439,28 +1494,13 @@ shape beyond "a redaction placeholder and rule id may appear in place of a
 span" — a harvester treats a redacted span as ordinary text, not as a
 schema or grammar concern.
 
-**Open design question, escalated rather than resolved here (challenge
-round 3, confirmed real, deliberately not fixed under time/round
-pressure):** `evidence_comments[]`, `outcome`, and `pr` are top-level
-run-record fields with **no** append-only chain protection of their own —
-unlike `stage_transitions[]`/`interventions[]`/`settlements[]` (see
-"Append-only entry chaining" below), nothing detects an entry silently
-disappearing from `evidence_comments[]`, or `outcome` changing without a
-corresponding, chain-verified transition to justify it. The identity-only
-run-index check (above) intentionally stopped trying to protect *content*
-at all — trying to re-add protection narrowly, under this stage's
-capped-round pressure, is exactly the kind of hasty change that produced
-the P0 this section already documents once. Two directions worth
-weighing, neither attempted here: extend the SAME append-only-chain
-pattern to `evidence_comments[]` as a fourth chained array (distinguishing
-its existing per-entry `digest`, which authenticates the referenced
-evidence *payload*, from a new chain digest that would authenticate the
-entry's own position in the array); or accept that `evidence_comments[]`
-entries are provably real once listed (id/author/marker all verified) and
-rely on human/CODEOWNERS review of run-record edits for the "entry quietly
-removed" case, the way an ordinary GitHub edit history already would if
-anyone looked. This needs a design decision, not a quick patch, from
-whoever picks up the harvester's next round of work.
+`run.schema.json` is owned by evanharmon1/harmon-devkit#634's lineage;
+round 4 of #663 touches it anyway (per explicit maintainer direction) as
+the evidence contract #663 exists to implement — the same schema-ownership
+crossover this PR's own body discloses. Everything about
+`stage_transitions[]`/`interventions[]`/`settlements[]` staying unenforced
+pending #738 (above) remains that follow-up's own separate scope, not
+reopened here.
 
 ## The Foreman conformance contract
 

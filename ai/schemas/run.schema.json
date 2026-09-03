@@ -15,6 +15,9 @@
     "outcome",
     "pr",
     "evidence_comments",
+    "evidence_registrations",
+    "pr_bindings",
+    "outcome_transitions",
     "settlements",
     "promotion"
   ],
@@ -141,6 +144,80 @@
                 "minimum": 1
               }
             }
+          }
+        }
+      }
+    },
+    "evidence_registrations": {
+      "description": "Append-only chain protecting `evidence_comments[]` (a derived projection: the entries below, in seq order, minus the chain-only fields) against a silently removed or in-place-edited registration. `payload_digest` is the referenced evidence comment's own posted-content hash (ai/schemas/README.md 'Digest') — distinct from this entry's own `digest`, which authenticates the entry's position and content in THIS chain, not the comment it registers.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["seq", "digest", "prev_digest", "id", "author_actor_id", "login", "payload_digest", "marker"],
+        "properties": {
+          "seq": { "type": "integer", "minimum": 0 },
+          "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "prev_digest": { "type": "string", "pattern": "^(genesis|[0-9a-f]{64})$" },
+          "id": { "type": "string", "minLength": 1 },
+          "author_actor_id": { "type": "integer", "minimum": 1 },
+          "login": { "type": "string", "minLength": 1 },
+          "payload_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "marker": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["run_id", "stage", "destination", "round", "sequence"],
+            "properties": {
+              "run_id": { "type": "string", "minLength": 1 },
+              "stage": {
+                "enum": [
+                  "kickoff", "claim", "explore", "plan", "implement", "verify",
+                  "challenge", "review", "security", "integration"
+                ]
+              },
+              "destination": { "enum": ["issue", "pr"] },
+              "round": { "type": ["integer", "null"], "minimum": 1 },
+              "sequence": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "pr_bindings": {
+      "description": "Append-only chain protecting `pr` (a derived projection: the last entry's `number`/`url`, or null if this array is empty) against a silent swap to a different PR. `bound_at` is this entry's own creation time, letting `--as-of` reconstruct which PR (if any) the run was bound to at a given cutoff without depending on `pr`'s own live value.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["seq", "digest", "prev_digest", "number", "url", "bound_at"],
+        "properties": {
+          "seq": { "type": "integer", "minimum": 0 },
+          "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "prev_digest": { "type": "string", "pattern": "^(genesis|[0-9a-f]{64})$" },
+          "number": { "type": "integer", "minimum": 1 },
+          "url": { "type": "string", "minLength": 1 },
+          "bound_at": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+          }
+        }
+      }
+    },
+    "outcome_transitions": {
+      "description": "Append-only chain protecting `outcome` (a derived projection: the last entry's `outcome`, or null if this array is empty) against a silent rewrite to a different terminal value. Distinct from `stage_transitions[]`, which records STAGE progress through the run; an entry here instead records a change to the run's own terminal state — never `null` (an entry exists only once a terminal value is set, matching `outcome`'s own enum minus `null`).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["seq", "digest", "prev_digest", "outcome", "at"],
+        "properties": {
+          "seq": { "type": "integer", "minimum": 0 },
+          "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "prev_digest": { "type": "string", "pattern": "^(genesis|[0-9a-f]{64})$" },
+          "outcome": { "enum": ["ready-for-review", "capped", "escalated", "abandoned"] },
+          "at": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
           }
         }
       }

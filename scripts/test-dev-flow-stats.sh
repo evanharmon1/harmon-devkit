@@ -115,13 +115,42 @@ function comment(actorId, login, body, createdAt) {
   return { id: nextCommentId++, user: { id: actorId, login }, body, created_at: createdAt };
 }
 
+// Auto-derives evidence_registrations[]/pr_bindings[]/outcome_transitions[]
+// from a body's own evidence_comments[]/pr/outcome, UNLESS the scenario
+// already set one explicitly (needed only by the two scenarios deliberately
+// testing THESE chains' own tamper detection — everything else gets a
+// consistent, valid chain for free). outcome_transitions borrows
+// promotion.promoted_at as its timestamp when a promotion exists — the
+// same causal link reconstructAsOf itself now relies on for
+// "ready-for-review" — falling back to started_at otherwise; pr_bindings
+// always uses started_at (no existing scenario depends on PR-binding's own
+// as-of timing, only outcome's).
+function deriveDefaultChains(body) {
+  const out = {};
+  if (!("evidence_registrations" in body)) {
+    out.evidence_registrations = chain((body.evidence_comments || []).map((e) => ({
+      id: e.id, author_actor_id: e.author_actor_id, login: e.login,
+      payload_digest: e.digest, marker: e.marker,
+    })));
+  }
+  if (!("pr_bindings" in body)) {
+    out.pr_bindings = body.pr ? chain([{ number: body.pr.number, url: body.pr.url, bound_at: body.started_at }]) : chain([]);
+  }
+  if (!("outcome_transitions" in body)) {
+    const at = body.promotion ? body.promotion.promoted_at : body.started_at;
+    out.outcome_transitions = body.outcome ? chain([{ outcome: body.outcome, at }]) : chain([]);
+  }
+  return out;
+}
+
 // Returns { index, record } — the run-index anchor and the run-record
 // comment it names, built together since the index's payload has to name
 // the record comment's own id/digest/author (ai/schemas/README.md
 // "Comment kinds", run-index). Every scenario needs both on the issue now;
 // scanning for a bare run-record marker with no anchoring index is exactly
 // what challenge round 1 confirmed as a real gap.
-function runRecordComment(actorId, login, runId, body, createdAt) {
+function runRecordComment(actorId, login, runId, bodyIn, createdAt) {
+  const body = { ...bodyIn, ...deriveDefaultChains(bodyIn) };
   const text = JSON.stringify(body);
   const m = marker("run-record", runId, "kickoff", "issue", null, 1);
   const record = comment(actorId, login, \`\${m}\n\${fence(text)}\`, createdAt);
@@ -794,6 +823,80 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 14: an evidence_registrations[] entry is EDITED in place
+// (round 4 of #663, the maintainer's "edited registration ... fails
+// closed" requirement) — mirrors scenario 6's digest-tampering test, but
+// against the new chain: the registration's own recorded digest no longer
+// matches its (now-changed) content, so verifyChain rejects it before
+// verifyProjections is ever reached.
+{
+  const runId = "run-edited-registration-1";
+  const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, { passes: [] }, "2026-09-01T00:03:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    evidence_comments: [{
+      id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
+      digest: sha256(JSON.stringify({ passes: [] })),
+      marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
+    }],
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  // Tamper: change the (already-embedded, already-digested)
+  // evidence_registrations[0].login without recomputing its chain digest —
+  // the same in-place-edit shape scenario 6 uses for stage_transitions,
+  // applied to the new chain.
+  rr.body = rr.body.replace('"login":"orchestrator","payload_digest"', '"login":"someone-else","payload_digest"');
+  writeScenario("edited-registration", {
+    issues: [{ number: 116, pull_request: null }],
+    comments: { "116": [idx, rr, ev] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 116 },
+  });
+}
+
+// --- Scenario 15: evidence_comments[] (the flat projection) is edited to
+// name a DIFFERENT comment id than its own evidence_registrations[] chain
+// still names — the chain itself stays internally valid (untouched,
+// correctly digested), but no longer matches the flat field it is supposed
+// to authenticate. Round 4 of #663's "a swapped comment id ... fails
+// closed" requirement: this is what verifyProjections exists to catch,
+// distinct from scenario 14's verifyChain break.
+{
+  const runId = "run-swapped-comment-id-1";
+  const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, { passes: [] }, "2026-09-01T00:03:00Z");
+  const decoyId = String(Number(ev.id) + 999);
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    // The flat field names a comment id the chain below does NOT — as if
+    // it were independently overwritten after the chain was built.
+    evidence_comments: [{
+      id: decoyId, author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
+      digest: sha256(JSON.stringify({ passes: [] })),
+      marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
+    }],
+    evidence_registrations: chain([{
+      id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
+      payload_digest: sha256(JSON.stringify({ passes: [] })),
+      marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
+    }]),
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("swapped-comment-id", {
+    issues: [{ number: 117, pull_request: null }],
+    comments: { "117": [idx, rr, ev] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 117 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -1123,5 +1226,25 @@ early="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as
 echo "$early" | jq -e '.post_ready_fix_count == 0' >/dev/null || fail "postfix as-of before the fix commit: expected post_ready_fix_count 0, got: $early"
 late="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:25:00Z --json)"
 echo "$late" | jq -e '.post_ready_fix_count == 1' >/dev/null || fail "postfix as-of after the fix commit: expected post_ready_fix_count 1, got: $late"
+
+echo "== round 4 of #663: an edited evidence_registrations[] entry breaks its own chain, rejected like any other tampered entry =="
+export DFSTATS_DB="$tmp/scenarios/edited-registration.json"
+run_id="$(meta edited-registration .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "edited-registration: expected exit 3 (indeterminate), got $rc: $out"
+echo "$out" | grep -qi "evidence_registrations.*chain broken\|tamper" || fail "edited-registration: expected an evidence_registrations chain-break reason, got: $out"
+
+echo "== round 4 of #663: evidence_comments[] naming a different comment than its own (untouched, valid) chain fails closed =="
+export DFSTATS_DB="$tmp/scenarios/swapped-comment-id.json"
+run_id="$(meta swapped-comment-id .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "swapped-comment-id: expected exit 3 (indeterminate), got $rc: $out"
+echo "$out" | grep -qi "evidence_comments.*does not match\|out-of-band edit" || fail "swapped-comment-id: expected an evidence_comments/evidence_registrations mismatch reason, got: $out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

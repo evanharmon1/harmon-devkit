@@ -25,10 +25,11 @@ share the record and reused branch names do not reuse trajectories.
 ### Requirement: Role outputs and adjudications remain immutable
 
 Raw role results and adjudication records SHALL be immutable after receipt.
-Run history, including stage transitions, interventions, and terminal outcome,
-SHALL live in append-only run-record entries rather than editable summary fields.
-Deferred-finding terminal settlements SHALL likewise be append-only, keyed by
-finding ID, and SHALL NOT rewrite the original evidence comment or adjudication
+Run history, including stage transitions, interventions, evidence-comment
+registrations, the PR binding, and the terminal outcome, SHALL live in
+append-only run-record entries rather than editable summary fields. Deferred-
+finding terminal settlements SHALL likewise be append-only, keyed by finding
+ID, and SHALL NOT rewrite the original evidence comment or adjudication
 digest.
 
 #### Scenario: Integration settles a deferred finding
@@ -155,8 +156,9 @@ before computing metrics or exits.
 
 ### Requirement: Run history is append-only and as-of reconstructable
 
-Every run-record transition, intervention, and terminal-outcome entry SHALL carry
-an immutable timestamp, sequence, previous-entry digest, and canonical digest.
+Every run-record transition, intervention, evidence-comment registration,
+PR-binding, and terminal-outcome entry SHALL carry an immutable timestamp,
+sequence, previous-entry digest, and canonical digest.
 Appending an entry SHALL extend that chain without editing an earlier entry. An
 `--as-of` read SHALL first normalize exact-duplicate entries (below), then
 validate the complete chain, then reconstruct state using only entries whose

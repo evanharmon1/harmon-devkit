@@ -4,13 +4,23 @@
   "initiated_by": "human",
   "started_at": "2026-08-29T09:00:00Z",
   "stage_transitions": [
-    { "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z", "exit": "claimed" },
-    { "stage": "claim", "entered_at": "2026-08-29T09:05:00Z" }
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-08-29T09:00:00Z",
+      "exit": "claimed"
+    },
+    {
+      "stage": "claim",
+      "entered_at": "2026-08-29T09:05:00Z"
+    }
   ],
   "interventions": [],
   "outcome": "abandoned",
   "pr": null,
   "evidence_comments": [],
   "settlements": [],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }

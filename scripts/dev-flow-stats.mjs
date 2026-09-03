@@ -482,10 +482,28 @@ const CHAIN_FIELDS = {
   stage_transitions: ["stage", "entered_at", "exit"],
   interventions: ["kind", "at", "note"],
   settlements: ["finding_id", "disposition", "settled_at", "reference"],
+  // The three chains below protect evidence_comments[]/pr/outcome — round 4
+  // of #663, closing the gap ai/schemas/README.md documented as an open
+  // design question after challenge round 3. Unlike the three above, these
+  // three ARE part of the shipped run.schema.json (not blocked on #738):
+  // the flat fields stay in the schema for existing direct consumers
+  // (scripts/render-dev-flow.mjs reads record.run.pr.number/.url), but are
+  // now DERIVED and cross-checked against their chain rather than trusted
+  // as bare mutable fields — see deriveProjections/verifyProjections below.
+  evidence_registrations: ["id", "author_actor_id", "login", "payload_digest", "marker"],
+  pr_bindings: ["number", "url", "bound_at"],
+  outcome_transitions: ["outcome", "at"],
 };
-const CHAIN_TIMESTAMP_FIELD = { stage_transitions: "entered_at", interventions: "at", settlements: "settled_at" };
+const CHAIN_TIMESTAMP_FIELD = {
+  stage_transitions: "entered_at",
+  interventions: "at",
+  settlements: "settled_at",
+  evidence_registrations: null, // marker carries no comment-post timestamp; registration order (seq) is the only ordering this chain defines
+  pr_bindings: "bound_at",
+  outcome_transitions: "at",
+};
 
-// Validates all three append-only arrays in a run-record body. Throws
+// Validates all six append-only arrays in a run-record body. Throws
 // EvidenceError on any broken chain — the record is not trusted past the
 // break (evidence spec: "fail closed").
 function verifyRunRecordChains(body) {
@@ -500,50 +518,87 @@ function verifyRunRecordChains(body) {
   return result;
 }
 
+// Recomputes the flat evidence_comments[]/pr/outcome fields from their
+// verified chains — the projection deriveProjections/verifyProjections
+// compare the live record against, so an edited or deleted registration is
+// caught the same way an edited transition already is (round 4's ask).
+function deriveProjections(chains) {
+  const evidence_comments = chains.evidence_registrations.map((r) => ({
+    id: r.id,
+    author_actor_id: r.author_actor_id,
+    login: r.login,
+    digest: r.payload_digest,
+    marker: r.marker,
+  }));
+  const lastPr = chains.pr_bindings[chains.pr_bindings.length - 1];
+  const pr = lastPr ? { number: lastPr.number, url: lastPr.url } : null;
+  const lastOutcome = chains.outcome_transitions[chains.outcome_transitions.length - 1];
+  const outcome = lastOutcome ? lastOutcome.outcome : null;
+  return { evidence_comments, pr, outcome };
+}
+
+// Throws EvidenceError when a flat field has drifted from its chain-derived
+// value — this is what makes the chain actually PROTECT the flat field,
+// rather than merely existing alongside it unread. A drift means either the
+// chain was tampered (caught above, before this ever runs) or the flat
+// field was overwritten out-of-band; either way the record is untrustworthy
+// past this point.
+function verifyProjections(body, chains) {
+  const derived = deriveProjections(chains);
+  if (canonicalJson(body.evidence_comments || []) !== canonicalJson(derived.evidence_comments)) {
+    throw new EvidenceError("run record evidence_comments[] does not match its evidence_registrations[] chain — out-of-band edit");
+  }
+  if (canonicalJson(body.pr ?? null) !== canonicalJson(derived.pr)) {
+    throw new EvidenceError("run record pr does not match its pr_bindings[] chain — out-of-band edit");
+  }
+  if (canonicalJson(body.outcome ?? null) !== canonicalJson(derived.outcome)) {
+    throw new EvidenceError("run record outcome does not match its outcome_transitions[] chain — out-of-band edit");
+  }
+}
+
 // `--as-of` reconstruction: validate the COMPLETE chain first (a break
 // after the cutoff still means nothing before it can be trusted, since the
 // break could be a rewrite of earlier history too — ai/schemas/README.md),
 // then keep only entries at or before the cutoff.
 function reconstructAsOf(body, cutoffIso) {
   const chains = verifyRunRecordChains(body);
+  // Tamper check against CURRENT (unfiltered) state, once, regardless of
+  // cutoff — a chain broken or drifted from its flat projection right now
+  // means the record is untrustworthy at any --as-of, the same reasoning
+  // the complete-chain-first rule already applies below (round 4 of #663).
+  verifyProjections(body, chains);
   const cutoff = cutoffIso ? Date.parse(cutoffIso) : Infinity;
   const filtered = {};
   for (const [arrayName, entries] of Object.entries(chains)) {
     const field = CHAIN_TIMESTAMP_FIELD[arrayName];
-    filtered[arrayName] = entries.filter((e) => Date.parse(e[field]) <= cutoff);
+    // evidence_registrations carries no independent per-entry post
+    // timestamp (a registration's real-world time is the evidence
+    // comment's own created_at, already governed by assembleListedEvidence's
+    // separate withinCutoff filtering) — this chain exists to tamper-protect
+    // the CURRENT evidence_comments[] projection, not to supply its own
+    // as-of view, so it is never cutoff-filtered here.
+    filtered[arrayName] = field === null ? entries : entries.filter((e) => Date.parse(e[field]) <= cutoff);
   }
-  // outcome/pr/promotion are point-in-time fields on the run record, not
-  // append-only arrays — reconstructing them "as of" a cutoff means
-  // deriving from the filtered chains rather than trusting the record's
-  // current (possibly later-than-cutoff) top-level values directly.
-  const lastTransition = filtered.stage_transitions[filtered.stage_transitions.length - 1];
   const promotion =
     body.promotion && Date.parse(body.promotion.promoted_at) <= cutoff ? body.promotion : null;
-  // outcome is terminal-only in the live record; "as of" a cutoff before
-  // the recorded outcome's own effective time, the run reads as still
-  // in-flight (null) rather than inheriting a future terminal state. The
-  // record does not carry an explicit outcome timestamp, so trust the
-  // live `outcome` field only once every transition (including any that
-  // exist strictly after this reconstruction's own filtered set) is also
-  // within the cutoff AND the last transition itself already carries an
-  // exit — together these mean the run's own edit history shows nothing
-  // happened after the cutoff, so whatever `outcome` currently says was
-  // already true then. The ONE exception is "ready-for-review": that
-  // specific value requires `promotion` (itself cutoff-checked above,
-  // properly timestamped) — a transition's own exit text is never trusted
-  // to mean readiness on its own, challenge round 1 confirmed (an
-  // integration-stage exit at 10:00 does not mean ready-for-review by
-  // 10:10 if promotion did not land until 10:15). Parsing the exit text
-  // for a specific magic word (an earlier version of this fix) is exactly
-  // as fragile as it sounds — challenge round 2, confirmed: run.schema.json
-  // only gives EXAMPLE exit text ("e.g. 'capped: ...'"), never a fixed
-  // format, so a legitimately different phrasing for the same terminal
-  // outcome was silently read as still in-flight.
-  let outcome = null;
-  if (promotion) {
-    outcome = "ready-for-review";
-  } else if (lastTransition && lastTransition.exit && filtered.stage_transitions.length === chains.stage_transitions.length) {
-    outcome = body.outcome === "ready-for-review" ? null : body.outcome;
+  // pr/outcome now have their own timestamped, chain-verified history
+  // (pr_bindings[]/outcome_transitions[] — round 4 of #663), so "as of a
+  // cutoff" is simply the last filtered entry in each, replacing the
+  // fragile transition-exit-text heuristic this function used before that
+  // chain existed (it had no outcome timestamp to reconstruct from at all).
+  const lastPr = filtered.pr_bindings[filtered.pr_bindings.length - 1];
+  const pr = lastPr ? { number: lastPr.number, url: lastPr.url } : null;
+  const lastOutcome = filtered.outcome_transitions[filtered.outcome_transitions.length - 1];
+  const outcome = lastOutcome ? lastOutcome.outcome : null;
+  // A transition's own claim is never sufficient for "ready-for-review" —
+  // that specific value requires promotion (itself cutoff-checked above),
+  // the same invariant challenge round 1 established when this was the
+  // only way to derive outcome at all: an integration-stage exit does not
+  // mean ready-for-review by itself if promotion never landed (or, for an
+  // --as-of read, had not yet landed by the cutoff). A chain-verified entry
+  // claiming otherwise is an inconsistent record, not a quiet downgrade.
+  if (outcome === "ready-for-review" && !promotion) {
+    throw new EvidenceError("run record outcome_transitions[] claims ready-for-review without a corresponding promotion — inconsistent record");
   }
   return {
     run_id: body.run_id,
@@ -552,7 +607,7 @@ function reconstructAsOf(body, cutoffIso) {
     stage_transitions: filtered.stage_transitions,
     interventions: filtered.interventions,
     settlements: filtered.settlements,
-    pr: body.pr,
+    pr,
     promotion,
     outcome,
   };

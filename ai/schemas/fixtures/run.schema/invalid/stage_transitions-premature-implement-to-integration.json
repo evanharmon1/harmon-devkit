@@ -4,16 +4,38 @@
   "initiated_by": "human",
   "started_at": "2026-08-29T09:00:00Z",
   "stage_transitions": [
-    { "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z", "exit": "claimed" },
-    { "stage": "claim", "entered_at": "2026-08-29T09:02:00Z", "exit": "planned" },
-    { "stage": "plan", "entered_at": "2026-08-29T09:04:00Z", "exit": "briefed" },
-    { "stage": "implement", "entered_at": "2026-08-29T09:06:00Z", "exit": "verified" },
-    { "stage": "integration", "entered_at": "2026-08-29T09:08:00Z" }
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-08-29T09:00:00Z",
+      "exit": "claimed"
+    },
+    {
+      "stage": "claim",
+      "entered_at": "2026-08-29T09:02:00Z",
+      "exit": "planned"
+    },
+    {
+      "stage": "plan",
+      "entered_at": "2026-08-29T09:04:00Z",
+      "exit": "briefed"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-08-29T09:06:00Z",
+      "exit": "verified"
+    },
+    {
+      "stage": "integration",
+      "entered_at": "2026-08-29T09:08:00Z"
+    }
   ],
   "interventions": [],
   "outcome": null,
   "pr": null,
   "evidence_comments": [],
   "settlements": [],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }
