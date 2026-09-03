@@ -16,6 +16,20 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-curr
 
 **Arguments:** $ARGUMENTS
 
+**Transitional.** This skill's readiness gate (`assets/readiness-gate.sh`)
+requires a real dev-flow-v2 record directory — `run.json` plus
+`adjudications/*.json` — as `--record`. Nothing shipped today writes one:
+that record is `/review`'s (harmon-devkit#638, wave 2b) own output, and this
+gate is v2-only by design (`openspec/changes/dev-flow-v2` task 5.1;
+harmon-devkit#604: successor skills ship v2-only, consumers stay on the
+shipped procedure until their pipeline migrates — no compat mode is added
+here for that transition, per the delta spec). **Until #638 and the
+`.devflow.toml` policy migration (harmon-devkit#711) land, shepherd a draft
+PR with the shipped procedure instead** — the vendored `shepherd` skill and
+its own `readiness-gate.sh` as merged to `main` (reads deferred findings from
+the PR body directly, no record directory). Do not fabricate a `run.json` to
+route around this; there is nothing yet that would keep it truthful.
+
 Opening a draft PR is not the end. Integrate it: dispatch the integrator agent
 to settle CI and drive the Codex cloud-review cycle (see
 [§2](#2-watch)), poll incoming bot/human reviews, adjudicate what lands, fix
