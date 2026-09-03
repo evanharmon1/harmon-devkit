@@ -15,11 +15,9 @@
 #
 # Usage:
 #   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
-#       (--codex-state FILE [--codex-actor-id N] | --codex-disabled)
-#       [--allow-edited-root ID]...
+#       --record DIR --integrator-result FILE [--allow-edited-root ID]...
 #   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
-#       (--codex-state FILE [--codex-actor-id N] | --codex-disabled)
-#       [--allow-edited-root ID]...
+#       --record DIR --integrator-result FILE [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 #
 # `check` evaluates the gate for the adjudicated 40-hex head SHA and, on full
@@ -50,7 +48,7 @@
 #   changes-requested, merge-state-dirty, merge-state-behind (fail)
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
-#   deferred-unchecked, deferred-no-outcome                 (fail)
+#   deferred-unsettled                                       (fail)
 #   codex-not-clean                                         (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, usage              (indeterminate)
@@ -73,12 +71,14 @@
 # watch owes it, exactly as it did under the hand-run recipe this replaces. A
 # human still reads the PR.
 #
-# Toward the local filesystem the gate itself writes nothing. With
-# --codex-state there is one delegated write path: the sibling classifier's
-# `check` takes and releases its advisory lock directory beside that state
-# file. It is reachable only through a state file this script has already
-# proven to name this exact repo, PR, and head, and no timeout flag is
-# passed, so the helper never rewrites the state itself.
+# Toward the local filesystem and GitHub alike, the gate itself writes
+# nothing: --integrator-result is a FILE the caller already has (the
+# dispatched integrator agent's own schema-valid result.envelope, role
+# integrator — see ai/agents/integrator.md and result.integrator.schema.json),
+# never a live state file this script pokes at or a helper it re-invokes.
+# --record DIR is the dev-flow-v2 record directory render-dev-flow.mjs reads
+# to project current deferred-finding settlement (readiness-input), also
+# read-only.
 
 set -euo pipefail
 
@@ -86,11 +86,9 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
-      (--codex-state FILE [--codex-actor-id N] | --codex-disabled)
-      [--allow-edited-root ID]...
+      --record DIR --integrator-result FILE [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
-      (--codex-state FILE [--codex-actor-id N] | --codex-disabled)
-      [--allow-edited-root ID]...
+      --record DIR --integrator-result FILE [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
@@ -98,10 +96,15 @@ audit is the same evaluation with the draft requirement inverted (the PR
 must be non-draft), for judging a PR somebody already promoted — its pass
 never authorizes gh pr ready.
 fingerprint recomputes the five-surface content fingerprint for the
-post-promotion compare. --codex-state FILE runs the sibling
-check-codex-cloud-review.sh against that attempt state (Codex cloud review
-enabled); --codex-disabled records the caller's assertion that no Codex
-cloud reviewer is configured. Exactly one of the two is required.
+post-promotion compare. --record DIR is the dev-flow-v2 record directory
+(run.json plus adjudications/*.json) render-dev-flow.mjs projects deferred-
+finding settlement from. --integrator-result FILE is the dispatched
+integrator agent's schema-valid result.envelope (role integrator) for this
+exact head; its payload's codex_cycle carries the current-head Codex verdict
+when the resolved integration cap is not 0, or is null when it is — a null
+codex_cycle is how the Codex condition is waived, so there is no separate
+disabled flag. Both are always required; there is no mode where either is
+skippable.
 --allow-edited-root ID clears an edited-since-reply line for that thread
 root only — the named-exception rule: the caller's report must say why the
 edit needs no reply.
@@ -120,6 +123,19 @@ need() {
 
 need gh
 need jq
+need node
+
+# The record projector lives at a fixed repo-root path, not beside this asset
+# script (which the skills-sync vendoring can relocate on its own), so it is
+# resolved from the checkout's own toplevel rather than "$(dirname "$0")/..".
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" ||
+    die "not inside a git checkout — cannot locate scripts/render-dev-flow.sh"
+render_dev_flow="$repo_root/scripts/render-dev-flow.sh"
+[ -x "$render_dev_flow" ] ||
+    die "$render_dev_flow is missing or not executable"
+validate_result_schemas="$repo_root/scripts/validate-result-schemas.mjs"
+[ -f "$validate_result_schemas" ] ||
+    die "$validate_result_schemas is missing"
 
 # Bounded network calls where GNU timeout exists; a loud, unbounded fallback
 # where it does not (stock macOS ships neither `timeout` nor `gtimeout`).
@@ -141,21 +157,20 @@ shift
 repo=
 pr=
 head=
-codex_state=
-codex_disabled=0
-codex_actor_id=199175422
+record_dir=
+integrator_result=
 allowed_edited_roots='[]'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --head | --codex-state | --codex-actor-id | --allow-edited-root)
+    --repo | --pr | --head | --record | --integrator-result | --allow-edited-root)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
         --pr) pr=$2 ;;
         --head) head=$2 ;;
-        --codex-state) codex_state=$2 ;;
-        --codex-actor-id) codex_actor_id=$2 ;;
+        --record) record_dir=$2 ;;
+        --integrator-result) integrator_result=$2 ;;
         --allow-edited-root)
             printf '%s' "$2" | grep -Eq '^[1-9][0-9]*$' ||
                 die "--allow-edited-root must be a thread root comment ID"
@@ -165,10 +180,6 @@ while [ "$#" -gt 0 ]; do
             ;;
         esac
         shift 2
-        ;;
-    --codex-disabled)
-        codex_disabled=1
-        shift
         ;;
     *) usage ;;
     esac
@@ -200,16 +211,15 @@ check | audit)
     [ "$command_name" = check ] || require_draft=0
     [ -n "$head" ] || usage
     valid_sha "$head" || die "--head must be a full 40-hex commit"
-    # Exactly one Codex mode, explicitly: the Codex condition must not be
-    # skippable by silence. Enabled needs the attempt state to judge;
-    # disabled is the caller's recorded assertion, not a default.
-    if [ -n "$codex_state" ] && [ "$codex_disabled" = 1 ]; then
-        die "--codex-state and --codex-disabled are mutually exclusive"
-    fi
-    if [ -z "$codex_state" ] && [ "$codex_disabled" != 1 ]; then
-        die "one of --codex-state or --codex-disabled is required"
-    fi
-    valid_uint "$codex_actor_id" || die "invalid Codex actor ID"
+    [ -n "$record_dir" ] || usage
+    [ -d "$record_dir" ] || die "--record $record_dir is not a directory"
+    # Always required, never a mode switch: the integrator result's own
+    # codex_cycle (null vs. non-null) is what says whether the Codex
+    # condition applies this pass, so there is no separate disabled flag for
+    # the condition to be skippable by silence, or by a false claim, on.
+    [ -n "$integrator_result" ] || usage
+    [ -f "$integrator_result" ] ||
+        die "--integrator-result $integrator_result does not exist"
     ;;
 fingerprint) ;;
 *) usage ;;
@@ -373,8 +383,8 @@ live_head="$(jq -er '.headRefOid | select(type == "string")' <<<"$scalars")" ||
 [ "$live_head" = "$head" ] ||
     fail_condition head-mismatch "PR head is $live_head, not the adjudicated $head — re-adjudicate against the new head"
 
-# 2. The PR object (REST). Feeds the deferred-findings condition AND the
-# fingerprint's first surface, so the gate judges the exact body it hashes.
+# 2. The PR object (REST) — the fingerprint's first surface, and a second
+# head-moved check independent of the scalar fetch above.
 fp_pr="$(run_gh api repos/"$repo"/pulls/"$pr")" ||
     indeterminate fetch-failed "cannot fetch the PR object"
 rest_head="$(jq -er '.head.sha | select(type == "string")' <<<"$fp_pr")" ||
@@ -673,61 +683,27 @@ UNKNOWN | "")
     ;;
 esac
 
-# 6. Deferred findings in the PR body. Every entry under a "## Deferred
-# findings" heading must be ticked, and a tick settles nothing without its
-# outcome — `fixed in <sha>`, `declined: <reason>`, or `filed as [#]<n>`
-# (the description is contributor-editable, so a bare `- [x]` is a checkbox,
-# not a decision). Items span their indented continuation lines.
-deferred_summary="$(jq -c '
-      def outcome_present:
-        test("fixed in [0-9a-f]{7,40}"; "i") or
-        test("declined:[[:space:]]*[^[:space:]]"; "i") or
-        test("filed as [^ ]*#[0-9]+"; "i");
-      (.body // "") | gsub("\r"; "") | split("\n")
-      | . as $lines | (length) as $count | (to_entries) as $entries
-      # EVERY matching section counts — an empty template section left above
-      # an appended real one must not hide the open findings below it.
-      | ($entries
-         | map(select(.value
-             | test("^#{1,6}[[:space:]]*deferred findings[[:space:]]*$"; "i"))
-           | .key)) as $starts
-      # A section ends only at a heading of the SAME or HIGHER level: a
-      # child heading (### under ##) is structure inside the section, and
-      # ending there would orphan every item listed beneath it.
-      | ($starts | map(. as $start
-          | ($lines[$start] | match("^#+").string | length) as $level
-          | (($entries
-              | map(select(.key > $start and
-                    (.value | test("^#{1,6}[[:space:]]")) and
-                    ((.value | match("^#+").string | length) <= $level))
-                | .key)
-              | first) // $count) as $end
-          | $lines[($start + 1):$end])
-         | add // [])
-      | reduce .[] as $line ([];
-          if ($line | test("^[[:space:]]*[-*+][[:space:]]+\\[[ xX]\\]"))
-          then . + [$line]
-          # A continuation must be INDENTED, the way list continuations are:
-          # bare body prose after an item must not lend it an outcome.
-          elif (length > 0 and ($line | test("^[[:space:]]+[^[:space:]]"))
-                and ($line | test("^[[:space:]]*[-*+][[:space:]]") | not))
-          then .[:-1] + [.[-1] + " " + $line]
-          else . end)
-      | {unchecked:
-           [.[] | select(test("^[[:space:]]*[-*+][[:space:]]+\\[ \\]"))],
-         no_outcome:
-           [.[] | select(test("^[[:space:]]*[-*+][[:space:]]+\\[[xX]\\]"))
-                | select(outcome_present | not)]}' <<<"$fp_pr")" ||
-    indeterminate malformed-data "the PR body could not be parsed for deferred findings"
-unchecked_count="$(jq -r '.unchecked | length' <<<"$deferred_summary")"
-if [ "$unchecked_count" -gt 0 ]; then
-    first_unchecked="$(jq -r '.unchecked[0][0:120]' <<<"$deferred_summary")"
-    fail_condition deferred-unchecked "$unchecked_count deferred finding(s) still unchecked, e.g.: $first_unchecked"
-fi
-no_outcome_count="$(jq -r '.no_outcome | length' <<<"$deferred_summary")"
-if [ "$no_outcome_count" -gt 0 ]; then
-    first_no_outcome="$(jq -r '.no_outcome[0][0:120]' <<<"$deferred_summary")"
-    fail_condition deferred-no-outcome "$no_outcome_count ticked entr(y/ies) carry no outcome (fixed in <sha> / declined: / filed as): $first_no_outcome"
+# 6. Deferred findings — projected from the record, never parsed from the
+# PR body. The rendered "## Deferred findings" section is a VIEW of
+# run.json's settlements[], not a second copy: render-dev-flow.mjs's
+# readiness-input projection is the one place that reads the record and
+# reports which defer-dispositioned findings still lack a settlement. A
+# settlement's outcome shape (fixed in <sha> / declined: / filed as <n>) is
+# enforced by run.schema.json at write time, so there is no longer a
+# "ticked but no outcome" state to separately detect here — the renderer
+# either sees a schema-valid settlement or none at all.
+readiness_input="$("$render_dev_flow" readiness-input \
+    --record "$record_dir" --head "$head" 2>&1)" ||
+    indeterminate malformed-data "readiness-input projection failed: $readiness_input"
+projected_head="$(jq -er '.head | select(type == "string")' \
+    <<<"$readiness_input" 2>/dev/null)" ||
+    indeterminate malformed-data "readiness-input produced no head"
+[ "$projected_head" = "$head" ] ||
+    indeterminate malformed-data "readiness-input projected head $projected_head, not the gated $head"
+unsettled_count="$(jq -r '.deferred_findings.unsettled | length' <<<"$readiness_input")"
+if [ "$unsettled_count" -gt 0 ]; then
+    first_unsettled="$(jq -r '.deferred_findings.unsettled[0].finding_id' <<<"$readiness_input")"
+    fail_condition deferred-unsettled "$unsettled_count deferred finding(s) not yet settled, e.g.: $first_unsettled"
 fi
 
 # 7. Unanswered inline threads, by reply linkage, never by timestamp — the
@@ -784,47 +760,49 @@ edited_roots="$(jq -r --argjson allowed "$allowed_edited_roots" \
 # unresolved until a human resolves them.
 fetch_fingerprint_surfaces
 
-# 9. The current-head Codex cloud-review cycle, where enabled — run AFTER the
-# fingerprint surfaces are captured, deliberately: the helper re-reads its
-# four evidence surfaces fresh, so any Codex activity already inside the
-# baseline fingerprint has been classified by this later read, and activity
-# landing after it sits outside the baseline, where the post-promotion
-# compare flags it. Classification
-# belongs to the sibling helper — run it, never re-derive its evidence. But
-# first bind the attempt state to THIS gate's target: the helper validates
-# its state against the live head of whatever PR the state itself names, so a
-# state file for a different PR that shares this commit (one branch, two
-# bases) would check out clean and certify the wrong PR. The identity triplet
-# is read here, before the helper can act on — or lock, or adopt a timeout
-# into — a file that was never this PR's.
-if [ "$codex_disabled" != 1 ]; then
-    codex_helper="$(dirname "$0")/check-codex-cloud-review.sh"
-    [ -x "$codex_helper" ] ||
-        die "check-codex-cloud-review.sh is not beside this script"
-    [ -f "$codex_state" ] ||
-        indeterminate codex-indeterminate "no Codex attempt state at $codex_state — reserve/attach the cycle before gating"
-    jq -e \
-        --arg repo "$repo" \
-        --argjson pr "$pr" \
-        --arg head "$head" '
-          type == "object" and .repo == $repo and .pr == $pr and .head == $head
-        ' "$codex_state" >/dev/null 2>&1 ||
-        indeterminate codex-indeterminate "the Codex attempt state does not describe this repo, PR, and head — pass this PR's own state file"
-    codex_rc=0
-    codex_out="$("$codex_helper" check --state "$codex_state" \
-        --actor-id "$codex_actor_id")" || codex_rc=$?
-    case "$codex_rc" in
+# 9. The current-head Codex cloud-review cycle — evaluated from the
+# dispatched integrator agent's own schema-valid result, run AFTER the
+# fingerprint surfaces are captured, deliberately: activity the agent's own
+# fresh evidence collection already classified sits inside the baseline
+# fingerprint, and activity landing after that pass sits outside it, where
+# the post-promotion compare flags it. Classification belongs to the agent
+# and the checker it runs — never re-derived here, only validated and read.
+node "$validate_result_schemas" envelope "$integrator_result" >/dev/null 2>&1 ||
+    indeterminate codex-indeterminate "--integrator-result $integrator_result is not a schema-valid result.envelope"
+integrator_role="$(jq -er '.role | select(type == "string")' \
+    "$integrator_result" 2>/dev/null)" ||
+    indeterminate malformed-data "integrator result carries no role"
+[ "$integrator_role" = integrator ] ||
+    indeterminate codex-indeterminate "--integrator-result names role $integrator_role, not integrator"
+envelope_head="$(jq -er '.head | select(type == "string")' \
+    "$integrator_result" 2>/dev/null)" ||
+    indeterminate malformed-data "integrator result carries no head"
+[ "$envelope_head" = "$head" ] ||
+    indeterminate codex-indeterminate "integrator result is for head $envelope_head, not the gated $head — dispatch a fresh pass against this head"
+codex_cycle="$(jq -c '.payload.codex_cycle' "$integrator_result" 2>/dev/null)" ||
+    indeterminate malformed-data "integrator result payload is unreadable"
+if [ "$codex_cycle" != null ]; then
+    cycle_head="$(jq -er '.head | select(type == "string")' \
+        <<<"$codex_cycle" 2>/dev/null)" ||
+        indeterminate malformed-data "codex_cycle carries no head"
+    [ "$cycle_head" = "$head" ] ||
+        indeterminate codex-indeterminate "codex_cycle head $cycle_head disagrees with the gated $head"
+    codex_exit="$(jq -er '.exit_code | select(type == "number")' \
+        <<<"$codex_cycle" 2>/dev/null)" ||
+        indeterminate malformed-data "codex_cycle carries no exit_code"
+    case "$codex_exit" in
     0) ;;
     10 | 11 | 12 | 13)
-        codex_status="$(jq -r '.status // "not clean"' <<<"$codex_out" \
-            2>/dev/null || printf 'not clean')"
-        fail_condition codex-not-clean "the current-head Codex cycle is ${codex_status} (helper exit $codex_rc), not terminal-clean"
+        fail_condition codex-not-clean "the current-head Codex cycle exited $codex_exit, not terminal-clean"
         ;;
     *)
-        indeterminate codex-indeterminate "check-codex-cloud-review.sh exited $codex_rc — reconcile the attempt state before promoting"
+        indeterminate codex-indeterminate "codex_cycle exit_code $codex_exit is not a recognized terminal or pending value"
         ;;
     esac
 fi
+# codex_cycle == null means the resolved integration cap was 0 — the Codex
+# condition is waived for this pass, exactly as a schema-valid, cap-0
+# integrator result always reports it; nothing further to check here.
 
 # 10. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
 # and require equality before any pass. The evaluated fingerprint hashes the

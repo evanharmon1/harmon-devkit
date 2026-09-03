@@ -1,26 +1,32 @@
 ---
 name: integrate
 description: >-
-  Shepherd a draft PR to ready for review — watch CI and incoming bot/human reviews,
-  treat findings as hypotheses (verify, fix only what's confirmed, explain
-  rejections in per-thread replies), push, and re-watch, under the resolved
-  shepherd cap (0-6, from .devflow.toml's review policy). Use when a draft PR
-  exists and the dev loop calls for shepherding it to ready-for-review. Invoke
-  as /shepherd [PR # or URL].
+  Integrate a draft PR to ready for review — dispatch the integrator agent to
+  drive CI settlement and one current-head Codex cloud-review cycle, poll
+  incoming bot/human reviews, adjudicate findings as hypotheses (verify, fix
+  only what's confirmed, explain rejections in per-thread replies), push, and
+  re-dispatch, under the resolved integration and remediation caps (from
+  .devflow.toml's review policy). Promoting to ready-for-review is the
+  human-handoff point of the dev loop, so a human decides when to enter this
+  stage rather than a model triggering it on its own. Invoke as /integrate
+  [PR # or URL].
+disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*)
 ---
 
-# Shepherd
+# Integrate
 
 **Arguments:** $ARGUMENTS
 
-Opening a draft PR is not the end. Shepherd it: watch CI **and** incoming
-bot/human reviews, adjudicate what lands, fix what's confirmed, and re-watch
-— under the resolved **shepherd cap** (see "The repository's own policy
-outranks this file" below). Both signals matter and both must end green: a
-PR is not done until CI/CD workflows pass *and* no unresolved review findings
-remain. This cap is independent of any other loop caps used earlier in the
-dev flow.
+Opening a draft PR is not the end. Integrate it: dispatch the integrator agent
+to settle CI and drive the Codex cloud-review cycle (see
+[§2](#2-watch)), poll incoming bot/human reviews, adjudicate what lands, fix
+what's confirmed, and re-dispatch — under the resolved **integration cap**
+(bounds Codex cycles) and **remediation cap** (bounds fix pushes), counted
+and disclosed separately (see "The repository's own policy outranks this
+file" below). Both signals matter and both must end green: a PR is not done
+until CI/CD workflows pass *and* no unresolved review findings remain. These
+caps are independent of any other loop caps used earlier in the dev flow.
 
 **Draft is the workbench; ready is the human handoff.** The normal entry from
 `/implement` is a draft PR. Keep it draft while checks, explicit bot reviews,
@@ -108,55 +114,60 @@ section under that stage's guarded body-update procedure and do not append a
 duplicate sidecar entry. A one-step task that touches a single stage owes no ledger.
 
 **The repository's own policy outranks this file.** Where its `AGENTS.md`
-states a different shepherd cap or exit condition, follow `AGENTS.md` — it is
-the policy, this skill is the procedure. Read the cap from what `AGENTS.md`
-actually states, never from inferring its vintage: a three-round cap is correct
-in a repo whose `AGENTS.md` still says three, and stops being correct the
-moment that file says otherwise — including in repos that have not yet adopted
-the P0/P1-gating dev flow.
+states a different integration or remediation cap or exit condition, follow
+`AGENTS.md` — it is the policy, this skill is the procedure. Read the caps
+from what `AGENTS.md` actually states, never from inferring its vintage.
 
-**Absent a repo-specific override, the shepherd cap is resolved the same way
-gauntlet resolves its challenge/review caps — check the config shape first**
-(gauntlet's `SKILL.md` §2 "Config shape" step; not a literal 4 either way,
-under either shape). `.devflow.toml` ships in two shapes, and skills-sync and
+**Two caps, counted separately, never combined.** The **integration cap**
+bounds how many current-head Codex cloud-review cycles this stage may drive;
+the **remediation cap** bounds how many fix pushes it may make. A Codex cycle
+that a fix push directly answers is not a second charge against remediation —
+one fix push, however many findings (Codex's or a human reviewer's) it
+answers, is one remediation unit. **Check the config shape first** (gauntlet's
+`SKILL.md` §2 "Config shape" step — the same detection, applied to this
+stage's own fields). `.devflow.toml` ships in two shapes, and skills-sync and
 the harmon-init copier update run on independent cadences, so a repo can have
-this skill before its file has migrated. Under the **migrated shape** (a
-top-level `rigor_order` exists and `[rigor.<level>]` names its caps through a
-`review` pointer), the cap is `[review.<the resolved policy>].shepherd`, and
-a `rigor:*` label conflict resolves to the single strongest level by
-`rigor_order`. Under the **legacy shape** (`[rigor.<level>]` carries
-`challenge`, `review`, `shepherd`, and `min_rounds` directly — no `review`
-pointer, no `[review.*]` tables, no `rigor_order`), the cap is that resolved
-level's own `shepherd` field, and a label conflict instead resolves **per
-stage, to the highest cap present**. Either way, an edit to `.devflow.toml`
-itself resolves every parameter from the merge-base copy. Shipped
-migrated-shape policies range the shepherd cap 0–6; a legacy-shape repo's own
-levels may or may not share one fixed value across levels — read them, don't
-assume. Announce the resolved value the way gauntlet announces its caps, and
-disclose it in the PR body when it is off-default.
+this skill before its file has migrated.
 
-**A resolved cap of 0 does not skip the readiness gate — and whether it
-drops the current-head Codex-cycle condition from that gate is a *policy*
-question, answered by the repository's own `AGENTS.md`, never assumed
-here.** It means: spend no shepherd round — the watch/adjudicate/fix/push
-loop in steps 2–5 never runs, so triggering `@codex review` and waiting out
-its cycle (itself active engagement this budget cannot afford) never
-happens either. What that implies for the gate depends on what `AGENTS.md`'s
-Readiness Gate actually says:
+- **Migrated shape** (a top-level `rigor_order` exists and `[rigor.<level>]`
+  names its caps through a `rounds` pointer into `[rounds.<policy>]`): read
+  `[rounds.<the resolved policy>].integration` and `.remediation` as two
+  independent fields. A `rigor:*` label conflict resolves to the single
+  strongest level by `rigor_order`.
+- **Legacy shape** (`[rigor.<level>]` carries `challenge`, `review`,
+  `shepherd`, and `min_rounds` directly — no `rounds` pointer, no
+  `[rounds.*]` tables, no `rigor_order`): the resolved level's own `shepherd`
+  field bounded fix pushes and no-change cycles together under the old
+  single-stage design, so decode it as **one shared budget**: set both
+  `integration` and `remediation` to that same `shepherd` value, charging one
+  unit per legacy round (one fix push or one no-change adjudication cycle,
+  never both for the same round), exactly as the migrated reader's own
+  legacy-decode contract states — so a repo cannot gain rounds, or cap
+  earlier, merely because this stage now counts two things instead of one. A
+  label conflict resolves **per stage, to the highest cap present**.
+- **Where a merge-base-resolving config reader
+  (`scripts/devflow-policy.mjs`) exists in this checkout, use it** rather
+  than hand-decoding either shape — it is the one place this resolution is
+  implemented once. Where it does not exist yet, apply the rules above
+  directly; do not block on the reader landing.
 
-- **Where `AGENTS.md` states that a resolved shepherd cap of 0 drops the
-  current-head Codex condition** — pass the gate `--codex-disabled` for this
-  run, exactly as that wording directs, and evaluate the rest of the gate
-  normally.
-- **Where `AGENTS.md` still requires a terminal, clean current-head Codex
-  cycle with no cap exception** — that requirement does not lapse because no
-  round is available to satisfy it. **Never pass `--codex-disabled` to claim
-  the reviewer is off when it is not** — that would falsely declare a
-  configured reviewer disabled to force a pass. If no terminal clean result
-  already exists for this head, the Codex condition reads indeterminate — a
-  failed condition, not a pass — so the PR stays draft with a blocker report
-  naming it: no automated path promotes this PR until a clean result exists
-  by some means outside this budget.
+Either way, an edit to `.devflow.toml` itself resolves every parameter from
+the merge-base copy. Announce both resolved values the way gauntlet announces
+its caps ("integration ≤`<n>`, remediation ≤`<n>`"), and disclose either one
+in the PR body when it is off-default.
+
+**A resolved integration cap of 0 does not skip the readiness gate — it
+waives only that gate's Codex-verdict condition.** Every other condition
+(CI, human findings, thread replies, deferred-finding settlement, merge
+state) still applies in full — a human finding open on the draft PR still
+blocks the gate even when no Codex cycle ever ran. It means: dispatch the
+integrator agent (§2) with no Codex cycle to drive — checks-settlement and
+thread polling still happen, `codex_cycle` in its result is `null`, and
+triggering `@codex review` and waiting out its cycle (itself active
+engagement this budget cannot afford) never happens. Pass the readiness gate
+`--integrator-result <file>` exactly as usual (§6) — a `null codex_cycle`
+inside a schema-valid result is how the gate learns the condition is waived;
+there is no separate disabled flag to reach for or avoid.
 
 CI still has to be green, and any human review finding already on the PR
 still has to be answered, for the gate to pass — those are checks against
@@ -166,6 +177,12 @@ stage evaluates — and the gate is not otherwise clean, that is stop
 condition 2 (**cap reached**) on the spot: leave the PR draft with a
 blocker report naming it, **never an agent fix round** — there is no round
 to spend on it. A pass otherwise promotes normally.
+
+**A resolved remediation cap of 0 escalates the first finding that needs a
+code fix.** A reply-only or decline-only round still costs nothing — the cap
+bounds fix *pushes*, not adjudication — but the moment any finding's
+disposition would be `fix`, that is stop condition 2 with zero rounds spent:
+there was never a push available to make it.
 
 **This stage settles the low-priority findings.** Where the earlier dev-flow
 loops gate only on high-priority findings (in repos that run a
@@ -178,7 +195,9 @@ follow-up issue.
 **Round accounting (read this first):** one round = one fix push, **or**
 one no-change adjudication cycle (everything rejected/external — replies
 posted, nothing to fix — then back to watching). Count rounds explicitly
-(say "round 2 of `<cap>`", using the resolved shepherd cap above) — the
+against the **remediation cap** (say "round 2 of `<remediation cap>`") —
+dispatching the integrator agent again for another look, or another Codex
+cycle, is never itself a round; only a fix push or a no-change cycle is. The
 counter only ever increases, every wait below is
 bounded, and every path ends in one of the stop conditions in step 6, so
 the loop cannot run forever.
@@ -190,7 +209,7 @@ to watching. Keep the completed `round n/cap` in `Stage`, put the final
 disposition in `Round`, and name the next bounded wait in `Next`; this closes
 the current round and does not start another.
 
-**Shepherd round-entry ledger.** Before the round-start fetch establishes a
+**Integrator round-entry ledger.** Before the round-start fetch establishes a
 finding or no-change adjudication cycle, post the fixed stage-ledger table in
 your own commentary. Before the stage's first round, use
 `waiting (no round yet)` in `Stage`; after a round has completed, retain its
@@ -207,14 +226,17 @@ Only write-incapable reads are pre-approved (`git log`/`diff`/`show` accept
 plus exactly two of this skill's asset scripts by skill-directory path:
 `assets/gh-ro.sh`, the GET-only front door for the raw `gh api` reads below,
 and `assets/readiness-gate.sh`, which reads GitHub and — beyond the
-classifier's transient advisory lock beside a `--codex-state` file it first
-proves is this PR's own — writes nothing.
+classifier's transient advisory lock beside an `--integrator-result` file it
+first proves is this PR's own — writes nothing. Dispatching the integrator
+agent is not one of these grants either: it is a separate trust boundary with
+its own, much narrower write allowance (the brokered trigger comment and
+orchestrator-supplied reply text — see `ai/agents/integrator.md`), not
+something this skill's own `allowed-tools` extends to.
 Raw `gh api` is never granted — the same prefix that lists comments posts
-them — and neither is `assets/check-codex-cloud-review.sh`: its `reserve`,
-`attach`, and `reap` subcommands write and delete local state at
-caller-chosen paths, so §2's cycle invocations keep prompting (the gate
-script still runs its `check` internally, against a state file it first
-proves belongs to this exact repo, PR, and head).
+them — and neither is `assets/check-codex-cloud-review.sh`'s `settle`
+subcommand, which this skill (never the dispatched agent) calls directly to
+record a disposition against a non-inline-thread finding: it writes local
+state at a caller-chosen path, so that call keeps prompting.
 `${CLAUDE_SKILL_DIR}` in those grants and snippets is Claude Code's
 skill-directory substitution; where nothing substitutes it, set
 `CLAUDE_SKILL_DIR` to this skill's directory first (the same value later
@@ -241,7 +263,7 @@ Then verify the checkout **is** the PR before touching anything: fetch
 `gh pr view <n> --repo "$repo" --json state,isDraft,headRepositoryOwner,headRepository,headRefName,headRefOid`
 and compare against the local branch and HEAD. Requirements, all hard:
 
-- The PR `state` is `OPEN` — never shepherd a closed or merged PR.
+- The PR `state` is `OPEN` — never integrate a closed or merged PR.
 - Record `isDraft`. A draft is the normal active-work state. A non-draft PR
   follows the idempotent re-entry rule above — which routes its return to
   draft through §2's guard — before any new fix or review cycle.
@@ -250,7 +272,7 @@ and compare against the local branch and HEAD. Requirements, all hard:
   gating, or pushing from an unrelated checkout is how the wrong code gets
   "fixed".
 - `git status` is **clean** — pre-existing uncommitted edits can ride into
-  a shepherd commit or get clobbered; park them first.
+  a fix commit or get clobbered; park them first.
 - **Fork-trust check**: if the PR head comes from a fork you don't control,
   running `task verify`/`task ci` executes contributor-controlled code on
   your machine — and not just the gate toolchain: an *unchanged* Taskfile
@@ -291,7 +313,7 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   rule rather than a check bolted onto each call site. Three conditions come
   off that one read, and their remedies differ. `state` must be `OPEN`:
   anything else stops the stage outright — step 1's rule that a closed or
-  merged PR is never shepherded holds mid-round too, and no round can continue
+  merged PR is never integrated holds mid-round too, and no round can continue
   on one, so this is neither a route nor a retry. A false `isDraft` means
   the write would land on a PR already requesting human review, so route it
   through the unexplained-promotion procedure below **before** writing; that
@@ -390,470 +412,158 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   (observed on harmon-init#758 — the maintainer merged mid-cycle and the
   loop noticed only at the next explicit state read). A `MERGED` or
   `CLOSED` answer stops the **whole stage** immediately — step 1's
-  never-shepherd rule holds mid-round — not just this loop.
+  never-integrate rule holds mid-round — not just this loop.
   Treat `skipping` jobs as neutral, not
   failures. Right after a push there is a window where
   GitHub reports **no checks yet** — poll (bounded, a few minutes) until
   check suites register on the new head before concluding anything; and
   if the repo genuinely has no applicable CI, say so explicitly and judge
   on reviews alone rather than treating the absence as pass or fail.
-- Findings deferred into this stage: read the **PR description**
-  (`gh pr view <n> --repo "$repo" --json body`) for a section listing
-  findings the pre-PR review loops deferred here (conventionally
-  "Deferred findings"). Those loops run locally — their output is ephemeral
-  and a cloud reviewer will not repost a low-priority finding — so the PR
-  body is the only place they survive. Treat every **unchecked** entry as an
-  open finding and settle it like any other. If the workflow that deferred
-  them left no such section, say so rather than assuming there was nothing to
-  defer.
-- A ticked entry counts as settled only if it **carries its outcome** — a
-  commit sha, a decline reason, or an issue number. The description is
-  contributor-editable and is the only copy of these findings, so a bare
-  `- [x]` with nothing behind it settles nothing: treat it as open and say
-  why. The checkbox records a decision; it is not the decision.
-- **Tick each one off as you settle it**, in the same round, by editing the
-  PR body (`gh pr edit <n> --repo "$repo" --body-file -`): `- [x] … — fixed
-  in <sha>` / `declined: <reason>` / `filed as #<n>`. The checkbox is the
-  durable settlement state — without it, the next return to this step reads
-  the same entries as open and re-adjudicates them, duplicating follow-up
-  issues and burning rounds. Before filing a follow-up, **search the repo the
-  follow-up is going into** — `track-work` §3 owns this step and the reasoning;
-  the short form is
+- **Findings deferred into this stage — read the record, never the rendered
+  Markdown.** Project the current settlement state:
+  `render-dev-flow.sh readiness-input --record <dir> --head <headRefOid>`.
+  Its `deferred_findings.unsettled[]` names every finding still open
+  (`finding_id`, `adjudicated_priority`, `stage`, `round`); `.settled[]`
+  names every one already resolved (`finding_id`, `disposition`,
+  `reference`, `settled_at`). The PR body's own "Deferred findings" section
+  is a **rendered view** of this same record, not a second copy to parse —
+  treat every `unsettled` entry as an open finding and settle it like any
+  other (§3). A record with no deferred findings at all (both arrays empty)
+  means there was nothing to defer; that is a valid state, not a missing
+  section to chase down.
+- **Settle by writing the record, not by editing PR-body text.** When a
+  finding resolves — `fixed in <sha>`, `declined: <reason>`, or
+  `filed as <owner/repo>#<n>` — append a `run.schema.json`-shaped settlement
+  (`{finding_id, disposition, settled_at, reference}`, `reference` per
+  disposition: `{type: sha, value: <sha>}` / `{type: comment_id, value: <id>}`
+  / `{type: issue_number, value: <n>}`) to `run.json`'s `settlements[]` in
+  the record directory, then validate the updated file
+  (`node scripts/validate-result-schemas.mjs run <record>/run.json --receipt
+  --adjudication <record>/adjudications/*.json`) before publishing anything
+  from it — an invalid record must never reach `publish`. This is what
+  removes the old class of failure entirely: there is no contributor-editable
+  copy to drift from, no whole-body read-modify-write to race, and no way for
+  a bare, outcome-less tick to look settled, since the schema requires the
+  outcome fields the old checkbox grammar could omit.
+- **Publish the rendered sections once the record changes**:
+  `render-dev-flow.sh publish --record <dir> --repo "$repo" --pr <n> --head
+  <headRefOid> --sections deferred-findings[,policy-disclosure,adjudication-record
+  as those also changed]`. The script does its own safe merge into the draft
+  PR body and its own concurrent-publish detection; do not additionally
+  hand-edit the body for these sections. It rejects (as `pr-mismatch`) a
+  `--pr` that disagrees with `run.json`'s own `pr` field, and detects a
+  second concurrent publish against the same record — treat either as a
+  reconciliation the record's own state must resolve before retrying, not
+  something to force past.
+- **Follow-ups still go through `track-work`.** Before filing one, **search
+  the repo the follow-up is going into** — `track-work` §3 owns this step and
+  the reasoning; the short form is
   `gh issue list --repo <target> --state all --limit 200 --search "<distinctive phrase>"`.
-  Note that `<target>` is **not** `"$repo"` whenever the follow-up belongs to
-  another repository, which the repo conventions require it to when that repo
-  owns the code: `$repo` is this PR's base, so reusing it searches the tracker
-  you are working in instead of the one you are filing into, and finds nothing
-  every time.
-- **Validate the follow-up title before filing.** Follow-ups use
-  `(<free-form scope>): <imperative outcome>` and the title-only checker from
-  `track-work` §5. The scope describes the concern independently of labels;
-  never publish a review finding under a legacy unscoped or nested-prefix
-  title.
-- **Qualify the number in the tick when it crosses a repo.** `filed as #<n>` is
-  only correct for a follow-up in `$repo`; a bare `#<n>` in a PR body resolves
-  against the PR's own repository, so where you filed into another one it
-  silently links whatever issue happens to hold that number there. Write
-  `filed as <target-owner/target-repo>#<n>` — this is `track-work`'s existing
-  rule that a number crossing a repo boundary is never bare, applied to the one
-  place this stage writes issue numbers.
-- **The search rules out a settled duplicate, not a fresh one.** `--search` reads
-  GitHub's search index, which is eventually consistent, so it is blind to
-  anything filed in the last moments — and what decides that is **how recently
-  the issue was indexed, not who filed it**. Two fresh duplicates are in play
-  here and the search catches neither: the issue *this stage* filed in an earlier
-  round before failing to record the tick, and one another session filed against
-  the same finding while you worked. For your own, the number `gh issue create`
-  returned is the record — carry it to the tick rather than re-deriving it. For
-  either, when you have to look it up, use a plain listing rather than a search
-  (`gh issue list --repo <target> --state all --limit 20`, newest first) before
-  filing a second time.
-- **Record a `fixed in <sha>` tick only once that commit is on the PR head.**
-  The fix, its push, and the tick are separate steps, and a tick written first
-  survives a failed push or an interrupted session — leaving a checked entry
-  pointing at a commit the PR does not contain, which a later session reads as
-  settled. Queue the body update with the inline replies of step 5 and write it
-  after confirming the head advanced.
-- Editing replaces the **whole** body, so treat it as read-modify-write:
-  fetch, compose the ticks against that copy, then **fetch again immediately
-  before writing and compare**. If it changed, recompose on the newer text —
-  that is what catches an edit landing while you worked. Note the limit
-  honestly: a read *after* your own write proves nothing, because it returns
-  your text whether or not you overwrote someone. The API offers no conditional
-  update, so the window between that final read and the write is not
-  detectable — keep it to a single command, and never drop or reword the other
-  sections.
-- Reviews and inline comments:
+  `<target>` is **not** `"$repo"` whenever the follow-up belongs to another
+  repository, which the repo conventions require it to when that repo owns
+  the code: `$repo` is this PR's base, so reusing it searches the tracker you
+  are working in instead of the one you are filing into, and finds nothing
+  every time. Validate the title with `track-work` §5's checker
+  (`(<free-form scope>): <imperative outcome>`; never a legacy unscoped or
+  nested-prefix title), and record the settlement's `issue_number` reference
+  qualified with owner/repo whenever it crosses a repository boundary — the
+  same rule `track-work` already applies to a bare `#<n>` anywhere else.
+  `--search` is eventually consistent and blind to anything filed in the last
+  moments, so for your own just-created issue carry forward the number
+  `gh issue create` returned rather than re-deriving it by search; when you do
+  need to look one up, use a plain listing
+  (`gh issue list --repo <target> --state all --limit 20`, newest first)
+  rather than a search.
+- **Record a `fixed in <sha>` settlement only once that commit is on the PR
+  head.** The fix, its push, and the settlement write are separate steps, and
+  a settlement written first survives a failed push or an interrupted session
+  — leaving a record pointing at a commit the PR does not contain, which a
+  later session or the readiness gate reads as settled. Write it after
+  confirming the head advanced (§5), immediately before the same round's
+  `publish`.
+- **Read reviews and comments for their content** — adjudication (§3) needs
+  what a finding actually says, not just whether it has a reply:
   `gh pr view <n> --repo "$repo" --json reviews,reviewDecision,mergeStateStatus`
   plus
   `"${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate repos/"$repo"/pulls/<n>/comments`
-  (the pre-approved GET-only wrapper; the raw `gh api` spelling of the same
-  read still works but prompts). `gh api` — and therefore the wrapper — has
-  **no** `--repo` flag: a `{owner}/{repo}` placeholder resolves from the
-  checkout/`GH_REPO`, not from your binding, so `$repo` must appear
-  literally in every endpoint path, as here. `--paginate` matters too, or
-  findings past the first page are silently never adjudicated. Thread
-  resolution is not in the REST payload; check it with the paginated
-  GraphQL `reviewThreads` query (`pageInfo{hasNextPage endCursor}`,
-  `nodes{isResolved}`) — GraphQL rides POST and so sits outside the
-  wrapper by design; that raw `gh api graphql` read prompts, and §6's gate
-  script runs the same query itself where the answer gates promotion. Also
-  fetch the top-level PR conversation
+  and the top-level conversation
   (`"${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate repos/"$repo"/issues/<n>/comments`)
   — material findings get posted there too, not only as reviews or inline
-  threads. Distinguish bot reviewers (Codex, CodeRabbit, …) from humans,
-  but adjudicate both the same way.
-- **Which comments are still unanswered — settle it by reply linkage, never
-  by timestamp.** "Nothing new since my last push" does not establish that
-  every comment is answered: a comment landing *between* a poll and the next
-  push falls outside that window on both sides and is silently never
-  adjudicated. Ask the order-independent question instead — *which threads
-  does my own reply not terminate?* — which returns the same answer whenever
-  the comment arrived:
+  threads. Distinguish bot reviewers (Codex, CodeRabbit, …) from humans, but
+  adjudicate both the same way.
+- **Which threads still need a reply is the dispatched integrator agent's
+  own computation, not this skill's** — its `unanswered_thread_roots[]`
+  (§7 of `ai/agents/integrator.md`, and its own `result.integrator`) is the
+  fail-closed answer: a root appears there whenever this PR's own account has
+  never replied in that thread, **or** a reviewer's newest activity in it —
+  a new comment or an edit to an existing one — postdates the last reply.
+  Adjudicate every listed root (§3) and answer it (§4) through that same root
+  ID; the agent re-lists it on the next dispatch until a reply actually
+  clears it. Thread `isResolved` state is a separate question the readiness
+  gate reads via GraphQL directly (§6): resolution is the maintainer's act,
+  never evidence that you replied.
+- **Where the resolved integration cap is not 0, dispatch the integrator
+  agent (`ai/agents/integrator.md`) to drive the current-head Codex cycle —
+  never hand-roll the reserve/trigger/attach/check protocol yourself.** That
+  file owns every mechanical detail (resumption after interruption, the one
+  bounded retry on a timed-out attempt, the four-surface classification that
+  makes `check-codex-cloud-review.sh` trustworthy, the `reap` cleanup
+  sweep); this skill's job is to give it the right inputs and act correctly
+  on what it returns. Hand the brief:
 
-  ```sh
-  me="$("${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh user --jq .login)"
-  [ -n "$me" ] || { echo 'identity lookup failed — unknown'; exit 1; }
-  comments="$("${CLAUDE_SKILL_DIR}"/assets/gh-ro.sh --paginate --slurp \
-    repos/"$repo"/pulls/<n>/comments)" \
-    || { echo 'comment fetch failed — unknown, NOT answered'; exit 1; }
-  jq -c --arg me "$me" 'add
-      | group_by(.in_reply_to_id // .id)
-      | map( . as $t
-        | ([$t[] | select(.user.login == $me and .in_reply_to_id != null)
-                 | .created_at] | max) as $mine
-        | ([$t[] | select(.user.login != $me
-                          and ($mine == null or .created_at >= $mine))
-                 | .created_at] | max) as $new
-        | ([$t[] | select(.user.login != $me and $mine != null
-                          and .updated_at >= $mine and .created_at < $mine)
-                 | .updated_at] | max) as $edit
-        | { root: ($t[0].in_reply_to_id // $t[0].id), path: $t[0].path,
-            state: (if   $mine == null then "unanswered"
-                    elif $new  != null then "new-follow-up"
-                    elif $edit != null then "edited-since-reply"
-                    else null end),
-            at: ($new // $edit) })
-      | map(select(.state != null))
-      | .[]' <<<"$comments"
-  ```
+  - repo, PR, and this round's **verified head** — from §2's round-start
+    fetch, never re-read at dispatch time (a mid-adjudication push would
+    otherwise be laundered into "current");
+  - the resolved `integration_round` ordinal (this run-wide pass number) and
+    the resolved integration cap;
+  - `applied_dispositions` accumulated so far this integration stage, so a
+    pass that comes back clean can echo them into a schema-valid result
+    (empty list if this is the stage's first pass);
+  - any reply text already composed and ready to post this round — generate
+    it deterministically rather than composing it by hand:
+    `render-dev-flow.sh thread-reply-plan --record <dir>` emits
+    `{finding_id, root_comment_id, reply_text, ...}` per already-adjudicated
+    integration finding whose thread is still unanswered. Handing the agent
+    exact `reply_text`/`root_comment_id` pairs lets it post them in the same
+    dispatch as the Codex cycle; you may also post them yourself directly
+    and hand the agent none.
 
-  It prints one line per thread that needs your attention, each carrying the
-  **root** comment ID that step 4 replies through — and prints **literally
-  nothing** when every thread's newest reviewer activity predates your reply
-  to it. The trailing `.[]` is load-bearing: without it the command prints
-  `[]` on success, which is not empty output, and a gate reading "any output
-  means findings remain" could then never go green.
+  **Validate what comes back before using any of it**
+  (`node scripts/validate-result-schemas.mjs integrator <file>`) — a
+  dispatched role's result is a claim, not a fact, until it passes its own
+  schema; a malformed result is rejected outright, never adjudicated or
+  patched into shape.
 
-  The three states are not settled the same way, and conflating them either
-  misses findings or deadlocks the loop:
+  Branch on the validated result:
 
-  - `unanswered` — you have never replied in this thread. Always a finding;
-    answer it per step 4. Posting the reply advances `mine`, so the line
-    clears on the next run. This is the state that #165 was filed about.
-  - `new-follow-up` — a reviewer posted a **new** comment in the thread at or
-    after your reply. Also always a finding, with no exception for looking
-    minor: `AGENTS.md` requires a reply to every inline review comment in its
-    own thread, and a reply here advances `mine` and clears the line, so
-    nothing is gained by skipping it. Adjudicate the new comment and answer
-    it through the same root ID.
-  - `edited-since-reply` — no new comment; a reviewer **edited** an existing
-    one after your reply. This is the only state with an escape hatch, and it
-    needs one: replying again to an unchanged finding is spam, yet nothing
-    else advances `mine`. **Re-read the current body.** If the edit is
-    material, answer it (which clears the line mechanically); if it is a typo
-    fix or other non-material change, record the decision instead — name the
-    root ID and why it needs no reply, in the round summary or a PR comment.
-    Stop condition 1 requires that accounting by root ID, so a non-material
-    edit cannot be waved away silently, and a re-read alone cannot hold the
-    PR hostage forever.
+  - `codex_cycle: null` (cap 0) or `codex_cycle.exit_code` `0`/`10` —
+    terminal for this pass. A `10` (or any human finding the agent also
+    surfaced) feeds `findings[]` into §3; a clean `0` with no other open
+    finding and an empty `unanswered_thread_roots` proceeds toward §6.
+  - `codex_cycle.exit_code: 11` (pending) — this pass ended without a
+    terminal Codex result. Waiting is never a round (see "Round accounting"
+    above): re-dispatch the agent after a bounded wait rather than
+    inventing a poller of your own. The agent absorbs the single
+    reserve-retry attempt (exit `12`) internally within one dispatch, so you
+    should never see `12` at this level.
+  - `codex_cycle.exit_code: 13` (both attempts timed out), `14` (the PR
+    closed or merged — stop the **whole stage** immediately, matching §1's
+    never-integrate-a-closed-PR rule), or `2` (indeterminate) — stop and
+    reconcile per §6 rather than re-dispatching to try again.
+  - `verdict: "escalate"` — the resolved **remediation** cap is spent and a
+    finding still needs a code fix (see "A resolved remediation cap of 0..."
+    above, which is the zero-cap instance of this same stop). Stop condition
+    2, whatever the Codex cycle's own state.
 
-  Splitting `new-follow-up` from `edited-since-reply` is the point of
-  comparing `created_at` and `updated_at` separately. Collapse them into one
-  "changed since my reply" state and the escape hatch that edits legitimately
-  need silently extends to brand-new inline comments, which must always be
-  answered.
-
-  Six details the shorter forms get wrong:
-
-  - **Guard the identity lookup too, not just the comment fetch.** If
-    `gh api user` fails transiently while the public comments endpoint keeps
-    working, `$me` is empty, every comment — including replies you just
-    posted — classifies as reviewer activity, and the check can never clear.
-    That fails *loud* rather than false-green, but it still burns the round
-    cap, so bail on an empty login.
-
-  - **Capture the fetch and check its exit status before filtering.** `jq`
-    exits 0 and prints nothing on empty input, so a one-liner piping a
-    rate-limited, unauthenticated, or timed-out `gh api` straight into `jq`
-    renders "the API broke" identically to "nothing outstanding" — the exact
-    false green this check exists to prevent. A failed fetch is *unknown*,
-    never *answered*.
-  - **`--slurp` is what makes it page-safe.** `--paginate` with `--jq` runs
-    the filter over each page separately, so a reply on page 2 never cancels
-    its root on page 1 and the command prints one result per page instead of
-    one answer. `gh api` refuses `--slurp` alongside `--jq`, hence the pipe
-    to a standalone `jq`.
-  - **Compare newest-reviewer-activity against your reply**, rather than
-    asking whether a reply merely exists: a reviewer follow-up posted after
-    your answer leaves a thread that is replied-to but not answered, and
-    step 4 treats that follow-up as a fresh finding.
-  - **Take `updated_at` into account, not just `created_at`.** An edited
-    comment keeps its original `created_at`, so a reviewer who rewrites a
-    finding after you replied stays hidden behind your later-created reply
-    while its body says something new. Timestamps are ISO-8601 `Z`, so
-    lexical `max`/`>=` is chronological. This does flag edits that changed
-    nothing material — that is what the `edited-since-reply` state above is
-    for; a cheap re-read beats a missed finding.
-  - **A `mine` timestamp only means *answered* if that reply was composed
-    from the thread's current state.** The predicate compares clocks, not
-    content: it assumes your reply is responsive to everything posted before
-    it. Step 5 deliberately queues "fixed in `<sha>`" replies until after the
-    gate and push, which can be many minutes after you read the thread — a
-    reviewer editing or following up inside that window gets stamped as
-    answered by a reply that never saw it, and the thread then drops out of
-    this check for good. So **re-read each thread immediately before posting
-    its queued reply** and fold in anything new; a reply that reaches the
-    thread later than the activity it ignored is indistinguishable, after the
-    fact, from one that addressed it. Step 5 carries the watermark check that
-    closes the remaining sliver between that re-read and the post.
-  - **Break ties toward unanswered (`>=`, not `>`).** GitHub serializes these
-    timestamps at second precision, so reviewer activity landing in the same
-    second as your reply is genuinely ambiguous about ordering. A strict `>`
-    resolves that ambiguity in favour of green; `>=` resolves it toward one
-    redundant re-read, which is the direction a fail-closed gate should err in.
-
-  `mine` counts only comments with an `in_reply_to_id` — replies, not roots.
-  The shepherd usually runs as the PR author's own account, so without that
-  clause an inline note *you* left would count as its own answer: `theirs`
-  would be null, the thread would filter out, and a finding a human wrote on
-  their own PR would never be raised. Counting replies only makes such a
-  thread `unanswered` until something actually replies to it. One reply
-  clears it, so the loop cannot stick.
-
-  The residual blind spot is narrower and worth stating: the API shows the
-  same login for a reply the shepherd posted and one you typed by hand, so
-  the check cannot tell them apart. It measures whether a thread has been
-  answered, never who thought about it.
-
-  This covers inline threads only. Top-level PR conversation comments carry no
-  reply linkage at all — track those from the `issues/<n>/comments` fetch
-  above. Thread `isResolved` state comes from the GraphQL query and is a
-  separate question: resolution is the maintainer's act, never evidence that
-  you replied.
-- Where Codex cloud review is enabled, require one terminal result attributable
-  to the **exact current head**. Use
-  `assets/check-codex-cloud-review.sh`; it is deliberately read-only toward
-  GitHub and classifies all paginated evidence from the immutable Codex bot
-  actor ID `199175422`. **Run it; never hand-roll the evidence collection or
-  its classification** — `check` reads all four surfaces (trigger reactions,
-  top-level comments, reviews, inline comments), and a substitute that drops
-  one false-negatives: a poller watching only reviews and reactions missed a
-  clean terminal verdict that arrived as a top-level `Reviewed commit:`
-  comment, and reported an already-green attempt "incomplete"
-  (`harmon-devkit#334`). `check` is one-shot and implements no loop of its own;
-  while it reports pending, re-run it within the bounded window below rather
-  than standing up a poller of your own. A clean result from Codex itself is
-exactly one of (adjudication, below, is the one clean path that comes from
-you rather than the bot):
-
-  - an authenticated review for the full current commit;
-  - an authenticated top-level result whose `Reviewed commit` value is an
-    unambiguous prefix of the current commit;
-  - a 👍 by that actor on the exact `@codex review` trigger comment recorded
-    for this head.
-
-  An authenticated inline comment is attributed by its immutable
-  `original_commit_id` (GitHub rewrites `commit_id` as the diff advances); a
-  current-head inline comment **without a trusted in-thread reply** — one from
-  the PR author or an OWNER/MEMBER/COLLABORATOR, posted after it and after any
-  edit to it — is a finding, as is a non-clean review. Once every current-head
-  finding carries that reply (fixed, or declined with reasoning), the helper
-  reports the cycle clean as adjudicated rather than re-blocking on findings
-  that are already settled. A 👀 is
-  pending, never clean. PR-level reactions, timestamps,
-  previous-head verdicts, and reactions on any other comment do not count.
-  Actor ambiguity, malformed or incomplete API data, a changed head, and an
-  ambiguous commit prefix fail closed.
-
-  Classification is three-way, because "I cannot tell" is a real answer and
-  reporting it as a finding is a false statement about what the reviewer said.
-  A result carrying a severity marker anywhere in its body is a **finding**;
-  one that opens with the clean verdict sentence and whose remaining lines are
-  Codex's own metadata is **clean**; anything else is **indeterminate** and
-  escalates.
-
-  **The trailing clause Codex appends to the verdict sentence is not part of
-  the decision.** It is stripped. Codex writes it differently nearly every
-  time — "Bravo.", "Swish!", ":+1:", "Already looking forward to the next
-  diff." — and three separate attempts to parse it (reject caveat shapes;
-  require a praise word; require every word recognised) were each fail-**open**
-  within minutes of review, while the literal allowlist that preceded them
-  could not converge and deadlocked the PR fixing it. It is free text, and it
-  is not a channel that can be parsed reliably.
-
-  What decides the verdict is the part of Codex's output that does *not* vary:
-  the verdict sentence matched exactly, the absence of any severity badge
-  anywhere in the body, and every remaining line being Codex's own metadata.
-  Inline comments on the current head are classified as findings before any of
-  this runs.
-
-  **The residual, stated so nobody rediscovers it as a surprise:** an unbadged
-  concern appended to the verdict sentence would classify clean. It has never
-  been observed — every finding Codex has posted in this repo carried a
-  severity badge, including an observed P3, and this would require it to
-  contradict itself inside one sentence — and the
-  gate promotes a draft to *ready for review* rather than merging, so a human
-  still reads the PR. `scripts/test-shepherd-codex.sh` pins that case
-  deliberately, and it is tracked as evanharmon1/harmon-devkit#285. **If it
-  ever fires in the wild, do not resume parsing the clause; raise it with the
-  maintainer, because the assumption behind the design has broken.**
-
-  Persist each attempt under the git directory so branch switches and resumed
-  sessions cannot duplicate it:
-
-  Do not reserve or post the trigger until every required check has settled.
-  The attempt window starts when the trigger is created, so posting during CI
-  would consume the reviewer's promised post-CI response window. The trigger
-  is a PR write, so it takes §2's pre-write read first — the snippet below
-  does exactly that, and reserves against the verified round head rather than
-  whatever SHA the read happens to return.
+  **A badged finding outside an inline thread is settled by this skill, not
+  the agent** — the agent never calls `settle` (its brief has no disposition
+  to give it). Once you decide fix/decline/file for a finding whose
+  `source_id` names a top-level comment or a review body (never an inline
+  thread, which keeps the normal reply path in §4), record it yourself:
 
   ```bash
   helper="$skill_dir/assets/check-codex-cloud-review.sh"
-  # Collect state left behind by PRs that have since closed or merged. Safe to
-  # run unconditionally — it removes nothing whose PR is still open.
-  "$helper" reap --root "$(git rev-parse --git-path shepherd-codex)"
-  state="$(git rev-parse --git-path "shepherd-codex/$repo/<n>.json")"
-  # the SHA from §2's round-start fetch
-  round_head="<this round's headRefOid>"
-  # Checks-settled is a VERIFIED step, not an assumed prior: re-verify, on
-  # a fresh snapshot, what this round's watch already observed — every
-  # check concluded, and none failed. With --json, `gh pr checks` exits 0
-  # whenever the fetch succeeded (the 8/1 exits belong to the non-JSON
-  # form), so this exit distinguishes only read from unread, and the
-  # payload is the verdict: every bucket `pass` or `skipping` (skipping is
-  # neutral, per §2). `fail` and `cancel` block too — a red head gets a
-  # fix round, not a reviewer window its fix push would immediately reset.
-  # No snapshot can see checks GitHub has not registered yet — §2's
-  # bounded no-checks-yet poll during the watch is what closes that
-  # window; this step re-verifies its outcome, never replaces it.
-  #
-  # §2's no-CI carve-out stays available and stays EXPLICIT: set no_ci=1
-  # only after the watch concluded this repo genuinely has no applicable
-  # CI (its bounded poll found nothing to register — absence confirmed,
-  # not merely nothing yet). It is never inferred here from an empty or
-  # failed read, and it waives only absence — checks that do exist must
-  # still be green. gh answers a checkless head with a SPECIFIC error
-  # ("no checks reported"), not an empty list, and only that answer under
-  # the carve-out reads as absence: auth, rate-limit, and network
-  # failures are indeterminate and fail closed whatever no_ci says. If gh
-  # rewords that literal, this breaks toward a false block in a no-CI
-  # repo, never a false pass.
-  no_ci="${no_ci:-0}"
-  checks="$(gh pr checks <n> --repo "$repo" --json bucket 2>&1)" || {
-    case "$no_ci:$checks" in
-    1:*'no checks reported'*) checks='[]' ;;
-    *)
-      echo 'cannot read check status — do not reserve or trigger'
-      exit 1
-      ;;
-    esac
-  }
-  [ "$(jq -r --argjson no_ci "$no_ci" '
-        (length > 0 or $no_ci == 1) and
-        all(.[]; .bucket == "pass" or .bucket == "skipping")' \
-    <<<"$checks" 2>/dev/null)" = true ] || {
-    echo 'checks absent, unconcluded, or not green — do not reserve or trigger'
-    exit 1
-  }
-  # §2's pre-write read: the trigger below is a PR write.
-  pre="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)"
-  [ "$(jq -r '.state == "OPEN" and .isDraft' <<<"$pre")" = true ] || {
-    echo 'not an open draft — see §2: CLOSED stops, promoted routes'
-    exit 1
-  }
-  [ "$(jq -r .headRefOid <<<"$pre")" = "$round_head" ] || {
-    echo 'head moved since the round began — restart the round'
-    exit 1
-  }
-  head="$round_head"
-  "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
-    --head "$head" --attempt 1 || exit
-  trigger_id="$(
-    gh api "repos/$repo/issues/<n>/comments" \
-      -f body='@codex review' --jq .id
-  )" || exit
-  "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
-  "$helper" check --state "$state" --actor-id 199175422
-  ```
-
-  Resolve `$skill_dir` to this skill's directory before running the snippet.
-  `reserve` must happen **before** the external comment write. If state for
-  this head is already attached, resume `check`; do not trigger again. If it
-  is reserved without a trigger ID, stop and reconcile the possibly-created
-  comment before any new write. This separation keeps classification
-  write-incapable while making the one external write explicit.
-
-  **The cycle's steps are non-chainable.** Each step — the checks-settled
-  assertion, `reserve`, the trigger comment, `attach`, `check` — runs as
-  its own command, and its exit status is read before the next external
-  write occurs; the snippet's `|| exit` guards are that rule mechanized for
-  a pasted block, so keep them when adapting it. Never collapse the cycle
-  into one compound `checks-watch && reserve && trigger && attach && poll`:
-  a `&&` chain stops without saying which link broke, and both observed
-  failures were silent exactly that way — `reserve` refused while a
-  `;`-separated tail printed a misleading "window elapsed" with no trigger
-  ever posted, and a checks-watch exited early so the trigger posted while
-  CI was still running, consuming the reviewer window concurrently with
-  the checks it was promised to follow. Two corollaries: the trigger
-  comment is never posted in the same shell chain as a checks-watch, and
-  no `;`-separated tail may follow a step that can fail — after a broken
-  link the tail still runs, and reports the state of a cycle that never
-  happened.
-
-  Exactly one active shepherd must own a PR at a time. The git-directory state
-  and its lock protect interrupted or concurrent work in this checkout; they
-  are not a distributed lock across separate clones, worktrees with separate
-  git directories, or machines. Never shepherd the same PR concurrently from
-  another checkout. If ownership is unclear, stop and reconcile the remote
-  trigger comments before reserving or writing anything.
-
-  `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
-  14 PR no longer open, and 2 indeterminate. Transient read failures consume
-  the same bounded window:
-  they return pending, then retry after attempt 1 or escalate after attempt 2.
-  Exit 14 is the opposite of transient: GitHub answered and the PR is
-  `MERGED` or `CLOSED`, which is terminal for the **whole stage**, not the
-  loop — stop immediately; there is no window left to poll out, nothing to
-  re-trigger, and no attempt to spend. (`reserve` and `attach` refuse a
-  non-open PR the same way: exit 2 with a reason naming the state.)
-  Exit 2 is reserved for invalid state, identity, metadata, or a changed head;
-  stop and reconcile that condition rather than spending another trigger.
-  Exit 10 names the surface it came from: an inline finding is answered in its
-  own thread, while one in a top-level comment or a review body is answered on
-  the PR and then recorded with `settle` below — re-running `check` without
-  that record returns 10 again forever, because nothing on GitHub can carry
-  the answer.
-  Poll pending within a bounded 10–15-minute window after checks settle. Each
-  re-run of `check` is an ordinary watch round and starts with §2's round-start
-  fetch — the helper never reads `isDraft`, so a promotion landing mid-window
-  is invisible without it — and that same fetch's `state` is the in-window
-  bail: `MERGED`/`CLOSED` there, or `check` exiting 14, ends the stage on
-  the spot rather than finishing the window. On
-  retry, repeat reserve/write/attach once with `--attempt 2`; on escalate or
-  indeterminate, stop for the maintainer. Every push creates a new head and
-  resets this procedure to attempt 1. There is no CI-only fallback when this
-  option is enabled.
-
-  **Codex-cycle result ledger.** Immediately after every Codex `check` result,
-  regardless of whether it is clean, findings, pending, retry, escalation,
-  closed, or indeterminate, post the fixed stage-ledger table in your own
-  commentary before replying, settling, re-triggering, or stopping. Fill
-  `Stage` with `🚢 shepherd`; before a finding or no-change adjudication cycle
-  has begun, omit `round n/cap` and write `waiting (no round yet)`, while a
-  cap-zero stage uses `skipped (cap 0)` as the shared rule requires. Otherwise
-  fill in the current `round n/cap`; use the matching status glyph (`✅`, `🔴`,
-  `🟡`, `⚪`, `⏳`, or `⛔`) and make `Next` name the exact follow-up.
-
-  `show --state "$state"` prints the state file back unchanged. It decides
-  nothing; it is the read for reconciling an interrupted cycle by hand.
-
-  **A badged finding outside an inline thread is settled with `settle`.** The
-  reply rule above reaches inline comments only, because they are the only
-  surface GitHub gives a reply linkage. A badged finding stated in a
-  **top-level conversation comment** or in a **review body** has nothing to
-  reply to, so no act on GitHub can ever record that you answered it and
-  `check` returns exit 10 for that head forever — the deadlock the inline
-  adjudication path was built to end, reappearing on the two surfaces it
-  cannot see. Answer the finding on the PR as usual — and note that only two
-  of the three answers end here. **Fixing** it means a push, which moves the
-  head and starts a fresh cycle that reviews the fix on its own merits;
-  `settle` neither applies nor accepts that disposition. For the two answers
-  that leave the code alone — declining with reasoning, or filing it as
-  follow-up work — record the disposition:
-
-  ```bash
+  state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")"
   "$helper" settle --state "$state" --actor-id 199175422 \
     --surface comment --id <comment-or-review-id> \
     --disposition declined --note "why, or the issue it was filed as"
@@ -861,81 +571,43 @@ you rather than the bot):
 
   `--surface review` takes a review ID instead. `settle` refuses (exit 2) a
   target that does not exist, was not written by the pinned actor, carries no
-  severity badge, or does not identify this state's head — a disposition
-  against another head answers nothing.
+  severity badge, or does not identify this state's head. A disposition
+  settles the **whole** target — where it carries several badges, pass
+  `--covers <n>` matching that count, or a partial settlement would read as
+  full. It fingerprints the body it settled, so a finding Codex edits
+  afterwards goes back to exit 10 against the new text; the superseded entry
+  stays as the record of what was decided about the old one. This is a
+  **local** record of a decision already published on the PR, never a
+  substitute for publishing it — and it is never available for a disposition
+  of `fix`: fixing means a push, which moves the head and starts a fresh
+  cycle reviewing the fix on its own merits.
 
-  **A disposition settles the whole target, so say so when it holds more than
-  one finding.** Entries are keyed by object ID and re-settling replaces
-  rather than accumulates, so settling one finding in a body that states
-  three would mark all three answered. Where the target carries several
-  badges, `settle` requires `--covers <n>` matching that count. It cannot
-  check that your reasoning is any good — nothing can — but it cannot be
-  satisfied by accident, which is the difference between settling a body and
-  settling the one finding you happened to notice. It fingerprints the body it settled,
-  so a finding Codex **edits afterwards** goes back to exit 10 and must be
-  settled again against the new text; the superseded entry is kept as the
-  record of what was decided about the old one. Settling a review body says
-  nothing about the inline comments hanging off that same review: those keep
-  the reply path, and a review with both needs both.
-
-  This is a **local** record of a decision you already published on the PR, not
-  a substitute for publishing it. The disposition lives in this checkout's
-  state file; the reasoning a human reads still belongs in the PR.
-
-  **That state has a second half to its lifecycle, and `reap` is it.**
-  `reserve` creates one file per PR and nothing in the cycle above removes it —
-  a shepherded PR is still *open* when this skill stops, because promotion to
-  ready-for-review is not a merge. A cycle therefore cannot collect its own
-  state, and without a sweep the directory grows by one file per PR for the
-  life of the checkout, with nothing to distinguish a live entry from a dead
-  one. The snippet runs `reap` at entry so each session collects what earlier
-  ones left; skipping it is what made the accumulation invisible for as long as
-  it was.
-
-  A sweep walks every `<owner>/<repo>/<pr>.json` the layout defines, asks
-  GitHub for that PR's state, and deletes **only** the closed and merged ones.
-  Everything else is kept or skipped: an open PR, a PR whose state cannot be
-  read (a rate limit, an expired token, a repository gone inaccessible), a file
-  whose contents do not identify it as this helper's own or disagree with the
-  path holding it, and a file whose lock a live shepherd holds. The asymmetry
-  is deliberate — keeping a dead file costs one stale entry until the next
-  sweep, while deleting on an unreadable answer discards a cycle that is still
-  in flight. `reap` exits 0 for any completed sweep and prints a JSON summary
-  (`scanned`, `reaped`, `kept`, `skipped`, and a per-entry list with the reason
-  for each), so it is run unconditionally rather than adjudicated; exit 2 means
-  the sweep could not run at all.
-
-  Because it runs *ahead* of the work that matters, the whole sweep is bounded
-  by one deadline — `--budget-sec`, 60 by default — not merely by a per-call
-  timeout. Sequential entries each carrying their own timeout is how a slow or
-  unreachable GitHub turns a stale backlog into minutes of delay before the
-  current PR is even reserved. Past the deadline the remaining entries are
-  **kept** unexamined, which is the same answer reaping gives for any other
-  unreadable state; the next sweep tries again. Best-effort cleanup must never
-  be able to block shepherding.
-
-  Audit a checkout at any time with:
-
-  ```bash
-  "$helper" reap --root "$(git rev-parse --git-path shepherd-codex)" |
-    jq '{scanned,reaped,kept,skipped}'
-  ```
+**Codex-cycle result ledger.** Immediately after every dispatched integrator
+result, regardless of whether it is clean, findings, pending, retry, escalation,
+closed, or indeterminate, post the fixed stage-ledger table in your own
+commentary before replying, settling, re-dispatching, or stopping. Fill
+`Stage` with `🚢 shepherd`; before a finding or no-change adjudication cycle
+has begun, omit `round n/cap` and write `waiting (no round yet)`, while a
+cap-zero stage uses `skipped (cap 0)` as the shared rule requires. Otherwise
+fill in the current `round n/cap`; use the matching status glyph (`✅`, `🔴`,
+`🟡`, `⚪`, `⏳`, or `⛔`) and make `Next` name the exact follow-up.
 
 - Wait for **both** signals before deciding anything: let every check
   conclude (bounded — if a check hangs past ~30 minutes, treat it as a
   failure to diagnose, not something to wait on forever), and finish the
-  configured reviewer procedure for the current head. When Codex cloud review
-  is disabled, give other reviewers a bounded ~10–15-minute window after
-  checks conclude; when it is enabled, use the two-attempt contract above.
+  configured reviewer procedure for the current head. When the integration
+  cap is 0, give other reviewers a bounded ~10–15-minute window after checks
+  conclude; when it is not, the dispatched integrator agent's own two-attempt
+  window (above) is that wait.
 - A round begins when a check fails or a review lands findings. All workflows
   green and no unresolved findings means the candidate head may proceed to
   step 6's readiness gate; **do not stop or report a handoff here**. Never
   merge — merging is always the maintainer's decision.
 
-**Shepherd-stage override transfer.** This stage starts after the draft PR
+**Integrator-stage override transfer.** This stage starts after the draft PR
 exists, so the shared Stage-ledger paragraph's `§10` transfer describes the
-gauntlet's pre-PR handoff and cannot be the shepherd path. If a maintainer
-ends or redirects shepherd while a P0/P1 remains open, complete the shared
+gauntlet's pre-PR handoff and cannot be the integrate path. If a maintainer
+ends or redirects integration while a P0/P1 remains open, complete the shared
 trigger contract in the PR itself before stopping or changing stages:
 
 1. Immediately after recording the override in the commentary ledger, re-read
@@ -954,11 +626,11 @@ trigger contract in the PR itself before stopping or changing stages:
    and repeat this complete fetch-and-validation. A post-write read cannot
    detect a concurrent edit that the replacement already erased.
 4. This direct PR-body write replaces the shared pre-PR sidecar append: do not
-   create a duplicate shepherd `override-carried` sidecar entry.
+   create a duplicate integrator `override-carried` sidecar entry.
 5. Update the body with `gh pr edit <n> --repo "$repo" --body-file <file>`,
    then re-read it and confirm every override-carried entry landed before
    leaving the stage. Do not rely on the git-directory sidecar alone: this
-   PR already exists and shepherd has no later §10 transfer step.
+   PR already exists and integrate has no later §10 transfer step.
 
 ## 3. Adjudicate findings (hypotheses, not authority)
 
@@ -1068,7 +740,7 @@ is optional in addition, never a substitute for per-thread replies.
 
 ## 5. Fix, gate, push, re-watch
 
-- Every shepherd-round fix must **pass the definition-of-done gate**
+- Every remediation-round fix must **pass the definition-of-done gate**
   (`task verify`) before each push — actually run it and confirm exit 0,
   not just intend to; a fix that can't pass locally doesn't get pushed.
   `task verify` does not include a secret scan the way the old mandatory
@@ -1313,8 +985,8 @@ is optional in addition, never a substitute for per-thread replies.
 
 ## 6. Stop conditions
 
-Every shepherd session ends at exactly one of these — there is no path that
-loops indefinitely:
+Every integration session ends at exactly one of these — there is no path
+that loops indefinitely:
 
 1. **Ready for human review** — all workflows pass, `reviewDecision` is not
    `CHANGES_REQUESTED`, `mergeStateStatus` is not `DIRTY` or `BEHIND`
@@ -1336,19 +1008,17 @@ loops indefinitely:
    ```sh
    "${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check \
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
-     --codex-state "$state"   # §2's attempt-state file; pass
-                              # --codex-disabled instead where Codex cloud
-                              # review is not enabled, or where a resolved
-                              # shepherd cap of 0 AND AGENTS.md's own
-                              # readiness gate both say the Codex condition
-                              # drops out at that cap (the cap-0 note
-                              # above) — never pass it merely because the
-                              # cap is 0 while Codex review is actually
-                              # enabled and AGENTS.md still requires the
-                              # cycle: one of the two flags is always
-                              # required, so the Codex condition can never
-                              # be skipped by silence, and it can never be
-                              # skipped by a false claim either
+     --integrator-result <file>   # the LAST dispatched integrator agent's
+                                  # validated result.integrator for this
+                                  # exact head — never a stale or a
+                                  # different-head result. A null
+                                  # `codex_cycle` inside it (the resolved
+                                  # integration cap was 0) is how the gate
+                                  # itself learns the Codex condition is
+                                  # waived; there is no separate disabled
+                                  # flag to pass or avoid, so the condition
+                                  # can never be skipped by silence nor by a
+                                  # false claim
    ```
 
    `--head` is the head whose CI, Codex result, comments, and deferred
@@ -1522,13 +1192,13 @@ loops indefinitely:
    maintainer/required approval" — say that, and
    list unresolved threads you answered with rejections (they stay
    unresolved until the maintainer resolves them). Project status is a manual,
-   non-authoritative delivery view; shepherd never reads or writes it.
+   non-authoritative delivery view; integration never reads or writes it.
    **Release the chain-owned `claim:*` labels** as part of this stop: the labels assert an
    agent is implementing the issue *right now*, which becomes false the
    moment the work is handed to a human — leaving it is the misleading claim
    state harmon-devkit#210 exists to remove. Remove them only when they are
    currently on the issue **and** the claim comment's record says this claim
-   added them (read the record — shepherd is routinely a different session
+   added them (read the record — integration is routinely a different session
    from the one that claimed, so "I know I added it" is session memory, not
    evidence; the record grammar is in
    `track-work/references/claim-lifecycle.md`). Remove **each exact chain-owned
@@ -1547,7 +1217,7 @@ loops indefinitely:
    Do **not** post a release comment — the claim
    as a whole is still live (assignee) until the close event or
    `/wrap` releases it; only the label's "right now" assertion has expired.
-   And the release is not one-way: if review activity later pulls shepherd
+   And the release is not one-way: if review activity later pulls integration
    back into §5 fix rounds, **re-add the label first** (same guard — the
    record said the claim added it), because "implementing right now" has
    become true again and coordination checks read the label as exactly that.
@@ -1556,9 +1226,12 @@ loops indefinitely:
    event releases the rest.`
    Then stop.
 2. **Cap reached** — checks still fail or findings remain unresolved after
-   the resolved shepherd cap's rounds: stop. A resolved cap of 0 reaches this
-   condition on the spot, having spent zero rounds — see the cap-resolution
-   note above.
+   the resolved **remediation** cap's rounds, or the dispatched integrator
+   agent's Codex cycle itself escalates (both attempts timed out, or the
+   **integration** cap's cycles are spent with the condition still
+   unresolved): stop. A resolved cap of 0 on either axis reaches this
+   condition on the spot, having spent zero rounds of that kind — see the
+   cap-resolution note above.
 3. **No progress** — the same failure signature or finding survives two
    consecutive rounds unchanged **and** it is the sole remaining blocker
    (or the rounds made no material progress overall): stop early; burning
@@ -1591,7 +1264,7 @@ not keep iterating past a stop condition.
 
 ## 7. Leave Project status manual
 
-Project fields are a manual, non-authoritative delivery view. Shepherd never
-reads or writes them: the PR state, checks, reviews, and claim markers are its
+Project fields are a manual, non-authoritative delivery view. Integration
+never reads or writes them: the PR state, checks, reviews, and claim markers are its
 authoritative inputs. This avoids a one-way session projection that cannot be
 restored safely after independent planning edits.

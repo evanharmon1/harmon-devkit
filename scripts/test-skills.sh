@@ -2036,6 +2036,7 @@ STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 GAUNTLET_SKILL="$repo/ai/skills/universal/gauntlet/SKILL.md"
 INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"
+INTEGRATOR_AGENT="$repo/ai/agents/integrator.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 CLAIM_SKILL="$repo/ai/skills/universal/claim/SKILL.md"
 
@@ -2105,7 +2106,7 @@ ledger_trigger() {
 }
 
 ledger_section() {
-    # The shared contract ends at its fixed final sentence. Shepherd has
+    # The shared contract ends at its fixed final sentence. Integrate has
     # additional policy prose before its numbered section, so stopping at the
     # next top-level heading would compare unrelated layout rather than the
     # complete shared ledger contract.
@@ -2556,7 +2557,7 @@ expect_ok "update guidance rejects missing Codex classifier prerequisites" \
     "$STANDARDIZE_REFS/mode-update.md"
 expect_ok "update guidance waives classifier prerequisites for a skills-source repo" \
     sh -c 'grep -qF "SKILLS_SOURCE_CLASSIFIER=" "$1" &&
-        grep -qF "ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh" "$1" &&
+        grep -qF "ai/skills/universal/integrate/assets/check-codex-cloud-review.sh" "$1" &&
         grep -qF "SHIPS_CLASSIFIER_NATIVELY=true" "$1" &&
         grep -qF "git ls-files --stage -- \"\$SKILLS_SOURCE_CLASSIFIER\"" "$1" &&
         grep -qF "= \"100755\"" "$1" &&
@@ -2604,8 +2605,8 @@ expect_ok "classifier detector carries exactly one extraction marker pair" \
 expect_ok "classifier detector extraction is non-empty and parses as bash" \
     sh -c 'test -s "$1" && bash -n "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET"
-expect_ok "classifier detector validates the shepherd entry point frontmatter" \
-    sh -c 'grep -qF "ai/skills/universal/shepherd/SKILL.md" "$1" &&
+expect_ok "classifier detector validates the integrate entry point frontmatter" \
+    sh -c 'grep -qF "ai/skills/universal/integrate/SKILL.md" "$1" &&
         grep -qF "git ls-files --error-unmatch" "$1" &&
         grep -qF "classifier_skill_frontmatter_ok" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET"
@@ -2645,7 +2646,7 @@ expect_ok "classifier frontmatter probe cross-references its canonical source" \
     'verify-skills.sh' 'frontmatter_is_closed'
 # The entry point is mode-checked from the index, same idiom as the classifier
 # path: only regular blobs qualify, so a 120000 symlink cannot stand in.
-expect_ok "classifier detector requires a regular-file shepherd entry point" \
+expect_ok "classifier detector requires a regular-file integrate entry point" \
     sh -c 'grep -qF "classifier_skill_is_regular_file" "$1" &&
         grep -qF "100644 | 100755" "$1"' sh \
     "$GU_CLASSIFIER_SNIPPET"
@@ -2662,7 +2663,7 @@ done
 expect_fail "classifier detector code no longer anchors on printable usage strings" \
     sh -c 'sed "s/^[[:space:]]*//" "$1" | grep -v "^#" | grep -qF -- "$2"' sh \
     "$GU_CLASSIFIER_SNIPPET" 'reserve --state'
-# The exit-code pairs are the bounded-attempt lifecycle shepherd depends on,
+# The exit-code pairs are the bounded-attempt lifecycle the integrator depends on,
 # asserted as verdict+code pairs so neither half can drift away alone.
 expect_ok "classifier detector anchors the pending and escalate exit contract" \
     sh -c 'for needle in "$2" "$3" "$4" "$5"; do
@@ -2693,8 +2694,18 @@ expect_ok "classifier detector code contains no early-exit grep pipeline" \
 # it should. The greps above prove the probes are written; these prove they
 # decide. Staging is enough: every probe reads the index or the worktree, so no
 # fixture needs a commit.
-CLASSIFIER_HELPER_REL="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
-CLASSIFIER_SKILL_REL="ai/skills/universal/shepherd/SKILL.md"
+CLASSIFIER_HELPER_REL="ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
+CLASSIFIER_SKILL_REL="ai/skills/universal/integrate/SKILL.md"
+# The frozen predecessor probes below (see "frozen predecessor probes") are
+# verbatim historical snapshots that hardcode the pre-rename
+# ai/skills/universal/shepherd/... paths and a literal `name: shepherd` check
+# — by design, since they prove how THAT code judged a repo tree, not how
+# today's does. Every fixture therefore carries its SKILL.md and helper at
+# BOTH paths: the integrate path for the live detector under test, and this
+# legacy shepherd path so the frozen probes still find the file they
+# hardcode. Only the `name:` value differs between the two copies.
+CLASSIFIER_HELPER_LEGACY_REL="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
+CLASSIFIER_SKILL_LEGACY_REL="ai/skills/universal/shepherd/SKILL.md"
 # $1 repo root, $2 `git add --chmod` flag for the helper, $3 SKILL.md shape
 # (`valid` | `untracked` | `nofrontmatter` | `quotedname` | `blockscalar` |
 # `unclosed` | `bodyonly` | `emptydq` | `emptysq` | `commentdesc` | `nulldesc` |
@@ -2737,10 +2748,145 @@ classifier_dispatch_body() {
         '    : ;;' \
         'esac'
 }
+# Emits the SKILL.md frontmatter body for shape $2, with the skill's name and
+# heading parameterized on $1 so the same shape renders for both the live
+# "integrate" identity and the frozen probes' legacy "shepherd" one.
+classifier_skill_body() {
+    local nm="$1" skill_shape="$2" heading
+    case "$nm" in
+    integrate) heading="Integrate" ;;
+    shepherd) heading="Shepherd" ;;
+    esac
+    case "$skill_shape" in
+    nofrontmatter)
+        printf '%s\n' "# $heading" 'No frontmatter here.'
+        ;;
+    quotedname)
+        printf '%s\n' '---' "name: \"$nm\"" \
+            'description: Double-quoted name, valid YAML.' '---' 'Body.'
+        ;;
+    blockscalar)
+        printf '%s\n' '---' "name: $nm" 'description: >-' \
+            '  A folded block scalar, the form the real SKILL.md uses.' \
+            '---' 'Body.'
+        ;;
+    unclosed)
+        printf '%s\n' '---' "name: $nm" \
+            'description: The block never closes.' 'Straight into the body.'
+        ;;
+    bodyonly)
+        printf '%s\n' '---' '---' "name: $nm" \
+            'description: These live in the body, not the block.'
+        ;;
+    emptydq)
+        printf '%s\n' '---' "name: $nm" 'description: ""' '---' 'Body.'
+        ;;
+    emptysq)
+        printf '%s\n' '---' "name: $nm" "description: ''" '---' 'Body.'
+        ;;
+    commentdesc)
+        printf '%s\n' '---' "name: $nm" 'description: # TODO' '---' 'Body.'
+        ;;
+    nulldesc)
+        printf '%s\n' '---' "name: $nm" 'description: null' '---' 'Body.'
+        ;;
+    tildedesc)
+        printf '%s\n' '---' "name: $nm" 'description: ~' '---' 'Body.'
+        ;;
+    emptyscalar)
+        printf '%s\n' '---' "name: $nm" 'description: >-' '---' 'Body.'
+        ;;
+    flowseqdesc)
+        printf '%s\n' '---' "name: $nm" 'description: []' '---' 'Body.'
+        ;;
+    commentedheader)
+        printf '%s\n' '---' "name: $nm" 'description: >- # folded' \
+            '---' 'Body.'
+        ;;
+    commentedheadercontent)
+        printf '%s\n' '---' "name: $nm" 'description: >- # folded' \
+            '  Real folded content behind a commented header.' '---' 'Body.'
+        ;;
+    commentedpipe)
+        printf '%s\n' '---' "name: $nm" 'description: | # kept' \
+            '---' 'Body.'
+        ;;
+    inlinecomment)
+        printf '%s\n' '---' "name: $nm" \
+            'description: A real value # with a trailing comment' '---' 'Body.'
+        ;;
+    chompfirstfold)
+        printf '%s\n' '---' "name: $nm" 'description: >+2' '---' 'Body.'
+        ;;
+    chompfirstliteral)
+        printf '%s\n' '---' "name: $nm" 'description: |-2' '---' 'Body.'
+        ;;
+    chompfirstcontent)
+        printf '%s\n' '---' "name: $nm" 'description: >+2' \
+            '  Content behind a chomp-first header.' '---' 'Body.'
+        ;;
+    nullcomment)
+        printf '%s\n' '---' "name: $nm" 'description: null # TODO' \
+            '---' 'Body.'
+        ;;
+    emptydqcomment)
+        printf '%s\n' '---' "name: $nm" 'description: "" # TODO' \
+            '---' 'Body.'
+        ;;
+    tildecomment)
+        printf '%s\n' '---' "name: $nm" 'description: ~ # x' \
+            '---' 'Body.'
+        ;;
+    flowcomment)
+        printf '%s\n' '---' "name: $nm" 'description: [] # x' \
+            '---' 'Body.'
+        ;;
+    quotednull)
+        printf '%s\n' '---' "name: $nm" 'description: "null"' \
+            '---' 'Body.'
+        ;;
+    indentzero)
+        printf '%s\n' '---' "name: $nm" 'description: |0' \
+            '  Content behind an illegal zero indent indicator.' '---' 'Body.'
+        ;;
+    indentten)
+        printf '%s\n' '---' "name: $nm" 'description: |10' \
+            '  Content behind a two-digit indent indicator.' '---' 'Body.'
+        ;;
+    spacedflowseq)
+        printf '%s\n' '---' "name: $nm" 'description: [ ]' '---' 'Body.'
+        ;;
+    spacedflowmap)
+        printf '%s\n' '---' "name: $nm" 'description: { }' '---' 'Body.'
+        ;;
+    *)
+        printf '%s\n' '---' "name: $nm" \
+            "description: ${heading} a draft PR to ready for review." '---' \
+            'Body.'
+        ;;
+    esac
+}
+# Guarded rm for a fixture-relative path: refuses unless both arguments are
+# non-empty and the resolved path sits under $TMPROOT, so a variable gone
+# empty upstream can never widen this into rm -f outside the throwaway
+# fixture tree (an absolute "/$rel" if $root were ever "").
+classifier_rm_tracked() {
+    local root="${1:?classifier_rm_tracked: root is required}" \
+        rel="${2:?classifier_rm_tracked: relative path is required}"
+    case "$root/$rel" in
+    "$TMPROOT"/*) : ;;
+    *)
+        echo "refusing to rm outside \$TMPROOT: $root/$rel" >&2
+        return 1
+        ;;
+    esac
+    rm -f -- "$root/$rel"
+}
 make_classifier_fixture() {
     local root="$1" chmod_flag="$2" skill_shape="$3" helper_shape="$4"
     git_init "$root"
-    mkdir -p "$root/ai/skills/universal/shepherd/assets"
+    mkdir -p "$root/ai/skills/universal/integrate/assets" \
+        "$root/ai/skills/universal/shepherd/assets"
     case "$helper_shape" in
     dispatch)
         classifier_dispatch_body >"$root/$CLASSIFIER_HELPER_REL"
@@ -2768,133 +2914,41 @@ make_classifier_fixture() {
             >"$root/$CLASSIFIER_HELPER_REL"
         ;;
     esac
-    chmod +x "$root/$CLASSIFIER_HELPER_REL"
+    cp -- "$root/$CLASSIFIER_HELPER_REL" "$root/$CLASSIFIER_HELPER_LEGACY_REL"
+    chmod +x "$root/$CLASSIFIER_HELPER_REL" "$root/$CLASSIFIER_HELPER_LEGACY_REL"
     git -C "$root" add "--chmod=$chmod_flag" -- "$CLASSIFIER_HELPER_REL"
-    case "$skill_shape" in
-    nofrontmatter)
-        printf '%s\n' '# Shepherd' 'No frontmatter here.'
-        ;;
-    quotedname)
-        printf '%s\n' '---' 'name: "shepherd"' \
-            'description: Double-quoted name, valid YAML.' '---' 'Body.'
-        ;;
-    blockscalar)
-        printf '%s\n' '---' 'name: shepherd' 'description: >-' \
-            '  A folded block scalar, the form the real SKILL.md uses.' \
-            '---' 'Body.'
-        ;;
-    unclosed)
-        printf '%s\n' '---' 'name: shepherd' \
-            'description: The block never closes.' 'Straight into the body.'
-        ;;
-    bodyonly)
-        printf '%s\n' '---' '---' 'name: shepherd' \
-            'description: These live in the body, not the block.'
-        ;;
-    emptydq)
-        printf '%s\n' '---' 'name: shepherd' 'description: ""' '---' 'Body.'
-        ;;
-    emptysq)
-        printf '%s\n' '---' 'name: shepherd' "description: ''" '---' 'Body.'
-        ;;
-    commentdesc)
-        printf '%s\n' '---' 'name: shepherd' 'description: # TODO' '---' 'Body.'
-        ;;
-    nulldesc)
-        printf '%s\n' '---' 'name: shepherd' 'description: null' '---' 'Body.'
-        ;;
-    tildedesc)
-        printf '%s\n' '---' 'name: shepherd' 'description: ~' '---' 'Body.'
-        ;;
-    emptyscalar)
-        printf '%s\n' '---' 'name: shepherd' 'description: >-' '---' 'Body.'
-        ;;
-    flowseqdesc)
-        printf '%s\n' '---' 'name: shepherd' 'description: []' '---' 'Body.'
-        ;;
-    commentedheader)
-        printf '%s\n' '---' 'name: shepherd' 'description: >- # folded' \
-            '---' 'Body.'
-        ;;
-    commentedheadercontent)
-        printf '%s\n' '---' 'name: shepherd' 'description: >- # folded' \
-            '  Real folded content behind a commented header.' '---' 'Body.'
-        ;;
-    commentedpipe)
-        printf '%s\n' '---' 'name: shepherd' 'description: | # kept' \
-            '---' 'Body.'
-        ;;
-    inlinecomment)
-        printf '%s\n' '---' 'name: shepherd' \
-            'description: A real value # with a trailing comment' '---' 'Body.'
-        ;;
-    chompfirstfold)
-        printf '%s\n' '---' 'name: shepherd' 'description: >+2' '---' 'Body.'
-        ;;
-    chompfirstliteral)
-        printf '%s\n' '---' 'name: shepherd' 'description: |-2' '---' 'Body.'
-        ;;
-    chompfirstcontent)
-        printf '%s\n' '---' 'name: shepherd' 'description: >+2' \
-            '  Content behind a chomp-first header.' '---' 'Body.'
-        ;;
-    nullcomment)
-        printf '%s\n' '---' 'name: shepherd' 'description: null # TODO' \
-            '---' 'Body.'
-        ;;
-    emptydqcomment)
-        printf '%s\n' '---' 'name: shepherd' 'description: "" # TODO' \
-            '---' 'Body.'
-        ;;
-    tildecomment)
-        printf '%s\n' '---' 'name: shepherd' 'description: ~ # x' \
-            '---' 'Body.'
-        ;;
-    flowcomment)
-        printf '%s\n' '---' 'name: shepherd' 'description: [] # x' \
-            '---' 'Body.'
-        ;;
-    quotednull)
-        printf '%s\n' '---' 'name: shepherd' 'description: "null"' \
-            '---' 'Body.'
-        ;;
-    indentzero)
-        printf '%s\n' '---' 'name: shepherd' 'description: |0' \
-            '  Content behind an illegal zero indent indicator.' '---' 'Body.'
-        ;;
-    indentten)
-        printf '%s\n' '---' 'name: shepherd' 'description: |10' \
-            '  Content behind a two-digit indent indicator.' '---' 'Body.'
-        ;;
-    spacedflowseq)
-        printf '%s\n' '---' 'name: shepherd' 'description: [ ]' '---' 'Body.'
-        ;;
-    spacedflowmap)
-        printf '%s\n' '---' 'name: shepherd' 'description: { }' '---' 'Body.'
-        ;;
-    *)
-        printf '%s\n' '---' 'name: shepherd' \
-            'description: Shepherd a draft PR to ready for review.' '---' \
-            'Body.'
-        ;;
-    esac >"$root/$CLASSIFIER_SKILL_REL"
+    git -C "$root" add "--chmod=$chmod_flag" -- "$CLASSIFIER_HELPER_LEGACY_REL"
+    classifier_skill_body integrate "$skill_shape" >"$root/$CLASSIFIER_SKILL_REL"
     if [ "$skill_shape" != untracked ]; then
         git -C "$root" add -- "$CLASSIFIER_SKILL_REL"
     fi
+    classifier_skill_body shepherd "$skill_shape" \
+        >"$root/$CLASSIFIER_SKILL_LEGACY_REL"
+    git -C "$root" add -- "$CLASSIFIER_SKILL_LEGACY_REL"
 }
 # A skills source whose entry point is a tracked SYMLINK to a perfectly valid
 # SKILL.md. Every content-based probe reads straight through it; only the index
-# mode tells them apart, so this needs its own builder rather than a shape.
+# mode tells them apart, so this needs its own builder rather than a shape. The
+# legacy shepherd-path copy gets the same symlink-to-target treatment so the
+# frozen skill-probes control still finds a symlinked entry point to reject.
 make_classifier_symlink_fixture() {
-    local root="$1" target="ai/skills/universal/shepherd/SKILL-target.md"
+    local root="$1" target="ai/skills/universal/integrate/SKILL-target.md" \
+        legacy_target="ai/skills/universal/shepherd/SKILL-target.md"
     make_classifier_fixture "$root" +x valid dispatch
-    rm -f "$root/$CLASSIFIER_SKILL_REL"
+    classifier_rm_tracked "$root" "$CLASSIFIER_SKILL_REL"
     git -C "$root" rm -q --cached -- "$CLASSIFIER_SKILL_REL"
-    printf '%s\n' '---' 'name: shepherd' \
+    printf '%s\n' '---' 'name: integrate' \
         'description: A completely valid target file.' '---' 'Body.' \
         >"$root/$target"
     ln -s SKILL-target.md "$root/$CLASSIFIER_SKILL_REL"
     git -C "$root" add -- "$target" "$CLASSIFIER_SKILL_REL"
+    classifier_rm_tracked "$root" "$CLASSIFIER_SKILL_LEGACY_REL"
+    git -C "$root" rm -q --cached -- "$CLASSIFIER_SKILL_LEGACY_REL"
+    printf '%s\n' '---' 'name: shepherd' \
+        'description: A completely valid target file.' '---' 'Body.' \
+        >"$root/$legacy_target"
+    ln -s SKILL-target.md "$root/$CLASSIFIER_SKILL_LEGACY_REL"
+    git -C "$root" add -- "$legacy_target" "$CLASSIFIER_SKILL_LEGACY_REL"
 }
 # Run a detector snippet ($1) with a fixture ($2) as cwd; report its verdict.
 classifier_verdict_with() {
@@ -3254,7 +3308,7 @@ expect_ok_contains "classifier detector accepts a complete skills-source tree" \
 # chmod +x on disk and still fails, which is the whole point of the index test.
 expect_ok_contains "classifier detector rejects a helper staged non-executable" \
     "RESULT=false" classifier_verdict "$CLS_MODE"
-expect_ok_contains "classifier detector rejects an untracked shepherd entry point" \
+expect_ok_contains "classifier detector rejects an untracked integrate entry point" \
     "RESULT=false" classifier_verdict "$CLS_NOSKILL"
 expect_ok_contains "classifier detector rejects a SKILL.md without frontmatter" \
     "RESULT=false" classifier_verdict "$CLS_BADFM"
@@ -3355,7 +3409,7 @@ expect_ok_contains "classifier detector rejects a spaced empty flow mapping" \
 # Every content probe reads straight through a symlink; only the index mode
 # distinguishes it, which is why the entry point is mode-checked like the
 # classifier path. verify-skills.sh takes the same stance by finding with -type f.
-expect_ok_contains "classifier detector rejects a symlinked shepherd entry point" \
+expect_ok_contains "classifier detector rejects a symlinked integrate entry point" \
     "RESULT=false" classifier_verdict "$CLS_SYMLINK"
 expect_ok_contains "classifier detector rejects a symlinked entry point under pipefail" \
     "RESULT=false" classifier_verdict_pipefail "$CLS_SYMLINK"
@@ -3370,7 +3424,7 @@ expect_ok_contains "classifier detector rejects a tracked executable stub" \
 # The negative control, and the reason this round exists. The comment-only stub
 # is tracked, 100755, at the right path, beside a valid SKILL.md, and prints all
 # five usage forms — so the usage-string detector waived all three guards for
-# it, and shepherd's `check` would then read its exit 0 as clean evidence.
+# it, and the integrator's `check` would then read its exit 0 as clean evidence.
 # Structural anchors reject it. Both halves are asserted: a reject case whose
 # predecessor also rejected it would prove nothing was hardened.
 expect_ok_contains "superseded detector accepted a comment-only usage stub" \
@@ -3514,60 +3568,60 @@ expect_ok "new-repo and adopt guidance note the skills-source waiver" \
 expect_fail "update guidance does not preseed reviewed skill categories" \
     grep -qF 'failed to seed reviewed skill categories' \
     "$STANDARDIZE_REFS/mode-update.md"
-expect_ok "shepherd starts Codex attempts only after checks settle" \
+expect_ok "the integrator agent starts Codex attempts only after checks settle" \
     grep -qF 'Do not reserve or post the trigger until every required check has settled.' \
-    "$SHEPHERD_SKILL"
+    "$INTEGRATOR_AGENT"
 expect_ok "implement creates the normal PR as a draft" \
     grep -qF 'gh pr create --draft --repo "$repo"' "$IMPLEMENT_SKILL"
 expect_ok "implement confirms the pushed draft head" \
     sh -c 'grep -qF "headRefOid,isDraft" "$1" &&
         grep -qF "isDraft == true" "$1"' sh "$IMPLEMENT_SKILL"
-expect_ok "shepherd records draft state on entry" \
-    grep -qF 'state,isDraft,headRepositoryOwner' "$SHEPHERD_SKILL"
-expect_ok "shepherd promotes only the unchanged ready head" \
+expect_ok "integration records draft state on entry" \
+    grep -qF 'state,isDraft,headRepositoryOwner' "$INTEGRATE_SKILL"
+expect_ok "integration promotes only the unchanged ready head" \
     sh -c 'grep -qF "gh pr ready <n>" "$1" &&
         grep -qF "changed head invalidates the gate" "$1" &&
-        grep -qF "must not be called again" "$1"' sh "$SHEPHERD_SKILL"
-expect_ok "shepherd fails closed on a pre-promotion head mismatch" \
+        grep -qF "must not be called again" "$1"' sh "$INTEGRATE_SKILL"
+expect_ok "integration fails closed on a pre-promotion head mismatch" \
     sh -c 'grep -qF "the first mismatch. Step 5" "$1" &&
-        grep -qF "Never wait out a pre-promotion" "$1"' sh "$SHEPHERD_SKILL"
-expect_ok "shepherd reconciles partial or raced promotion" \
+        grep -qF "Never wait out a pre-promotion" "$1"' sh "$INTEGRATE_SKILL"
+expect_ok "integration reconciles partial or raced promotion" \
     sh -c 'grep -qF "response can be lost" "$1" &&
         grep -qF "gh pr ready --undo <n> --repo" "$1" &&
         grep -qF "non-draft on a changed head" "$1" &&
         grep -qF "report must name that unresolved" "$1" &&
-        grep -qF "remote-state risk" "$1"' sh "$SHEPHERD_SKILL"
-expect_ok "shepherd paginates the draft-conversion undo guard" \
+        grep -qF "remote-state risk" "$1"' sh "$INTEGRATE_SKILL"
+expect_ok "integration paginates the draft-conversion undo guard" \
     sh -c 'grep -qF "/assets/gh-ro.sh --paginate repos/\"\$repo\"/issues/<n>/timeline" "$1" &&
-        grep -qF "convert_to_draft" "$1"' sh "$SHEPHERD_SKILL"
-expect_ok "shepherd bounds the undo per PR across sessions" \
-    grep -qF 'the bound is per PR, across sessions' "$SHEPHERD_SKILL"
-expect_ok "shepherd freezes review content across promotion" \
+        grep -qF "convert_to_draft" "$1"' sh "$INTEGRATE_SKILL"
+expect_ok "integration bounds the undo per PR across sessions" \
+    grep -qF 'the bound is per PR, across sessions' "$INTEGRATE_SKILL"
+expect_ok "integration freezes review content across promotion" \
     sh -c 'grep -qF "top-level comments, inline comments" "$1" &&
         grep -qF "GraphQL review-thread resolution" "$1" &&
         grep -qF "readiness-gate.sh fingerprint --repo" "$1" &&
         grep -qF "re-read the content fingerprint" "$1" &&
         grep -qF "identical to the passing gate" "$1"' sh \
-    "$SHEPHERD_SKILL"
-expect_ok "shepherd settles automation before final ready promotion" \
+    "$INTEGRATE_SKILL"
+expect_ok "integration settles automation before final ready promotion" \
     sh -c 'grep -qF "cannot be used as an automation" "$1" &&
         grep -qF "pull_request.ready_for_review" "$1" &&
         grep -qF "final lifecycle transition" "$1" &&
         grep -qF "coordination cleanup" "$1" &&
-        grep -qF "leave the PR draft" "$1"' sh "$SHEPHERD_SKILL"
-expect_fail "shepherd has no post-ready automation workbench" \
-    grep -qF "bounded post-promotion window" "$SHEPHERD_SKILL"
-expect_ok "shepherd blockers preserve the draft workbench" \
+        grep -qF "leave the PR draft" "$1"' sh "$INTEGRATE_SKILL"
+expect_fail "integration has no post-ready automation workbench" \
+    grep -qF "bounded post-promotion window" "$INTEGRATE_SKILL"
+expect_ok "integration blockers preserve the draft workbench" \
     grep -qF 'For every stop except Ready for human review, leave the PR draft' \
-    "$SHEPHERD_SKILL"
-expect_ok "shepherd documents the external Automatic-review prerequisite" \
+    "$INTEGRATE_SKILL"
+expect_ok "integration documents the external Automatic-review prerequisite" \
     sh -c 'grep -qF "Codex Automatic reviews" "$1" &&
         grep -qF "must be disabled in the external integration" "$1"' sh \
-    "$SHEPHERD_SKILL"
-expect_ok "shepherd names all three Codex Automatic-review knobs" \
+    "$INTEGRATE_SKILL"
+expect_ok "integration names all three Codex Automatic-review knobs" \
     sh -c 'grep -qF "personal **Auto review** off" "$1" &&
         grep -qF "**Auto code review**" "$1" &&
-        grep -qF "review **Trigger**" "$1"' sh "$SHEPHERD_SKILL"
+        grep -qF "review **Trigger**" "$1"' sh "$INTEGRATE_SKILL"
 expect_ok "standardization setup disables Codex Automatic reviews" \
     sh -c 'grep -qF "Disable **Codex Automatic reviews**" "$1/post-generation-checklist.md" &&
         grep -qF "human-confirmed disabled" "$1/mode-audit.md"' sh "$STANDARDIZE_REFS"
@@ -3603,7 +3657,7 @@ expect_ok "standardization modes use the draft-workbench handoff" \
         grep -qF "open a draft PR" "$1/standards-catalog.md"' sh "$STANDARDIZE_REFS"
 expect_fail "Codex classifier does not add an undeclared Perl dependency" \
     grep -qF 'need perl' \
-    "$repo/ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
+    "$repo/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
 expect_ok "update guidance reads the reviewed CodeQL language matrix" \
     grep -qF "'.codeql_languages' \"\$REVIEWED_DATA\"" \
     "$STANDARDIZE_REFS/mode-update.md"
@@ -5232,7 +5286,7 @@ expect_ok_contains "verify-applied warns when a skills-sync manifest was never v
     "WARN: .skills-sync.yaml is never vendored: skills and agents have no # managed: provenance; run 'task sync:skills' to materialize them." \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 mkdir -p "$AGG_TARGET/vendored/skills" "$AGG_TARGET/vendored/agents"
-printf '%s\n' '# managed: gauntlet, shepherd' \
+printf '%s\n' '# managed: gauntlet, integrate' \
     >"$AGG_TARGET/vendored/skills/.SKILLS_PROVENANCE"
 expect_ok_contains "verify-applied warns when only skills-sync agents lack provenance" \
     "WARN: .skills-sync.yaml is never vendored: agents have no # managed: provenance; run 'task sync:skills' to materialize them." \
@@ -5243,7 +5297,7 @@ rm -f "$AGG_TARGET/vendored/skills/.SKILLS_PROVENANCE"
 expect_ok_contains "verify-applied warns when only skills-sync skills lack provenance" \
     "WARN: .skills-sync.yaml is never vendored: skills have no # managed: provenance; run 'task sync:skills' to materialize them." \
     bash "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
-printf '%s\n' '# managed: gauntlet, shepherd' \
+printf '%s\n' '# managed: gauntlet, integrate' \
     >"$AGG_TARGET/vendored/skills/.SKILLS_PROVENANCE"
 expect_ok "verify-applied stays silent about never-vendored skills with provenance" \
     bash -c '

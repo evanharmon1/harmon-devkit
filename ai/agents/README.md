@@ -16,7 +16,8 @@ Flat, one file per agent, no category subdirectories:
 
 ```text
 ai/agents/
-└── implementer.md   # implement a plan or a confirmed defect in a fresh context
+├── implementer.md   # implement a plan or a confirmed defect in a fresh context
+└── integrator.md    # drive one integration-stage Codex cycle + review-thread poll
 ```
 
 Categories exist in `ai/skills/` so consumers can vendor a subset without a
@@ -26,6 +27,7 @@ indirection; when there are, categories drop in exactly as they did for skills.
 | Agent | For |
 | --- | --- |
 | [`implementer`](./implementer.md) | Turning a written plan — or a review finding the caller has already confirmed — into a verified, committed change. Never branches, pushes, opens PRs, or merges. |
+| [`integrator`](./integrator.md) | The `/integrate` stage's mechanical half: settle CI, drive one current-head Codex cloud-review cycle to a terminal result, and find which review threads still lack a reply — returning schema-valid `result.integrator` evidence. Posts only the brokered `@codex review` trigger and exact reply text the orchestrator supplies; never adjudicates, settles, or promotes. |
 
 ## Portability contract
 
