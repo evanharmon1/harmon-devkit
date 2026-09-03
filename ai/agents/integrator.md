@@ -290,7 +290,8 @@ Three cases, mutually exclusive:
   one to attach.
 
 ```bash
-"$helper" check --state "$state" --actor-id 199175422
+check_out="$("$helper" check --state "$state" --actor-id 199175422)" || check_exit=$?
+check_exit=${check_exit:-0}
 ```
 
 `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14
@@ -305,6 +306,15 @@ On **11 (pending)**, this pass ends without a terminal result; report
 Poll bounded — give the window your brief's cap implies (10–15 minutes per
 attempt) rather than looping indefinitely; a caller that wants another look
 dispatches you again.
+
+On **0 (clean)** or **10 (findings)**, `check_out` itself now carries the
+accepted evidence (harmon-devkit#639 gauntlet challenge round 4): build
+`codex_cycle.accepted` directly from it rather than re-deriving anything —
+`{surface: (check_out | .accepted.surface), id: (check_out | .accepted.id),
+reviewed_commit: (check_out | .accepted.reviewed_commit)}`. All three are
+always present together on these two exit codes; their absence is a
+malformed `check_out` your brief did not anticipate — stop and report it
+rather than fabricating a value.
 
 You never call `settle`. A badged finding sitting outside an inline thread
 (a top-level comment or a review body) is a **finding** you report like any
