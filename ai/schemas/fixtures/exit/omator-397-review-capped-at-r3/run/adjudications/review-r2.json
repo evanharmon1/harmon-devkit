@@ -1,0 +1,45 @@
+{
+  "schema": 2,
+  "run_id": "omator-397-replay-review",
+  "stage": "review",
+  "round": 2,
+  "reviewed_head": "a9f2bcb978cb3572edb1010ba2b1be7b257368c9",
+  "adjudications": [
+    {
+      "finding_id": "review-r2-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: ref-less contacts.csv has no identity (about challenge r3/r4 fix)",
+      "evidence": "ref-less contacts.csv has no identity (about challenge r3/r4 fix)",
+      "override": null
+    },
+    {
+      "finding_id": "review-r2-codex-cli-2",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: primary-contact exception contradicts \"every created row\" (about review r1 fix)",
+      "evidence": "primary-contact exception contradicts \"every created row\" (about review r1 fix)",
+      "override": null
+    },
+    {
+      "finding_id": "review-r2-codex-cli-3",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: batch contacts on surviving customers never deleted/unlocked (about challenge r4 fix)",
+      "evidence": "batch contacts on surviving customers never deleted/unlocked (about challenge r4 fix)",
+      "override": null
+    },
+    {
+      "finding_id": "review-r2-codex-cli-4",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "omator#397 ledger: error CSV not reversibly decoded (about challenge r4 fix)",
+      "evidence": "error CSV not reversibly decoded (about challenge r4 fix)",
+      "override": null
+    }
+  ]
+}

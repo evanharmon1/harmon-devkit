@@ -1,0 +1,20 @@
+[
+  {
+    "round": 1,
+    "path": "scripts/shifted-claim.mjs",
+    "added_lines": [
+      5
+    ],
+    "deleted_lines": [],
+    "renamed_from": null
+  },
+  {
+    "round": 2,
+    "path": "scripts/shifted-claim.mjs",
+    "added_lines": [],
+    "deleted_lines": [
+      3
+    ],
+    "renamed_from": null
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "stage": "challenge",
+  "current-head": "0303030303030303030303030303030303030303",
+  "heads": "heads.json",
+  "history": "history.json"
+}

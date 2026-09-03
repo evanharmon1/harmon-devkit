@@ -1,0 +1,18 @@
+{
+  "run_id": "run-duplicate-transition",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "breadth": {
+    "policy": "builtin-default",
+    "max_agent_runs": 8,
+    "max_parallel_agents": 3
+  },
+  "decoded_from": "legacy"
+}

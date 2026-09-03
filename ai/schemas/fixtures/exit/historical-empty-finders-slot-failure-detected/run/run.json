@@ -1,0 +1,10 @@
+{
+  "run_id": "run-a1-verify",
+  "initiated_by": "human",
+  "receipts": [
+    {"kind": "transition", "stage": "review"}
+  ],
+  "slot_failures": [
+    {"stage": "review", "round": 1, "slot": "codex-cli", "reason": "finder_unavailable", "head": "0101010101010101010101010101010101010101"}
+  ]
+}

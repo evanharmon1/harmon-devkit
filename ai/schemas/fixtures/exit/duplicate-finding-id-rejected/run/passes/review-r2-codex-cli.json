@@ -1,0 +1,42 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "0202020202020202020202020202020202020202",
+  "produced_at": "2026-08-30T09:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "model-x",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-dup-id",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "review",
+    "round": 2,
+    "reviewed_head": "0202020202020202020202020202020202020202",
+    "slot": "codex-cli",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r1-codex-cli-1",
+        "path": "scripts/example.mjs",
+        "line": 99,
+        "class": "nit",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P3",
+        "recommended_disposition": "decline",
+        "evidence": "reused id from round 1 on purpose"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 0,
+      "P3": 1
+    }
+  }
+}

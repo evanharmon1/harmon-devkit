@@ -1,0 +1,30 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "0101010101010101010101010101010101010101",
+  "produced_at": "2026-08-29T15:00:00Z",
+  "producer": {"harness": "codex-cli", "model": "model-x", "tier": "frontier"},
+  "run": {"run_id": "run-round-claim-disproven", "initiated_by": "human"},
+  "payload": {
+    "stage": "review",
+    "round": 1,
+    "reviewed_head": "0101010101010101010101010101010101010101",
+    "slot": "codex-cli",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r1-codex-cli-1",
+        "path": "scripts/a.mjs",
+        "line": 9,
+        "class": "correctness",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "falsely claims round 1 introduced this line; the ledger shows round 1 only touched a different file"
+      }
+    ],
+    "counts": {"P0": 0, "P1": 0, "P2": 1, "P3": 0}
+  }
+}

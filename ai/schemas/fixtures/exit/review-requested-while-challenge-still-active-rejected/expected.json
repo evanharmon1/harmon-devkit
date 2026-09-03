@@ -1,0 +1,4 @@
+{
+  "indeterminate": true,
+  "reason": "--stage review was requested but the trusted receipt sequence's active stage is still \"challenge\" (cap 3, not disabled) — review cannot be active until challenge exits"
+}

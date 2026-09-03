@@ -1,0 +1,18 @@
+{
+  "families": [
+    {
+      "slug": "poisoned-family"
+    }
+  ],
+  "harnesses": [
+    {
+      "slug": "poisoned-harness"
+    }
+  ],
+  "finders": [
+    {
+      "slug": "poisoned-finder",
+      "surface": "pr-cloud"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+default_rigor = "standard"
+default_tier   = "standard"
+default_method = "plan"
+
+[rigor.standard]
+challenge  = 3
+review     = 3
+shepherd   = 4
+min_rounds = 1
+
+[method]
+rank = ["human-led", "plan-approved", "council", "orchestrate", "plan", "oneshot"]

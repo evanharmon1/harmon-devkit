@@ -1,0 +1,9 @@
+{
+  "outcome": "continue",
+  "reason": "below_threshold",
+  "rounds_counted": 2,
+  "no_repeat_relationship": [
+    "review-r1-codex-cli-1",
+    "review-r2-codex-cli-1"
+  ]
+}

@@ -1,0 +1,3 @@
+{
+  "cross_validation_error_contains": "distinct_families requires 2 distinct eligible families"
+}
