@@ -19,6 +19,24 @@ directory. Capture and refresh base and canonical head before every logical
 round. A changed head invalidates an unadjudicated pass rather than letting it
 describe a new tree.
 
+## Entry gate
+
+The input must also name the canonical `owner/repo` that will receive the PR.
+Before creating the record directory, dispatching a role, or writing external
+state, resolve `origin` and require it to identify that same repository:
+
+```sh
+origin_url="$(git remote get-url origin)" || exit 2
+origin_repo="$(gh repo view "$origin_url" --json nameWithOwner -q .nameWithOwner)" || exit 2
+[ "$origin_repo" = "$target_repo" ] || exit 2
+```
+
+Treat an absent remote, a failed identity lookup, or a mismatch as this skill
+being unavailable, not as permission to guess. Return control without creating
+review state so `/implement` can use its inline confidence-stage procedure for
+the conventional fork topology where `origin` is the writable fork and the PR
+targets upstream.
+
 ## Dispatch and receipt
 
 The dispatcher is a capability boundary: dispatch a challenger or reviewer

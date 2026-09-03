@@ -26,9 +26,14 @@ trap 'rm -rf "$tmp"' EXIT
 echo "==> review skill names both role dispatches and record authority"
 for text in '[stage.challenge].finders' '[stage.review].finders' challenger reviewer \
     'scripts/dev-flow-exit.sh' 'scripts/render-dev-flow.sh' 'scripts/round-push.sh' \
-    'run.json.evidence_comments' 'fenced JSON'; do
+    'run.json.evidence_comments' 'fenced JSON' 'git remote get-url origin' \
+    'gh repo view "$origin_url"' 'inline confidence-stage procedure'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing $text"
 done
+entry_gate_line="$(grep -n '^## Entry gate$' "$skill" | cut -d: -f1)"
+dispatch_line="$(grep -n '^## Dispatch and receipt$' "$skill" | cut -d: -f1)"
+[ -n "$entry_gate_line" ] && [ -n "$dispatch_line" ] && [ "$entry_gate_line" -lt "$dispatch_line" ] ||
+    fail "review skill does not fail topology before dispatch"
 grep -Fq 'synthesis_of' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not preserve council synthesis provenance"
 for model_skill in "$skill" ai/skills/universal/orchestrator/SKILL.md; do
