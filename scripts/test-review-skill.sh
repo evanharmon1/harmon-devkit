@@ -54,11 +54,34 @@ grep -Fq 'review-r1-codex-cli-1' <<<"$rendered" || fail "review finding was not 
 
 echo "==> durable publisher owns crash adoption and postcondition refusal"
 head="$(jq -r '.head' "$fixture/run/passes/review-r1-codex-cli.json")"
+common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+resolved_state="$("$monitor" state-path --run-id fixture-run)"
+[ "$resolved_state" = "$common_dir/dev-flow-v2/runs/fixture-run/monitor.json" ] ||
+    fail "monitor state did not resolve through the git common directory"
 state="$tmp/monitor.json"
+trusted_actor_id="199175422"
+comment_marker="dev-flow:fixture-run:challenge:1"
+comment_body="<!-- $comment_marker --> fixture evidence"
+comment_digest="$(printf '%s' "$comment_body" | sha256sum | awk '{print $1}')"
 "$monitor" reserve --state "$state" --event crash-write --action comment \
-    --expected-head "$head" --writer feature-owner >/dev/null
-jq -n --arg head "$head" \
-    '{status: "landed", event: "crash-write", action: "comment", head: $head}' >"$tmp/landed.json"
+    --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
+    --marker "$comment_marker" --payload-digest "$comment_digest" >/dev/null
+jq -n --arg head "$head" --arg marker "$comment_marker" --arg body "$comment_body" \
+    --arg digest "$comment_digest" \
+    '{status: "landed", event: "crash-write", action: "comment", head: $head,
+      comment_id: 42, actor_id: 1, marker: $marker, body: $body, payload_digest: $digest}' \
+    >"$tmp/untrusted.json"
+set +e
+"$monitor" reconcile --state "$state" --event crash-write --observed "$tmp/untrusted.json" \
+    >"$tmp/untrusted.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "untrusted comment postcondition was adopted"
+jq -n --arg head "$head" --arg actor "$trusted_actor_id" --arg marker "$comment_marker" \
+    --arg body "$comment_body" --arg digest "$comment_digest" \
+    '{status: "landed", event: "crash-write", action: "comment", head: $head,
+      comment_id: 42, actor_id: $actor, marker: $marker, body: $body, payload_digest: $digest}' \
+    >"$tmp/landed.json"
 "$monitor" reconcile --state "$state" --event crash-write --observed "$tmp/landed.json" |
     grep -Fq 'adopt crash-write' || fail "crash-after-write action was not adopted"
 jq -e '.cursor == "crash-write" and .actions[0].state == "adopted"' "$state" >/dev/null ||
@@ -93,18 +116,18 @@ grep -Fq 'only the feature-branch owner' "$tmp/lane-push.out" ||
 
 echo "==> monitor rejects out-of-order and stale reconciliation"
 ordered_state="$tmp/ordered-monitor.json"
-"$monitor" reserve --state "$ordered_state" --event e1 --action comment \
+"$monitor" reserve --state "$ordered_state" --event e1 --action assembly \
     --expected-head "$head" --writer feature-owner >/dev/null
-"$monitor" reserve --state "$ordered_state" --event e2 --action comment \
+"$monitor" reserve --state "$ordered_state" --event e2 --action assembly \
     --expected-head "$head" --writer feature-owner >/dev/null
-jq -n --arg head "$head" '{status: "landed", event: "e2", action: "comment", head: $head}' >"$tmp/e2.json"
+jq -n --arg head "$head" '{status: "landed", event: "e2", action: "assembly", head: $head}' >"$tmp/e2.json"
 set +e
 "$monitor" reconcile --state "$ordered_state" --event e2 --observed "$tmp/e2.json" >"$tmp/e2.out" 2>&1
 status=$?
 set -e
 [ "$status" -eq 2 ] || fail "out-of-order action advanced the monitor cursor"
 grep -Fq 'out of reservation order' "$tmp/e2.out" || fail "out-of-order refusal was not reported"
-jq -n --arg head "$head" '{status: "landed", event: "e1", action: "comment", head: $head}' >"$tmp/e1.json"
+jq -n --arg head "$head" '{status: "landed", event: "e1", action: "assembly", head: $head}' >"$tmp/e1.json"
 "$monitor" reconcile --state "$ordered_state" --event e1 --observed "$tmp/e1.json" >/dev/null
 "$monitor" reconcile --state "$ordered_state" --event e2 --observed "$tmp/e2.json" >/dev/null
 jq -n '{status: "absent"}' >"$tmp/stale.json"
@@ -114,7 +137,7 @@ jq -n '{status: "absent"}' >"$tmp/stale.json"
 echo "==> monitor serializes concurrent reservations"
 concurrent_state="$tmp/concurrent-monitor.json"
 for number in $(seq 1 20); do
-    "$monitor" reserve --state "$concurrent_state" --event "concurrent-$number" --action comment \
+    "$monitor" reserve --state "$concurrent_state" --event "concurrent-$number" --action assembly \
         --expected-head "$head" --writer feature-owner >"$tmp/concurrent-$number.out" &
 done
 wait

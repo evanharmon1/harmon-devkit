@@ -52,8 +52,11 @@ verified branch state before dispatch; never let a finder supply them. Its
 provenance and fingerprint corrections are preconditions, not an advisory
 reviewer assertion. Use that first projection only to correct the finding facts. The orchestrator
 then writes one schema-valid `adjudications/<stage>-r<N>.json`, containing the
-verified provenance/fingerprint values and every disposition, and validates it
-against every accepted pass. Only after that write, run the exit command again
+schema-supported priority, disposition, classification, reason, and evidence
+for every finding, and validates it against every accepted pass. Cite any
+verified provenance/fingerprint correction in `evidence`; keep the machine
+values in the verification/exit projection rather than adding fields the
+adjudication schema rejects. Only after that write, run the exit command again
 with the same trusted repository history and head map, persist its returned JSON as
 `verdict.json`, and act on that second outcome.
 

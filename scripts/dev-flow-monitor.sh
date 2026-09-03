@@ -8,13 +8,17 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
+  dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh reserve --state FILE --event ID --action assembly|push|comment \
-    --expected-head SHA --writer feature-owner
+    --expected-head SHA --writer feature-owner \
+    [--trusted-actor-id ID --marker TEXT --payload-digest SHA256]
   dev-flow-monitor.sh reconcile --state FILE --event ID --observed FILE
 
 The state file is durable monitor state.  A reservation is written before an
 external action.  The observed file must be JSON with status landed, absent, or
 indeterminate; landed also requires matching event, action, and expected_head.
+Comment observations additionally require comment_id, trusted actor_id, marker,
+payload_digest, and body; the body is hashed again before adoption.
 `reconcile` prints adopt, retry, or block and advances the event cursor only
 for an adopted landed action.  PR merges are never reservable.
 EOF
@@ -34,6 +38,11 @@ action=""
 expected_head=""
 writer=""
 observed=""
+run_id=""
+repo_root="."
+trusted_actor_id=""
+marker=""
+payload_digest=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -61,9 +70,37 @@ while [ "$#" -gt 0 ]; do
         observed="${2:-}"
         shift 2
         ;;
+    --run-id)
+        run_id="${2:-}"
+        shift 2
+        ;;
+    --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+    --trusted-actor-id)
+        trusted_actor_id="${2:-}"
+        shift 2
+        ;;
+    --marker)
+        marker="${2:-}"
+        shift 2
+        ;;
+    --payload-digest)
+        payload_digest="${2:-}"
+        shift 2
+        ;;
     *) usage ;;
     esac
 done
+
+if [ "$command_name" = "state-path" ]; then
+    [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "run id is missing or unsafe"
+    common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+        die "could not resolve git common directory"
+    printf '%s/dev-flow-v2/runs/%s/monitor.json\n' "$common_dir" "$run_id"
+    exit 0
+fi
 
 [ -n "$state" ] && [ -n "$event" ] || usage
 command -v flock >/dev/null 2>&1 || die "flock is required"
@@ -78,6 +115,11 @@ reserve)
     [ -n "$action" ] && [ -n "$expected_head" ] && [ -n "$writer" ] || usage
     case "$action" in assembly | push | comment) ;; *) die "action $action is not replayable" ;; esac
     [ "$writer" = "feature-owner" ] || die "only the feature-branch owner may reserve $action"
+    if [ "$action" = "comment" ]; then
+        [[ "$trusted_actor_id" =~ ^[1-9][0-9]*$ ]] || die "comment reservation requires a trusted actor id"
+        [ -n "$marker" ] || die "comment reservation requires a deterministic marker"
+        [[ "$payload_digest" =~ ^[0-9a-f]{64}$ ]] || die "comment reservation requires a SHA-256 payload digest"
+    fi
     if [ ! -e "$state" ]; then
         jq -n '{version: 1, cursor: null, actions: []}' >"$state"
     fi
@@ -88,8 +130,19 @@ reserve)
             ($action != "merge")
         ' "$state" >/dev/null || die "invalid state, duplicate event, or invalid reservation"
     tmp="${state}.tmp.$$"
-    jq --arg event "$event" --arg action "$action" --arg head "$expected_head" '
-            .actions += [{event: $event, action: $action, expected_head: $head, state: "reserved"}]
+    jq --arg event "$event" --arg action "$action" --arg head "$expected_head" \
+        --arg actor "$trusted_actor_id" --arg marker "$marker" --arg digest "$payload_digest" '
+            .actions += [{
+                event: $event,
+                action: $action,
+                expected_head: $head,
+                state: "reserved",
+                comment_auth: (if $action == "comment" then {
+                    trusted_actor_id: $actor,
+                    marker: $marker,
+                    payload_digest: $digest
+                } else null end)
+            }]
         ' "$state" >"$tmp"
     mv "$tmp" "$state"
     printf 'reserved %s\n' "$event"
@@ -123,9 +176,28 @@ reconcile)
         jq -e --arg event "$event" --arg action "$expected_action" --arg head "$expected_head_value" '
                     .event == $event and .action == $action and .head == $head
                 ' "$observed" >/dev/null || die "landed postcondition does not match reservation"
+        comment_id=""
+        if [ "$expected_action" = "comment" ]; then
+            expected_actor="$(jq -r '.comment_auth.trusted_actor_id' <<<"$reservation")"
+            expected_marker="$(jq -r '.comment_auth.marker' <<<"$reservation")"
+            expected_digest="$(jq -r '.comment_auth.payload_digest' <<<"$reservation")"
+            jq -e --arg actor "$expected_actor" --arg marker "$expected_marker" --arg digest "$expected_digest" '
+                (.comment_id | type == "number" and . > 0 and floor == .) and
+                (.actor_id | tostring) == $actor and
+                .marker == $marker and
+                .payload_digest == $digest and
+                (.body | type == "string" and contains($marker))
+            ' "$observed" >/dev/null || die "comment postcondition is not authenticated"
+            actual_digest="$(jq -j '.body' "$observed" | sha256sum | awk '{print $1}')"
+            [ "$actual_digest" = "$expected_digest" ] || die "comment body digest does not match reservation"
+            comment_id="$(jq -r '.comment_id' "$observed")"
+        fi
         tmp="${state}.tmp.$$"
-        jq --arg event "$event" '
+        jq --arg event "$event" --arg comment_id "$comment_id" '
                     .actions |= map(if .event == $event then .state = "adopted" else . end) |
+                    .actions |= map(if .event == $event and $comment_id != "" then
+                        .postcondition = {comment_id: $comment_id}
+                    else . end) |
                     .cursor = $event
                 ' "$state" >"$tmp"
         mv "$tmp" "$state"

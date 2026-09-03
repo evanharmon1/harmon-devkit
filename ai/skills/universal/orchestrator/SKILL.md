@@ -18,15 +18,21 @@ or write credential, otherwise the run blocks. Use one worktree and branch per
 lane, record ownership, scope, dependencies, and file overlap, and enforce one
 writer per feature branch. A lane can commit only its lane branch; the feature
 owner alone assembles selected lanes, records the included/discarded lanes and
-canonical SHA in `run.json`, then pushes the feature branch. Reject a lane that
-requests feature-branch write authority.
+canonical SHA in the run directory's separate `lanes.json`, then appends only
+the schema-supported lifecycle transition to `run.json` and pushes the feature
+branch. Reject a lane that requests feature-branch write authority.
 
-Maintain durable monitor state at `.git/dev-flow-v2/runs/<run-id>/monitor.json`
-and use `scripts/dev-flow-monitor.sh`. Before assembly, push, or comment, first
-reserve an event/action/expected-head in that file; never reserve or replay a
-merge. On re-arm, inspect every `reserved` action's exact external
+Resolve the shared run directory with `git rev-parse --git-common-dir`, never by
+appending to a worktree's `.git` path (which is a file in linked worktrees).
+`scripts/dev-flow-monitor.sh state-path --run-id <run-id>` returns the canonical
+`<git-common-dir>/dev-flow-v2/runs/<run-id>/monitor.json` path. Keep
+`lanes.json` beside it and never add its fields to schema-closed `run.json`.
+Before assembly, push, or comment, first reserve an
+event/action/expected-head in monitor state; never reserve or replay a merge.
+For comments, also reserve the trusted immutable actor ID, deterministic marker,
+and SHA-256 digest of the exact body. On re-arm, inspect every `reserved` action's exact external
 postcondition (assembled canonical SHA, remote branch SHA, or marker-bearing
-comment) and reconcile it: `landed` adopts it and advances the durable event
+comment ID/actor/marker/body digest) and reconcile it: `landed` adopts it and advances the durable event
 cursor, `absent` keeps the reservation for one safe re-execution, and
 `indeterminate` blocks the run. Never advance the cursor before this
 reconciliation. A crash is therefore re-armed, not read as human cancellation.
