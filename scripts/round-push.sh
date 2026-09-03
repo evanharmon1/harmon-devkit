@@ -129,24 +129,40 @@ cross-validation indeterminate, which both plan and push treat as a hard
 refusal — there is no code path that resolves policy successfully without
 them.
 
+preflight/plan/push each refuse any option that belongs only to one of the
+other two modes (e.g. --json in push, --gitleaks-config in plan,
+--policy in preflight) — a misplaced mode or flag is refused up front
+rather than silently ignored.
+
 push additionally requires:
   - --branch to name the worktree's own checked-out branch — never merely a
     syntactically valid one — so a stale or mistyped --branch naming some
     other branch (e.g. main) can't send the checked-out SHA there instead;
-  - --policy, --devflow-policy-script, --gitleaks-script, --gitleaks-config,
-    and --registry (when given) to each match, byte for byte, the blob at
-    their canonical repository path in --closure-base (verified via
-    `git show`) before any of them is read for any other purpose; the
-    closure's .gitleaksignore (beside --gitleaks-config, since there is no
-    --gitleaksignore flag of its own) is checked the same way, in both
-    directions — a merge base with none must mean the closure has none
-    either;
+  - --policy, --devflow-policy-script, and --registry (when given) to each
+    match, byte for byte, the blob at their canonical repository path in
+    --closure-base (verified via `git show`) before any of them is read
+    for any other purpose; devflow-policy.mjs's own transitive dependency
+    scripts/lib/toml-lite.mjs (resolved the same way Node resolves it,
+    relative to --devflow-policy-script's own directory) is verified the
+    same way, before policy resolution ever runs;
   - the required Taskfile target for the recomputed diff class (round_code
     or round_docs) to exit 0 when this script runs it itself, from the
-    feature worktree — there is no caller-supplied marker to validate
-    instead; the script prints its own `ROUND-GREEN-<sha>-<target>-<class>`
-    line to stdout as evidence once this and the scan below both pass,
-    never as something it reads back;
+    feature worktree, inheriting this script's own stdout/stderr — there
+    is no caller-supplied marker to validate instead; the script prints
+    its own `ROUND-GREEN-<sha>-<target>-<class>` line to stdout as
+    evidence once this and the scan below both pass, never as something
+    it reads back;
+  - --gitleaks-script, --gitleaks-config, and gitleaks-scan.sh's own
+    transitive dependency scripts/summarize-gitleaks.mjs (resolved
+    relative to --gitleaks-script's own directory) to each match
+    --closure-base the same way, checked immediately before the scan
+    below reads them — after the required target above has already run,
+    since that is branch-controlled code with a real chance to tamper
+    with closure-resident files living outside the worktree, where
+    `git status` cannot see it; the closure's .gitleaksignore (beside
+    --gitleaks-config, since there is no --gitleaksignore flag of its
+    own) is checked the same way, in both directions — a merge base with
+    none must mean the closure has none either;
   - the closure's secret scanner (--gitleaks-script, configured with
     --gitleaks-config) to exit clean against the current worktree;
   - the same ref-safety conditions as the older gauntlet push helper: SHA is
@@ -155,12 +171,17 @@ push additionally requires:
     HOST and OWNER/REPO and no custom receive-pack command; the remote
     branch still equals --expect and the update is fast-forward; an explicit
     SHA refspec, lease, and --no-follow-tags update only the named branch;
-  - the push destination to still match what was validated immediately
-    before the actual write, since git re-applies url.*.insteadOf/
+  - the push destination AND the SSH transport override (core.sshCommand,
+    plus any inherited GIT_SSH_COMMAND/GIT_SSH) to both still match what
+    was validated BEFORE the required target ran, checked again
+    immediately before the actual write — git re-applies url.*.insteadOf/
     pushInsteadOf rewriting at push time regardless of whether the
-    destination came from a named remote or a literal URL — a rule change
-    between this run's own two resolutions is refused, though this can only
-    shrink the window, never make git's own resolution atomic.
+    destination came from a named remote or a literal URL, and a
+    branch-controlled gate can install its own core.sshCommand override
+    via a plain `git config` call that never touches a tracked file,
+    silently redirecting the connection regardless of the validated
+    hostname; either check can only shrink the window a change could land
+    in, never make git's own resolution atomic.
 
 Each accepted -c NAME=VALUE is passed to destination resolution, ls-remote,
 and push, so an unprovisioned host can supply the repository's documented
@@ -741,8 +762,14 @@ read_remote_head() {
 # ---------------------------------------------------------------------------
 
 if [ "$mode" = preflight ]; then
-    [ -z "$sha$expect$against$closure_base$policy" ] ||
-        die_usage "push/plan-only arguments are not valid in preflight mode"
+    # Every plan/push-only option is rejected, not only the handful this
+    # check previously named — a misplaced mode or flag would otherwise
+    # look validated while the option it named was silently never used
+    # (Codex cloud review, confirmed).
+    { [ -z "$sha$expect$against$closure_base$policy$devflow_policy_script" ] &&
+        [ -z "$gitleaks_script$gitleaks_config$registry$task_targets$taskfile_dir" ] &&
+        [ -z "$rigor$strategy" ] && [ "$want_json" -eq 0 ]; } ||
+        die_usage "plan/push-only arguments are not valid in preflight mode"
     [ -n "$remote" ] || die_usage "--remote is required"
     [ -n "$branch" ] || die_usage "--branch is required"
     case "$remote" in
@@ -787,6 +814,10 @@ if [ "$mode" = preflight ]; then
 fi
 
 if [ "$mode" = plan ]; then
+    # preflight/push-only options are rejected the same way preflight
+    # rejects plan/push-only ones (Codex cloud review, confirmed).
+    [ -z "$remote$branch$host$repo$expect$gitleaks_script$gitleaks_config" ] ||
+        die_usage "preflight/push-only arguments are not valid in plan mode"
     [ -n "$against" ] || die_usage "plan requires --against"
     require_against_is_ref
     [ -n "$closure_base" ] || die_usage "plan requires --closure-base"
@@ -818,6 +849,10 @@ if [ "$mode" = plan ]; then
 fi
 
 # mode = push
+# --json is plan-only (push has no JSON output); rejected the same way
+# preflight/plan reject each other's arguments (Codex cloud review,
+# confirmed).
+[ "$want_json" -eq 0 ] || die_usage "--json is not valid in push mode"
 [ -n "$remote" ] || die_usage "--remote is required"
 [ -n "$branch" ] || die_usage "--branch is required"
 case "$remote" in
@@ -888,17 +923,29 @@ absent) ;;
     ;;
 esac
 
-# Every closure-resident input is verified against --closure-base's own
-# git object BEFORE any of it is read for real (Codex review, confirmed —
-# see verify_closure_member's own comment).
+# Every closure-resident input that resolve_policy (right below) needs is
+# verified against --closure-base's own git object BEFORE any of it is
+# read for real (Codex review, confirmed — see verify_closure_member's own
+# comment). This now includes devflow-policy.mjs's own transitive
+# dependency scripts/lib/toml-lite.mjs, resolved the same way Node itself
+# resolves it (relative to --devflow-policy-script's own directory):
+# disclosing it as an unverified residual limitation was not the same as
+# closing it — it is imported by a fixed relative path, so a caller could
+# point --devflow-policy-script at a verified, genuine file while pairing
+# it with a substituted toml-lite.mjs beside it, and devflow-policy.mjs
+# would execute that substitute during policy resolution regardless
+# (Codex cloud review, confirmed).
+#
+# The scanner's own closure members (--gitleaks-script/--gitleaks-config/
+# .gitleaksignore/summarize-gitleaks.mjs) are verified separately, much
+# further below, immediately before the scan reads them rather than here —
+# see the comment there for why.
 closure_verify_tmp="$(mktemp)"
 trap 'rm -f "$closure_verify_tmp"' EXIT
 verify_closure_member "$policy" ".devflow.toml"
 verify_closure_member "$devflow_policy_script" "scripts/devflow-policy.mjs"
-verify_closure_member "$gitleaks_script" "scripts/gitleaks-scan.sh"
-verify_closure_member "$gitleaks_config" ".gitleaks.toml"
+verify_closure_member "$(dirname "$devflow_policy_script")/lib/toml-lite.mjs" "scripts/lib/toml-lite.mjs"
 [ -z "$registry" ] || verify_closure_member "$registry" "agent-registry.json"
-verify_closure_gitleaksignore
 rm -f "$closure_verify_tmp"
 
 # Recompute the diff class and required target ourselves — never trust a
@@ -914,6 +961,32 @@ jq -r '.gates.docs_only_paths[]' <<<"$resolved_json" >"$patterns_file"
 diff_class="$(classify_diff "$patterns_file" "$paths_file")"
 required_target="$(required_target_for "$diff_class")"
 
+# The push destination and SSH transport are snapshotted BEFORE the gate
+# runs, not only afterward: `task "$required_target"` right below executes
+# the feature worktree's own, branch-controlled Taskfile recipe, and a
+# malicious one gets a real window to tamper with either (Codex cloud
+# review, confirmed, two distinct ways). (1) core.sshCommand is a
+# repository-local git config value, not a tracked file — a gate recipe
+# can set it with a plain `git config` call that the later `git status`
+# check never sees, and git then uses WHATEVER command core.sshCommand
+# (or an inherited GIT_SSH_COMMAND/GIT_SSH — read once here too, since a
+# gate's own child process cannot alter its parent's already-inherited
+# environment) names to establish the connection, ignoring the validated
+# hostname entirely; the test suite's own SSH stub is a working
+# demonstration of exactly this class of redirect. (2) resolving
+# $push_url only once, AFTER the gate (the previous round's fix),
+# cannot detect a change the gate itself already made — only a change
+# happening after that single resolution. Snapshotting both here, before
+# any branch-controlled code has run, and comparing again immediately
+# before the write (further below) closes both windows with the same
+# mechanism, covering the gate's own execution as well as the narrower
+# window the previous round's fix already covered.
+resolve_push_url
+gated_push_url="$push_url"
+ssh_command_rc=0
+ssh_command_before="$(git config --get core.sshCommand 2>/dev/null)" || ssh_command_rc=$?
+ssh_command_before="${ssh_command_rc}:${ssh_command_before}:${GIT_SSH_COMMAND:-}:${GIT_SSH:-}"
+
 # The broker EXECUTES the required target itself, from the feature
 # worktree, rather than validating a marker a caller produced — config
 # spec "Gate authority separates policy from branch implementation": "the
@@ -923,11 +996,42 @@ required_target="$(required_target_for "$diff_class")"
 # broker's own test helper demonstrated the bypass by fabricating both
 # directly. There is no cross-process handoff left to bridge with a
 # marker, so there is nothing for a caller to fabricate.
-gate_log="$(mktemp)"
-if ! task "$required_target" >"$gate_log" 2>&1; then
-    refuse "required target '${required_target}' failed (see ${gate_log} for its output): $(tail -c 2000 "$gate_log")"
+#
+# Output is NOT captured to a log: an earlier version redirected it to a
+# temp file and replayed its tail in the refusal message on failure, but
+# that file was never registered for cleanup, and a failing gate's own
+# output can legitimately contain credentials or other sensitive
+# environment-derived values that a refusal message is the wrong place to
+# echo outward (Codex cloud review, confirmed both). Letting the gate
+# inherit this script's own stdout/stderr gives the same visibility a
+# caller running `task <target>` directly would already have, with
+# nothing captured left to leak or to clean up.
+if ! task "$required_target"; then
+    refuse "required target '${required_target}' failed"
 fi
-rm -f "$gate_log"
+
+# The scanner's own closure members are verified here, immediately before
+# the scan reads them, rather than earlier alongside --policy/--registry
+# above (Codex cloud review, confirmed): unlike those (read during
+# resolve_policy, before the gate ever runs), gitleaks-script/
+# gitleaks-config/.gitleaksignore/summarize-gitleaks.mjs are not read
+# until the scan below, so verifying them earlier would leave exactly the
+# gate-execution window described above — a malicious gate could
+# overwrite them (they live outside the worktree, so `git status` never
+# sees it) between an early check and their actual use. Checking
+# immediately before use, against --closure-base's own immutable git
+# object, closes that regardless of when the tampering happened.
+# summarize-gitleaks.mjs (gitleaks-scan.sh's own transitive dependency,
+# resolved the same way gitleaks-scan.sh itself resolves it — relative to
+# its own directory) is now verified for the same reason toml-lite.mjs is
+# above: disclosing it as unverified was not the same as closing it.
+closure_verify_tmp="$(mktemp)"
+trap 'rm -f "$closure_verify_tmp"' EXIT
+verify_closure_member "$gitleaks_script" "scripts/gitleaks-scan.sh"
+verify_closure_member "$gitleaks_config" ".gitleaks.toml"
+verify_closure_member "$(dirname "$gitleaks_script")/summarize-gitleaks.mjs" "scripts/summarize-gitleaks.mjs"
+verify_closure_gitleaksignore
+rm -f "$closure_verify_tmp"
 
 # Secret scan runs unconditionally, every push, via the closure's own
 # extracted scanner and config — never the worktree's .gitleaks.toml (or,
@@ -968,8 +1072,6 @@ status_output="$(git status --porcelain --untracked-files=all 2>/dev/null)" || s
 [ -z "$status_output" ] ||
     refuse "the worktree changed during the gate; commit and re-gate before pushing"
 
-resolve_push_url
-gated_push_url="$push_url"
 read_remote_head || refuse "$remote_error"
 [ "$remote_head" = "$expect" ] ||
     refuse "the remote branch moved from expected '${expect}' to '${remote_head}'; reconcile before pushing"
@@ -987,13 +1089,12 @@ else
     lease="--force-with-lease=refs/heads/${branch}:"
 fi
 
-# Push to the validated destination captured above as $gated_push_url,
-# never a fresh re-resolution of the mutable named remote (Codex review,
-# confirmed: the prior code passed $remote here, so a receive-pack,
-# pushurl, or insteadOf rewrite change landing between the
-# resolve_push_url/read_remote_head calls above and this write would
-# silently redirect it — the checks above would have validated a
-# destination this write never actually used).
+# Push to the destination and SSH transport validated BEFORE the gate ran
+# (captured above as $gated_push_url/$ssh_command_before), never a fresh
+# re-resolution of the mutable named remote (Codex review, confirmed: the
+# prior code passed $remote here, so a receive-pack, pushurl, or insteadOf
+# rewrite change would silently redirect it — the checks above would have
+# validated a destination this write never actually used).
 #
 # Passing the literal $gated_push_url string here does NOT by itself close
 # the insteadOf/pushInsteadOf case, though: git re-applies that rewriting
@@ -1005,15 +1106,22 @@ fi
 # push time). round-push.sh's own -c allowlist deliberately permits a
 # caller to supply url.*.insteadOf (an unprovisioned host's documented
 # HTTPS override), so this can't be refused outright — but a rule change
-# landing between this run's OWN first resolution and this write must
-# still be caught (Codex cloud review, confirmed: switching from $remote
-# to a literal URL closed the remote.<name>.pushurl mutation vector but
-# left this one open). Re-resolving immediately before the write and
+# landing between the EARLY resolution (before the gate) and this write
+# must still be caught (Codex cloud review, confirmed twice over: first
+# that switching from $remote to a literal URL closed the
+# remote.<name>.pushurl mutation vector but left this one open, then that
+# resolving only once, after the gate, could not detect the gate's own
+# tampering at all). Re-resolving immediately before the write and
 # refusing on any drift shrinks the window to the smallest gap this
 # script can create; it cannot make git's own resolution atomic.
 resolve_push_url
 [ "$push_url" = "$gated_push_url" ] ||
     refuse "the push destination changed since it was validated (was ${gated_push_url}, now ${push_url}); reconcile before pushing"
+ssh_command_rc=0
+ssh_command_after="$(git config --get core.sshCommand 2>/dev/null)" || ssh_command_rc=$?
+ssh_command_after="${ssh_command_rc}:${ssh_command_after}:${GIT_SSH_COMMAND:-}:${GIT_SSH:-}"
+[ "$ssh_command_after" = "$ssh_command_before" ] ||
+    refuse "the SSH transport override changed since it was validated; reconcile before pushing"
 
 # git_with_args still carries the caller's -c transport overrides.
 # refs/remotes/<remote>/<branch> is updated by hand afterward, since a
@@ -1024,7 +1132,14 @@ if ! git_with_args push --no-follow-tags \
     "$push_url" "${resolved}:refs/heads/${branch}" "$lease"; then
     exit 4
 fi
-git update-ref "refs/remotes/${remote}/${branch}" "$resolved" 2>/dev/null || true
+# The actual push above already succeeded; a failure here only means the
+# LOCAL tracking ref could not be updated to match — an uncertain outcome
+# to report, exactly like a post-push read_remote_head failure right
+# below, never a silently-swallowed one (Codex cloud review, confirmed:
+# lock contention, permissions, or an invalid existing ref could all fail
+# this update-ref, and `|| true` reported success regardless).
+git update-ref "refs/remotes/${remote}/${branch}" "$resolved" 2>/dev/null ||
+    uncertain "the push landed, but refs/remotes/${remote}/${branch} could not be updated to match; the local tracking ref may be stale"
 
 read_remote_head || uncertain "$remote_error"
 [ "$remote_head" = "$resolved" ] ||

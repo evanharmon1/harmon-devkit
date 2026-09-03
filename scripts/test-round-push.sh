@@ -337,6 +337,27 @@ assert_rc 2
 run push --remote origin --branch main --sha deadbeef
 assert_rc 2
 
+echo "  -> each mode refuses another mode's options"
+root="$(new_fixture mode-options)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+run preflight --remote origin --branch main --host github.com --repo owner/repo --policy "${policy_args[1]}"
+assert_rc 2
+printf '%s' "$err" | grep -Fi "not valid in preflight mode" >/dev/null ||
+    fail "preflight must refuse a plan/push-only option like --policy (Codex cloud review, confirmed a misplaced option looked validated while silently never used): $err"
+run plan --against "$merge_base" --closure-base "$merge_base_sha" "${policy_args[@]}" --host github.com --json
+assert_rc 2
+printf '%s' "$err" | grep -Fi "not valid in plan mode" >/dev/null ||
+    fail "plan must refuse a preflight/push-only option like --host: $err"
+run push --remote origin --branch main --host github.com --repo owner/repo \
+    --sha "$(git rev-parse HEAD)" --expect absent \
+    --against "$merge_base" --closure-base "$merge_base_sha" "${policy_args[@]}" "${scan_args[@]}" --json
+assert_rc 2
+printf '%s' "$err" | grep -Fi "not valid in push mode" >/dev/null ||
+    fail "push must refuse --json, a plan-only option: $err"
+
 echo "  -> --branch must match the checked-out branch, not merely be syntactically valid"
 root="$(new_fixture branch-binding)"
 cd "${root}/work"
@@ -359,6 +380,12 @@ grep -F -- 'if [ "$git_arg_count" -gt 0 ]; then' "$helper" >/dev/null ||
 [ "$(grep -F -c -- '"${git_args[@]}"' "$helper")" -eq 1 ] ||
     fail "git_args must be expanded only in its non-empty guarded branch"
 
+echo "  -> the gate's own output is never captured to a file that could leak or leave a stray temp file"
+grep -F -- 'gate_log' "$helper" >/dev/null &&
+    fail "a captured gate log is exactly what let a failing gate's output — which can legitimately contain credentials — get replayed into a refusal message, and it was never registered for cleanup either (Codex cloud review, confirmed both); the gate must inherit this script's own stdout/stderr instead"
+grep -F -- 'if ! task "$required_target"; then' "$helper" >/dev/null ||
+    fail "the required target must run with its output inherited, not redirected to a capture file"
+
 echo "  -> the write is bound to the validated push URL, not a fresh remote-name resolution"
 grep -F -- 'git_with_args push --no-follow-tags \' "$helper" >/dev/null &&
     grep -F -- '"$push_url" "${resolved}:refs/heads/${branch}" "$lease"' "$helper" >/dev/null ||
@@ -378,6 +405,45 @@ grep -F -- 'gated_push_url="$push_url"' "$helper" >/dev/null ||
     fail "resolve_push_url must run a second time before the write"
 grep -F -- '[ "$push_url" = "$gated_push_url" ]' "$helper" >/dev/null ||
     fail "a destination that changed since first validated must be refused — git re-applies url.*.insteadOf/pushInsteadOf to a literal URL argument at push time just as it would a named remote (Codex cloud review, confirmed empirically), so passing \$push_url alone does not close this"
+
+echo "  -> a core.sshCommand configured before the gate runs, and left unchanged, does not spuriously refuse"
+root="$(new_fixture sshcommand-stable)"
+cd "${root}/work"
+git config core.sshCommand "${test_tmp}/bin/ssh"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
+push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
+assert_rc 0
+[ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$code_sha" ] ||
+    fail "a stable, unchanged core.sshCommand present before the gate must not block an otherwise-valid push"
+
+echo "  -> a gate that installs a core.sshCommand override during its own execution is refused"
+root="$(new_fixture sshcommand-tamper)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+cat >"${root}/work/Taskfile.yml" <<'EOF'
+version: '3'
+tasks:
+  fixture-verify:
+    cmds:
+      - git config core.sshCommand /bin/a-malicious-ssh-override
+  fixture-check:
+    cmds:
+      - echo fixture-check ok
+EOF
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: fixture-verify installs a core.sshCommand override"
+code_sha="$(git -C "${root}/work" rev-parse HEAD)"
+push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
+assert_rc 3
+printf '%s' "$err" | grep -Fi "SSH transport override changed" >/dev/null ||
+    fail "a gate that installs core.sshCommand during its own execution must be refused before the push — git would use that override, ignoring the validated hostname entirely, regardless of \$push_url (Codex cloud review, confirmed: core.sshCommand is a repository-local config value, not a tracked file, so the worktree-cleanliness check never sees it): $err"
+[ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
+    fail "a push whose gate installed an SSH transport override must not land"
 
 # Structural, not behavioral, for the same reason the push-URL-binding check
 # just above is structural: exercising resolve_push_url's HTTPS branch to a
@@ -551,6 +617,57 @@ printf '%s' "$err" | grep -Fi "does not match .devflow.toml" >/dev/null ||
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
     fail "a content-mismatched closure file must not push"
 
+echo "  -> a tampered scripts/lib/toml-lite.mjs is refused even when devflow-policy.mjs itself verifies clean"
+root="$(new_fixture toml-lite-mismatch)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
+tampered_dir="${test_tmp}/tampered-toml-lite"
+mkdir -p "${tampered_dir}/lib"
+cp "${policy_args[3]}" "${tampered_dir}/devflow-policy.mjs"
+printf 'export function parseToml(){ return {}; } export class TomlError extends Error {}\n' \
+    >"${tampered_dir}/lib/toml-lite.mjs"
+tampered_policy_args=("${policy_args[@]}")
+tampered_policy_args[3]="${tampered_dir}/devflow-policy.mjs"
+run push --remote origin --branch main --host github.com --repo owner/repo \
+    --sha "$code_sha" --expect absent \
+    --against "$merge_base" --closure-base "$merge_base_sha" \
+    "${tampered_policy_args[@]}" "${scan_args[@]}"
+assert_rc 3
+printf '%s' "$err" | grep -Fi "does not match scripts/lib/toml-lite.mjs" >/dev/null ||
+    fail "devflow-policy.mjs's own transitive dependency toml-lite.mjs must be verified even when devflow-policy.mjs itself is byte-identical to the genuine closure member (Codex cloud review, confirmed: disclosing it as unverified was not the same as closing it): $err"
+[ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
+    fail "a tampered toml-lite.mjs must not push"
+
+echo "  -> a gate that tampers the scanner closure during its own execution is caught before the scan"
+root="$(new_fixture scanner-closure-tamper)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+tamper_target="${scan_args[3]}"
+cat >"${root}/work/Taskfile.yml" <<EOF
+version: '3'
+tasks:
+  fixture-verify:
+    cmds:
+      - printf '[extend]\nuseDefault = false\n' > "${tamper_target}"
+  fixture-check:
+    cmds:
+      - echo fixture-check ok
+EOF
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: fixture-verify tampers the extracted .gitleaks.toml"
+code_sha="$(git -C "${root}/work" rev-parse HEAD)"
+push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
+assert_rc 3
+printf '%s' "$err" | grep -Fi "does not match .gitleaks.toml" >/dev/null ||
+    fail "a gate that overwrites the extracted .gitleaks.toml during its own execution must be caught by the post-gate re-verification, not silently used by the scan afterward (Codex cloud review, confirmed: verifying the scanner closure only once, before the gate, cannot detect the gate's own tampering): $err"
+[ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
+    fail "a push whose gate tampered the scanner closure must not land"
+
 echo "  -> a closure .gitleaksignore matching the worktree's, but not --closure-base's, is still refused"
 root="$(new_fixture closure-gitleaksignore-mismatch)"
 cd "${root}/work"
@@ -661,6 +778,22 @@ printf '%s' "$out" | grep -F "ROUND-GREEN-${code_sha}-fixture-verify-code" >/dev
     fail "a successful push must emit its own evidence marker naming the gated head, target, AND diff class: $out"
 [ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$code_sha" ] ||
     fail "code-class push did not land the gated commit"
+
+echo "  -> a push whose local tracking-ref update fails is reported as uncertain, not silently swallowed"
+root="$(new_fixture update-ref-uncertain)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
+mkdir -p "${root}/work/.git/refs/remotes/origin"
+touch "${root}/work/.git/refs/remotes/origin/main.lock"
+push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
+assert_rc 5
+printf '%s' "$err" | grep -Fi "tracking ref may be stale" >/dev/null ||
+    fail "a git update-ref failure after an already-successful push must be reported as uncertain (exit 5), not silently swallowed by the old '|| true' (Codex cloud review, confirmed: lock contention, permissions, or an invalid existing ref could all fail this update-ref while the real push had already landed): $err"
+[ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$code_sha" ] ||
+    fail "the actual push must still have landed even though the local tracking-ref update failed"
 
 echo "  -> the required target alone never substitutes for the secret scan"
 root="$(new_fixture secret-refusal)"
