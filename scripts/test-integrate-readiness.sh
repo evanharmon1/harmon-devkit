@@ -287,6 +287,7 @@ run_gate() {
         --repo example/repo --pr 493 --head "$head_sha" \
         --record "$record_dir" \
         --integrator-result "${fixtures}/integrator-result-disabled.json" \
+        --integration-cap 0 \
         "$@" 2>&1)"
     gate_rc=$?
     set -e
@@ -299,6 +300,7 @@ run_audit() {
         --repo example/repo --pr 493 --head "$head_sha" \
         --record "$record_dir" \
         --integrator-result "${fixtures}/integrator-result-disabled.json" \
+        --integration-cap 0 \
         "$@" 2>&1)"
     gate_rc=$?
     set -e
@@ -369,13 +371,13 @@ assert_gate() {
 echo "==> full pass (Codex cycle terminal-clean) prints a fingerprint, stable across two runs on identical data"
 write_defaults
 clean_result="$(write_integrator_result clean "$(codex_cycle_json 0)")"
-run_gate_recheck_clean --integrator-result "$clean_result"
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1
 assert_gate 0 pass ready
 first_fingerprint="$(gate_field fingerprint)"
 [ -n "$first_fingerprint" ] && [ "$first_fingerprint" != "null" ] ||
     fail "pass did not print a fingerprint: $gate_out"
 rm -f "${fixtures}/pr-view-count"
-run_gate_recheck_clean --integrator-result "$clean_result"
+run_gate_recheck_clean --integrator-result "$clean_result" --integration-cap 1
 assert_gate 0 pass ready
 second_fingerprint="$(gate_field fingerprint)"
 [ "$first_fingerprint" = "$second_fingerprint" ] ||
@@ -1080,14 +1082,14 @@ echo "==> an integrator result reporting Codex findings/pending/retry/escalate a
 for exit_code in 10 11 12 13; do
     write_defaults
     result="$(write_integrator_result "exit-${exit_code}" "$(codex_cycle_json "$exit_code")")"
-    run_gate --integrator-result "$result"
+    run_gate --integrator-result "$result" --integration-cap 1
     assert_gate 1 fail codex-not-clean
 done
 
 echo "==> a codex_cycle exit_code of 2 (indeterminate) is codex-indeterminate"
 write_defaults
 result="$(write_integrator_result exit-2 "$(codex_cycle_json 2)")"
-run_gate --integrator-result "$result"
+run_gate --integrator-result "$result" --integration-cap 1
 assert_gate 2 indeterminate codex-indeterminate
 
 echo "==> a missing --integrator-result file is refused as a usage error, never a pass"
@@ -1145,15 +1147,10 @@ assert_gate 2 indeterminate codex-indeterminate
 # ── harmon-devkit#685 criteria owned by #639 ────────────────────────────────
 # codex_cycle.cycle <= [rounds.<policy>].integration; cap 0 <=> null cycle; a
 # clean verdict with a null cycle under a positive cap is not clean.
-# --integration-cap is optional context the caller supplies (this script
-# never reads .devflow.toml itself), so every case below is scoped to runs
-# that pass it.
-
-echo "==> --integration-cap is advisory: omitting it skips the cap checks entirely"
-write_defaults
-clean_result="$(write_integrator_result cap-omitted "$(codex_cycle_json 0)")"
-run_gate_recheck_clean --integrator-result "$clean_result"
-assert_gate 0 pass ready
+# --integration-cap is required context the caller supplies (this script
+# never reads .devflow.toml itself) — see the dedicated "never skippable by
+# silence" case above for the omitted-flag usage error; every case below
+# passes it explicitly.
 
 echo "==> a non-null codex_cycle against --integration-cap 0 is codex-cap-mismatch"
 write_defaults
@@ -1196,13 +1193,13 @@ assert_gate 2 indeterminate codex-cap-mismatch
 echo "==> a clean codex_cycle with no --codex-recheck is codex-stale"
 write_defaults
 recheck_missing_result="$(write_integrator_result recheck-missing "$(codex_cycle_json 0)")"
-run_gate --integrator-result "$recheck_missing_result"
+run_gate --integrator-result "$recheck_missing_result" --integration-cap 1
 assert_gate 2 indeterminate codex-stale
 
 echo "==> --codex-recheck naming a file that does not exist is codex-stale"
 write_defaults
 recheck_absent_result="$(write_integrator_result recheck-absent "$(codex_cycle_json 0)")"
-run_gate --integrator-result "$recheck_absent_result" \
+run_gate --integrator-result "$recheck_absent_result" --integration-cap 1 \
     --codex-recheck "${fixtures}/does-not-exist.json"
 assert_gate 2 indeterminate codex-stale
 
@@ -1212,7 +1209,7 @@ recheck_mismatch_result="$(write_integrator_result recheck-mismatch "$(codex_cyc
 mismatched_state="${fixtures}/codex-recheck-state-mismatched.json"
 jq -cn --arg repo other/repo --argjson pr 1 --arg head "$moved_sha" \
     '{repo:$repo, pr:$pr, head:$head}' >"$mismatched_state"
-run_gate --integrator-result "$recheck_mismatch_result" \
+run_gate --integrator-result "$recheck_mismatch_result" --integration-cap 1 \
     --codex-recheck "$mismatched_state"
 assert_gate 2 indeterminate codex-stale
 
@@ -1225,7 +1222,7 @@ jq -cn --arg repo example/repo --argjson pr 493 --arg head "$head_sha" \
       settled:null, cycle_requested_at:null,
       previous_trigger_comment_id:null, timeout_min:15}' \
     >"$not_attached_state"
-run_gate --integrator-result "$recheck_disagree_result" \
+run_gate --integrator-result "$recheck_disagree_result" --integration-cap 1 \
     --codex-recheck "$not_attached_state"
 assert_gate 2 indeterminate codex-stale
 printf '%s\n' "$gate_out" | grep -Fq 'not attached' ||
@@ -1416,7 +1413,7 @@ set +e
 gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" env PATH="$restricted_bin" RECHECK_FAKE_EXIT=0 \
     "$recheck_gate" check --repo example/repo --pr 493 --head "$head_sha" \
     --record "$record_dir" --integrator-result "$clean_result" \
-    --codex-recheck "$recheck_state" 2>&1)"
+    --integration-cap 1 --codex-recheck "$recheck_state" 2>&1)"
 gate_rc=$?
 set -e
 check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
@@ -1456,7 +1453,7 @@ write_defaults
 run_audit
 assert_gate 1 fail pr-draft
 
-echo "==> --record and --integrator-result are never skippable by silence"
+echo "==> --record, --integrator-result, and --integration-cap are never skippable by silence"
 write_defaults
 clean_result="$(write_integrator_result skip-check "$(codex_cycle_json 0)")"
 set +e
@@ -1467,18 +1464,25 @@ set -e
     fail "omitting --record and --integrator-result should exit 2, got $usage_rc: $usage_out"
 set +e
 no_record_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --integrator-result "$clean_result" 2>&1)"
+    --integrator-result "$clean_result" --integration-cap 1 2>&1)"
 no_record_rc=$?
 set -e
 [ "$no_record_rc" -eq 2 ] ||
     fail "omitting --record alone should exit 2, got $no_record_rc: $no_record_out"
 set +e
 no_result_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --record "$record_dir" 2>&1)"
+    --record "$record_dir" --integration-cap 1 2>&1)"
 no_result_rc=$?
 set -e
 [ "$no_result_rc" -eq 2 ] ||
     fail "omitting --integrator-result alone should exit 2, got $no_result_rc: $no_result_out"
+set +e
+no_cap_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" --integrator-result "$clean_result" 2>&1)"
+no_cap_rc=$?
+set -e
+[ "$no_cap_rc" -eq 2 ] ||
+    fail "omitting --integration-cap alone should exit 2, got $no_cap_rc: $no_cap_out"
 
 echo "==> a short --head is a usage error, exit 2"
 write_defaults

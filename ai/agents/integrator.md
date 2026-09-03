@@ -396,6 +396,19 @@ that is not a file, an endpoint that is not one of these two, and a
 this section did not intend. If the brief gave you no reply text, skip this
 step entirely — silence is correct, not a gap to fill.
 
+**If you posted any inline reply above, re-run §5's fetch-and-classify
+before reporting `unanswered_thread_roots` — never report the snapshot §5
+computed before you posted.** A thread you just answered is no longer
+unanswered, and §7's clean verdict requires this list empty; reporting the
+stale pre-post snapshot would show your own successful reply as still
+outstanding and force an unnecessary re-dispatch to fix nothing. Re-fetch
+`comments` and re-run the same `jq` classification — the roots that changed
+are exactly the ones you replied to, but re-running the whole pipeline
+(rather than hand-subtracting them) is what keeps this consistent with any
+other activity that landed in between. Skip this re-fetch only when you
+posted no inline replies this pass — §5's original snapshot is still
+current then.
+
 ## 7. Assemble and validate the result
 
 Your deliverable is a full `result.envelope` — `{schema, role, status, head,

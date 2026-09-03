@@ -15,10 +15,10 @@
 #
 # Usage:
 #   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
-#       --record DIR --integrator-result FILE [--integration-cap N]
+#       --record DIR --integrator-result FILE --integration-cap N
 #       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
-#       --record DIR --integrator-result FILE [--integration-cap N]
+#       --record DIR --integrator-result FILE --integration-cap N
 #       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 #
@@ -116,10 +116,10 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
-      --record DIR --integrator-result FILE [--integration-cap N]
+      --record DIR --integrator-result FILE --integration-cap N
       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
-      --record DIR --integrator-result FILE [--integration-cap N]
+      --record DIR --integrator-result FILE --integration-cap N
       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 
@@ -145,19 +145,23 @@ to the schema validator as --run-id/--initiated-by, so a schema-valid
 envelope whose own .run disagrees — evidence from a superseded or resumed
 run that happens to present the same head — is refused exactly like a
 malformed one, never silently accepted on head equality alone.
---integration-cap N is optional context (harmon-devkit#685): when given, it
-additionally enforces that a cap of 0 pairs only with a null codex_cycle,
-that a positive cap pairs only with a non-null one, and that
-codex_cycle.cycle never exceeds it — the resolved value is the caller's
-(this script does not read .devflow.toml), so omitting the flag simply
-skips this one extra guard rather than assuming a cap of any particular
-value.
+--integration-cap N is required (harmon-devkit#685; made mandatory rather
+than advisory in harmon-devkit#639 gauntlet challenge round 3): it enforces
+that a cap of 0 pairs only with a null codex_cycle, that a positive cap
+pairs only with a non-null one, and that codex_cycle.cycle never exceeds it
+— the resolved value is the caller's (this script does not read
+.devflow.toml), but the caller always has it, resolved early in its own
+process, so there is no legitimate case for omitting it: a null codex_cycle
+with the flag missing used to be silently trusted as proof the resolved cap
+was 0, when it was really just the integrator's own unverified claim.
 --codex-recheck STATE_FILE is optional and, when codex_cycle reports a clean
 exit_code 0, re-confirms it read-only by re-running check-codex-cloud-
 review.sh's own `check` against STATE_FILE (the same on-disk state the
 dispatched integrator agent drove) rather than trusting a result that may
-have gone stale since. Omitting it skips this one extra guard, the same way
-omitting --integration-cap does; every real caller supplies it.
+have gone stale since. Omitting it skips this one extra guard — unlike
+--integration-cap, this one remains advisory, since resuming it needs an
+on-disk state file that can genuinely be absent for operational reasons the
+caller does not control; every real caller supplies it anyway.
 --allow-edited-root ID clears an edited-since-reply line for that thread
 root only — the named-exception rule: the caller's report must say why the
 edit needs no reply.
@@ -297,6 +301,15 @@ check | audit)
     [ -n "$integrator_result" ] || usage
     [ -f "$integrator_result" ] ||
         die "--integrator-result $integrator_result does not exist"
+    # Required, not advisory (harmon-devkit#639 gauntlet challenge round 3):
+    # a null codex_cycle with --integration-cap omitted used to be silently
+    # trusted as "the resolved cap must have been 0", but that is the
+    # integrator's unverified claim, not something this gate independently
+    # confirmed — a missed flag or a wrong/dishonest claim would waive a
+    # positive-cap Codex requirement with nothing catching it. The caller
+    # (the /integrate skill) always resolves this value early in its own
+    # process, so there is no legitimate case for omitting it here.
+    [ -n "$integration_cap" ] || usage
     ;;
 fingerprint) ;;
 *) usage ;;
@@ -948,10 +961,10 @@ elif [ -n "$integration_cap" ] && [ "$integration_cap" -gt 0 ]; then
     # dispatched pass never ran one, whatever its verdict claims.
     indeterminate codex-cap-mismatch "codex_cycle is null but --integration-cap is $integration_cap (a positive cap requires a cycle)"
 fi
-# codex_cycle == null with no --integration-cap given (or one of 0) means
-# the resolved integration cap was 0 — the Codex condition is waived for
-# this pass, exactly as a schema-valid, cap-0 integrator result always
-# reports it; nothing further to check here.
+# codex_cycle == null with --integration-cap 0 (the only way past the elif
+# above, now that the flag is required rather than advisory) means the Codex
+# condition is genuinely waived for this pass, exactly as a schema-valid,
+# cap-0 integrator result always reports it; nothing further to check here.
 
 # 9b. Every applied disposition that touches a deferred finding must have a
 # matching settlement in run.json, regardless of the disposition's outcome

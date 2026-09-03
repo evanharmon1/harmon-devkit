@@ -539,7 +539,15 @@ function buildFindingIndex(record) {
 }
 
 const EXPECTED_REFERENCE_TYPE = { fix: 'sha', decline: 'comment_id', file: 'issue_number' }
-const REFERENCE_VALUE_PATTERN = { sha: /^[0-9a-f]{40}$/, issue_number: /^[1-9][0-9]*$/ }
+// issue_number: a bare positive integer (same-repo) or an owner/repo#N
+// qualified form (cross-repository) -- kept in sync with
+// validate-result-schemas.mjs's ISSUE_NUMBER_PATTERN (harmon-devkit#639
+// gauntlet challenge round 3: the bare-only pattern here rejected the exact
+// cross-repo settlement shape the integrate skill's own text requires).
+const REFERENCE_VALUE_PATTERN = {
+  sha: /^[0-9a-f]{40}$/,
+  issue_number: /^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9][0-9]*)$/
+}
 
 // validateCrossDocumentConsistency — the local (single-record-directory)
 // checks renderer/spec.md requires before publication, and that every
@@ -882,7 +890,15 @@ function buildSettlementIndex(run) {
 function settlementSuffix(settlement) {
   const { disposition, reference } = settlement
   if (disposition === 'fix') return `${SETTLEMENT_GRAMMAR.fix} ${shortSha(reference.value)}`
-  if (disposition === 'file') return `${SETTLEMENT_GRAMMAR.file} #${reference.value}`
+  if (disposition === 'file') {
+    // reference.value is either a bare "<n>" (same-repo) or an already-
+    // qualified "owner/repo#<n>" (cross-repository) -- the qualified form
+    // already carries its own "#", so prepending a second one would render
+    // "filed as #owner/repo#<n>" (harmon-devkit#639 gauntlet challenge
+    // round 3).
+    const value = String(reference.value)
+    return `${SETTLEMENT_GRAMMAR.file} ${value.includes('#') ? value : `#${value}`}`
+  }
   if (disposition === 'decline') return `${SETTLEMENT_GRAMMAR.decline} see comment ${neutralizeMarkers(reference.value)}`
   fail(`run.json: settlement for ${settlement.finding_id} has unknown disposition ${disposition}`)
   return ''

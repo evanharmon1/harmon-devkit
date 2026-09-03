@@ -479,9 +479,11 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   are working in instead of the one you are filing into, and finds nothing
   every time. Validate the title with `track-work` §5's checker
   (`(<free-form scope>): <imperative outcome>`; never a legacy unscoped or
-  nested-prefix title), and record the settlement's `issue_number` reference
-  qualified with owner/repo whenever it crosses a repository boundary — the
-  same rule `track-work` already applies to a bare `#<n>` anywhere else.
+  nested-prefix title), and record the settlement's `issue_number` reference as
+  the exact string `owner/repo#<n>` (never `owner/repo, <n>` or a bare `<n>`)
+  whenever it crosses a repository boundary — the same rule `track-work`
+  already applies to a bare `#<n>` anywhere else, and the shape
+  `validate-result-schemas.mjs`/`render-dev-flow.mjs` both accept.
   `--search` is eventually consistent and blind to anything filed in the last
   moments, so for your own just-created issue carry forward the number
   `gh issue create` returned rather than re-deriving it by search; when you do
@@ -1036,10 +1038,15 @@ that loops indefinitely:
                                   # flag to pass or avoid, so the condition
                                   # can never be skipped by silence nor by a
                                   # false claim
-     --integration-cap <n> \      # harmon-devkit#685: the resolved
+     --integration-cap <n> \      # required, not advisory (harmon-devkit
+                                  # #685; harmon-devkit#639 gauntlet
+                                  # challenge round 3): the resolved
                                   # integration cap, cross-checked against
                                   # codex_cycle's own cap-0/cycle-ceiling
-                                  # invariants
+                                  # invariants. Never omit it — a null
+                                  # codex_cycle with the flag missing used
+                                  # to be trusted as "the cap must be 0"
+                                  # on the integrator's own unverified word
      --codex-recheck <state file> # the integrator's own check-codex-cloud-
                                   # review.sh state file for this repo/PR —
                                   # `git rev-parse --git-path
