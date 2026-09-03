@@ -1921,6 +1921,59 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 43: a registry revision GRANTS an actor trust between the
+// run-record's own post and its dependent run-index's post — shepherd
+// round 3, Codex-confirmed (P2): the record-author trust check must
+// authenticate against the RECORD's own created_at, not the index's later
+// one. Built by hand (not runRecordComment, which stamps both comments
+// with one shared createdAt) so record and index genuinely straddle the
+// registry revision:
+//   T0  2026-09-01T00:00:00Z  narrow revision lands (trusts OTHER_TRUSTED only)
+//   T1  2026-09-01T00:10:00Z  run-record posted (TRUSTED_ORCHESTRATOR NOT yet trusted)
+//   T2  2026-09-01T00:15:00Z  widen revision lands (adds TRUSTED_ORCHESTRATOR)
+//   T3  2026-09-01T00:20:00Z  run-index posted (TRUSTED_ORCHESTRATOR now trusted)
+// Before the fix, evaluating at the index's T3 would find TRUSTED_ORCHESTRATOR
+// trusted and wrongly accept a record whose own kickoff had no such trust.
+{
+  const narrowSha = "1".repeat(40);
+  const widenSha = "2".repeat(40);
+  const registryCommits = [{ sha: widenSha }, { sha: narrowSha }]; // newest-first, as GitHub returns
+  const registryContents = {
+    [narrowSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
+    [widenSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED, TRUSTED_ORCHESTRATOR] })).toString("base64"),
+  };
+  const runId = "run-registry-trust-timing-1";
+  const recordCreatedAt = "2026-09-01T00:10:00Z";
+  const indexCreatedAt = "2026-09-01T00:20:00Z";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: recordCreatedAt,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: recordCreatedAt }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const body = { ...runBody, ...deriveDefaultChains(runBody) };
+  const rm = marker("run-record", runId, "kickoff", "issue", null, 1);
+  const rr = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${rm}\n\${fence(JSON.stringify(body))}\`, recordCreatedAt);
+  const indexPayload = {
+    run_id: runId, initiated_by: body.initiated_by, branch: null,
+    run_record: { id: String(rr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator" },
+  };
+  const im = marker("run-index", runId, "kickoff", "issue", null, 1);
+  const idx = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${im}\n\${fence(JSON.stringify(indexPayload))}\`, indexCreatedAt);
+  writeScenario("registry-trust-record-before-index", {
+    issues: [{ number: 158, pull_request: null }],
+    comments: { "158": [idx, rr] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: {
+      [narrowSha]: [{ number: 611, merged_at: "2026-09-01T00:00:00Z" }],
+      [widenSha]: [{ number: 612, merged_at: "2026-09-01T00:15:00Z" }],
+    },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 158 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -2577,5 +2630,15 @@ json_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 -
 echo "$json_out" | jq -e '.post_ready_fix_indeterminate_count == 1' >/dev/null || fail "postfix-unresolvable: expected post_ready_fix_indeterminate_count 1 in JSON, got: $json_out"
 table_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001)"
 echo "$table_out" | grep -qi "post-ready human fixes indeterminate" || fail "postfix-unresolvable: expected the human-readable form to show post-ready-fix uncertainty, got: $table_out"
+
+echo "== shepherd round 3: the run-record author's trust is evaluated at the RECORD's own kickoff time, not the later run-index post time =="
+export DFSTATS_DB="$tmp/scenarios/registry-trust-record-before-index.json"
+run_id="$(meta registry-trust-record-before-index .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "registry-trust-record-before-index: expected indeterminate (untrusted at record-post time, even though a later registry revision would trust it by index-post time), got rc=$rc: $out"
+echo "$out" | grep -qi "not a configured trusted actor" || fail "registry-trust-record-before-index: expected an untrusted-author reason, got: $out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"
