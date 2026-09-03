@@ -106,6 +106,15 @@ common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
 resolved_state="$("$monitor" state-path --run-id fixture-run)"
 [ "$resolved_state" = "$common_dir/dev-flow-v2/runs/fixture-run/monitor.json" ] ||
     fail "monitor state did not resolve through the git common directory"
+for unsafe_run_id in . ..; do
+    set +e
+    "$monitor" state-path --run-id "$unsafe_run_id" >"$tmp/unsafe-run-id.out" 2>&1
+    status=$?
+    set -e
+    [ "$status" -eq 2 ] || fail "unsafe run id $unsafe_run_id was accepted"
+    grep -Fq 'run id is missing or unsafe' "$tmp/unsafe-run-id.out" ||
+        fail "unsafe run id rejection was not reported"
+done
 trusted_actor_id="199175422"
 trust_repo="$tmp/trust-repo"
 git init -q "$trust_repo"

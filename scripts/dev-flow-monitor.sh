@@ -251,8 +251,13 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+validate_run_id() {
+    [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$run_id" != "." ] && [ "$run_id" != ".." ] ||
+        die "run id is missing or unsafe"
+}
+
 state_path() {
-    [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "run id is missing or unsafe"
+    validate_run_id
     common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
         die "could not resolve git common directory"
     printf '%s/dev-flow-v2/runs/%s/monitor.json\n' "$common_dir" "$run_id"
@@ -278,7 +283,7 @@ if [ "$command_name" = "active-path" ]; then
 fi
 
 if [ "$command_name" = "activate" ]; then
-    [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "run id is missing or unsafe"
+    validate_run_id
     [ -n "$branch" ] && [ -n "$active_state" ] && [ "$writer" = "feature-owner" ] || usage
     [[ "$expected_generation" =~ ^(0|[1-9][0-9]*)$ ]] || die "expected generation must be a non-negative integer"
     [[ "$registry_revision" =~ ^[0-9a-f]{40}$ ]] ||
@@ -319,7 +324,7 @@ fi
 
 [ -n "$state" ] && [ -n "$event" ] || usage
 [ -n "$active_state" ] && [ -n "$run_id" ] && [ -n "$branch" ] || usage
-[[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "run id is missing or unsafe"
+validate_run_id
 [[ "$generation" =~ ^[1-9][0-9]*$ ]] || die "generation must be a positive integer"
 [ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
 expected_state="$(state_path)"
