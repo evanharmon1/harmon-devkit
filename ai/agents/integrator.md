@@ -73,6 +73,20 @@ A workable brief names:
   ever send; you never compose your own, and you never post a new top-level
   PR conversation comment — that write belongs to the orchestrating skill's
   own `settle` (§4), never to you.
+- **`previously_seen_source_ids` to suppress** — every GitHub-native
+  `source_id` (a comment id, review id, or check `run_id`) whose
+  integration-stage finding the orchestrator has already dispositioned
+  `decline` or `file` in an earlier round of this same run. You are a fresh
+  context each dispatch with no memory of a prior pass, and the underlying
+  GitHub object a declined or filed finding came from does not disappear —
+  without this list you would re-read the exact same comment or review next
+  round and mint it a new, differently-numbered finding id, reporting
+  resolved work as new forever (§5). Its absence means "none yet" (treat as
+  empty), never "nothing has ever been adjudicated." Only `decline`/`file`
+  belong here: a `fix` disposition changed the code, so the same finding
+  should not recur in that shape, and a `defer`-dispositioned finding is
+  tracked through the deferred-findings sidecar/PR body instead, never
+  through this list.
 
 If any of these is missing and the step that needs it would otherwise guess,
 say which is missing and stop. A guessed head or round number produces
@@ -121,18 +135,28 @@ required CI check has concluded non-failing for the exact head your brief
 named:
 
 ```sh
-checks="$(gh pr checks <n> --repo "$repo" --json bucket,name,workflow,event,link 2>&1)" || {
+checks="$(gh pr checks <n> --repo "$repo" --json bucket,name,workflow,event,link 2>/dev/null)"
+jq -e 'type == "array"' <<<"$checks" >/dev/null 2>&1 || {
     echo 'cannot read check status — do not reserve or trigger'
-    exit 1
-}
-[ "$(jq -r 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' \
-    <<<"$checks" 2>/dev/null)" = true ] || {
-    echo 'checks absent, unconcluded, or not green — report pending, do not reserve or trigger'
     exit 1
 }
 required_names="$(gh pr checks <n> --repo "$repo" --json name --required \
     --jq '[.[].name]' 2>/dev/null)" || required_names='[]'
+checks_ready="$(jq -r 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' \
+    <<<"$checks" 2>/dev/null)"
 ```
+
+`gh pr checks` exits nonzero for the two ordinary, expected cases this step
+exists to detect — 8 while any check is still pending, and nonzero again
+once a required check has failed — so a nonzero exit is not by itself
+evidence the read failed; only output that fails to parse as a JSON array (a
+network error, a bad PR reference, an authentication failure) is. `2>/dev/null`
+keeps a diagnostic on stderr from ever landing inside `$checks` and being
+mistaken for its data. `checks_ready` is not an early exit: a `false` here
+still flows through the rest of this section and on to §5–§7 to produce a
+schema-valid `pending` or `findings` result, exactly as one is owed whenever
+CI has not settled — §4 below is what actually reads `checks_ready` to decide
+whether reserving or triggering is safe.
 
 `$checks` decides pass/fail here, and **stays the source of `checks[]`'s own
 `bucket` in your result too** — `gh pr checks` reads the same server-side
@@ -197,10 +221,25 @@ confirmed absence), it will say so explicitly; do not infer that yourself
 from an empty or failed read. This step feeds `checks[]` in your result (§7)
 either way — capture the full array, not just the pass/fail verdict.
 
+```sh
+failed_required="$(jq -c '[.[] | select(.required and (.bucket == "fail" or .bucket == "cancel"))
+    | {name, run_id}]' <<<"$checks_json" 2>/dev/null)"
+```
+
+A non-empty `$failed_required` is exactly the "a CI failure needing
+adjudication" case §5 already asks you to carry into `findings[]` — one
+finding per entry there, `source_id` its own `run_id`. A required check still
+merely `pending` (neither failed nor settled) belongs in `checks_ready`
+(already false) and `checks[]`, never in `$failed_required` or `findings[]`
+— it is not yet a defect to adjudicate, just CI still running.
+
 ## 4. Drive one current-head Codex cycle (skip entirely when the cap is 0)
 
-If your brief states the resolved `[rounds].integration` cap is 0, skip this
-whole section. Report `codex_cycle: null` and move to §5.
+If your brief states the resolved `[rounds].integration` cap is 0, **or §3's
+`checks_ready` is not `true`**, skip this whole section. Report
+`codex_cycle: null` and move to §5 — triggering before CI settles would spend
+the reviewer's promised post-CI response window on an incomplete head,
+exactly what §3 already refuses to reserve for.
 
 Otherwise, persist state under the git directory so a resumed dispatch — this
 one retried, or a fresh one after this process died — finds what an earlier
@@ -369,13 +408,20 @@ under-report nothing, not to filter for materiality. Every root ID this
 prints is an entry for `unanswered_thread_roots` (§7).
 Also carry forward, as `findings`, anything substantive your reads turned up
 that the orchestrator has not already seen: a non-clean Codex verdict's
-badged findings, a CI failure needing adjudication, a review comment raising
-a new concern. Format each with `id` following
-`integration-r<round>-<finder>-<n>` — `<round>` is your brief's
+badged findings, each entry in §3's `$failed_required` (a CI failure needing
+adjudication), a review comment raising a new concern. **Before adding one,
+check its `source_id` against your brief's `previously_seen_source_ids`
+(§1); a match means the orchestrator already declined or filed this exact
+finding in an earlier round, so skip it rather than re-reporting resolved
+work as new.** Format everything that survives that check with `id`
+following `integration-r<round>-<finder>-<n>` — `<round>` is your brief's
 `integration_round`, `<finder>` is `codex-cloud` for Codex findings or
-`human` for a reviewer's own comment, and `<n>` numbers your findings this
-pass starting at 1. `source_id` carries the GitHub-native id (the comment,
-review, or check-run id) so the orchestrator can trace it back.
+`human` for a reviewer's own comment or a CI failure, and `<n>` numbers your
+findings this pass starting at 1. `source_id` carries the GitHub-native id
+(the comment id, review id, or — for a `$failed_required` entry — its own
+`run_id`) so the orchestrator can trace it back — the same id
+`previously_seen_source_ids` will carry forward if this exact finding gets
+declined or filed again.
 
 ## 6. Post only what you were handed
 

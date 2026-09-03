@@ -83,6 +83,7 @@ Agents are a flat directory — one `<name>.md` per subagent, no categories yet.
 | Agent | Status | Description |
 | --- | --- | --- |
 | [`implementer`](./ai/agents/implementer.md) | Ready | Implements a written plan — or a review finding the caller has already confirmed — in a fresh context, and returns a verified change plus a report. Refuses a brief that isn't self-contained. Never branches, adjudicates review findings, pushes, opens PRs, or merges |
+| [`integrator`](./ai/agents/integrator.md) | Ready | Runs the mechanical, long-poll half of the integration stage (dispatched by `/integrate`) in a fresh context: settles CI, drives one current-head Codex cloud-review cycle to a terminal result, finds which review threads still lack a reply, and returns schema-valid evidence. Posts only the brokered `@codex review` trigger and exact reply text it's handed. Never adjudicates, settles, replies in its own words, or promotes |
 
 [`ai/schemas/`](./ai/schemas/) holds shared JSON Schemas for dev-flow v2 agent results, with a conformance fixture corpus (`ai/schemas/fixtures/`) validated against them.
 

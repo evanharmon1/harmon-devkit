@@ -1697,7 +1697,16 @@ function main(argv) {
     process.exit(result.status === 'published' ? 0 : 1)
   }
 
-  const output = secretScanAndRedact(render(options.command, record, options))
+  const rendered = render(options.command, record, options)
+  // readiness-input is the one projection never posted anywhere — the
+  // readiness gate's own shell/jq logic is its only consumer — and it is
+  // pure structured data (finding ids, dispositions, references, an ISO
+  // timestamp), never free text a reviewer or contributor wrote, so the
+  // evidence-scanning spec's own rationale ("something that can be posted to
+  // GitHub") does not apply to it. Scanning it anyway bought nothing but an
+  // external `gitleaks` dependency on the readiness gate's hot path (review
+  // round 3 gauntlet review, harmon-devkit#639).
+  const output = options.command === 'readiness-input' ? rendered : secretScanAndRedact(rendered)
   if (options.out) fs.writeFileSync(options.out, `${output}\n`)
   else console.log(output)
 }
