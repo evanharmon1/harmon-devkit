@@ -214,6 +214,20 @@ commit_on() {
     git -C "$repo" rev-parse HEAD
 }
 
+# round-push.sh's --against now refuses a bare commit ID (Codex challenge
+# round 2, confirmed: a raw SHA carries no target-branch identity, so a
+# caller could assert an arbitrary, deliberately-too-close ancestor
+# directly). Every fixture below therefore marks its intended base with a
+# frozen tag — never the live "main" branch name, which keeps moving as
+# later commits land on it in these single-branch fixtures — and passes
+# the TAG NAME to --against.
+mark_base() {
+    local repo=$1 label=${2:-base}
+
+    git_q "$repo" tag "round-push-test-${label}"
+    printf 'round-push-test-%s\n' "$label"
+}
+
 rc=0
 out=
 err=
@@ -253,7 +267,7 @@ push_gated() {
     write_gate "$sha" "$target" "$suffix"
     run push --remote origin --branch main --host github.com --repo owner/repo \
         --sha "$sha" --expect "$expected" --gate-file "$gate_file" --gate-token "$gate_token" \
-        --merge-base "$merge_base" "${policy_args[@]}" "${scan_args[@]}"
+        --against "$merge_base" "${policy_args[@]}" "${scan_args[@]}"
 }
 
 echo "  -> usage errors are distinct"
@@ -278,12 +292,28 @@ run preflight --remote origin --branch main --host github.com --repo owner/repo
 assert_rc 0
 [ "$out" = absent ] || fail "new remote branch should preflight as absent, got '$out'"
 
+echo "  -> --against refuses a bare commit ID, requiring a symbolic ref"
+root="$(new_fixture against-shape)"
+cd "${root}/work"
+bare_sha="$(git rev-parse HEAD)"
+run plan --against "$bare_sha" "${policy_args[@]}" --json
+assert_rc 2
+printf '%s' "$err" | grep -Fi "symbolic ref" >/dev/null ||
+    fail "the usage error should name the symbolic-ref requirement: $err"
+run plan --against round-push-test-base "${policy_args[@]}" --json
+assert_rc 3
+printf '%s' "$err" | grep -Fi "could not compute a merge base" >/dev/null ||
+    fail "a ref name that does not yet exist should fail at merge-base computation, not the shape check: $err"
+git_q "${root}/work" tag round-push-test-base
+run plan --against round-push-test-base "${policy_args[@]}" --json
+assert_rc 0
+
 echo "  -> plan re-derives docs-only from the diff, never from a caller flag"
 root="$(new_fixture docs-plan)"
 cd "${root}/work"
-merge_base="$(git rev-parse HEAD)"
+merge_base="$(mark_base "${root}/work")"
 docs_sha="$(commit_on "${root}/work" "test: docs" g.md "docs change")"
-run plan --merge-base "$merge_base" --sha "$docs_sha" "${policy_args[@]}" --json
+run plan --against "$merge_base" --sha "$docs_sha" "${policy_args[@]}" --json
 assert_rc 0
 printf '%s' "$out" | grep -F '"diff_class": "docs"' >/dev/null ||
     fail "a docs-only diff must classify as docs: $out"
@@ -293,16 +323,17 @@ printf '%s' "$out" | grep -F '"required_target": "fixture-check"' >/dev/null ||
 echo "  -> plan re-derives code from a non-docs path, root-level .md included"
 root="$(new_fixture code-plan)"
 cd "${root}/work"
-merge_base="$(git rev-parse HEAD)"
+merge_base="$(mark_base "${root}/work")"
 code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
-run plan --merge-base "$merge_base" --sha "$code_sha" "${policy_args[@]}" --json
+run plan --against "$merge_base" --sha "$code_sha" "${policy_args[@]}" --json
 assert_rc 0
 printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
     fail "a non-docs-path diff must classify as code: $out"
 printf '%s' "$out" | grep -F '"required_target": "fixture-verify"' >/dev/null ||
     fail "a code diff must require gates.round_code: $out"
+code_sha_base="$(mark_base "${root}/work" second)"
 root_md_sha="$(commit_on "${root}/work" "test: root md" README.md "root-level markdown")"
-run plan --merge-base "$code_sha" --sha "$root_md_sha" "${policy_args[@]}" --json
+run plan --against "$code_sha_base" --sha "$root_md_sha" "${policy_args[@]}" --json
 assert_rc 0
 printf '%s' "$out" | grep -F '"diff_class": "docs"' >/dev/null ||
     fail "a root-level .md file must still match **/*.md: $out"
@@ -310,19 +341,18 @@ printf '%s' "$out" | grep -F '"diff_class": "docs"' >/dev/null ||
 echo "  -> a code-to-docs rename classifies as code, not docs (rename detection defeated)"
 root="$(new_fixture rename-plan)"
 cd "${root}/work"
-merge_base="$(git rev-parse HEAD)"
 mkdir -p src
 printf 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n' >src/run.sh
 git_q "${root}/work" add src/run.sh
 git_q "${root}/work" commit -m "test: add code file"
-premv_base="$(git rev-parse HEAD)"
+premv_base="$(mark_base "${root}/work")"
 mkdir -p "${root}/work/docs"
 git_q "${root}/work" mv src/run.sh docs/run.md
 git_q "${root}/work" commit -m "test: rename code file into docs/"
 rename_sha="$(git rev-parse HEAD)"
 git -C "${root}/work" diff --name-status "${premv_base}..${rename_sha}" | grep -q '^R100' ||
     fail "fixture setup did not produce a 100%-similarity rename to test against"
-run plan --merge-base "$premv_base" --sha "$rename_sha" "${policy_args[@]}" --json
+run plan --against "$premv_base" --sha "$rename_sha" "${policy_args[@]}" --json
 assert_rc 0
 printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
     fail "a rename from a non-docs path into a docs-shaped path must still classify as code, not docs (source path must not be invisible to the classifier): $out"
@@ -330,7 +360,7 @@ printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
 echo "  -> a docs-class push succeeds against the recomputed docs target"
 root="$(new_fixture docs-push)"
 cd "${root}/work"
-merge_base="$(git rev-parse HEAD)"
+merge_base="$(mark_base "${root}/work")"
 docs_sha="$(commit_on "${root}/work" "test: docs" g.md "docs change")"
 push_gated "$root" "$docs_sha" absent "$merge_base" fixture-check docs1
 assert_rc 0
@@ -340,7 +370,7 @@ assert_rc 0
 echo "  -> a code-class push succeeds against the recomputed code target"
 root="$(new_fixture code-push)"
 cd "${root}/work"
-merge_base="$(git rev-parse HEAD)"
+merge_base="$(mark_base "${root}/work")"
 code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
 push_gated "$root" "$code_sha" absent "$merge_base" fixture-verify code1
 assert_rc 0
@@ -350,7 +380,7 @@ assert_rc 0
 echo "  -> a docs-target marker is refused over a diff that recomputes as mixed/code"
 root="$(new_fixture mixed-refusal)"
 cd "${root}/work"
-merge_base="$(git rev-parse HEAD)"
+merge_base="$(mark_base "${root}/work")"
 commit_on "${root}/work" "test: docs" g.md "docs change" >/dev/null
 mixed_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
 push_gated "$root" "$mixed_sha" absent "$merge_base" fixture-check mixed1
@@ -362,7 +392,7 @@ assert_reason
 echo "  -> a marker naming a target the policy did not list for this diff is refused"
 root="$(new_fixture bogus-target)"
 cd "${root}/work"
-merge_base="$(git rev-parse HEAD)"
+merge_base="$(mark_base "${root}/work")"
 code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
 push_gated "$root" "$code_sha" absent "$merge_base" not-a-real-target bogus1
 assert_rc 3
@@ -373,7 +403,7 @@ assert_reason
 echo "  -> the round gate marker alone never substitutes for the secret scan"
 root="$(new_fixture secret-refusal)"
 cd "${root}/work"
-merge_base="$(git rev-parse HEAD)"
+merge_base="$(mark_base "${root}/work")"
 secret_sha="$(commit_on "${root}/work" "test: secret" leaked.env "$(fake_github_token)")"
 push_gated "$root" "$secret_sha" absent "$merge_base" fixture-verify secret1
 assert_rc 3
@@ -431,7 +461,7 @@ EOF
 git_q "${root}/work" add -A
 git_q "${root}/work" commit -m "test: tamper worktree copies of every closure-resident path"
 
-merge_base="$(git rev-parse HEAD)"
+merge_base="$(mark_base "${root}/work")"
 docs_sha="$(commit_on "${root}/work" "test: docs" g.md "docs change")"
 gate_file="${test_tmp}/mat-gate"
 gate_token="ROUND-GREEN-${docs_sha}-fixture-check-mat1"
@@ -442,7 +472,7 @@ ROUND_PUSH_TEST_BARE="$(git config --get roundpush.testBare)" \
     "${materialized}/scripts/round-push.sh" push \
     --remote origin --branch main --host github.com --repo owner/repo \
     --sha "$docs_sha" --expect absent --gate-file "$gate_file" --gate-token "$gate_token" \
-    --merge-base "$merge_base" \
+    --against "$merge_base" \
     --policy "${materialized}/.devflow.toml" \
     --devflow-policy-script "${materialized}/scripts/devflow-policy.mjs" \
     --gitleaks-script "${materialized}/scripts/gitleaks-scan.sh" \
@@ -469,7 +499,7 @@ tasks:
 EOF
 git_q "${root}/work" add -A
 git_q "${root}/work" commit -m "test: tamper the security:secrets Taskfile recipe"
-merge_base="$(git rev-parse HEAD)"
+merge_base="$(mark_base "${root}/work")"
 secret_sha="$(commit_on "${root}/work" "test: secret" leaked.env "$(fake_github_token)")"
 push_gated "$root" "$secret_sha" absent "$merge_base" fixture-verify recipe1
 assert_rc 3
@@ -482,7 +512,7 @@ echo "  -> round-push.sh helper invocation is shell-independent"
 if command -v zsh >/dev/null 2>&1; then
     root="$(new_fixture zsh-call)"
     cd "${root}/work"
-    merge_base="$(git rev-parse HEAD)"
+    merge_base="$(mark_base "${root}/work")"
     code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
     write_gate "$code_sha" fixture-verify zsh1
     set +e
@@ -493,7 +523,7 @@ if command -v zsh >/dev/null 2>&1; then
     REGISTRY="${closure}/agent-registry.json" TASK_TARGETS="${closure}/task-targets.json" \
         zsh -c '"$HELPER" push --remote origin --branch main --host github.com --repo owner/repo \
             --sha "$SHA" --expect absent --gate-file "$GATE_FILE" --gate-token "$GATE_TOKEN" \
-            --merge-base "$MERGE_BASE" --policy "$POLICY" --devflow-policy-script "$DEVFLOW_SCRIPT" \
+            --against "$MERGE_BASE" --policy "$POLICY" --devflow-policy-script "$DEVFLOW_SCRIPT" \
             --gitleaks-script "$GITLEAKS_SCRIPT" --gitleaks-config "$GITLEAKS_CONFIG" \
             --registry "$REGISTRY" --task-targets "$TASK_TARGETS"' \
         >/dev/null 2>"${test_tmp}/zsh-stderr"

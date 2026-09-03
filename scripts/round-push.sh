@@ -47,13 +47,13 @@ usage() {
 Usage:
   round-push.sh preflight --remote NAME --branch NAME --host HOST --repo OWNER/REPO [-c NAME=VALUE]...
 
-  round-push.sh plan --merge-base SHA --policy FILE --devflow-policy-script FILE \
+  round-push.sh plan --against REF --policy FILE --devflow-policy-script FILE \
     [--sha SHA] [--rigor LEVEL] [--strategy NAME] \
     [--registry FILE] [--task-targets FILE] [--taskfile-dir DIR] [--json]
 
   round-push.sh push --remote NAME --branch NAME --host HOST --repo OWNER/REPO \
     --sha SHA --expect absent|OID --gate-file FILE --gate-token TOKEN \
-    --merge-base SHA --policy FILE --devflow-policy-script FILE \
+    --against REF --policy FILE --devflow-policy-script FILE \
     --gitleaks-script FILE --gitleaks-config FILE \
     [--rigor LEVEL] [--strategy NAME] \
     [--registry FILE] [--task-targets FILE] [--taskfile-dir DIR] \
@@ -63,10 +63,28 @@ preflight is read-only, identical to the older gauntlet helper: it requires
 the forge to report push permission and prints the remote branch's current
 full object ID, or "absent", for use as the next push's --expect value.
 
-plan re-derives the diff class between --merge-base and --sha (default HEAD)
-and resolves the required gate target for it, so a caller knows which
-`task <target>` to run before minting a gate token. It touches no marker,
-scanner, or remote and never pushes.
+--against REF names the target branch the diff is classified against
+(e.g. `origin/main`) — a SYMBOLIC REF, never a bare commit ID: a raw
+40/64-hex value is refused. plan and push both derive the merge base
+themselves via `git merge-base "$against" "$target"`, resolving --against
+fresh at computation time rather than accepting a pre-computed commit ID.
+This is a real but partial improvement, stated precisely rather than
+oversold: it correctly handles a --against that is not an ancestor of
+--sha (a diverged or unrelated ref, which the ancestor-gated design this
+replaced could only refuse outright), and it closes off asserting an
+arbitrary, disconnected commit ID with no binding to any actual ref. It
+does NOT and cannot, by itself, prove the NAMED ref is the semantically
+correct target — that a caller passes `--against origin/main` and means
+it is a trust boundary this script cannot verify from inside, exactly
+like the closure files' own provenance below: the caller (a future
+integration stage skill) is responsible for resolving --against from the
+actual target branch, never from anything the pushing branch's own
+content or config could steer.
+
+plan re-derives the diff class between the merge base of --against and
+--sha (default HEAD) and resolves the required gate target for it, so a
+caller knows which `task <target>` to run before minting a gate token. It
+touches no marker, scanner, or remote and never pushes.
 
 --registry and one of --task-targets/--taskfile-dir are not bash-enforced
 as usage errors, but omitting either leaves devflow-policy.mjs's own
@@ -77,8 +95,8 @@ them.
 push additionally requires:
   - GATE-FILE's last non-blank line to exactly equal GATE-TOKEN;
   - GATE-TOKEN to be unique to this run and to name both SHA and the
-    RECOMPUTED required target for the diff between --merge-base and SHA —
-    never the caller's own assertion of either;
+    RECOMPUTED required target for the diff between --against's merge
+    base and SHA — never the caller's own assertion of either;
   - the closure's secret scanner (--gitleaks-script, configured with
     --gitleaks-config) to exit clean against the current worktree;
   - the same ref-safety conditions as the older gauntlet push helper: SHA is
@@ -152,7 +170,7 @@ sha=
 expect=
 gate_file=
 gate_token=
-merge_base=
+against=
 policy=
 devflow_policy_script=
 gitleaks_script=
@@ -219,9 +237,9 @@ while [ "$#" -gt 0 ]; do
         gate_token=$2
         shift 2
         ;;
-    --merge-base)
-        [ "$#" -ge 2 ] || die_usage "--merge-base needs a value"
-        merge_base=$2
+    --against)
+        [ "$#" -ge 2 ] || die_usage "--against needs a value"
+        against=$2
         shift 2
         ;;
     --policy)
@@ -303,10 +321,22 @@ done
 # Policy resolution and diff classification — shared by `plan` and `push`.
 # ---------------------------------------------------------------------------
 
-# Prints the set of paths that changed between --merge-base and the target
-# commit (default HEAD), one per line. Requires the current working
-# directory to be a real checkout of the feature branch: the closure has no
-# git history to diff, only extracted files.
+# Prints the set of paths that changed between the TRUE merge base of
+# --against and the target commit (default HEAD), one per line. Requires
+# the current working directory to be a real checkout of the feature
+# branch: the closure has no git history to diff, only extracted files.
+#
+# The merge base is derived here, never accepted as a caller-supplied
+# value: Codex challenge round 2, confirmed — an earlier revision took an
+# explicit --merge-base SHA and only checked it was SOME ancestor of the
+# target, which a caller (or a bug) could satisfy with any earlier
+# ancestor, narrowing or emptying the diff and letting a code change
+# classify as docs-only. `git merge-base "$against" "$target"` computes the
+# one true common ancestor deterministically, leaving no value for a
+# caller to substitute. --against should be a SHA resolved before the
+# closure was extracted (e.g. `git rev-parse origin/main`), not a live
+# branch name, so this computation cannot race a moving branch between
+# extraction and classification.
 #
 # --no-renames is required, not cosmetic: with rename detection on (git's
 # own default), a 100%-similar rename reports ONLY the destination path —
@@ -317,11 +347,28 @@ done
 # plus an add of the new one, so both sides are checked against
 # docs_only_paths.
 changed_paths() {
-    local target=$1
+    local target=$1 mb
 
-    git_with_args merge-base --is-ancestor "$merge_base" "$target" 2>/dev/null ||
-        refuse "--merge-base is not an ancestor of ${target}"
-    git_with_args diff --no-renames --name-only "${merge_base}..${target}"
+    mb="$(git_with_args merge-base "$against" "$target" 2>/dev/null)" ||
+        refuse "could not compute a merge base between --against (${against}) and ${target}"
+    git_with_args diff --no-renames --name-only "${mb}..${target}"
+}
+
+# --against must be a symbolic ref (e.g. origin/main), never a bare commit
+# ID: a raw SHA carries no target-branch identity, so a caller (or a bug)
+# could assert an arbitrary, deliberately-too-close ancestor commit
+# directly, narrowing the diff with no binding to any actual branch.
+# Requiring a name does not by itself prove the name is the CORRECT
+# target — see the usage text's "trust boundary" note — but it does
+# require the value to resolve through git's own ref namespace rather
+# than being an opaque, disconnected commit ID.
+require_against_is_ref() {
+    case "$against" in
+    '' | *[!0-9a-f]*) return 0 ;;
+    esac
+    case "${#against}" in
+    40 | 64) die_usage "--against must be a symbolic ref (e.g. origin/main), not a bare commit ID" ;;
+    esac
 }
 
 # Matches a single repo-root-relative PATH against one docs_only_paths glob
@@ -525,7 +572,7 @@ read_remote_head() {
 # ---------------------------------------------------------------------------
 
 if [ "$mode" = preflight ]; then
-    [ -z "$sha$expect$gate_file$gate_token$merge_base$policy" ] ||
+    [ -z "$sha$expect$gate_file$gate_token$against$policy" ] ||
         die_usage "push/plan-only arguments are not valid in preflight mode"
     [ -n "$remote" ] || die_usage "--remote is required"
     [ -n "$branch" ] || die_usage "--branch is required"
@@ -571,7 +618,8 @@ if [ "$mode" = preflight ]; then
 fi
 
 if [ "$mode" = plan ]; then
-    [ -n "$merge_base" ] || die_usage "plan requires --merge-base"
+    [ -n "$against" ] || die_usage "plan requires --against"
+    require_against_is_ref
     [ -n "$policy" ] || die_usage "plan requires --policy"
     [ -n "$devflow_policy_script" ] || die_usage "plan requires --devflow-policy-script"
     target=${sha:-HEAD}
@@ -624,7 +672,8 @@ esac
 [ -n "$expect" ] || die_usage "push requires --expect"
 [ -n "$gate_file" ] || die_usage "push requires --gate-file"
 [ -n "$gate_token" ] || die_usage "push requires --gate-token"
-[ -n "$merge_base" ] || die_usage "push requires --merge-base"
+[ -n "$against" ] || die_usage "push requires --against"
+require_against_is_ref
 [ -n "$policy" ] || die_usage "push requires --policy"
 [ -n "$devflow_policy_script" ] || die_usage "push requires --devflow-policy-script"
 [ -n "$gitleaks_script" ] || die_usage "push requires --gitleaks-script"

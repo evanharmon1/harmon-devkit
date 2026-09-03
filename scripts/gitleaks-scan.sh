@@ -40,18 +40,37 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Bash 3.2 treats an empty indexed-array expansion as an unbound variable
+# under `set -u` (the same class of bug round-push.sh's own git_args/
+# git_arg_count guards against) — track presence separately so this script
+# never expands config_args when --config was not given.
 config_args=()
-[ -z "$config_path" ] || config_args=(--config "$config_path")
+have_config=0
+if [ -n "$config_path" ]; then
+    config_args=(--config "$config_path")
+    have_config=1
+fi
+
+run_gitleaks() {
+    if [ "$have_config" -eq 1 ]; then
+        gitleaks detect --no-banner --redact --source . "${config_args[@]}" "$@"
+    else
+        gitleaks detect --no-banner --redact --source . "$@"
+    fi
+}
 
 if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
-    exec gitleaks detect --no-banner --redact --source . "${config_args[@]}"
+    if [ "$have_config" -eq 1 ]; then
+        exec gitleaks detect --no-banner --redact --source . "${config_args[@]}"
+    else
+        exec gitleaks detect --no-banner --redact --source .
+    fi
 fi
 
 report="$(mktemp)"
 trap 'rm -f "$report"' EXIT
 
 rc=0
-gitleaks detect --no-banner --redact --source . "${config_args[@]}" \
-    --report-format json --report-path "$report" || rc=$?
+run_gitleaks --report-format json --report-path "$report" || rc=$?
 node "${script_dir}/summarize-gitleaks.mjs" "$report"
 exit "$rc"
