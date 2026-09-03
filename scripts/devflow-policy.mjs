@@ -717,6 +717,14 @@ function resolveStages(doc) {
 }
 
 function resolveStrategy(doc, requestedStrategy) {
+  // default_strategy is a REQUIRED top-level v2 field (specs/dev-flow-v2.md
+  // "Top level: schema_version = 2, default_rigor, default_strategy, and..."
+  // — the same requirement default_rigor has, validated unconditionally
+  // above in resolveRigorLevel for the identical reason: `requestedStrategy
+  // || doc.default_strategy` short-circuits on ANY override, so a policy
+  // with a missing default_strategy resolved successfully whenever
+  // --strategy was supplied. Shepherd-stage cloud finding, confirmed.
+  if (!doc.default_strategy) throw new PolicyError("policy has no default_strategy");
   const name = requestedStrategy || doc.default_strategy;
   if (!name) return null;
   const table = doc.strategy?.[name];
@@ -1077,6 +1085,19 @@ export function resolveV2(doc, { rigor: requestedRigor, strategy: requestedStrat
   const stages = resolveStages(doc);
   const strategy = resolveStrategy(doc, requestedStrategy);
 
+  // A present-but-wrong-typed tier_escalation (e.g. the string "true", a
+  // plausible TOML-authoring mistake) silently coerced to `false` under
+  // `=== true` — accepting a malformed profile while disabling the very
+  // escalation behavior it appears to request. Shepherd-stage cloud
+  // finding, confirmed; scoped narrowly to a PRESENT wrong-typed value —
+  // an earlier round considered and explicitly deferred the broader
+  // "require every profile to declare it explicitly" fix (a wide,
+  // mechanical ripple to every fixture relying on the absent-defaults-
+  // false convention); rejecting only a present non-boolean carries no
+  // such ripple, since an omitted field is untouched by this check.
+  if (Object.hasOwn(profile, "tier_escalation") && typeof profile.tier_escalation !== "boolean") {
+    throw new PolicyError(`[rigor.${level}].tier_escalation must be a boolean, got ${JSON.stringify(profile.tier_escalation)}`);
+  }
   return {
     source: "operating",
     rigor: { level, order, tier_escalation: profile.tier_escalation === true },

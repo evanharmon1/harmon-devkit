@@ -1,11 +1,12 @@
 schema_version = 2
 default_rigor = "standard"
-default_strategy = "solo"
 rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
 tier_order = ["local", "economy", "standard", "frontier", "apex"]
+
 [convergence]
 converged = { all = [ { predicate = "no_gating_findings" } ] }
 diverging = { any = [ { predicate = "provenance_share", min = 0.5 } ] }
+
 [rigor.standard]
 rounds = "standard"
 breadth = "standard"
@@ -14,22 +15,26 @@ implementer_tier = "standard"
 challenger_tier = "standard"
 reviewer_tier = "standard"
 integrator_tier = "standard"
+
 [rounds.standard]
 challenge = 1
-review = 3
+review = 1
 integration = 1
 remediation = 1
 min_rounds = 1
 wall_clock_min = 240
+
 [breadth.standard]
-max_agent_runs = 8
-max_parallel_agents = 3
+max_agent_runs = 4
+max_parallel_agents = 1
+
 [gates]
 round_code = "verify"
 round_docs = "check"
 secret_scan = "security:secrets"
 pre_pr = "security"
 docs_only_paths = ["docs/**"]
+
 [role.orchestrator]
 families = ["claude"]
 [role.implementer]
@@ -40,13 +45,10 @@ families = ["claude"]
 families = ["claude"]
 [role.integrator]
 families = ["claude"]
+
 [stage.challenge]
 finders = ["codex-cli"]
 [stage.review]
 finders = ["codex-cli"]
 [stage.integration]
 finders = ["codex-cli"]
-[strategy.solo]
-topology = "single-agent"
-planning = "inline"
-delegation = "none"

@@ -1,5 +1,6 @@
 schema_version = 2
 default_rigor = "standard"
+default_strategy = "solo"
 rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
 tier_order = ["local", "economy", "standard", "frontier", "apex"]
 
@@ -63,3 +64,7 @@ finders = ["codex-cli"]
 finders = ["codex-cli"]
 [stage.integration]
 finders = ["codex-cli"]
+[strategy.solo]
+topology = "single-agent"
+planning = "inline"
+delegation = "none"

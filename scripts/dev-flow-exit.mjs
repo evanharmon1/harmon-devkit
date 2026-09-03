@@ -1092,8 +1092,18 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
           // common min_rounds = 1, a single nonempty all-P2 round converged
           // immediately — never checking whether an earlier round was also
           // clean.
+          // Array-adjacent, not round-number-adjacent, was wrong: if an
+          // intervening round was excluded from `retained` (ancestry
+          // incomparable/unknown), the array's previous ELEMENT is an
+          // earlier, non-consecutive round — e.g. retained = [round 1,
+          // round 3] with round 2 excluded, where round 1 is clean but is
+          // not round 3's immediate predecessor. That still let round 3
+          // converge on a confirmation that never actually happened.
+          // Shepherd-stage cloud finding, confirmed: require the array
+          // neighbor's OWN round number to be exactly one less, not merely
+          // its array position.
           const previous = currentIndex > 0 ? retained[currentIndex - 1] : null;
-          const previousClean = previous && previous.status === "complete" && gatingFindings(previous).length === 0;
+          const previousClean = previous && previous.round === latest.round - 1 && previous.status === "complete" && gatingFindings(previous).length === 0;
           if (previousClean) {
             return { ...base, outcome: "converged", reason: "predicates_satisfied", action: "advance" };
           }
@@ -1227,7 +1237,7 @@ async function main() {
     return 1;
   }
 
-  // Stage-skipping (computing review's exit while challenge is the trusted
+  // Stage-skipping (computing REVIEW's exit while challenge is the trusted
   // receipt sequence's EXPLICITLY active stage) is only legal when
   // challenge is fully disabled — post-merge cloud review, confirmed:
   // nothing previously compared the requested --stage against the receipt
@@ -1240,6 +1250,18 @@ async function main() {
   // behavior below (a pass that arrived before any transition is rejected
   // as invalid on its own terms, naturally yielding continue/no_rounds_yet
   // with zero valid rounds) — this check must not relitigate that.
+  //
+  // The BACKWARD direction (--stage challenge while review is active) is
+  // handled separately, below verdict computation, rather than as an
+  // equally-unconditional early gate here — a second, later cloud finding
+  // confirmed that a blanket symmetric gate at this point wrongly refuses
+  // a legitimate retrospective query (challenge's OWN already-converged
+  // result, computed after the run moved on to review — see the
+  // stale-pass-after-stage-moved-on fixture, which exercises exactly this
+  // and expects `converged/empty_round` to still compute correctly). What
+  // must never happen is a backward query resolving to `continue`/dispatch
+  // (implying more challenge work should be authorized after review has
+  // already begun) — see the post-verdict guard below.
   const activeStage = latestActiveStage(runDir.runRecord.receipts);
   if (args.stage === "review" && activeStage === "challenge" && resolved.rounds.challenge !== 0) {
     return indeterminate(
@@ -1358,10 +1380,35 @@ async function main() {
   if (!currentHead) {
     return indeterminate(args, "--current-head is required (an independently captured value, never derived from a round's own reviewed_head)");
   }
+  // A typo'd --current-head (e.g. "typo") was accepted outright, so every
+  // real round's reviewed_head silently failed to match it and the
+  // trajectory was treated as fully invalidated instead of flagging the
+  // malformed input itself. Shepherd-stage cloud finding, confirmed. Same
+  // 40-hex-char full-SHA contract this schema family uses elsewhere
+  // (ai/schemas/run.schema.json's promotion.head pattern).
+  if (!/^[0-9a-f]{40}$/.test(currentHead)) {
+    return indeterminate(args, `--current-head must be a full 40-character commit SHA, got ${JSON.stringify(currentHead)}`);
+  }
 
-  const ancestryOpts = { headsMap: loadHeadsMap(args.heads), repoRoot: args["repo-root"] };
+  // --heads and --history are optional evidence dependencies; an unreadable
+  // or malformed file should produce the same structured indeterminate
+  // result as other failures that prevent exit computation, not an
+  // uncaught exception with an empty --json stdout. Shepherd-stage cloud
+  // finding, confirmed.
+  let headsMap;
+  try {
+    headsMap = loadHeadsMap(args.heads);
+  } catch (err) {
+    return indeterminate(args, `--heads could not be read as JSON: ${err.message}`);
+  }
+  const ancestryOpts = { headsMap, repoRoot: args["repo-root"] };
 
-  const ledger = loadLedger({ historyFile: args.history, repoRoot: args["repo-root"] });
+  let ledger;
+  try {
+    ledger = loadLedger({ historyFile: args.history, repoRoot: args["repo-root"] });
+  } catch (err) {
+    return indeterminate(args, `--history could not be read as JSON: ${err.message}`);
+  }
   // Fingerprint verification (verifyFingerprint's repeat-of check) must
   // never resolve a target finding from a round computeVerdict would
   // exclude — an ancestry-incomparable or otherwise non-retained round is
@@ -1386,6 +1433,26 @@ async function main() {
   }
   if (cap === 0 && rounds.length > 0) {
     return indeterminate(args, `${args.stage} cap is 0 (disabled) but the trajectory contains round ${rounds[0].round} — trajectory inconsistent with its own policy`);
+  }
+  // The two checks above inspect only `rounds` — assembled AFTER blocked or
+  // otherwise-rejected passes and orphaned adjudications have already
+  // disappeared (validateReceipts/the adjudication loop above both push a
+  // rejection to `diagnostics` and drop the entry, for reasons unrelated to
+  // round number). A receipt-backed pass or adjudication numbered cap + 1
+  // that happens to ALSO be rejected for some other reason — wrong status,
+  // schema failure, mismatched run_id — is therefore invisible to this
+  // guard, even though its mere existence proves dispatch continued past
+  // the cap. Check the raw, pre-filter evidence directly. Shepherd-stage
+  // cloud finding, confirmed.
+  const rawOverCapPassRound = runDir.passes
+    .map((p) => p.envelope.payload)
+    .find((p) => p && p.stage === args.stage && typeof p.round === "number" && p.round > cap);
+  if (rawOverCapPassRound) {
+    return indeterminate(args, `a ${args.stage} pass names round ${rawOverCapPassRound.round}, exceeding the resolved cap (${cap}), even though it did not survive receipt validation — trajectory inconsistent with its own policy`);
+  }
+  const rawOverCapAdjRound = runDir.adjudications.find((a) => a.doc.stage === args.stage && a.doc.round > cap);
+  if (rawOverCapAdjRound) {
+    return indeterminate(args, `a ${args.stage} adjudication names round ${rawOverCapAdjRound.doc.round}, exceeding the resolved cap (${cap}), even though it did not survive validation — trajectory inconsistent with its own policy`);
   }
   // Round numbers must be exactly 1..max with no gaps — trusting the
   // largest producer-supplied round number alone (as capReached/capped-clean
@@ -1414,6 +1481,24 @@ async function main() {
       currentHead,
       ancestryOpts,
     });
+  }
+
+  // A BACKWARD stage request (--stage challenge while review is already
+  // the active transition) resolving to `continue`/dispatch would
+  // authorize more challenge work after the run has moved past it — no
+  // legitimate exception exists for this direction; a real challenge
+  // re-entry must first record its own new transition, at which point
+  // activeStage would already read "challenge" again. Scoped to `continue`
+  // specifically (not every mismatch) because a backward query correctly
+  // reporting an already-settled converged/capped/diverging verdict for a
+  // superseded stage is a legitimate retrospective read, not an
+  // authorization to dispatch — see stale-pass-after-stage-moved-on.
+  // Shepherd-stage cloud finding, confirmed.
+  if (activeStage !== null && args.stage !== activeStage && activeStage !== "challenge" && verdict.outcome === "continue") {
+    return indeterminate(
+      args,
+      `--stage ${args.stage} was requested but the trusted receipt sequence's active stage is "${activeStage}" — a backward stage request cannot be authorized to dispatch more work`,
+    );
   }
 
   verdict.corrections = corrections;
