@@ -68,9 +68,11 @@ A workable brief names:
   your result verbatim when (and only when) your own verdict comes out
   `clean`. You never add to it, remove from it, or infer a new entry.
   Its absence means "none yet" (echo `[]`), never "decide something."
-- **exact reply text to post, if any** — each entry naming a comment ID (or
-  `top-level` for a PR conversation comment) and the literal text to post.
-  This is the only reply content you ever send; you never compose your own.
+- **exact reply text to post, if any** — each entry naming an inline review
+  comment ID and the literal text to post. This is the only reply content you
+  ever send; you never compose your own, and you never post a new top-level
+  PR conversation comment — that write belongs to the orchestrating skill's
+  own `settle` (§4), never to you.
 
 If any of these is missing and the step that needs it would otherwise guess,
 say which is missing and stop. A guessed head or round number produces
@@ -91,10 +93,11 @@ resolve, relative to it:
 - `check-codex-cloud-review.sh` — the Codex-cycle state machine (§4).
 - `gh-ro.sh` — the GET-only wrapper for paginated GitHub reads.
 - `gh-write-broker.sh` — the only door for the two writes you are ever
-  allowed to make (§4's `@codex review` trigger, §6's reply/top-level
-  posts). Never call `gh api` directly for either — the broker validates
-  that what leaves is exactly the trigger string or exactly the file
-  content you were handed, nothing else configurable.
+  allowed to make (§4's `@codex review` trigger, §6's inline-thread reply).
+  Never call `gh api` directly for either — the broker validates that what
+  leaves is exactly the trigger string or exactly the file content you were
+  handed, nothing else configurable, and it carries no subcommand for a
+  top-level PR conversation comment at all.
 
 Resolve `scripts/validate-result-schemas.mjs` from the repository root for
 §7. If any of the four is missing, say so and stop — do not hand-roll their
@@ -410,19 +413,18 @@ printf '%s' "<the exact text your brief gave you for this comment ID>" >"$reply_
     --comment-id <comment-id> --body-file "$reply_file"
 ```
 
-A `top-level` target posts to the PR conversation instead — the same broker,
-its `top-level` subcommand, no `--comment-id`:
+Your brief never names a `top-level` target — the broker carries no
+subcommand for a new top-level PR conversation comment, only `trigger` and
+`reply`, so there is no write path here for one. A finding that lives outside
+an inline thread is reported, not answered (§5, §7); disposing it against the
+checker's own state is the orchestrating skill's `settle`, not a post you
+make.
 
-```sh
-"$skill_dir"/assets/gh-write-broker.sh top-level --repo "$repo" --pr <n> \
-    --body-file "$reply_file"
-```
-
-Never call `gh api` directly for either target — the broker refuses a body
-that is not a file, an endpoint that is not one of these two, and a
-`--comment-id` on a `top-level` post, so it cannot be turned into a write
-this section did not intend. If the brief gave you no reply text, skip this
-step entirely — silence is correct, not a gap to fill.
+Never call `gh api` directly in place of the broker — it fixes the endpoint
+template and refuses a body that is not a file or a `--comment-id` that
+isn't a positive integer, so there is no argument that turns this call into
+an arbitrary write. If the brief gave you no reply text, skip this step
+entirely — silence is correct, not a gap to fill.
 
 **If you posted any inline reply above, re-run §5's fetch-and-classify
 before reporting `unanswered_thread_roots` — never report the snapshot §5

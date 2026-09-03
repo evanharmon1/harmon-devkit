@@ -971,6 +971,38 @@ write_defaults
 run_gate
 assert_gate 0 pass ready
 
+# 9a: the pass's own findings[] is unconditional evidence, independent of
+# codex_cycle (review round 2 gauntlet challenge, harmon-devkit#639). A
+# schema-valid verdict:"clean" cannot itself carry an undispositioned finding
+# (validate-result-schemas.mjs already ties every listed finding to a
+# decline/file disposition there), so exercise the gap the schema does allow:
+# a non-"clean" verdict (here "findings") whose codex_cycle is independently
+# waived by --integration-cap 0. Nothing else in the gate (thread-linkage is
+# inline-only, deferred-findings only covers findings already carried from an
+# earlier stage) can ever catch a finding surfaced only here.
+echo "==> a pass reporting a non-empty findings[] fails as unresolved-integrator-findings"
+write_defaults
+findings_result="${fixtures}/integrator-result-with-findings.json"
+jq -cn --arg head "$head_sha" '
+  {schema:2, role:"integrator", status:"completed", head:$head,
+   produced_at:"2026-01-01T00:00:00Z",
+   producer:{harness:"claude-code",model:"test",tier:"economy"},
+   run:{run_id:"test-run",initiated_by:"human"},
+   payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+            codex_cycle:null, integration_round:1,
+            findings:[{id:"integration-r1-human-1",
+                       body:"a top-level finding needing adjudication",
+                       source_id:"42"}],
+            unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+            verdict:"findings"}}' \
+    >"$findings_result"
+node "$validator" envelope "$findings_result" >/dev/null ||
+    fail "with-findings fixture failed schema validation"
+run_gate --integrator-result "$findings_result"
+assert_gate 1 fail unresolved-integrator-findings
+printf '%s\n' "$gate_out" | grep -Fq 'integration-r1-human-1' ||
+    fail "unresolved-integrator-findings did not name the finding: $gate_out"
+
 echo "==> an unanswered inline thread fails as threads-unanswered"
 write_defaults
 jq -cn '[[{id:900,user:{login:"reviewer-bot"},path:"f.sh",in_reply_to_id:null,
@@ -1259,10 +1291,48 @@ validator_out="$(node "$validator" envelope "$stale_result" 2>&1)" &&
 printf '%s\n' "$validator_out" | grep -Fq 'reviewed_commit' ||
     fail "the validator's rejection does not name reviewed_commit: $validator_out"
 
-# The moment an integrator pass applies fix|decline|file to a deferred
-# finding, the matching append-only settlement exists, regardless of outcome.
-echo "==> applied_dispositions naming a finding with no matching settlement is disposition-unsettled"
+# 9b is scoped to DEFERRED findings only (review round 2 gauntlet challenge,
+# harmon-devkit#639): a finding this same integration pass discovered fresh
+# was never carried with disposition `defer` by any adjudication document, so
+# render-dev-flow.mjs's own cross-document consistency would reject a
+# settlement for one outright — requiring a settlement here would make such a
+# finding impossible to ever pass this gate, resolved or not. Prove that
+# first, before proving the deferred case below still requires one.
+echo "==> applied_dispositions naming a FRESH (never-deferred) finding needs no settlement and passes"
 write_defaults
+fresh_result="${fixtures}/integrator-result-fresh-disposition.json"
+jq -cn --arg head "$head_sha" '
+  {schema:2, role:"integrator", status:"completed", head:$head,
+   produced_at:"2026-01-01T00:00:00Z",
+   producer:{harness:"claude-code",model:"test",tier:"economy"},
+   run:{run_id:"test-run",initiated_by:"human"},
+   payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+            codex_cycle:null, integration_round:1, findings:[],
+            unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+            verdict:"clean",
+            applied_dispositions:[{finding_id:"integration-r1-human-1",
+                                    disposition:"fix"}]}}' \
+    >"$fresh_result"
+node "$validator" envelope "$fresh_result" >/dev/null ||
+    fail "fresh-disposition fixture failed schema validation"
+run_gate --integrator-result "$fresh_result"
+assert_gate 0 pass ready
+
+# A disposition claim alone, with no durable settlement behind it, cannot
+# promote a genuinely deferred finding — check 6 (deferred-unsettled) already
+# guards every deferred-and-unsettled finding regardless of what the current
+# pass's applied_dispositions claims, so it fires here before 9b's own
+# (narrower, settlement-existence-only) check ever gets a chance to.
+echo "==> a DEFERRED finding claimed fixed in applied_dispositions still fails as deferred-unsettled without a settlement"
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{schema:2, run_id:"test-run", stage:"review", round:1,
+      reviewed_head:$head,
+      adjudications:[{finding_id:"review-r1-codex-cli-9",
+        reviewer_priority:"P2", adjudicated_priority:"P2",
+        disposition:"defer", reason:"carrying to integration",
+        evidence:"needs a second look", override:null}]}' \
+    >"${record_dir}/adjudications/review-r1.json"
 undisclosed_result="${fixtures}/integrator-result-undisclosed.json"
 jq -cn --arg head "$head_sha" '
   {schema:2, role:"integrator", status:"completed", head:$head,
@@ -1279,9 +1349,9 @@ jq -cn --arg head "$head_sha" '
 node "$validator" envelope "$undisclosed_result" >/dev/null ||
     fail "undisclosed-disposition fixture failed schema validation"
 run_gate --integrator-result "$undisclosed_result"
-assert_gate 1 fail disposition-unsettled
+assert_gate 1 fail deferred-unsettled
 printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
-    fail "disposition-unsettled did not name the unsettled finding: $gate_out"
+    fail "deferred-unsettled did not name the unsettled finding: $gate_out"
 
 echo "==> applied_dispositions naming a finding WITH a matching settlement passes"
 write_defaults
@@ -1598,8 +1668,7 @@ wb_refuse_case "reply missing --body-file" reply --repo example/repo --pr 493 --
 wb_refuse_case "reply with nonexistent --body-file" reply --repo example/repo --pr 493 --comment-id 900 --body-file "${fixtures}/does-not-exist.txt"
 wb_refuse_case "reply with empty --body-file" reply --repo example/repo --pr 493 --comment-id 900 --body-file "$empty_body"
 wb_refuse_case "reply with non-numeric --comment-id" reply --repo example/repo --pr 493 --comment-id abc --body-file "$reply_body"
-wb_refuse_case "top-level with --comment-id" top-level --repo example/repo --pr 493 --comment-id 900 --body-file "$reply_body"
-wb_refuse_case "top-level missing --body-file" top-level --repo example/repo --pr 493
+wb_refuse_case "top-level is not a recognized subcommand" top-level --repo example/repo --pr 493 --body-file "$reply_body"
 wb_refuse_case "invalid repo" trigger --repo not-a-repo --pr 493
 wb_refuse_case "invalid pr" trigger --repo example/repo --pr abc
 wb_refuse_case "unknown subcommand" delete --repo example/repo --pr 493
@@ -1618,13 +1687,6 @@ printf '0\n' >"${fixtures}/ro-exit"
 "$ghwb" reply --repo example/repo --pr 493 --comment-id 900 --body-file "$reply_body" >/dev/null
 grep -Fxq "api repos/example/repo/pulls/493/comments/900/replies -F body=@${reply_body}" "$log" ||
     fail "gh-write-broker reply forwarded unexpected arguments: $(cat "$log")"
-
-echo "==> gh-write-broker top-level posts exactly the given file to the PR conversation"
-write_defaults
-printf '0\n' >"${fixtures}/ro-exit"
-"$ghwb" top-level --repo example/repo --pr 493 --body-file "$reply_body" >/dev/null
-grep -Fxq "api repos/example/repo/issues/493/comments -F body=@${reply_body}" "$log" ||
-    fail "gh-write-broker top-level forwarded unexpected arguments: $(cat "$log")"
 
 echo "==> gh-write-broker propagates gh's own exit code"
 write_defaults

@@ -5,12 +5,21 @@
 # specs/dev-flow-v2.md's role-write contract: "every permitted external write
 # goes through a broker script that validates its one action" — this is that
 # broker for the writes ai/agents/integrator.md §4 and §6 make: the
-# `@codex review` trigger, an inline-thread reply, and a top-level PR
-# conversation comment. Unlike gh-ro.sh (a structurally read-only front door
-# that vets and forwards a caller-chosen endpoint), this wrapper does not
-# forward a caller-chosen body or endpoint shape at all — each subcommand has
-# its own fixed endpoint template and its own narrow body source, so there is
-# no argument that could turn "post this reply" into "post anything else."
+# `@codex review` trigger and an inline-thread reply. Unlike gh-ro.sh (a
+# structurally read-only front door that vets and forwards a caller-chosen
+# endpoint), this wrapper does not forward a caller-chosen body or endpoint
+# shape at all — each subcommand has its own fixed endpoint template and its
+# own narrow body source, so there is no argument that could turn "post this
+# reply" into "post anything else."
+#
+# Deliberately NOT a subcommand here: posting a new top-level PR conversation
+# comment. specs/dev-flow-v2.md's role-write table authorizes the integrator
+# for exactly "the Codex trigger comment; thread replies of given text" —
+# a top-level comment is neither; disposing a badged finding with no inline
+# thread is the orchestrating skill's own `settle` write (ai/skills/
+# universal/integrate/SKILL.md §2), never delegated to this agent (review
+# round 2 gauntlet challenge, harmon-devkit#639: an earlier revision of this
+# broker carried a `top-level` subcommand that exceeded that boundary).
 #
 # This script does not, by itself, restrict which tools the dispatching
 # harness lets the integrator invoke (ai/agents/integrator.md carries no
@@ -31,11 +40,8 @@
 #   gh-write-broker.sh reply --repo OWNER/REPO --pr N --comment-id ID --body-file FILE
 #       Posts FILE's exact byte content as a reply within that inline review
 #       comment's thread.
-#   gh-write-broker.sh top-level --repo OWNER/REPO --pr N --body-file FILE
-#       Posts FILE's exact byte content as a new top-level PR conversation
-#       comment.
 #
-# `reply` and `top-level` take their body from a FILE, never a flag value or
+# `reply` takes its body from a FILE, never a flag value or
 # stdin freeform text — matching ai/agents/integrator.md §6's own file-based
 # posting (never a heredoc: contributor-controlled review text can contain
 # any line, including one that would terminate a heredoc early and hand the
@@ -51,12 +57,10 @@ usage() {
 Usage:
   gh-write-broker.sh trigger --repo OWNER/REPO --pr N
   gh-write-broker.sh reply --repo OWNER/REPO --pr N --comment-id ID --body-file FILE
-  gh-write-broker.sh top-level --repo OWNER/REPO --pr N --body-file FILE
 
-trigger posts the hardcoded "@codex review" body; reply and top-level post a
-FILE's exact byte content to one specific, non-negotiable endpoint each. No
-subcommand accepts a caller-supplied body on the command line or an
-arbitrary endpoint.
+trigger posts the hardcoded "@codex review" body; reply posts a FILE's exact
+byte content to one specific, non-negotiable endpoint. No subcommand accepts
+a caller-supplied body on the command line or an arbitrary endpoint.
 EOF
     exit 2
 }
@@ -119,14 +123,6 @@ reply)
     [ -f "$body_file" ] || refuse "--body-file $body_file does not exist"
     [ -s "$body_file" ] || refuse "--body-file $body_file is empty"
     exec gh api "repos/$repo/pulls/$pr/comments/$comment_id/replies" -F body=@"$body_file"
-    ;;
-top-level)
-    [ -z "$comment_id" ] ||
-        refuse "top-level takes no --comment-id — it posts to the PR conversation, not a reply thread"
-    [ -n "$body_file" ] || usage
-    [ -f "$body_file" ] || refuse "--body-file $body_file does not exist"
-    [ -s "$body_file" ] || refuse "--body-file $body_file is empty"
-    exec gh api "repos/$repo/issues/$pr/comments" -F body=@"$body_file"
     ;;
 *)
     usage

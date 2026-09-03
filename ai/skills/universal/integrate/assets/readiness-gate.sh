@@ -51,7 +51,8 @@
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled                                       (fail)
-#   codex-not-clean, disposition-unsettled                  (fail)
+#   codex-not-clean, disposition-unsettled,
+#   unresolved-integrator-findings                          (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, usage                                      (indeterminate)
@@ -963,22 +964,56 @@ elif [ -n "$integration_cap" ] && [ "$integration_cap" -gt 0 ]; then
 fi
 # codex_cycle == null with --integration-cap 0 (the only way past the elif
 # above, now that the flag is required rather than advisory) means the Codex
-# condition is genuinely waived for this pass, exactly as a schema-valid,
-# cap-0 integrator result always reports it; nothing further to check here.
+# condition is genuinely waived for this pass; that is a statement about
+# codex_cycle specifically, not about the pass as a whole.
 
-# 9b. Every applied disposition that touches a deferred finding must have a
+# 9a. The pass's own findings[] is unconditional evidence, independent of
+# codex_cycle — a null or clean codex_cycle says nothing about a NEW
+# top-level human finding the integrator surfaced this same pass (review
+# round 2 gauntlet challenge, harmon-devkit#639): a badged finding outside
+# an inline thread has no reply linkage, so no other condition here (the
+# thread-reply-linkage check is inline-only, the fingerprint only detects
+# CHANGE, deferred-findings only covers findings already carried from an
+# earlier stage) can ever catch it. Any non-empty findings[] on the pass
+# being gated is exactly what "the orchestrator has not adjudicated away"
+# (ai/agents/integrator.md §7) means — it is unresolved by construction,
+# whatever verdict the pass claims.
+findings_json="$(jq -c '.payload.findings // []' "$integrator_result" 2>/dev/null)" ||
+    indeterminate malformed-data "integrator result payload is unreadable"
+findings_count="$(jq -r 'length' <<<"$findings_json" 2>/dev/null)" ||
+    indeterminate malformed-data "integrator result findings could not be read"
+if [ "$findings_count" -gt 0 ]; then
+    finding_ids="$(jq -r '[.[].id] | join(", ")' <<<"$findings_json")"
+    fail_condition unresolved-integrator-findings "the gated pass's own findings[] is non-empty: $finding_ids — adjudicate and re-dispatch before promoting"
+fi
+
+# 9b. Every applied disposition that touches a DEFERRED finding must have a
 # matching settlement in run.json, regardless of the disposition's outcome
 # (harmon-devkit#685: "the moment an integrator pass applies fix|decline|file
-# to a deferred finding, the matching append-only settlement exists"). Read
-# straight from run.json rather than the readiness-input projection: the
-# projection already filters to defer-dispositioned findings and settled
-# state is exactly what it exists to report, but this check additionally
-# needs applied_dispositions from a DIFFERENT document (the integrator
-# result), so the cross-reference happens here, not in the projection.
+# to a deferred finding, the matching append-only settlement exists"). This
+# is scoped to deferred findings ONLY, never to a finding this same
+# integration pass discovered fresh (review round 2 gauntlet challenge,
+# harmon-devkit#639): a fresh integration-stage finding was never carried
+# with disposition `defer` by any adjudication document, so a settlement for
+# it is exactly the "settlement for a finding never dispositioned defer"
+# render-dev-flow.mjs's own cross-document consistency check rejects as
+# invalid — requiring one here would make such a finding impossible to
+# ever pass this gate, resolved or not. readiness_input's own
+# deferred_findings (settled ∪ unsettled) is the authoritative set of
+# finding ids that are genuinely deferred; read straight from run.json for
+# the settlement lookup itself rather than the projection, since this check
+# additionally needs applied_dispositions from a DIFFERENT document (the
+# integrator result), so the cross-reference happens here, not in the
+# projection.
+deferred_ids="$(jq -c '[.deferred_findings.settled[].finding_id,
+    .deferred_findings.unsettled[].finding_id]' <<<"$readiness_input" 2>/dev/null)" ||
+    indeterminate malformed-data "readiness-input's deferred_findings could not be read"
 applied_dispositions="$(jq -c '.payload.applied_dispositions // []' \
     "$integrator_result" 2>/dev/null)" ||
     indeterminate malformed-data "integrator result payload is unreadable"
-settleable_ids="$(jq -r '.[] | select(.disposition == "fix" or .disposition == "decline" or .disposition == "file") | .finding_id' \
+settleable_ids="$(jq -r --argjson deferred "$deferred_ids" \
+    '.[] | select(.disposition == "fix" or .disposition == "decline" or .disposition == "file") |
+     . as $d | select($deferred | index($d.finding_id) != null) | $d.finding_id' \
     <<<"$applied_dispositions" 2>/dev/null)"
 if [ -n "$settleable_ids" ]; then
     # $run_json is already resolved and proven to exist above, for the
@@ -989,7 +1024,7 @@ if [ -n "$settleable_ids" ]; then
         [ -n "$finding_id" ] || continue
         jq -e --arg id "$finding_id" 'any(.[]; .finding_id == $id)' \
             <<<"$settlements" >/dev/null 2>&1 ||
-            fail_condition disposition-unsettled "applied_dispositions names $finding_id but run.json's settlements[] has no matching entry"
+            fail_condition disposition-unsettled "applied_dispositions names deferred finding $finding_id but run.json's settlements[] has no matching entry"
     done <<<"$settleable_ids"
 fi
 
