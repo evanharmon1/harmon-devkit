@@ -43,14 +43,17 @@ round disguised as complete.
 ## Verify, adjudicate, publish, exit
 
 Before adjudication, run `scripts/dev-flow-exit.sh --run <record> --stage
-<stage> --policy <policy> --current-head <head> --json`. Its provenance and
-fingerprint corrections are preconditions, not an advisory reviewer assertion.
-Use that first projection only to correct the finding facts; it can correctly
-be `indeterminate` until the new round has an adjudication. The orchestrator
+<stage> --policy <policy> --current-head <head> --repo-root <trusted-repo>
+--history <record>/history.json --heads <record>/heads.json --verification-only
+--json`. Materialize the trusted history and head map from the feature-owner's
+verified branch state before dispatch; never let a finder supply them. Its
+provenance and fingerprint corrections are preconditions, not an advisory
+reviewer assertion. Use that first projection only to correct the finding facts. The orchestrator
 then writes one schema-valid `adjudications/<stage>-r<N>.json`, containing the
 verified provenance/fingerprint values and every disposition, and validates it
-against every accepted pass. Only after that write, run the exit command again,
-persist its returned JSON as `verdict.json`, and act on that second outcome.
+against every accepted pass. Only after that write, run the exit command again
+with the same trusted repository history and head map, persist its returned JSON as
+`verdict.json`, and act on that second outcome.
 
 After each adjudication, render immutable evidence through
 `scripts/render-dev-flow.sh round-table --record <record> --stage <stage>
@@ -66,5 +69,6 @@ declined/deferred round); otherwise it dispatches a fresh bounded implementer,
 commits the one fix round, and pushes only through `scripts/round-push.sh` by
 path. `diverging` permits only deletion or restructuring of round-created
 scaffolding; `capped` with P0/P1 records an intervention and blocker, then
-stops before a PR; terminal clean names security as the next stage. Deferred
-P2s remain recorded for integration.
+stops before a PR. A terminal `challenge` clean transitions to `review`; a
+terminal `review` clean names security as next. Deferred P2s remain recorded
+for integration.

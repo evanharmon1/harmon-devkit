@@ -66,12 +66,18 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$state" ] && [ -n "$event" ] || usage
+command -v flock >/dev/null 2>&1 || die "flock is required"
+mkdir -p "$(dirname "$state")"
+# The state is a read-modify-write record shared by monitor re-arms. Keep the
+# lock beside it so callers with the same durable state serialize both reserve
+# and reconciliation; a temp-file rename alone cannot prevent lost updates.
+exec 9>"${state}.lock"
+flock -x 9
 case "$command_name" in
 reserve)
     [ -n "$action" ] && [ -n "$expected_head" ] && [ -n "$writer" ] || usage
     case "$action" in assembly | push | comment) ;; *) die "action $action is not replayable" ;; esac
     [ "$writer" = "feature-owner" ] || die "only the feature-branch owner may reserve $action"
-    mkdir -p "$(dirname "$state")"
     if [ ! -e "$state" ]; then
         jq -n '{version: 1, cursor: null, actions: []}' >"$state"
     fi

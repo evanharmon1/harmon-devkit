@@ -33,6 +33,21 @@ set -e
 jq -e '.outcome == "converged" and .reason == "empty_round" and .rounds_counted == 1' \
     <<<"$out" >/dev/null || fail "fixture exit verdict differs: $out"
 
+echo "==> pre-adjudication verification remains distinct from an exit"
+pre_record="$tmp/pre-adjudication"
+mkdir -p "$pre_record/passes"
+cp "$fixture/run/run.json" "$pre_record/run.json"
+cp "$fixture/run/passes/review-r1-codex-cli.json" "$pre_record/passes/"
+set +e
+pre_out="$(node scripts/dev-flow-exit.mjs --run "$pre_record" --stage review \
+    --policy "$fixture/policy.toml" --current-head \
+    "$(jq -r '.head' "$fixture/run/passes/review-r1-codex-cli.json")" --verification-only --json)"
+status=$?
+set -e
+[ "$status" -eq 0 ] || fail "pre-adjudication verification failed: $pre_out"
+jq -e '.outcome == "verification" and .action == "adjudicate"' <<<"$pre_out" >/dev/null ||
+    fail "pre-adjudication projection was not distinct from an exit"
+
 echo "==> renderer projects the review record"
 rendered="$(scripts/render-dev-flow.sh adjudication-record --record "$render_record")"
 grep -Fq 'review-r1-codex-cli-1' <<<"$rendered" || fail "review finding was not rendered"
@@ -75,5 +90,15 @@ set -e
 [ "$status" -eq 2 ] || fail "parallel lane could reserve a feature-branch push"
 grep -Fq 'only the feature-branch owner' "$tmp/lane-push.out" ||
     fail "single-writer rejection was not reported"
+
+echo "==> monitor serializes concurrent reservations"
+concurrent_state="$tmp/concurrent-monitor.json"
+for number in $(seq 1 20); do
+    "$monitor" reserve --state "$concurrent_state" --event "concurrent-$number" --action comment \
+        --expected-head "$head" --writer feature-owner >"$tmp/concurrent-$number.out" &
+done
+wait
+jq -e '[.actions[] | select(.state == "reserved")] | length == 20' "$concurrent_state" >/dev/null ||
+    fail "concurrent reservations lost monitor state"
 
 echo "review skill fixtures OK"

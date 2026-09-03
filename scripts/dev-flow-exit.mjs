@@ -11,7 +11,8 @@
 //   node scripts/dev-flow-exit.mjs --run <dir> --stage <challenge|review> \
 //     --policy <file> [--rigor <level>] [--merge-base-policy <file>] \
 //     [--current-head <sha>] [--history <file> | --repo-root <dir>] \
-//     [--heads <file>] [--closure <dir>] [--validator <path>] [--json]
+//     [--heads <file>] [--closure <dir>] [--validator <path>]
+//     [--verification-only] [--json]
 //
 // No --registry / --merge-base-registry / --task-targets here on purpose:
 // exit computation reads the RESOLVED policy shape (rounds, convergence,
@@ -1362,7 +1363,7 @@ async function main() {
   const missingAdjudication = rounds.some(
     (r) => r.status === "complete" && (!r.hasAdjudication || r.findings.some((f) => f.adjudicated_priority === null)),
   );
-  if (missingAdjudication) {
+  if (missingAdjudication && !args["verification-only"]) {
     return indeterminate(args, "a completed round has no adjudication document, or a finding in it has no matching adjudication entry");
   }
 
@@ -1416,6 +1417,32 @@ async function main() {
   // has no legitimate target to verify against, retained or not.
   const { retained: ancestryRetainedForVerification } = ancestryRetainedRounds(rounds, currentHead, ancestryOpts);
   const corrections = applyVerification(ancestryRetainedForVerification, ledger);
+
+  // A stage needs verified provenance and fingerprint facts before it can
+  // author this round's adjudication. This read-only projection never grants
+  // an exit; ordinary computation above still rejects a complete round that
+  // lacks an adjudication document.
+  if (args["verification-only"]) {
+    const verification = {
+      stage: args.stage,
+      outcome: "verification",
+      reason: "pre_adjudication",
+      action: "adjudicate",
+      corrections,
+      verified_findings: rounds.flatMap((r) =>
+        r.findings.map((f) => ({
+          id: f.id,
+          provenance_status: f.provenanceStatus,
+          verified_provenance: f.verifiedProvenance,
+          fingerprint_status: f.fingerprintStatus,
+          verified_fingerprint: f.verifiedFingerprint,
+        })),
+      ),
+    };
+    if (args.json) console.log(JSON.stringify(verification, null, 2));
+    else console.log(`${args.stage}: verification (pre_adjudication)`);
+    return 0;
+  }
 
   const cap = resolved.rounds[args.stage];
   const minRounds = effectiveMinRounds(resolved.rounds, cap);
