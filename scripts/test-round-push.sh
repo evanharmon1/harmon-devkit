@@ -298,19 +298,24 @@ run preflight --remote origin --branch main --host github.com --repo owner/repo
 assert_rc 0
 [ "$out" = absent ] || fail "new remote branch should preflight as absent, got '$out'"
 
-echo "  -> --against refuses a bare commit ID, requiring a symbolic ref"
+echo "  -> --against refuses anything that is not an actual resolvable ref"
 root="$(new_fixture against-shape)"
 cd "${root}/work"
 bare_sha="$(git rev-parse HEAD)"
 run plan --against "$bare_sha" "${policy_args[@]}" --json
 assert_rc 2
-printf '%s' "$err" | grep -Fi "symbolic ref" >/dev/null ||
-    fail "the usage error should name the symbolic-ref requirement: $err"
-run plan --against round-push-test-base "${policy_args[@]}" --json
-assert_rc 3
-printf '%s' "$err" | grep -Fi "could not compute a merge base" >/dev/null ||
-    fail "a ref name that does not yet exist should fail at merge-base computation, not the shape check: $err"
-git_q "${root}/work" tag round-push-test-base
+printf '%s' "$err" | grep -Fi "must resolve to an actual ref" >/dev/null ||
+    fail "the usage error should name the actual-ref requirement: $err"
+run plan --against nonexistent-ref-xyz "${policy_args[@]}" --json
+assert_rc 2
+printf '%s' "$err" | grep -Fi "must resolve to an actual ref" >/dev/null ||
+    fail "a nonexistent ref name should be refused at the same check, not later at merge-base computation: $err"
+commit_on "${root}/work" "test: second commit" second.md "second" >/dev/null
+run plan --against 'HEAD~1' "${policy_args[@]}" --json
+assert_rc 2
+printf '%s' "$err" | grep -Fi "revision expression" >/dev/null ||
+    fail "a revision expression like HEAD~1 names no ref of its own and must be refused like a bare commit ID: $err"
+git_q "${root}/work" tag round-push-test-base 'HEAD~1'
 run plan --against round-push-test-base "${policy_args[@]}" --json
 assert_rc 0
 

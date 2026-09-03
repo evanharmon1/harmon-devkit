@@ -64,22 +64,28 @@ the forge to report push permission and prints the remote branch's current
 full object ID, or "absent", for use as the next push's --expect value.
 
 --against REF names the target branch the diff is classified against
-(e.g. `origin/main`) — a SYMBOLIC REF, never a bare commit ID: a raw
-40/64-hex value is refused. plan and push both derive the merge base
-themselves via `git merge-base "$against" "$target"`, resolving --against
-fresh at computation time rather than accepting a pre-computed commit ID.
-This is a real but partial improvement, stated precisely rather than
-oversold: it correctly handles a --against that is not an ancestor of
---sha (a diverged or unrelated ref, which the ancestor-gated design this
-replaced could only refuse outright), and it closes off asserting an
-arbitrary, disconnected commit ID with no binding to any actual ref. It
-does NOT and cannot, by itself, prove the NAMED ref is the semantically
-correct target — that a caller passes `--against origin/main` and means
-it is a trust boundary this script cannot verify from inside, exactly
-like the closure files' own provenance below: the caller (a future
-integration stage skill) is responsible for resolving --against from the
-actual target branch, never from anything the pushing branch's own
-content or config could steer.
+(e.g. `origin/main`) — a SYMBOLIC REF, never a bare commit ID or a
+revision expression: `git rev-parse --symbolic-full-name --verify` must
+resolve it to an actual `refs/*` name. A raw 40/64-hex object ID fails
+this (it names no ref at all), and so does `HEAD~1`, `HEAD^`, or any other
+`~`/`^`/`@{...}` expression (Codex review round 1, confirmed: rejecting
+only hex-shaped values left exactly this class unrejected — a revision
+expression is just as capable of naming an arbitrary, too-close commit as
+a bare SHA is, and resolves to no symbolic name of its own). plan and push
+both derive the merge base themselves via
+`git merge-base "$against" "$target"`, resolving --against fresh at
+computation time rather than accepting a pre-computed commit ID. This is
+a real but partial improvement, stated precisely rather than oversold: it
+correctly handles a --against that is not an ancestor of --sha (a
+diverged or unrelated ref, which the ancestor-gated design this replaced
+could only refuse outright), and it closes off asserting anything with no
+binding to an actual named ref. It does NOT and cannot, by itself, prove
+the NAMED ref is the semantically correct target — that a caller passes
+`--against origin/main` and means it is a trust boundary this script
+cannot verify from inside, exactly like the closure files' own provenance
+below: the caller (a future integration stage skill) is responsible for
+resolving --against from the actual target branch, never from anything
+the pushing branch's own content or config could steer.
 
 plan re-derives the diff class between the merge base of --against and
 --sha (default HEAD) and resolves the required gate target for it, so a
@@ -363,12 +369,13 @@ changed_paths() {
 # require the value to resolve through git's own ref namespace rather
 # than being an opaque, disconnected commit ID.
 require_against_is_ref() {
-    case "$against" in
-    '' | *[!0-9a-f]*) return 0 ;;
+    local resolved rc=0
+
+    resolved="$(git_with_args rev-parse --symbolic-full-name --verify --quiet "$against" 2>/dev/null)" || rc=$?
+    case "$resolved" in
+    refs/*) [ "$rc" -eq 0 ] && return 0 ;;
     esac
-    case "${#against}" in
-    40 | 64) die_usage "--against must be a symbolic ref (e.g. origin/main), not a bare commit ID" ;;
-    esac
+    die_usage "--against must resolve to an actual ref (e.g. origin/main), not a bare commit ID or a revision expression like HEAD~1"
 }
 
 # Matches a single repo-root-relative PATH against one docs_only_paths glob
