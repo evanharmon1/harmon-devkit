@@ -158,12 +158,39 @@ this skill before its file has migrated.
   earlier, merely because this stage now counts two things instead of one. A
   label conflict resolves **per stage, to the highest cap present**.
 - **Where a merge-base-resolving config reader (`scripts/devflow-policy.mjs`)
-  exists in this checkout, try it first** — `task devflow:policy -- resolve
-  --policy .devflow.toml --json` (add `--rigor <level>` for an explicit
-  override) — rather than hand-decoding either shape yourself; it is the one
-  place this resolution is implemented once, and once the operating
-  `.devflow.toml` is schema_version 2 its JSON names the two caps directly as
-  `rounds.integration` and `rounds.remediation`. **The reader's own shape
+  exists in this checkout, try it first** — rather than hand-decoding either
+  shape yourself; it is the one place this resolution is implemented once,
+  and once the operating `.devflow.toml` is schema_version 2 its JSON names
+  the two caps directly as `rounds.integration` and `rounds.remediation`.
+  **On an ordinary review** (the change under review does not touch
+  `scripts/devflow-policy.mjs`, `.devflow.toml`, or `agent-registry.json`):
+  `task devflow:policy -- resolve --policy .devflow.toml --json` (add
+  `--rigor <level>` for an explicit override) is the whole invocation. **When
+  the change under review touches any of those three files, that bare
+  invocation resolves the BRANCH's own (possibly self-lowered) copy** — the
+  reader's self-modification protection only activates when `--closure`
+  and `--merge-base-policy` are explicitly supplied (Codex cloud-review
+  cycle on PR harmon-devkit#758). Materialize the merge-base copies first,
+  the same way gauntlet's own entry gate does for `.devflow.toml` alone:
+
+  ```sh
+  base="$(git merge-base HEAD "$base_ref")"           # $base_ref from §1
+  mb_dir="$(mktemp -d)"
+  mkdir -p "$mb_dir/scripts"
+  git show "$base:scripts/devflow-policy.mjs" >"$mb_dir/scripts/devflow-policy.mjs"
+  git show "$base:.devflow.toml" >"$mb_dir/devflow.toml"
+  task devflow:policy -- resolve --closure "$mb_dir" \
+      --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" --json
+  ```
+
+  `--closure <dir>` re-execs the trusted `<dir>/scripts/devflow-policy.mjs`
+  before this checkout's own (possibly branch-modified) copy runs any of its
+  own code — the reader's self-modification boundary protects the reader
+  itself, not only the data it reads, since a branch could otherwise lower
+  its own gate by editing the resolution code instead of the config. A
+  merge base predating `scripts/devflow-policy.mjs`'s own existence has
+  nothing to materialize into `$mb_dir/scripts/`; treat that the same as the
+  reader not existing yet, below. **The reader's own shape
   detection, not merely its presence, decides which path applies**: it
   refuses non-zero on a legacy-shaped file rather than resolving one (the
   legacy rules above are exactly its own documented legacy-decode contract,
@@ -552,22 +579,30 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     pass that comes back clean can echo them into a schema-valid result
     (empty list if this is the stage's first pass);
   - `previously_seen_source_ids` accumulated so far this integration stage —
-    every `source_id` from an integration finding you dispositioned `fix`,
-    `decline`, or `file` in an earlier round (never `defer`, tracked
-    separately). The dispatched agent is a fresh context each time with no
-    memory of a prior pass, and the GitHub comment or review a dispositioned
-    finding came from does not disappear regardless of which of those three
-    you chose — including `fix`, since the agent has no way to re-evaluate
-    whether the comment's text still applies to the new code, only whether
-    the comment itself is already accounted for (Codex cloud-review cycle on
-    harmon-devkit#758) — so without this list every re-dispatch re-mints the
-    same resolved finding under a new id forever (`ai/agents/integrator.md`
-    §1/§5). The actual code change from a `fix` still gets reviewed on its
-    own merits through the ordinary current-head Codex cycle; this list only
-    stops the *comment* from being re-litigated as a fresh finding. A
-    `findings` verdict from your own adjudication history's own `source_id`s
-    is exactly what you accumulate here; there is no schema field for it
-    yet, so track it in your own working state for the run's duration
+    every `{source_id, seen_updated_at}` pair from an integration finding
+    you dispositioned `fix`, `decline`, or `file` in an earlier round (never
+    `defer`, tracked separately), `seen_updated_at` copied from that
+    source's own `updated_at` (or `created_at` if never edited) at the
+    moment you dispositioned it. The dispatched agent is a fresh context
+    each time with no memory of a prior pass, and the GitHub comment or
+    review a dispositioned finding came from does not disappear regardless
+    of which of those three you chose — including `fix`, since the agent
+    has no way to re-evaluate whether the comment's text still applies to
+    the new code, only whether the comment itself is already accounted for
+    — so without this list every re-dispatch re-mints the same resolved
+    finding under a new id forever (`ai/agents/integrator.md` §1/§5). The
+    timestamp half is not decoration: a reviewer can edit an
+    already-dispositioned comment to add or replace its concern without
+    changing its id (Codex cloud-review cycle on harmon-devkit#758), so
+    `seen_updated_at` is what lets the agent tell an edited object from an
+    unchanged one and stop suppressing the moment the live timestamp moves
+    past what you recorded. The actual code change from a `fix` still gets
+    reviewed on its own merits through the ordinary current-head Codex
+    cycle; this list only stops the *comment*, in its dispositioned shape,
+    from being re-litigated as a fresh finding. A `findings` verdict from
+    your own adjudication history's own sources is exactly what you
+    accumulate here; there is no schema field for it yet, so track it in
+    your own working state for the run's duration
     (empty list if this
     is the stage's first pass, or if nothing has been dispositioned yet);
   - any reply text already composed and ready to post this round — generate

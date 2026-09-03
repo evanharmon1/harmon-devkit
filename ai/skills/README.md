@@ -33,23 +33,25 @@ ai/skills/
 ```
 
 `universal/` ships the dev-workflow session suite, split on whether invoking
-the skill is itself the thing that authorizes what it does. Three stay
+the skill is itself the thing that authorizes what it does. Two stay
 user-only (`disable-model-invocation: true`): `/breakdown`, because invoking
 it **is** the human consent for a bulk decomposition written to GitHub, so a
 model triggering it on its own would file a batch of issues nobody agreed
-to; `/retro`, a human-timed session ritual — only the person at the
-keyboard knows a session is actually ending; and `/integrate`, because
-promoting a draft to ready-for-review is the dev loop's human-handoff point
-— a human decides when a change is ready to leave the draft workbench and
-request review, not a model reaching that stage on its own. The rest are
+to; and `/retro`, a human-timed session ritual — only the person at the
+keyboard knows a session is actually ending. The rest are
 model-invocable, so an agent following the repo's own dev loop (`AGENTS.md`)
 can enter a stage through the Skill tool instead of waiting for a human to
 type the command: `/claim` (the invocation still names and confirms the
 target issue before any write, exactly as it does when a human types it; its
 writes are idempotent and released by the ordinary lifecycle, not gated
 behind a standing human-only rule) and `/wrap` join `/kickoff`, `/implement`,
-and `/gauntlet` covering orienting at the start of a session through driving
-a claimed issue to a draft PR, and `/triage` (also run
+`/gauntlet`, and `/integrate` covering orienting at the start of a session
+through driving a claimed issue to a draft PR and on into the integration
+stage — the same session continues from `/implement` into `/integrate`
+without waiting for a separate human trigger, stopping only at
+`/integrate`'s own terminal condition (ready-for-review, or a blocker);
+ready-for-review is still the dev loop's human-handoff point, it is just the
+*output* of that stage rather than a gate on entering it. `/triage` (also run
 by `task triage` with a cheap headless model, or interactively) classifies
 the backlog. `track-work` is model-invocable too, and deliberately **not**
 slash-only. Tracking

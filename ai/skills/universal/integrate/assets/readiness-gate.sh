@@ -1011,21 +1011,29 @@ deferred_ids="$(jq -c '[.deferred_findings.settled[].finding_id,
 applied_dispositions="$(jq -c '.payload.applied_dispositions // []' \
     "$integrator_result" 2>/dev/null)" ||
     indeterminate malformed-data "integrator result payload is unreadable"
-settleable_ids="$(jq -r --argjson deferred "$deferred_ids" \
+# The disposition travels with the finding_id through this whole check, not
+# just the id alone (Codex cloud-review cycle on PR harmon-devkit#758): an
+# id-only match would accept run.json recording "declined" for a finding
+# applied_dispositions calls "fixed" — both documents individually
+# schema-valid, the deferred projection reads settled, and the gate would
+# promote over contradictory evidence about how the finding was actually
+# resolved.
+settleable_tsv="$(jq -r --argjson deferred "$deferred_ids" \
     '.[] | select(.disposition == "fix" or .disposition == "decline" or .disposition == "file") |
-     . as $d | select($deferred | index($d.finding_id) != null) | $d.finding_id' \
+     . as $d | select($deferred | index($d.finding_id) != null) | [$d.finding_id, $d.disposition] | @tsv' \
     <<<"$applied_dispositions" 2>/dev/null)"
-if [ -n "$settleable_ids" ]; then
+if [ -n "$settleable_tsv" ]; then
     # $run_json is already resolved and proven to exist above, for the
     # active-run binding — reused here rather than re-checked.
     settlements="$(jq -c '.settlements // []' "$run_json" 2>/dev/null)" ||
         indeterminate malformed-data "run.json's settlements could not be read"
-    while IFS= read -r finding_id; do
+    while IFS=$'\t' read -r finding_id disposition; do
         [ -n "$finding_id" ] || continue
-        jq -e --arg id "$finding_id" 'any(.[]; .finding_id == $id)' \
+        jq -e --arg id "$finding_id" --arg disp "$disposition" \
+            'any(.[]; .finding_id == $id and .disposition == $disp)' \
             <<<"$settlements" >/dev/null 2>&1 ||
-            fail_condition disposition-unsettled "applied_dispositions names deferred finding $finding_id but run.json's settlements[] has no matching entry"
-    done <<<"$settleable_ids"
+            fail_condition disposition-unsettled "applied_dispositions names deferred finding $finding_id as $disposition but run.json's settlements[] has no entry with that id and disposition"
+    done <<<"$settleable_tsv"
 fi
 
 # 10. Freeze the evaluated fingerprint, then re-fetch every surface FRESH

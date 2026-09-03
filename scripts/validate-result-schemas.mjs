@@ -697,19 +697,27 @@ function checkCodexCycleAcceptedScope(payload, errors) {
 // check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
 // 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
 // indeterminate. checkIntegratorCleanVerdict separately requires exit_code
-// 0 (with accepted present) when verdict IS clean — that is the OTHER
-// direction of this same equivalence (clean implies 0); the 0 entry here
-// is what closes the loop the other way (0 implies clean), the same
-// two-direction shape every other exit code in this table already gets.
-// 13 (escalate) and 2 (indeterminate) share the SAME equals rule: AGENTS.md's
-// integration stage escalates when both Codex-cycle attempts are incomplete,
-// which is exactly what an indeterminate result IS — there is no
-// meaningful difference between "explicitly escalate" and "couldn't tell,
-// so escalate" for what the orchestrator does next. Each entry is either
-// `equals` (verdict must be exactly this value) or `excludes` (a set
-// verdict must not be any member of).
+// 0 (with accepted present) when verdict IS clean — clean implies 0 — but
+// 0 does NOT imply clean: ai/agents/integrator.md §7's own verdict rule
+// says a substantive human finding or CI failure surfacing in the SAME
+// pass as a Codex-clean cycle still makes the overall verdict `findings`
+// (the routine mixed-source case), so 0 only excludes the two verdicts
+// that are incoherent with a terminal, non-retriable exit code — pending
+// (nothing left to wait for) and escalate (nothing here needs the
+// remediation cap) — not `findings` (Codex cloud-review cycle on
+// harmon-devkit#758, gauntlet round 5: an earlier `equals: 'clean'` here
+// made 0 and a fresh same-pass finding jointly unsatisfiable, since
+// checkIntegratorCleanVerdict also requires every listed finding to
+// already carry a decline/file disposition the integrator itself never
+// assigns). 13 (escalate) and 2 (indeterminate) share the SAME equals
+// rule: AGENTS.md's integration stage escalates when both Codex-cycle
+// attempts are incomplete, which is exactly what an indeterminate result
+// IS — there is no meaningful difference between "explicitly escalate" and
+// "couldn't tell, so escalate" for what the orchestrator does next. Each
+// entry is either `equals` (verdict must be exactly this value) or
+// `excludes` (a set verdict must not be any member of).
 const EXIT_CODE_VERDICT_CONSTRAINTS = {
-  0: { equals: 'clean' },
+  0: { excludes: new Set(['pending', 'escalate']) },
   10: { equals: 'findings' },
   11: { equals: 'pending' },
   12: { equals: 'pending' },

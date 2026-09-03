@@ -73,26 +73,36 @@ A workable brief names:
   ever send; you never compose your own, and you never post a new top-level
   PR conversation comment — that write belongs to the orchestrating skill's
   own `settle` (§4), never to you.
-- **`previously_seen_source_ids` to suppress** — every GitHub-native
-  `source_id` (a comment id, review id, or check `run_id`) whose
-  integration-stage finding the orchestrator has already dispositioned
-  `fix`, `decline`, or `file` in an earlier round of this same run. You are
-  a fresh context each dispatch with no memory of a prior pass, and the
-  underlying GitHub object a dispositioned finding came from does not
-  disappear — without this list you would re-read the exact same comment or
-  review next round and mint it a new, differently-numbered finding id,
-  reporting resolved work as new forever (§5). Its absence means "none yet"
-  (treat as empty), never "nothing has ever been adjudicated." A `fix`
-  belongs here too, and for the same mechanical reason as `decline`/`file`:
-  you have no way to tell that a top-level comment or review body's *text*
-  no longer applies just because a later push changed the code it was about
-  (Codex cloud-review cycle on this PR, harmon-devkit#758) — you are not
-  re-evaluating the comment's substance against the new diff, only
-  filtering which already-adjudicated GitHub objects to skip. The actual
-  code change still gets reviewed on its own merits, through the ordinary
-  current-head Codex cycle (§4), which this list neither replaces nor
-  suppresses. Only a `defer`-dispositioned finding stays off this list — it
-  is tracked through the deferred-findings sidecar/PR body instead.
+- **`previously_seen_source_ids` to suppress** — every GitHub-native source
+  the orchestrator has already dispositioned `fix`, `decline`, or `file` in
+  an earlier round of this same run, each entry `{source_id, seen_updated_at}`
+  (`source_id` a comment id, review id, or check `run_id`; `seen_updated_at`
+  that object's own `updated_at` — or `created_at` if it has never been
+  edited — at the moment it was dispositioned). You are a fresh context each
+  dispatch with no memory of a prior pass, and the underlying GitHub object a
+  dispositioned finding came from does not disappear — without this list you
+  would re-read the exact same comment or review next round and mint it a
+  new, differently-numbered finding id, reporting resolved work as new
+  forever (§5). Its absence means "none yet" (treat as empty), never
+  "nothing has ever been adjudicated." A `fix` belongs here too, and for the
+  same mechanical reason as `decline`/`file`: you have no way to tell that a
+  top-level comment or review body's *text* no longer applies just because a
+  later push changed the code it was about — you are not re-evaluating the
+  comment's substance against the new diff, only filtering which
+  already-adjudicated GitHub objects to skip. The actual code change still
+  gets reviewed on its own merits, through the ordinary current-head Codex
+  cycle (§4), which this list neither replaces nor suppresses. Only a
+  `defer`-dispositioned finding stays off this list — it is tracked through
+  the deferred-findings sidecar/PR body instead.
+  **`seen_updated_at` is load-bearing, not decoration**: a reviewer can edit
+  an already-dispositioned comment or review body to add or replace its
+  concern without changing its id, and the id-only version of this list
+  (harmon-devkit#639, Codex cloud-review cycle on PR harmon-devkit#758)
+  would suppress the edited text right along with the original — §5 only
+  suppresses a match on **both** fields together; a source whose live
+  `updated_at` (or `created_at`, if still unedited) no longer equals the
+  `seen_updated_at` you were handed is treated as unsuppressed, exactly like
+  one your brief never mentioned at all.
 
 If any of these is missing and the step that needs it would otherwise guess,
 say which is missing and stop. A guessed head or round number produces
@@ -380,11 +390,29 @@ the **same** state and head — this is the one bounded retry your brief
 expects; do not retry a second time. On **13 (escalate)**, **14**, or **2**,
 stop driving the cycle and carry that exit code straight into `codex_cycle`
 (§7) — these are terminal for this pass, not something you work around.
-On **11 (pending)**, this pass ends without a terminal result; report
-`codex_cycle` with `exit_code: 11` and no `accepted` (§7 shows the shape).
-Poll bounded — give the window your brief's cap implies (10–15 minutes per
-attempt) rather than looping indefinitely; a caller that wants another look
-dispatches you again.
+On **11 (pending)**, do not end the pass on the first pending read — that
+would spend the orchestrator's whole dispatch budget re-invoking you for
+every single poll, exactly the long-poll cost this role exists to absorb
+instead (Codex cloud-review cycle on PR harmon-devkit#758). Keep polling
+`check` yourself, within this same dispatch, for the bounded window your
+brief's cap implies (10–15 minutes per attempt):
+
+```sh
+window_end=$((SECONDS + 900))  # 15 minutes; use your brief's own window if different
+while [ "$SECONDS" -lt "$window_end" ]; do
+    check_exit=0
+    check_out="$("$helper" check --state "$state" --actor-id 199175422)" || check_exit=$?
+    [ "$check_exit" != "11" ] && break
+    sleep 90
+done
+```
+
+Only once that loop exits — either a terminal `check_exit` broke it, or the
+window ran out still on 11 — do you stop driving the cycle for this pass.
+If the window elapsed still pending, report `codex_cycle` with
+`exit_code: 11` and no `accepted` (§7 shows the shape); a caller that wants
+another look dispatches you again for a fresh window, rather than this pass
+looping indefinitely on its own.
 
 On **0 (clean)** or **10 (findings)**, `check_out` itself now carries the
 accepted evidence (harmon-devkit#639 gauntlet challenge round 4): build
@@ -448,17 +476,24 @@ that the orchestrator has not already seen: a non-clean Codex verdict's
 badged findings, each entry in §3's `$failed_required` (a CI failure needing
 adjudication), a review comment raising a new concern. **Before adding one,
 check its `source_id` against your brief's `previously_seen_source_ids`
-(§1); a match means the orchestrator already dispositioned this exact
-finding — fixed, declined, or filed — in an earlier round, so skip it
-rather than re-reporting resolved work as new.** Format everything that
-survives that check with `id` following `integration-r<round>-<finder>-<n>`
-— `<round>` is your brief's `integration_round`, `<finder>` is `codex-cloud`
-for Codex findings or `human` for a reviewer's own comment or a CI failure,
-and `<n>` numbers your findings this pass starting at 1. `source_id` carries
-the GitHub-native id (the comment id, review id, or — for a
-`$failed_required` entry — its own `run_id`) so the orchestrator can trace
-it back — the same id `previously_seen_source_ids` will carry forward once
-this finding is dispositioned.
+(§1) by BOTH fields, never `source_id` alone: a match means an entry whose
+`source_id` equals this source's id AND whose `seen_updated_at` equals this
+source's own current `updated_at` (or `created_at` if it has never been
+edited) — the orchestrator already dispositioned this exact finding, in
+this exact unedited shape, in an earlier round, so skip it rather than
+re-reporting resolved work as new.** A `source_id` match whose live
+timestamp disagrees with `seen_updated_at` is a reviewer edit landing on an
+already-dispositioned object — treat it exactly like a source not on the
+list at all, since the orchestrator dispositioned the OLD text, never the
+new. Format everything that survives that check with `id` following
+`integration-r<round>-<finder>-<n>` — `<round>` is your brief's
+`integration_round`, `<finder>` is `codex-cloud` for Codex findings or
+`human` for a reviewer's own comment or a CI failure, and `<n>` numbers your
+findings this pass starting at 1. `source_id` carries the GitHub-native id
+(the comment id, review id, or — for a `$failed_required` entry — its own
+`run_id`) so the orchestrator can trace it back — the same
+`{source_id, seen_updated_at}` pair `previously_seen_source_ids` will carry
+forward once this finding is dispositioned.
 
 ## 6. Post only what you were handed
 

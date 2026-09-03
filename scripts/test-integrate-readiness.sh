@@ -1291,6 +1291,33 @@ validator_out="$(node "$validator" envelope "$stale_result" 2>&1)" &&
 printf '%s\n' "$validator_out" | grep -Fq 'reviewed_commit' ||
     fail "the validator's rejection does not name reviewed_commit: $validator_out"
 
+# Codex cloud-review cycle on PR harmon-devkit#758: a Codex-clean cycle
+# (exit_code 0) alongside a separate, same-pass human/CI finding is the
+# routine mixed-source case ai/agents/integrator.md §7 documents
+# (verdict:"findings" even though the Codex cycle itself is clean) — the
+# schema must not force verdict:"clean" whenever exit_code is 0, or this
+# ordinary case could never produce a validatable envelope.
+echo "==> a clean codex_cycle (exit_code 0) alongside verdict:findings is schema-valid"
+mixed_source_result="${fixtures}/integrator-result-mixed-source.json"
+jq -cn --arg head "$head_sha" '
+  {schema:2, role:"integrator", status:"completed", head:$head,
+   produced_at:"2026-01-01T00:00:00Z",
+   producer:{harness:"claude-code",model:"test",tier:"economy"},
+   run:{run_id:"test-run",initiated_by:"human"},
+   payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+            codex_cycle:{head:$head, cycle:1, attempt:1,
+              trigger_comment_id:"1",
+              accepted:{surface:"review", id:"1", reviewed_commit:$head},
+              exit_code:0},
+            integration_round:1,
+            findings:[{id:"integration-r1-human-1",
+                       body:"a top-level finding needing adjudication",
+                       source_id:"42"}],
+            unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+            verdict:"findings"}}' >"$mixed_source_result"
+node "$validator" envelope "$mixed_source_result" >/dev/null ||
+    fail "a clean codex_cycle alongside verdict:findings should validate: $(node "$validator" envelope "$mixed_source_result" 2>&1)"
+
 # 9b is scoped to DEFERRED findings only (review round 2 gauntlet challenge,
 # harmon-devkit#639): a finding this same integration pass discovered fresh
 # was never carried with disposition `defer` by any adjudication document, so
@@ -1396,6 +1423,50 @@ node "$validator" envelope "$disclosed_result" >/dev/null ||
     fail "disclosed-disposition fixture failed schema validation"
 run_gate --integrator-result "$disclosed_result"
 assert_gate 0 pass ready
+
+# review round 3 gauntlet challenge, harmon-devkit#639 (Codex cloud-review
+# cycle on PR #758): an id-only match let run.json record a DIFFERENT
+# disposition than applied_dispositions claims and still read as settled.
+echo "==> applied_dispositions naming fix but run.json's settlement says decline is disposition-unsettled"
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{schema:2, run_id:"test-run", stage:"review", round:1,
+      reviewed_head:$head,
+      adjudications:[{finding_id:"review-r1-codex-cli-9",
+        reviewer_priority:"P2", adjudicated_priority:"P2",
+        disposition:"defer", reason:"carrying to integration",
+        evidence:"needs a second look", override:null}]}' \
+    >"${record_dir}/adjudications/review-r1.json"
+jq -cn --arg head "$head_sha" \
+    '{schema:2, run_id:"test-run", initiated_by:"human",
+      started_at:"2026-01-01T00:00:00Z",
+      stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z"}],
+      interventions:[], outcome:null,
+      pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+      evidence_comments:[],
+      settlements:[{finding_id:"review-r1-codex-cli-9", disposition:"decline",
+        settled_at:"2026-01-01T00:01:00Z",
+        reference:{type:"comment_id",value:"555"}}],
+      promotion:null}' >"${record_dir}/run.json"
+mismatched_disposition_result="${fixtures}/integrator-result-mismatched-disposition.json"
+jq -cn --arg head "$head_sha" '
+  {schema:2, role:"integrator", status:"completed", head:$head,
+   produced_at:"2026-01-01T00:00:00Z",
+   producer:{harness:"claude-code",model:"test",tier:"economy"},
+   run:{run_id:"test-run",initiated_by:"human"},
+   payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+            codex_cycle:null, integration_round:1, findings:[],
+            unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+            verdict:"clean",
+            applied_dispositions:[{finding_id:"review-r1-codex-cli-9",
+                                    disposition:"fix"}]}}' \
+    >"$mismatched_disposition_result"
+node "$validator" envelope "$mismatched_disposition_result" >/dev/null ||
+    fail "mismatched-disposition fixture failed schema validation"
+run_gate --integrator-result "$mismatched_disposition_result"
+assert_gate 1 fail disposition-unsettled
+printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
+    fail "disposition-unsettled did not name the mismatched finding: $gate_out"
 
 echo "==> a CHANGES_REQUESTED review landing mid-gate fails on the final re-read"
 write_defaults
