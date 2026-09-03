@@ -1302,6 +1302,321 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 25: a schema-conformant record whose stage_transitions[]
+// carries NO seq/digest/prev_digest at all (today's shipped run.schema.json
+// forbids those fields via additionalProperties:false — #738, open) still
+// harvests successfully (shepherd round 1, Codex-confirmed P1); a record
+// with a MIXED shape (one entry chain-protected, one not) still fails
+// closed as tampering, never silently accepted either way.
+{
+  const runIdPlain = "run-chain-pending-plain-1";
+  const bodyPlain = {
+    schema: 2, run_id: runIdPlain, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: [
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "claim", entered_at: "2026-09-01T00:01:00Z" },
+    ],
+    interventions: [], settlements: [],
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idxPlain, record: rrPlain } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdPlain, bodyPlain, "2026-09-01T00:00:00Z");
+
+  const runIdMixed = "run-chain-pending-mixed-1";
+  const protectedEntry = {
+    stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed",
+    seq: 0, digest: entryDigest({ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" }, GENESIS), prev_digest: GENESIS,
+  };
+  const bodyMixed = {
+    schema: 2, run_id: runIdMixed, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: [protectedEntry, { stage: "claim", entered_at: "2026-09-01T00:01:00Z" }],
+    interventions: [], settlements: [],
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idxMixed, record: rrMixed } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdMixed, bodyMixed, "2026-09-01T00:00:00Z");
+
+  writeScenario("chain-pending-schema", {
+    issues: [{ number: 129, pull_request: null }, { number: 130, pull_request: null }],
+    comments: { "129": [idxPlain, rrPlain], "130": [idxMixed, rrMixed] },
+    commits: {},
+    meta: { runIdPlain, runIdMixed, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumberPlain: 129, issueNumberMixed: 130 },
+  });
+}
+
+// --- Scenario 26: initiated_by and started_at are edited in place in the
+// mutable record body, disagreeing with the run-index's own immutable
+// copies (initiated_by) and the index comment's own created_at
+// (started_at) — shepherd round 1, Codex-confirmed (P1 x2). Neither field
+// is chain-protected, so before this fix the edit passed every existing
+// check; computeIssueVerdict's human-intervention counting and --since
+// cohort membership both depend on these fields being genuine.
+{
+  const runIdInit = "run-initiated-by-tamper-1";
+  const bodyInit = {
+    schema: 2, run_id: runIdInit, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idxInit, record: rrInit } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdInit, bodyInit, "2026-09-01T00:00:00Z");
+  rrInit.body = rrInit.body.replace('"initiated_by":"human"', '"initiated_by":"foreman"');
+
+  const runIdStart = "run-started-at-tamper-1";
+  const bodyStart = {
+    schema: 2, run_id: runIdStart, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idxStart, record: rrStart } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdStart, bodyStart, "2026-09-01T00:00:00Z");
+  rrStart.body = rrStart.body.replace('"started_at":"2026-09-01T00:00:00Z"', '"started_at":"2026-09-01T00:05:00Z"');
+
+  writeScenario("mutable-field-tamper", {
+    issues: [{ number: 137, pull_request: null }, { number: 138, pull_request: null }],
+    comments: { "137": [idxInit, rrInit], "138": [idxStart, rrStart] },
+    commits: {},
+    meta: { runIdInit, runIdStart, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumberInit: 137, issueNumberStart: 138 },
+  });
+}
+
+// --- Scenario 27: a run_id containing path-traversal segments — schema-
+// legal (run.schema.json's run_id is only {type:string, minLength:1}) —
+// must not let --replay escape its own temp directory. shepherd round 1,
+// Codex-confirmed (P1, severe): path.join(tmpRoot, run_id) with no
+// containment check let such a run_id write files outside the mkdtempSync
+// root entirely.
+{
+  const runIdEvil = "../../evil-replay-dir";
+  const bodyEvil = {
+    schema: 2, run_id: runIdEvil, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idxEvil, record: rrEvil } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdEvil, bodyEvil, "2026-09-01T00:00:00Z");
+  writeScenario("replay-path-traversal", {
+    issues: [{ number: 139, pull_request: null }],
+    comments: { "139": [idxEvil, rrEvil] },
+    commits: {},
+    meta: { runId: runIdEvil, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 139 },
+  });
+}
+
+// --- Scenario 28: firstSeen must take the EARLIEST of check-suite and
+// merged_at, never merged_at unconditionally — shepherd round 1,
+// Codex-confirmed (P2): a commit visible via check-suite well BEFORE its
+// PR eventually merges flipped from visible to not-visible for the SAME
+// --as-of cutoff once merged_at started being preferred unconditionally,
+// breaking the immutable-cutoff property first_seen exists to guarantee.
+{
+  const runId = "run-postfix-early-checksuite-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:01:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 505, url: "https://example.invalid/pr/505" },
+    evidence_comments: [],
+    promotion: { head: "5".repeat(40), promoted_at: "2026-09-01T00:10:00Z", gate_fingerprint: "early" },
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const promotedCommit = { sha: "5".repeat(40), commit: { committer: { date: "2026-09-01T00:10:00Z" } }, author: { id: TRUSTED_ORCHESTRATOR } };
+  // Check-suite ran (visible) well before the eventual merge.
+  const humanCommit = { sha: "9".repeat(40), commit: { committer: { date: "2026-09-01T00:20:00Z" } }, author: { id: 42 } };
+  writeScenario("postfix-early-checksuite", {
+    issues: [{ number: 140, pull_request: null }],
+    comments: { "140": [idx, rr] },
+    commits: { "505": [promotedCommit, humanCommit] },
+    ...mergedPrSeen(humanCommit.sha, 507, "2026-09-01T01:00:00Z"),
+    ...checkSuiteSeen(humanCommit.sha, ["2026-09-01T00:15:00Z"]),
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 140 },
+  });
+}
+
+// --- Scenario 29: two stage_transitions entries share seq/prev_digest/
+// CONTENT but disagree on their own digest field (one correct, one
+// corrupted) — shepherd round 1, Codex-confirmed (P2): a content-only
+// duplicate comparison still treated these as the same entry and silently
+// discarded the corrupted one before verifyChain's per-entry digest check
+// ever ran on it, hiding tampering evidence instead of reporting it.
+{
+  const runId = "run-digest-mismatch-duplicate-1";
+  const base = chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" }]);
+  const validContent = { stage: "claim", entered_at: "2026-09-01T00:01:00Z" };
+  const validDigest = entryDigest(validContent, base[0].digest);
+  const validEntry = { ...validContent, seq: 1, digest: validDigest, prev_digest: base[0].digest };
+  const corruptEntry = { ...validContent, seq: 1, digest: "0".repeat(64), prev_digest: base[0].digest };
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: [...base, validEntry, corruptEntry],
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("digest-mismatch-duplicate", {
+    issues: [{ number: 141, pull_request: null }],
+    comments: { "141": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 141 },
+  });
+}
+
+// --- Scenario 30: an evidence marker edited from round=1 to round=1junk —
+// shepherd round 1, Codex-confirmed (P2): the payload digest never covers
+// the marker line itself, and Number.parseInt("1junk",10)=1 silently
+// accepted the edit as round:1 before the regex was tightened.
+{
+  const runId = "run-marker-round-tamper-1";
+  const roundPayload = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
+  const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, roundPayload, "2026-09-01T00:03:00Z");
+  ev.body = ev.body.replace("round=1 seq=1", "round=1junk seq=1");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    evidence_comments: [
+      evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadDigest(JSON.stringify(roundPayload))),
+    ],
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("marker-round-tamper", {
+    issues: [{ number: 142, pull_request: null }],
+    comments: { "142": [idx, rr, ev] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 142 },
+  });
+}
+
+// --- Scenario 31: a trusted run-index marker with a NON-canonical tuple
+// (stage=claim instead of the grammar's reserved kickoff/issue/-/1) —
+// shepherd round 1, Codex-confirmed (P2): discovery checked only the
+// marker kind, accepting a shape the protocol never sanctions.
+{
+  const runId = "run-noncanonical-index-1";
+  const bodyDoc = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const bodyDocFull = { ...bodyDoc, ...deriveDefaultChains(bodyDoc) };
+  const recordText = JSON.stringify(bodyDocFull);
+  const recordMarkerText = marker("run-record", runId, "kickoff", "issue", null, 1);
+  const record = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${recordMarkerText}\n\${fence(recordText)}\`, "2026-09-01T00:00:00Z");
+  const indexPayload = {
+    run_id: runId, initiated_by: bodyDocFull.initiated_by, branch: null,
+    run_record: { id: String(record.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator" },
+  };
+  const badIndexMarkerText = marker("run-index", runId, "claim", "issue", null, 1);
+  const index = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${badIndexMarkerText}\n\${fence(JSON.stringify(indexPayload))}\`, "2026-09-01T00:00:00Z");
+  writeScenario("noncanonical-index", {
+    issues: [{ number: 143, pull_request: null }],
+    comments: { "143": [index, record] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 143 },
+  });
+}
+
+// --- Scenario 32: rounds posted challenge-r1, review-r1, challenge-r2 (in
+// THAT chronological order) must render in that order — shepherd round 1,
+// Codex-confirmed (P2): sorting by stage name alphabetically grouped both
+// challenge rounds before review regardless of a remediation loop's real
+// posting order.
+{
+  const runId = "run-chronological-rounds-1";
+  const payload1 = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 1, adjudications: [] } };
+  const ev1 = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, payload1, "2026-09-01T00:01:00Z");
+  const payload2 = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
+  const ev2 = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payload2, "2026-09-01T00:02:00Z");
+  const payload3 = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 2, adjudications: [] } };
+  const ev3 = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 2, 1, payload3, "2026-09-01T00:03:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    evidence_comments: [
+      evidenceIndexEntry(ev1, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, payloadDigest(JSON.stringify(payload1))),
+      evidenceIndexEntry(ev2, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadDigest(JSON.stringify(payload2))),
+      evidenceIndexEntry(ev3, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 2, 1, payloadDigest(JSON.stringify(payload3))),
+    ],
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("chronological-rounds", {
+    issues: [{ number: 144, pull_request: null }],
+    comments: { "144": [idx, rr, ev1, ev2, ev3] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 144 },
+  });
+}
+
+// --- Scenario 33: a bot-authored post-promotion commit must never count
+// as a "post-ready HUMAN fix" — shepherd round 1, Codex-confirmed (P2):
+// every post-promotion commit counted regardless of author.
+{
+  const runId = "run-postfix-bot-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:01:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 508, url: "https://example.invalid/pr/508" },
+    evidence_comments: [],
+    promotion: { head: "7".repeat(40), promoted_at: "2026-09-01T00:10:00Z", gate_fingerprint: "bot" },
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const promotedCommit = { sha: "7".repeat(40), commit: { committer: { date: "2026-09-01T00:10:00Z" } }, author: { id: TRUSTED_ORCHESTRATOR } };
+  const botCommit = { sha: "e".repeat(40), commit: { committer: { date: "2026-09-01T00:20:00Z" } }, author: { id: 99, type: "Bot" } };
+  writeScenario("postfix-bot", {
+    issues: [{ number: 145, pull_request: null }],
+    comments: { "145": [idx, rr] },
+    commits: { "508": [promotedCommit, botCommit] },
+    ...mergedPrSeen(botCommit.sha, 509, "2026-09-01T00:20:00Z"),
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 145 },
+  });
+}
+
+// --- Scenario 34: a comment physically posted on the PR (fetched via the
+// PR's own comment list) whose marker falsely claims dest=issue —
+// shepherd round 1, Codex-confirmed (P2): assembleListedEvidence checked
+// only the marker's self-declared destination against the run record's
+// listed destination, never against which endpoint actually returned the
+// comment.
+{
+  const runId = "run-marker-dest-mismatch-1";
+  const stagePayload = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
+  const misplacedComment = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, stagePayload, "2026-09-01T00:03:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null,
+    pr: { number: 622, url: "https://example.invalid/pr/622" },
+    evidence_comments: [{
+      id: String(misplacedComment.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
+      digest: payloadDigest(JSON.stringify(stagePayload)),
+      marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
+    }],
+    pr_bindings: chain([{ number: 622, url: "https://example.invalid/pr/622", bound_at: "2026-09-01T00:00:00Z" }]),
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("marker-dest-mismatch", {
+    issues: [{ number: 146, pull_request: null }],
+    comments: { "146": [idx, rr], "622": [misplacedComment] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 146 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -1483,6 +1798,11 @@ const headLogPath = process.env.FAKE_EXIT_HEAD_LOG;
 if (headLogPath) {
   const prior = existsSync(headLogPath) ? JSON.parse(readFileSync(headLogPath, "utf8")) : {};
   prior[args.stage] = args["current-head"];
+  // shepherd round 1, Codex-confirmed (P1): --repo-root was hardcoded to
+  // process.cwd(), never threaded from a --repo-root CLI flag — logged
+  // here the same way current-head already is, so the bash test can
+  // assert dev-flow-stats.mjs actually passes an explicit value through.
+  prior.repo_root = args["repo-root"];
   writeFileSync(headLogPath, JSON.stringify(prior));
 }
 const passesDir = path.join(args.run, "passes");
@@ -1747,5 +2067,111 @@ export DFSTATS_DB="$tmp/scenarios/registry-revision-cherrypick.json"
 run_id="$(meta registry-revision-cherrypick .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "registry-revision-cherrypick: run governed by the earlier eligible commit should still authenticate cleanly"
+
+echo "== shepherd round 1: a schema-conformant record with NO chain fields at all on stage_transitions harvests cleanly (pre-#738 shape) =="
+export DFSTATS_DB="$tmp/scenarios/chain-pending-schema.json"
+run_id_plain="$(meta chain-pending-schema .meta.runIdPlain)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_plain" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "chain-pending-schema: a plain (no seq/digest/prev_digest) record should still authenticate cleanly"
+
+echo "== shepherd round 1: a MIXED record (one entry chain-protected, one not) still fails closed =="
+run_id_mixed="$(meta chain-pending-schema .meta.runIdMixed)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_mixed" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "chain-pending-schema: mixed chain shape should be indeterminate, got rc=$rc: $out"
+
+echo "== shepherd round 1: initiated_by edited in the mutable record body, disagreeing with the run-index's own copy, fails closed =="
+export DFSTATS_DB="$tmp/scenarios/mutable-field-tamper.json"
+run_id_init="$(meta mutable-field-tamper .meta.runIdInit)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_init" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "mutable-field-tamper (initiated_by): expected indeterminate, got rc=$rc: $out"
+echo "$out" | grep -qi "initiated_by" || fail "mutable-field-tamper (initiated_by): expected an initiated_by mismatch reason, got: $out"
+
+echo "== shepherd round 1: started_at edited in the mutable record body, disagreeing with the run-index comment's own created_at, fails closed =="
+run_id_start="$(meta mutable-field-tamper .meta.runIdStart)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_start" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "mutable-field-tamper (started_at): expected indeterminate, got rc=$rc: $out"
+echo "$out" | grep -qi "started_at" || fail "mutable-field-tamper (started_at): expected a started_at mismatch reason, got: $out"
+
+echo "== shepherd round 1: a path-traversal run_id cannot escape --replay's temp directory =="
+export DFSTATS_DB="$tmp/scenarios/replay-path-traversal.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.[0].indeterminate == true' >/dev/null || fail "replay-path-traversal: expected the unsafe run_id to be reported indeterminate, got: $out"
+echo "$out" | jq -r '.[0].reason' | grep -qi "escape" || fail "replay-path-traversal: expected the reason to name the escape refusal, got: $out"
+
+echo "== shepherd round 1: firstSeen takes the EARLIEST of check-suite and merged_at, never merged_at unconditionally =="
+export DFSTATS_DB="$tmp/scenarios/postfix-early-checksuite.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+echo "$out" | jq -e '.post_ready_fix_count == 1' >/dev/null || fail "postfix-early-checksuite: expected the check-suite's earlier visibility to count as of a cutoff between it and the eventual merge, got: $out"
+
+echo "== shepherd round 1: two chain entries sharing content+prev_digest but disagreeing on their own digest field are a fork, not a silently-discarded duplicate =="
+export DFSTATS_DB="$tmp/scenarios/digest-mismatch-duplicate.json"
+run_id="$(meta digest-mismatch-duplicate .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "digest-mismatch-duplicate: expected indeterminate (forked chain), got rc=$rc: $out"
+echo "$out" | grep -qi "forked chain" || fail "digest-mismatch-duplicate: expected a forked-chain reason, got: $out"
+
+echo "== shepherd round 1: an evidence marker edited from round=1 to round=1junk is rejected, not silently parsed as round:1 =="
+export DFSTATS_DB="$tmp/scenarios/marker-round-tamper.json"
+run_id="$(meta marker-round-tamper .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "marker-round-tamper: expected indeterminate, got rc=$rc: $out"
+echo "$out" | grep -qi "edited-entry tampering\|no longer matches" || fail "marker-round-tamper: expected an edited-marker reason, got: $out"
+
+echo "== shepherd round 1: a trusted run-index marker with a non-canonical tuple is not recognized as a real index =="
+export DFSTATS_DB="$tmp/scenarios/noncanonical-index.json"
+run_id="$(meta noncanonical-index .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 1 ] || fail "noncanonical-index: expected not-found (non-canonical index ignored), got rc=$rc: $out"
+
+echo "== shepherd round 1: rounds render in CHRONOLOGICAL (posting) order, not alphabetical-by-stage-name order =="
+export DFSTATS_DB="$tmp/scenarios/chronological-rounds.json"
+run_id="$(meta chronological-rounds .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds[0].stage == "challenge" and .rounds[0].round == 1' >/dev/null || fail "chronological-rounds: expected rounds[0] = challenge r1, got: $out"
+echo "$out" | jq -e '.rounds[1].stage == "review" and .rounds[1].round == 1' >/dev/null || fail "chronological-rounds: expected rounds[1] = review r1 (posted before challenge r2), got: $out"
+echo "$out" | jq -e '.rounds[2].stage == "challenge" and .rounds[2].round == 2' >/dev/null || fail "chronological-rounds: expected rounds[2] = challenge r2, got: $out"
+
+echo "== shepherd round 1: a bot-authored post-promotion commit never counts as a post-ready HUMAN fix =="
+export DFSTATS_DB="$tmp/scenarios/postfix-bot.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.unattended_success_count == 1 and .post_ready_fix_count == 0' >/dev/null || fail "postfix-bot: expected the bot commit to be excluded from post_ready_fix_count, got: $out"
+
+echo "== shepherd round 1: --repo-root is threaded to the exit script explicitly, not silently defaulted =="
+export DFSTATS_DB="$tmp/scenarios/happy.json"
+export FAKE_EXIT_HEAD_LOG="$tmp/fake-exit-heads-repo-root.json"
+rm -f "$FAKE_EXIT_HEAD_LOG"
+node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --repo-root "$tmp" --trusted-actor-id 9001 --json >/dev/null
+[ -f "$FAKE_EXIT_HEAD_LOG" ] || fail "--repo-root: fake exit script was never invoked"
+logged_repo_root="$(jq -r '.repo_root' "$FAKE_EXIT_HEAD_LOG")"
+[ "$logged_repo_root" = "$tmp" ] || fail "--repo-root: expected the exit script to receive the explicit --repo-root value ($tmp), got: $logged_repo_root"
+unset FAKE_EXIT_HEAD_LOG
+
+echo "== shepherd round 1: a comment physically posted on the PR but whose marker claims dest=issue fails closed =="
+export DFSTATS_DB="$tmp/scenarios/marker-dest-mismatch.json"
+run_id="$(meta marker-dest-mismatch .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "marker-dest-mismatch: expected indeterminate, got rc=$rc: $out"
+echo "$out" | grep -qi "not actually fetched from\|edited-entry tampering" || fail "marker-dest-mismatch: expected a destination-mismatch reason, got: $out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

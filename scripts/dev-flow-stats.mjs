@@ -76,7 +76,6 @@ function ghApiOne(endpoint) {
 function firstSeen(repo, sha) {
   const prs = ghApiPaginated(`repos/${repo}/commits/${sha}/pulls`);
   const merged = prs.find((pr) => pr.merged_at);
-  if (merged) return merged.merged_at;
   const suites = ghApiPaginated(`repos/${repo}/commits/${sha}/check-suites`);
   // The check-suites endpoint wraps its array in a `check_suites` object
   // per page rather than returning a bare array — ghApiPaginated's
@@ -84,6 +83,14 @@ function firstSeen(repo, sha) {
   // endpoint's own nested field.
   const flatSuites = suites.flatMap((page) => (Array.isArray(page.check_suites) ? page.check_suites : []));
   const timestamps = flatSuites.map((s) => Date.parse(s.created_at)).filter((t) => Number.isFinite(t));
+  // Take the EARLIEST of every available signal, never merged_at alone —
+  // shepherd round 1, Codex-confirmed (P2): a commit's check-suites can run
+  // (and be visible) well before its PR merges, so preferring merged_at
+  // unconditionally let the SAME immutable --as-of cutoff flip a commit
+  // from visible to not-visible depending on whether the query ran before
+  // or after the eventual merge, defeating the exact reproducibility
+  // first_seen exists to guarantee.
+  if (merged) timestamps.push(Date.parse(merged.merged_at));
   if (timestamps.length > 0) return new Date(Math.min(...timestamps)).toISOString();
   return null;
 }
@@ -165,8 +172,13 @@ function fetchPrComments(repo, prNumber) {
 const RUN_STAGES = ["kickoff", "claim", "explore", "plan", "implement", "verify", "challenge", "review", "security", "integration"];
 
 // <!-- devflow:<kind> v2 run_id=<id> stage=<stage> dest=<issue|pr> round=<n|-> seq=<n> -->
+// round=(-|\d+): the literal "-" or a plain digit run — never a bare \S+.
+// shepherd round 1, Codex-confirmed (P2): \S+ let round=1junk parse as
+// round:1 (Number.parseInt ignores trailing garbage), silently accepting
+// an edited marker the payload digest doesn't cover (it protects only the
+// fenced JSON, never the marker comment line itself).
 const MARKER_RE =
-  /<!--\s*devflow:(run-index|run-record|evidence)\s+v2\s+run_id=(\S+)\s+stage=(\S+)\s+dest=(issue|pr)\s+round=(\S+)\s+seq=(\d+)\s*-->/;
+  /<!--\s*devflow:(run-index|run-record|evidence)\s+v2\s+run_id=(\S+)\s+stage=(\S+)\s+dest=(issue|pr)\s+round=(-|\d+)\s+seq=(\d+)\s*-->/;
 const FENCE_RE = /```json\r?\n([\s\S]*?)\r?\n```/;
 
 class EvidenceError extends Error {}
@@ -177,7 +189,6 @@ function parseMarker(body) {
   const [, kind, runId, stage, dest, roundRaw, seqRaw] = m;
   if (!RUN_STAGES.includes(stage)) return null;
   const round = roundRaw === "-" ? null : Number.parseInt(roundRaw, 10);
-  if (roundRaw !== "-" && !Number.isInteger(round)) return null;
   const seq = Number.parseInt(seqRaw, 10);
   return { kind, runId, stage, dest, round, seq };
 }
@@ -329,7 +340,13 @@ function resolveCanonical(markedTrusted) {
 // no independent anchor to notice the deletion at all).
 function findRunRecord(issueComments, { trustedActorIds, repo }) {
   const byId = new Map(issueComments.map((c) => [c.id, c]));
-  const indexMarked = markedComments(issueComments).filter((e) => e.marker.kind === "run-index");
+  // The grammar reserves exactly ONE tuple for a run-index marker
+  // (kickoff/issue/-/1) — shepherd round 1, Codex-confirmed (P2): checking
+  // only `kind` accepted a trusted-but-noncanonical index (a stray
+  // stage/dest/round/seq) that the protocol does not actually sanction.
+  const indexMarked = markedComments(issueComments).filter(
+    (e) => e.marker.kind === "run-index" && e.marker.stage === "kickoff" && e.marker.dest === "issue" && e.marker.round === null && e.marker.seq === 1,
+  );
 
   // Registry-revision pinning (issue #741, review round 4 of #663): narrows
   // trustedActorIds to whichever ids the repo-committed registry also
@@ -349,18 +366,18 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
     return registryTrustCache.get(atIso);
   };
 
-  const trustedIndex = [];
-  const untrustedIndex = [];
-  for (const e of indexMarked) {
-    (effectiveTrustAt(e.comment.created_at).has(e.actorId) ? trustedIndex : untrustedIndex).push(e);
-  }
+  const trustedIndex = indexMarked.filter((e) => effectiveTrustAt(e.comment.created_at).has(e.actorId));
 
+  // An untrusted-authored index is forged noise, not evidence of tampering
+  // with a real run — never a trusted index to begin with, so there is
+  // nothing here that WAS real Dev Flow activity. Returning null (matching
+  // the "no index at all" case immediately below) rather than throwing
+  // keeps a random commenter's marker-shaped paste out of indeterminate_count
+  // — shepherd round 1, Codex-confirmed (P2): the prior throw's own message
+  // said "ignored" but the code did not actually ignore it, letting
+  // --repo's noise floor scale with how many issues an untrusted party
+  // happens to paste a marker-shaped comment on.
   if (trustedIndex.length === 0) {
-    if (untrustedIndex.length > 0) {
-      throw new EvidenceError(
-        `run-index marker present but authored by an untrusted actor id (${untrustedIndex.map((e) => e.actorId).join(", ")}) — forged evidence, ignored`,
-      );
-    }
     return null;
   }
 
@@ -434,6 +451,25 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
       // identity for its actual content.
       if (body.run_id !== runId) {
         throw new EvidenceError(`run-index ${runId} names comment ${named.id}, whose parsed payload declares run_id ${JSON.stringify(body.run_id)} — identity mismatch`);
+      }
+      // initiated_by and started_at live in the MUTABLE record body, edited
+      // in place throughout the run, and neither is chain-protected —
+      // shepherd round 1, Codex-confirmed (P1 x2): a valid-looking in-place
+      // edit to either passes every existing check. The run-index payload
+      // carries its own copy of initiated_by, and the index COMMENT's own
+      // created_at is when kickoff genuinely happened — both fixed once, at
+      // kickoff, never edited again, so cross-checking the mutable body
+      // against them closes the gap the same way the run_id check above
+      // does. initiated_by directly gates whether computeIssueVerdict
+      // counts a human re-kick as an intervention — an edit from human to
+      // foreman here would launder a real failure into unattended success,
+      // the primary metric this tool exists to compute. started_at gates
+      // --since cohort membership and stale-terminalization timing.
+      if (body.initiated_by !== indexPayload.initiated_by) {
+        throw new EvidenceError(`run-index ${runId} names comment ${named.id}, whose parsed payload declares initiated_by ${JSON.stringify(body.initiated_by)} but the run-index recorded ${JSON.stringify(indexPayload.initiated_by)} — edited-entry tampering`);
+      }
+      if (body.started_at !== indexEntry.comment.created_at) {
+        throw new EvidenceError(`run-index ${runId} names comment ${named.id}, whose parsed payload declares started_at ${JSON.stringify(body.started_at)} but the run-index comment was itself posted at ${indexEntry.comment.created_at} — edited-entry tampering`);
       }
       results.push({
         status: "ok",
@@ -516,6 +552,11 @@ function assembleListedEvidence(runRecord, allComments, withinCutoff, runRecordA
     // harvested. `kind` is checked for the same reason: nothing before this
     // point requires the referenced comment to BE an evidence comment at
     // all. Both — challenge round 3, confirmed.
+    // currentMarker.dest is the comment's OWN claim; comment._fetchedFrom
+    // is which API endpoint actually returned it — shepherd round 1,
+    // Codex-confirmed (P2): checking the claim against the listed entry
+    // alone let a PR-posted comment claim dest=issue (or vice versa) and
+    // still pass, since nothing tied either side to physical reality.
     const markersAgree =
       currentMarker &&
       currentMarker.kind === "evidence" &&
@@ -523,10 +564,11 @@ function assembleListedEvidence(runRecord, allComments, withinCutoff, runRecordA
       currentMarker.runId === listed.run_id &&
       currentMarker.stage === listed.stage &&
       currentMarker.dest === listed.destination &&
+      currentMarker.dest === comment._fetchedFrom &&
       currentMarker.round === listed.round &&
       currentMarker.seq === listed.sequence;
     if (!markersAgree) {
-      throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} no longer matches its recorded marker or does not bind to run ${runRecord.run_id} (listed ${JSON.stringify(listed)}, current ${JSON.stringify(currentMarker)}) — edited-entry tampering`);
+      throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} no longer matches its recorded marker, does not bind to run ${runRecord.run_id}, or claims a destination its comment was not actually fetched from (listed ${JSON.stringify(listed)}, current ${JSON.stringify(currentMarker)}, fetched from ${JSON.stringify(comment._fetchedFrom)}) — edited-entry tampering`);
     }
     const payloadText = fencedPayloadText(comment.body || "");
     if (payloadText === null) {
@@ -640,20 +682,26 @@ function normalizeExactDuplicates(rawEntries, contentKeys) {
   const normalized = [];
   for (const [seq, group] of bySeq) {
     const first = group[0];
-    // Compare full canonical CONTENT (plus prev_digest), never the
-    // digest FIELD's value alone — review round 3, confirmed (P1): an
-    // entry edited after being appended, whose content no longer matches
-    // its own (now-stale) digest, would still equal a genuine original
-    // sharing that same stale digest, so the edited copy could be
-    // silently discarded here — DISCARDED, before verifyChain's own
-    // per-entry digest-vs-content check ever runs on it — hiding exactly
-    // the tampering that check exists to catch. Comparing content
-    // directly means an edited copy no longer equals the original at
-    // all, so it falls through to the fork branch below instead.
+    // Compare full canonical CONTENT (plus prev_digest AND digest itself),
+    // never content alone — review round 3, confirmed (P1): an entry edited
+    // after being appended, whose content no longer matches its own
+    // (now-stale) digest, would still equal a genuine original sharing
+    // that same stale digest, so the edited copy could be silently
+    // discarded here — DISCARDED, before verifyChain's own per-entry
+    // digest-vs-content check ever runs on it — hiding exactly the
+    // tampering that check exists to catch. Comparing content directly
+    // means an edited copy no longer equals the original at all, so it
+    // falls through to the fork branch below instead. digest is ALSO
+    // compared — shepherd round 1, Codex-confirmed (P2): two entries
+    // sharing identical content+prev_digest but disagreeing on their own
+    // digest field (one right, one corrupted) still equaled each other
+    // under a content-only comparison, so the corrupted one could be
+    // silently discarded as a "duplicate" instead of surfacing as the
+    // tampering evidence it actually is.
     const canonicalOf = (e) => {
       const content = {};
       for (const k of contentKeys) content[k] = e[k];
-      return canonicalJson({ content, prev_digest: e.prev_digest });
+      return canonicalJson({ content, prev_digest: e.prev_digest, digest: e.digest });
     };
     const firstKey = canonicalOf(first);
     const allIdentical = group.every((e) => canonicalOf(e) === firstKey);
@@ -719,13 +767,36 @@ const CHAIN_TIMESTAMP_FIELD = {
   outcome_transitions: "at",
 };
 
+// #738 (open, unimplemented as of this writing): these three arrays are
+// not yet schema-enforced to carry seq/digest/prev_digest at all — a
+// genuinely schema-conformant record from today's shipped run.schema.json
+// legitimately has NONE of them. shepherd round 1, Codex-confirmed (P1):
+// requiring the chain fields unconditionally rejected every such record
+// outright ("expected seq 0, got undefined"), including the schema's own
+// committed valid fixtures — this file's entire test suite masked the gap
+// because every fixture builds these arrays via the chain() helper, which
+// always adds the fields.
+const CHAINS_PENDING_SCHEMA = new Set(["stage_transitions", "interventions", "settlements"]);
+
 // Validates all six append-only arrays in a run-record body. Throws
 // EvidenceError on any broken chain — the record is not trusted past the
-// break (evidence spec: "fail closed").
+// break (evidence spec: "fail closed"). For the three CHAINS_PENDING_SCHEMA
+// arrays specifically, an array whose entries ALL lack seq is treated as
+// pre-#738 and passed through unprotected (natural array order, no digest
+// check) rather than rejected — this is exactly what today's schema
+// allows, no more. An array with SOME but not all entries carrying seq is
+// a mixed, suspicious shape with no legitimate writer behind it (only an
+// attempt to look chain-protected) and still fails closed via the normal
+// path below.
 function verifyRunRecordChains(body) {
   const result = {};
   for (const [arrayName, contentKeys] of Object.entries(CHAIN_FIELDS)) {
-    const outcome = verifyChain(body[arrayName] || [], contentKeys);
+    const rawEntries = body[arrayName] || [];
+    if (CHAINS_PENDING_SCHEMA.has(arrayName) && rawEntries.length > 0 && rawEntries.every((e) => e.seq === undefined)) {
+      result[arrayName] = rawEntries;
+      continue;
+    }
+    const outcome = verifyChain(rawEntries, contentKeys);
     if (!outcome.ok) {
       throw new EvidenceError(`run record ${arrayName} chain broken: ${outcome.reason}`);
     }
@@ -857,12 +928,24 @@ function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds }) {
 // ---------------------------------------------------------------------------
 // Run directory reconstruction — the shape scripts/dev-flow-exit.mjs's
 // loadRunDir() reads (run.json + passes/*.json + adjudications/*.json).
-// receipts[] and slot_failures[] are DERIVED here from harvested evidence,
-// entirely as an implementation detail of this harvester: dev-flow-exit.mjs
-// already expects them (evanharmon1/harmon-devkit#727 tracks giving them a
-// canonical durable schema of their own; this reconstruction does not wait
-// on that). Chronology comes directly from ascending comment id order,
-// which IS creation order on GitHub.
+// receipts[] IS derived here from harvested evidence, entirely as an
+// implementation detail of this harvester: dev-flow-exit.mjs already
+// expects it (evanharmon1/harmon-devkit#727 tracks giving it a canonical
+// durable schema of its own; this reconstruction does not wait on that).
+// Chronology comes directly from ascending comment id order, which IS
+// creation order on GitHub. slot_failures[] is NOT derived — always []
+// below — shepherd round 1, Codex-confirmed (P1): a finder_unavailable or
+// breadth_exhausted slot has no pass and is indistinguishable from a
+// still-pending one without it, so a capped/finder-unavailable round can
+// replay to the wrong exit. Left unimplemented here rather than guessed at:
+// deriving the FAILURE REASON needs a settled writer-side evidence contract
+// for what gets posted (if anything) for a failed slot, which does not
+// exist yet (the writer, #638/#639, is itself unbuilt) — filed as a
+// follow-up once that contract is settled, the same "blocked on a
+// capability this file doesn't have" category as the registry-trust gap.
+// --history is similarly never passed to dev-flow-exit.mjs, so
+// provenance_share/repeat_after_fix convergence predicates cannot replay
+// correctly either — same follow-up.
 // ---------------------------------------------------------------------------
 
 function buildRunDirectory(runRecord, roundEvidence, destDir) {
@@ -938,7 +1021,16 @@ function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, w
     // as-of exclusion of those later entries from the ASSEMBLED
     // trajectory still happens correctly downstream, via withinCutoff.
     const allPrComments = record.body.pr ? fetchPrComments(repo, record.body.pr.number) : [];
-    const allComments = [...issueComments, ...allPrComments];
+    // Tagged with the API endpoint each comment actually came from —
+    // shepherd round 1, Codex-confirmed (P2): assembleListedEvidence below
+    // only checked the marker's OWN self-declared dest against the run
+    // record's listed destination, never against which endpoint physically
+    // returned the comment, so a comment posted on the PR could claim
+    // dest=issue and pass every self-consistency check.
+    const allComments = [
+      ...issueComments.map((c) => ({ ...c, _fetchedFrom: "issue" })),
+      ...allPrComments.map((c) => ({ ...c, _fetchedFrom: "pr" })),
+    ];
     // List-driven: verifies every evidence_comments[] entry (unconditionally
     // — a listed comment either genuinely exists, unedited, or it's
     // tampering, regardless of --as-of) and assembles only the entries
@@ -1132,7 +1224,16 @@ function computePostReadyFix(repo, readyRun, cutoffEpoch) {
   // author date is fully pusher-controlled and does not answer that,
   // and Commit.pushedDate (an earlier attempted fix) turned out to never
   // populate for this repo's commits at all.
-  const postPromotion = commits.slice(headIndex + 1);
+  // Bot-authored commits (author.type === "Bot" — a GitHub App or Actions
+  // identity, distinct from computeIssueVerdict's own initiated_by-based
+  // human/Foreman distinction, which has no equivalent signal at the git
+  // commit level) never count as a "post-ready HUMAN fix" — shepherd round
+  // 1, Codex-confirmed (P2): every post-promotion commit counted
+  // regardless of author, inflating a metric explicitly defined as human
+  // fixes after readiness. Conservative on purpose: only a POSITIVELY
+  // bot-identified commit is excluded; a human's git identity unlinked
+  // from a GitHub account (author null/absent) is never false-excluded.
+  const postPromotion = commits.slice(headIndex + 1).filter((c) => c.author?.type !== "Bot");
   let fixed = false;
   let indeterminate = false;
   for (const c of postPromotion) {
@@ -1236,9 +1337,15 @@ function findingCountsByClassAndProvenance(rounds) {
 }
 
 function renderTrajectory(run) {
+  // Chronological (by comment id — ascending id IS creation order on
+  // GitHub, the same fact buildRunDirectory's own chronology already
+  // relies on), never alphabetical by stage name — shepherd round 1,
+  // Codex-confirmed (P2): a remediation loop re-entering an earlier stage
+  // (e.g. review, then challenge again) rendered every challenge round
+  // before every review round regardless of when each actually happened.
   const rounds = run.rounds
     .filter((r) => r.dest === "issue" && r.round !== null)
-    .sort((a, b) => a.stage.localeCompare(b.stage) || a.round - b.round);
+    .sort((a, b) => Math.min(...a.commentIds) - Math.min(...b.commentIds));
   return {
     run_id: run.runId,
     issue: run.issueNumber,
@@ -1299,7 +1406,7 @@ function renderTrajectoryTable(trajectory) {
 
 const DEFAULT_EXIT_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "dev-flow-exit.mjs");
 
-function invokeExitScript(exitScriptPath, { runDir, stage, policyPath, currentHead }) {
+function invokeExitScript(exitScriptPath, { runDir, stage, policyPath, currentHead, repoRoot }) {
   // --repo-root lets dev-flow-exit.mjs resolve real ancestry via
   // `git merge-base --is-ancestor` for any pass whose reviewed_head
   // differs from currentHead — without it, every such pass is marked
@@ -1311,9 +1418,17 @@ function invokeExitScript(exitScriptPath, { runDir, stage, policyPath, currentHe
   // traversal exists anywhere here) — --repo-root alone is sufficient,
   // since dev-flow-exit.mjs's own ancestry check does a direct git query
   // and never requires the heads-map to be present.
+  // Caller-overridable (default process.cwd()) — shepherd round 1,
+  // Codex-confirmed (P1): hardcoding process.cwd() silently produced wrong
+  // ancestry whenever --repo names a repository other than the current
+  // checkout (or a checkout missing the retained remote commits). Fetching
+  // a mismatched repo's history automatically is out of scope (this tool
+  // is otherwise gh-api-only, no other local-git network dependency); the
+  // flag gives the caller an explicit, correct escape hatch instead of a
+  // silent wrong answer.
   const result = spawnSync(
     process.execPath,
-    [exitScriptPath, "--run", runDir, "--stage", stage, "--policy", policyPath, "--current-head", currentHead, "--repo-root", process.cwd(), "--json"],
+    [exitScriptPath, "--run", runDir, "--stage", stage, "--policy", policyPath, "--current-head", currentHead, "--repo-root", repoRoot, "--json"],
     { encoding: "utf8" },
   );
   if (result.error) {
@@ -1382,15 +1497,35 @@ function currentHeadForStage(run, stage) {
   return "0".repeat(40);
 }
 
-function replayOneRun(run, { policyPath, exitScriptPath, tmpRoot }) {
-  const runDir = path.join(tmpRoot, run.runId);
+// run.schema.json's run_id is `{type: "string", minLength: 1}` — no
+// format/pattern restriction, so it may legitimately (per schema) contain
+// path separators or ".." segments. shepherd round 1, Codex-confirmed
+// (P1, severe): path.join(tmpRoot, run.runId) let a run_id like
+// "../../somewhere" escape the mkdtempSync'd temp root entirely, after
+// which buildRunDirectory's mkdirSync/writeFileSync calls create
+// directories and overwrite fixed filenames (run.json, passes/*,
+// adjudications/*) at that external location — this is the only place
+// this otherwise read-only (gh-api-only) tool writes to the local
+// filesystem at all. Resolve-and-check-prefix, not a blocklist: any name
+// that does not stay inside base is refused outright.
+function safeJoin(base, name) {
+  const resolvedBase = path.resolve(base);
+  const joined = path.resolve(resolvedBase, name);
+  if (joined !== resolvedBase && !joined.startsWith(resolvedBase + path.sep)) {
+    throw new EvidenceError(`run_id ${JSON.stringify(name)} would escape the replay temp directory — refusing`);
+  }
+  return joined;
+}
+
+function replayOneRun(run, { policyPath, exitScriptPath, tmpRoot, repoRoot }) {
+  const runDir = safeJoin(tmpRoot, run.runId);
   buildRunDirectory(run.record.body, run.rounds, runDir);
   const diffs = [];
   for (const stage of ["challenge", "review"]) {
     const hasRounds = run.rounds.some((r) => r.stage === stage && r.dest === "issue" && r.round !== null);
     if (!hasRounds) continue;
     const currentHead = currentHeadForStage(run, stage);
-    const { verdict, error } = invokeExitScript(exitScriptPath, { runDir, stage, policyPath, currentHead });
+    const { verdict, error } = invokeExitScript(exitScriptPath, { runDir, stage, policyPath, currentHead, repoRoot });
     const recordedText = recordedExitFor(run.state, stage);
     const recorded = recordedOutcome(recordedText);
     if (error) {
@@ -1404,14 +1539,24 @@ function replayOneRun(run, { policyPath, exitScriptPath, tmpRoot }) {
   return { runId: run.runId, issue: run.issueNumber, diffs };
 }
 
-function replayAll(runs, { policyPath, exitScriptPath }) {
+function replayAll(runs, { policyPath, exitScriptPath, repoRoot }) {
   const tmpRoot = mkdtempSync(path.join(tmpdir(), "dev-flow-stats-replay-"));
   try {
     return runs.map((run) => {
       if (run.status === "indeterminate") {
         return { runId: run.runId, issue: run.issueNumber, diffs: [], indeterminate: true, reason: run.reason };
       }
-      return replayOneRun(run, { policyPath, exitScriptPath: exitScriptPath || DEFAULT_EXIT_SCRIPT, tmpRoot });
+      // One run's unsafe run_id (safeJoin) must not abort the whole batch
+      // — the same per-run isolation this file applies everywhere else
+      // (harvestOneRunRecord, findRunRecord's per-run_id grouping).
+      try {
+        return replayOneRun(run, { policyPath, exitScriptPath: exitScriptPath || DEFAULT_EXIT_SCRIPT, tmpRoot, repoRoot: repoRoot || process.cwd() });
+      } catch (err) {
+        if (err instanceof EvidenceError) {
+          return { runId: run.runId, issue: run.issueNumber, diffs: [], indeterminate: true, reason: err.message };
+        }
+        throw err;
+      }
     });
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
@@ -1697,6 +1842,14 @@ function cliReplay(args) {
     console.error(`dev-flow-stats: exit script does not exist: ${exitScriptPath}`);
     return 2;
   }
+  // Defaults to process.cwd() (unchanged behavior) — only needed when
+  // --repo names a repository other than the current checkout, or a
+  // checkout missing the retained remote commits. See invokeExitScript.
+  const repoRoot = args["repo-root"] || process.cwd();
+  if (typeof repoRoot !== "string" || !existsSync(repoRoot)) {
+    console.error(`dev-flow-stats: --repo-root path does not exist: ${repoRoot}`);
+    return 2;
+  }
 
   let runs;
   try {
@@ -1705,7 +1858,7 @@ function cliReplay(args) {
     console.error(`dev-flow-stats: ${err.message}`);
     return err instanceof EvidenceError ? 3 : 2;
   }
-  const results = replayAll(runs, { policyPath, exitScriptPath });
+  const results = replayAll(runs, { policyPath, exitScriptPath, repoRoot });
   const indeterminate = results.filter((r) => r.indeterminate);
   const withDiffs = results.filter((r) => !r.indeterminate && r.diffs.length > 0);
 
