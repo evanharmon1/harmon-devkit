@@ -1181,10 +1181,12 @@ exercising it.
 ## Evidence marker and digest grammar
 
 The contract both sides of the evidence protocol implement: the writer that
-will post run records and round evidence to GitHub (stage skills, #638/#639)
-and the reader that harvests them back (`scripts/dev-flow-stats.mjs`, #663).
-Neither exists as an implementation yet; this section is the interface, not
-a description of running code. It implements `specs/dev-flow-v2.md`
+will post run records and round evidence to GitHub (stage skills, #638/#639
+— not yet implemented) and the reader that harvests them back
+(`scripts/dev-flow-stats.mjs`, #663 — implemented and wired into `task
+test:dev-flow-stats`). This section remains the interface both sides must
+produce/consume, not a description of the writer's own running code, which
+does not exist yet. It implements `specs/dev-flow-v2.md`
 § Evidence and the evidence delta spec's requirements — this doc is where a
 concrete byte-level grammar for "deterministic marker" and "canonical
 digest" lives, since neither the anchor nor the delta spec pins one.

@@ -1046,6 +1046,81 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 19: an evidence_comments[] entry names a DIFFERENT trusted
+// actor (OTHER_TRUSTED, also in the configured set, but not this run's own
+// author) as author_actor_id, and a real comment exists matching that
+// claim exactly (marker, digest, and actual author all agree with the
+// entry) — review round 2, confirmed P1: self-consistency alone accepted
+// this; trust must narrow to the run's OWN author specifically
+// (ai/schemas/README.md "Trust: actor ID, never a payload claim").
+{
+  const runId = "run-forged-author-1";
+  const stagePayload = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
+  const ev = evidenceComment(OTHER_TRUSTED, "other-orchestrator", runId, "review", "issue", 1, 1, stagePayload, "2026-09-01T00:03:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    evidence_comments: [{
+      id: String(ev.id), author_actor_id: OTHER_TRUSTED, login: "other-orchestrator",
+      digest: payloadDigest(JSON.stringify(stagePayload)),
+      marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
+    }],
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("forged-author", {
+    issues: [{ number: 122, pull_request: null }],
+    comments: { "122": [idx, rr, ev] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED], issueNumber: 122 },
+  });
+}
+
+// --- Scenario 20: a run sits in one stage for well past stale_after by
+// stage_transitions alone, but keeps posting NEW round evidence (fresh
+// evidence_registrations entries) throughout — review round 2, confirmed
+// P1: staleness previously ignored evidence_registrations/pr_bindings/
+// outcome_transitions entirely, so genuinely active runs were
+// terminalized as abandoned.
+{
+  const runId = "run-active-not-stale-1";
+  const stagePayload = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
+  const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, stagePayload, "2026-09-08T12:00:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "review", entered_at: "2026-09-01T00:05:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    evidence_comments: [{
+      id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
+      digest: payloadDigest(JSON.stringify(stagePayload)),
+      marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
+    }],
+    // Explicit override: registered well within the stale window, days
+    // after the last stage_transitions entry (2026-09-01), proving THIS
+    // is what keeps the run active, not the stage transition.
+    evidence_registrations: chain([{
+      id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
+      payload_digest: payloadDigest(JSON.stringify(stagePayload)),
+      marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
+      registered_at: "2026-09-08T12:00:00Z",
+    }]),
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("active-not-stale", {
+    issues: [{ number: 123, pull_request: null }],
+    comments: { "123": [idx, rr, ev] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 123 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -1345,6 +1420,16 @@ for flag_args in "--as-of not-a-date" "--since not-a-date" "--stale-after-days n
     [ "$rc" -eq 2 ] || fail "invalid arg ($flag_args): expected exit 2, got $rc: $out"
 done
 
+echo "== review round 2: a value-taking flag followed by nothing (or another flag) is a usage error, not a silent default =="
+for flag_args in "--as-of" "--since" "--stale-after-days"; do
+    set +e
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "missing-value ($flag_args --json): expected exit 2, got $rc: $out"
+    echo "$out" | grep -qi "requires a value" || fail "missing-value ($flag_args --json): expected a 'requires a value' reason, got: $out"
+done
+
 echo "== a listed evidence entry naming a foreign run_id in its own marker is rejected, not silently merged =="
 export DFSTATS_DB="$tmp/scenarios/foreign-evidence.json"
 set +e
@@ -1426,5 +1511,20 @@ before="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-a
 echo "$before" | jq -e '.outcome == null' >/dev/null || fail "asof-pr-rollup: expected a clean, tampering-free in-flight reconstruction before the promotion cutoff, got: $before"
 after="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-01T02:25:00Z --json)"
 echo "$after" | jq -e '.outcome == "ready-for-review"' >/dev/null || fail "asof-pr-rollup: expected a clean, tampering-free ready-for-review reconstruction after the promotion cutoff, got: $after"
+
+echo "== review round 2: an evidence_comments[] entry naming a DIFFERENT trusted actor than the run's own author is a forged-author entry, not merely self-consistent =="
+export DFSTATS_DB="$tmp/scenarios/forged-author.json"
+run_id="$(meta forged-author .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "forged-author: expected exit 3 (indeterminate), got $rc: $out"
+echo "$out" | grep -qi "not this run's own trusted author\|forged-author" || fail "forged-author: expected a forged-author reason, got: $out"
+
+echo "== review round 2: fresh evidence_registrations activity keeps a long-in-one-stage run out of stale-abandoned terminalization =="
+export DFSTATS_DB="$tmp/scenarios/active-not-stale.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-09T00:00:00Z --stale-after-days 7 --json)"
+echo "$out" | jq -e '.cohort_size == 0' >/dev/null || fail "active-not-stale: expected the run to stay open (not stale-terminalized, so not yet in the closed cohort), got: $out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

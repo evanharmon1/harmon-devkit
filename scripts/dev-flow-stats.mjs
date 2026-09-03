@@ -352,7 +352,7 @@ function findRunRecord(issueComments, { trustedActorIds }) {
 // against the full, unfiltered comment set regardless of cutoff, for the
 // same reason findRunRecord's own cutoff filtering only ever applies to
 // discovery, never to whether a listed entry was deleted or edited.
-function assembleListedEvidence(runRecord, allComments, withinCutoff) {
+function assembleListedEvidence(runRecord, allComments, withinCutoff, runRecordAuthorId) {
   const byId = new Map(allComments.map((c) => [c.id, c]));
   const verified = [];
   for (const entry of runRecord.evidence_comments || []) {
@@ -363,6 +363,22 @@ function assembleListedEvidence(runRecord, allComments, withinCutoff) {
     }
     if (commentActorId(comment) !== entry.author_actor_id) {
       throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} names author ${entry.author_actor_id} but the comment's current author is ${commentActorId(comment)}`);
+    }
+    // Self-consistency (the check above) is not trust: entry.author_actor_id
+    // is itself just a claim the run record makes about who posted this
+    // comment, so it must ALSO be the run's own already-validated author —
+    // never merely equal to whatever the entry claims, and never any other
+    // member of the broader configured trust set. ai/schemas/README.md
+    // "Trust: actor ID, never a payload claim" is explicit that
+    // evidence_comments[]'s author_actor_id "narrows the same root to the
+    // SPECIFIC already-trusted actor" — an evidence comment authored by
+    // anyone else is never trusted, run record or no. review round 2,
+    // confirmed (P1): this narrowing (already applied to the
+    // marker-scanning path via isTrustedFor) was never applied to this
+    // list-driven path at all — the function did not even receive the run
+    // record's own author id to check against.
+    if (entry.author_actor_id !== runRecordAuthorId) {
+      throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} names author ${entry.author_actor_id}, which is not this run's own trusted author ${runRecordAuthorId} — forged-author entry`);
     }
     // The payload can be untouched while only the marker line changes —
     // author agreement alone would miss that, and grouping-by-marker below
@@ -656,6 +672,15 @@ function reconstructAsOf(body, cutoffIso) {
     stage_transitions: filtered.stage_transitions,
     interventions: filtered.interventions,
     settlements: filtered.settlements,
+    // Raw, cutoff-filtered — carried through so isStale can treat these as
+    // activity too (an actively-updated run posting new round evidence
+    // within one stage, with no NEW stage_transitions entry yet, is not
+    // stale) — review round 2, confirmed (P1): lastActivity previously
+    // could not see this at all, since it was never part of this return
+    // value in the first place.
+    evidence_registrations: filtered.evidence_registrations,
+    pr_bindings: filtered.pr_bindings,
+    outcome_transitions: filtered.outcome_transitions,
     pr,
     promotion,
     outcome,
@@ -771,7 +796,7 @@ function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, w
     // silently keeping whatever DID reassemble (an earlier version of this
     // function) let metrics and replay operate on a trajectory the
     // producer never actually emitted — challenge round 1, confirmed.
-    const rounds = assembleListedEvidence(record.body, allComments, withinCutoff);
+    const rounds = assembleListedEvidence(record.body, allComments, withinCutoff, record.authorActorId);
     const listedIds = new Set((record.body.evidence_comments || []).map((e) => Number(e.id)));
     const orphans = findOrphanEvidence(allComments, { runId: record.runId, runRecordAuthorId: record.authorActorId, listedIds });
     return {
@@ -846,9 +871,20 @@ function discoverAllRuns(repo, { trustedActorIds, asOf }) {
 
 function isStale(state, staleAfterDays, asOfEpoch) {
   if (state.outcome !== null) return false; // already terminal
-  const allEntries = [...state.stage_transitions, ...state.interventions, ...state.settlements];
+  // Every timestamped run-record update counts as activity (specs/
+  // dev-flow-v2.md § Success metric: "no run-record update for
+  // [convergence].stale_after"), not just stage/intervention/settlement
+  // entries — review round 2, confirmed (P1): a run posting new round
+  // evidence for days within a single stage, with no fresh
+  // stage_transitions entry, was previously terminalized as abandoned
+  // regardless of that activity, since these three arrays were not in
+  // the union at all.
+  const allEntries = [
+    ...state.stage_transitions, ...state.interventions, ...state.settlements,
+    ...state.evidence_registrations, ...state.pr_bindings, ...state.outcome_transitions,
+  ];
   const lastActivity = allEntries.reduce((max, e) => {
-    const t = Date.parse(e.entered_at || e.at || e.settled_at);
+    const t = Date.parse(e.entered_at || e.at || e.settled_at || e.registered_at || e.bound_at);
     return t > max ? t : max;
   }, Date.parse(state.started_at));
   return asOfEpoch - lastActivity > staleAfterDays * 24 * 60 * 60 * 1000;
@@ -1320,6 +1356,21 @@ const DEFAULT_STALE_AFTER_DAYS = 7;
 // everything" rather than an error — the command would exit 0 with a
 // plausible-looking, silently wrong empty metric instead of refusing bad
 // input. Challenge round 2, confirmed (P2).
+// parseArgs stores `true` (not a string) for a value-taking flag with no
+// following value (e.g. `--as-of --json` or `--as-of` at the end of argv)
+// — review round 2, confirmed (P2): callers were narrowing that case with
+// `typeof x === "string" ? x : null`, which reads `true` exactly like
+// "flag omitted" and silently falls back to the default instead of
+// reporting a usage error, despite the CLI documenting these as
+// value-required options.
+function requiredArgValue(flagName, rawValue) {
+  if (rawValue === undefined) return { ok: true, value: null };
+  if (rawValue === true) {
+    return { ok: false, error: `dev-flow-stats: --${flagName} requires a value` };
+  }
+  return { ok: true, value: rawValue };
+}
+
 function parseIsoDateArg(flagName, value) {
   if (value === null) return { ok: true, value: null };
   if (Number.isNaN(Date.parse(value))) {
@@ -1331,12 +1382,22 @@ function parseIsoDateArg(flagName, value) {
 function cliMetrics(args) {
   const trustedActorIds = requireTrustedActorIds(args);
   if (!trustedActorIds) return 2;
-  const asOfArg = parseIsoDateArg("as-of", typeof args["as-of"] === "string" ? args["as-of"] : null);
+  const asOfRequired = requiredArgValue("as-of", args["as-of"]);
+  if (!asOfRequired.ok) {
+    console.error(asOfRequired.error);
+    return 2;
+  }
+  const asOfArg = parseIsoDateArg("as-of", asOfRequired.value);
   if (!asOfArg.ok) {
     console.error(asOfArg.error);
     return 2;
   }
-  const sinceArg = parseIsoDateArg("since", typeof args.since === "string" ? args.since : null);
+  const sinceRequired = requiredArgValue("since", args.since);
+  if (!sinceRequired.ok) {
+    console.error(sinceRequired.error);
+    return 2;
+  }
+  const sinceArg = parseIsoDateArg("since", sinceRequired.value);
   if (!sinceArg.ok) {
     console.error(sinceArg.error);
     return 2;
@@ -1344,10 +1405,15 @@ function cliMetrics(args) {
   const asOf = asOfArg.value;
   const since = sinceArg.value;
   let staleAfterDays = DEFAULT_STALE_AFTER_DAYS;
-  if (args["stale-after-days"]) {
-    staleAfterDays = Number(args["stale-after-days"]);
+  const staleRequired = requiredArgValue("stale-after-days", args["stale-after-days"]);
+  if (!staleRequired.ok) {
+    console.error(staleRequired.error);
+    return 2;
+  }
+  if (staleRequired.value !== null) {
+    staleAfterDays = Number(staleRequired.value);
     if (!Number.isFinite(staleAfterDays) || staleAfterDays <= 0) {
-      console.error(`dev-flow-stats: --stale-after-days must be a positive number, got ${JSON.stringify(args["stale-after-days"])}`);
+      console.error(`dev-flow-stats: --stale-after-days must be a positive number, got ${JSON.stringify(staleRequired.value)}`);
       return 2;
     }
   }
@@ -1389,7 +1455,12 @@ function cliMetrics(args) {
 function cliRun(args) {
   const trustedActorIds = requireTrustedActorIds(args);
   if (!trustedActorIds) return 2;
-  const asOfArg = parseIsoDateArg("as-of", typeof args["as-of"] === "string" ? args["as-of"] : null);
+  const asOfRequired = requiredArgValue("as-of", args["as-of"]);
+  if (!asOfRequired.ok) {
+    console.error(asOfRequired.error);
+    return 2;
+  }
+  const asOfArg = parseIsoDateArg("as-of", asOfRequired.value);
   if (!asOfArg.ok) {
     console.error(asOfArg.error);
     return 2;
