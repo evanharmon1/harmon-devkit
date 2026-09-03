@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-repeat-after-decline",
+  "stage": "review",
+  "round": 2,
+  "reviewed_head": "0202020202020202020202020202020202020202",
+  "adjudications": [
+    {
+      "finding_id": "review-r2-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "decline",
+      "reason": "still a false positive",
+      "evidence": "confirmed by orchestrator",
+      "override": null
+    }
+  ]
+}

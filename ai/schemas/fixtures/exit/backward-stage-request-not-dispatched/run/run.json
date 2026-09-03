@@ -1,0 +1,8 @@
+{
+  "run_id": "run-backward-stage",
+  "initiated_by": "human",
+  "receipts": [
+    { "kind": "transition", "stage": "challenge" },
+    { "kind": "transition", "stage": "review" }
+  ]
+}

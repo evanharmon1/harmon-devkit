@@ -1,0 +1,7 @@
+{
+  "outcome": "continue",
+  "reason": "below_threshold",
+  "next_round": 2,
+  "corrections_field": "provenance",
+  "corrections_status": "corrected"
+}

@@ -1,0 +1,6 @@
+{
+  "outcome": "capped",
+  "reason": "finder_unavailable",
+  "rounds_counted": 1,
+  "unresolved_slot": "codex-cli"
+}

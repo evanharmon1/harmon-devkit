@@ -1,0 +1,4 @@
+{
+  "indeterminate": true,
+  "reason": "--stage challenge was requested but the trusted receipt sequence's active stage is \"review\" — a backward stage request cannot be authorized to dispatch more work"
+}

@@ -1,0 +1,8 @@
+{
+  "run_id": "run-raw-over-cap",
+  "initiated_by": "human",
+  "receipts": [
+    { "kind": "transition", "stage": "review" },
+    { "kind": "pass", "file": "review-r4-codex-cli" }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "families": [
+    {
+      "slug": "claude"
+    },
+    {
+      "slug": "gpt"
+    },
+    {
+      "slug": "gemini"
+    }
+  ],
+  "harnesses": [
+    {
+      "slug": "claude-code"
+    },
+    {
+      "slug": "codex-cli"
+    },
+    {
+      "slug": "gemini-cli"
+    }
+  ],
+  "finders": [
+    {
+      "slug": "codex-cli",
+      "surface": "local"
+    },
+    {
+      "slug": "gemini-cli",
+      "surface": "local"
+    }
+  ]
+}
