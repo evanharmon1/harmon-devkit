@@ -3,11 +3,6 @@
 # successor to gauntlet/assets/push-round.sh (see that script's own test,
 # scripts/test-gauntlet-push.sh, which stays green against the untouched
 # legacy asset and is not touched by this file).
-#
-# scripts/devflow-policy.mjs (#636) is not yet on main at the time this test
-# was written. Every test that needs it is skipped, with a clear message,
-# when the script is absent from the tree — see maybe_skip_no_devflow_policy
-# below. Once #636 merges, this suite un-skips on its own; no flag needed.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,11 +12,6 @@ toml_lite_src="${repo_root}/scripts/lib/toml-lite.mjs"
 gitleaks_scan_src="${repo_root}/scripts/gitleaks-scan.sh"
 summarize_gitleaks_src="${repo_root}/scripts/summarize-gitleaks.mjs"
 gitleaks_config_src="${repo_root}/.gitleaks.toml"
-
-if [ ! -f "$devflow_policy_src" ]; then
-    echo "test-round-push: SKIP — scripts/devflow-policy.mjs is not yet on this branch (#636 not merged); nothing to test yet"
-    exit 0
-fi
 
 test_tmp="$(mktemp -d -t round-push-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT

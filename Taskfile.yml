@@ -466,7 +466,7 @@ tasks:
       - ./scripts/test-gauntlet-push.sh
 
   test:round-push:
-    desc: Unit-test the dev-flow-v2 diff-aware round-push broker (offline, local bare remotes; skips until #636 lands)
+    desc: Unit-test the dev-flow-v2 diff-aware round-push broker (offline, local bare remotes)
     cmds:
       - ./scripts/test-round-push.sh
 
