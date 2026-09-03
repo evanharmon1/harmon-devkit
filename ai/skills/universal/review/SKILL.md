@@ -60,20 +60,31 @@ adjudication schema rejects. Only after that write, run the exit command again
 with the same trusted repository history and head map, persist its returned JSON as
 `verdict.json`, and act on that second outcome.
 
-After each adjudication, render immutable evidence through
-`scripts/render-dev-flow.sh round-table --record <record> --stage <stage>
---round <N>`. Before any GitHub write, compute the exact body digest and reserve
-the comment through `scripts/dev-flow-monitor.sh reserve`, binding the expected
-head, deterministic run/stage/round/sequence marker, actor ID, and the run's
-kickoff-pinned registry revision. Only then post. On re-arm, fetch the complete
-bounded comment candidate set and pass it to `reconcile`; the monitor validates
-the actor against that pinned registry, hashes each candidate body, and adopts
-the lowest authenticated matching comment ID. Post once only after `reconcile`
-returns `retry`; `block` is terminal. Before a draft exists, that issue comment
-is the durable projection; terminal blockers are rendered with
-`blocker-comment` and use the same reserve-first path. At draft creation, use
-`scripts/render-dev-flow.sh publish` for the PR-body projection without deleting
-the local record.
+After each adjudication, build the issue comment from the validated source
+result envelopes, that round's adjudication JSON, and its exit projection in
+fenced JSON, then append the human table from `scripts/render-dev-flow.sh
+round-table --record <record> --stage <stage> --round <N>`. Scan and redact that
+exact replayable body before posting; the rendered table alone is never the
+durable evidence. Before any GitHub write, compute the exact body digest and
+reserve the comment through `scripts/dev-flow-monitor.sh reserve`, binding the
+active run generation, expected head, deterministic run/stage/round/sequence
+marker, actor ID, and the run's kickoff-pinned registry revision. Only then
+post. On re-arm, fetch the complete bounded comment candidate set and pass it to
+`reconcile`; the monitor validates the actor against that pinned registry,
+hashes each candidate body, and adopts the lowest authenticated matching
+comment ID. Post once only after `reconcile` returns `retry`; `block` is
+terminal.
+
+After adoption, append the canonical comment ID, immutable actor ID, display
+login, `sha256:` body digest, and marker fields to
+`run.json.evidence_comments`, validate the run record, then reserve and apply an
+update to its issue comment through the same monitor. A crash between evidence
+creation and run-record publication therefore resumes from the adopted monitor
+postcondition and cannot orphan an unindexed comment. Before a draft exists,
+the issue comment is the durable projection; terminal blockers are rendered
+with `blocker-comment` and use the same reserve-first path. At draft creation,
+use `scripts/render-dev-flow.sh publish` for the PR-body projection without
+deleting the local record.
 
 Act only on the second returned outcome. `continue` dispatches the next pass
 when no confirmed remediation exists (including an empty or entirely

@@ -19,13 +19,21 @@ lane, record ownership, scope, dependencies, and file overlap, and enforce one
 writer per feature branch. A lane can commit only its lane branch; the feature
 owner alone assembles selected lanes, then records the included/discarded lanes
 and canonical SHA in that assembly's `run.json` stage transition before pushing
-the feature branch. Reject a lane that requests feature-branch write authority.
+the feature branch. Under council with `synthesis = true`, dispatch one fresh
+implementer with the ordered source proposals and accept its artifact only when
+`result.implementer.payload.synthesis_of` names those proposal identities in
+that same order; record every proposal's selection outcome in the assembly.
+Reject a lane that requests feature-branch write authority.
 
 Resolve the shared run directory with `git rev-parse --git-common-dir`, never by
 appending to a worktree's `.git` path (which is a file in linked worktrees).
 `scripts/dev-flow-monitor.sh state-path --run-id <run-id>` returns the canonical
 `<git-common-dir>/dev-flow-v2/runs/<run-id>/monitor.json` path. Keep
-the schema-valid `run.json` beside it. Before assembly, push, or comment, first reserve an
+the schema-valid `run.json` beside it. Resolve the branch's shared active pointer
+with `active-path`, and activate a new run by compare-and-swap from the prior
+generation. Every `reserve` and `reconcile` supplies that canonical active path,
+run ID, branch, and generation; a superseded run blocks even when it presents
+the same expected head. Before assembly, push, or comment, first reserve an
 event/action/expected-head in monitor state; never reserve or replay a merge.
 For comments, also reserve the trusted immutable actor ID, deterministic marker,
 SHA-256 digest of the exact body, and kickoff-pinned registry revision; the

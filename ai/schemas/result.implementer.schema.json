@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/result.implementer.schema.json",
   "title": "Dev flow v2 implementer payload",
-  "$comment": "This schema describes the SHAPE of `payload` for role: implementer — see result.envelope.schema.json for how the two compose. Fields and types are unchanged from Foreman v1's flat result.json (schema:1) — see ponderousdev/foreman src/foreman/prompts/implementer-preamble.md and src/foreman/backend.py:read_result() at v2.5.0. `status` itself is NOT repeated in this payload: it lives once, on the envelope. The v1-documented conditional requirements (summary/handoff/ac_test_map required iff status is completed; blocked_question iff blocked) therefore cannot be expressed as a structural keyword in THIS file, because the deciding field (envelope.status) is not part of the instance this schema validates — scripts/validate-result-schemas.mjs enforces them as a receipt-validation semantic check instead, reading both the envelope and the payload together. See ai/schemas/README.md 'Composition' and 'Why implementer's conditional fields are a semantic check, not if/then'.",
+  "$comment": "This schema describes the SHAPE of `payload` for role: implementer — see result.envelope.schema.json for how the two compose. It retains every Foreman v1 flat result.json field and type (schema:1) and adds only optional synthesis_of for Dev flow v2 council artifacts — see ponderousdev/foreman src/foreman/prompts/implementer-preamble.md and src/foreman/backend.py:read_result() at v2.5.0. `status` itself is NOT repeated in this payload: it lives once, on the envelope. The v1-documented conditional requirements (summary/handoff/ac_test_map required iff status is completed; blocked_question iff blocked) therefore cannot be expressed as a structural keyword in THIS file, because the deciding field (envelope.status) is not part of the instance this schema validates — scripts/validate-result-schemas.mjs enforces them as a receipt-validation semantic check instead, reading both the envelope and the payload together. See ai/schemas/README.md 'Composition' and 'Why implementer's conditional fields are a semantic check, not if/then'.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -48,6 +48,12 @@
       "description": "Optional at every status, exactly as in v1.",
       "type": "string",
       "minLength": 1
+    },
+    "synthesis_of": {
+      "description": "Ordered source-proposal identities. Present only on the fresh implementer artifact produced when council strategy enables synthesis; optional so ordinary and pre-v2 implementer results remain valid.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
     }
   }
 }

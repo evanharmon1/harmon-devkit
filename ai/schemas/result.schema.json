@@ -183,6 +183,12 @@
           "description": "Optional at every status, exactly as in v1.",
           "type": "string",
           "minLength": 1
+        },
+        "synthesis_of": {
+          "description": "Ordered source-proposal identities. Present only on the fresh implementer artifact produced when council strategy enables synthesis; optional so ordinary and pre-v2 implementer results remain valid.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     },

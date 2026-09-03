@@ -720,6 +720,12 @@ decisions):
   `blocked_question` with no `human_tasks` key at all
   (`result.implementer.schema/valid/blocked-minimal.json`). When present it
   is still constrained to an array of strings.
+- **`synthesis_of` is optional and ordered.** An ordinary implementer result
+  omits it; the fresh artifact produced by a council strategy with synthesis
+  enabled includes at least one source-proposal identity in the exact order
+  supplied to the synthesizing implementer. It is additive to the Foreman v1
+  payload, and the orchestrator—not this payload-only schema—enforces the
+  strategy-dependent "present exactly when synthesized" condition.
 - **`summary` and `handoff` have no `minLength`**, even though both are
   "required (non-empty) when completed." Foreman v1 serializes them as `""`
   — present, empty — rather than omitting the key on a blocked result

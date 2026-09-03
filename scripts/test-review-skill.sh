@@ -18,9 +18,12 @@ trap 'rm -rf "$tmp"' EXIT
 
 echo "==> review skill names both role dispatches and record authority"
 for text in '[stage.challenge].finders' '[stage.review].finders' challenger reviewer \
-    'scripts/dev-flow-exit.sh' 'scripts/render-dev-flow.sh' 'scripts/round-push.sh'; do
+    'scripts/dev-flow-exit.sh' 'scripts/render-dev-flow.sh' 'scripts/round-push.sh' \
+    'run.json.evidence_comments' 'fenced JSON'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing $text"
 done
+grep -Fq 'synthesis_of' ai/skills/universal/orchestrator/SKILL.md ||
+    fail "orchestrator skill does not preserve council synthesis provenance"
 
 echo "==> fixture-driven review-stage dry run converges"
 set +e
@@ -90,23 +93,47 @@ resolved_state="$("$monitor" state-path --run-id fixture-run)"
     fail "monitor state did not resolve through the git common directory"
 state="$tmp/monitor.json"
 trusted_actor_id="199175422"
-registry_revision="$(git rev-parse HEAD)"
+trust_repo="$tmp/trust-repo"
+git init -q "$trust_repo"
+jq -n '{}' >"$trust_repo/agent-registry.json"
+git -C "$trust_repo" add agent-registry.json
+git -C "$trust_repo" -c user.name='Fixture Author' -c user.email='fixture@example.invalid' \
+    commit -qm 'test: registry without orchestrator trust'
+untrusted_registry_revision="$(git -C "$trust_repo" rev-parse HEAD)"
+jq -n --arg actor "$trusted_actor_id" '{trusted_orchestrator_actor_ids: [$actor]}' \
+    >"$trust_repo/agent-registry.json"
+git -C "$trust_repo" add agent-registry.json
+git -C "$trust_repo" -c user.name='Fixture Author' -c user.email='fixture@example.invalid' \
+    commit -qm 'test: registry with orchestrator trust'
+registry_revision="$(git -C "$trust_repo" rev-parse HEAD)"
+branch="feat/fixture-run"
+active_state="$("$monitor" active-path --branch "$branch" --repo-root "$trust_repo")"
+generation="$("$monitor" activate --active-state "$active_state" --run-id fixture-run \
+    --branch "$branch" --expected-generation 0 --writer feature-owner --repo-root "$trust_repo")"
+active_args=(--active-state "$active_state" --run-id fixture-run --branch "$branch"
+    --generation "$generation" --repo-root "$trust_repo")
+monitor_reserve() {
+    "$monitor" reserve "${active_args[@]}" "$@"
+}
+monitor_reconcile() {
+    "$monitor" reconcile "${active_args[@]}" "$@"
+}
 comment_marker="dev-flow:fixture-run:challenge:1"
 comment_body="<!-- $comment_marker --> fixture evidence"
 comment_digest="$(printf '%s' "$comment_body" | sha256sum | awk '{print $1}')"
 set +e
-"$monitor" reserve --state "$tmp/untrusted-reservation.json" --event forged-trust --action comment \
+monitor_reserve --state "$tmp/untrusted-reservation.json" --event forged-trust --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id 1 \
-    --registry-revision "$registry_revision" --repo-root "$repo" \
+    --registry-revision "$untrusted_registry_revision" \
     --marker "$comment_marker" --payload-digest "$comment_digest" >"$tmp/forged-trust.out" 2>&1
 status=$?
 set -e
 [ "$status" -eq 2 ] || fail "caller-declared actor bypassed the run-pinned registry trust root"
 grep -Fq 'not trusted by the run-pinned registry revision' "$tmp/forged-trust.out" ||
     fail "registry-rooted actor rejection was not reported"
-"$monitor" reserve --state "$state" --event crash-write --action comment \
+monitor_reserve --state "$state" --event crash-write --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
-    --registry-revision "$registry_revision" --repo-root "$repo" \
+    --registry-revision "$registry_revision" \
     --marker "$comment_marker" --payload-digest "$comment_digest" >/dev/null
 jq -n --arg head "$head" --arg marker "$comment_marker" --arg body "$comment_body" \
     --arg digest "$comment_digest" \
@@ -114,7 +141,7 @@ jq -n --arg head "$head" --arg marker "$comment_marker" --arg body "$comment_bod
       comments: [{comment_id: 42, actor_id: 1, marker: $marker, body: $body, payload_digest: $digest}]}' \
     >"$tmp/untrusted.json"
 set +e
-"$monitor" reconcile --state "$state" --event crash-write --observed "$tmp/untrusted.json" \
+monitor_reconcile --state "$state" --event crash-write --observed "$tmp/untrusted.json" \
     >"$tmp/untrusted.out" 2>&1
 status=$?
 set -e
@@ -127,24 +154,24 @@ jq -n --arg head "$head" --arg actor "$trusted_actor_id" --arg marker "$comment_
         {comment_id: 42, actor_id: $actor, marker: $marker, body: $body, payload_digest: $digest}
       ]}' \
     >"$tmp/landed.json"
-"$monitor" reconcile --state "$state" --event crash-write --observed "$tmp/landed.json" |
+monitor_reconcile --state "$state" --event crash-write --observed "$tmp/landed.json" |
     grep -Fq 'adopt crash-write' || fail "crash-after-write action was not adopted"
 jq -e '.cursor == "crash-write" and .actions[0].state == "adopted"' "$state" >/dev/null ||
     fail "adoption did not durably advance the cursor"
 jq -e '.actions[0].postcondition.comment_id == "42"' "$state" >/dev/null ||
     fail "monitor did not canonically adopt the lowest matching comment id"
 
-"$monitor" reserve --state "$state" --event absent-write --action push \
+monitor_reserve --state "$state" --event absent-write --action push \
     --expected-head "$head" --writer feature-owner >/dev/null
 jq -n '{status: "absent"}' >"$tmp/absent.json"
-"$monitor" reconcile --state "$state" --event absent-write --observed "$tmp/absent.json" |
+monitor_reconcile --state "$state" --event absent-write --observed "$tmp/absent.json" |
     grep -Fq 'retry absent-write' || fail "absent action was not marked retryable"
 jq -e '.cursor == "crash-write" and .actions[1].state == "reserved"' "$state" >/dev/null ||
     fail "absent action advanced the cursor"
 
 jq -n '{status: "indeterminate"}' >"$tmp/indeterminate.json"
 set +e
-"$monitor" reconcile --state "$state" --event absent-write --observed "$tmp/indeterminate.json" \
+monitor_reconcile --state "$state" --event absent-write --observed "$tmp/indeterminate.json" \
     >"$tmp/indeterminate.out" 2>&1
 status=$?
 set -e
@@ -153,7 +180,7 @@ grep -Fq 'postcondition is indeterminate' "$tmp/indeterminate.out" ||
     fail "indeterminate refusal was not reported"
 
 set +e
-"$monitor" reserve --state "$state" --event lane-push --action push \
+monitor_reserve --state "$state" --event lane-push --action push \
     --expected-head "$head" --writer lane >"$tmp/lane-push.out" 2>&1
 status=$?
 set -e
@@ -163,32 +190,45 @@ grep -Fq 'only the feature-branch owner' "$tmp/lane-push.out" ||
 
 echo "==> monitor rejects out-of-order and stale reconciliation"
 ordered_state="$tmp/ordered-monitor.json"
-"$monitor" reserve --state "$ordered_state" --event e1 --action assembly \
+monitor_reserve --state "$ordered_state" --event e1 --action assembly \
     --expected-head "$head" --writer feature-owner >/dev/null
-"$monitor" reserve --state "$ordered_state" --event e2 --action assembly \
+monitor_reserve --state "$ordered_state" --event e2 --action assembly \
     --expected-head "$head" --writer feature-owner >/dev/null
 jq -n --arg head "$head" '{status: "landed", event: "e2", action: "assembly", head: $head}' >"$tmp/e2.json"
 set +e
-"$monitor" reconcile --state "$ordered_state" --event e2 --observed "$tmp/e2.json" >"$tmp/e2.out" 2>&1
+monitor_reconcile --state "$ordered_state" --event e2 --observed "$tmp/e2.json" >"$tmp/e2.out" 2>&1
 status=$?
 set -e
 [ "$status" -eq 2 ] || fail "out-of-order action advanced the monitor cursor"
 grep -Fq 'out of reservation order' "$tmp/e2.out" || fail "out-of-order refusal was not reported"
 jq -n --arg head "$head" '{status: "landed", event: "e1", action: "assembly", head: $head}' >"$tmp/e1.json"
-"$monitor" reconcile --state "$ordered_state" --event e1 --observed "$tmp/e1.json" >/dev/null
-"$monitor" reconcile --state "$ordered_state" --event e2 --observed "$tmp/e2.json" >/dev/null
+monitor_reconcile --state "$ordered_state" --event e1 --observed "$tmp/e1.json" >/dev/null
+monitor_reconcile --state "$ordered_state" --event e2 --observed "$tmp/e2.json" >/dev/null
 jq -n '{status: "absent"}' >"$tmp/stale.json"
-"$monitor" reconcile --state "$ordered_state" --event e2 --observed "$tmp/stale.json" |
+monitor_reconcile --state "$ordered_state" --event e2 --observed "$tmp/stale.json" |
     grep -Fq 'adopt e2' || fail "adopted action was retryable"
 
 echo "==> monitor serializes concurrent reservations"
 concurrent_state="$tmp/concurrent-monitor.json"
 for number in $(seq 1 20); do
-    "$monitor" reserve --state "$concurrent_state" --event "concurrent-$number" --action assembly \
+    monitor_reserve --state "$concurrent_state" --event "concurrent-$number" --action assembly \
         --expected-head "$head" --writer feature-owner >"$tmp/concurrent-$number.out" &
 done
 wait
 jq -e '[.actions[] | select(.state == "reserved")] | length == 20' "$concurrent_state" >/dev/null ||
     fail "concurrent reservations lost monitor state"
+
+echo "==> monitor rejects a superseded run at the same head"
+replacement_generation="$("$monitor" activate --active-state "$active_state" --run-id replacement-run \
+    --branch "$branch" --expected-generation "$generation" --writer feature-owner --repo-root "$trust_repo")"
+[ "$replacement_generation" -eq $((generation + 1)) ] || fail "replacement run did not advance generation"
+set +e
+monitor_reserve --state "$tmp/stale-run.json" --event stale-run --action push \
+    --expected-head "$head" --writer feature-owner >"$tmp/stale-run.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "superseded run reserved a write at the same head"
+grep -Fq 'no longer active for this branch generation' "$tmp/stale-run.out" ||
+    fail "stale-generation rejection was not reported"
 
 echo "review skill fixtures OK"

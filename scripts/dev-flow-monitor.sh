@@ -9,11 +9,17 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
+  dev-flow-monitor.sh active-path --branch BRANCH [--repo-root DIR]
+  dev-flow-monitor.sh activate --active-state FILE --run-id ID --branch BRANCH \
+    --expected-generation N --writer feature-owner [--repo-root DIR]
   dev-flow-monitor.sh reserve --state FILE --event ID --action assembly|push|comment \
-    --expected-head SHA --writer feature-owner \
+    --expected-head SHA --writer feature-owner --active-state FILE --run-id ID \
+    --branch BRANCH --generation N [--repo-root DIR] \
     [--trusted-actor-id ID --registry-revision SHA --repo-root DIR \
      --marker TEXT --payload-digest SHA256]
-  dev-flow-monitor.sh reconcile --state FILE --event ID --observed FILE
+  dev-flow-monitor.sh reconcile --state FILE --event ID --observed FILE \
+    --active-state FILE --run-id ID --branch BRANCH --generation N \
+    [--repo-root DIR]
 
 The state file is durable monitor state.  A reservation is written before an
 external action.  The observed file must be JSON with status landed, absent, or
@@ -46,6 +52,10 @@ trusted_actor_id=""
 marker=""
 payload_digest=""
 registry_revision=""
+active_state=""
+branch=""
+generation=""
+expected_generation=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -97,6 +107,22 @@ while [ "$#" -gt 0 ]; do
         registry_revision="${2:-}"
         shift 2
         ;;
+    --active-state)
+        active_state="${2:-}"
+        shift 2
+        ;;
+    --branch)
+        branch="${2:-}"
+        shift 2
+        ;;
+    --generation)
+        generation="${2:-}"
+        shift 2
+        ;;
+    --expected-generation)
+        expected_generation="${2:-}"
+        shift 2
+        ;;
     *) usage ;;
     esac
 done
@@ -109,8 +135,64 @@ if [ "$command_name" = "state-path" ]; then
     exit 0
 fi
 
+active_path() {
+    local common_dir branch_key
+    common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+        die "could not resolve git common directory"
+    branch_key="$(printf '%s' "$branch" | sha256sum | awk '{print $1}')"
+    printf '%s/dev-flow-v2/active/%s.json\n' "$common_dir" "$branch_key"
+}
+
+if [ "$command_name" = "active-path" ]; then
+    [ -n "$branch" ] || die "branch is required"
+    active_path
+    exit 0
+fi
+
+if [ "$command_name" = "activate" ]; then
+    command -v flock >/dev/null 2>&1 || die "flock is required"
+    [[ "$run_id" =~ ^[A-Za-z0-9._-]+$ ]] || die "run id is missing or unsafe"
+    [ -n "$branch" ] && [ -n "$active_state" ] && [ "$writer" = "feature-owner" ] || usage
+    [[ "$expected_generation" =~ ^(0|[1-9][0-9]*)$ ]] || die "expected generation must be a non-negative integer"
+    [ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
+    mkdir -p "$(dirname "$active_state")"
+    exec 8>"${active_state}.lock"
+    flock -x 8
+    if [ -e "$active_state" ]; then
+        # Re-arm after a crash that landed the activation: adopt the exact
+        # already-active generation instead of superseding it a second time.
+        if jq -e --arg run "$run_id" --arg branch "$branch" --argjson next "$((expected_generation + 1))" '
+            .version == 1 and .run_id == $run and .branch == $branch and .generation == $next
+        ' "$active_state" >/dev/null; then
+            printf '%s\n' "$((expected_generation + 1))"
+            exit 0
+        fi
+        current_generation="$(jq -r '.generation // empty' "$active_state")"
+        [[ "$current_generation" =~ ^[1-9][0-9]*$ ]] || die "active run state is invalid"
+    else
+        current_generation=0
+    fi
+    [ "$current_generation" -eq "$expected_generation" ] ||
+        die "active run generation changed (expected $expected_generation, found $current_generation)"
+    next_generation=$((expected_generation + 1))
+    active_tmp="${active_state}.tmp.$$"
+    jq -n --arg run "$run_id" --arg branch "$branch" --argjson generation "$next_generation" \
+        '{version: 1, run_id: $run, branch: $branch, generation: $generation}' >"$active_tmp"
+    mv "$active_tmp" "$active_state"
+    printf '%s\n' "$next_generation"
+    exit 0
+fi
+
 [ -n "$state" ] && [ -n "$event" ] || usage
 command -v flock >/dev/null 2>&1 || die "flock is required"
+[ -n "$active_state" ] && [ -n "$run_id" ] && [ -n "$branch" ] || usage
+[[ "$generation" =~ ^[1-9][0-9]*$ ]] || die "generation must be a positive integer"
+[ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
+exec 8>"${active_state}.lock"
+flock -x 8
+jq -e --arg run "$run_id" --arg branch "$branch" --argjson generation "$generation" '
+    .version == 1 and .run_id == $run and .branch == $branch and .generation == $generation
+' "$active_state" >/dev/null || die "run is no longer active for this branch generation"
 mkdir -p "$(dirname "$state")"
 # The state is a read-modify-write record shared by monitor re-arms. Keep the
 # lock beside it so callers with the same durable state serialize both reserve
@@ -131,13 +213,13 @@ reserve)
         # The actor ID is evidence, not authority. Resolve authority from the
         # immutable registry snapshot captured for this run; accepting the ID
         # merely because the caller repeated it would let a forged record
-        # vouch for its own comments. #741 may add a dedicated orchestrator
-        # allowlist later, but this lane deliberately consumes the registry's
-        # existing remote-finder trust roots instead of inventing that schema.
+        # vouch for its own comments. #741 owns adding this top-level allowlist
+        # to the live registry/schema. Until it lands, the absent list remains
+        # empty and comment evidence correctly fails closed.
         registry_json="$(git -C "$repo_root" show "${registry_revision}:agent-registry.json" 2>/dev/null)" ||
             die "could not read agent-registry.json at the run-pinned revision"
         jq -e --arg actor "$trusted_actor_id" '
-            [.finders[]?.trusted_actor_id | select(. != null)] | index($actor) != null
+            (.trusted_orchestrator_actor_ids // []) | index($actor) != null
         ' <<<"$registry_json" >/dev/null ||
             die "comment actor id is not trusted by the run-pinned registry revision"
     fi
