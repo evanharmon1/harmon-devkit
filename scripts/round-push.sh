@@ -362,10 +362,12 @@ done
 # ancestor, narrowing or emptying the diff and letting a code change
 # classify as docs-only. `git merge-base "$against" "$target"` computes the
 # one true common ancestor deterministically, leaving no value for a
-# caller to substitute. --against should be a SHA resolved before the
-# closure was extracted (e.g. `git rev-parse origin/main`), not a live
-# branch name, so this computation cannot race a moving branch between
-# extraction and classification.
+# caller to substitute. --against stays a named ref (e.g. `origin/main`)
+# even when the caller resolved it to a SHA before extracting the
+# closure — require_against_is_ref below refuses a bare commit ID here on
+# purpose; that resolved SHA is what --closure-base carries instead, so
+# the two flags together still pin the exact commit the closure came from
+# without letting --against itself be a disconnected object ID.
 #
 # --no-renames is required, not cosmetic: with rename detection on (git's
 # own default), a 100%-similar rename reports ONLY the destination path —
