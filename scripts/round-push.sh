@@ -139,12 +139,16 @@ push additionally requires:
     syntactically valid one — so a stale or mistyped --branch naming some
     other branch (e.g. main) can't send the checked-out SHA there instead;
   - --policy, --devflow-policy-script, and --registry (when given) to each
-    match, byte for byte, the blob at their canonical repository path in
-    --closure-base (verified via `git show`) before any of them is read
-    for any other purpose; devflow-policy.mjs's own transitive dependency
-    scripts/lib/toml-lite.mjs (resolved the same way Node resolves it,
-    relative to --devflow-policy-script's own directory) is verified the
-    same way, before policy resolution ever runs;
+    be a regular file (never a symlink — a symlinked entrypoint whose
+    TARGET holds the expected bytes would pass a bytewise check while
+    Node resolves its own relative imports against the target's real
+    directory instead) matching, byte for byte, the blob at their
+    canonical repository path in --closure-base (verified via `git show`)
+    before any of them is read for any other purpose; devflow-policy.mjs's
+    own transitive dependency scripts/lib/toml-lite.mjs (resolved the same
+    way Node resolves it, relative to --devflow-policy-script's own
+    directory) is verified the same way, before policy resolution ever
+    runs;
   - the required Taskfile target for the recomputed diff class (round_code
     or round_docs) to exit 0 when this script runs it itself, from the
     feature worktree, inheriting this script's own stdout/stderr — there
@@ -171,17 +175,25 @@ push additionally requires:
     HOST and OWNER/REPO and no custom receive-pack command; the remote
     branch still equals --expect and the update is fast-forward; an explicit
     SHA refspec, lease, and --no-follow-tags update only the named branch;
-  - the push destination AND the SSH transport override (core.sshCommand,
-    plus any inherited GIT_SSH_COMMAND/GIT_SSH) to both still match what
-    was validated BEFORE the required target ran, checked again
-    immediately before the actual write — git re-applies url.*.insteadOf/
-    pushInsteadOf rewriting at push time regardless of whether the
-    destination came from a named remote or a literal URL, and a
-    branch-controlled gate can install its own core.sshCommand override
-    via a plain `git config` call that never touches a tracked file,
-    silently redirecting the connection regardless of the validated
+  - the push destination AND its transport settings (core.sshCommand, any
+    inherited GIT_SSH_COMMAND/GIT_SSH, and the HTTP proxy/TLS-verify/
+    curloptResolve family — see transport_fingerprint's own comment) to
+    all still match what was validated BEFORE the required target ran,
+    checked again immediately before the actual write — git re-applies
+    url.*.insteadOf/pushInsteadOf rewriting at push time regardless of
+    whether the destination came from a named remote or a literal URL,
+    and a branch-controlled gate can install any of these overrides via a
+    plain `git config` call that never touches a tracked file, silently
+    redirecting or weakening the connection regardless of the validated
     hostname; either check can only shrink the window a change could land
-    in, never make git's own resolution atomic.
+    in, never make git's own resolution atomic;
+  - the diff this classifies to be computed with --no-relative and
+    --ignore-submodules=none, regardless of ambient diff.relative/
+    diff.ignoreSubmodules config — diff.relative=true silently OMITS every
+    changed path outside the invocation directory rather than merely
+    reformatting them (verified empirically), so a code change elsewhere
+    in the tree could otherwise be invisible to classification, authorizing
+    the weaker round_docs gate for a diff that actually contains code.
 
 Each accepted -c NAME=VALUE is passed to destination resolution, ls-remote,
 and push, so an unprovisioned host can supply the repository's documented
@@ -428,7 +440,22 @@ changed_paths() {
     # freshly (and differently) computed diff boundary.
     [ "$mb" = "$closure_base" ] ||
         refuse "the merge base computed from --against (${mb}) does not match --closure-base (${closure_base}); the closure and the diff boundary must share one authority"
-    git_with_args diff --no-renames --name-only "${mb}..${target}"
+    # --no-relative and --ignore-submodules=none force this diff back to
+    # its unqualified default regardless of ambient diff.relative/
+    # diff.ignoreSubmodules config: diff.relative=true, combined with
+    # invoking this script from a subdirectory (a normal, legitimate way
+    # to run it), silently OMITS every changed path outside that
+    # subdirectory rather than merely reformatting them (verified
+    # empirically) — a code change living elsewhere in the tree would
+    # then be invisible to classify_diff below, misclassifying the round
+    # as docs-only and authorizing the weaker round_docs gate for a diff
+    # that actually contains code (Codex cloud review, confirmed).
+    # diff.ignoreSubmodules=all is the same class of gap for a changed
+    # gitlink. Neither is reachable through the -c allowlist, but ambient
+    # config (an operator's own gitconfig, not necessarily anything
+    # branch-controlled) is enough on its own.
+    git_with_args diff --no-renames --no-relative --ignore-submodules=none \
+        --name-only "${mb}..${target}"
 }
 
 # --against must be a symbolic ref (e.g. origin/main), never a bare commit
@@ -600,6 +627,19 @@ required_target_for() {
 verify_closure_member() {
     local caller_path=$1 canonical_path=$2
 
+    # Refused BEFORE the -f/cmp checks below, which both follow symlinks:
+    # a symlinked --devflow-policy-script whose TARGET holds the expected
+    # bytes passes cmp, but Node resolves ES-module imports against the
+    # entrypoint's REAL (symlink-resolved) path by default — so
+    # verify_closure_member's OWN toml-lite.mjs check (derived from this
+    # path's own dirname) and Node's ACTUAL import can diverge, letting an
+    # unverified, symlink-target-adjacent file execute regardless (Codex
+    # cloud review, confirmed for Node specifically). Refused uniformly
+    # for every closure member, not only entrypoints with their own
+    # relative imports: a real merge-base extraction never produces a
+    # symlink for any of these paths, so this costs nothing legitimate.
+    [ -L "$caller_path" ] &&
+        refuse "${caller_path} is a symlink; a closure-resident path must be a regular file"
     [ -f "$caller_path" ] ||
         refuse "${caller_path} does not exist (expected the closure's ${canonical_path})"
     git_with_args show "${closure_base}:${canonical_path}" >"$closure_verify_tmp" 2>/dev/null ||
@@ -712,6 +752,36 @@ resolve_push_url() {
         refuse "the push destination repository does not match --repo"
 
     push_url=$output
+}
+
+# Fingerprints every git config/environment knob that can redirect or
+# weaken the ACTUAL transport connection without changing $push_url's own
+# parsed host/path — comparing this before and immediately before the
+# write closes the same gate-execution window $push_url's own before/
+# after check closes, for settings resolve_push_url never looks at
+# (Codex cloud review, confirmed twice over): core.sshCommand and any
+# inherited GIT_SSH_COMMAND/GIT_SSH let git run an arbitrary program to
+# establish an SSH connection, ignoring the validated hostname entirely;
+# http.proxy, http.sslVerify, and http.curloptResolve do the analogous
+# thing for HTTPS — a proxy or a forced DNS-level resolve can redirect the
+# connection, and disabling TLS verification makes intercepting it easier,
+# none of which touch $push_url's own string. core.sshCommand/http.proxy/
+# http.sslVerify are singular; http.curloptResolve can repeat, so it is
+# read with --get-all. None of these are reachable through the -c
+# allowlist, but ambient config (an operator's own gitconfig, not
+# necessarily anything branch-controlled) is enough on its own, and a
+# gate recipe can set any of them with a plain `git config` call that
+# never touches a tracked file.
+transport_fingerprint() {
+    local ssh_command_rc=0 ssh_command proxy_rc=0 proxy sslverify_rc=0 sslverify resolve
+
+    ssh_command="$(git config --get core.sshCommand 2>/dev/null)" || ssh_command_rc=$?
+    proxy="$(git config --get http.proxy 2>/dev/null)" || proxy_rc=$?
+    sslverify="$(git config --get http.sslVerify 2>/dev/null)" || sslverify_rc=$?
+    resolve="$(git config --get-all http.curloptResolve 2>/dev/null)" || true
+    printf '%s:%s|%s:%s|%s:%s|%s|%s|%s' \
+        "$ssh_command_rc" "$ssh_command" "$proxy_rc" "$proxy" "$sslverify_rc" "$sslverify" \
+        "$resolve" "${GIT_SSH_COMMAND:-}" "${GIT_SSH:-}"
 }
 
 remote_head=
@@ -961,31 +1031,28 @@ jq -r '.gates.docs_only_paths[]' <<<"$resolved_json" >"$patterns_file"
 diff_class="$(classify_diff "$patterns_file" "$paths_file")"
 required_target="$(required_target_for "$diff_class")"
 
-# The push destination and SSH transport are snapshotted BEFORE the gate
-# runs, not only afterward: `task "$required_target"` right below executes
-# the feature worktree's own, branch-controlled Taskfile recipe, and a
-# malicious one gets a real window to tamper with either (Codex cloud
-# review, confirmed, two distinct ways). (1) core.sshCommand is a
-# repository-local git config value, not a tracked file — a gate recipe
-# can set it with a plain `git config` call that the later `git status`
-# check never sees, and git then uses WHATEVER command core.sshCommand
-# (or an inherited GIT_SSH_COMMAND/GIT_SSH — read once here too, since a
-# gate's own child process cannot alter its parent's already-inherited
-# environment) names to establish the connection, ignoring the validated
-# hostname entirely; the test suite's own SSH stub is a working
-# demonstration of exactly this class of redirect. (2) resolving
-# $push_url only once, AFTER the gate (the previous round's fix),
-# cannot detect a change the gate itself already made — only a change
-# happening after that single resolution. Snapshotting both here, before
-# any branch-controlled code has run, and comparing again immediately
-# before the write (further below) closes both windows with the same
-# mechanism, covering the gate's own execution as well as the narrower
-# window the previous round's fix already covered.
+# The push destination and its transport settings are snapshotted BEFORE
+# the gate runs, not only afterward: `task "$required_target"` right
+# below executes the feature worktree's own, branch-controlled Taskfile
+# recipe, and a malicious one gets a real window to tamper with either
+# (Codex cloud review, confirmed across three rounds). (1) transport_
+# fingerprint's own comment lists every config/environment knob covered —
+# core.sshCommand and the HTTP proxy/TLS/resolve family are all
+# repository-local or ambient settings, not tracked files, so a gate
+# recipe can change any of them with a plain `git config` call the later
+# `git status` check never sees, and git then uses whatever they say
+# regardless of the validated hostname; the test suite's own SSH stub is
+# a working demonstration of exactly this class of redirect for the SSH
+# case. (2) resolving $push_url only once, AFTER the gate (an earlier
+# round's fix), cannot detect a change the gate itself already made —
+# only a change happening after that single resolution. Snapshotting
+# both here, before any branch-controlled code has run, and comparing
+# again immediately before the write (further below) closes both windows
+# with the same mechanism, covering the gate's own execution as well as
+# the narrower window an earlier round's fix already covered.
 resolve_push_url
 gated_push_url="$push_url"
-ssh_command_rc=0
-ssh_command_before="$(git config --get core.sshCommand 2>/dev/null)" || ssh_command_rc=$?
-ssh_command_before="${ssh_command_rc}:${ssh_command_before}:${GIT_SSH_COMMAND:-}:${GIT_SSH:-}"
+transport_before="$(transport_fingerprint)"
 
 # The broker EXECUTES the required target itself, from the feature
 # worktree, rather than validating a marker a caller produced — config
@@ -1089,8 +1156,9 @@ else
     lease="--force-with-lease=refs/heads/${branch}:"
 fi
 
-# Push to the destination and SSH transport validated BEFORE the gate ran
-# (captured above as $gated_push_url/$ssh_command_before), never a fresh
+# Push to the destination and transport settings validated BEFORE the
+# gate ran (captured above as $gated_push_url/$transport_before), never a
+# fresh
 # re-resolution of the mutable named remote (Codex review, confirmed: the
 # prior code passed $remote here, so a receive-pack, pushurl, or insteadOf
 # rewrite change would silently redirect it — the checks above would have
@@ -1117,11 +1185,8 @@ fi
 resolve_push_url
 [ "$push_url" = "$gated_push_url" ] ||
     refuse "the push destination changed since it was validated (was ${gated_push_url}, now ${push_url}); reconcile before pushing"
-ssh_command_rc=0
-ssh_command_after="$(git config --get core.sshCommand 2>/dev/null)" || ssh_command_rc=$?
-ssh_command_after="${ssh_command_rc}:${ssh_command_after}:${GIT_SSH_COMMAND:-}:${GIT_SSH:-}"
-[ "$ssh_command_after" = "$ssh_command_before" ] ||
-    refuse "the SSH transport override changed since it was validated; reconcile before pushing"
+[ "$(transport_fingerprint)" = "$transport_before" ] ||
+    refuse "a transport override (SSH command or HTTP proxy/TLS/resolve setting) changed since it was validated; reconcile before pushing"
 
 # git_with_args still carries the caller's -c transport overrides.
 # refs/remotes/<remote>/<branch> is updated by hand afterward, since a

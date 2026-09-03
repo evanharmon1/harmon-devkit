@@ -440,7 +440,7 @@ git_q "${root}/work" commit -m "test: fixture-verify installs a core.sshCommand 
 code_sha="$(git -C "${root}/work" rev-parse HEAD)"
 push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
 assert_rc 3
-printf '%s' "$err" | grep -Fi "SSH transport override changed" >/dev/null ||
+printf '%s' "$err" | grep -Fi "transport override" >/dev/null ||
     fail "a gate that installs core.sshCommand during its own execution must be refused before the push — git would use that override, ignoring the validated hostname entirely, regardless of \$push_url (Codex cloud review, confirmed: core.sshCommand is a repository-local config value, not a tracked file, so the worktree-cleanliness check never sees it): $err"
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
     fail "a push whose gate installed an SSH transport override must not land"
@@ -558,6 +558,26 @@ assert_rc 0
 printf '%s' "$out" | grep -F '"diff_class": "docs"' >/dev/null ||
     fail "docs/**/api/**/*.md must match docs/v1/api/readme.md — the FIRST ** consuming a real directory (v1/) while the SECOND collapses to zero, a combination a single leftmost-collapse pass never tries (Codex cloud review, confirmed): $out"
 
+echo "  -> ambient diff.relative does not hide a code change outside the invocation directory"
+root="$(new_fixture diff-relative)"
+cd "${root}/work"
+mkdir -p docs src
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+git config diff.relative true
+printf 'docs content\n' >docs/readme.md
+printf 'code content\n' >src/run.sh
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: a docs file and a code file outside the invocation directory"
+diffrel_sha="$(git -C "${root}/work" rev-parse HEAD)"
+cd "${root}/work/docs"
+run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$diffrel_sha" "${policy_args[@]}" --json
+assert_rc 0
+printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
+    fail "ambient diff.relative must not hide src/run.sh (a code change outside the invocation directory) from classification, which would otherwise misclassify this diff as docs-only and authorize the weaker gate (Codex cloud review, confirmed empirically): $out"
+cd "${root}/work"
+
 echo "  -> a code-to-docs rename classifies as code, not docs (rename detection defeated)"
 root="$(new_fixture rename-plan)"
 cd "${root}/work"
@@ -640,6 +660,28 @@ printf '%s' "$err" | grep -Fi "does not match scripts/lib/toml-lite.mjs" >/dev/n
     fail "devflow-policy.mjs's own transitive dependency toml-lite.mjs must be verified even when devflow-policy.mjs itself is byte-identical to the genuine closure member (Codex cloud review, confirmed: disclosing it as unverified was not the same as closing it): $err"
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
     fail "a tampered toml-lite.mjs must not push"
+
+echo "  -> a symlinked --devflow-policy-script is refused even when its target's bytes match"
+root="$(new_fixture symlinked-entrypoint)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
+symlink_dir="${test_tmp}/symlinked-entrypoint"
+mkdir -p "$symlink_dir"
+ln -s "${policy_args[3]}" "${symlink_dir}/devflow-policy.mjs"
+symlinked_policy_args=("${policy_args[@]}")
+symlinked_policy_args[3]="${symlink_dir}/devflow-policy.mjs"
+run push --remote origin --branch main --host github.com --repo owner/repo \
+    --sha "$code_sha" --expect absent \
+    --against "$merge_base" --closure-base "$merge_base_sha" \
+    "${symlinked_policy_args[@]}" "${scan_args[@]}"
+assert_rc 3
+printf '%s' "$err" | grep -Fi "is a symlink" >/dev/null ||
+    fail "a symlinked --devflow-policy-script must be refused even though its TARGET's bytes match the genuine closure member — Node resolves relative imports against the target's real directory, not the symlink's own (Codex cloud review, confirmed): $err"
+[ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
+    fail "a symlinked closure entrypoint must not push"
 
 echo "  -> a gate that tampers the scanner closure during its own execution is caught before the scan"
 root="$(new_fixture scanner-closure-tamper)"
