@@ -72,12 +72,15 @@ repos/*/commits/*/check-suites)
     sha="$(echo "$endpoint" | sed -E 's#.*/commits/([0-9a-f]+)/check-suites.*#\1#')"
     jq --arg sha "$sha" '[{check_suites: (.commit_check_suites[$sha] // [])}]' "$db"
     ;;
-repos/*/commits\?path=agent-registry.json\&sha=main)
+repos/*/commits\?path=agent-registry.json\&sha=*)
     jq '[(.registry_commits // [])]' "$db"
     ;;
 repos/*/contents/agent-registry.json\?ref=*)
     sha="$(echo "$endpoint" | sed -E 's#.*[?&]ref=([0-9a-f]+).*#\1#')"
     jq --arg sha "$sha" '{content: (.registry_contents[$sha] // null)}' "$db"
+    ;;
+repos/[^/]*/[^/]*)
+    jq '{default_branch: (.default_branch // "main")}' "$db"
     ;;
 *)
     echo "fake gh: unhandled endpoint: $endpoint" >&2
@@ -1342,13 +1345,17 @@ function writeScenario(name, db) {
   });
 }
 
-// --- Scenario 26: initiated_by and started_at are edited in place in the
-// mutable record body, disagreeing with the run-index's own immutable
-// copies (initiated_by) and the index comment's own created_at
-// (started_at) — shepherd round 1, Codex-confirmed (P1 x2). Neither field
-// is chain-protected, so before this fix the edit passed every existing
-// check; computeIssueVerdict's human-intervention counting and --since
-// cohort membership both depend on these fields being genuine.
+// --- Scenario 26: initiated_by is edited in place in the mutable record
+// body, disagreeing with the run-index's own immutable copy — shepherd
+// round 1, Codex-confirmed (P1). initiated_by is not chain-protected, so
+// before this fix the edit passed every existing check;
+// computeIssueVerdict's human-intervention counting depends on it being
+// genuine. started_at's OWN tamper case (originally paired with this one
+// in round 1) is now scenario 26.5 below: round 1's cross-check against
+// the run-index comment's created_at turned out to be too strict for a
+// legitimate writer (shepherd round 2, Codex-confirmed) and was replaced
+// with never trusting body.started_at at all — so what scenario 26.5
+// proves is that tampering it has NO EFFECT, not that it is rejected.
 {
   const runIdInit = "run-initiated-by-tamper-1";
   const bodyInit = {
@@ -1360,21 +1367,40 @@ function writeScenario(name, db) {
   const { index: idxInit, record: rrInit } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdInit, bodyInit, "2026-09-01T00:00:00Z");
   rrInit.body = rrInit.body.replace('"initiated_by":"human"', '"initiated_by":"foreman"');
 
-  const runIdStart = "run-started-at-tamper-1";
-  const bodyStart = {
-    schema: 2, run_id: runIdStart, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+  writeScenario("mutable-field-tamper", {
+    issues: [{ number: 137, pull_request: null }],
+    comments: { "137": [idxInit, rrInit] },
+    commits: {},
+    meta: { runIdInit, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumberInit: 137 },
+  });
+}
+
+// --- Scenario 26.5: a run record body claiming a DIFFERENT started_at
+// than the comment's own created_at (an edit, or simply a writer that
+// computed the timestamp before posting) has NO EFFECT — started_at is
+// never read from the body at all. shepherd round 2, Codex-confirmed
+// (P1): round 1's exact-equality cross-check against the run-index's
+// created_at was itself too strict (the index cannot be posted until the
+// record's own POST returns a comment id to name, so ordinary latency
+// between the two posts could legitimately cross a second boundary and
+// fail equality). The fix instead uses the run-record COMMENT's own
+// created_at unconditionally — this fixture proves the run authenticates
+// cleanly and --run reports the comment's real created_at, not the
+// claimed value.
+{
+  const runId = "run-started-at-neutralized-1";
+  const body = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2099-01-01T00:00:00Z",
     stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
     interventions: chain([]), settlements: chain([]),
     outcome: null, pr: null, evidence_comments: [], promotion: null,
   };
-  const { index: idxStart, record: rrStart } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdStart, bodyStart, "2026-09-01T00:00:00Z");
-  rrStart.body = rrStart.body.replace('"started_at":"2026-09-01T00:00:00Z"', '"started_at":"2026-09-01T00:05:00Z"');
-
-  writeScenario("mutable-field-tamper", {
-    issues: [{ number: 137, pull_request: null }, { number: 138, pull_request: null }],
-    comments: { "137": [idxInit, rrInit], "138": [idxStart, rrStart] },
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, body, "2026-09-01T00:00:00Z");
+  writeScenario("started-at-neutralized", {
+    issues: [{ number: 147, pull_request: null }],
+    comments: { "147": [idx, rr] },
     commits: {},
-    meta: { runIdInit, runIdStart, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumberInit: 137, issueNumberStart: 138 },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 147 },
   });
 }
 
@@ -1617,6 +1643,218 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 35: a registry commit whose check-suite ran EARLY (on its
+// own feature branch, before merge) must not be treated as in-effect
+// before it actually landed on the default branch — shepherd round 2,
+// Codex-confirmed (P1): resolveRegistryTrustedActorIds previously reused
+// firstSeen's MIN-of-(merged_at, any check-suite), so the pre-merge
+// check-suite time backdated the revision's effective date. A run kicked
+// off AFTER the check-suite time but BEFORE the merge must see NO
+// registry opinion yet (falls back to full CLI trust), not the narrowed
+// set the commit eventually establishes.
+{
+  const narrowSha = "f".repeat(40);
+  const registryCommits = [{ sha: narrowSha }];
+  const registryContents = {
+    [narrowSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
+  };
+  const runId = "run-registry-premerge-checksuite-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:10:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:10:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:10:00Z");
+  writeScenario("registry-premerge-checksuite", {
+    issues: [{ number: 148, pull_request: null }],
+    comments: { "148": [idx, rr] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    // Check-suite ran on the feature branch well BEFORE kickoff (would
+    // wrongly backdate under the old design); the actual merge lands
+    // AFTER kickoff, so this revision is correctly not yet in effect.
+    ...checkSuiteSeen(narrowSha, ["2026-09-01T00:00:00Z"]),
+    ...mergedPrSeen(narrowSha, 610, "2026-09-01T00:20:00Z"),
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 148 },
+  });
+}
+
+// --- Scenario 36: the registry-revision mechanism works against a
+// default branch that isn't literally "main" — shepherd round 2,
+// Codex-confirmed (P2): sha=main was hardcoded, so a repo using a
+// different default branch name would silently fall back to full CLI
+// trust via the unavailable-registry path instead of erroring OR working.
+// Proves the narrowing still applies once the branch is resolved
+// dynamically.
+{
+  const narrowSha = "9".repeat(40);
+  const registryCommits = [{ sha: narrowSha }];
+  const registryContents = {
+    [narrowSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
+  };
+  const runId = "run-registry-nonmain-branch-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:10:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:10:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:10:00Z");
+  writeScenario("registry-nonmain-branch", {
+    issues: [{ number: 149, pull_request: null }],
+    comments: { "149": [idx, rr] },
+    commits: {},
+    default_branch: "trunk",
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    ...mergedPrSeen(narrowSha, 611, "2026-09-01T00:05:00Z"),
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 149 },
+  });
+}
+
+// --- Scenario 37: a forged-author evidence marker (matches this run, but
+// posted by an actor who is not this run's own trusted author) is
+// reported under forged_comments, not silently dropped — shepherd round
+// 2, Codex-confirmed (P2), verified directly against ai/schemas/README.md:
+// "a forged-author comment: reported, ignored". The run itself still
+// authenticates cleanly (an unrelated forged comment on the same issue
+// does not invalidate the real run record).
+{
+  const runId = "run-forged-marker-report-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const forgedPayload = { passes: [], adjudication: null };
+  const forged = evidenceComment(UNTRUSTED, "impersonator", runId, "review", "issue", 1, 1, forgedPayload, "2026-09-01T00:05:00Z");
+  writeScenario("forged-marker-report", {
+    issues: [{ number: 150, pull_request: null }],
+    comments: { "150": [idx, rr, forged] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 150, forgedId: forged.id },
+  });
+}
+
+// --- Scenario 38: two run_ids that would normalize to the SAME path
+// under plain path.resolve (a vs a/.) must not collide or cross-
+// contaminate during one --replay batch — shepherd round 2, Codex-
+// confirmed (P2). Both bare kickoff-only runs replay independently.
+{
+  const runIdA = "a";
+  const bodyA = {
+    schema: 2, run_id: runIdA, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idxA, record: rrA } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdA, bodyA, "2026-09-01T00:00:00Z");
+
+  const runIdB = "a/.";
+  const bodyB = {
+    schema: 2, run_id: runIdB, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idxB, record: rrB } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdB, bodyB, "2026-09-01T00:00:00Z");
+
+  writeScenario("replay-dir-collision", {
+    issues: [{ number: 151, pull_request: null }, { number: 152, pull_request: null }],
+    comments: { "151": [idxA, rrA], "152": [idxB, rrB] },
+    commits: {},
+    meta: { runIdA, runIdB, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumberA: 151, issueNumberB: 152 },
+  });
+}
+
+// --- Scenario 39: an issue whose EARLIEST run is chain-broken
+// (indeterminate) but whose trusted run-index still fixes a real,
+// old kickoff time, followed by a later valid run inside a requested
+// --since window — shepherd round 2, Codex-confirmed (P2): before the
+// fix, firstKickoffEpoch saw kickoff:null for this issue (indeterminate
+// runs were invisible to it), which bypassed the --since filter entirely
+// and admitted an issue that actually predates the window.
+{
+  const runIdBroken = "run-since-indeterminate-first-1";
+  const base = chain([{ stage: "kickoff", entered_at: "2026-08-01T00:00:00Z", exit: "claimed" }]);
+  const forkA = { stage: "claim", entered_at: "2026-08-01T00:01:00Z", exit: "implementing" };
+  const forkB = { stage: "explore", entered_at: "2026-08-01T00:01:05Z", exit: "planning" };
+  const digestA = entryDigest(forkA, base[0].digest);
+  const digestB = entryDigest(forkB, base[0].digest);
+  const forked = [
+    ...base,
+    { ...forkA, seq: 1, digest: digestA, prev_digest: base[0].digest },
+    { ...forkB, seq: 1, digest: digestB, prev_digest: base[0].digest },
+  ];
+  const bodyBroken = {
+    schema: 2, run_id: runIdBroken, initiated_by: "human", started_at: "2026-08-01T00:00:00Z",
+    stage_transitions: forked, interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idxBroken, record: rrBroken } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdBroken, bodyBroken, "2026-08-01T00:00:00Z");
+
+  const runIdLater = "run-since-indeterminate-later-1";
+  const bodyLater = {
+    schema: 2, run_id: runIdLater, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:01:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 623, url: "https://example.invalid/pr/623" },
+    evidence_comments: [],
+    promotion: { head: "c".repeat(40), promoted_at: "2026-09-01T00:05:00Z", gate_fingerprint: "since" },
+  };
+  const { index: idxLater, record: rrLater } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdLater, bodyLater, "2026-09-01T00:00:00Z");
+
+  writeScenario("since-indeterminate-first", {
+    issues: [{ number: 153, pull_request: null }],
+    comments: { "153": [idxBroken, rrBroken, idxLater, rrLater] },
+    commits: {},
+    meta: { runIdBroken, runIdLater, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 153 },
+  });
+}
+
+// --- Scenario 40: an outcome_transitions[] chain with TWO chain- and
+// digest-valid entries (capped, then ready-for-review) — shepherd round
+// 2, Codex-confirmed (P1, severe): the chain was unbounded and
+// deriveProjections trusts only the LAST entry, so this laundered a real
+// failure into a success without breaking chain or projection
+// verification (the flat outcome field is set to match the last entry,
+// exactly as a real attack would need it to). A run reaches exactly one
+// terminal outcome; this must now be rejected outright.
+{
+  const runId = "run-outcome-transitions-unbounded-1";
+  const cappedContent = { outcome: "capped", at: "2026-09-01T00:05:00Z" };
+  const cappedDigest = entryDigest(cappedContent, GENESIS);
+  const cappedEntry = { ...cappedContent, seq: 0, digest: cappedDigest, prev_digest: GENESIS };
+  const readyContent = { outcome: "ready-for-review", at: "2026-09-01T00:10:00Z" };
+  const readyDigest = entryDigest(readyContent, cappedDigest);
+  const readyEntry = { ...readyContent, seq: 1, digest: readyDigest, prev_digest: cappedDigest };
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 624, url: "https://example.invalid/pr/624" },
+    evidence_comments: [],
+    outcome_transitions: [cappedEntry, readyEntry],
+    promotion: { head: "d".repeat(40), promoted_at: "2026-09-01T00:10:00Z", gate_fingerprint: "laundered" },
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("outcome-transitions-unbounded", {
+    issues: [{ number: 154, pull_request: null }],
+    comments: { "154": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 154 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -1696,7 +1934,7 @@ echo "$before_cutoff" | jq -e '.rounds | length == 1' >/dev/null || fail "duplic
 echo "$after_cutoff" | jq -e '.rounds | length == 1' >/dev/null || fail "duplicate-marker: still exactly one round after the duplicate's own timestamp"
 [ "$(echo "$before_cutoff" | jq -c .rounds)" = "$(echo "$after_cutoff" | jq -c .rounds)" ] || fail "duplicate-marker: reconstruction must be identical at both cutoffs (concurrent-writer stability)"
 duplicate_id="$(meta duplicate-marker .meta.duplicateId)"
-echo "$after_cutoff" | jq -e --argjson id "$duplicate_id" '[.untrusted_comments[].id] | index($id) != null' >/dev/null ||
+echo "$after_cutoff" | jq -e --argjson id "$duplicate_id" '[.orphan_comments[].id] | index($id) != null' >/dev/null ||
     fail "duplicate-marker: expected the unlisted duplicate to surface as an orphan, not silently vanish"
 
 echo "== split segments reassemble in sequence order =="
@@ -1813,6 +2051,16 @@ const rounds = new Set(
 const policyText = readFileSync(args.policy, "utf8");
 const capMatch = policyText.match(new RegExp(`${args.stage}_cap\\s*=\\s*(\\d+)`));
 const cap = capMatch ? Number(capMatch[1]) : 99;
+// shepherd round 2: on-demand indeterminate verdict, matching
+// dev-flow-exit.mjs's own real "could not verify" contract (JSON
+// outcome:"indeterminate", exit 2) — proves dev-flow-stats.mjs
+// propagates it instead of diffing it like an ordinary recomputed
+// outcome.
+if (process.env.FAKE_EXIT_INDETERMINATE) {
+  const verdict = { stage: args.stage, outcome: "indeterminate", reason: "fake-cannot-verify" };
+  if (args.json) console.log(JSON.stringify(verdict));
+  process.exit(2);
+}
 const outcome = rounds.size >= cap ? "capped" : "continue";
 const verdict = { stage: args.stage, outcome, reason: outcome === "capped" ? "fake-cap-reached" : "fake-below-cap", rounds_counted: rounds.size, next_round: outcome === "continue" ? rounds.size + 1 : null };
 if (args.json) console.log(JSON.stringify(verdict));
@@ -2092,20 +2340,18 @@ set -e
 [ "$rc" -eq 3 ] || fail "mutable-field-tamper (initiated_by): expected indeterminate, got rc=$rc: $out"
 echo "$out" | grep -qi "initiated_by" || fail "mutable-field-tamper (initiated_by): expected an initiated_by mismatch reason, got: $out"
 
-echo "== shepherd round 1: started_at edited in the mutable record body, disagreeing with the run-index comment's own created_at, fails closed =="
-run_id_start="$(meta mutable-field-tamper .meta.runIdStart)"
-set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_start" --trusted-actor-id 9001 2>&1)"
-rc=$?
-set -e
-[ "$rc" -eq 3 ] || fail "mutable-field-tamper (started_at): expected indeterminate, got rc=$rc: $out"
-echo "$out" | grep -qi "started_at" || fail "mutable-field-tamper (started_at): expected a started_at mismatch reason, got: $out"
+echo "== shepherd round 2: a claimed started_at in the mutable record body has no effect — the record comment's own created_at is always authoritative =="
+export DFSTATS_DB="$tmp/scenarios/started-at-neutralized.json"
+run_id="$(meta started-at-neutralized .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "started-at-neutralized: expected the run to authenticate cleanly despite the implausible claimed started_at"
+echo "$out" | jq -e '.started_at == "2026-09-01T00:00:00Z"' >/dev/null || fail "started-at-neutralized: expected started_at to be the record comment's own created_at (2026-09-01), not the claimed 2099 value, got: $out"
 
-echo "== shepherd round 1: a path-traversal run_id cannot escape --replay's temp directory =="
+echo "== shepherd round 1/2: a path-traversal run_id cannot escape --replay's temp directory, and is replayed normally (hashing neutralizes rather than rejects) =="
 export DFSTATS_DB="$tmp/scenarios/replay-path-traversal.json"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.[0].indeterminate == true' >/dev/null || fail "replay-path-traversal: expected the unsafe run_id to be reported indeterminate, got: $out"
-echo "$out" | jq -r '.[0].reason' | grep -qi "escape" || fail "replay-path-traversal: expected the reason to name the escape refusal, got: $out"
+echo "$out" | jq -e '.[0].indeterminate // false | not' >/dev/null || fail "replay-path-traversal: expected the run to replay normally (hashing makes the id safe unconditionally), got: $out"
+echo "$out" | jq -e '.[0].diffs == []' >/dev/null || fail "replay-path-traversal: expected no diffs for a bare kickoff-only run with no rounds, got: $out"
 
 echo "== shepherd round 1: firstSeen takes the EARLIEST of check-suite and merged_at, never merged_at unconditionally =="
 export DFSTATS_DB="$tmp/scenarios/postfix-early-checksuite.json"
@@ -2173,5 +2419,68 @@ rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "marker-dest-mismatch: expected indeterminate, got rc=$rc: $out"
 echo "$out" | grep -qi "not actually fetched from\|edited-entry tampering" || fail "marker-dest-mismatch: expected a destination-mismatch reason, got: $out"
+
+echo "== shepherd round 2: a registry commit's pre-merge (feature-branch) check-suite time does not backdate when its revision took effect =="
+export DFSTATS_DB="$tmp/scenarios/registry-premerge-checksuite.json"
+run_id="$(meta registry-premerge-checksuite .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "registry-premerge-checksuite: expected the run to authenticate cleanly (the revision is not yet in effect at kickoff), got: $out"
+
+echo "== shepherd round 2: registry-revision narrowing still applies against a non-'main' default branch =="
+export DFSTATS_DB="$tmp/scenarios/registry-nonmain-branch.json"
+run_id="$(meta registry-nonmain-branch .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 1 ] || fail "registry-nonmain-branch: expected not-found (narrowed by the in-effect registry revision on the trunk branch), got rc=$rc: $out"
+
+echo "== shepherd round 2: a forged-author evidence marker is reported under forged_comments, not silently dropped =="
+export DFSTATS_DB="$tmp/scenarios/forged-marker-report.json"
+run_id="$(meta forged-marker-report .meta.runId)"
+forged_id="$(meta forged-marker-report .meta.forgedId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "forged-marker-report: expected the run itself to authenticate cleanly"
+echo "$out" | jq -e --argjson id "$forged_id" '[.forged_comments[].id] | index($id) != null' >/dev/null || fail "forged-marker-report: expected the forged comment under forged_comments, got: $out"
+echo "$out" | jq -e --argjson id "$forged_id" '[.orphan_comments[].id] | index($id) == null' >/dev/null || fail "forged-marker-report: forged comment must not also appear in orphan_comments, got: $out"
+
+echo "== shepherd round 2: run_ids that normalize to the same path (a vs a/.) do not collide during one --replay batch =="
+export DFSTATS_DB="$tmp/scenarios/replay-dir-collision.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '[.[].runId] | sort == ["a", "a/."]' >/dev/null || fail "replay-dir-collision: expected both run_ids to appear independently, got: $out"
+echo "$out" | jq -e '[.[].indeterminate] | all(. != true)' >/dev/null || fail "replay-dir-collision: expected neither run to be indeterminate, got: $out"
+
+echo "== shepherd round 2: an unrecognized flag (a typo, e.g. --asof) is a usage error, not a silent no-op =="
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --asof 2026-09-01T00:00:00Z --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "unrecognized flag: expected usage error (exit 2), got rc=$rc: $out"
+echo "$out" | grep -qi "unrecognized option" || fail "unrecognized flag: expected an unrecognized-option message, got: $out"
+
+echo "== shepherd round 2: an indeterminate exit-script verdict is propagated, not diffed as a policy disagreement =="
+export DFSTATS_DB="$tmp/scenarios/happy.json"
+export FAKE_EXIT_INDETERMINATE=1
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+unset FAKE_EXIT_INDETERMINATE
+echo "$out" | jq -e '.[0].diffs[0].recomputed == null and (.[0].diffs[0].error | test("could not verify"))' >/dev/null || fail "indeterminate-exit-script: expected an error-shaped diff entry naming the verification failure, got: $out"
+echo "$out" | jq -e '.[0].diffs[0] | has("reason") | not' >/dev/null || fail "indeterminate-exit-script: expected no policy-disagreement 'reason' field on an indeterminate diff entry, got: $out"
+
+echo "== shepherd round 2: --since correctly excludes an issue whose indeterminate FIRST run predates the window, using the trusted index's own kickoff time =="
+export DFSTATS_DB="$tmp/scenarios/since-indeterminate-first.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-08-15T00:00:00Z --json)"
+echo "$out" | jq -e '.cohort_size == 0' >/dev/null || fail "since-indeterminate-first: expected the issue excluded by --since (predates the window via the broken run's own index time), got: $out"
+without_since="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$without_since" | jq -e '.indeterminate_count == 1' >/dev/null || fail "since-indeterminate-first: without --since, expected the issue counted as indeterminate (the broken first run), got: $without_since"
+
+echo "== shepherd round 2: a second chain- and digest-valid outcome_transitions entry (capped then ready-for-review) is rejected, not laundered into success =="
+export DFSTATS_DB="$tmp/scenarios/outcome-transitions-unbounded.json"
+run_id="$(meta outcome-transitions-unbounded .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "outcome-transitions-unbounded: expected indeterminate, got rc=$rc: $out"
+echo "$out" | grep -qi "outcome_transitions has 2 entries\|one terminal outcome" || fail "outcome-transitions-unbounded: expected an at-most-one-terminal-outcome reason, got: $out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

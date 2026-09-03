@@ -95,6 +95,39 @@ function firstSeen(repo, sha) {
   return null;
 }
 
+const defaultBranchCache = new Map();
+
+// shepherd round 2, Codex-confirmed (P2): sha=main was hardcoded — a
+// target repo whose default branch is not literally "main" would search
+// the wrong (or a nonexistent) ref, hit the catch below, and silently
+// fall back to full CLI trust. The CLI is explicitly repository-generic
+// (--repo <owner/repo>, any repo), so this resolves and caches the real
+// default branch instead of assuming.
+function resolveDefaultBranch(repo) {
+  if (!defaultBranchCache.has(repo)) {
+    defaultBranchCache.set(repo, ghApiOne(`repos/${repo}`).default_branch);
+  }
+  return defaultBranchCache.get(repo);
+}
+
+// "When did this commit land on the default branch" — narrower than
+// firstSeen(sha)'s "when did this commit first become visible anywhere in
+// the repo". shepherd round 2, Codex-confirmed (P1): reusing firstSeen's
+// MIN-of-(merged_at, any check-suite) for registry-revision selection was
+// wrong — a registry commit's check suite can run on its OWN feature
+// branch, before it ever merges, and that pre-merge time is not when the
+// revision actually took effect on the default branch. Every commit
+// reachable via the default-branch path listing (resolveRegistryTrustedActorIds's
+// own commits?path=...&sha=<default> call) has exactly one merging PR
+// (direct pushes to the default branch are ruleset-blocked), so merged_at
+// alone is always available here and is the only correct signal — no
+// check-suite fallback, unlike firstSeen.
+function defaultBranchLandedAt(repo, sha) {
+  const prs = ghApiPaginated(`repos/${repo}/commits/${sha}/pulls`);
+  const merged = prs.find((pr) => pr.merged_at);
+  return merged ? merged.merged_at : null;
+}
+
 // Repo-committed trust narrowing: issue #741 proposes a trusted-orchestrator
 // actor allowlist in agent-registry.json, pinned to the revision in effect
 // at evidence-write time — never the latest, which a later edit could
@@ -111,25 +144,30 @@ function firstSeen(repo, sha) {
 // already narrows evidence-comment trust to one run's own author rather
 // than the whole configured set.
 //
-// "Revision in effect" is selected by first_seen(sha), never a
-// committer/author date — the same spoofable-by-cherry-pick field review
-// round 4 already closed once for post-ready-fix detection above — so a
-// hostile revision cannot be backdated into looking like it predates the
-// write it is meant to govern. Among commits whose first_seen is on or
-// before atIso, the one with the LATEST first_seen wins (the newest
-// registry state actually visible by that moment).
+// "Revision in effect" is selected by defaultBranchLandedAt(sha) — its own
+// merged_at, never a committer/author date (the same spoofable-by-cherry-
+// pick field review round 4 already closed once for post-ready-fix
+// detection above) and never firstSeen's broader "visible anywhere"
+// signal (shepherd round 2, Codex-confirmed — see defaultBranchLandedAt's
+// own comment) — so a hostile or merely pre-merge-visible revision cannot
+// be backdated into looking like it predates the write it is meant to
+// govern. Among commits whose landing time is on or before atIso, the one
+// with the LATEST landing time wins (the newest registry state actually
+// in effect on the default branch by that moment).
 function resolveRegistryTrustedActorIds(repo, atIso) {
   const cutoff = Date.parse(atIso);
+  let defaultBranch;
   let commits;
   try {
-    commits = ghApiPaginated(`repos/${repo}/commits?path=agent-registry.json&sha=main`);
+    defaultBranch = resolveDefaultBranch(repo);
+    commits = ghApiPaginated(`repos/${repo}/commits?path=agent-registry.json&sha=${defaultBranch}`);
   } catch {
     return null;
   }
   let bestSha = null;
   let bestSeen = -Infinity;
   for (const c of commits) {
-    const seen = firstSeen(repo, c.sha);
+    const seen = defaultBranchLandedAt(repo, c.sha);
     if (seen === null) continue;
     const seenEpoch = Date.parse(seen);
     if (seenEpoch <= cutoff && seenEpoch > bestSeen) {
@@ -398,9 +436,13 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
   // harvestOneRunRecord already isolates later per-run failures.
   const results = [];
   for (const [runId, entries] of byRunId) {
+    // Declared outside the try so the catch below can still read it —
+    // shepherd round 2, Codex-confirmed (P2): see the catch block's own
+    // comment for why.
+    let indexEntry;
     try {
       const canonicalMap = resolveCanonical(entries);
-      const indexEntry = [...canonicalMap.values()][0];
+      indexEntry = [...canonicalMap.values()][0];
       let indexPayload;
       try {
         indexPayload = JSON.parse(indexEntry.payloadText);
@@ -452,29 +494,37 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
       if (body.run_id !== runId) {
         throw new EvidenceError(`run-index ${runId} names comment ${named.id}, whose parsed payload declares run_id ${JSON.stringify(body.run_id)} — identity mismatch`);
       }
-      // initiated_by and started_at live in the MUTABLE record body, edited
-      // in place throughout the run, and neither is chain-protected —
-      // shepherd round 1, Codex-confirmed (P1 x2): a valid-looking in-place
-      // edit to either passes every existing check. The run-index payload
-      // carries its own copy of initiated_by, and the index COMMENT's own
-      // created_at is when kickoff genuinely happened — both fixed once, at
-      // kickoff, never edited again, so cross-checking the mutable body
-      // against them closes the gap the same way the run_id check above
-      // does. initiated_by directly gates whether computeIssueVerdict
-      // counts a human re-kick as an intervention — an edit from human to
-      // foreman here would launder a real failure into unattended success,
-      // the primary metric this tool exists to compute. started_at gates
-      // --since cohort membership and stale-terminalization timing.
+      // initiated_by lives in the MUTABLE record body, edited in place
+      // throughout the run, and is not chain-protected — shepherd round 1,
+      // Codex-confirmed (P1): a valid-looking in-place edit passes every
+      // other check. The run-index payload carries its own copy, fixed
+      // once at kickoff and never edited again, so cross-checking the
+      // mutable body against it closes the gap the same way the run_id
+      // check above does. initiated_by directly gates whether
+      // computeIssueVerdict counts a human re-kick as an intervention — an
+      // edit from human to foreman here would launder a real failure into
+      // unattended success, the primary metric this tool exists to
+      // compute.
       if (body.initiated_by !== indexPayload.initiated_by) {
         throw new EvidenceError(`run-index ${runId} names comment ${named.id}, whose parsed payload declares initiated_by ${JSON.stringify(body.initiated_by)} but the run-index recorded ${JSON.stringify(indexPayload.initiated_by)} — edited-entry tampering`);
       }
-      if (body.started_at !== indexEntry.comment.created_at) {
-        throw new EvidenceError(`run-index ${runId} names comment ${named.id}, whose parsed payload declares started_at ${JSON.stringify(body.started_at)} but the run-index comment was itself posted at ${indexEntry.comment.created_at} — edited-entry tampering`);
-      }
+      // started_at is NEVER read from the body at all (see reconstructAsOf)
+      // — shepherd round 2, Codex-confirmed (P1): round 1's cross-check
+      // against the run-INDEX comment's created_at was too strict for a
+      // legitimate writer. The index cannot be posted until the record's
+      // own POST returns a comment id to name, so an index posted even
+      // moments after the record — ordinary network latency, not
+      // tampering — could cross a second boundary and fail exact
+      // equality. recordComment.created_at (this SAME comment, GitHub-
+      // assigned, available the instant it posts, no round-trip
+      // dependency) is the authoritative kickoff time everywhere
+      // instead; body.started_at becomes purely decorative payload text,
+      // never trusted for cohort/staleness/display logic.
       results.push({
         status: "ok",
         runId,
         commentId: recordComment.id,
+        recordCreatedAt: recordComment.created_at,
         authorActorId: named.author_actor_id,
         authorLogin: named.login,
         body,
@@ -482,7 +532,19 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
       });
     } catch (err) {
       if (err instanceof EvidenceError) {
-        results.push({ status: "indeterminate", runId, reason: err.message });
+        // The trusted run-INDEX's own comment.created_at survives even
+        // when something LATER fails (a broken record chain, a deleted
+        // record comment, ...) — it is a separate, simpler artifact from
+        // the record whose verification just failed. shepherd round 2,
+        // Codex-confirmed (P2): firstKickoffEpoch only ever looked at
+        // status:"ok" runs, so an issue whose EARLIEST run turned out
+        // indeterminate reported kickoff:null, which the --since filter's
+        // `kickoff !== null` guard reads as "always inside the window" —
+        // inflating indeterminate_count for issues that actually predate
+        // the requested window. Recording this fallback whenever the
+        // index itself was found closes that gap without trusting
+        // anything the failed verification didn't already establish.
+        results.push({ status: "indeterminate", runId, reason: err.message, indexCreatedAt: indexEntry ? indexEntry.comment.created_at : null });
         continue;
       }
       throw err;
@@ -800,6 +862,21 @@ function verifyRunRecordChains(body) {
     if (!outcome.ok) {
       throw new EvidenceError(`run record ${arrayName} chain broken: ${outcome.reason}`);
     }
+    // outcome_transitions[]'s own enum (ready-for-review/capped/escalated/
+    // abandoned) is the FULL terminal set — every entry it could ever hold
+    // is by definition a terminal outcome, so more than one entry means a
+    // second terminal value was appended after the run already ended.
+    // shepherd round 2, Codex-confirmed (P1, severe): a chain- and
+    // digest-valid second entry (e.g. capped then ready-for-review) passed
+    // every existing check and laundered a real failure into a success via
+    // deriveProjections' own last-entry-wins rule — directly corrupting
+    // the primary unattended-success metric. A retry after a terminal
+    // outcome is a NEW run_id (the run-index/findRunRecord grouping
+    // already treats it that way); it is never another entry on this
+    // chain.
+    if (arrayName === "outcome_transitions" && outcome.entries.length > 1) {
+      throw new EvidenceError(`run record outcome_transitions has ${outcome.entries.length} entries — a run may reach only one terminal outcome, any retry is a new run_id`);
+    }
     result[arrayName] = outcome.entries;
   }
   return result;
@@ -846,8 +923,12 @@ function verifyProjections(body, chains) {
 // `--as-of` reconstruction: validate the COMPLETE chain first (a break
 // after the cutoff still means nothing before it can be trusted, since the
 // break could be a rewrite of earlier history too — ai/schemas/README.md),
-// then keep only entries at or before the cutoff.
-function reconstructAsOf(body, cutoffIso) {
+// then keep only entries at or before the cutoff. recordCreatedAt is the
+// run-record COMMENT's own (GitHub-assigned) created_at, the authoritative
+// kickoff time — never body.started_at, a mutable, unprotected payload
+// field (see the caller, findRunRecord, for why round 1's cross-check
+// against it was itself too strict and was replaced with this instead).
+function reconstructAsOf(body, cutoffIso, recordCreatedAt) {
   const chains = verifyRunRecordChains(body);
   // Tamper check against CURRENT (unfiltered) state, once, regardless of
   // cutoff — a chain broken or drifted from its flat projection right now
@@ -892,7 +973,7 @@ function reconstructAsOf(body, cutoffIso) {
   return {
     run_id: body.run_id,
     initiated_by: body.initiated_by,
-    started_at: body.started_at,
+    started_at: recordCreatedAt,
     stage_transitions: filtered.stage_transitions,
     interventions: filtered.interventions,
     settlements: filtered.settlements,
@@ -912,17 +993,37 @@ function reconstructAsOf(body, cutoffIso) {
 }
 
 // ---------------------------------------------------------------------------
-// Orphan detection (reporting only — never trusted, never assembled): a
-// comment shaped like evidence for this run, posted by an actor who could
-// legitimately author it, but never added to evidence_comments[]. Kept
-// visible in trajectory output as a signal something may have failed to
-// index (a crash between posting and updating the list) — assembleListedEvidence
-// above never accepts it regardless.
+// Orphan and forged-marker detection (reporting only — neither is ever
+// trusted or assembled; assembleListedEvidence above never accepts either
+// regardless). Two DIFFERENT signals, previously conflated into one
+// "untrusted_comments" field that actually only ever held the first kind
+// — shepherd round 2, Codex-confirmed (P2), verified directly against
+// ai/schemas/README.md's own "Trust: actor ID, never a payload claim":
+// "A comment whose marker matches but whose author fails this check is a
+// forged-author comment: reported, ignored" — this file previously just
+// dropped forged markers silently instead.
+//   - trusted orphan: a comment shaped like evidence for this run, posted
+//     by an actor who could legitimately author it, but never added to
+//     evidence_comments[] — a signal something may have failed to index
+//     (a crash between posting and updating the list).
+//   - forged marker: a comment shaped like evidence for this run, posted
+//     by an actor who is NOT this run's trusted author — noise or an
+//     attempted forgery, reported so it is visible, never treated as
+//     evidence.
 // ---------------------------------------------------------------------------
 
 function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds }) {
   const marked = markedComments(comments).filter((e) => e.marker.kind === "evidence" && e.marker.runId === runId);
-  return marked.filter((e) => isTrustedFor(e.comment, { runRecordAuthorId }) && !listedIds.has(e.comment.id));
+  const trusted = [];
+  const forged = [];
+  for (const e of marked) {
+    if (isTrustedFor(e.comment, { runRecordAuthorId })) {
+      if (!listedIds.has(e.comment.id)) trusted.push(e);
+    } else {
+      forged.push(e);
+    }
+  }
+  return { trusted, forged };
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,7 +1107,7 @@ function buildRunDirectory(runRecord, roundEvidence, destDir) {
 // many issues keeps going past an indeterminate one rather than aborting.
 function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, withinCutoff }) {
   try {
-    const state = reconstructAsOf(record.body, asOf);
+    const state = reconstructAsOf(record.body, asOf, record.recordCreatedAt);
     // The LIVE pr (record.body.pr), never the as-of-filtered state.pr:
     // assembleListedEvidence below verifies every LIVE evidence_comments[]
     // entry unconditionally (existence/author/marker, regardless of
@@ -1043,7 +1144,7 @@ function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, w
     // producer never actually emitted — challenge round 1, confirmed.
     const rounds = assembleListedEvidence(record.body, allComments, withinCutoff, record.authorActorId);
     const listedIds = new Set((record.body.evidence_comments || []).map((e) => Number(e.id)));
-    const orphans = findOrphanEvidence(allComments, { runId: record.runId, runRecordAuthorId: record.authorActorId, listedIds });
+    const { trusted: orphans, forged: forgedMarkers } = findOrphanEvidence(allComments, { runId: record.runId, runRecordAuthorId: record.authorActorId, listedIds });
     return {
       status: "ok",
       runId: record.runId,
@@ -1052,10 +1153,17 @@ function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, w
       state,
       rounds,
       untrusted: orphans,
+      forged: forgedMarkers,
     };
   } catch (err) {
     if (err instanceof EvidenceError) {
-      return { status: "indeterminate", runId: record.runId, issueNumber, reason: err.message };
+      // record itself was already fully authenticated by findRunRecord
+      // (its author/identity checks passed) — only the LATER chain/
+      // projection verification failed here, so record.recordCreatedAt
+      // is still a genuine kickoff-time fallback. shepherd round 2,
+      // Codex-confirmed (P2) — see findRunRecord's own indexCreatedAt for
+      // the general reasoning; this is the same fallback, one level up.
+      return { status: "indeterminate", runId: record.runId, issueNumber, reason: err.message, indexCreatedAt: record.recordCreatedAt };
     }
     throw err;
   }
@@ -1090,7 +1198,7 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf }) {
   // need harvestOneRunRecord's further (evidence-level) processing.
   return records.map((record) =>
     record.status === "indeterminate"
-      ? { status: "indeterminate", runId: record.runId, issueNumber, reason: record.reason }
+      ? { status: "indeterminate", runId: record.runId, issueNumber, reason: record.reason, indexCreatedAt: record.indexCreatedAt }
       : harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, withinCutoff }),
   );
 }
@@ -1251,8 +1359,20 @@ function computePostReadyFix(repo, readyRun, cutoffEpoch) {
 // harvested runs. An indeterminate run's started_at cannot be trusted the
 // same way (its chain never passed verification), so it never EXCLUDES an
 // issue from the window — only a verified "ok" run's timestamp can.
+// shepherd round 2, Codex-confirmed (P2): only status:"ok" runs were ever
+// considered, so an issue whose EARLIEST run turned out indeterminate
+// (chain broken, deleted record, ...) reported kickoff:null — which the
+// --since caller's `kickoff !== null` guard reads as "always inside the
+// window", inflating indeterminate_count for issues that actually predate
+// the window. indexCreatedAt (see findRunRecord/harvestOneRunRecord) is a
+// genuine fallback whenever it survives an indeterminate result: it comes
+// from the run's own trusted index/record identity, established before
+// whatever LATER check failed.
 function firstKickoffEpoch(issueRuns) {
-  const started = issueRuns.filter((r) => r.status === "ok").map((r) => Date.parse(r.state.started_at));
+  const started = issueRuns
+    .map((r) => (r.status === "ok" ? r.state.started_at : r.indexCreatedAt))
+    .filter((t) => t != null)
+    .map((t) => Date.parse(t));
   return started.length > 0 ? Math.min(...started) : null;
 }
 
@@ -1367,7 +1487,13 @@ function renderTrajectory(run) {
       has_adjudication: Boolean(r.payload.adjudication),
     })),
     findings_by_class_and_provenance: findingCountsByClassAndProvenance(rounds),
-    untrusted_comments: run.untrusted.map((u) => ({ id: u.comment.id, actor_id: u.actorId })),
+    // Renamed from the misleading untrusted_comments — shepherd round 2,
+    // Codex-confirmed (P2): this field has only ever held TRUSTED-but-
+    // unlisted orphans, never untrusted ones. forged_comments is the new,
+    // genuinely-untrusted counterpart (ai/schemas/README.md: "a
+    // forged-author comment: reported, ignored").
+    orphan_comments: run.untrusted.map((u) => ({ id: u.comment.id, actor_id: u.actorId })),
+    forged_comments: run.forged.map((f) => ({ id: f.comment.id, actor_id: f.actorId })),
   };
 }
 
@@ -1506,19 +1632,24 @@ function currentHeadForStage(run, stage) {
 // directories and overwrite fixed filenames (run.json, passes/*,
 // adjudications/*) at that external location — this is the only place
 // this otherwise read-only (gh-api-only) tool writes to the local
-// filesystem at all. Resolve-and-check-prefix, not a blocklist: any name
-// that does not stay inside base is refused outright.
-function safeJoin(base, name) {
-  const resolvedBase = path.resolve(base);
-  const joined = path.resolve(resolvedBase, name);
-  if (joined !== resolvedBase && !joined.startsWith(resolvedBase + path.sep)) {
-    throw new EvidenceError(`run_id ${JSON.stringify(name)} would escape the replay temp directory — refusing`);
-  }
-  return joined;
+// filesystem at all.
+//
+// A resolve-and-check-prefix guard (round 1's first attempt) stops the
+// escape but not collision: shepherd round 2, Codex-confirmed (P2) —
+// distinct schema-valid ids like "a" and "a/." both normalize to the same
+// joined path, and buildRunDirectory never clears a directory before
+// writing into it, so a second run in the same --replay batch could
+// silently inherit and be scored against the first run's files. Hashing
+// the id into the directory name fixes both concerns in one step: a hex
+// digest can never contain a path separator (containment) and collides
+// only as often as SHA-256 does (uniqueness) — simpler than a
+// resolve-and-check guard on the raw value.
+function runReplayDir(base, runId) {
+  return path.join(path.resolve(base), sha256(runId).slice(0, 16));
 }
 
 function replayOneRun(run, { policyPath, exitScriptPath, tmpRoot, repoRoot }) {
-  const runDir = safeJoin(tmpRoot, run.runId);
+  const runDir = runReplayDir(tmpRoot, run.runId);
   buildRunDirectory(run.record.body, run.rounds, runDir);
   const diffs = [];
   for (const stage of ["challenge", "review"]) {
@@ -1530,6 +1661,17 @@ function replayOneRun(run, { policyPath, exitScriptPath, tmpRoot, repoRoot }) {
     const recorded = recordedOutcome(recordedText);
     if (error) {
       diffs.push({ stage, recorded: recordedText, recomputed: null, error });
+      continue;
+    }
+    // dev-flow-exit.mjs deliberately emits outcome:"indeterminate" (exit
+    // 2) when it cannot verify a reconstructed trajectory — shepherd
+    // round 2, Codex-confirmed (P1): this was never distinguished from an
+    // ordinary recomputed outcome, so an indeterminate verdict was
+    // compared against the recorded exit like any other and reported as
+    // a POLICY DISAGREEMENT, when the actual failure mode is "could not
+    // verify at all", unrelated to the candidate policy under test.
+    if (verdict.outcome === "indeterminate") {
+      diffs.push({ stage, recorded: recordedText, recomputed: null, error: `exit script could not verify this trajectory: ${verdict.reason || "indeterminate"}` });
       continue;
     }
     if (verdict.outcome !== recorded) {
@@ -1546,9 +1688,10 @@ function replayAll(runs, { policyPath, exitScriptPath, repoRoot }) {
       if (run.status === "indeterminate") {
         return { runId: run.runId, issue: run.issueNumber, diffs: [], indeterminate: true, reason: run.reason };
       }
-      // One run's unsafe run_id (safeJoin) must not abort the whole batch
-      // — the same per-run isolation this file applies everywhere else
-      // (harvestOneRunRecord, findRunRecord's per-run_id grouping).
+      // One run's own EvidenceError (e.g. an indeterminate exit-script
+      // result) must not abort the whole batch — the same per-run
+      // isolation this file applies everywhere else (harvestOneRunRecord,
+      // findRunRecord's per-run_id grouping).
       try {
         return replayOneRun(run, { policyPath, exitScriptPath: exitScriptPath || DEFAULT_EXIT_SCRIPT, tmpRoot, repoRoot: repoRoot || process.cwd() });
       } catch (err) {
@@ -1611,12 +1754,29 @@ export {
 // CLI
 // ---------------------------------------------------------------------------
 
+// shepherd round 2, Codex-confirmed (P2): every --key was accepted and
+// stored regardless of whether anything ever reads it, so a typo (--asof
+// instead of --as-of) silently no-opped — the mistyped flag's own check
+// (requiredArgValue et al.) never runs because nothing asks for
+// args["asof"], and the command exits 0 with live data mislabeled as the
+// requested historical cutoff. Especially hazardous for reproducibility:
+// the output stays plausible, nothing signals the mistake.
+const KNOWN_FLAGS = new Set([
+  "as-of", "config", "exit-script", "json", "policy", "replay", "repo",
+  "repo-root", "run", "since", "stale-after-days", "trusted-actor-id",
+  "trusted-actors-file",
+]);
+
 function parseArgs(argv) {
   const args = { "trusted-actor-id": [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith("--")) continue;
     const key = a.slice(2);
+    if (!KNOWN_FLAGS.has(key)) {
+      console.error(`dev-flow-stats: unrecognized option --${key}`);
+      return null;
+    }
     const next = argv[i + 1];
     const takesValue = next !== undefined && !next.startsWith("--");
     if (key === "trusted-actor-id") {
