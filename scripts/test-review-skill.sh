@@ -28,7 +28,7 @@ for text in '[stage.challenge].finders' '[stage.review].finders' challenger revi
     'scripts/dev-flow-exit.sh' 'scripts/render-dev-flow.sh' 'scripts/round-push.sh' \
     'run.json.evidence_comments' 'fenced JSON' 'git remote get-url origin' \
     'gh repo view "$origin_url"' 'inline confidence-stage procedure' \
-    'validated finding records'; do
+    'validated finding records' 'override it upward' 'run.json.interventions'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing $text"
 done
 entry_gate_line="$(grep -n '^## Entry gate$' "$skill" | cut -d: -f1)"

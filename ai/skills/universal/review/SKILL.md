@@ -118,6 +118,11 @@ declined/deferred round); otherwise it dispatches a fresh bounded implementer,
 commits the one fix round, and pushes only through `scripts/round-push.sh` by
 path. `diverging` permits only deletion or restructuring of round-created
 scaffolding; `capped` with P0/P1 records an intervention and blocker, then
-stops before a PR. A terminal `challenge` clean transitions to `review`; a
-terminal `review` clean names security as next. Deferred P2s remain recorded
-for integration.
+stops before a PR. A `converged` result advances by default, but an attributable
+operator may override it upward to exactly one additional pass while the
+resolved stage cap still has headroom. Before dispatch, append that operator's
+reason and attribution to `run.json.interventions` as `kind: other`; refuse the
+override when no round remains. Never override an exit downward or reinterpret
+the script's outcome. Without that recorded upward override, a terminal
+`challenge` clean transitions to `review` and a terminal `review` clean names
+security as next. Deferred P2s remain recorded for integration.
