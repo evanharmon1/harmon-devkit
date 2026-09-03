@@ -20,7 +20,7 @@
       "id": "3000000001",
       "author_actor_id": 123456,
       "login": "evanharmon1",
-      "digest": "sha256:1a2b3c4d5e6f00000000000000000000000000000000000000000000000000",
+      "digest": "sha256:1a2b3c4d5e6f0000000000000000000000000000000000000000000000000000",
       "marker": { "run_id": "run-637-fixture-0001", "stage": "challenge", "destination": "issue", "round": 1, "sequence": 1 }
     }
   ],
