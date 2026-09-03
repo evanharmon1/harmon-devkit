@@ -227,11 +227,19 @@ commit_on() {
 
 # Extracts the closure files from REPO at SHA into a fresh directory via
 # `git archive`, mirroring a real merge-base extraction, and returns the
-# directory's path.
+# directory's path. .gitleaksignore is optional per the closure's own
+# declared shape (round-push.sh's verify_closure_gitleaksignore treats "the
+# merge base has none" as a valid state, not a missing-file error) — `git
+# archive` hard-errors on ANY explicit pathspec absent from the tree, so
+# unlike every other entry in CLOSURE_FILES this one is only added when it
+# actually exists at SHA, checked first via `cat-file -e`.
 extract_closure() {
-    local repo=$1 sha=$2 dest
+    local repo=$1 sha=$2 dest paths=("${CLOSURE_FILES[@]}")
     dest="$(mktemp -d)"
-    git -C "$repo" archive "$sha" -- "${CLOSURE_FILES[@]}" | tar -x -C "$dest"
+    if git -C "$repo" cat-file -e "${sha}:.gitleaksignore" 2>/dev/null; then
+        paths+=(.gitleaksignore)
+    fi
+    git -C "$repo" archive "$sha" -- "${paths[@]}" | tar -x -C "$dest"
     chmod +x "${dest}/scripts/gitleaks-scan.sh"
     printf '%s' "$dest"
 }
@@ -264,21 +272,30 @@ closure_args_from() {
 # resolve to, and now verifies every closure-resident input against that
 # commit's own git objects (Codex review rounds 2 and current-head cloud
 # review, confirmed). mark_base tags AT (default HEAD, so an earlier commit
-# can be named for tests that need one), extracts the closure from that
-# same commit, and sets policy_args/scan_args as a side effect — every
-# existing call site keeps working unchanged, now pointed at real,
-# verifiable closure files instead of a standalone directory. Prints
-# "TAG SHA" on one line — split with bash parameter expansion (no bash-4-
-# only namerefs, matching this suite's own Bash-3.2 compatibility
-# elsewhere).
+# can be named for tests that need one) with `tag -f`, so calling it twice
+# with the same LABEL just moves the tag rather than failing outright,
+# extracts the closure from that same commit, and sets policy_args/
+# scan_args as a side effect, plus the
+# tag name and sha in mark_base_tag/mark_base_sha — MUST be called directly
+# (never as `x="$(mark_base ...)"`), because bash always forks a subshell
+# for command substitution, which would silently discard every one of
+# those global-variable side effects the instant the subshell exits,
+# leaving policy_args/scan_args/mark_base_tag/mark_base_sha stuck at
+# whichever earlier fixture's mark_base call last set them directly (a
+# latent bug in this suite itself, not in round-push.sh: caught only
+# because two fixtures happen to give DIFFERENT, mutually exclusive
+# docs_only_paths results, so a stale policy from an unrelated earlier
+# fixture would misclassify rather than coincidentally agree — every
+# fixture before that shared byte-identical closure content, so a stale
+# policy_args was undetectably wrong).
 mark_base() {
-    local repo=$1 label=${2:-base} at=${3:-HEAD} sha dir
+    local repo=$1 label=${2:-base} at=${3:-HEAD} dir
 
-    sha="$(git -C "$repo" rev-parse "$at")"
-    git_q "$repo" tag "round-push-test-${label}" "$sha"
-    dir="$(extract_closure "$repo" "$sha")"
+    mark_base_sha="$(git -C "$repo" rev-parse "$at")"
+    mark_base_tag="round-push-test-${label}"
+    git_q "$repo" tag -f "$mark_base_tag" "$mark_base_sha"
+    dir="$(extract_closure "$repo" "$mark_base_sha")"
     closure_args_from "$dir"
-    printf 'round-push-test-%s %s\n' "$label" "$sha"
 }
 
 rc=0
@@ -320,6 +337,22 @@ assert_rc 2
 run push --remote origin --branch main --sha deadbeef
 assert_rc 2
 
+echo "  -> --branch must match the checked-out branch, not merely be syntactically valid"
+root="$(new_fixture branch-binding)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
+run push --remote origin --branch some-other-branch --host github.com --repo owner/repo \
+    --sha "$code_sha" --expect absent \
+    --against "$merge_base" --closure-base "$merge_base_sha" "${policy_args[@]}" "${scan_args[@]}"
+assert_rc 3
+printf '%s' "$err" | grep -Fi "does not match the checked-out branch" >/dev/null ||
+    fail "a --branch naming something other than the checked-out branch should be refused by name (Codex cloud review, confirmed a stale or mistyped --branch main in a topic worktree could otherwise push the topic SHA straight to refs/heads/main): $err"
+[ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
+    fail "a --branch not matching the checked-out branch must not push"
+
 echo "  -> empty transport overrides stay structurally safe on Bash 3.2"
 grep -F -- 'if [ "$git_arg_count" -gt 0 ]; then' "$helper" >/dev/null ||
     fail "git argument expansion must be guarded by the separate count"
@@ -332,6 +365,19 @@ grep -F -- 'git_with_args push --no-follow-tags \' "$helper" >/dev/null &&
     fail "the push write must use \$push_url, not \$remote, or a TOCTOU on the named remote's config reopens (Codex cloud review, confirmed)"
 grep -F -- 'git update-ref "refs/remotes/${remote}/${branch}"' "$helper" >/dev/null ||
     fail "a raw-URL push must update the remote-tracking ref by hand (AGENTS.md's own stale-tracking-ref concern)"
+
+# Structural, not behavioral, for the same reason as the two checks above:
+# driving this race hermetically would need a config mutation landing in
+# the exact window between the two resolve_push_url calls INSIDE one
+# single-process run of round-push.sh, which this test harness has no way
+# to inject without instrumenting the script under test.
+echo "  -> the push destination is re-validated immediately before the write, not only once"
+grep -F -- 'gated_push_url="$push_url"' "$helper" >/dev/null ||
+    fail "the first resolve_push_url must save its result for a later comparison"
+[ "$(grep -F -c -- 'resolve_push_url' "$helper")" -ge 2 ] ||
+    fail "resolve_push_url must run a second time before the write"
+grep -F -- '[ "$push_url" = "$gated_push_url" ]' "$helper" >/dev/null ||
+    fail "a destination that changed since first validated must be refused — git re-applies url.*.insteadOf/pushInsteadOf to a literal URL argument at push time just as it would a named remote (Codex cloud review, confirmed empirically), so passing \$push_url alone does not close this"
 
 # Structural, not behavioral, for the same reason the push-URL-binding check
 # just above is structural: exercising resolve_push_url's HTTPS branch to a
@@ -354,7 +400,7 @@ echo "  -> --against refuses anything that is not an actual resolvable ref"
 root="$(new_fixture against-shape)"
 cd "${root}/work"
 bare_sha="$(git rev-parse HEAD)"
-mark_base "${root}/work" >/dev/null
+mark_base "${root}/work"
 run plan --against "$bare_sha" "${policy_args[@]}" --json
 assert_rc 2
 printf '%s' "$err" | grep -Fi "must resolve to an actual ref" >/dev/null ||
@@ -368,18 +414,18 @@ run plan --against 'HEAD~1' "${policy_args[@]}" --json
 assert_rc 2
 printf '%s' "$err" | grep -Fi "revision expression" >/dev/null ||
     fail "a revision expression like HEAD~1 names no ref of its own and must be refused like a bare commit ID: $err"
-_mb="$(mark_base "${root}/work" base 'HEAD~1')"
-base_ref=${_mb% *}
-base_sha=${_mb#* }
+mark_base "${root}/work" base 'HEAD~1'
+base_ref=$mark_base_tag
+base_sha=$mark_base_sha
 run plan --against "$base_ref" --closure-base "$base_sha" "${policy_args[@]}" --json
 assert_rc 0
 
 echo "  -> plan re-derives docs-only from the diff, never from a caller flag"
 root="$(new_fixture docs-plan)"
 cd "${root}/work"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 docs_sha="$(commit_on "${root}/work" "test: docs" g.md "docs change")"
 run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$docs_sha" "${policy_args[@]}" --json
 assert_rc 0
@@ -391,9 +437,9 @@ printf '%s' "$out" | grep -F '"required_target": "fixture-check"' >/dev/null ||
 echo "  -> plan re-derives code from a non-docs path, root-level .md included"
 root="$(new_fixture code-plan)"
 cd "${root}/work"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
 run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$code_sha" "${policy_args[@]}" --json
 assert_rc 0
@@ -401,9 +447,9 @@ printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
     fail "a non-docs-path diff must classify as code: $out"
 printf '%s' "$out" | grep -F '"required_target": "fixture-verify"' >/dev/null ||
     fail "a code diff must require gates.round_code: $out"
-_mb="$(mark_base "${root}/work" second)"
-code_sha_base=${_mb% *}
-code_sha_base_sha=${_mb#* }
+mark_base "${root}/work" second
+code_sha_base=$mark_base_tag
+code_sha_base_sha=$mark_base_sha
 root_md_sha="$(commit_on "${root}/work" "test: root md" README.md "root-level markdown")"
 run plan --against "$code_sha_base" --closure-base "$code_sha_base_sha" --sha "$root_md_sha" "${policy_args[@]}" --json
 assert_rc 0
@@ -418,15 +464,33 @@ awk '{gsub(/docs_only_paths = .*/, "docs_only_paths = [\"docs/**/*.md\"]"); prin
 mv "${test_tmp}/embedded-globstar-devflow.toml" "${root}/work/.devflow.toml"
 git_q "${root}/work" add -A
 git_q "${root}/work" commit -m "test: docs_only_paths uses only an embedded globstar pattern"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 mkdir -p "${root}/work/docs"
 direct_child_sha="$(commit_on "${root}/work" "test: direct docs child" docs/readme.md "docs content")"
 run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$direct_child_sha" "${policy_args[@]}" --json
 assert_rc 0
 printf '%s' "$out" | grep -F '"diff_class": "docs"' >/dev/null ||
     fail "docs/**/*.md must match a direct child docs/readme.md with zero intervening directories, not only a deeper docs/sub/readme.md (Codex cloud review, confirmed): $out"
+
+echo "  -> a pattern with two globstars matches when only ONE of them collapses to zero"
+root="$(new_fixture multi-globstar)"
+cd "${root}/work"
+awk '{gsub(/docs_only_paths = .*/, "docs_only_paths = [\"docs/**/api/**/*.md\"]"); print}' \
+    "${root}/work/.devflow.toml" >"${test_tmp}/multi-globstar-devflow.toml"
+mv "${test_tmp}/multi-globstar-devflow.toml" "${root}/work/.devflow.toml"
+git_q "${root}/work" add -A
+git_q "${root}/work" commit -m "test: docs_only_paths uses two globstars"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+mkdir -p "${root}/work/docs/v1/api"
+two_star_sha="$(commit_on "${root}/work" "test: nested docs child" docs/v1/api/readme.md "docs content")"
+run plan --against "$merge_base" --closure-base "$merge_base_sha" --sha "$two_star_sha" "${policy_args[@]}" --json
+assert_rc 0
+printf '%s' "$out" | grep -F '"diff_class": "docs"' >/dev/null ||
+    fail "docs/**/api/**/*.md must match docs/v1/api/readme.md — the FIRST ** consuming a real directory (v1/) while the SECOND collapses to zero, a combination a single leftmost-collapse pass never tries (Codex cloud review, confirmed): $out"
 
 echo "  -> a code-to-docs rename classifies as code, not docs (rename detection defeated)"
 root="$(new_fixture rename-plan)"
@@ -435,9 +499,9 @@ mkdir -p src
 printf 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n' >src/run.sh
 git_q "${root}/work" add src/run.sh
 git_q "${root}/work" commit -m "test: add code file"
-_mb="$(mark_base "${root}/work")"
-premv_base=${_mb% *}
-premv_base_sha=${_mb#* }
+mark_base "${root}/work"
+premv_base=$mark_base_tag
+premv_base_sha=$mark_base_sha
 mkdir -p "${root}/work/docs"
 git_q "${root}/work" mv src/run.sh docs/run.md
 git_q "${root}/work" commit -m "test: rename code file into docs/"
@@ -452,9 +516,9 @@ printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
 echo "  -> a --closure-base that no longer matches the recomputed merge base is refused"
 root="$(new_fixture closure-base-drift)"
 cd "${root}/work"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
 run plan --against "$merge_base" --closure-base 0000000000000000000000000000000000000000 --sha "$code_sha" "${policy_args[@]}" --json
 assert_rc 3
@@ -466,9 +530,9 @@ assert_rc 0
 echo "  -> a closure file that does not match --closure-base's own git object is refused"
 root="$(new_fixture closure-content-mismatch)"
 cd "${root}/work"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
 # A structurally valid but BYTE-DIFFERENT policy file — otherwise it would
 # resolve cleanly, which is exactly why a shape check alone cannot catch
@@ -487,6 +551,37 @@ printf '%s' "$err" | grep -Fi "does not match .devflow.toml" >/dev/null ||
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
     fail "a content-mismatched closure file must not push"
 
+echo "  -> a closure .gitleaksignore matching the worktree's, but not --closure-base's, is still refused"
+root="$(new_fixture closure-gitleaksignore-mismatch)"
+cd "${root}/work"
+printf 'true-merge-base-fingerprint\n' >"${root}/work/.gitleaksignore"
+git_q "${root}/work" add .gitleaksignore
+git_q "${root}/work" commit -m "test: the merge base's real .gitleaksignore"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+# The branch changes its OWN .gitleaksignore after the merge base — proving
+# gitleaks-scan.sh's own worktree-vs-closure comparison alone cannot catch a
+# "closure" whose .gitleaksignore happens to match THIS (wrong) content too.
+printf 'branch-forged-fingerprint\n' >"${root}/work/.gitleaksignore"
+git_q "${root}/work" add .gitleaksignore
+code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
+tampered_dir="${test_tmp}/tampered-gitleaksignore"
+mkdir -p "$tampered_dir"
+cp "${scan_args[3]}" "${tampered_dir}/.gitleaks.toml"
+cp "${root}/work/.gitleaksignore" "${tampered_dir}/.gitleaksignore"
+tampered_scan_args=("${scan_args[@]}")
+tampered_scan_args[3]="${tampered_dir}/.gitleaks.toml"
+run push --remote origin --branch main --host github.com --repo owner/repo \
+    --sha "$code_sha" --expect absent \
+    --against "$merge_base" --closure-base "$merge_base_sha" \
+    "${policy_args[@]}" "${tampered_scan_args[@]}"
+assert_rc 3
+printf '%s' "$err" | grep -Fi "closure's .gitleaksignore does not match" >/dev/null ||
+    fail "a closure .gitleaksignore matching the worktree's (but not --closure-base's real object) should still be refused by round-push.sh's own check rather than relying on gitleaks-scan.sh's worktree-vs-closure comparison alone (Codex cloud review, confirmed the earlier closure-verification list omitted .gitleaksignore even after it became a declared closure member): $err"
+[ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
+    fail "a closure with a mismatched .gitleaksignore must not push"
+
 echo "  -> the broker executes the required target itself; a failing gate refuses the push"
 root="$(new_fixture gate-execution)"
 cd "${root}/work"
@@ -502,9 +597,9 @@ tasks:
 EOF
 git_q "${root}/work" add -A
 git_q "${root}/work" commit -m "test: fixture-verify always fails here"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
 push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
 assert_rc 3
@@ -528,9 +623,9 @@ tasks:
 EOF
 git_q "${root}/work" add -A
 git_q "${root}/work" commit -m "test: only fixture-check would pass here"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 commit_on "${root}/work" "test: docs" g.md "docs change" >/dev/null
 mixed_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
 push_gated "$root" "$mixed_sha" absent "$merge_base" "$merge_base_sha"
@@ -542,37 +637,37 @@ assert_reason
 echo "  -> a docs-class push succeeds against the recomputed docs target"
 root="$(new_fixture docs-push)"
 cd "${root}/work"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 docs_sha="$(commit_on "${root}/work" "test: docs" g.md "docs change")"
 push_gated "$root" "$docs_sha" absent "$merge_base" "$merge_base_sha"
 assert_rc 0
-printf '%s' "$out" | grep -F "ROUND-GREEN-${docs_sha}-fixture-check" >/dev/null ||
-    fail "a successful push must emit its own evidence marker naming the gated head and target: $out"
+printf '%s' "$out" | grep -F "ROUND-GREEN-${docs_sha}-fixture-check-docs" >/dev/null ||
+    fail "a successful push must emit its own evidence marker naming the gated head, target, AND diff class (Codex cloud review, confirmed a policy could alias round_code/round_docs to the same target, making the target alone ambiguous): $out"
 [ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$docs_sha" ] ||
     fail "docs-class push did not land the gated commit"
 
 echo "  -> a code-class push succeeds against the recomputed code target"
 root="$(new_fixture code-push)"
 cd "${root}/work"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
 push_gated "$root" "$code_sha" absent "$merge_base" "$merge_base_sha"
 assert_rc 0
-printf '%s' "$out" | grep -F "ROUND-GREEN-${code_sha}-fixture-verify" >/dev/null ||
-    fail "a successful push must emit its own evidence marker naming the gated head and target: $out"
+printf '%s' "$out" | grep -F "ROUND-GREEN-${code_sha}-fixture-verify-code" >/dev/null ||
+    fail "a successful push must emit its own evidence marker naming the gated head, target, AND diff class: $out"
 [ "$(git -C "${root}/origin.git" rev-parse refs/heads/main)" = "$code_sha" ] ||
     fail "code-class push did not land the gated commit"
 
 echo "  -> the required target alone never substitutes for the secret scan"
 root="$(new_fixture secret-refusal)"
 cd "${root}/work"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 secret_sha="$(commit_on "${root}/work" "test: secret" leaked.env "$(fake_github_token)")"
 push_gated "$root" "$secret_sha" absent "$merge_base" "$merge_base_sha"
 assert_rc 3
@@ -584,9 +679,9 @@ printf '%s' "$err" | grep -Fi "secret scan" >/dev/null ||
 echo "  -> a branch-committed .gitleaksignore matching its own leak is refused, not honored"
 root="$(new_fixture gitleaksignore-mismatch)"
 cd "${root}/work"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 secret_content="$(fake_github_token)"
 printf '%s\n' "$secret_content" >"${root}/work/leaked.env"
 git_q "${root}/work" add leaked.env
@@ -606,9 +701,9 @@ printf '%s' "$err" | grep -Fi "secret scan" >/dev/null ||
 echo "  -> a .gitleaksignore committed as a symlink is refused outright"
 root="$(new_fixture gitleaksignore-symlink)"
 cd "${root}/work"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 external_target="${test_tmp}/external-ignore-target"
 printf '%s\n' "not a fingerprint yet" >"$external_target"
 ln -s "$external_target" "${root}/work/.gitleaksignore"
@@ -625,9 +720,9 @@ printf '%s' "$err" | grep -Fi "secret scan" >/dev/null ||
 echo "  -> the merge-base-materialized execution path is immune to worktree tampering"
 root="$(new_fixture materialized)"
 cd "${root}/work"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 materialized="$(extract_closure "${root}/work" "$merge_base_sha")"
 cp "$helper" "${materialized}/scripts/round-push.sh"
 chmod +x "${materialized}/scripts/round-push.sh"
@@ -683,9 +778,9 @@ cat >>"${root}/work/Taskfile.yml" <<'EOF'
 EOF
 git_q "${root}/work" add -A
 git_q "${root}/work" commit -m "test: tamper the security:secrets Taskfile recipe"
-_mb="$(mark_base "${root}/work")"
-merge_base=${_mb% *}
-merge_base_sha=${_mb#* }
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
 secret_sha="$(commit_on "${root}/work" "test: secret" leaked.env "$(fake_github_token)")"
 push_gated "$root" "$secret_sha" absent "$merge_base" "$merge_base_sha"
 assert_rc 3
@@ -698,9 +793,9 @@ echo "  -> round-push.sh helper invocation is shell-independent"
 if command -v zsh >/dev/null 2>&1; then
     root="$(new_fixture zsh-call)"
     cd "${root}/work"
-    _mb="$(mark_base "${root}/work")"
-    merge_base=${_mb% *}
-    merge_base_sha=${_mb#* }
+    mark_base "${root}/work"
+    merge_base=$mark_base_tag
+    merge_base_sha=$mark_base_sha
     code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
     set +e
     HELPER="$helper" ROUND_PUSH_TEST_BARE="$(git config --get roundpush.testBare)" \

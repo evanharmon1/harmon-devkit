@@ -130,14 +130,21 @@ refusal — there is no code path that resolves policy successfully without
 them.
 
 push additionally requires:
+  - --branch to name the worktree's own checked-out branch — never merely a
+    syntactically valid one — so a stale or mistyped --branch naming some
+    other branch (e.g. main) can't send the checked-out SHA there instead;
   - --policy, --devflow-policy-script, --gitleaks-script, --gitleaks-config,
     and --registry (when given) to each match, byte for byte, the blob at
     their canonical repository path in --closure-base (verified via
-    `git show`) before any of them is read for any other purpose;
+    `git show`) before any of them is read for any other purpose; the
+    closure's .gitleaksignore (beside --gitleaks-config, since there is no
+    --gitleaksignore flag of its own) is checked the same way, in both
+    directions — a merge base with none must mean the closure has none
+    either;
   - the required Taskfile target for the recomputed diff class (round_code
     or round_docs) to exit 0 when this script runs it itself, from the
     feature worktree — there is no caller-supplied marker to validate
-    instead; the script prints its own `ROUND-GREEN-<sha>-<target>`
+    instead; the script prints its own `ROUND-GREEN-<sha>-<target>-<class>`
     line to stdout as evidence once this and the scan below both pass,
     never as something it reads back;
   - the closure's secret scanner (--gitleaks-script, configured with
@@ -147,7 +154,13 @@ push additionally requires:
     named remote has exactly one credential-free push destination matching
     HOST and OWNER/REPO and no custom receive-pack command; the remote
     branch still equals --expect and the update is fast-forward; an explicit
-    SHA refspec, lease, and --no-follow-tags update only the named branch.
+    SHA refspec, lease, and --no-follow-tags update only the named branch;
+  - the push destination to still match what was validated immediately
+    before the actual write, since git re-applies url.*.insteadOf/
+    pushInsteadOf rewriting at push time regardless of whether the
+    destination came from a named remote or a literal URL — a rule change
+    between this run's own two resolutions is refused, though this can only
+    shrink the window, never make git's own resolution atomic.
 
 Each accepted -c NAME=VALUE is passed to destination resolution, ls-remote,
 and push, so an unprovisioned host can supply the repository's documented
@@ -431,36 +444,52 @@ require_closure_base_is_full_sha() {
 }
 
 # Matches a single repo-root-relative PATH against one docs_only_paths glob
-# PATTERN. Plain case/fnmatch semantics already treat a trailing `/**` (or
-# any repeated `*`) as "any remainder including further slashes", so
-# `docs/**` needs no special handling. A `**/` segment ANYWHERE in the
-# pattern is the case that needs help: as a literal case pattern it
-# requires an actual `/` at that point, which is wrong for the
-# conventional "zero or more directories" meaning — both a LEADING `**/`
-# (`**/*.md` must match root-level `AGENTS.md`) and an EMBEDDED one
-# (`docs/**/*.md` must match the direct child `docs/readme.md`, not only
-# `docs/sub/readme.md` — Codex review, confirmed round-push.sh's earlier
-# leading-only special case missed this). Recursion tries the pattern with
-# each `**/` occurrence collapsed to empty, one at a time, so a pattern
-# with more than one still gets a chance at each; depth is bounded since a
-# real pattern has only a handful.
+# PATTERN. Plain case/fnmatch semantics already treat a bare `*` (and so a
+# redundant `**`) as "any remainder including further slashes", which is
+# exactly "one or more directories" for a `**/` segment — the case that
+# needs help is "zero directories", since the LITERAL `/` immediately after
+# `**` in the pattern text requires an actual `/` in the input at that
+# point, which a direct-child path doesn't have (`**/*.md` must still match
+# root-level `AGENTS.md`; `docs/**/*.md` must still match the direct child
+# `docs/readme.md`, not only `docs/sub/readme.md`).
+#
+# A single left-to-right "collapse every `**/` to zero" pass (this
+# function's own earlier design) cannot represent a pattern where DIFFERENT
+# occurrences need DIFFERENT resolutions — Codex cloud review, confirmed:
+# `docs/**/api/**/*.md` matching `docs/v1/api/readme.md` needs the FIRST
+# `**/` to consume a real directory (`v1/`) while the SECOND collapses to
+# zero, and collapsing either or both to zero alone never produces that.
+# _docs_glob_resolve instead branches at each occurrence, trying BOTH (1)
+# zero directories (drop the `**/`) and (2) one-or-more (freeze it — replace
+# with a sentinel byte no real pattern contains, so the next call scans past
+# it to any FURTHER occurrence instead of re-deciding this one) before
+# finally restoring every frozen occurrence to a literal `**/` for one
+# direct match, where bare `*`'s own slash-crossing handles "however many"
+# on its own. Depth is bounded by the number of `**/` occurrences actually
+# decided (one per call), so a real pattern's handful of globs costs at
+# most a few branches.
 docs_glob_match() {
-    _docs_glob_try "$1" "$2" 0
+    _docs_glob_resolve "$1" "$2" 0
 }
 
-_docs_glob_try() {
-    local pattern=$1 path=$2 depth=$3 before after
+_docs_glob_frozen=$'\x01'
+
+_docs_glob_resolve() {
+    local pattern=$1 path=$2 depth=$3 before after final
     [ "$depth" -le 8 ] || return 1
-    # shellcheck disable=SC2254  # unquoted on purpose: glob match
-    case "$path" in
-    $pattern) return 0 ;;
-    esac
     case "$pattern" in
     *'**/'*)
         before=${pattern%%'**/'*}
         after=${pattern#*'**/'}
-        _docs_glob_try "${before}${after}" "$path" $((depth + 1)) && return 0
+        _docs_glob_resolve "${before}${after}" "$path" $((depth + 1)) && return 0
+        _docs_glob_resolve "${before}${_docs_glob_frozen}${after}" "$path" $((depth + 1))
+        return $?
         ;;
+    esac
+    final=${pattern//$_docs_glob_frozen/'**/'}
+    # shellcheck disable=SC2254  # unquoted on purpose: glob match
+    case "$path" in
+    $final) return 0 ;;
     esac
     return 1
 }
@@ -538,11 +567,15 @@ required_target_for() {
 #
 # Residual, documented limitation: this verifies only the files this
 # script is directly handed a path for. scripts/lib/toml-lite.mjs (an
-# ES-module-relative import of devflow-policy.mjs), scripts/
-# summarize-gitleaks.mjs (a script-relative import of gitleaks-scan.sh),
-# and .gitleaksignore (read by gitleaks itself from beside
-# --gitleaks-config) are not independently checked — tampering with those
-# specifically is not closed by this script alone.
+# ES-module-relative import of devflow-policy.mjs) and scripts/
+# summarize-gitleaks.mjs (a script-relative import of gitleaks-scan.sh) are
+# not independently checked — tampering with those specifically is not
+# closed by this script alone. .gitleaksignore (read by gitleaks itself
+# from beside --gitleaks-config) is NOT in this list: see
+# verify_closure_gitleaksignore below, added once it also became a
+# declared closure member — Codex cloud review, confirmed the earlier
+# omission left the declared closure's most recently added member as the
+# one file this function never checked.
 verify_closure_member() {
     local caller_path=$1 canonical_path=$2
 
@@ -552,6 +585,34 @@ verify_closure_member() {
         refuse "could not read ${canonical_path} from --closure-base (${closure_base})"
     cmp -s "$closure_verify_tmp" "$caller_path" ||
         refuse "${caller_path} does not match ${canonical_path} at --closure-base (${closure_base}) — the closure's provenance could not be verified"
+}
+
+# Verifies the closure's own .gitleaksignore — the file gitleaks-scan.sh
+# reads from beside GITLEAKS_CONFIG (--gitleaks-config) and compares the
+# worktree's copy against — is itself exactly what --closure-base has,
+# unlike every other closure member there is no --gitleaksignore flag
+# naming it directly, so this derives the same path gitleaks-scan.sh
+# derives (dirname of --gitleaks-config) rather than taking one. Optional:
+# the spec only requires one "if the merge base has one", so both
+# directions are checked — a closure ignore file the merge base does NOT
+# have is refused exactly like a mismatched one. Codex cloud review,
+# confirmed: without this, a compromised or wrongly-materialized closure
+# directory could carry a .gitleaksignore that byte-matches whatever the
+# WORKTREE happens to commit (satisfying gitleaks-scan.sh's own
+# worktree-vs-closure comparison) while neither one is the merge base's
+# actual file, silently suppressing a real secret finding.
+verify_closure_gitleaksignore() {
+    local gitleaks_ignore_dir gitleaks_ignore_path
+
+    gitleaks_ignore_dir="$(dirname "$gitleaks_config")"
+    gitleaks_ignore_path="${gitleaks_ignore_dir}/.gitleaksignore"
+    if git_with_args show "${closure_base}:.gitleaksignore" >"$closure_verify_tmp" 2>/dev/null; then
+        [ -f "$gitleaks_ignore_path" ] && cmp -s "$closure_verify_tmp" "$gitleaks_ignore_path" ||
+            refuse "the closure's .gitleaksignore does not match .gitleaksignore at --closure-base (${closure_base})"
+    else
+        [ ! -e "$gitleaks_ignore_path" ] ||
+            refuse "the closure provides a .gitleaksignore that --closure-base (${closure_base}) does not have"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -789,6 +850,21 @@ require_closure_base_is_full_sha
 [ -n "$gitleaks_script" ] || die_usage "push requires --gitleaks-script"
 [ -n "$gitleaks_config" ] || die_usage "push requires --gitleaks-config"
 
+# --branch only shapes the destination refspec; nothing above ties it to
+# what is actually checked out. A stale or mistyped --branch main in a
+# topic-branch worktree would then push topic's own (validated) --sha
+# straight to refs/heads/main — and since main is normally an ancestor of
+# a feature branch's tip, the fast-forward check would not even catch it
+# (Codex cloud review, confirmed). Refuse unless --branch names the
+# worktree's own checked-out branch; a detached HEAD has no checked-out
+# branch to compare against and is refused outright rather than silently
+# accepted. Checked here, after every other required-argument usage error,
+# so an incomplete invocation is still reported as a usage error first.
+current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+[ -n "$current_branch" ] || refuse "HEAD is detached; --branch cannot be bound to a checked-out branch"
+[ "$current_branch" = "$branch" ] ||
+    refuse "--branch (${branch}) does not match the checked-out branch (${current_branch})"
+
 receivepack_rc=0
 git config --get-all "remote.${remote}.receivepack" >/dev/null 2>&1 || receivepack_rc=$?
 case "$receivepack_rc" in
@@ -822,6 +898,7 @@ verify_closure_member "$devflow_policy_script" "scripts/devflow-policy.mjs"
 verify_closure_member "$gitleaks_script" "scripts/gitleaks-scan.sh"
 verify_closure_member "$gitleaks_config" ".gitleaks.toml"
 [ -z "$registry" ] || verify_closure_member "$registry" "agent-registry.json"
+verify_closure_gitleaksignore
 rm -f "$closure_verify_tmp"
 
 # Recompute the diff class and required target ourselves — never trust a
@@ -871,7 +948,15 @@ fi
 # to the gated head and the diff class it verified — never an input a
 # caller can supply. Purely informational: nothing downstream reads it
 # back.
-printf 'ROUND-GREEN-%s-%s\n' "$resolved" "$required_target"
+# diff_class rides along explicitly: a policy is free to configure
+# round_code and round_docs to the SAME target slug (nothing in the reader
+# requires them distinct), and without diff_class in the marker a code and
+# a docs push at the same SHA would then print an IDENTICAL line, leaving
+# the evidence unable to say which classification the broker actually
+# derived (Codex cloud review, confirmed; config spec "Merge-base
+# resolution SHALL determine gate policy" binds the marker to "the exact
+# head and diff class", not to the target alone).
+printf 'ROUND-GREEN-%s-%s-%s\n' "$resolved" "$required_target" "$diff_class"
 
 head_sha="$(git rev-parse HEAD)"
 [ "$head_sha" = "$resolved" ] ||
@@ -884,6 +969,7 @@ status_output="$(git status --porcelain --untracked-files=all 2>/dev/null)" || s
     refuse "the worktree changed during the gate; commit and re-gate before pushing"
 
 resolve_push_url
+gated_push_url="$push_url"
 read_remote_head || refuse "$remote_error"
 [ "$remote_head" = "$expect" ] ||
     refuse "the remote branch moved from expected '${expect}' to '${remote_head}'; reconcile before pushing"
@@ -901,13 +987,35 @@ else
     lease="--force-with-lease=refs/heads/${branch}:"
 fi
 
-# Push to the validated $push_url captured just above, never a fresh
-# re-resolution of the mutable named remote (Codex review, confirmed: the
-# prior code passed $remote here, so a receive-pack, pushurl, or insteadOf
-# rewrite change landing between the resolve_push_url/read_remote_head
-# calls above and this write would silently redirect it — the checks
-# above would have validated a destination this write never actually
-# used). git_with_args still carries the caller's -c transport overrides.
+# Push to the validated destination captured above as $gated_push_url,
+# never a fresh re-resolution of the mutable named remote (Codex review,
+# confirmed: the prior code passed $remote here, so a receive-pack,
+# pushurl, or insteadOf rewrite change landing between the
+# resolve_push_url/read_remote_head calls above and this write would
+# silently redirect it — the checks above would have validated a
+# destination this write never actually used).
+#
+# Passing the literal $gated_push_url string here does NOT by itself close
+# the insteadOf/pushInsteadOf case, though: git re-applies that rewriting
+# to ANY repository operand — a named remote or a literal URL alike — at
+# the moment git push actually runs, not merely when a URL is first looked
+# up (verified empirically: `git remote get-url` already reflects
+# insteadOf, and a second `git push` given that same pre-rewrite literal
+# string still gets rewritten again by whatever rule is configured at
+# push time). round-push.sh's own -c allowlist deliberately permits a
+# caller to supply url.*.insteadOf (an unprovisioned host's documented
+# HTTPS override), so this can't be refused outright — but a rule change
+# landing between this run's OWN first resolution and this write must
+# still be caught (Codex cloud review, confirmed: switching from $remote
+# to a literal URL closed the remote.<name>.pushurl mutation vector but
+# left this one open). Re-resolving immediately before the write and
+# refusing on any drift shrinks the window to the smallest gap this
+# script can create; it cannot make git's own resolution atomic.
+resolve_push_url
+[ "$push_url" = "$gated_push_url" ] ||
+    refuse "the push destination changed since it was validated (was ${gated_push_url}, now ${push_url}); reconcile before pushing"
+
+# git_with_args still carries the caller's -c transport overrides.
 # refs/remotes/<remote>/<branch> is updated by hand afterward, since a
 # raw-URL push (unlike a named-remote push) does not update it itself and
 # AGENTS.md's own "Git transport" guidance is explicit that leaving it
