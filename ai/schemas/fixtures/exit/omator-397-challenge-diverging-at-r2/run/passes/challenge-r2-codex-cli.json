@@ -1,0 +1,184 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "efa9005196b949db6278a75619868883cf8a39dd",
+  "produced_at": "2026-07-11T09:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "omator-397-replay-challenge",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 2,
+    "reviewed_head": "efa9005196b949db6278a75619868883cf8a39dd",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "challenge-r2-codex-cli-1",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 124,
+        "class": "correctness",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "delete",
+        "evidence": "single-file name-only dedupe contradicts rule (stale r1 text)"
+      },
+      {
+        "id": "challenge-r2-codex-cli-2",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 127,
+        "class": "design",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "restructure",
+        "evidence": "row-number refs reusable as importRef"
+      },
+      {
+        "id": "challenge-r2-codex-cli-3",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 135,
+        "class": "design",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "blank/unmapped cell semantics undefined"
+      },
+      {
+        "id": "challenge-r2-codex-cli-4",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 77,
+        "class": "design",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "restructure",
+        "evidence": "negative matches not snapshotted"
+      },
+      {
+        "id": "challenge-r2-codex-cli-5",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 77,
+        "class": "hardening",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "restructure",
+        "evidence": "snapshot exceeds document size"
+      },
+      {
+        "id": "challenge-r2-codex-cli-6",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 103,
+        "class": "correctness",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "cap check per chunk only proves one slot"
+      },
+      {
+        "id": "challenge-r2-codex-cli-7",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 114,
+        "class": "design",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "primary contact loses ref on export"
+      },
+      {
+        "id": "challenge-r2-codex-cli-8",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 79,
+        "class": "design",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "mapping changes don't invalidate preview"
+      },
+      {
+        "id": "challenge-r2-codex-cli-9",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 176,
+        "class": "design",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "restructure",
+        "evidence": "undo intermediate states dangle primaryContactId"
+      },
+      {
+        "id": "challenge-r2-codex-cli-10",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 188,
+        "class": "design",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "restructure",
+        "evidence": "undo chunk doesn't recheck updatedAt"
+      },
+      {
+        "id": "challenge-r2-codex-cli-11",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 185,
+        "class": "design",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "failed batch has no completedAt cutoff"
+      },
+      {
+        "id": "challenge-r2-codex-cli-12",
+        "path": "docs/decisions/0013-contacts-as-separate-table.md",
+        "line": 27,
+        "class": "design",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "primaryContactId ownership not an invariant"
+      },
+      {
+        "id": "challenge-r2-codex-cli-13",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 202,
+        "class": "hardening",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "CSV formula injection"
+      },
+      {
+        "id": "challenge-r2-codex-cli-14",
+        "path": "specs/lawnomator-data-import-export.md",
+        "line": 202,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "paginated export inconsistent"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 12,
+      "P2": 2,
+      "P3": 0
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "families": [
+    {
+      "slug": "claude"
+    },
+    {
+      "slug": "gpt"
+    }
+  ],
+  "harnesses": [
+    {
+      "slug": "claude-code",
+      "family_constraint": {
+        "kind": "fixed",
+        "family": "claude"
+      },
+      "roles": [
+        "implementer"
+      ]
+    },
+    {
+      "slug": "claude-code-action",
+      "family_constraint": {
+        "kind": "fixed",
+        "family": "claude"
+      },
+      "roles": [
+        "implementer"
+      ]
+    }
+  ],
+  "finders": [
+    {
+      "slug": "codex-cli",
+      "surface": "local"
+    },
+    {
+      "slug": "gemini-cli",
+      "surface": "local"
+    },
+    {
+      "slug": "copilot-cli",
+      "surface": "local"
+    },
+    {
+      "slug": "codex-cloud",
+      "surface": "pr-cloud"
+    }
+  ]
+}

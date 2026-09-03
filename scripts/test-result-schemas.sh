@@ -110,6 +110,14 @@ invalid_count=0
 for dir in "$fixtures_dir"/*/; do
     [ -d "$dir" ] || continue
     base="$(basename "${dir%/}")"
+    # ai/schemas/fixtures/exit/ is a separate conformance corpus (the Dev
+    # flow v2 policy reader and exit-computation engine, #636) with its own
+    # per-case directory shape (policy.toml, registry.json, run/, ...) and
+    # its own test driver (scripts/test-dev-flow-exit.sh / task
+    # test:dev-flow-exit) — it is not one of this script's schema-fixture
+    # directories, so it is intentionally skipped here rather than mapped to
+    # a <kind>.
+    [ "$base" = "exit" ] && continue
     # render/ holds golden fixtures for scripts/render-dev-flow.mjs, a
     # projection tool rather than one of this family's six schema kinds
     # (ai/schemas/README.md "Rendering"); scripts/test-render-dev-flow.sh

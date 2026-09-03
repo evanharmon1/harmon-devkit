@@ -1,0 +1,7 @@
+{
+  "run_id": "run-review-while-challenge-active",
+  "initiated_by": "human",
+  "receipts": [
+    {"kind": "transition", "stage": "challenge"}
+  ]
+}

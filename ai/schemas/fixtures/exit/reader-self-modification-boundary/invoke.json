@@ -1,0 +1,4 @@
+{
+  "entry_script": "poisoned-devflow-policy.mjs",
+  "merge-base-policy": "policy.merge-base.toml"
+}

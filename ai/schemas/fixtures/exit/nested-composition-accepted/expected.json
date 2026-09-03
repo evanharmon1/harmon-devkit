@@ -1,0 +1,3 @@
+{
+  "convergence_json": "{\"converged\":{\"kind\":\"all\",\"list\":[{\"predicate\":\"no_gating_findings\"}]},\"diverging\":{\"kind\":\"any\",\"list\":[{\"all\":[{\"predicate\":\"count_rising\",\"increases\":2},{\"predicate\":\"repeat_after_fix\"}]},{\"predicate\":\"provenance_share\",\"min\":0.5}]}}"
+}

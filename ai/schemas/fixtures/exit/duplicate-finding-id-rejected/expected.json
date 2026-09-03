@@ -1,0 +1,6 @@
+{
+  "outcome": "continue",
+  "reason": "invalidated",
+  "rounds_counted": 1,
+  "diagnostic_contains": "collides with a finding already in the run"
+}

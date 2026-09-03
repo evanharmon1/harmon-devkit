@@ -1,0 +1,4 @@
+{
+  "resolve_fails": true,
+  "message_contains": "missing numeric \"wall_clock_min\""
+}

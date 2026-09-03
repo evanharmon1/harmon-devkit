@@ -1,0 +1,17 @@
+{
+  "rounds": {
+    "challenge": 3,
+    "review": 3,
+    "integration": 4,
+    "remediation": 4,
+    "min_rounds": 1,
+    "shared_budget": true
+  },
+  "gates": {
+    "round_code": "verify",
+    "round_docs": "check",
+    "secret_scan": "security:secrets",
+    "pre_pr": "security"
+  },
+  "decoded_from": "v1"
+}

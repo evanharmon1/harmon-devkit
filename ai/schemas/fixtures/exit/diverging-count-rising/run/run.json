@@ -1,0 +1,22 @@
+{
+  "run_id": "run-diverging-count-rising",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "challenge"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r1-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r2-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r3-codex-cli"
+    }
+  ]
+}

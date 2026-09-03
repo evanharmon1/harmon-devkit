@@ -1,0 +1,9 @@
+{
+  "outcome": "converged",
+  "reason": "predicates_satisfied",
+  "rounds_counted": 2,
+  "verified_provenance_for": {
+    "id": "review-r2-codex-cli-1",
+    "value": "round:1"
+  }
+}

@@ -1,0 +1,3 @@
+# omator-397-challenge-diverging-at-r2
+
+Reconstruction of [ponderousdev/omator#397](https://github.com/ponderousdev/omator/pull/397) from the issue's own description (specs/dev-flow-v2.md Problem/Why, and `ai/schemas/README.md`'s existing omator-397-* fixture notes), marked as such. The pass and adjudication documents are copied verbatim from `ai/schemas/fixtures/result.reviewer.schema/valid/omator-397-*.json` and `ai/schemas/fixtures/adjudication.schema/valid/omator-397-*-adjudication.json` (only `run_id` is rebound), not re-typed, so this replay can never drift from the shared conformance corpus those files are part of.

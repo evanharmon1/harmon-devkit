@@ -1,0 +1,14 @@
+{
+  "run_id": "run-challenger-schema-accepted",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "challenge"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r1-codex-cli"
+    }
+  ]
+}
