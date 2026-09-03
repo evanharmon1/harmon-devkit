@@ -1430,13 +1430,22 @@ entry. `--as-of <cutoff>` first validates the complete chain (every entry,
 regardless of cutoff — a chain broken *after* the cutoff still proves
 nothing *before* it can be trusted either, since the break could be a
 rewrite of history that also touches earlier entries), then reconstructs
-state using only entries whose own timestamp is at or before the cutoff —
-except `evidence_registrations[]`, which carries no independent per-entry
-post timestamp of its own (a registration's real-world time is the
-evidence comment's own `created_at`, already governed by the separate
-comment-level cutoff filtering "Discovery" above describes) and is never
-cutoff-filtered: its role is tamper-protecting the *current*
-`evidence_comments[]` projection, not supplying its own as-of view.
+state using only entries whose own timestamp is at or before the cutoff.
+`evidence_registrations[]`'s own timestamp is `registered_at` — when the
+entry was appended to the chain, distinct from the referenced comment's
+own `created_at` (a crash-recovery writer can register an already-posted
+comment slightly late). It exists so this chain carries the same
+immutable-timestamp requirement every other append-only array does (the
+evidence delta spec's "Run history is append-only" requirement, verbatim
+— review round 1, confirmed as a real gap: an earlier version of this
+chain had no timestamp at all, reasoning that registration time was
+never load-bearing for the harvester's own logic — which is separately
+still true: `registered_at` is not what a `--as-of` read uses to decide
+which evidence a run's trajectory includes, since that already comes
+from each comment's own authoritative `created_at`, ungameable by late
+registration (the "Discovery" section above). Its filtering here is
+therefore uniform with the other five chains but not load-bearing for
+`evidence_comments[]`'s own projection.
 
 **`evidence_registrations[]`/`pr_bindings[]`/`outcome_transitions[]` chain
 what were previously bare mutable fields** (`evidence_comments[]`, `pr`,

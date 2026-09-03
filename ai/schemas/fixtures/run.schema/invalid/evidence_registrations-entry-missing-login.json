@@ -29,7 +29,8 @@
         "destination": "issue",
         "round": 1,
         "sequence": 1
-      }
+      },
+      "registered_at": "2026-09-03T09:00:00Z"
     }
   ],
   "pr_bindings": [],

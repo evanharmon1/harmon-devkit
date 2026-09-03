@@ -104,6 +104,19 @@ function sha256(text) {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+// The schema-canonical payload-digest representation (ai/schemas/README.md
+// "Digest" — "Payload digest"): sha256:<64 lowercase hex>, WITH the
+// algorithm prefix. Distinct from a bare sha256() call, which every
+// run.schema.json evidence_comments[].digest / evidence_registrations[].
+// payload_digest field is NOT shaped like — comparing a bare hash against
+// either field always fails for real, schema-valid evidence. review round 1,
+// confirmed (P1): the prior bare comparison rejected every real
+// evidence-bearing run as tampered, hidden by a matching bug in this
+// file's own test fixtures (which built schema-invalid bare digests too).
+function payloadDigest(text) {
+  return `sha256:${sha256(text)}`;
+}
+
 // Canonical digest of a parsed, already-trusted structured value — sorted
 // keys, so it is reproducible across implementations (unlike the raw-text
 // comment digest, which hashes exactly the bytes posted). See
@@ -419,7 +432,7 @@ function assembleListedEvidence(runRecord, allComments, withinCutoff) {
       throw new EvidenceError(`${key}: segments disagree on the reassembled-payload digest they were indexed with — tampering`);
     }
     const fullText = entries.map((e) => e.payloadText).join("");
-    if (sha256(fullText) !== entries[0].entryDigest) {
+    if (payloadDigest(fullText) !== entries[0].entryDigest) {
       throw new EvidenceError(`${key}: reassembled payload does not match its indexed digest — edited-entry tampering`);
     }
     let payload;
@@ -451,12 +464,46 @@ function entryDigest(contentFields, prevDigest) {
   return canonicalDigest({ ...contentFields, prev_digest: prevDigest });
 }
 
+// A resumed writer's own retry re-appends an entry that already landed,
+// byte-identical to the one already there — same seq, same prev_digest,
+// same digest (the digest is computed FROM content+prev_digest, so
+// identical content necessarily produces an identical digest). The
+// evidence spec requires collapsing that harmless case to one entry
+// BEFORE raw sequence validation runs, since the un-normalized array
+// otherwise has two entries claiming the same seq and the strict
+// `entries[i].seq === i` check below rejects it as broken — review round
+// 1, confirmed (P1): this normalization was never implemented, so any
+// writer retry broke the whole chain. Two entries sharing a seq but
+// carrying DIFFERENT digests are the opposite case — a genuine FORK — and
+// must still fail closed rather than have either one silently picked
+// (scenario "fork" in scripts/test-dev-flow-stats.sh proves this).
+function normalizeExactDuplicates(rawEntries) {
+  const bySeq = new Map();
+  for (const entry of rawEntries) {
+    const list = bySeq.get(entry.seq) || [];
+    list.push(entry);
+    bySeq.set(entry.seq, list);
+  }
+  const normalized = [];
+  for (const [seq, group] of bySeq) {
+    const first = group[0];
+    const allIdentical = group.every((e) => e.digest === first.digest && e.prev_digest === first.prev_digest);
+    if (!allIdentical) {
+      return { ok: false, reason: `two entries at seq ${seq} share a predecessor but carry different content — forked chain`, brokenAtSeq: seq };
+    }
+    normalized.push(first);
+  }
+  return { ok: true, entries: normalized };
+}
+
 // contentKeys names the entry's semantic fields (excluding seq/digest/
 // prev_digest themselves). Returns { ok: true, entries: [...sorted by seq] }
 // or { ok: false, reason, brokenAtSeq }.
 function verifyChain(rawEntries, contentKeys) {
   if (!Array.isArray(rawEntries)) return { ok: false, reason: "not an array", brokenAtSeq: null };
-  const entries = [...rawEntries].sort((a, b) => (a.seq ?? -1) - (b.seq ?? -1));
+  const deduped = normalizeExactDuplicates(rawEntries);
+  if (!deduped.ok) return deduped;
+  const entries = deduped.entries.sort((a, b) => (a.seq ?? -1) - (b.seq ?? -1));
   for (let i = 0; i < entries.length; i++) {
     if (entries[i].seq !== i) {
       return { ok: false, reason: `expected seq ${i}, got ${entries[i].seq}`, brokenAtSeq: i };
@@ -490,7 +537,7 @@ const CHAIN_FIELDS = {
   // (scripts/render-dev-flow.mjs reads record.run.pr.number/.url), but are
   // now DERIVED and cross-checked against their chain rather than trusted
   // as bare mutable fields — see deriveProjections/verifyProjections below.
-  evidence_registrations: ["id", "author_actor_id", "login", "payload_digest", "marker"],
+  evidence_registrations: ["id", "author_actor_id", "login", "payload_digest", "marker", "registered_at"],
   pr_bindings: ["number", "url", "bound_at"],
   outcome_transitions: ["outcome", "at"],
 };
@@ -498,7 +545,7 @@ const CHAIN_TIMESTAMP_FIELD = {
   stage_transitions: "entered_at",
   interventions: "at",
   settlements: "settled_at",
-  evidence_registrations: null, // marker carries no comment-post timestamp; registration order (seq) is the only ordering this chain defines
+  evidence_registrations: "registered_at",
   pr_bindings: "bound_at",
   outcome_transitions: "at",
 };
@@ -568,16 +615,18 @@ function reconstructAsOf(body, cutoffIso) {
   // the complete-chain-first rule already applies below (round 4 of #663).
   verifyProjections(body, chains);
   const cutoff = cutoffIso ? Date.parse(cutoffIso) : Infinity;
+  // evidence_registrations[]'s own registered_at is never actually
+  // consumed below (this function's return value carries no
+  // evidence_comments[] projection — assembleListedEvidence separately
+  // governs which evidence a --as-of read assembles, using each comment's
+  // own authoritative created_at, never registration time), but the
+  // filtering runs uniformly across every chain anyway for consistency —
+  // review round 1, confirmed: leaving it out of this loop as a special
+  // case was itself only possible because the field did not exist yet.
   const filtered = {};
   for (const [arrayName, entries] of Object.entries(chains)) {
     const field = CHAIN_TIMESTAMP_FIELD[arrayName];
-    // evidence_registrations carries no independent per-entry post
-    // timestamp (a registration's real-world time is the evidence
-    // comment's own created_at, already governed by assembleListedEvidence's
-    // separate withinCutoff filtering) — this chain exists to tamper-protect
-    // the CURRENT evidence_comments[] projection, not to supply its own
-    // as-of view, so it is never cutoff-filtered here.
-    filtered[arrayName] = field === null ? entries : entries.filter((e) => Date.parse(e[field]) <= cutoff);
+    filtered[arrayName] = entries.filter((e) => Date.parse(e[field]) <= cutoff);
   }
   const promotion =
     body.promotion && Date.parse(body.promotion.promoted_at) <= cutoff ? body.promotion : null;
@@ -697,7 +746,20 @@ function buildRunDirectory(runRecord, roundEvidence, destDir) {
 function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, withinCutoff }) {
   try {
     const state = reconstructAsOf(record.body, asOf);
-    const allPrComments = state.pr ? fetchPrComments(repo, state.pr.number) : [];
+    // The LIVE pr (record.body.pr), never the as-of-filtered state.pr:
+    // assembleListedEvidence below verifies every LIVE evidence_comments[]
+    // entry unconditionally (existence/author/marker, regardless of
+    // --as-of — see its own comment), so it needs every comment that
+    // entry list could name, including PR-side rollups posted after a
+    // requested historical cutoff. Fetching by state.pr instead — review
+    // round 1, confirmed (P1) — made an as-of read taken before the run's
+    // PR existed skip fetching PR comments entirely (state.pr correctly
+    // null), so any evidence_comments[] entry the LIVE record later added
+    // for a PR rollup could never be found and was reported as
+    // deleted-entry tampering, even though nothing was deleted. The
+    // as-of exclusion of those later entries from the ASSEMBLED
+    // trajectory still happens correctly downstream, via withinCutoff.
+    const allPrComments = record.body.pr ? fetchPrComments(repo, record.body.pr.number) : [];
     const allComments = [...issueComments, ...allPrComments];
     // List-driven: verifies every evidence_comments[] entry (unconditionally
     // — a listed comment either genuinely exists, unedited, or it's
@@ -827,7 +889,20 @@ function computeIssueVerdict(issueRuns, { staleAfterDays, asOfEpoch }) {
   if (terminalized.some((r) => r.state.outcome === null)) {
     return { closed: false };
   }
-  const totalInterventions = terminalized.reduce((n, r) => n + runInterventionCount(r.state), 0);
+  // A human re-kicking a failed run is itself an intervention on the
+  // issue's trajectory, while a Foreman automatic retry is not (specs/
+  // dev-flow-v2.md § Success metric, verbatim) — review round 1, confirmed
+  // (P1): this was documented in this function's own comment above but
+  // never actually implemented; totalInterventions summed each run's OWN
+  // interventions[] and never inspected initiated_by at all, so two
+  // interventions-free runs (a failed Foreman-visible run, then a
+  // human-initiated retry that reaches ready-for-review) reported success.
+  // The FIRST run (earliest started_at) is the original kickoff, never
+  // itself a "re-kick" regardless of who initiated it; every run after
+  // that is a re-kick, counted here only when a human did it.
+  const byStart = [...terminalized].sort((a, b) => Date.parse(a.state.started_at) - Date.parse(b.state.started_at));
+  const rekickInterventions = byStart.slice(1).filter((r) => r.state.initiated_by === "human").length;
+  const totalInterventions = terminalized.reduce((n, r) => n + runInterventionCount(r.state), 0) + rekickInterventions;
   const totalAsked = terminalized.reduce((n, r) => n + runAskedCount(r.state), 0);
   const readyRun = terminalized.find((r) => r.state.outcome === "ready-for-review");
   const success = Boolean(readyRun) && totalInterventions === 0;
@@ -1146,6 +1221,7 @@ export {
   parseMarker,
   fencedPayloadText,
   sha256,
+  payloadDigest,
   canonicalDigest,
   canonicalJson,
   commentActorId,

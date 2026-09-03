@@ -85,7 +85,7 @@ cat >"$tmp/build-fixtures.mjs" <<NODE
 import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  entryDigest, sha256, canonicalDigest, GENESIS,
+  entryDigest, sha256, canonicalDigest, GENESIS, payloadDigest,
 } from "${repo}/scripts/dev-flow-stats.mjs";
 
 const TRUSTED_ORCHESTRATOR = 9001;
@@ -130,7 +130,7 @@ function deriveDefaultChains(body) {
   if (!("evidence_registrations" in body)) {
     out.evidence_registrations = chain((body.evidence_comments || []).map((e) => ({
       id: e.id, author_actor_id: e.author_actor_id, login: e.login,
-      payload_digest: e.digest, marker: e.marker,
+      payload_digest: e.digest, marker: e.marker, registered_at: body.started_at,
     })));
   }
   if (!("pr_bindings" in body)) {
@@ -219,7 +219,7 @@ function writeScenario(name, db) {
     // vacuous "empty list" case every other scenario here uses.
     evidence_comments: [{
       id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
-      digest: sha256(JSON.stringify(roundPayload)),
+      digest: payloadDigest(JSON.stringify(roundPayload)),
       marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
     }],
     promotion: { head: "1".repeat(40), promoted_at: "2026-09-01T00:15:00Z", gate_fingerprint: "abc" },
@@ -257,6 +257,33 @@ function writeScenario(name, db) {
     comments: { "102": [idx, rr] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 102 },
+  });
+}
+
+// --- Scenario 2b: a resumed writer's own retry re-appends a BYTE-IDENTICAL
+// entry (same seq, same prev_digest, same digest) — must normalize to one
+// and validate cleanly, the opposite of scenario 2's genuine fork (review
+// round 1, confirmed P1: this was previously indistinguishable from a
+// broken chain, since nothing collapsed the duplicate before the strict
+// seq === i check ran).
+{
+  const runId = "run-dup-retry-1";
+  const base = chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" }]);
+  const claimContent = { stage: "claim", entered_at: "2026-09-01T00:01:00Z" };
+  const claimDigest = entryDigest(claimContent, base[0].digest);
+  const claimEntry = { ...claimContent, seq: 1, digest: claimDigest, prev_digest: base[0].digest };
+  const retried = [...base, claimEntry, { ...claimEntry }]; // exact duplicate append
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: retried, interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("dup-retry", {
+    issues: [{ number: 118, pull_request: null }],
+    comments: { "118": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 118 },
   });
 }
 
@@ -301,7 +328,7 @@ function writeScenario(name, db) {
     stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" }, { stage: "claim", entered_at: "2026-09-01T00:01:00Z" }]),
     interventions: chain([]), settlements: chain([]),
     outcome: null, pr: null,
-    evidence_comments: [evidenceIndexEntry(first, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, sha256(JSON.stringify(payloadA)))],
+    evidence_comments: [evidenceIndexEntry(first, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadDigest(JSON.stringify(payloadA)))],
     promotion: null,
   };
   const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
@@ -328,7 +355,7 @@ function writeScenario(name, db) {
   // Every segment of a split payload is indexed with the digest of the
   // FULL reassembled text (ai/schemas/README.md "Digest") — the same
   // value on both entries, not each segment's own partial-text digest.
-  const fullDigest = sha256(text);
+  const fullDigest = payloadDigest(text);
   const runBody = {
     schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
     stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
@@ -498,7 +525,7 @@ function writeScenario(name, db) {
     const roundPayload = { passes: [envelope], adjudication: adjDoc };
     const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, stage, "issue", round, 1, roundPayload, at());
     evComments.push(ev);
-    evIndexEntries.push(evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", runId, stage, "issue", round, 1, sha256(JSON.stringify(roundPayload))));
+    evIndexEntries.push(evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", runId, stage, "issue", round, 1, payloadDigest(JSON.stringify(roundPayload))));
   }
 
   const runBody = {
@@ -534,7 +561,7 @@ function writeScenario(name, db) {
     interventions: chain([]), settlements: chain([]),
     outcome: "ready-for-review",
     pr: { number: 599, url: "https://example.invalid/pr/599" },
-    evidence_comments: [evidenceIndexEntry(ev, FOREMAN, "foreman-bot", runId, "review", "issue", 1, 1, sha256(JSON.stringify(roundPayload)))],
+    evidence_comments: [evidenceIndexEntry(ev, FOREMAN, "foreman-bot", runId, "review", "issue", 1, 1, payloadDigest(JSON.stringify(roundPayload)))],
     promotion: { head: "3".repeat(40), promoted_at: "2026-09-01T00:15:00Z", gate_fingerprint: "ghi" },
   };
   // Posted by the Foreman service account — trust derives from that actor
@@ -564,7 +591,7 @@ function writeScenario(name, db) {
     outcome: null, pr: null,
     evidence_comments: [{
       id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
-      digest: sha256(JSON.stringify(roundPayload)),
+      digest: payloadDigest(JSON.stringify(roundPayload)),
       marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
     }],
     promotion: null,
@@ -710,7 +737,7 @@ function writeScenario(name, db) {
     outcome: null, pr: null,
     evidence_comments: [{
       id: String(foreignEv.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
-      digest: sha256(JSON.stringify(roundPayload)),
+      digest: payloadDigest(JSON.stringify(roundPayload)),
       // The list entry's OWN marker claims THIS run — but the comment's
       // actual, current marker (in its body) says otherRunId. A bug that
       // copies an index entry across runs would produce exactly this
@@ -747,7 +774,7 @@ function writeScenario(name, db) {
     outcome: null, pr: null,
     // The writer's own resolution (after the race) lists the LOWER id —
     // "first" — with ITS OWN digest.
-    evidence_comments: [evidenceIndexEntry(first, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, sha256(JSON.stringify(payloadA)))],
+    evidence_comments: [evidenceIndexEntry(first, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payloadDigest(JSON.stringify(payloadA)))],
     promotion: null,
   };
   const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
@@ -779,7 +806,7 @@ function writeScenario(name, db) {
     interventions: chain([]), settlements: chain([]),
     outcome: "ready-for-review",
     pr: { number: 506, url: "https://example.invalid/pr/506" },
-    evidence_comments: [evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, sha256(JSON.stringify(challengePayload)))],
+    evidence_comments: [evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, payloadDigest(JSON.stringify(challengePayload)))],
     // Promoted at a LATER head than challenge's own reviewed_head.
     promotion: { head: finalHead, promoted_at: "2026-09-01T00:15:00Z", gate_fingerprint: "stu" },
   };
@@ -839,7 +866,7 @@ function writeScenario(name, db) {
     outcome: null, pr: null,
     evidence_comments: [{
       id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
-      digest: sha256(JSON.stringify({ passes: [] })),
+      digest: payloadDigest(JSON.stringify({ passes: [] })),
       marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
     }],
     promotion: null,
@@ -878,13 +905,14 @@ function writeScenario(name, db) {
     // it were independently overwritten after the chain was built.
     evidence_comments: [{
       id: decoyId, author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
-      digest: sha256(JSON.stringify({ passes: [] })),
+      digest: payloadDigest(JSON.stringify({ passes: [] })),
       marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
     }],
     evidence_registrations: chain([{
       id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
-      payload_digest: sha256(JSON.stringify({ passes: [] })),
+      payload_digest: payloadDigest(JSON.stringify({ passes: [] })),
       marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 },
+      registered_at: "2026-09-01T00:00:00Z",
     }]),
     promotion: null,
   };
@@ -894,6 +922,127 @@ function writeScenario(name, db) {
     comments: { "117": [idx, rr, ev] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 117 },
+  });
+}
+
+// --- Scenario 16: a failed first run, then a HUMAN-initiated second run
+// that reaches ready-for-review with an empty interventions[] of its own —
+// the re-kick itself must count as an intervention (specs/dev-flow-v2.md
+// § Success metric: "a human re-kicking a failed run is itself an
+// intervention"). Review round 1, confirmed P1: previously ignored,
+// reporting unattended success.
+{
+  const issueNumber = 119;
+  const runIdA = "run-multirun-human-A";
+  const bodyA = {
+    schema: 2, run_id: runIdA, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "abandoned", pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idxA, record: rrA } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdA, bodyA, "2026-09-01T00:00:00Z");
+
+  const runIdB = "run-multirun-human-B";
+  const bodyB = {
+    schema: 2, run_id: runIdB, initiated_by: "human", started_at: "2026-09-01T02:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T02:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T02:05:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 619, url: "https://example.invalid/pr/619" },
+    evidence_comments: [], promotion: { head: "8".repeat(40), promoted_at: "2026-09-01T02:10:00Z", gate_fingerprint: "pqr" },
+  };
+  const { index: idxB, record: rrB } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdB, bodyB, "2026-09-01T02:00:00Z");
+
+  writeScenario("multirun-human-rekick", {
+    issues: [{ number: issueNumber, pull_request: null }],
+    comments: { [String(issueNumber)]: [idxA, rrA, idxB, rrB] },
+    commits: { "619": [] },
+    meta: { trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber },
+  });
+}
+
+// --- Scenario 17: the same shape as 16, but the second run is
+// FOREMAN-initiated — specs/dev-flow-v2.md's explicit carve-out ("a
+// Foreman automatic retry is not [an intervention]"). Negative control
+// proving scenario 16's fix does not overreach.
+{
+  const issueNumber = 120;
+  const FOREMAN_ID = 9099;
+  const runIdA = "run-multirun-foreman-A";
+  const bodyA = {
+    schema: 2, run_id: runIdA, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "abandoned", pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idxA, record: rrA } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdA, bodyA, "2026-09-01T00:00:00Z");
+
+  const runIdB = "run-multirun-foreman-B";
+  const bodyB = {
+    schema: 2, run_id: runIdB, initiated_by: "foreman", started_at: "2026-09-01T02:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T02:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T02:05:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 620, url: "https://example.invalid/pr/620" },
+    evidence_comments: [], promotion: { head: "9".repeat(40), promoted_at: "2026-09-01T02:10:00Z", gate_fingerprint: "stu" },
+  };
+  const { index: idxB, record: rrB } = runRecordComment(FOREMAN_ID, "foreman-bot", runIdB, bodyB, "2026-09-01T02:00:00Z");
+
+  writeScenario("multirun-foreman-retry", {
+    issues: [{ number: issueNumber, pull_request: null }],
+    comments: { [String(issueNumber)]: [idxA, rrA, idxB, rrB] },
+    commits: { "620": [] },
+    meta: { trustedActorIds: [TRUSTED_ORCHESTRATOR, FOREMAN_ID], issueNumber },
+  });
+}
+
+// --- Scenario 18: an --as-of cutoff BEFORE the run's PR ever existed must
+// not report deleted-entry tampering for a PR-side evidence_comments[]
+// entry the LIVE record later added — review round 1, confirmed P1: the
+// harvester previously fetched PR comments using the AS-OF-FILTERED pr
+// (correctly null before the cutoff), so it never even looked for that
+// entry's comment, and the unconditional existence check then rejected
+// the whole run as tampered. The as-of trajectory must still exclude the
+// PR-side round (posted after the cutoff) — this proves both halves.
+{
+  const runId = "run-asof-pr-rollup-1";
+  const stagePayload = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
+  const prRollup = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "pr", null, 1, stagePayload, "2026-09-01T02:20:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T02:00:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 621, url: "https://example.invalid/pr/621" },
+    evidence_comments: [{
+      id: String(prRollup.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
+      digest: payloadDigest(JSON.stringify(stagePayload)),
+      marker: { run_id: runId, stage: "review", destination: "pr", round: null, sequence: 1 },
+    }],
+    // Explicit override, not the auto-derived default (which would bind
+    // at started_at — too early to exercise the bug this proves): the PR
+    // is bound at 02:10, after the "before" cutoff below and before the
+    // "after" one, so state.pr is genuinely null at "before" while
+    // record.body.pr stays non-null throughout — exactly the state.pr-
+    // vs-record.body.pr gap the fix closes.
+    pr_bindings: chain([{ number: 621, url: "https://example.invalid/pr/621", bound_at: "2026-09-01T02:10:00Z" }]),
+    promotion: { head: "b".repeat(40), promoted_at: "2026-09-01T02:15:00Z", gate_fingerprint: "vwx" },
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("asof-pr-rollup", {
+    issues: [{ number: 121, pull_request: null }],
+    comments: { "121": [idx, rr], "621": [prRollup] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 121 },
   });
 }
 
@@ -1227,6 +1376,12 @@ echo "$early" | jq -e '.post_ready_fix_count == 0' >/dev/null || fail "postfix a
 late="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-01T00:25:00Z --json)"
 echo "$late" | jq -e '.post_ready_fix_count == 1' >/dev/null || fail "postfix as-of after the fix commit: expected post_ready_fix_count 1, got: $late"
 
+echo "== review round 1: a resumed writer's byte-identical retry normalizes to one entry and validates cleanly (not a broken chain) =="
+export DFSTATS_DB="$tmp/scenarios/dup-retry.json"
+run_id="$(meta dup-retry .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "dup-retry: expected the run to harvest cleanly (in-flight), got: $out"
+
 echo "== round 4 of #663: an edited evidence_registrations[] entry breaks its own chain, rejected like any other tampered entry =="
 export DFSTATS_DB="$tmp/scenarios/edited-registration.json"
 run_id="$(meta edited-registration .meta.runId)"
@@ -1246,5 +1401,30 @@ rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "swapped-comment-id: expected exit 3 (indeterminate), got $rc: $out"
 echo "$out" | grep -qi "evidence_comments.*does not match\|out-of-band edit" || fail "swapped-comment-id: expected an evidence_comments/evidence_registrations mismatch reason, got: $out"
+
+echo "== review round 1: a human-initiated re-kick after a failed run is itself an intervention, even with empty interventions[] on both runs =="
+export DFSTATS_DB="$tmp/scenarios/multirun-human-rekick.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.cohort_size == 1 and .unattended_success_count == 0' >/dev/null || fail "multirun-human-rekick: expected the human re-kick to count as an intervention (not unattended success), got: $out"
+
+echo "== review round 1: a FOREMAN-initiated retry after a failed run is NOT an intervention (explicit spec carve-out, negative control) =="
+export DFSTATS_DB="$tmp/scenarios/multirun-foreman-retry.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --trusted-actor-id 9099 --json)"
+echo "$out" | jq -e '.cohort_size == 1 and .unattended_success_count == 1' >/dev/null || fail "multirun-foreman-retry: expected the Foreman retry to still count as unattended success, got: $out"
+
+echo "== review round 1: an --as-of read does not falsely report a PR-side evidence_comments[] entry as deleted-entry tampering =="
+export DFSTATS_DB="$tmp/scenarios/asof-pr-rollup.json"
+run_id="$(meta asof-pr-rollup .meta.runId)"
+# The prior bug fetched PR comments using the AS-OF-FILTERED pr (state.pr)
+# rather than the live record.body.pr, so any cutoff still resolving a
+# non-null pr should reproduce it once the run's own listed
+# evidence_comments[] entry lives on the PR thread — before this fix, BOTH
+# cutoffs below threw "deleted-entry tampering" (exit 3) rather than
+# resolving cleanly, since the fake gh stub only serves PR comments when
+# actually asked for them.
+before="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-01T01:00:00Z --json)"
+echo "$before" | jq -e '.outcome == null' >/dev/null || fail "asof-pr-rollup: expected a clean, tampering-free in-flight reconstruction before the promotion cutoff, got: $before"
+after="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-01T02:25:00Z --json)"
+echo "$after" | jq -e '.outcome == "ready-for-review"' >/dev/null || fail "asof-pr-rollup: expected a clean, tampering-free ready-for-review reconstruction after the promotion cutoff, got: $after"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

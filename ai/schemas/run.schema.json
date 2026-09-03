@@ -154,7 +154,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["seq", "digest", "prev_digest", "id", "author_actor_id", "login", "payload_digest", "marker"],
+        "required": ["seq", "digest", "prev_digest", "id", "author_actor_id", "login", "payload_digest", "marker", "registered_at"],
         "properties": {
           "seq": { "type": "integer", "minimum": 0 },
           "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -163,6 +163,11 @@
           "author_actor_id": { "type": "integer", "minimum": 1 },
           "login": { "type": "string", "minLength": 1 },
           "payload_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "registered_at": {
+            "description": "When this entry was appended to the chain — distinct from the referenced comment's own creation time (a crash-recovery writer can register an already-posted comment slightly late). Not used to bound which evidence an --as-of read assembles into rounds (that already uses the comment's own created_at, authoritative and un-gameable by late registration); it exists so this chain matches the same immutable-timestamp requirement every other append-only array carries (evidence delta spec § 'Run history is append-only').",
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+          },
           "marker": {
             "type": "object",
             "additionalProperties": false,
