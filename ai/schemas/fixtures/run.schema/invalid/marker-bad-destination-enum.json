@@ -14,7 +14,7 @@
       "id": "2000000026",
       "author_actor_id": 12345678,
       "login": "evanharmon1",
-      "digest": "sha256:abcdef0123456789",
+      "digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
       "marker": { "run_id": "run-6076-marker-bad-destination-enum", "stage": "challenge", "destination": "email", "round": 1, "sequence": 1 }
     }
   ],

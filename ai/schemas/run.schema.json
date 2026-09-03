@@ -27,7 +27,7 @@
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
     },
     "stage_transitions": {
-      "description": "Non-empty: a run always has at least kicked off. Structural shape (minItems, per-entry required) is a schema keyword; the array-wide coherence rule — first entry is kickoff, entries strictly follow the enum's own order with no stage repeated, and every entry but the last has exit — needs positional/cross-entry reasoning this subset engine cannot express, so it is a receipt check (checkStageTransitionsOrder in scripts/validate-result-schemas.mjs) instead. See ai/schemas/README.md.",
+      "description": "Non-empty: a run always has at least kicked off. Structural shape (minItems, per-entry required) is a schema keyword; the array-wide coherence rule needs positional/cross-entry reasoning this subset engine cannot express, so it is a receipt check (checkStageTransitionsOrder in scripts/validate-result-schemas.mjs) instead: the first entry is kickoff, and every later entry is reached from the one immediately before it by one of the permitted lifecycle edges docs/product/domain.md's Dev-flow diagram draws (the run-span subset transcribed as ALLOWED_EDGES) — never any other transition, including an entry repeating its own immediate predecessor. This is a directed graph, not a linear order: legal remediation loops (for example challenge -> implement -> verify -> challenge) let a stage recur LATER in the array once a loop-back edge (such as review -> implement, or security -> implement) has been taken, and every entry but the last also records how/why it ended. See ai/schemas/README.md.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -109,9 +109,9 @@
             "minLength": 1
           },
           "digest": {
-            "description": "A hash of the posted payload, so an edited comment is detected as tampered rather than silently replayed.",
+            "description": "A hash of the posted payload, so an edited comment is detected as tampered rather than silently replayed. Canonical format `sha256:<64 lowercase hex>` — a fixed algorithm and encoding, so independent producers and harvesters compute and compare the same representation rather than choosing incompatible ones.",
             "type": "string",
-            "minLength": 1
+            "pattern": "^sha256:[0-9a-f]{64}$"
           },
           "marker": {
             "type": "object",

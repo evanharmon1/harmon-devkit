@@ -14,7 +14,7 @@
       "id": "2000000024",
       "author_actor_id": 12345678,
       "login": "evanharmon1",
-      "digest": "sha256:abcdef0123456789",
+      "digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
       "marker": { "run_id": "run-6074-marker-missing-destination", "stage": "challenge", "round": 1, "sequence": 1 }
     }
   ],
