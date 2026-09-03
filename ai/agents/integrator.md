@@ -325,15 +325,23 @@ Three cases, mutually exclusive:
   posted before this process died:
 
   ```sh
+  my_id="$("$skill_dir"/assets/gh-ro.sh user --jq .id)" || exit
   reserved_at="$(jq -r '.reserved_at' "$state")"
   top_level="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp "repos/$repo/issues/<n>/comments")" || exit
-  candidates="$(jq -c --arg since "$reserved_at" '
+  candidates="$(jq -c --arg since "$reserved_at" --argjson my_id "$my_id" '
       add | map(select(
           ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "@codex review"
-          and .created_at >= $since))' <<<"$top_level")"
+          and .created_at >= $since
+          and .user.id == $my_id))' <<<"$top_level")"
   ```
 
-  `jq -r 'length' <<<"$candidates"` decides which of three ways this goes.
+  The author check matters here specifically: any PR commenter, or a
+  concurrent session, can post the exact trigger text, and without pinning
+  `.user.id` (the immutable numeric id — never `.login`, which can be
+  renamed) this reconciliation would adopt whichever one it finds first as
+  if you had posted it yourself (Codex cloud-review cycle on PR
+  harmon-devkit#758). `jq -r 'length' <<<"$candidates"` decides which of
+  three ways this goes.
   **Exactly one** means that comment is the trigger this reservation already
   posted — attach it directly, never call `reserve`:
 
