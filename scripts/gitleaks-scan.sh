@@ -14,12 +14,23 @@
 # one self-hosted runner — would overwrite each other's report and summarize the
 # wrong findings. Same class of race as issue #476.
 #
-# --config PATH overrides gitleaks' own auto-discovered .gitleaks.toml (which
-# it otherwise looks up relative to --source, i.e. the scanned worktree). The
-# round-push broker passes its merge-base-extracted config explicitly, so a
-# branch cannot weaken the rules used to scan its own push by editing its
-# worktree copy; `task security:secrets` itself never passes --config and
-# keeps today's auto-discovery behavior unchanged.
+# --config PATH overrides gitleaks' own auto-discovered .gitleaks.toml. It
+# does NOT, however, override gitleaks' SEPARATE .gitleaksignore lookup:
+# gitleaks 8.30.1's --gitleaks-ignore-path defaults to "." (--source's root)
+# and, verified empirically, keeps reading that path even when
+# --gitleaks-ignore-path is explicitly pointed elsewhere — the flag adds a
+# location to check rather than replacing the default one. A branch could
+# therefore commit a .gitleaksignore listing its own leaked secret's
+# fingerprint and gitleaks would exit clean regardless of which
+# .gitleaks.toml is in effect, or where --gitleaks-ignore-path points.
+# There is no gitleaks flag that closes this, so this script refuses
+# outright instead: when --config is given, a .gitleaksignore in the
+# worktree root (--source's root) must be BYTE-IDENTICAL to the one beside
+# PATH (the closure's own copy, extracted from the same merge base — absent
+# there if the merge base ships none) or the scan refuses before gitleaks
+# ever runs. `task security:secrets` itself never passes --config and is
+# unaffected — this check only ever fires for the round-push broker's
+# closure-consuming invocation.
 #
 # summarize-gitleaks.mjs is resolved relative to THIS script's own location,
 # never cwd: the broker runs this script with cwd set to the feature worktree
@@ -47,6 +58,15 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 config_args=()
 have_config=0
 if [ -n "$config_path" ]; then
+    closure_dir="$(dirname "$config_path")"
+    closure_ignore="${closure_dir}/.gitleaksignore"
+    worktree_ignore=".gitleaksignore"
+    if [ -e "$worktree_ignore" ] || [ -e "$closure_ignore" ]; then
+        if ! cmp -s "$worktree_ignore" "$closure_ignore" 2>/dev/null; then
+            echo "gitleaks-scan: refusing — a .gitleaksignore in the worktree does not match the closure's copy (or one exists in only one place); gitleaks' ignore-path lookup cannot be redirected away from the worktree root, so this scan cannot proceed safely" >&2
+            exit 1
+        fi
+    fi
     config_args=(--config "$config_path")
     have_config=1
 fi

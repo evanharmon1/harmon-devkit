@@ -47,13 +47,15 @@ usage() {
 Usage:
   round-push.sh preflight --remote NAME --branch NAME --host HOST --repo OWNER/REPO [-c NAME=VALUE]...
 
-  round-push.sh plan --against REF --policy FILE --devflow-policy-script FILE \
+  round-push.sh plan --against REF --closure-base SHA \
+    --policy FILE --devflow-policy-script FILE \
     [--sha SHA] [--rigor LEVEL] [--strategy NAME] \
     [--registry FILE] [--task-targets FILE] [--taskfile-dir DIR] [--json]
 
   round-push.sh push --remote NAME --branch NAME --host HOST --repo OWNER/REPO \
     --sha SHA --expect absent|OID --gate-file FILE --gate-token TOKEN \
-    --against REF --policy FILE --devflow-policy-script FILE \
+    --against REF --closure-base SHA \
+    --policy FILE --devflow-policy-script FILE \
     --gitleaks-script FILE --gitleaks-config FILE \
     [--rigor LEVEL] [--strategy NAME] \
     [--registry FILE] [--task-targets FILE] [--taskfile-dir DIR] \
@@ -86,6 +88,21 @@ cannot verify from inside, exactly like the closure files' own provenance
 below: the caller (a future integration stage skill) is responsible for
 resolving --against from the actual target branch, never from anything
 the pushing branch's own content or config could steer.
+
+--closure-base SHA is the exact commit the caller's --policy/--registry/
+--gitleaks-config closure was materialized from (the same SHA a
+`git show <closure-base>:<path>` extraction used) — a FULL commit ID,
+never a ref: the whole point is pinning one exact commit, not whatever a
+moving name resolves to right now. plan and push both refuse unless the
+merge base freshly computed from --against equals --closure-base exactly
+(Codex review round 2, confirmed: --against is resolved fresh at
+invocation time, so a ref that moved between closure extraction and this
+run — another worktree fetching and advancing origin/main, say — would
+otherwise classify the diff against a DIFFERENT commit than the one whose
+policy/scanner config the closure actually holds, enforcing stale,
+possibly weaker gate policy against a freshly-and-differently-computed
+diff boundary; config spec "Gate authority separates policy from branch
+implementation": "Merge-base resolution SHALL determine gate policy").
 
 plan re-derives the diff class between the merge base of --against and
 --sha (default HEAD) and resolves the required gate target for it, so a
@@ -177,6 +194,7 @@ expect=
 gate_file=
 gate_token=
 against=
+closure_base=
 policy=
 devflow_policy_script=
 gitleaks_script=
@@ -246,6 +264,11 @@ while [ "$#" -gt 0 ]; do
     --against)
         [ "$#" -ge 2 ] || die_usage "--against needs a value"
         against=$2
+        shift 2
+        ;;
+    --closure-base)
+        [ "$#" -ge 2 ] || die_usage "--closure-base needs a value"
+        closure_base=$2
         shift 2
         ;;
     --policy)
@@ -357,6 +380,19 @@ changed_paths() {
 
     mb="$(git_with_args merge-base "$against" "$target" 2>/dev/null)" ||
         refuse "could not compute a merge base between --against (${against}) and ${target}"
+    # The freshly computed merge base must be the EXACT commit the caller's
+    # closure was materialized from — config spec "Gate authority separates
+    # policy from branch implementation": "Merge-base resolution SHALL
+    # determine gate policy." Codex review round 2, confirmed: without this
+    # check, --against is resolved fresh at invocation time, so if the
+    # named ref moved between closure extraction and this run (another
+    # worktree fetched and advanced origin/main, say), the diff would be
+    # classified against a DIFFERENT commit than the one whose
+    # .devflow.toml/docs_only_paths actually govern the closure files this
+    # run was handed — enforcing stale, possibly weaker policy against a
+    # freshly (and differently) computed diff boundary.
+    [ "$mb" = "$closure_base" ] ||
+        refuse "the merge base computed from --against (${mb}) does not match --closure-base (${closure_base}); the closure and the diff boundary must share one authority"
     git_with_args diff --no-renames --name-only "${mb}..${target}"
 }
 
@@ -376,6 +412,21 @@ require_against_is_ref() {
     refs/*) [ "$rc" -eq 0 ] && return 0 ;;
     esac
     die_usage "--against must resolve to an actual ref (e.g. origin/main), not a bare commit ID or a revision expression like HEAD~1"
+}
+
+# --closure-base must be the full commit ID the caller's closure was
+# materialized from (the same SHA a `git show <closure-base>:<path>`
+# extraction used) — a symbolic ref here would defeat its own purpose,
+# since the whole point is to pin the ONE exact commit, never whatever a
+# moving name currently resolves to.
+require_closure_base_is_full_sha() {
+    case "$closure_base" in
+    '' | *[!0-9a-f]*) die_usage "--closure-base must be a full commit ID" ;;
+    esac
+    case "${#closure_base}" in
+    40 | 64) ;;
+    *) die_usage "--closure-base must be a full commit ID" ;;
+    esac
 }
 
 # Matches a single repo-root-relative PATH against one docs_only_paths glob
@@ -579,7 +630,7 @@ read_remote_head() {
 # ---------------------------------------------------------------------------
 
 if [ "$mode" = preflight ]; then
-    [ -z "$sha$expect$gate_file$gate_token$against$policy" ] ||
+    [ -z "$sha$expect$gate_file$gate_token$against$closure_base$policy" ] ||
         die_usage "push/plan-only arguments are not valid in preflight mode"
     [ -n "$remote" ] || die_usage "--remote is required"
     [ -n "$branch" ] || die_usage "--branch is required"
@@ -627,6 +678,8 @@ fi
 if [ "$mode" = plan ]; then
     [ -n "$against" ] || die_usage "plan requires --against"
     require_against_is_ref
+    [ -n "$closure_base" ] || die_usage "plan requires --closure-base"
+    require_closure_base_is_full_sha
     [ -n "$policy" ] || die_usage "plan requires --policy"
     [ -n "$devflow_policy_script" ] || die_usage "plan requires --devflow-policy-script"
     target=${sha:-HEAD}
@@ -681,6 +734,8 @@ esac
 [ -n "$gate_token" ] || die_usage "push requires --gate-token"
 [ -n "$against" ] || die_usage "push requires --against"
 require_against_is_ref
+[ -n "$closure_base" ] || die_usage "push requires --closure-base"
+require_closure_base_is_full_sha
 [ -n "$policy" ] || die_usage "push requires --policy"
 [ -n "$devflow_policy_script" ] || die_usage "push requires --devflow-policy-script"
 [ -n "$gitleaks_script" ] || die_usage "push requires --gitleaks-script"
@@ -753,12 +808,17 @@ marker="$(awk '
 
 # Secret scan runs unconditionally, every push, via the closure's own
 # extracted scanner and config — never the round gate's marker, and never
-# the worktree's .gitleaks.toml. Config spec "Gate authority separates
-# policy from branch implementation": "the orchestrator SHALL materialize
-# outside the feature worktree and execute the merge-base implementations of
-# both the secret scan and the round-push broker."
+# the worktree's .gitleaks.toml (or, per gitleaks-scan.sh's own --config
+# handling, a worktree-committed .gitleaksignore that doesn't match the
+# closure's copy: gitleaks reads that file from the scanned worktree root
+# regardless of what --gitleaks-ignore-path says, so the scanner refuses
+# outright on a mismatch rather than silently honoring a branch-controlled
+# suppression list). Config spec "Gate authority separates policy from
+# branch implementation": "the orchestrator SHALL materialize outside the
+# feature worktree and execute the merge-base implementations of both the
+# secret scan and the round-push broker."
 if ! "$gitleaks_script" --config "$gitleaks_config"; then
-    refuse "the closure-extracted secret scan found findings or failed to run"
+    refuse "the closure-extracted secret scan found findings, refused a mismatched .gitleaksignore, or failed to run"
 fi
 
 head_sha="$(git rev-parse HEAD)"
