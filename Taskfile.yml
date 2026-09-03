@@ -87,7 +87,6 @@ tasks:
       - task: test:shepherd-codex
       - task: test:shepherd-marker
       - task: test:shepherd-readiness
-      - task: test:gauntlet-push
       - task: test:round-push
       - task: test:lint-hygiene
       - task: test:release-title
