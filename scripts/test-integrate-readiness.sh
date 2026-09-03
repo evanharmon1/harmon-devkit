@@ -8,47 +8,36 @@
 # every fixture below asserts an exit code AND the machine token naming the
 # decisive condition, and the full-pass fixture asserts the fingerprint is
 # printed and stable. gh is stubbed on PATH; nothing talks to the network.
+#
+# The gate is NOT fully hermetic any more: it resolves scripts/render-dev-
+# flow.sh and scripts/validate-result-schemas.mjs from the checkout's own
+# `git rev-parse --show-toplevel`, so those two run for REAL against the
+# record/integrator-result fixtures this file builds, rather than being
+# stubbed. That is deliberate — it proves the integration, not just that the
+# gate calls the right command name — and it is why `gate` below is called
+# directly from its real path rather than a copied sibling: there is no more
+# sibling-helper resolution left to control by copying.
 
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 assets="${repo_root}/ai/skills/universal/integrate/assets"
+gate="${assets}/readiness-gate.sh"
+ghro="${assets}/gh-ro.sh"
+validator="${repo_root}/scripts/validate-result-schemas.mjs"
 test_tmp="$(mktemp -d -t integrate-readiness-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
 bin_dir="${test_tmp}/bin"
 fixtures="${test_tmp}/fixtures"
+record_dir="${test_tmp}/record"
 log="${test_tmp}/gh.log"
-mkdir -p "$bin_dir" "$fixtures"
+mkdir -p "$bin_dir" "$fixtures" "$record_dir/adjudications"
 
 fail() {
     echo "FAIL: $*" >&2
     exit 1
 }
-
-# The gate resolves its Codex helper as a sibling of its own path, so the
-# suite runs a byte-identical copy of the gate beside a STUB helper — that is
-# the only way to pin the helper-exit mapping without a live Codex cycle.
-# gh-ro.sh has no siblings to resolve and runs from the repo directly.
-gate_dir="${test_tmp}/assets"
-mkdir -p "$gate_dir"
-cp "${assets}/readiness-gate.sh" "$gate_dir/"
-gate="${gate_dir}/readiness-gate.sh"
-ghro="${assets}/gh-ro.sh"
-cat >"${gate_dir}/check-codex-cloud-review.sh" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'codex-helper %s\n' "$*" >>"$GH_LOG"
-rc=0
-[ ! -f "$GH_FIXTURES/codex-exit" ] || rc="$(cat "$GH_FIXTURES/codex-exit")"
-if [ "$rc" = 0 ]; then
-    jq -cn '{status:"clean"}'
-else
-    jq -cn '{status:"stub-not-clean"}'
-fi
-exit "$rc"
-STUB
-chmod +x "${gate_dir}/check-codex-cloud-review.sh"
 
 # Watchdog for gate invocations, same idiom as test-integrate-codex.sh: a
 # fired watchdog means the helper hung, which is a distinct failure from any
@@ -158,16 +147,93 @@ default_body() {
     cat <<'BODY'
 What/why prose.
 
-## Deferred findings
-
-- [x] scripts/a.sh:10 — quoting hardening — fixed in abc1234
-- [x] docs/b.md:5 — wording nit — declined: the current prose is the accurate one
-- [x] scripts/c.sh:1 — edge case — filed as #999
-
 ## Verification
 
 - task verify
 BODY
+}
+
+# A minimal valid run.json (ai/schemas/run.schema.json) with no findings at
+# all — zero adjudications means readiness-input's finding index has nothing
+# disposition:"defer" to report, so deferred_findings.{settled,unsettled} are
+# always [] against it. This is the default record for every test that is
+# not itself about deferred-finding settlement.
+write_default_record() {
+    jq -cn --arg head "$head_sha" '
+      {schema:2, run_id:"test-run", initiated_by:"human",
+       started_at:"2026-01-01T00:00:00Z",
+       stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z"}],
+       interventions:[], outcome:null,
+       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+       evidence_comments:[], settlements:[], promotion:null}' \
+        >"${record_dir}/run.json"
+    rm -f "${record_dir}"/adjudications/*.json
+}
+
+# A schema-valid result.envelope (role integrator) at
+# ${fixtures}/integrator-result-<name>.json. $2 is the codex_cycle sub-object
+# (or the literal string "null"); $3 overrides the head baked into the
+# envelope/codex_cycle/accepted (defaults to $head_sha) so a head-mismatch
+# fixture can be built without hand-editing JSON.
+write_integrator_result() {
+    local name="$1" codex_cycle="$2" head="${3:-$head_sha}"
+    local out="${fixtures}/integrator-result-${name}.json"
+    # verdict is constrained against codex_cycle.exit_code by
+    # validate-result-schemas.mjs's EXIT_CODE_VERDICT_CONSTRAINTS (0->clean,
+    # 10->findings, 11|12->pending, 13|2->escalate; the gate itself never
+    # reads `verdict` at all, only `codex_cycle`, but the fixture still has
+    # to satisfy the validator to be usable). A null codex_cycle (cap 0)
+    # takes the same "clean" path as exit_code 0.
+    local exit_code
+    exit_code="$(jq -r '.exit_code // "null"' <<<"$codex_cycle")"
+    local verdict findings='[]' checks='[]'
+    case "$exit_code" in
+    null | 0)
+        verdict=clean
+        checks='[{"name":"build","bucket":"pass","run_id":"1","required":true}]'
+        ;;
+    10)
+        verdict=findings
+        findings='[{"id":"integration-r1-codex-cloud-1","body":"a finding","source_id":"1"}]'
+        ;;
+    11 | 12) verdict=pending ;;
+    13 | 2) verdict=escalate ;;
+    *) verdict=pending ;;
+    esac
+    jq -cn --arg head "$head" --argjson codex_cycle "$codex_cycle" \
+        --argjson checks "$checks" --argjson findings "$findings" \
+        --arg verdict "$verdict" '
+      {schema:2, role:"integrator", status:"completed", head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"claude-code",model:"test",tier:"economy"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:({checks:$checks, codex_cycle:$codex_cycle, integration_round:1,
+                 findings:$findings, unanswered_thread_roots:[],
+                 settled_at:"2026-01-01T00:00:00Z", verdict:$verdict}
+         + (if $verdict == "clean" then {applied_dispositions:[]} else {} end))}' \
+        >"$out"
+    node "$validator" envelope "$out" >/dev/null ||
+        fail "write_integrator_result $name: fixture failed schema validation"
+    printf '%s' "$out"
+}
+
+# codex_cycle with exit_code 0 requires `accepted` (schema: required exactly
+# when exit_code is 0 or 10); everything else omits it.
+codex_cycle_json() {
+    local exit_code="$1" head="${2:-$head_sha}"
+    case "$exit_code" in
+    0 | 10)
+        jq -cn --arg head "$head" --argjson exit_code "$exit_code" \
+            '{head:$head, cycle:1, attempt:1, trigger_comment_id:"1",
+              accepted:{surface:"review", id:"1", reviewed_commit:$head},
+              exit_code:$exit_code}'
+        ;;
+    *)
+        jq -cn --arg head "$head" --argjson exit_code "$exit_code" \
+            '{head:$head, cycle:1, attempt:1, trigger_comment_id:"1",
+              exit_code:$exit_code}'
+        ;;
+    esac
 }
 
 write_defaults() {
@@ -195,28 +261,32 @@ write_defaults() {
     printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]' \
         >"${fixtures}/workflow-runs.pages.json"
     jq -cn '{login:"pr-author"}' >"${fixtures}/user.json"
-    # A Codex attempt state naming THIS repo, PR, and head — the gate refuses
-    # to hand the helper a state file describing anything else.
-    jq -cn --arg head "$head_sha" \
-        '{version:1,repo:"example/repo",pr:493,head:$head,
-          attempt:1,phase:"attached"}' >"${fixtures}/codex-state.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/top.pages.json"
     printf '%s\n' \
         '[{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"T1","isResolved":false}]}}}}}]' \
         >"${fixtures}/threads.pages.json"
-    rm -f "${fixtures}/fail-endpoint" "${fixtures}/codex-exit"
+    rm -f "${fixtures}/fail-endpoint"
     rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json"
     rm -f "${fixtures}"/count-* "${fixtures}"/second-*
     rm -f "${fixtures}/ro-exit"
     : >"$log"
+    write_default_record
+    write_integrator_result disabled null >/dev/null
 }
 
+# Both --record and --integrator-result are baked in here as the default
+# (cap-0-equivalent, clean) case; a test that needs a different record or
+# integrator result appends its own "$@" override — the gate's flag parser
+# overwrites on repeat, so the last occurrence of either flag wins.
 run_gate() {
     set +e
     gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" check \
-        --repo example/repo --pr 493 --head "$head_sha" "$@" 2>&1)"
+        --repo example/repo --pr 493 --head "$head_sha" \
+        --record "$record_dir" \
+        --integrator-result "${fixtures}/integrator-result-disabled.json" \
+        "$@" 2>&1)"
     gate_rc=$?
     set -e
     check_watchdog "$gate_rc" run_gate "$gate_out"
@@ -225,7 +295,10 @@ run_gate() {
 run_audit() {
     set +e
     gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" audit \
-        --repo example/repo --pr 493 --head "$head_sha" "$@" 2>&1)"
+        --repo example/repo --pr 493 --head "$head_sha" \
+        --record "$record_dir" \
+        --integrator-result "${fixtures}/integrator-result-disabled.json" \
+        "$@" 2>&1)"
     gate_rc=$?
     set -e
     check_watchdog "$gate_rc" run_audit "$gate_out"
@@ -251,25 +324,16 @@ assert_gate() {
         fail "expected condition $expected_condition, got '$actual_condition': $gate_out"
 }
 
-echo "==> full pass prints a fingerprint, stable across two runs on identical data"
+echo "==> full pass (Codex cycle terminal-clean) prints a fingerprint, stable across two runs on identical data"
 write_defaults
-printf '0\n' >"${fixtures}/codex-exit"
-run_gate --codex-state "${fixtures}/codex-state.json"
+clean_result="$(write_integrator_result clean "$(codex_cycle_json 0)")"
+run_gate --integrator-result "$clean_result"
 assert_gate 0 pass ready
 first_fingerprint="$(gate_field fingerprint)"
 [ -n "$first_fingerprint" ] && [ "$first_fingerprint" != "null" ] ||
     fail "pass did not print a fingerprint: $gate_out"
-grep -q 'codex-helper check' "$log" ||
-    fail "the enabled-Codex pass did not invoke the sibling helper"
-# The classifier must run AFTER the fingerprint surfaces are captured, so
-# Codex activity inside the baseline has been classified by a later read.
-codex_log_line="$(grep -n 'codex-helper check' "$log" | head -n 1 | cut -d: -f1)"
-threads_log_line="$(grep -n '^api graphql' "$log" | head -n 1 | cut -d: -f1)"
-[ -n "$codex_log_line" ] && [ -n "$threads_log_line" ] &&
-    [ "$codex_log_line" -gt "$threads_log_line" ] ||
-    fail "the Codex classifier must run after the fingerprint-surface fetches (codex at line $codex_log_line, threads at $threads_log_line)"
 rm -f "${fixtures}/pr-view-count"
-run_gate --codex-state "${fixtures}/codex-state.json"
+run_gate --integrator-result "$clean_result"
 assert_gate 0 pass ready
 second_fingerprint="$(gate_field fingerprint)"
 [ "$first_fingerprint" = "$second_fingerprint" ] ||
@@ -291,11 +355,8 @@ echo "==> BLOCKED mergeStateStatus and REVIEW_REQUIRED are promotable (never req
 # The defaults above already pin BLOCKED + REVIEW_REQUIRED; this case exists
 # so a regression toward must-be-CLEAN names itself.
 write_defaults
-run_gate --codex-disabled
+run_gate
 assert_gate 0 pass ready
-if grep -q 'codex-helper' "$log"; then
-    fail "--codex-disabled must not invoke the Codex helper"
-fi
 
 echo "==> a closed PR fails as pr-not-open"
 write_defaults
@@ -303,7 +364,7 @@ jq -cn --arg head "$head_sha" \
     '{state:"MERGED",isDraft:false,headRefOid:$head,
       reviewDecision:"",mergeStateStatus:"UNKNOWN",
       headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail pr-not-open
 
 echo "==> a non-draft PR fails as pr-not-draft"
@@ -313,7 +374,7 @@ jq -cn --arg head "$head_sha" \
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
       headRefName:"feature-branch"}' \
     >"${fixtures}/pr-view.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail pr-not-draft
 
 echo "==> a head other than the adjudicated one fails as head-mismatch"
@@ -323,7 +384,7 @@ jq -cn --arg head "$moved_sha" \
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
       headRefName:"feature-branch"}' \
     >"${fixtures}/pr-view.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail head-mismatch
 
 echo "==> a failing check run fails as checks-failing and names the check"
@@ -332,7 +393,7 @@ jq -cn '[{total_count:2,check_runs:[
     {name:"build",status:"completed",conclusion:"success"},
     {name:"lint",status:"completed",conclusion:"failure"}]}]' \
     >"${fixtures}/check-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
     fail "checks-failing did not name the failing check: $gate_out"
@@ -343,7 +404,7 @@ jq -cn '[{total_count:2,check_runs:[
     {name:"build",status:"completed",conclusion:"success"},
     {name:"verify",status:"in_progress",conclusion:null}]}]' \
     >"${fixtures}/check-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-pending
 printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
     fail "checks-pending did not name the pending check: $gate_out"
@@ -353,7 +414,7 @@ write_defaults
 jq -cn '[[{context:"ci/legacy",state:"success",id:1},
           {context:"ci/legacy",state:"failure",id:3}]]' \
     >"${fixtures}/statuses.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 
 echo "==> a multi-MB check-runs payload still classifies (ARG_MAX regression)"
@@ -374,7 +435,7 @@ jq -cn '[{total_count:60001,
 oversized_bytes="$(wc -c <"${fixtures}/check-runs.pages.json")"
 [ "$oversized_bytes" -gt 1048576 ] ||
     fail "the ARG_MAX fixture shrank to ${oversized_bytes} bytes — below the per-argument limit it exists to exceed, so it no longer reproduces"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
     fail "the oversized payload was not classified — the failing check went unnamed: $gate_out"
@@ -391,7 +452,7 @@ jq -cn '[{total_count:60000,
         {name:("broken-" + (. | tostring)),
          status:"completed",conclusion:"failure"}]}]' \
     >"${fixtures}/check-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'broken-0' ||
     fail "the bounded detail names no failing check: $gate_out"
@@ -420,7 +481,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:10,workflow_id:100,event:"pull_request"},
     {check_suite_id:20,workflow_id:100,event:"pull_request"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 0 pass ready
 
 echo "==> a stale PASSING check suite superseded by a later failure still fails (inverse of the above)"
@@ -435,7 +496,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:30,workflow_id:100,event:"pull_request"},
     {check_suite_id:40,workflow_id:100,event:"pull_request"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not name the check whose latest run fails: $gate_out"
@@ -458,7 +519,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:70,workflow_id:100,event:"pull_request"},
     {check_suite_id:80,workflow_id:100,event:"pull_request"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 
 echo "==> two distinct workflows whose jobs share a literal name are kept apart, never suite-broken"
@@ -479,7 +540,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:50,workflow_id:100,event:"pull_request"},
     {check_suite_id:60,workflow_id:200,event:"pull_request"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not surface the failing workflow's guard job when a same-named passing job from a different workflow has a higher id: $gate_out"
@@ -501,7 +562,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:90,workflow_id:100,event:"pull_request"},
     {check_suite_id:91,workflow_id:100,event:"workflow_dispatch"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
     fail "checks-failing did not surface the failed pull_request run when a later workflow_dispatch of the same workflow/job succeeded: $gate_out"
@@ -526,7 +587,7 @@ jq -cn '[{total_count:3,check_runs:[
 jq -cn '[{total_count:1,workflow_runs:[
     {check_suite_id:200,workflow_id:100,event:"pull_request"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
     fail "checks-failing did not surface the failing sibling job when a same-named passing sibling shares its (latest) suite: $gate_out"
@@ -551,7 +612,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:20,workflow_id:100,event:"pull_request",
      pull_requests:[{number:999}]}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not survive when a higher-suite-id run scoped to a different PR shared the same name/workflow/event: $gate_out"
@@ -572,7 +633,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:10,workflow_id:100,event:"pull_request",pull_requests:[]},
     {check_suite_id:20,workflow_id:100,event:"pull_request",pull_requests:[]}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 0 pass ready
 
 echo "==> a run naming MULTIPLE PRs (a genuinely shared head) cannot clear this PR's own failure (harmon-devkit#714 review r1)"
@@ -596,7 +657,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:20,workflow_id:100,event:"pull_request",
      pull_requests:[{number:493},{number:999}]}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not survive when a later run naming multiple PRs (including this one) shared the same name/workflow/event: $gate_out"
@@ -611,7 +672,7 @@ jq -cn '[{total_count:1,workflow_runs:[
     {check_suite_id:10,workflow_id:100,event:"pull_request",
      pull_requests:[{number:493},{number:999}]}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "a failing run naming multiple PRs (including this one) was dropped instead of surfaced: $gate_out"
@@ -635,7 +696,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:20,workflow_id:100,event:"pull_request",
      pull_requests:[{number:493},{number:999}]}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not survive when a later ambiguous suite's success shared its nominal workflow/event with an earlier ambiguous failure: $gate_out"
@@ -653,7 +714,7 @@ jq -cn '[{total_count:1,workflow_runs:[
     {check_suite_id:10,workflow_id:100,event:"pull_request",
      pull_requests:[{number:999}]}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 0 pass ready
 
 echo "==> two different non-Actions apps sharing a check name are never conflated (harmon-devkit#714 review r3)"
@@ -673,7 +734,7 @@ jq -cn '[{total_count:2,check_runs:[
     {id:2,name:"lint",status:"completed",conclusion:"success",
      started_at:"2026-01-01T00:05:00Z",check_suite:{id:20},app:{id:77}}]}]' \
     >"${fixtures}/check-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
     fail "checks-failing did not survive when a different non-Actions app's later success shared a check name with an earlier failure: $gate_out"
@@ -698,7 +759,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:20,workflow_id:100,event:"pull_request",
      pull_requests:[],head_branch:"someone-elses-branch"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not survive when a later run on a DIFFERENT branch (both sides reporting empty pull_requests) shared the same name/workflow/event: $gate_out"
@@ -722,7 +783,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:20,workflow_id:100,event:"pull_request",
      pull_requests:[],head_branch:"feature-branch"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not survive a push-triggered failure on an unrelated branch, which the branch heuristic must not exclude: $gate_out"
@@ -741,7 +802,7 @@ jq -cn '[{total_count:1,workflow_runs:[
     {check_suite_id:10,workflow_id:100,event:"pull_request",
      pull_requests:[{number:999},{number:1000}]}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 0 pass ready
 
 echo "==> a push run with a stale PR association naming only a sibling is never excluded (harmon-devkit#714 shepherd r3)"
@@ -759,7 +820,7 @@ jq -cn '[{total_count:1,workflow_runs:[
     {check_suite_id:10,workflow_id:100,event:"push",
      pull_requests:[{number:999}],head_branch:"main"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not survive a push run whose only pull_requests association names a different PR: $gate_out"
@@ -782,7 +843,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     {check_suite_id:20,workflow_id:100,event:"push",
      pull_requests:[],head_branch:"release"}]}]' \
     >"${fixtures}/workflow-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not survive when a push suite on a different branch shared the workflow/event but not the branch: $gate_out"
@@ -792,7 +853,7 @@ write_defaults
 printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \
     >"${fixtures}/check-runs.pages.json"
 printf '%s\n' '[[]]' >"${fixtures}/statuses.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 2 indeterminate checks-indeterminate
 
 echo "==> CHANGES_REQUESTED fails as changes-requested"
@@ -802,7 +863,7 @@ jq -cn --arg head "$head_sha" \
       reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",
       headRefName:"feature-branch"}' \
     >"${fixtures}/pr-view.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail changes-requested
 
 echo "==> DIRTY and BEHIND fail; UNKNOWN is indeterminate"
@@ -816,34 +877,54 @@ for pair in "DIRTY 1 fail merge-state-dirty" "BEHIND 1 fail merge-state-behind" 
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:$ms,
           headRefName:"feature-branch"}' \
         >"${fixtures}/pr-view.json"
-    run_gate --codex-disabled
+    run_gate
     assert_gate "$2" "$3" "$4"
 done
 
-echo "==> an unchecked deferred finding fails as deferred-unchecked"
-write_defaults
-body="$(printf '## Deferred findings\n\n- [ ] scripts/a.sh:10 — still open\n')"
-jq -cn --arg head "$head_sha" --arg body "$body" \
-    '{number:493,title:"t",body:$body,head:{sha:$head},
-      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
-run_gate --codex-disabled
-assert_gate 1 fail deferred-unchecked
-
-echo "==> a ticked deferred finding without an outcome fails as deferred-no-outcome"
-write_defaults
-body="$(printf '## Deferred findings\n\n- [x] scripts/a.sh:10 — says done, shows nothing\n')"
-jq -cn --arg head "$head_sha" --arg body "$body" \
-    '{number:493,title:"t",body:$body,head:{sha:$head},
-      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
-run_gate --codex-disabled
-assert_gate 1 fail deferred-no-outcome
-
-echo "==> a body with no deferred-findings section passes that condition"
+echo "==> an unsettled deferred finding fails as deferred-unsettled"
 write_defaults
 jq -cn --arg head "$head_sha" \
-    '{number:493,title:"t",body:"plain body",head:{sha:$head},
-      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
-run_gate --codex-disabled
+    '{schema:2, run_id:"test-run", stage:"review", round:1,
+      reviewed_head:$head,
+      adjudications:[{finding_id:"review-r1-codex-cli-1",
+        reviewer_priority:"P2", adjudicated_priority:"P2",
+        disposition:"defer", reason:"carrying to integration",
+        evidence:"needs a second look", override:null}]}' \
+    >"${record_dir}/adjudications/review-r1.json"
+# run.json's settlements[] stays empty from write_default_record — nothing
+# has settled the one deferred finding the adjudication above declares.
+run_gate
+assert_gate 1 fail deferred-unsettled
+printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-1' ||
+    fail "deferred-unsettled did not name the unsettled finding: $gate_out"
+
+echo "==> the same finding, once settled in run.json, passes that condition"
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{schema:2, run_id:"test-run", stage:"review", round:1,
+      reviewed_head:$head,
+      adjudications:[{finding_id:"review-r1-codex-cli-1",
+        reviewer_priority:"P2", adjudicated_priority:"P2",
+        disposition:"defer", reason:"carrying to integration",
+        evidence:"needs a second look", override:null}]}' \
+    >"${record_dir}/adjudications/review-r1.json"
+jq -cn --arg head "$head_sha" \
+    '{schema:2, run_id:"test-run", initiated_by:"human",
+      started_at:"2026-01-01T00:00:00Z",
+      stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z"}],
+      interventions:[], outcome:null,
+      pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+      evidence_comments:[],
+      settlements:[{finding_id:"review-r1-codex-cli-1", disposition:"decline",
+        settled_at:"2026-01-01T00:01:00Z",
+        reference:{type:"comment_id",value:"555"}}],
+      promotion:null}' >"${record_dir}/run.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> a record with no deferred findings at all passes that condition"
+write_defaults
+run_gate
 assert_gate 0 pass ready
 
 echo "==> an unanswered inline thread fails as threads-unanswered"
@@ -851,7 +932,7 @@ write_defaults
 jq -cn '[[{id:900,user:{login:"reviewer-bot"},path:"f.sh",in_reply_to_id:null,
            created_at:"2026-08-01T00:00:00Z",updated_at:"2026-08-01T00:00:00Z",
            body:"finding"}]]' >"${fixtures}/inline.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail threads-unanswered
 printf '%s\n' "$gate_out" | grep -Fq '900' ||
     fail "threads-unanswered did not name the root: $gate_out"
@@ -865,7 +946,7 @@ jq -cn '[[
     {id:901,user:{login:"pr-author"},path:"f.sh",in_reply_to_id:900,
      created_at:"2026-08-01T01:00:00Z",updated_at:"2026-08-01T01:00:00Z",
      body:"fixed in abc"}]]' >"${fixtures}/inline.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 0 pass ready
 write_defaults
 jq -cn '[[
@@ -878,7 +959,7 @@ jq -cn '[[
     {id:902,user:{login:"reviewer-bot"},path:"f.sh",in_reply_to_id:900,
      created_at:"2026-08-01T02:00:00Z",updated_at:"2026-08-01T02:00:00Z",
      body:"follow-up"}]]' >"${fixtures}/inline.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail threads-new-follow-up
 
 edited_thread() {
@@ -894,13 +975,13 @@ edited_thread() {
 echo "==> an edit after the reply fails distinctly as threads-edited-since-reply"
 write_defaults
 edited_thread
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail threads-edited-since-reply
 
 echo "==> --allow-edited-root clears exactly that edited root"
 write_defaults
 edited_thread
-run_gate --codex-disabled --allow-edited-root 900
+run_gate --allow-edited-root 900
 assert_gate 0 pass ready
 
 echo "==> --allow-edited-root never clears an unanswered thread"
@@ -908,31 +989,31 @@ write_defaults
 jq -cn '[[{id:900,user:{login:"reviewer-bot"},path:"f.sh",in_reply_to_id:null,
            created_at:"2026-08-01T00:00:00Z",updated_at:"2026-08-01T00:00:00Z",
            body:"finding"}]]' >"${fixtures}/inline.pages.json"
-run_gate --codex-disabled --allow-edited-root 900
+run_gate --allow-edited-root 900
 assert_gate 1 fail threads-unanswered
 
 echo "==> a failed identity lookup is indeterminate, never answered"
 write_defaults
 printf 'user' >"${fixtures}/fail-endpoint"
-run_gate --codex-disabled
+run_gate
 assert_gate 2 indeterminate fetch-failed
 
 echo "==> a failed inline-comment fetch is indeterminate, never a pass"
 write_defaults
 printf 'pulls/493/comments' >"${fixtures}/fail-endpoint"
-run_gate --codex-disabled
+run_gate
 assert_gate 2 indeterminate fetch-failed
 
 echo "==> a failed fingerprint-surface fetch (reviews) is indeterminate"
 write_defaults
 printf 'pulls/493/reviews' >"${fixtures}/fail-endpoint"
-run_gate --codex-disabled
+run_gate
 assert_gate 2 indeterminate fetch-failed
 
 echo "==> a failed thread-resolution fetch (graphql) is indeterminate"
 write_defaults
 printf 'graphql' >"${fixtures}/fail-endpoint"
-run_gate --codex-disabled
+run_gate
 assert_gate 2 indeterminate fetch-failed
 
 echo "==> a head that moves mid-gate fails as head-moved on the final re-read"
@@ -941,7 +1022,7 @@ jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
     >"${fixtures}/pr-view-second.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail head-moved
 
 echo "==> a promotion mid-gate fails as pr-not-draft on the final re-read"
@@ -950,38 +1031,61 @@ jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
     >"${fixtures}/pr-view-second.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail pr-not-draft
 
-echo "==> Codex helper findings/pending/retry/escalate all fail as codex-not-clean"
-for helper_rc in 10 11 12 13; do
+echo "==> an integrator result reporting Codex findings/pending/retry/escalate all fail as codex-not-clean"
+for exit_code in 10 11 12 13; do
     write_defaults
-    printf '%s\n' "$helper_rc" >"${fixtures}/codex-exit"
-    run_gate --codex-state "${fixtures}/codex-state.json"
+    result="$(write_integrator_result "exit-${exit_code}" "$(codex_cycle_json "$exit_code")")"
+    run_gate --integrator-result "$result"
     assert_gate 1 fail codex-not-clean
 done
 
-echo "==> Codex helper exit 2 is codex-indeterminate"
+echo "==> a codex_cycle exit_code of 2 (indeterminate) is codex-indeterminate"
 write_defaults
-printf '2\n' >"${fixtures}/codex-exit"
-run_gate --codex-state "${fixtures}/codex-state.json"
+result="$(write_integrator_result exit-2 "$(codex_cycle_json 2)")"
+run_gate --integrator-result "$result"
 assert_gate 2 indeterminate codex-indeterminate
 
-echo "==> a missing Codex attempt state is codex-indeterminate, never a pass"
+echo "==> a missing --integrator-result file is refused as a usage error, never a pass"
 write_defaults
-run_gate --codex-state "${fixtures}/no-such-state.json"
+set +e
+missing_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" \
+    --integrator-result "${fixtures}/no-such-result.json" 2>&1)"
+missing_rc=$?
+set -e
+[ "$missing_rc" -eq 2 ] ||
+    fail "a missing --integrator-result file should exit 2, got $missing_rc: $missing_out"
+printf '%s\n' "$missing_out" | grep -Fq 'integrator-result' ||
+    fail "the missing-integrator-result error does not name the flag: $missing_out"
+
+echo "==> an integrator result naming a different head is refused before the Codex condition is read"
+write_defaults
+result="$(write_integrator_result other-head null "$moved_sha")"
+run_gate --integrator-result "$result"
 assert_gate 2 indeterminate codex-indeterminate
 
-echo "==> a Codex state for another PR is refused before the helper ever runs"
+echo "==> an integrator result whose role is not integrator is refused"
 write_defaults
+non_integrator_result="${fixtures}/integrator-result-wrong-role.json"
 jq -cn --arg head "$head_sha" \
-    '{version:1,repo:"example/repo",pr:777,head:$head,
-      attempt:1,phase:"attached"}' >"${fixtures}/codex-state.json"
-run_gate --codex-state "${fixtures}/codex-state.json"
+    '{schema:2, role:"reviewer", status:"completed", head:$head,
+      produced_at:"2026-01-01T00:00:00Z",
+      producer:{harness:"claude-code",model:"test",tier:"economy"},
+      run:{run_id:"test-run",initiated_by:"human"},
+      payload:{stage:"review",reviewed_head:$head,findings:[],
+               verdict:"clean"}}' >"$non_integrator_result"
+run_gate --integrator-result "$non_integrator_result"
 assert_gate 2 indeterminate codex-indeterminate
-if grep -q 'codex-helper check' "$log"; then
-    fail "a mismatched state file must not reach the Codex helper"
-fi
+
+echo "==> an --integrator-result that fails schema validation is refused"
+write_defaults
+malformed_result="${fixtures}/integrator-result-malformed.json"
+printf '%s\n' '{"not":"a valid envelope"}' >"$malformed_result"
+run_gate --integrator-result "$malformed_result"
+assert_gate 2 indeterminate codex-indeterminate
 
 echo "==> a CHANGES_REQUESTED review landing mid-gate fails on the final re-read"
 write_defaults
@@ -989,7 +1093,7 @@ jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED"}' \
     >"${fixtures}/pr-view-second.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail changes-requested
 
 echo "==> a DIRTY merge state arising mid-gate fails on the final re-read"
@@ -998,12 +1102,12 @@ jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"DIRTY"}' \
     >"${fixtures}/pr-view-second.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail merge-state-dirty
 
 echo "==> the fingerprint is double-read: gated evaluation plus a fresh compare"
 write_defaults
-run_gate --codex-disabled
+run_gate
 assert_gate 0 pass ready
 pr_object_fetches="$(grep -cxF 'api repos/example/repo/pulls/493' "$log")"
 [ "$pr_object_fetches" -eq 2 ] ||
@@ -1011,11 +1115,11 @@ pr_object_fetches="$(grep -cxF 'api repos/example/repo/pulls/493' "$log")"
 
 echo "==> a body edit mid-gate fails as content-moved, never laundered into a pass"
 write_defaults
-edited_body="$(printf '## Deferred findings\n\n- [ ] scripts/sneaky.sh:1 — added after the deferred check ran\n')"
+edited_body="$(printf 'What/why prose, edited after the gate read it.\n\n## Verification\n\n- task verify\n')"
 jq -cn --arg head "$head_sha" --arg body "$edited_body" \
     '{number:493,title:"t",body:$body,head:{sha:$head},
       user:{id:4242,login:"pr-author"}}' >"${fixtures}/second-pr.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail content-moved
 printf '%s\n' "$gate_out" | grep -Fq 'PR-title/body' ||
     fail "content-moved did not name the changed surface: $gate_out"
@@ -1025,7 +1129,7 @@ write_defaults
 jq -cn '[[{id:70,user:{login:"reviewer-bot"},body:"a late finding",
            updated_at:"2026-08-01T03:00:00Z"}]]' \
     >"${fixtures}/second-top.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail content-moved
 printf '%s\n' "$gate_out" | grep -Fq 'top-level-comments' ||
     fail "content-moved did not name the changed surface: $gate_out"
@@ -1035,61 +1139,22 @@ write_defaults
 jq -cn '[{total_count:1,check_runs:[
     {name:"late-red",status:"completed",conclusion:"failure"}]}]' \
     >"${fixtures}/second-check-runs.pages.json"
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'late-red' ||
     fail "the final re-evaluation did not name the late-failing check: $gate_out"
 
-echo "==> a second deferred-findings section cannot hide open findings"
-write_defaults
-dup_body="$(printf '## Deferred findings\n\nnone recorded here\n\n## Notes\n\nprose\n\n## Deferred findings\n\n- [ ] scripts/late.sh:1 — appended in a later section\n')"
-jq -cn --arg head "$head_sha" --arg body "$dup_body" \
-    '{number:493,title:"t",body:$body,head:{sha:$head},
-      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
-run_gate --codex-disabled
-assert_gate 1 fail deferred-unchecked
-
-echo "==> unindented body prose cannot lend a ticked entry an outcome"
-write_defaults
-prose_body="$(printf '## Deferred findings\n\n- [x] scripts/a.sh:10 — outcome missing\nUnrelated paragraph mentioning declined: something else entirely.\n')"
-jq -cn --arg head "$head_sha" --arg body "$prose_body" \
-    '{number:493,title:"t",body:$body,head:{sha:$head},
-      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
-run_gate --codex-disabled
-assert_gate 1 fail deferred-no-outcome
-
-echo "==> an indented continuation line can carry the outcome"
-write_defaults
-cont_body="$(printf '## Deferred findings\n\n- [x] scripts/a.sh:10 — long entry wraps\n  declined: reviewer agreed in the thread\n')"
-jq -cn --arg head "$head_sha" --arg body "$cont_body" \
-    '{number:493,title:"t",body:$body,head:{sha:$head},
-      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
-run_gate --codex-disabled
-assert_gate 0 pass ready
-
-echo "==> a bare 'declined:' with no rationale settles nothing"
-write_defaults
-bare_body="$(printf '## Deferred findings\n\n- [x] scripts/a.sh:10 — waved away — declined:\n')"
-jq -cn --arg head "$head_sha" --arg body "$bare_body" \
-    '{number:493,title:"t",body:$body,head:{sha:$head},
-      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
-run_gate --codex-disabled
-assert_gate 1 fail deferred-no-outcome
-
-echo "==> a child heading does not end the deferred section"
-write_defaults
-child_body="$(printf '## Deferred findings\n\n### Challenge findings\n\n- [ ] scripts/x.sh:2 — listed under a child heading\n\n## Verification\n\n- ok\n')"
-jq -cn --arg head "$head_sha" --arg body "$child_body" \
-    '{number:493,title:"t",body:$body,head:{sha:$head},
-      user:{id:4242,login:"pr-author"}}' >"${fixtures}/pr.json"
-run_gate --codex-disabled
-assert_gate 1 fail deferred-unchecked
-
 echo "==> without GNU timeout the gate still runs, loudly unbounded"
 write_defaults
+clean_result="$(write_integrator_result timeout-fallback "$(codex_cycle_json 0)")"
 restricted_bin="${test_tmp}/restricted-bin"
 mkdir -p "$restricted_bin"
-for tool in bash jq grep tr dirname cat; do
+# node, git, and gitleaks are required now (node for schema validation, git
+# to locate scripts/render-dev-flow.sh from the checkout's own toplevel,
+# gitleaks because render-dev-flow.mjs secret-scans every projection it
+# renders, unconditionally, before printing it), on top of the original
+# minimal toolset this fixture restricts PATH to.
+for tool in bash jq grep tr dirname cat node git gitleaks; do
     tool_path="$(command -v "$tool")" ||
         fail "missing $tool for the no-timeout fixture"
     ln -s "$tool_path" "${restricted_bin}/$tool"
@@ -1102,7 +1167,7 @@ ln -s "${bin_dir}/gh" "${restricted_bin}/gh"
 set +e
 gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" env PATH="$restricted_bin" \
     "$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --codex-disabled 2>&1)"
+    --record "$record_dir" --integrator-result "$clean_result" 2>&1)"
 gate_rc=$?
 set -e
 check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
@@ -1121,11 +1186,11 @@ nondraft_pr_view() {
 echo "==> audit passes a green already-promoted PR (check refuses the same PR)"
 write_defaults
 nondraft_pr_view
-run_audit --codex-disabled
+run_audit
 assert_gate 0 pass audit
 write_defaults
 nondraft_pr_view
-run_gate --codex-disabled
+run_gate
 assert_gate 1 fail pr-not-draft
 
 echo "==> audit still fails red checks on an already-promoted PR"
@@ -1134,36 +1199,44 @@ nondraft_pr_view
 jq -cn '[{total_count:1,check_runs:[
     {name:"lint",status:"completed",conclusion:"failure"}]}]' \
     >"${fixtures}/check-runs.pages.json"
-run_audit --codex-disabled
+run_audit
 assert_gate 1 fail checks-failing
 
 echo "==> audit refuses a draft target — there is no promotion to audit"
 write_defaults
-run_audit --codex-disabled
+run_audit
 assert_gate 1 fail pr-draft
 
-echo "==> the Codex mode is never skippable by silence"
+echo "==> --record and --integrator-result are never skippable by silence"
 write_defaults
+clean_result="$(write_integrator_result skip-check "$(codex_cycle_json 0)")"
 set +e
 usage_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" 2>&1)"
 usage_rc=$?
 set -e
 [ "$usage_rc" -eq 2 ] ||
-    fail "omitting both Codex flags should exit 2, got $usage_rc: $usage_out"
-printf '%s\n' "$usage_out" | grep -Fq 'codex' ||
-    fail "the missing-Codex-mode error does not say what is missing: $usage_out"
+    fail "omitting --record and --integrator-result should exit 2, got $usage_rc: $usage_out"
 set +e
-both_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --codex-disabled --codex-state "${fixtures}/codex-state.json" 2>&1)"
-both_rc=$?
+no_record_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --integrator-result "$clean_result" 2>&1)"
+no_record_rc=$?
 set -e
-[ "$both_rc" -eq 2 ] ||
-    fail "passing both Codex flags should exit 2, got $both_rc: $both_out"
+[ "$no_record_rc" -eq 2 ] ||
+    fail "omitting --record alone should exit 2, got $no_record_rc: $no_record_out"
+set +e
+no_result_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" 2>&1)"
+no_result_rc=$?
+set -e
+[ "$no_result_rc" -eq 2 ] ||
+    fail "omitting --integrator-result alone should exit 2, got $no_result_rc: $no_result_out"
 
 echo "==> a short --head is a usage error, exit 2"
+write_defaults
+clean_result="$(write_integrator_result short-head "$(codex_cycle_json 0)")"
 set +e
 short_out="$("$gate" check --repo example/repo --pr 493 --head abc123 \
-    --codex-disabled 2>&1)"
+    --record "$record_dir" --integrator-result "$clean_result" 2>&1)"
 short_rc=$?
 set -e
 [ "$short_rc" -eq 2 ] ||

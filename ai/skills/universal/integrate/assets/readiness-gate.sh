@@ -692,9 +692,17 @@ esac
 # enforced by run.schema.json at write time, so there is no longer a
 # "ticked but no outcome" state to separately detect here — the renderer
 # either sees a schema-valid settlement or none at all.
-readiness_input="$("$render_dev_flow" readiness-input \
-    --record "$record_dir" --head "$head" 2>&1)" ||
-    indeterminate malformed-data "readiness-input projection failed: $readiness_input"
+# stdout and stderr are captured separately: render-dev-flow.mjs's secret
+# scanner logs its own diagnostic lines to stderr on every invocation
+# (success included), and merging the two would corrupt the JSON this
+# script parses below on the success path — the error message only needs
+# stderr, and only on failure.
+if ! readiness_input="$("$render_dev_flow" readiness-input \
+    --record "$record_dir" --head "$head" 2>/dev/null)"; then
+    readiness_input_err="$("$render_dev_flow" readiness-input \
+        --record "$record_dir" --head "$head" 2>&1 >/dev/null)" || true
+    indeterminate malformed-data "readiness-input projection failed: $readiness_input_err"
+fi
 projected_head="$(jq -er '.head | select(type == "string")' \
     <<<"$readiness_input" 2>/dev/null)" ||
     indeterminate malformed-data "readiness-input produced no head"
