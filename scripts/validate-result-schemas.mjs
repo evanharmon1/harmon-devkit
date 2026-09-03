@@ -687,7 +687,7 @@ function checkCodexCycleAcceptedScope(payload, errors) {
 // EXIT_CODE_VERDICT_CONSTRAINTS — what codex_cycle.exit_code implies about
 // payload.verdict, per the SAME exit-code contract
 // result.integrator.schema.json's codex_cycle.exit_code description
-// documents, which is itself ai/skills/universal/shepherd/assets/
+// documents, which is itself ai/skills/universal/integrate/assets/
 // check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
 // 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
 // indeterminate. checkIntegratorCleanVerdict separately requires exit_code
@@ -696,7 +696,7 @@ function checkCodexCycleAcceptedScope(payload, errors) {
 // is what closes the loop the other way (0 implies clean), the same
 // two-direction shape every other exit code in this table already gets.
 // 13 (escalate) and 2 (indeterminate) share the SAME equals rule: AGENTS.md's
-// shepherd stage escalates when both Codex-cycle attempts are incomplete,
+// integration stage escalates when both Codex-cycle attempts are incomplete,
 // which is exactly what an indeterminate result IS — there is no
 // meaningful difference between "explicitly escalate" and "couldn't tell,
 // so escalate" for what the orchestrator does next. Each entry is either
@@ -1472,7 +1472,7 @@ function checkStageTransitionsOrder(document, errors) {
     }
   }
   // Reaching ready-for-review always means the run got through integration
-  // (the readiness gate promotes a draft PR shepherded out of that stage —
+  // (the readiness gate promotes a draft PR integrated out of that stage —
   // AGENTS.md's Dev Loop), so the last stage_transitions entry must BE
   // integration, not merely have progressed at all.
   if (document.outcome === 'ready-for-review') {
@@ -1614,7 +1614,7 @@ function checkRunChronology(document, errors) {
 // promotion without one), so both of those states additionally require a
 // non-null `pr`. `pr` itself can go non-null earlier than either — AGENTS.md's
 // Dev Loop opens the draft PR and only then enters the `integration` stage
-// (that is what the draft PR's existence kicks off: shepherding, Codex
+// (that is what the draft PR's existence kicks off: integration, Codex
 // cloud review cycles) — so a non-null `pr`, on its own, always requires
 // stage_transitions to already record having reached `integration`; it is
 // never legitimate for the PR to exist ahead of the run's own record of

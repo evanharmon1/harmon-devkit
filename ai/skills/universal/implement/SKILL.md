@@ -4,7 +4,7 @@ description: >-
   Drive a claimed issue to a ready-for-review PR — read the issue as a spec, work the
   repo's own dev loop (inner lint gate, definition-of-done gate, second-model
   review, security gate), tick acceptance criteria as they are verified, open the
-  PR, then continue through the shepherd stage until it reaches a terminal
+  PR, then continue through the integration stage until it reaches a terminal
   condition. Never claims, never merges. Use when an issue is already claimed
   and the session is told to implement it. Invoke as /implement [issue # or
   URL].
@@ -17,13 +17,14 @@ allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branc
 
 Turn a claimed issue into a **ready-for-review PR**. `/claim` verified and
 claimed the issue; this skill owns everything from there until the draft has
-passed shepherd's readiness gate and is handed to the maintainer for review.
+passed the integration stage's readiness gate and is handed to the maintainer
+for review.
 
-That span deliberately includes the shepherd stage. Opening the PR is a
+That span deliberately includes the integration stage. Opening the PR is a
 milestone inside this skill, not its exit — an open PR with unpolled checks and
 unanswered reviews is unfinished work, and the repos that mandate the transition
 (harmon-init among them) make `gh pr create` the *trigger* for it. Step 9 is
-where that happens: `/shepherd` is the procedure to follow there, not a separate
+where that happens: `/integrate` is the procedure to follow there, not a separate
 errand to hand off and forget.
 
 **The repository's own policy outranks this file.** Where its `AGENTS.md`
@@ -388,32 +389,32 @@ second PR is the expensive way to find out.
   the same one — naming it explicitly costs nothing and removes the ambiguity.
 - `gh pr create --draft`, then fetch `headRefOid,isDraft` and require both the
   pushed SHA and `isDraft == true`. A non-draft result is not the normal
-  publication path; stop and reconcile it before shepherding.
+  publication path; stop and reconcile it before integrating.
 - **Delete the scratch file last** — only once `gh pr create` has returned a URL
   *and* you have re-read the PR body and confirmed the findings are in it. The
   file is the sole durable copy: a push rejected for auth, a validation error, a
   network blip, or a session lost to compaction between the delete and the
-  create takes every deferred finding with it, and shepherd then settles a list
-  it cannot know is short. Deleting is bookkeeping; do it after the thing it is
-  bookkeeping for actually exists.
+  create takes every deferred finding with it, and integration then settles a
+  list it cannot know is short. Deleting is bookkeeping; do it after the thing
+  it is bookkeeping for actually exists.
 
-## 9. Shepherd the draft to ready for review
+## 9. Integrate the draft to ready for review
 
 `gh pr create --draft` returning is the trigger for the next stage, **not the
-end of this skill's work**. Continue into the shepherd stage while the PR stays
-draft — watch CI *and* incoming
+end of this skill's work**. Continue into the integration stage while the PR
+stays draft — watch CI *and* incoming
 bot/human reviews, settle the deferred findings, reply per thread — and stop
-only when shepherd reaches one of its own terminal conditions. Where the repo's
-`AGENTS.md` mandates that stage (harmon-init does), enter it the way the
-harness allows: where the Skill tool is available, **invoke `shepherd`
+only when integration reaches one of its own terminal conditions. Where the
+repo's `AGENTS.md` mandates that stage (harmon-init does), enter it the way the
+harness allows: where the Skill tool is available, **invoke `integrate`
 through it**; where it is not (a subagent, another harness), **read
-`/shepherd`'s `SKILL.md` and follow it directly**.
+`/integrate`'s `SKILL.md` and follow it directly**.
 
 Do not treat "draft PR opened" as a stopping point. A draft with unpolled
 checks is the middle of the work, and the deferred findings from step 6 are
 still open — nothing else in the lifecycle settles them. A failed,
-unavailable, stale, or indeterminate shepherd gate leaves the PR draft and is
-reported as a blocker. Only shepherd's complete readiness gate may run
+unavailable, stale, or indeterminate integration gate leaves the PR draft and
+is reported as a blocker. Only integration's complete readiness gate may run
 `gh pr ready`, and it must re-confirm that the head did not change before and
 after promotion.
 
