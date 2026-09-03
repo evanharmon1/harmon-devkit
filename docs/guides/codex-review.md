@@ -255,7 +255,7 @@ task ci         # full CI mirror
 # → merging stays a human decision
 ```
 
-The `/gauntlet` skill (`ai/skills/universal/gauntlet/`) is the procedure for
+The `/review` skill (`ai/skills/universal/review/`) is the procedure for
 the middle of that block — challenge and review to convergence, the CI mirror,
 and the draft-PR ritual that hands off to `/shepherd`. It carries the cap
 resolution, the adjudication table and ledger, the backgrounding recipes, and
