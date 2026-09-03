@@ -61,6 +61,25 @@ if [ -n "$config_path" ]; then
     closure_dir="$(dirname "$config_path")"
     closure_ignore="${closure_dir}/.gitleaksignore"
     worktree_ignore=".gitleaksignore"
+    # Neither path may be a symlink (or any other non-regular file): `cmp`
+    # below follows symlinks, so a branch could commit .gitleaksignore as a
+    # symlink to bytes outside git's own tracking entirely and swap that
+    # external target's content between this comparison and gitleaks' own
+    # later read of the same path — the symlink itself, and this check,
+    # would never see the change (Codex review, confirmed). A regular
+    # file's bytes cannot move between two reads without also dirtying the
+    # worktree, which the caller's own post-gate `git status` check catches
+    # separately; a symlink's TARGET is invisible to that check entirely.
+    for f in "$worktree_ignore" "$closure_ignore"; do
+        if [ -L "$f" ]; then
+            echo "gitleaks-scan: refusing — ${f} is a symlink; .gitleaksignore must be a regular file" >&2
+            exit 1
+        fi
+        if [ -e "$f" ] && [ ! -f "$f" ]; then
+            echo "gitleaks-scan: refusing — ${f} exists but is not a regular file" >&2
+            exit 1
+        fi
+    done
     if [ -e "$worktree_ignore" ] || [ -e "$closure_ignore" ]; then
         if ! cmp -s "$worktree_ignore" "$closure_ignore" 2>/dev/null; then
             echo "gitleaks-scan: refusing — a .gitleaksignore in the worktree does not match the closure's copy (or one exists in only one place); gitleaks' ignore-path lookup cannot be redirected away from the worktree root, so this scan cannot proceed safely" >&2

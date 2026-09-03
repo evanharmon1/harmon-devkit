@@ -16,22 +16,27 @@
 #      feature worktree (git show/git archive <merge-base>:<path>) — this
 #      script never resolves a worktree-resident policy, registry, or
 #      scanner file itself; every closure-resident input arrives as an
-#      explicit path;
-#   3. requires the caller's gate marker to be bound to BOTH the exact head
-#      and the required target for that diff class (round_code or
-#      round_docs), refusing a weaker marker over a stronger-required diff;
+#      explicit path, and every one of those paths is itself verified
+#      against the closure's own `git show <closure-base>:<path>` blob
+#      before anything reads it, so --closure-base pins content, not just
+#      the diff boundary (Codex review, confirmed — see
+#      verify_closure_member's own comment);
+#   3. EXECUTES the required target for that diff class (round_code or
+#      round_docs) itself, from the feature worktree, rather than
+#      validating a marker a caller produced — a caller-supplied
+#      gate-file/gate-token pair proves nothing was actually run (Codex
+#      review, confirmed: the broker's own test helper demonstrated the
+#      bypass by fabricating both directly before a successful push); the
+#      broker instead emits its own marker as OUTPUT, bound to the gated
+#      head and diff class, purely as evidence — never as an input;
 #   4. runs the secret scanner itself, unconditionally, via the closure's own
 #      gitleaks-scan.sh + .gitleaks.toml (never the worktree's, so a branch
 #      cannot weaken the scan that gates its own push);
 #   5. then performs the same ref-safety-checked push as the older helper
 #      (single writable remote, fast-forward-only, no destination rewrite,
-#      no receive-pack override, explicit refspec, no follow-tags).
-#
-# The configured ROUND gate itself (`task verify` / `task check`) is
-# deliberately NOT part of the closure: the caller runs it from the feature
-# worktree and this script only validates the marker it produced — that
-# result is branch-attested evidence, never CI-authoritative (config spec
-# "Gate authority separates policy from branch implementation").
+#      no receive-pack override, explicit refspec, no follow-tags), writing
+#      to the exact validated push URL rather than re-resolving the mutable
+#      named remote at write time.
 #
 # Bootstrap note (for whatever materializes the closure, not for this script
 # itself): a merge base predating this file's own introduction holds only
@@ -39,6 +44,15 @@
 # extracting and running THAT copy, unchanged, for a change structurally
 # like this one. A merge base holding neither copy has nothing to extract
 # and the round-push gate cannot run at all.
+#
+# Known, documented limitation (declined, not silently ignored): resolving
+# policy during an ACTUAL legacy/v1 -> v2 `.devflow.toml` migration commit
+# needs devflow-policy.mjs's `--merge-base-policy` historical-decode path,
+# which this script does not thread through — out of scope under the
+# maintainer's 2026-09-02 ruling that migration fidelity is low priority
+# for this milestone (matching the #666 lane's identical disposition for
+# devflow-policy.mjs's own decoder-fidelity gap). This repo has not
+# migrated yet, so the gap cannot manifest today.
 
 set -euo pipefail
 
@@ -53,7 +67,7 @@ Usage:
     [--registry FILE] [--task-targets FILE] [--taskfile-dir DIR] [--json]
 
   round-push.sh push --remote NAME --branch NAME --host HOST --repo OWNER/REPO \
-    --sha SHA --expect absent|OID --gate-file FILE --gate-token TOKEN \
+    --sha SHA --expect absent|OID \
     --against REF --closure-base SHA \
     --policy FILE --devflow-policy-script FILE \
     --gitleaks-script FILE --gitleaks-config FILE \
@@ -116,10 +130,16 @@ refusal — there is no code path that resolves policy successfully without
 them.
 
 push additionally requires:
-  - GATE-FILE's last non-blank line to exactly equal GATE-TOKEN;
-  - GATE-TOKEN to be unique to this run and to name both SHA and the
-    RECOMPUTED required target for the diff between --against's merge
-    base and SHA — never the caller's own assertion of either;
+  - --policy, --devflow-policy-script, --gitleaks-script, --gitleaks-config,
+    and --registry (when given) to each match, byte for byte, the blob at
+    their canonical repository path in --closure-base (verified via
+    `git show`) before any of them is read for any other purpose;
+  - the required Taskfile target for the recomputed diff class (round_code
+    or round_docs) to exit 0 when this script runs it itself, from the
+    feature worktree — there is no caller-supplied marker to validate
+    instead; the script prints its own `ROUND-GREEN-<sha>-<target>`
+    line to stdout as evidence once this and the scan below both pass,
+    never as something it reads back;
   - the closure's secret scanner (--gitleaks-script, configured with
     --gitleaks-config) to exit clean against the current worktree;
   - the same ref-safety conditions as the older gauntlet push helper: SHA is
@@ -128,15 +148,6 @@ push additionally requires:
     HOST and OWNER/REPO and no custom receive-pack command; the remote
     branch still equals --expect and the update is fast-forward; an explicit
     SHA refspec, lease, and --no-follow-tags update only the named branch.
-
-Mint the gate token only after policy resolution names the required target
-(round-push.sh plan, or equivalent), then run exactly that Taskfile target,
-following the shepherd marker contract:
-  sha="$(git rev-parse HEAD)"
-  target="<round_code or round_docs, from plan's output>"
-  token="ROUND-GREEN-${sha}-${target}-$$"
-  out="$(mktemp)"
-  task "$target" >"$out" 2>&1 && printf '\n%s\n' "$token" >>"$out"
 
 Each accepted -c NAME=VALUE is passed to destination resolution, ls-remote,
 and push, so an unprovisioned host can supply the repository's documented
@@ -191,8 +202,6 @@ host=
 repo=
 sha=
 expect=
-gate_file=
-gate_token=
 against=
 closure_base=
 policy=
@@ -249,16 +258,6 @@ while [ "$#" -gt 0 ]; do
     --expect)
         [ "$#" -ge 2 ] || die_usage "--expect needs a value"
         expect=$2
-        shift 2
-        ;;
-    --gate-file)
-        [ "$#" -ge 2 ] || die_usage "--gate-file needs a value"
-        gate_file=$2
-        shift 2
-        ;;
-    --gate-token)
-        [ "$#" -ge 2 ] || die_usage "--gate-token needs a value"
-        gate_token=$2
         shift 2
         ;;
     --against)
@@ -434,23 +433,33 @@ require_closure_base_is_full_sha() {
 # Matches a single repo-root-relative PATH against one docs_only_paths glob
 # PATTERN. Plain case/fnmatch semantics already treat a trailing `/**` (or
 # any repeated `*`) as "any remainder including further slashes", so
-# `docs/**` needs no special handling. A LEADING `**/` is the one case that
-# needs help: as a literal case pattern it requires an actual `/` before the
-# rest, which would wrongly exclude a root-level file (`AGENTS.md` should
-# match `**/*.md`) — so a leading `**/` is also tried with zero directories.
+# `docs/**` needs no special handling. A `**/` segment ANYWHERE in the
+# pattern is the case that needs help: as a literal case pattern it
+# requires an actual `/` at that point, which is wrong for the
+# conventional "zero or more directories" meaning — both a LEADING `**/`
+# (`**/*.md` must match root-level `AGENTS.md`) and an EMBEDDED one
+# (`docs/**/*.md` must match the direct child `docs/readme.md`, not only
+# `docs/sub/readme.md` — Codex review, confirmed round-push.sh's earlier
+# leading-only special case missed this). Recursion tries the pattern with
+# each `**/` occurrence collapsed to empty, one at a time, so a pattern
+# with more than one still gets a chance at each; depth is bounded since a
+# real pattern has only a handful.
 docs_glob_match() {
-    local pattern=$1 path=$2 rest
+    _docs_glob_try "$1" "$2" 0
+}
+
+_docs_glob_try() {
+    local pattern=$1 path=$2 depth=$3 before after
+    [ "$depth" -le 8 ] || return 1
     # shellcheck disable=SC2254  # unquoted on purpose: glob match
     case "$path" in
     $pattern) return 0 ;;
     esac
     case "$pattern" in
-    '**/'*)
-        rest=${pattern#'**/'}
-        # shellcheck disable=SC2254  # unquoted on purpose: glob match
-        case "$path" in
-        $rest) return 0 ;;
-        esac
+    *'**/'*)
+        before=${pattern%%'**/'*}
+        after=${pattern#*'**/'}
+        _docs_glob_try "${before}${after}" "$path" $((depth + 1)) && return 0
         ;;
     esac
     return 1
@@ -515,6 +524,36 @@ required_target_for() {
     esac
 }
 
+# Verifies that CALLER_PATH's bytes are EXACTLY the blob at CANONICAL_PATH
+# in --closure-base, via `git show` — never trusting that a path merely
+# named on the command line actually came from that commit. Codex review,
+# confirmed: --closure-base only ever constrained the DIFF boundary
+# (matching the freshly computed merge base); nothing tied the CONTENT at
+# --policy/--devflow-policy-script/--gitleaks-script/--gitleaks-config/
+# --registry to that commit at all — a caller could pass --closure-base
+# <correct-value> while pointing every other flag at files from an
+# unrelated extraction (or a worktree-resident file) and this script would
+# use them anyway. `git show` reads the closure_base's own git object
+# directly, needing no materialized closure directory of its own.
+#
+# Residual, documented limitation: this verifies only the files this
+# script is directly handed a path for. scripts/lib/toml-lite.mjs (an
+# ES-module-relative import of devflow-policy.mjs), scripts/
+# summarize-gitleaks.mjs (a script-relative import of gitleaks-scan.sh),
+# and .gitleaksignore (read by gitleaks itself from beside
+# --gitleaks-config) are not independently checked — tampering with those
+# specifically is not closed by this script alone.
+verify_closure_member() {
+    local caller_path=$1 canonical_path=$2
+
+    [ -f "$caller_path" ] ||
+        refuse "${caller_path} does not exist (expected the closure's ${canonical_path})"
+    git_with_args show "${closure_base}:${canonical_path}" >"$closure_verify_tmp" 2>/dev/null ||
+        refuse "could not read ${canonical_path} from --closure-base (${closure_base})"
+    cmp -s "$closure_verify_tmp" "$caller_path" ||
+        refuse "${caller_path} does not match ${canonical_path} at --closure-base (${closure_base}) — the closure's provenance could not be verified"
+}
+
 # ---------------------------------------------------------------------------
 # Shared push-url / remote-head helpers, unchanged from the gauntlet helper.
 # ---------------------------------------------------------------------------
@@ -545,6 +584,15 @@ resolve_push_url() {
         path=${rest#*/}
         case "$authority" in
         *@*) refuse "the HTTPS push destination contains userinfo" ;;
+        esac
+        # Strip only the HTTPS default port: an explicit-default-port URL
+        # (https://github.com:443/owner/repo.git) is exactly as valid a
+        # spelling of the same destination as one without it, and should
+        # not be refused just because :443 was written out (Codex review,
+        # confirmed). A non-default port is a genuinely different
+        # destination and stays refused by the host comparison below.
+        case "$authority" in
+        *:443) authority=${authority%:443} ;;
         esac
         destination_host=$authority
         ;;
@@ -632,7 +680,7 @@ read_remote_head() {
 # ---------------------------------------------------------------------------
 
 if [ "$mode" = preflight ]; then
-    [ -z "$sha$expect$gate_file$gate_token$against$closure_base$policy" ] ||
+    [ -z "$sha$expect$against$closure_base$policy" ] ||
         die_usage "push/plan-only arguments are not valid in preflight mode"
     [ -n "$remote" ] || die_usage "--remote is required"
     [ -n "$branch" ] || die_usage "--branch is required"
@@ -732,8 +780,6 @@ case "$repo" in
 esac
 [ -n "$sha" ] || die_usage "push requires --sha"
 [ -n "$expect" ] || die_usage "push requires --expect"
-[ -n "$gate_file" ] || die_usage "push requires --gate-file"
-[ -n "$gate_token" ] || die_usage "push requires --gate-token"
 [ -n "$against" ] || die_usage "push requires --against"
 require_against_is_ref
 [ -n "$closure_base" ] || die_usage "push requires --closure-base"
@@ -766,12 +812,17 @@ absent) ;;
     ;;
 esac
 
-nl='
-'
-case "$gate_token" in
-'' | *"$nl"*) die_usage "--gate-token must be one non-empty line" ;;
-[[:space:]]* | *[[:space:]]) die_usage "--gate-token must not have surrounding whitespace" ;;
-esac
+# Every closure-resident input is verified against --closure-base's own
+# git object BEFORE any of it is read for real (Codex review, confirmed —
+# see verify_closure_member's own comment).
+closure_verify_tmp="$(mktemp)"
+trap 'rm -f "$closure_verify_tmp"' EXIT
+verify_closure_member "$policy" ".devflow.toml"
+verify_closure_member "$devflow_policy_script" "scripts/devflow-policy.mjs"
+verify_closure_member "$gitleaks_script" "scripts/gitleaks-scan.sh"
+verify_closure_member "$gitleaks_config" ".gitleaks.toml"
+[ -z "$registry" ] || verify_closure_member "$registry" "agent-registry.json"
+rm -f "$closure_verify_tmp"
 
 # Recompute the diff class and required target ourselves — never trust a
 # caller-supplied target (config spec "Gates are repository-owned Taskfile
@@ -786,42 +837,41 @@ jq -r '.gates.docs_only_paths[]' <<<"$resolved_json" >"$patterns_file"
 diff_class="$(classify_diff "$patterns_file" "$paths_file")"
 required_target="$(required_target_for "$diff_class")"
 
-# The marker binds this exact SHA and the RECOMPUTED required target — a
-# docs-class marker presented for a diff that recomputes to "code" (or any
-# target the policy did not name for this diff class) fails this prefix
-# match, refusing before the gate file's contents are even read.
-token_prefix="ROUND-GREEN-${sha}-${required_target}-"
-case "$gate_token" in
-"${token_prefix}"?*) ;;
-*) refuse "the gate token is not bound to this SHA and its required target (${required_target})" ;;
-esac
-[ -f "$gate_file" ] && [ -r "$gate_file" ] ||
-    refuse "the gate output is not a readable regular file"
-marker="$(awk '
-    {
-        sub(/^[[:space:]]+/, "")
-        sub(/[[:space:]]+$/, "")
-        if ($0 != "") last = $0
-    }
-    END { if (last != "") print last }
-' "$gate_file")" || refuse "the gate output could not be read"
-[ -n "$marker" ] || refuse "the gate output has no marker line"
-[ "$marker" = "$gate_token" ] || refuse "the gate marker does not equal this run's token"
+# The broker EXECUTES the required target itself, from the feature
+# worktree, rather than validating a marker a caller produced — config
+# spec "Gate authority separates policy from branch implementation": "the
+# merge-base broker selects [the round gate], and then executes it from
+# the feature worktree." Codex review, confirmed: a caller-supplied
+# --gate-file/--gate-token pair proves nothing was actually run — the
+# broker's own test helper demonstrated the bypass by fabricating both
+# directly. There is no cross-process handoff left to bridge with a
+# marker, so there is nothing for a caller to fabricate.
+gate_log="$(mktemp)"
+if ! task "$required_target" >"$gate_log" 2>&1; then
+    refuse "required target '${required_target}' failed (see ${gate_log} for its output): $(tail -c 2000 "$gate_log")"
+fi
+rm -f "$gate_log"
 
 # Secret scan runs unconditionally, every push, via the closure's own
-# extracted scanner and config — never the round gate's marker, and never
-# the worktree's .gitleaks.toml (or, per gitleaks-scan.sh's own --config
-# handling, a worktree-committed .gitleaksignore that doesn't match the
-# closure's copy: gitleaks reads that file from the scanned worktree root
-# regardless of what --gitleaks-ignore-path says, so the scanner refuses
-# outright on a mismatch rather than silently honoring a branch-controlled
-# suppression list). Config spec "Gate authority separates policy from
-# branch implementation": "the orchestrator SHALL materialize outside the
-# feature worktree and execute the merge-base implementations of both the
-# secret scan and the round-push broker."
+# extracted scanner and config — never the worktree's .gitleaks.toml (or,
+# per gitleaks-scan.sh's own --config handling, a worktree-committed
+# .gitleaksignore that doesn't match the closure's copy: gitleaks reads
+# that file from the scanned worktree root regardless of what
+# --gitleaks-ignore-path says, so the scanner refuses outright on a
+# mismatch rather than silently honoring a branch-controlled suppression
+# list). Config spec "Gate authority separates policy from branch
+# implementation": "the orchestrator SHALL materialize outside the feature
+# worktree and execute the merge-base implementations of both the secret
+# scan and the round-push broker."
 if ! "$gitleaks_script" --config "$gitleaks_config"; then
     refuse "the closure-extracted secret scan found findings, refused a mismatched .gitleaksignore, or failed to run"
 fi
+
+# The gate having run is now evidence this script itself produces, bound
+# to the gated head and the diff class it verified — never an input a
+# caller can supply. Purely informational: nothing downstream reads it
+# back.
+printf 'ROUND-GREEN-%s-%s\n' "$resolved" "$required_target"
 
 head_sha="$(git rev-parse HEAD)"
 [ "$head_sha" = "$resolved" ] ||
@@ -851,10 +901,22 @@ else
     lease="--force-with-lease=refs/heads/${branch}:"
 fi
 
+# Push to the validated $push_url captured just above, never a fresh
+# re-resolution of the mutable named remote (Codex review, confirmed: the
+# prior code passed $remote here, so a receive-pack, pushurl, or insteadOf
+# rewrite change landing between the resolve_push_url/read_remote_head
+# calls above and this write would silently redirect it — the checks
+# above would have validated a destination this write never actually
+# used). git_with_args still carries the caller's -c transport overrides.
+# refs/remotes/<remote>/<branch> is updated by hand afterward, since a
+# raw-URL push (unlike a named-remote push) does not update it itself and
+# AGENTS.md's own "Git transport" guidance is explicit that leaving it
+# stale is the wrong tradeoff.
 if ! git_with_args push --no-follow-tags \
-    "$remote" "${resolved}:refs/heads/${branch}" "$lease"; then
+    "$push_url" "${resolved}:refs/heads/${branch}" "$lease"; then
     exit 4
 fi
+git update-ref "refs/remotes/${remote}/${branch}" "$resolved" 2>/dev/null || true
 
 read_remote_head || uncertain "$remote_error"
 [ "$remote_head" = "$resolved" ] ||
