@@ -5,8 +5,7 @@ description: >-
   challenge and reviewer passes for review, validate evidence, adjudicate,
   render durable records, compute the exit, and dispatch fresh implementers
   for confirmed fixes. Never bypass provenance, the round-push broker, or exit.
-  Invoke as /review.
-disable-model-invocation: true
+  Use when the Dev Loop enters either confidence stage. Invoke as /review.
 ---
 
 # Review

@@ -4,8 +4,7 @@ description: >-
   Standing mode for policy-resolved, worktree-isolated Dev flow runs. It
   dispatches scoped roles, owns run records and adjudication, monitors durable
   events, and schedules a merge queue without making product or safety choices.
-  Invoke as /orchestrator.
-disable-model-invocation: true
+  Use when coordinating one or more Dev Loop lanes. Invoke as /orchestrator.
 ---
 
 # Orchestrator
