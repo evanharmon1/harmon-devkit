@@ -1,5 +1,5 @@
 {
-  "run_id": "run-converged-nonempty",
+  "run_id": "run-fingerprint-ancestry-excluded",
   "initiated_by": "human",
   "receipts": [
     {"kind": "transition", "stage": "review"},

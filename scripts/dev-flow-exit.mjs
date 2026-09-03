@@ -28,8 +28,22 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { parseToml, TomlError } from "./lib/toml-lite.mjs";
-import { resolvePolicy, crossValidate, PolicyError } from "./devflow-policy.mjs";
+// devflow-policy.mjs and lib/toml-lite.mjs are DELIBERATELY NOT imported
+// here at module top level, even though they are only ever used inside
+// main() below. A static top-level import is hoisted and evaluated before
+// ANY of this module's own code runs — including tryDelegateToClosure's
+// own --closure check — so if this file is invoked from a branch checkout
+// where either sibling has been modified, that branch-controlled top-level
+// code would already have run (arbitrary side effects, up to and including
+// process.exit() before any output is even produced) before delegation to
+// a trusted --closure copy ever got a chance to happen. Post-merge cloud
+// review, confirmed real: the existing reader-self-modification-boundary
+// fixture only proved a poisoned CONSTANT never leaks into the resolved
+// output once execution reaches that point cleanly — it never proved the
+// poisoned module's top-level code doesn't run at all. Every use of these
+// two modules is confined to main(), after tryDelegateToClosure's own
+// early return, and pulled in via dynamic import() there instead — see
+// main() below.
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_VALIDATOR = path.join(HERE, "validate-result-schemas.mjs");
@@ -71,6 +85,19 @@ class ExitIndeterminate extends Error {}
 
 function loadJson(file) {
   return JSON.parse(readFileSync(file, "utf8"));
+}
+
+// The stage named by the LAST transition receipt, or null if none exists
+// yet. dev-flow-exit.mjs only ever computes challenge or review's exit
+// (args.stage is validated to one of those two), so this is used solely to
+// refuse computing review's exit while challenge is still active — see
+// main()'s use below.
+function latestActiveStage(receipts) {
+  let active = null;
+  for (const r of receipts || []) {
+    if (r.kind === "transition") active = r.stage;
+  }
+  return active;
 }
 
 function loadRunDir(dir) {
@@ -356,8 +383,17 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
   // used, unioned across every round of this stage.
   let primarySlots = resolvedStage.finders;
   if (primarySlots.length === 0) {
+    // Post-merge cloud review, confirmed: this observed-slot fallback only
+    // ever looked at stagePasses, so a slot that was exhausted with ONLY a
+    // slot_failures record and never produced any pass at all (blocked or
+    // complete) was invisible to the derived slot set — a round missing
+    // that slot entirely then had nothing to check it against and read as
+    // trivially complete (continue/no_rounds_yet) instead of the terminal
+    // capped/finder_unavailable its own recorded failure demands. Union in
+    // slotFailures' own slot names alongside stagePasses'.
     const observed = new Set();
     for (const p of stagePasses) observed.add(p.payload.slot || p.payload.finder);
+    for (const sf of slotFailures) observed.add(sf.slot);
     primarySlots = [...observed];
   }
   const rounds = [];
@@ -657,7 +693,29 @@ function verifyProvenance(finding, ledger) {
     }
     return { status: "verified", value: "original" };
   }
-  return { status: "unverified", value: finding.provenance, reason: "asserted round:N but no tracked round's fix added this line" };
+  // No tracked round's fix added this line, so it predates every round —
+  // the SAME positive conclusion the "original" branch above reaches via
+  // introducedAtRound === null, just arriving here because the finding
+  // asserted round:N instead of original. Post-merge cloud review,
+  // confirmed: this previously stayed merely "unverified" rather than
+  // being corrected, even though the ledger rules out every round
+  // attribution — and provenance_share drops unverified findings from
+  // both its numerator and denominator, so a wrongly-unverified claim can
+  // silently produce a false diverging. Mirrors the "original" branch's
+  // own ambiguousTouch handling: an ambiguous region stays undecidable,
+  // otherwise the claim is corrected to what the ledger actually shows.
+  if (ambiguousTouch) {
+    return {
+      status: "unverified",
+      value: finding.provenance,
+      reason: "asserted round:N but no tracked round's fix added this line, and the anchor line's region was later modified; mechanical attribution is undecidable",
+    };
+  }
+  return {
+    status: "corrected",
+    value: "original",
+    reason: `asserted "${finding.provenance}" but no tracked round's fix added line ${finding.line} at ${finding.path} — it predates every tracked round`,
+  };
 }
 
 function verifyFingerprint(finding, allByStageId, ledger) {
@@ -867,11 +925,30 @@ function effectiveMinRounds(roundsPolicy, cap) {
   return Math.min(roundsPolicy.min_rounds, cap);
 }
 
-function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHead, ancestryOpts }) {
+// Computes ancestry for every round and filters to the RETAINED subset — a
+// round whose reviewedHead is a true ancestor-or-equal of currentHead, or
+// an incomplete round with no reviewedHead at all (slot_failures may omit
+// `head`; its terminal nature is inherent to the exhausted slot, never
+// contingent on comparing a head that does not exist — see computeVerdict's
+// own use of this below). Shared with applyVerification/verifyFingerprint
+// (post-merge cloud review, confirmed): they previously built their
+// repeat-of lookup map from the FULL unfiltered rounds list, so a
+// current-head finding could verify `repeat-of:<id>` against a finding
+// from an ancestry-incomparable/excluded round that computeVerdict itself
+// would never retain — both call sites now agree on exactly one retained
+// set instead of computing it independently and risking drift.
+function ancestryRetainedRounds(rounds, currentHead, ancestryOpts) {
   const withAncestry = rounds.map((r) => ({
     ...r,
     ancestry: r.reviewedHead ? isAncestorOrEqual(r.reviewedHead, currentHead, ancestryOpts) : "unknown",
   }));
+  const retained = withAncestry.filter((r) => r.ancestry === true || (r.status !== "complete" && r.reviewedHead === null));
+  retained.sort((a, b) => a.round - b.round);
+  return { withAncestry, retained };
+}
+
+function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHead, ancestryOpts }) {
+  const { withAncestry, retained } = ancestryRetainedRounds(rounds, currentHead, ancestryOpts);
 
   // An incomplete round (capped/finder_unavailable or
   // capped/breadth_exhausted) with NO recorded reviewedHead at all — a
@@ -887,8 +964,8 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
   // specifically (not "any unknown ancestry") — a round that DOES carry a
   // head but whose ancestry could not be verified (no --heads/--repo-root
   // supplied at all) stays correctly excluded, unchanged from before.
-  const retained = withAncestry.filter((r) => r.ancestry === true || (r.status !== "complete" && r.reviewedHead === null));
-  retained.sort((a, b) => a.round - b.round);
+  // (retained/withAncestry now come from the shared ancestryRetainedRounds
+  // helper above, which already applies exactly this rule.)
 
   const maxRoundNumber = withAncestry.reduce((m, r) => Math.max(m, r.round), 0);
   const capReached = maxRoundNumber >= cap;
@@ -901,7 +978,24 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
   // counted"). `retained` (and `latest` from it) still needs to include an
   // incomplete round so the incomplete-current-head-round check above can
   // find it; only the REPORTED metric excludes it.
-  const base = { stage, rounds_counted: retained.filter((r) => r.status === "complete").length, next_round: null };
+  //
+  // "Every substitution SHALL be recorded and disclosed" is unconditional
+  // (exit-computation spec "Logical rounds require every configured
+  // finder") — the "fallback substitutes for a blocked primary" scenario
+  // explicitly covers a round that COMPLETES via a substitution, not only
+  // a terminal/incomplete one. Post-merge cloud review, confirmed: only
+  // the capped/finder_unavailable|breadth_exhausted branch below ever
+  // carried `substitutions` on the returned verdict; every ordinary
+  // continue/converged/capped-clean verdict dropped it entirely, even
+  // though `fallback-substitutes-for-primary`'s own fixture exercises
+  // exactly this case. Aggregated onto `base` once so every verdict below
+  // inherits it via `...base`.
+  const base = {
+    stage,
+    rounds_counted: retained.filter((r) => r.status === "complete").length,
+    next_round: null,
+    substitutions: retained.flatMap((r) => r.substitutions || []),
+  };
 
   // ANY incomplete round (finder_unavailable / breadth_exhausted) among the
   // retained trajectory is always terminal — "no later round is legal" once
@@ -974,11 +1068,36 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
     // can find it) — challenge round 3, confirmed: using the raw retained
     // count let one real complete round plus one stale incomplete attempt
     // satisfy min_rounds = 2.
-    if (base.rounds_counted >= minRounds && gatingFindings(latest).length === 0) {
+    if (gatingFindings(latest).length === 0) {
       const convergedEval = evalExpr(convergence.converged, ctx);
       if (convergedEval.overall) {
         const isEmptyRound = latest.findings.length === 0;
-        return { ...base, outcome: "converged", reason: isEmptyRound ? "empty_round" : "predicates_satisfied", action: "advance" };
+        if (isEmptyRound) {
+          // The empty-round shortcut: a round with NO findings at all ends
+          // the stage by itself, but only once min_rounds has been met —
+          // min_rounds constrains this exit alone (AGENTS.md "min_rounds
+          // constrains the empty-round exit alone and needs no separate
+          // check on the other two").
+          if (base.rounds_counted >= minRounds) {
+            return { ...base, outcome: "converged", reason: "empty_round", action: "advance" };
+          }
+        } else {
+          // A NONEMPTY clean round (findings exist but none are gating)
+          // needs a SECOND CONSECUTIVE clean round to converge — AGENTS.md
+          // "ends when two consecutive rounds adjudicate to zero P0 and
+          // zero P1 findings", and explicitly NOT via min_rounds ("min_rounds
+          // only governs the empty-round shortcut"). Post-merge cloud
+          // review, confirmed: this branch previously let ANY round satisfy
+          // convergence the moment rounds_counted >= minRounds, so with the
+          // common min_rounds = 1, a single nonempty all-P2 round converged
+          // immediately — never checking whether an earlier round was also
+          // clean.
+          const previous = currentIndex > 0 ? retained[currentIndex - 1] : null;
+          const previousClean = previous && previous.status === "complete" && gatingFindings(previous).length === 0;
+          if (previousClean) {
+            return { ...base, outcome: "converged", reason: "predicates_satisfied", action: "advance" };
+          }
+        }
       }
     }
   }
@@ -1042,10 +1161,16 @@ function tryDelegateToClosure(argv) {
   return result.status === null ? 1 : result.status;
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2);
   const delegated = tryDelegateToClosure(argv);
   if (delegated !== null) return delegated;
+
+  // Deferred until here — see the comment where these used to be static
+  // top-level imports, above. Resolves relative to THIS file, same as a
+  // static import would; the only difference that matters is WHEN it runs.
+  const { parseToml, TomlError } = await import("./lib/toml-lite.mjs");
+  const { resolvePolicy, crossValidate, PolicyError } = await import("./devflow-policy.mjs");
 
   const args = parseArgs(argv);
   if (!args.run || !args.stage || !args.policy) {
@@ -1100,6 +1225,27 @@ function main() {
     }
     console.error(`dev-flow-exit: could not read --run: ${err.message}`);
     return 1;
+  }
+
+  // Stage-skipping (computing review's exit while challenge is the trusted
+  // receipt sequence's EXPLICITLY active stage) is only legal when
+  // challenge is fully disabled — post-merge cloud review, confirmed:
+  // nothing previously compared the requested --stage against the receipt
+  // sequence's own active stage at all, so `--stage review` computed a
+  // valid continue/no_rounds_yet verdict (authorizing review's first
+  // dispatch) even while a transition into "challenge" was the latest one
+  // recorded and its cap was nonzero. Scoped specifically to
+  // activeStage === "challenge" (not "no transition recorded at all"): the
+  // no-transition case already has its own considered, fixture-proven
+  // behavior below (a pass that arrived before any transition is rejected
+  // as invalid on its own terms, naturally yielding continue/no_rounds_yet
+  // with zero valid rounds) — this check must not relitigate that.
+  const activeStage = latestActiveStage(runDir.runRecord.receipts);
+  if (args.stage === "review" && activeStage === "challenge" && resolved.rounds.challenge !== 0) {
+    return indeterminate(
+      args,
+      `--stage review was requested but the trusted receipt sequence's active stage is still "challenge" (cap ${resolved.rounds.challenge}, not disabled) — review cannot be active until challenge exits`,
+    );
   }
 
   const validatorPath = args.validator || DEFAULT_VALIDATOR;
@@ -1198,21 +1344,32 @@ function main() {
     return indeterminate(args, "a completed round has no adjudication document, or a finding in it has no matching adjudication entry");
   }
 
-  const ledger = loadLedger({ historyFile: args.history, repoRoot: args["repo-root"] });
-  const corrections = applyVerification(rounds, ledger);
-
   // --current-head must be an INDEPENDENTLY captured value (the caller's own
   // `git rev-parse HEAD`), never derived from the evidence being certified —
   // falling back to "whichever round is latest" would make that round
   // trivially "the current head round" by construction, defeating head
   // ancestry verification entirely (a stale round could certify convergence
-  // simply by being the last one recorded).
+  // simply by being the last one recorded). Moved ahead of
+  // applyVerification (post-merge cloud review fix, see
+  // ancestryRetainedRounds above): fingerprint verification needs the same
+  // ancestry-retained set computeVerdict uses, so currentHead/ancestryOpts
+  // must exist before it runs, not after.
   const currentHead = args["current-head"];
   if (!currentHead) {
     return indeterminate(args, "--current-head is required (an independently captured value, never derived from a round's own reviewed_head)");
   }
 
   const ancestryOpts = { headsMap: loadHeadsMap(args.heads), repoRoot: args["repo-root"] };
+
+  const ledger = loadLedger({ historyFile: args.history, repoRoot: args["repo-root"] });
+  // Fingerprint verification (verifyFingerprint's repeat-of check) must
+  // never resolve a target finding from a round computeVerdict would
+  // exclude — an ancestry-incomparable or otherwise non-retained round is
+  // not part of the trajectory being certified, so a claim referencing one
+  // has no legitimate target to verify against, retained or not.
+  const { retained: ancestryRetainedForVerification } = ancestryRetainedRounds(rounds, currentHead, ancestryOpts);
+  const corrections = applyVerification(ancestryRetainedForVerification, ledger);
+
   const cap = resolved.rounds[args.stage];
   const minRounds = effectiveMinRounds(resolved.rounds, cap);
 
@@ -1295,7 +1452,9 @@ function main() {
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
-  process.exitCode = main();
+  main().then((code) => {
+    process.exitCode = code;
+  });
 }
 
 export {

@@ -270,8 +270,20 @@ function resolveRigorLevel(doc, requestedRigor) {
   if (order.length !== CANONICAL_RIGOR_ORDER.length || order.some((v, i) => v !== CANONICAL_RIGOR_ORDER[i])) {
     throw new PolicyError(`policy's rigor_order must be exactly [${CANONICAL_RIGOR_ORDER.join(", ")}] (weakest to strongest), got [${order.join(", ")}]`);
   }
+  // default_rigor is a REQUIRED top-level v2 field (specs/dev-flow-v2.md
+  // "Top level: schema_version = 2, default_rigor, default_strategy, and
+  // two rankings"), not merely a fallback consulted only when no override
+  // is given — post-merge cloud review, confirmed: `requestedRigor ||
+  // doc.default_rigor` short-circuited on ANY override, so a policy with a
+  // missing or invalid default_rigor resolved successfully under
+  // `--rigor standard` and then failed as soon as a later run had no
+  // override. Validated independently of whether this call happens to
+  // carry an override.
+  if (!doc.default_rigor) throw new PolicyError("policy has no default_rigor");
+  if (!order.includes(doc.default_rigor)) {
+    throw new PolicyError(`policy's default_rigor "${doc.default_rigor}" is not in rigor_order (${order.join(", ")})`);
+  }
   const level = requestedRigor || doc.default_rigor;
-  if (!level) throw new PolicyError("no rigor level given and policy has no default_rigor");
   if (!order.includes(level)) {
     throw new PolicyError(`rigor level "${level}" is not in rigor_order (${order.join(", ")})`);
   }
@@ -677,9 +689,27 @@ function resolveStages(doc) {
     if (dup !== undefined) {
       throw new PolicyError(`[stage.${stage}].finders contains duplicate primary slot "${dup}" — each finder may fill at most one primary slot`);
     }
+    const finderFallbacks = resolveStageArray(table?.finder_fallbacks, `[stage.${stage}].finder_fallbacks`, []);
+    // A single-primary stage's own primary finder listed in its OWN
+    // finder_fallbacks is unconditionally dead configuration — post-merge
+    // cloud review, confirmed: dev-flow-exit.mjs's assembleLogicalRounds
+    // already refuses this at runtime (`finder !== slot`, a substitute
+    // must differ from the slot it fills), so with exactly one primary
+    // slot the finder can never validly serve as its own fallback,
+    // advertising a recovery chain entry that will always be discarded and
+    // a breadth budget that pays for an attempt that can only fail. Scoped
+    // to the single-primary case specifically (matching the reproduction):
+    // with multiple primaries, the same finder in finder_fallbacks is only
+    // dead for ITS OWN slot, not necessarily for a different one, which
+    // this finding neither reproduced nor asked to reject.
+    if (finders.length === 1 && finderFallbacks.includes(finders[0])) {
+      throw new PolicyError(
+        `[stage.${stage}].finder_fallbacks includes "${finders[0]}", which is also this stage's only primary finder — a finder can never validly substitute for its own slot`,
+      );
+    }
     result[stage] = {
       finders,
-      finder_fallbacks: resolveStageArray(table?.finder_fallbacks, `[stage.${stage}].finder_fallbacks`, []),
+      finder_fallbacks: finderFallbacks,
       pool: resolveStageArray(table?.pool, `[stage.${stage}].pool`, null),
     };
   }
@@ -873,26 +903,48 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
       // (e.g. an implementer-only harness assigned to `reviewer`), or a
       // tier no model in any of the role's families can ever provide —
       // every one of those resolves with no cross-validation error today.
+      const knownHarnesses = [];
       for (const h of r.harnesses) {
         const harness = harnessBySlug.get(h);
         if (!harness) {
           errors.push(`[role.${role}].harnesses references unknown harness "${h}"`);
           continue;
         }
+        knownHarnesses.push({ slug: h, harness });
         if (Array.isArray(harness.roles) && !harness.roles.includes(role)) {
           errors.push(`[role.${role}].harnesses includes "${h}", whose registry entry permits only role(s) ${harness.roles.join(", ")}`);
         }
-        // "broker" family_constraint means the harness resolves its family
-        // at runtime (no fixed family to check against); only "fixed"
-        // constrains which of the role's own families can satisfy it.
-        if (harness.family_constraint?.kind === "fixed") {
-          const fixedFamily = harness.family_constraint.family;
-          if (!r.families.includes(fixedFamily)) {
-            errors.push(
-              `[role.${role}].harnesses includes "${h}", whose family_constraint fixes family "${fixedFamily}", ` +
-                `not among [role.${role}].families (${r.families.join(", ") || "none"})`,
-            );
-          }
+      }
+      // Family compatibility is an ORDERED PREFERENCE, not a per-entry
+      // requirement (openspec/changes/dev-flow-v2/specs/registry/spec.md
+      // "Harnesses advertise executable role support": "select a family
+      // first and then the first compatible, available harness within
+      // that family; an incompatible harness SHALL be skipped without
+      // changing families") — post-merge cloud review, confirmed: the
+      // prior per-harness loop hard-errored on the FIRST harness whose
+      // fixed family_constraint excluded the role's families, even when a
+      // LATER harness in the same list was compatible (e.g. families =
+      // ["gpt"], harnesses = ["claude-code", "codex-cli"] refused outright
+      // instead of falling through to codex-cli). "broker" family_constraint
+      // means the harness resolves its family at runtime (no fixed family
+      // to check against, so always counts as compatible here); only
+      // "fixed" constrains which of the role's own families can satisfy
+      // it. Only error when NONE of the role's known harnesses can serve
+      // the resolved family — unknown-harness-reference and
+      // role-permission stay per-entry absolute errors above, since
+      // neither is the family-preference-skip this spec text covers.
+      if (knownHarnesses.length > 0) {
+        const anyFamilyCompatible = knownHarnesses.some(
+          ({ harness }) => harness.family_constraint?.kind !== "fixed" || r.families.includes(harness.family_constraint.family),
+        );
+        if (!anyFamilyCompatible) {
+          const fixedFamilies = knownHarnesses
+            .filter(({ harness }) => harness.family_constraint?.kind === "fixed")
+            .map(({ harness }) => harness.family_constraint.family);
+          errors.push(
+            `[role.${role}].harnesses (${knownHarnesses.map(({ slug }) => slug).join(", ")}) has no entry compatible with ` +
+              `[role.${role}].families (${r.families.join(", ") || "none"}) — checked fixed families: ${fixedFamilies.join(", ") || "none"}`,
+          );
         }
       }
       // A family's own `models[].tier` list is additive, like `finder.stages`

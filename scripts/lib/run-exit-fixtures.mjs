@@ -71,6 +71,7 @@ const VERDICT_EXPECTATION_KEYS = new Set([
   "verified_provenance_for",
   "no_repeat_relationship",
   "unresolved_slot",
+  "substitutions_json",
   "next_round",
   // Route flag only (see runExitFixture's `expected.indeterminate` branch,
   // which checks exit code 2 and delegates the JSON body itself to this
@@ -97,6 +98,10 @@ function checkVerdict(expected, actual) {
   }
   if (expected.unresolved_slot !== undefined && actual.unresolved_slot !== expected.unresolved_slot) {
     return `unresolved_slot: expected "${expected.unresolved_slot}", got ${JSON.stringify(actual.unresolved_slot)}`;
+  }
+  if (expected.substitutions_json !== undefined) {
+    const got = JSON.stringify(actual.substitutions || []);
+    if (got !== expected.substitutions_json) return `substitutions: expected ${expected.substitutions_json}, got ${got}`;
   }
   if ("next_round" in expected && actual.next_round !== expected.next_round) {
     return `next_round: expected ${JSON.stringify(expected.next_round)}, got ${JSON.stringify(actual.next_round)}`;
@@ -230,14 +235,50 @@ function runExitFixture(name, dir) {
     "--policy", path.join(dir, "policy.toml"),
     "--json",
   ];
+  // poisoned_sibling: proves dev-flow-exit.mjs's OWN entry point never
+  // executes branch-controlled top-level code from its sibling
+  // devflow-policy.mjs before --closure delegates (see
+  // reader-entry-poisoned-sibling-never-executes/README.md) — distinct
+  // from entry_script (runPolicyFixture, below), which poisons
+  // devflow-policy.mjs and runs it AS the entry to test ITS OWN closure
+  // check. Here the REAL dev-flow-exit.mjs is the entry; only its sibling
+  // is swapped for a poisoned one, in a scratch dir built fresh each run
+  // from whatever this repo currently ships (never a copy committed here).
+  let scriptPath = EXIT_SCRIPT;
+  let scratchDir = null;
+  let closureDir = null;
+  if (invoke.poisoned_sibling) {
+    scratchDir = mkdtempSync(path.join(os.tmpdir(), "devflow-poisoned-sibling-"));
+    mkdirSync(path.join(scratchDir, "scripts", "lib"), { recursive: true });
+    copyFileSync(EXIT_SCRIPT, path.join(scratchDir, "scripts", "dev-flow-exit.mjs"));
+    copyFileSync(path.join(dir, invoke.poisoned_sibling), path.join(scratchDir, "scripts", "devflow-policy.mjs"));
+    copyFileSync(path.join(SCRIPTS_DIR, "lib", "toml-lite.mjs"), path.join(scratchDir, "scripts", "lib", "toml-lite.mjs"));
+    scriptPath = path.join(scratchDir, "scripts", "dev-flow-exit.mjs");
+    closureDir = buildTrustedClosure();
+    args.push("--closure", closureDir);
+    // buildTrustedClosure() only copies the three files the self-modification
+    // boundary itself is about (dev-flow-exit.mjs, devflow-policy.mjs,
+    // toml-lite.mjs); validate-result-schemas.mjs and its own dependencies
+    // are a separate concern this finding never claimed, so point straight
+    // at this repo's real copy rather than teaching the closure builder
+    // about a script unrelated to what it exists to protect.
+    args.push("--validator", path.join(SCRIPTS_DIR, "validate-result-schemas.mjs"));
+  }
   for (const [key, value] of Object.entries(invoke)) {
-    if (key === "stage") continue;
+    if (key === "stage" || key === "poisoned_sibling") continue;
     args.push(`--${key}`);
     const asPath = path.join(dir, String(value));
     args.push(existsSync(asPath) ? asPath : String(value));
   }
 
-  const { status, stdout, stderr } = run(EXIT_SCRIPT, args);
+  let result;
+  try {
+    result = run(scriptPath, args);
+  } finally {
+    if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
+    if (closureDir) rmSync(closureDir, { recursive: true, force: true });
+  }
+  const { status, stdout, stderr } = result;
 
   if (expected.indeterminate) {
     if (status !== 2) return report(name, false, `expected exit 2 (indeterminate), got ${status}. stderr: ${stderr.trim()}`);
