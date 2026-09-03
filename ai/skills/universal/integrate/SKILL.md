@@ -181,19 +181,23 @@ inside a schema-valid result is how the gate learns the condition is waived;
 there is no separate disabled flag to reach for or avoid.
 
 CI still has to be green, and any human review finding already on the PR
-still has to be answered, for the gate to pass — those are checks against
-state that already exists, not rounds this budget has to spend. If a human
-finding is outstanding — unanswered already, or one that arrives while this
-stage evaluates — and the gate is not otherwise clean, that is stop
-condition 2 (**cap reached**) on the spot: leave the PR draft with a
-blocker report naming it, **never an agent fix round** — there is no round
-to spend on it. A pass otherwise promotes normally.
+still has to be answered, for the gate to pass — but answering one is **the
+remediation cap's own business, not this one's**: the two caps are
+independent (a resolved integration cap of 0 waives only the Codex-verdict
+condition), so a human finding needing a reply, a decline, or a genuine code
+fix is worked exactly like any other finding this stage settles, spending a
+remediation round per the round-accounting rule below. Only when
+**remediation's own cap** is reached with that finding still unresolved is
+this stop condition 2 — never as a direct consequence of integration being
+0. A pass otherwise promotes normally.
 
-**A resolved remediation cap of 0 escalates the first finding that needs a
-code fix.** A reply-only or decline-only round still costs nothing — the cap
-bounds fix *pushes*, not adjudication — but the moment any finding's
-disposition would be `fix`, that is stop condition 2 with zero rounds spent:
-there was never a push available to make it.
+**A resolved remediation cap of 0 means no fix push is ever available.** The
+cap bounds fix *pushes* specifically, not adjudication — a finding resolved
+by reply, decline, or filing still spends a round exactly per the
+round-accounting rule below, cap of 0 included. What a 0 cap forbids is the
+*other* half of that rule: the moment any finding's disposition would be
+`fix`, that is stop condition 2 on the spot, whatever round count has been
+reached by then — there was never a push available to make it.
 
 **This stage settles the low-priority findings.** Where the earlier dev-flow
 loops gate only on high-priority findings (in repos that run a

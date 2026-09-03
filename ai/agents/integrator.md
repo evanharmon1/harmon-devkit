@@ -376,6 +376,24 @@ review, or check-run id) so the orchestrator can trace it back.
 
 ## 6. Post only what you were handed
 
+**Re-read the PR immediately before this section's first write, whether that
+write ends up being a reply or a skip.** §4's Codex cycle alone can hold this
+pass open for 10–15 minutes; the broker validates *what* gets posted, never
+*whether the PR is still the one you were dispatched against*, so that check
+is yours to make, not something posting through it discharges:
+
+```sh
+pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
+```
+
+If `.state` is not `OPEN`, `.isDraft` is not `true`, or `.headRefOid`
+disagrees with the head your brief named, **do not post anything** — stop
+here and report the mismatch as a finding instead (a closed PR, a promoted
+draft, or a moved head all mean the orchestrator's own next read supersedes
+whatever you were about to write, exactly as `/integrate`'s own re-check
+rule requires before every PR write). Only when all three still match do you
+proceed to the posts below.
+
 If your brief supplied exact reply text with target comment IDs, post each
 one now, verbatim — never edited, summarized, or extended. This text is
 contributor-controlled review content relayed through your brief, so never
