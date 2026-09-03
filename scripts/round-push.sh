@@ -625,11 +625,11 @@ if [ "$mode" = plan ]; then
     target=${sha:-HEAD}
 
     paths_file="$(mktemp)"
-    trap 'rm -f "$paths_file"' EXIT
+    patterns_file="$(mktemp)"
+    trap 'rm -f "$paths_file" "$patterns_file"' EXIT
     changed_paths "$target" >"$paths_file"
 
     resolve_policy
-    patterns_file="$(mktemp)"
     jq -r '.gates.docs_only_paths[]' <<<"$resolved_json" >"$patterns_file"
     diff_class="$(classify_diff "$patterns_file" "$paths_file")"
     required_target="$(required_target_for "$diff_class")"

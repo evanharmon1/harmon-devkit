@@ -88,8 +88,14 @@ cp "$gitleaks_config_src" "${closure}/.gitleaks.toml"
 cat >"${closure}/.devflow.toml" <<'EOF'
 schema_version = 2
 default_rigor = "standard"
+default_strategy = "solo"
 rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
 tier_order = ["local", "economy", "standard", "frontier", "apex"]
+
+[strategy.solo]
+topology = "single-agent"
+planning = "inline"
+delegation = "none"
 
 [rigor.standard]
 rounds = "test"
