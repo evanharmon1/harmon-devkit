@@ -1,0 +1,38 @@
+{
+  "schema": 2,
+  "role": "challenger",
+  "status": "completed",
+  "head": "0101010101010101010101010101010101010101",
+  "produced_at": "2026-09-02T15:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "model-x",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-challenger-schema-accepted",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "challenge",
+    "round": 1,
+    "reviewed_head": "0101010101010101010101010101010101010101",
+    "finder": "codex-cli",
+    "slot": "codex-cli",
+    "findings": [],
+    "counts": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 0,
+      "P3": 0
+    },
+    "attack_scenarios": [
+      {
+        "id": "as-1",
+        "description": "attempted to find an authorization bypass around the new validation path; the design held",
+        "outcome": "held",
+        "finding_id": null
+      }
+    ]
+  }
+}

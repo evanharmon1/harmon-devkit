@@ -1,0 +1,22 @@
+{
+  "run_id": "run-headless-finder-unavailable",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    }
+  ],
+  "slot_failures": [
+    {
+      "stage": "review",
+      "round": 2,
+      "slot": "codex-cli",
+      "reason": "finder_unavailable"
+    }
+  ]
+}

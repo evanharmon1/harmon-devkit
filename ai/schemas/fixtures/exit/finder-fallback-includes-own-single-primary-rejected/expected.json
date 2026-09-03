@@ -1,0 +1,4 @@
+{
+  "resolve_fails": true,
+  "message_contains": "can never validly substitute for its own slot"
+}

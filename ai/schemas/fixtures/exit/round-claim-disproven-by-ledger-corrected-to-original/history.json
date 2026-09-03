@@ -1,0 +1,9 @@
+[
+  {
+    "round": 1,
+    "path": "scripts/b.mjs",
+    "added_lines": [20],
+    "deleted_lines": [],
+    "renamed_from": null
+  }
+]

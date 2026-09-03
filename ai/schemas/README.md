@@ -1178,6 +1178,735 @@ case above, and a coverage check that every `required` field and every
 `enum` declared anywhere in each schema has at least one invalid fixture
 exercising it.
 
+## Dev flow v2 policy resolution and exit computation
+
+Two more scripts consume this schema family — `scripts/devflow-policy.mjs`
+(the shared v2 `.devflow.toml` reader, [#636](https://github.com/evanharmon1/harmon-devkit/issues/636),
+design.md decision 13) and `scripts/dev-flow-exit.mjs` (deterministic
+confidence-stage exit computation, implementing
+`openspec/changes/dev-flow-v2/specs/exit-computation/spec.md` and
+`specs/dev-flow-v2.md` § "Convergence model v0") — with their own conformance
+corpus under `ai/schemas/fixtures/exit/<case>/`, run by
+`scripts/test-dev-flow-exit.sh` (`task test:dev-flow-exit`, wired into
+`task verify`). Both are usable as a CLI or imported as a library (notably,
+`dev-flow-exit.mjs` imports `resolvePolicy`/`crossValidate`/`PolicyError`
+from `devflow-policy.mjs` directly rather than shelling out to it), and both
+have thin Taskfile passthroughs — `task devflow:policy -- resolve|detect
+...` and `task devflow:exit -- ...` — for a human or another tool that
+would rather not spell out `node scripts/devflow-policy.mjs` /
+`scripts/dev-flow-exit.sh` directly. Two caveats for a caller parsing
+`--json` output through either Task target rather than the bare
+script/`.sh` wrapper: `Taskfile.yml`'s repo-wide `output: group` setting
+wraps EVERY task's stdout in `::group::<task>/::endgroup::` marker lines
+(strip them before parsing), and `task` does not reliably propagate a
+command's own exit code (`dev-flow-exit.mjs`'s verdict-carrying `20`/`21`/
+`22` were observed to arrive at the shell as a different `task`-assigned
+code) — read the verdict from the JSON body, not from `task`'s own exit
+status, or call the bare script when the precise exit code matters.
+
+**Shape detection and refusal.** `devflow-policy.mjs` detects `.devflow.toml`'s
+shape from controlling markers only (`schema_version = 2` for v2; `rigor_order`
+together with `[review.*]` and a `[rigor.<level>].review` pointer for v1;
+direct `[rigor.<level>]` caps together with `default_method` and `[method]`
+for legacy — never `[tier.*]`, which can occur in either older shape) and
+refuses to operate
+under anything but v2, naming the markers found. This repository's own live
+`.devflow.toml` is still legacy-shaped (pending the harmon-init v2 template
+migration, harmon-init#1081) — `scripts/test-dev-flow-exit.sh` asserts that
+`devflow-policy.mjs resolve --policy .devflow.toml` is refused, and every
+other fixture in this corpus resolves a policy under
+`ai/schemas/fixtures/exit/`, never the live file, so this test suite passes
+identically before and after that migration lands. A "mixed marker set"
+means what it says even when `schema_version = 2` is present — review round
+3 (confirmed): `hasV2` used to short-circuit straight to `"v2"` without
+checking for coexisting v1/legacy markers, so a partially migrated file
+(the new `schema_version = 2` key added without ever cleaning up the old
+direct-cap/`default_method`/`[method]` keys) was silently accepted as pure
+v2 instead of refused as `"mixed"`.
+
+**`rigor_order` is the fixed six-level ladder, not an arbitrary nonempty
+list.** `devflow-policy.mjs` requires it to equal `["cursory", "light",
+"standard", "thorough", "deep", "forensic"]` exactly, weakest to strongest
+— review round 3 (confirmed): only "nonempty and contains the requested/
+default level" was checked before, so a policy with e.g. `rigor_order =
+["standard"]` alone resolved successfully, losing the contractually fixed
+ordering every downstream strongest-wins resolution (tier, strategy,
+method) depends on. `forensic`, the strongest level, additionally requires
+`min_rounds >= 2` in whichever `[rounds.*]` table its profile points to —
+its own floor against the empty-round shortcut ending a confidence stage
+on a single clean round, the one level the ladder is specifically meant to
+hold to a higher bar.
+
+**A `[stage.*]` array field present with the wrong type is a `PolicyError`,
+never silently widened to the absent-key default.** `finders`/
+`finder_fallbacks`/`pool` all reject a present-but-non-array value now —
+review round 3 (confirmed): `Array.isArray(x) ? x : fallback` treated "the
+wrong type" the same as "absent," so `[stage.implement].pool = "local"` (a
+plausible typo for a single-entry allowlist) silently became `null` — no
+restriction, every implementer-capable harness eligible — turning a
+mistaken *narrow* allowlist into the *widest possible* one instead of
+failing closed.
+
+**A strategy's own requirements are cross-checked against breadth, not just
+resolved and left unchecked.** `[strategy.orchestrate]` and
+`[strategy.council]` declare `min_agents`; `crossValidate()` enforces the
+anchor rule pinning what breadth must provide for each: council needs
+`max_parallel_agents >= min_agents` **and** `max_agent_runs >= min_agents +
+1` (the extra run is the judge/synthesis pass `[strategy.council]`'s own
+`selection`/`synthesis` fields declare, beyond the `min_agents` independent
+proposals); orchestrate needs both `>= min_agents` (its lead is drawn from
+the same pool, not an extra run). Any other pairing is a cross-validation
+error, e.g. a `cursory`-rigor breadth of `1/1` cannot satisfy
+`[strategy.council]`'s `min_agents = 2`
+(`strategy-breadth-incompatible-council-cursory-refused/`). Registry-
+independent (only `resolved.strategy`/`resolved.breadth`), so — like the
+stage/breadth checks above — it runs unconditionally; strategies with no
+`min_agents` (`solo`, `plan`, `plan-approved`, `human-led`) are unaffected.
+
+**The merge-base historical decoder is reachable only from the merge-base
+path.** When the change under review touches `.devflow.toml` or
+`agent-registry.json`, AGENTS.md's merge-base rule applies: resolution must
+use the merge-base copy, not the branch copy. Ordinarily that merge-base copy
+is v2 too and resolves normally (`resolve --policy <branch v2 file>
+--merge-base-policy <merge-base file>`). The one exception is a *migration*
+diff, where the merge-base copy predates the branch's move to v2 — `.devflow.toml`
+had no v1 keyword before v2 was introduced, so "merge-base" and "v1" mean the same predecessor shape.
+For that case, and that case only, `devflow-policy.mjs` decodes the merge-base
+copy under its OWN declared shape (legacy `[rigor.<level>]` direct caps —
+`shepherd` maps to **both** the v2 `rounds.integration` cycle limit and
+`rounds.remediation` (legacy has one undifferentiated cap where v2 splits
+Codex re-review cycles from remediation fix-push accounting; decoding the same
+number into both is the closest legacy equivalent, not an independent
+built-in) — and the decoded `rounds` also carries `shared_budget: true`,
+present **only** on this decode path, never on a normal v2 resolution: it
+tells a downstream consumer (the integrator, #639's readiness gate) that
+`integration` and `remediation` are not two independent N-sized budgets here
+— together, cycles plus fix pushes must never exceed the single legacy
+`shepherd` total N, exactly as AGENTS.md's legacy shepherd cap always meant.
+**The unit charged against that shared total is one legacy round** — one fix
+push, or one no-change cycle where nothing needed fixing (AGENTS.md's legacy
+shepherd definition, unchanged by this decode) — and a Codex cycle that
+surfaces a finding together with the fix push that answers it is **one**
+round, charged once, never two separate charges for one cycle-then-fix
+sequence. `min_rounds` maps to the v2 floor unchanged; v1
+`[review.<policy>]` via the `[rigor.<level>].review` pointer, same field
+mapping) and supplies built-in `[gates]` defaults (`round_code = "verify"`,
+`round_docs = "check"`, `secret_scan = "security:secrets"`, `pre_pr =
+"security"`, plus a shipped `docs_only_paths`) since neither older shape has a
+`[gates]` table at all. `rounds.wall_clock_min` has no legacy/v1 equivalent at
+all and falls back to a built-in constant — see the
+`BUILTIN_*` constants at the top of `devflow-policy.mjs` for the exact
+values. **The operating-path shape gate always runs first and is
+unconditional**: `resolve --policy <file>` refuses a non-v2 `--policy`
+regardless of whether `--merge-base-policy` is also given — the decoder is
+never invoked to interpret the *operating* policy, only ever the merge-base
+one, per `specs/dev-flow-v2.md`'s "Shape refusal applies only to the file a
+consumer operates under." `ai/schemas/fixtures/exit/merge-base-legacy-to-v2/`,
+`merge-base-v1-to-v2/`, and `merge-base-decoder-unreachable-from-operating-path/`
+are the fixtures for this.
+
+**The decoder's scope is an invariant, not a field list.** On a migration
+diff, *every* merge-base-protected value — defaults, rounds, breadth,
+convergence, gates, roles, stages, strategy, `tier_order` — resolves from
+either the merge-base copy's own semantics or a fixed built-in default,
+**never** from the branch's v2 copy, even for the fields above that DO have a
+legacy/v1 equivalent (`rounds`, the rigor level name). Where the older shape
+has no equivalent concept at all — breadth, convergence predicates, roles,
+stages, strategy, and (once the registry gains them) finders and trusted
+actors — the built-in default is the *only* admissible source:
+`decodeHistoricalPolicy()` never reads `[breadth.*]`, `[convergence]`,
+`[role.*]`, `[stage.*]`, or `[strategy.*]` from `doc` to fill the gap, because
+`doc` there is always the merge-base copy, never the branch's. The built-ins
+are the v0 predicate catalog verbatim for `convergence` (the same one
+`specs/dev-flow-v2.md` ships as its own worked example), the anchor spec's own
+"shipped baselines" for each role's tier (orchestrator apex, implementer
+standard, challenger frontier, reviewer standard, integrator economy) with
+empty `families`/`harnesses` (no registry-independent default family exists,
+so cross-validation reports the resulting unresolvable family honestly rather
+than inventing one), an empty finder set for every stage, the simplest
+single-agent/no-delegation strategy, and `tier_order` copied from the spec's
+own fixed ladder. `scripts/dev-flow-exit.mjs` treats an empty resolved
+`stages.<stage>.finders` the same way — as "no configured authority", not
+"this stage configures zero finders" — and falls back to the observed
+passes' own slots (unioned across every round of the stage) for logical-round
+assembly, so a genuinely missing slot in one round is still caught even
+without a `[stage.*]` table to check against.
+`ai/schemas/fixtures/exit/merge-base-legacy-mutation-invariant/` and
+`merge-base-v1-mutation-invariant/` prove this end to end: the branch copy
+mutates every one of those values to something obviously wrong (`challenge =
+99`, an inverted `any`/`all` convergence, `tier = "local"` on every role, a
+`poisoned-finder` in every stage, ...) — and, since addendum 8, the branch
+`agent-registry.json` too (poisoned families/harnesses/finders — the only
+registry-shaped fields this decoder's `crossValidate()` reads, since
+addendum 6's registry-sourced roles/tiers is still deferred) — and the
+resolved policy is asserted identical to the unpoisoned case either way.
+`crossValidate()`'s "a confidence stage has a nonzero cap but no configured
+finders" and "a role has no resolvable family" checks (both added review
+round 1, to close a gap where they only ran when a registry happened to be
+supplied) are the reason a historical decode needs its OWN exemption from
+them: `resolved.decodedFrom` is set **only** by `decodeHistoricalPolicy()`,
+so both checks skip specifically when it is present — the empty
+finders/families they'd otherwise flag are this decoder's own documented,
+deferred limitation, not a genuine `[stage.*]`/`[role.*]` misconfiguration
+on the operating path (or a v2-shaped merge-base, which resolves its own
+real values via `resolveV2` and is *not* exempted). Review round 2
+(confirmed): without this, the very fix that closed the no-registry gap
+made every historical-decode resolution with a nonzero cap fail
+cross-validation outright whenever a registry *was* supplied — the normal,
+intended case — a regression introduced while fixing an unrelated gap.
+
+**Nothing here resolves relative to the caller's working directory.**
+`--policy`, `--registry`, `--merge-base-policy`, and `--merge-base-registry`
+are always explicit file paths; gate-slug cross-validation takes an explicit
+`--task-targets <file>` (a precomputed `task --list --json` target-name
+array) or `--taskfile-dir <dir>` (go-task's own `--dir`, run against that
+directory rather than cwd) — with neither, gate-slug checking is
+`indeterminate`, never silently scoped to whatever directory the process
+happens to be running in. This is deliberate: the round-push broker
+([#632](https://github.com/evanharmon1/harmon-devkit/issues/632)) calls this
+reader from a merge-base tree it has already materialized outside the
+worktree (AGENTS.md's "Gate authority separates policy from branch
+implementation"), and a cwd-relative fallback would quietly defeat that
+isolation the moment this reader ran from the wrong directory.
+
+**The self-modification boundary protects the reader's own code, not only
+the data it reads.** A branch that edits `devflow-policy.mjs` or
+`dev-flow-exit.mjs` themselves could otherwise lower their own gate exactly
+as editing `.devflow.toml`/`agent-registry.json` directly would — the
+identical concern AGENTS.md's merge-base rule already names for those two
+files, extended to the code that resolves them. `--closure <dir>`, checked
+before either script does anything else with its arguments, re-execs the
+**trusted** copy at `<dir>/scripts/devflow-policy.mjs` (or
+`dev-flow-exit.mjs`), passing every other argument through unchanged; a
+caller materializes `<dir>` the same way it materializes a merge-base
+`.devflow.toml` (e.g. `git show <merge-base>:scripts/devflow-policy.mjs`).
+`ai/schemas/fixtures/exit/reader-self-modification-boundary/` proves the
+mechanism: it ships a *poisoned* copy of `devflow-policy.mjs` (a mutated
+built-in breadth default) and `scripts/lib/run-exit-fixtures.mjs` invokes it
+with `--closure` pointed at a trusted closure the runner builds **at test
+time** from whatever `devflow-policy.mjs` the repository currently ships —
+never a copy committed under `ai/schemas/fixtures/`, so this fixture can
+never drift from the real reader. The resolved output is asserted to carry
+the *un-tampered* built-in, proving the poisoned code's own mutation was
+never reached.
+
+**Challenge-stage passes validate by their own declared role.**
+`result.challenger.schema.json` shipped with lane
+[#635](https://github.com/evanharmon1/harmon-devkit/issues/635)'s registry
+roles (PR #713); `dev-flow-exit.mjs`'s `PASS_VALIDATION_KIND` is `"envelope"`
+— `scripts/validate-result-schemas.mjs`'s self-dispatching kind, which reads
+each pass's own `role` field and runs exactly the same payload + receipt
+checks as invoking that role's kind name directly. A challenge-stage pass
+authored `role: "challenger"` validates against
+`result.challenger.schema.json`; one still authored `role: "reviewer"`
+(every pre-PR-713 trajectory, and any producer that has not migrated)
+validates against `result.reviewer.schema.json` — legal permanently, not
+just during a migration window, since that schema's `stage` enum admits
+both `"challenge"` and `"review"` on purpose. Either way,
+`dev-flow-exit.mjs`'s own stage-membership logic keys on the pass's
+`payload.stage`, never the envelope `role`, so a trajectory can freely mix
+challenger- and reviewer-shaped challenge passes across rounds without
+changing how logical rounds assemble.
+
+**`slot` and `substitutes_for` on `result.reviewer.schema.json` and
+`result.challenger.schema.json`.** `specs/dev-flow-v2.md`'s Results section
+(updated in the 2026-08-31 config redesign) describes every confidence-role
+pass as carrying `slot` (the configured primary finder) and, on a fallback
+pass, `substitutes_for` (the primary it substituted for) — fields the
+reviewer schema shipped by
+[#634](https://github.com/evanharmon1/harmon-devkit/issues/634)/PR #678 and
+the challenger schema shipped by #635/PR #713 both predate.
+`dev-flow-exit.mjs`'s logical-round assembly needs them to tell a primary
+pass from a substitution and to know which primary slot a substitute fills,
+so this issue adds both as **optional** properties to both schemas (and
+their inlined `$defs.reviewer`/`$defs.challenger` twins in
+`result.schema.json`, kept byte-identical to their standalone originals —
+`scripts/test-result-schemas.sh`'s own drift check enforces this) —
+additive only, `required` is unchanged on either, so every existing fixture
+and producer stays valid without them. `dev-flow-exit.mjs` itself requires
+`slot` on every pass it consumes (falling back to `finder` when absent,
+correct for a single-primary-slot stage since `finder == slot` there) —
+that is its own receipt-level requirement, not a schema one.
+
+**Run directory layout**, the input to `dev-flow-exit.mjs --run <dir>`:
+
+```text
+<run-dir>/
+  run.json                         — the run record subset this script needs
+  passes/<stage>-r<round>-<finder>.json   — one result envelope per pass
+  adjudications/<stage>-r<round>.json     — one adjudication document per round
+```
+
+Every **complete** round needs its own adjudication document, even a
+clean, zero-finding one (`adjudications: []` is schema-valid — no
+`minItems`) — review round 2, confirmed: checking only "does every
+*finding* have a matching entry" is vacuously true for a round with no
+findings to check, so a clean round with no adjudication document at all
+could previously certify convergence with nothing ever having reviewed it.
+`ai/schemas/fixtures/exit/clean-round-without-adjudication-rejected/` is
+the fixture; every other clean-round fixture in this corpus supplies one.
+
+**A fallback pass's `finder` must be a member of its slot's own configured
+`finder_fallbacks`** — asserting `substitutes_for == slot` and naming a
+different finder than the primary is necessary but not sufficient; the
+named finder must actually be in that slot's own configured fallback chain
+(review round 2, confirmed: an unconfigured, unauthorized finder could
+otherwise fill a slot merely by claiming to substitute for it, bypassing
+the fallback chain the exit-computation spec requires "attempted in
+order").
+
+`run.json`'s `receipts` array is the **trusted receipt sequence**
+(`specs/dev-flow-v2.md`'s "Producer-supplied `produced_at` SHALL be only a
+bounded sanity check ... never an ordering ... boundary" — ordering is the
+orchestrator's own receipt order, recorded as it happens, not reconstructed
+from timestamps): an ordered list of `{kind: "transition", stage}` and
+`{kind: "pass", file}` entries. A pass with no `"pass"` receipt entry, one
+naming a `run_id`/`initiated_by` other than `run.json`'s own, or one with no
+preceding `"transition"` receipt into its own `payload.stage`, is rejected
+and contributes no pass or finding — logged in the verdict's `diagnostics[]`,
+never silently. `run.json` may also carry `slot_failures: [{stage, round,
+slot, reason: "finder_unavailable"|"breadth_exhausted", head?}]`, recording a
+primary slot that never got filled after its retry and configured
+`finder_fallbacks` chain (`finder_unavailable`) or because the fallback chain
+was cut short by the resolved breadth ceiling (`breadth_exhausted`) — the
+distinction a post-hoc reader of already-recorded passes cannot otherwise
+draw, since both look identical from the outside ("no pass exists for this
+slot").
+
+**Every primary slot filled, but the passes disagree on `head`, is
+indeterminate, not a completed round.** A logical round has exactly one
+`reviewed_head` (exit-computation spec.md § "Logical rounds require every
+configured finder"); if every configured slot has an accepted pass yet those
+passes name different `head`s, that is an internally-inconsistent
+trajectory — the same class of problem as a duplicate receipt or a
+duplicate adjudication document — refused outright rather than silently
+excluded from `retained` (ancestry `"unknown"`) while quietly not counting
+toward anything, which would let a broken round be silently re-dispatched
+with no signal that anything was ever wrong.
+
+**`dev-flow-exit.mjs` re-runs the registry/Taskfile-**independent** half of
+cross-validation itself**, even though it takes no `--registry`/
+`--task-targets` (see its own header comment: that dependency belongs
+entirely to `devflow-policy.mjs resolve`, run once before a caller ever
+invokes this script). Breadth sufficiency and "a confidence stage has a
+nonzero cap but no configured finders" need only the already-resolved
+policy shape, not a registry — `devflow-policy.mjs`'s `crossValidate()`
+runs those two checks unconditionally now (previously nested under
+`if (registryDoc)`, so they silently never ran without one), and
+`dev-flow-exit.mjs` calls `crossValidate(resolved, null, null)` and refuses
+(exit `1`) on any hard error before ever reading `--run`. Without this, a
+policy `devflow-policy.mjs resolve` would refuse — e.g. breadth too small
+for its own stage's configured fallback chain — could still compute exits
+when this script was invoked directly, skipping the mandated
+resolve-then-dispatch sequence. `crossValidate()` also checks a finder's
+own registry entry for a `stages` restriction (`agent-registry.json`'s
+`finder.stages`, shipped by lane 635/PR #713), when present — a finder configured for
+`[stage.review]` whose registry entry permits only `["challenge"]` is
+rejected the same way an unknown finder or a pre-PR `pr-cloud` finder is
+(review round 2, confirmed: existence and the `pr-cloud` check alone didn't
+catch a finder dispatched to a stage its own registry entry doesn't
+permit). Absent `stages` (registries predating this field) means
+unrestricted, matching every other additive field in this schema family.
+
+**Provenance/fingerprint evidence: the change ledger.** `specs/dev-flow-v2.md`
+deliberately delegates the verification *mechanism* to this script rather than
+pinning one, since "any concrete mechanism ... accretes edge cases." This
+script defines that mechanism as a pure function over a **change ledger** — an
+array of `{round, path, added_lines[], deleted_lines[], renamed_from}`
+entries, one per round's fix commit's effect on one file — decoupled from how
+that ledger is populated. `--history <file.json>` supplies it directly (every
+fixture in this corpus uses this path, so the corpus never depends on a real
+git repository); a `--repo-root <dir>` production adapter that derives the
+same shape from real `git diff` between consecutive rounds' `reviewed_head`s
+is scaffolded but intentionally not hardened yet — see
+`## Deferred findings` in the PR that shipped this. Passing **neither** flag —
+the advertised no-flags `task devflow:exit` invocation — is `null` (no
+evidence source configured), exactly like `--repo-root` alone, never `[]` (a
+real, merely-empty ledger): the two drive `verifyProvenance` to different
+conclusions for an identical asserted claim, and only a genuinely real ledger
+may verify one. A fixture wanting a real-but-empty ledger supplies an explicit
+`--history` file containing `[]`. A finding not anchored to
+a line (`line: null`), or one whose anchor line's region was touched by an
+intervening round's fix in a way the ledger cannot cleanly attribute, comes
+back `unverified` — keeping its adjudicated priority for gating (a defect of
+unknown origin is still a defect) while being excluded from the
+provenance-dependent predicates, exactly as `specs/dev-flow-v2.md` specifies.
+A later round's insertion or deletion **at or above** a finding's own line
+also marks it ambiguous (unverified), even when that line itself was never
+directly touched — review round 2, confirmed: an intervening edit shifts
+every subsequent line number, so a direct `=== finding.line` comparison
+against an earlier round's recorded coordinate silently stops matching once
+something is inserted above it, falling through to a false "verified
+original" for code that actually came from that earlier round, just
+renumbered (`provenance-line-shift-not-falsely-verified-original/`). A
+`corrected` provenance status (the ledger proved a producer's `original`
+claim was actually `round:N`) counts as evidence-backed exactly like a
+`verified` one for `count_rising`'s own guard — excluding it let a
+strictly-rising, evidence-corrected self-feeding trajectory evade the
+predicate merely because the producer itself never asserted `round:N`
+(`count-rising-accepts-corrected-provenance/`).
+A `repeat-of:<id>`/`supersedes:<id>` fingerprint claim needs more than a
+shared (or rename-tracked) path to verify: two genuinely unrelated findings
+in the same file share a path too, so `verifyFingerprint` also requires the
+claiming finding's own `line` to appear among the lines the **target's own
+round's fix** actually added at the resolved origin path (the same
+`added_lines` evidence `verifyProvenance`'s `round:N` attribution uses) — a
+same-file coincidence with no such evidence stays `unverified`, exactly like
+any other undecidable claim, and cannot alone satisfy `repeat_after_fix`.
+`verdict.verified_findings[]` — `{id, provenance_status,
+verified_provenance, fingerprint_status, verified_fingerprint}` per finding
+across every round — exposes what `applyVerification` already computed but
+`corrections[]` alone cannot: `corrections[]` only records a **mismatch**
+(status `"corrected"`), so a claim that was simply confirmed as asserted, or
+left `unverified` because no evidence could decide it, has no other way to
+reach a caller (or the conformance corpus, which checks this field for the
+`corrections_field`/`corrections_status`/`verified_provenance_for`/
+`no_repeat_relationship` fixture expectations).
+
+**The predicate catalog** (`no_gating_findings`, `provenance_share`,
+`count_rising`, `repeat_after_fix`) is pinned by these exact names — a
+`[convergence]` policy naming anything else is rejected at resolution time —
+and evaluated per `specs/dev-flow-v2.md` § "Convergence model v0" verbatim,
+composed with `any`/`all` per predicate list. A list entry may itself be a
+nested `{any:[...]}`/`{all:[...]}` composition node instead of a leaf
+predicate, recursively — the exact grammar `specs/dev-flow-v2.md` normatively
+incorporates by reference ("A policy composes predicates from the anchor
+catalog"); `devflow-policy.mjs`'s resolver validates each leaf's own
+parameters (`provenance_share.min` in `[0, 1]`, `count_rising.increases` a
+positive integer) but only ever tighten-only-checks a **flat** rigor-level
+override — one containing a nested node is refused outright, since
+"which parameter moved which direction" has no defined meaning across a
+whole subtree; nesting inside a base `[convergence]` table with no override
+layered on top of it is unaffected. Precedence is `capped →
+diverging → converged → continue`, computed in `computeVerdict()`. Two
+refinements worth stating explicitly because they are easy to miss reading
+the spec prose alone:
+
+- **Any incomplete round (`finder_unavailable` / `breadth_exhausted`)
+  anywhere in the retained trajectory is `capped` immediately**, independent
+  of whether the round-number ceiling has also been reached, and independent
+  of whether it happens to be the *latest* retained round by number —
+  exhausting the finder or breadth resource for a slot is a hard stop on its
+  own terms (re-dispatching the same round would not help, since the retry
+  and full fallback chain are already spent) that no later round can
+  override. Review round 2 (confirmed): checking only the latest retained
+  round let a malformed or resumed trajectory bypass an earlier exhaustion
+  whenever a later, complete round also existed — itself an illegal
+  trajectory shape (`ai/schemas/fixtures/exit/
+  incomplete-round-excluded-from-min-rounds-floor/` covers exactly this:
+  round 1 exhausted, round 2 complete and clean, still `capped`). That
+  verdict also carries `unresolved_slot`/`substitutions` (review round 3,
+  P2) — the blocker report a human escalation needs names *which* slot
+  exhausted and what was already substituted, not only the generic
+  `finder_unavailable`/`breadth_exhausted` reason.
+- **A `capped/clean` verdict requires the round *at* the cap itself —
+  not merely some retained round — to review the current head.** If that
+  round is on a head incomparable to `currentHead` (excluded from
+  `retained`) while an *earlier* round coincidentally equals it exactly,
+  the earlier round must not be mistaken for the qualifying final one —
+  review round 2 (confirmed), covered by
+  `capped-clean-requires-final-round-at-current-head/`.
+
+**Two fixtures replay the [ponderousdev/omator#397](https://github.com/ponderousdev/omator/pull/397)
+retro** (`omator-397-challenge-diverging-at-r2/`, `omator-397-review-capped-at-r3/`)
+that motivates this whole milestone (`specs/dev-flow-v2.md` § Problem/Why),
+reusing the exact pass/adjudication documents already shipped at
+`ai/schemas/fixtures/{result.reviewer,adjudication}.schema/valid/omator-397-*.json`
+verbatim (only `run_id` is rebound) rather than re-typing the finding data.
+Because the real PR's line-level diffs are not available in this repository,
+each fixture's change ledger is synthesized *from* the reconstructed
+findings' own `provenance: round:N` assertions (documented in each fixture's
+own `README.md`) rather than a real git diff — what it reproduces faithfully
+is the aggregate shape (finding counts and provenance mix per round) that
+drives the predicate outcome under test. The challenge replay shows
+`provenance_share` calling `diverging` at round 2 — where
+`specs/dev-flow-v2.md` says "the interesting predicates are the divergence
+ones: they read the trajectory before the current round is clean, which is
+where omator#397 would have been stopped" — instead of the unscripted loop's
+actual 4 rounds. The review replay reproduces the retro's own account ("both
+stages capped with adjudicated P1s every round") as `capped/findings_remain`
+at round 3.
+
+**Ten more fixes landed during PR #720's shepherd stage**, from the current-head
+Codex cloud review of the whole branch diff (not a local `task
+challenge`/`task review` round — see AGENTS.md's shepherd section):
+
+- **The operating (branch) policy resolves on its own too when merge-base
+  is v2**, not only via `requireOperatingV2`'s shape-marker-only gate: a
+  branch policy carrying nothing but `schema_version = 2` used to borrow
+  the merge-base's real values during review and fail the moment the PR
+  merged and there was no more merge-base to fall back to.
+- **A `[strategy.<X>]` table's own `name` field cannot relabel the selected
+  strategy** — `resolveStrategy` now spreads `table` before `name`
+  (`{ ...table, name }`), not after; the old order let `[strategy.council]
+  name = "solo"` silently make `resolved.strategy.name === "solo"`, which
+  skipped the anchor-rule check for an actually-selected, actually-
+  incompatible council.
+- **`diverging` no longer hands back a `next_round`**, matching
+  `capped`/`converged` (neither sets one either — both inherit
+  `base.next_round === null`): offering a concrete next round number
+  alongside an action string that names "fix" as one of three options read
+  as authorizing an automated continue, exactly where the self-feeding
+  loop is supposed to be interrupted. Which disposition a "fix" verdict
+  actually satisfies stays the session's judgement to record (issue
+  #636's own "Out of scope" section), not this script's to arbitrate from
+  free-text adjudication reasoning.
+- **`resolveOriginPath` no longer hangs on a legitimate rename-back**
+  (round 1: `a→b`, round 2: `b→a`): it now walks distinct earlier rounds
+  strictly descending, at most once each, instead of re-scanning the whole
+  ledger to a fixpoint — the old loop bounced between the two paths
+  forever. Bounded by construction now, not merely in the cases tested.
+- **Role/family/harness/tier are cross-validated jointly, not as
+  independent slug memberships**: a role's `harnesses[]` entries are
+  checked against the registry's `family_constraint` (a `"fixed"`-kind
+  harness must be family-compatible with the role's own `families[]`; a
+  `"broker"`-kind harness has no fixed family and is unrestricted) and
+  against the harness's own `roles[]` list (absent means unrestricted,
+  matching `finder.stages`); a role's tier must be achievable by some
+  model in at least one of its families' `models[]` lists (additive, like
+  every other field in this family — a registry that doesn't populate
+  `models[]` for any of a role's families carries no evidence either way
+  and is unrestricted, not an error; only once at least one declared
+  family DOES carry model-tier data does an unachievable tier become
+  checkable).
+- **A single stray older-shape marker alongside `schema_version = 2` is
+  `mixed`, not silently accepted as v2** — review round 3 closed the
+  complete-old-shape-alongside-v2 case; a lone marker (e.g. `default_method`
+  with neither direct caps nor a `[method]` table) is exactly the
+  spec's "incomplete" marker set too. The one carve-out: `rigor_order`
+  itself cannot signal v1 this way, since v2 requires it too — only the
+  genuinely v1-exclusive markers (`[review.*]` tables, the `.review`
+  pointer) or any legacy marker count.
+- **`tier_order` must equal the canonical `[local, economy, standard,
+  frontier, apex]` ladder exactly**, the same exact-match requirement
+  `rigor_order` already has — previously only non-empty was checked, so a
+  reversed or truncated list resolved with no error and could silently
+  select a weaker tier or drop a required escalation rung.
+- **A rigor-level convergence override may add/remove a flat leaf beside
+  an untouched nested `any`/`all` node** — narrowing the earlier
+  all-or-nothing refusal (any list containing a nested entry anywhere, in
+  either base or override, was refused outright). Nested entries are now
+  matched between base and override by full structural identity: one
+  present in both, byte-for-byte unchanged, contributes nothing to
+  added/removed and is not ambiguous; one that differs, or that only one
+  side has, still has no defined tightening direction and is refused
+  exactly as before.
+- **A predicate rejects any parameter outside its own declared set** — a
+  `no_gating_findings`/`repeat_after_fix` entry (which take none) or an
+  unrecognized key on `count_rising`/`provenance_share` used to resolve
+  cleanly and be silently ignored, so a misspelled or misattached
+  parameter could look like it tightened convergence while doing nothing.
+- **A stage's `finders[]` list rejects a duplicate primary slot** — each
+  entry is its own all-of slot in logical-round assembly; a repeated slug
+  used to collapse two nominal slots onto the same map key, letting one
+  real pass silently satisfy both while breadth's worst-case math still
+  charged for two.
+
+Two findings from the same review were confirmed but are genuinely
+architectural rather than a quick patch, and are tracked instead of fixed
+here: `dev-flow-exit.mjs` computing an exit off a policy no registry ever
+validated when a caller skips `devflow-policy.mjs resolve --registry`
+first ([#724](https://github.com/evanharmon1/harmon-devkit/issues/724)),
+and `verifyFingerprint` trusting a producer-asserted `fingerprint: "new"`
+with no check against the change ledger, unlike `verifyProvenance`'s
+analogous handling of `"original"`
+([#725](https://github.com/evanharmon1/harmon-devkit/issues/725)).
+
+**A second cloud-review cycle on the round-1 fix commit surfaced 11 more
+findings** (6 P1, 5 P2) — the push moved the head, so this was a fresh
+current-head cycle, not the same review. Two were about round 1's own
+fixes (a provenance-checkpoint case each); the rest were about pre-existing
+code the round-1 diff never touched.
+
+- **The operating-copy resolution round 1 added only covers the v2-
+  merge-base branch** — moved `resolveV2(doc, opts)` to run unconditionally
+  whenever a merge-base is supplied, before branching on the merge-base's
+  own shape, so a legacy/v1 merge-base (the more common migration case)
+  gets the same protection.
+- **`checkTightenOnly`'s predicate-name `Map`s silently kept only the last
+  occurrence of a repeated predicate** in one composition list — a base
+  list naming the same predicate twice could have its override compared
+  against only one occurrence, hiding a real loosening in the one never
+  looked at. `validatePredicateExpr` now rejects any composition list
+  naming the same predicate more than once, closing the gap at the source
+  rather than trying to compare every occurrence.
+- **A lone direct-cap field (`challenge = 99` alone, not the complete
+  four-field set) still wasn't a legacy marker** even after round 1's
+  single-stray-marker fix — `hasDirectCaps` itself required all four
+  fields together; a separate `hasAnyDirectCapField` signal (any one
+  field) now feeds the mixed-with-v2 check specifically, while
+  `hasDirectCaps` (all four) still governs whether the file is genuinely
+  pure legacy.
+- **`verifyProvenance`'s `round:N` branch never consulted `ambiguousTouch`
+  at all**, unlike the `"original"` branch beside it — a later round's
+  edit at-or-above the line could shift what the ledger's round-N
+  coordinate now points at, and this branch verified (or "corrected") it
+  anyway. Fixing that surfaced a second, deeper bug in how
+  `ambiguousTouch` itself was computed: the original single pass
+  considered every ledger entry regardless of whether it came before or
+  after the round that introduced the line, so an EARLIER round's own
+  unrelated edit falsely flagged ambiguity for a line a LATER round
+  introduced. Restructured into two passes — the ambiguity scan now only
+  considers entries strictly after the introducing round (or, for an
+  `"original"` claim with no introducing round, every tracked entry, since
+  `"original"` predates all of them — unchanged from before).
+- **A missing or broken `--validator` couldn't be told apart from a
+  genuinely schema-invalid pass** — `runValidator`'s `status === 0` check
+  treats a Node module-loading crash (spawns fine, then exits non-zero on
+  its own `MODULE_NOT_FOUND`) identically to a real validation failure,
+  silently degrading a valid completed round into what reads as "no
+  passes at all." `--validator` is now preflighted for existence once,
+  before any pass is validated, refusing indeterminate rather than
+  degrading.
+- **The council/orchestrate anchor rule (added earlier this branch)
+  enforced a maintainer-relayed simplification, not
+  `specs/dev-flow-v2.md`'s own precise text**: "Orchestrate requires
+  `max_agent_runs >= min_agents` and, only under parallel coordination,
+  `max_parallel_agents >= min_agents`; sequential dispatch needs only the
+  run coverage... A council with `synthesis = true` requires
+  `max_agent_runs >= N + 1`." The check now reads `coordination` (only
+  `"parallel-when-independent"` triggers the parallel-capacity
+  requirement) and `synthesis` (only `true` requires council's extra run),
+  matching the spec exactly rather than requiring both unconditionally.
+- **`isAncestorOrEqual`'s `--repo-root` branch collapsed every nonzero
+  `git merge-base --is-ancestor` exit status to `false`** — status `1` is
+  the documented, genuine "not an ancestor" answer, but any other status
+  (`128` for a missing/unreachable object in a shallow checkout, among
+  others) or a spawn failure is an execution error, not a valid "no." Now
+  distinguished: `0` → `true`, `1` → `false`, anything else → `"unknown"`
+  (the same three-way result this function's callers already handle).
+- **`resolveSpend` silently accepted an invalid ceiling** — a negative,
+  fractional, or non-finite `max_tokens`, or a string-valued `max_usd`,
+  resolved either as-is (if numeric) or silently became `null` (read as
+  "absent"). `status: "UNENFORCED"` doesn't make this a dead value — it's
+  a shared resolved-policy field later dispatchers already consume — so
+  `max_tokens` now requires a non-negative integer and `max_usd` a finite
+  non-negative number, when present.
+
+Two findings were confirmed but deferred, both narrowly scoped to
+already-lower-priority territory: `assembleLogicalRounds`'s
+historical-decode primary-slot inference considers only completed passes,
+never `slot_failures` records, so a stage whose sole configured finder
+never produced a single pass (only a `finder_unavailable` failure record)
+can leave `primarySlots` empty and the round wrongly assembled as
+"complete" — narrowly scoped to the historical-decode path the maintainer
+has already ruled low-priority for fidelity work. And the
+`missingAdjudication` check is limited to rounds whose AGGREGATE status is
+`"complete"`, so a multi-finder round with one successful, retained pass
+and one failed slot (aggregate status `capped/finder_unavailable`) can
+carry an unadjudicated pass with no diagnostic — closing this correctly
+needs tracing per-pass retention independently of aggregate round status,
+deferred rather than rushed under this round's own time pressure.
+
+**A third cloud-review cycle** (queued behind concurrent PRs on Codex's
+side — a genuine ~15-minute delay, not an outage; see the PR's own
+shepherd-stage history for that lesson) surfaced 13 more inline findings
+(9 P1, 4 P2 — 10 distinct issues, 2 exact duplicate pairs) against the
+round-2 fix commit.
+
+- **`devflow-policy.mjs resolve`'s `--merge-base-registry` no longer falls
+  back to the branch's own `--registry`** when a merge-base policy is in
+  play — silently validating merge-base-resolved values against the
+  BRANCH's registry mixed trust revisions exactly where the merge-base
+  rule exists to prevent it (a branch could change a finder's registry
+  entry and have that change govern validation of the merge-base policy's
+  own references). Existing merge-base fixtures needed no changes — the
+  test runner now auto-wires `--merge-base-registry` to the same
+  `registry.json` file whenever a fixture doesn't name a distinct one.
+- **A `[strategy.*]` table's `coordination`/`synthesis` fields are now
+  validated before use** — a malformed value (a coordination typo, a
+  string `"true"` for synthesis) previously fell through to the
+  safer-looking default (sequential / no extra run) under strict `===`
+  comparison, silently letting a required breadth check be bypassed by a
+  typo rather than the value the author actually wrote.
+- **A council's `distinct_families` requirement is now checked against
+  the implement-stage pool's actual family diversity**, not just that
+  each pool harness slug exists — only "fixed" `family_constraint`
+  harnesses count toward the guaranteed-distinct set (a "broker"
+  harness's family is chosen at runtime and can't be statically proven
+  distinct from another broker's choice, so counting it would risk
+  silently accepting an unsatisfiable pool).
+- **A present-but-empty `[stage.*].pool = []` is now rejected** — `[]` is
+  truthy in JS, so it was never treated as the documented "unrestricted"
+  default (that's absent/`null`); it silently meant "no harness at all,"
+  a stage that could never dispatch, with no validation error naming it.
+- **A `capped` round assembled from a headless `slot_failures` entry
+  (the schema permits omitting `head`) is now retained and reported**,
+  not silently dropped — `reviewedHead === null` always computes ancestry
+  `"unknown"`, and the retained filter excluded that identically to a
+  confirmed non-ancestor, so the terminal-exhaustion check added earlier
+  this branch never even saw it. Scoped narrowly (an incomplete round
+  with no head at all, not "any unknown ancestry") so a complete round's
+  existing, correct exclusion-when-unverifiable behavior is unchanged.
+- **A configured slot with no accepted pass and no matching
+  `slot_failures` record is no longer synthesized as `finder_unavailable`**
+  — that has no actual evidence of exhaustion behind it (equally
+  consistent with "still pending" as with a rejected pass that left no
+  failure record); it now throws indeterminate instead of confidently
+  escalating a terminal outcome nothing supports.
+- **`remediation`/`wall_clock_min` are required v2 `[rounds.*]` fields**,
+  not optional-with-a-historical-decoder-fallback — `resolveRounds` has
+  exactly one call site (`resolveV2`, the operating-v2-only path); the
+  historical decoder builds its own `rounds` object with its own explicit
+  fallback constants and never reaches this function at all, so the
+  fallback here was never actually serving its documented purpose.
+
+Two findings were confirmed but deferred as P2, both because a correct fix
+has a wide ripple this round's own time budget shouldn't rush: `resolveV2`
+coerces any missing or non-boolean `tier_escalation` to `false` via strict
+`=== true` comparison rather than requiring it as a declared boolean —
+correct, but would require adding an explicit `tier_escalation` line to
+every one of the ~20 fixtures currently relying on the default; and
+`assembleLogicalRounds`'s round-number enumeration is built only from
+passes and `slot_failures`, so an orphan adjudication document (naming a
+round neither references) is invisible to later cap/contiguity checks —
+narrow in practice (only matters for a malformed or adversarial
+adjudication document) but needs careful tracing to close without
+disturbing the existing cap/contiguity logic. One more, P1, is deferred
+alongside the already-tracked `--repo-root` git-adapter scope:
+`isAncestorOrEqual`'s `"unknown"` result (round 2's own fix) is still
+discarded identically to a confirmed non-ancestor by the `retained` filter
+— distinguishing "ancestry verification was actively attempted via
+`--repo-root` and failed" from "it was never attempted at all" (the far
+more common case, and the one this round's own headless-round fix above
+correctly still excludes) needs a new signal threaded through
+`isAncestorOrEqual`'s return value, not a quick patch.
+
+**A fourth cloud-review cycle** (the final round under the resolved
+shepherd cap of 4) surfaced 4 more findings against the round-3 fix
+commit.
+
+- **A blocked envelope (`status: "blocked"` — `result.schema.json`'s own
+  documented "the role could not produce its full payload... a finder
+  that failed and will be retried once") is now excluded from logical-
+  round assembly**, not treated as a completed slot claim identically to
+  a genuine one — schema-valid is not the same as semantically complete,
+  and nothing checked `env.status` at all before this.
+- **A direct-cap field's mere presence — not its value type — is what
+  makes it a legacy marker** for the mixed-with-v2 check: a wrong-typed
+  `challenge = "3"` previously registered as no marker at all, since the
+  round-2/round-3 fix still required `typeof === "number"` to count a
+  field as present. Value-type validation for a genuine v2 field stays a
+  separate, already-enforced concern (`resolveRounds`'s own checks).
+
+Two findings were confirmed but filed as follow-ups rather than resolved
+in this final round, both requiring cross-lane coordination this lane
+cannot resolve unilaterally: the canonical `ai/schemas/run.schema.json`
+has `additionalProperties: false` and defines neither `receipts` nor
+`slot_failures` — the exact fields `dev-flow-exit.mjs`'s `validateReceipts`
+requires — so a schema-valid production `run.json` cannot actually supply
+the evidence this reader needs, and this reader's own fixture `run.json`
+files would themselves fail validation against the canonical schema as it
+stands today
+([#727](https://github.com/evanharmon1/harmon-devkit/issues/727)). And a
+request to validate the complete strategy vocabulary (noncanonical
+strategy names, malformed `topology`/`planning`/`delegation` values, not
+only the `coordination`/`synthesis` fields the anchor-rule check actually
+reads) was declined rather than filed — round 3 already made this an
+explicit, reasoned scope decision (validate only the fields a
+demonstrated exploit path reads, not the full vocabulary), and re-raising
+the same boundary a round later doesn't change that reasoning.
+
 ## The Foreman conformance contract
 
 harmon-devkit is the single source of truth for this schema family, vendored

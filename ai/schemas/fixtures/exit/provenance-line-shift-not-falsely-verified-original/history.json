@@ -1,0 +1,21 @@
+[
+  {
+    "round": 1,
+    "path": "scripts/shift.mjs",
+    "added_lines": [
+      5
+    ],
+    "deleted_lines": [],
+    "renamed_from": null
+  },
+  {
+    "round": 2,
+    "path": "scripts/shift.mjs",
+    "added_lines": [
+      3,
+      4
+    ],
+    "deleted_lines": [],
+    "renamed_from": null
+  }
+]

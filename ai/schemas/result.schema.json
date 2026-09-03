@@ -210,6 +210,16 @@
           "type": "string",
           "minLength": 1
         },
+        "slot": {
+          "description": "The configured primary finder this pass fills (specs/dev-flow-v2.md § Configuration: 'each primary finder defines one round slot'). Equal to `finder` on a primary pass; on a fallback pass, `slot` stays the configured primary while `finder` names who actually ran (see `substitutes_for`). Optional here so existing envelope-only fixtures/producers remain valid — scripts/dev-flow-exit.mjs (#636), which assembles logical rounds from this field, requires it on every pass it consumes; this schema only bounds its shape when present.",
+          "type": "string",
+          "minLength": 1
+        },
+        "substitutes_for": {
+          "description": "Present only on a fallback pass: the configured primary finder slug this pass substituted for after the primary was unavailable past its retry (specs/dev-flow-v2.md § Configuration). Absent on a primary pass, where `finder == slot` already says everything.",
+          "type": "string",
+          "minLength": 1
+        },
         "findings": {
           "description": "May be empty — a challenge round returning zero findings is a normal, schema-valid pass (specs/dev-flow-v2.md Acceptance criteria: a confidence role cannot end a stage on its own recommendation, including an empty findings list). A design-level finding is one with `class: design`; a de-scaffolding recommendation is one whose `recommended_disposition` is `delete` or `restructure` — both are ordinary entries in this same array, not a separate field.",
           "type": "array",
@@ -349,6 +359,16 @@
         },
         "finder": {
           "description": "The external review product that produced this pass (e.g. codex-cli, codex-cloud, coderabbit, copilot). Free string here — the finder catalog and its stage affinity are agent-registry.json's concern (#635), not this schema's. Must match the finder segment embedded in every finding id below (checked by the validator, not this schema).",
+          "type": "string",
+          "minLength": 1
+        },
+        "slot": {
+          "description": "The configured primary finder this pass fills (specs/dev-flow-v2.md § Configuration: 'each primary finder defines one round slot'). Equal to `finder` on a primary pass; on a fallback pass, `slot` stays the configured primary while `finder` names who actually ran (see `substitutes_for`). Optional here so existing envelope-only fixtures/producers remain valid — scripts/dev-flow-exit.mjs (#636), which assembles logical rounds from this field, requires it on every pass it consumes; this schema only bounds its shape when present.",
+          "type": "string",
+          "minLength": 1
+        },
+        "substitutes_for": {
+          "description": "Present only on a fallback pass: the configured primary finder slug this pass substituted for after the primary was unavailable past its retry (specs/dev-flow-v2.md § Configuration). Absent on a primary pass, where `finder == slot` already says everything.",
           "type": "string",
           "minLength": 1
         },

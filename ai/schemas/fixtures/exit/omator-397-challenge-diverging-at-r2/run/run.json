@@ -1,0 +1,18 @@
+{
+  "run_id": "omator-397-replay-challenge",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "challenge"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r1-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "challenge-r2-codex-cli"
+    }
+  ]
+}

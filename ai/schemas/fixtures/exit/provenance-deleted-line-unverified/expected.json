@@ -1,0 +1,7 @@
+{
+  "outcome": "continue",
+  "reason": "below_threshold",
+  "rounds_counted": 1,
+  "corrections_field": "provenance",
+  "corrections_status": "unverified"
+}
