@@ -436,10 +436,11 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
   // harvestOneRunRecord already isolates later per-run failures.
   const results = [];
   for (const [runId, entries] of byRunId) {
-    // Declared outside the try so the catch below can still read it —
-    // shepherd round 2, Codex-confirmed (P2): see the catch block's own
+    // Declared outside the try so the catch below can still read them —
+    // shepherd round 2/3, Codex-confirmed (P2): see the catch block's own
     // comment for why.
     let indexEntry;
+    let recordComment;
     try {
       const canonicalMap = resolveCanonical(entries);
       indexEntry = [...canonicalMap.values()][0];
@@ -451,11 +452,20 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
       }
       const named = indexPayload.run_record || {};
       const namedId = Number(named.id);
-      const recordComment = byId.get(namedId);
+      recordComment = byId.get(namedId);
       if (!recordComment) {
         throw new EvidenceError(`run-index ${runId} names run-record comment ${named.id}, which no longer exists — deleted-entry tampering`);
       }
-      if (!effectiveTrustAt(indexEntry.comment.created_at).has(named.author_actor_id)) {
+      // The record's OWN created_at, never the index's — shepherd round 3,
+      // Codex-confirmed (P2): the record must exist (and so has already
+      // been posted) before the index can name its comment id, so the
+      // record's timestamp is always the earlier, truer kickoff moment;
+      // the index's is later by however long that round-trip took. A
+      // registry revision landing in that gap must be evaluated as of
+      // when the record's author actually posted, not as of the index's
+      // later timestamp, or a not-yet-trusted author could be admitted
+      // retroactively.
+      if (!effectiveTrustAt(recordComment.created_at).has(named.author_actor_id)) {
         throw new EvidenceError(`run-index ${runId} names run-record author ${named.author_actor_id}, which is not a configured trusted actor`);
       }
       if (commentActorId(recordComment) !== named.author_actor_id) {
@@ -532,19 +542,27 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
       });
     } catch (err) {
       if (err instanceof EvidenceError) {
-        // The trusted run-INDEX's own comment.created_at survives even
-        // when something LATER fails (a broken record chain, a deleted
-        // record comment, ...) — it is a separate, simpler artifact from
-        // the record whose verification just failed. shepherd round 2,
-        // Codex-confirmed (P2): firstKickoffEpoch only ever looked at
-        // status:"ok" runs, so an issue whose EARLIEST run turned out
-        // indeterminate reported kickoff:null, which the --since filter's
-        // `kickoff !== null` guard reads as "always inside the window" —
-        // inflating indeterminate_count for issues that actually predate
-        // the requested window. Recording this fallback whenever the
-        // index itself was found closes that gap without trusting
-        // anything the failed verification didn't already establish.
-        results.push({ status: "indeterminate", runId, reason: err.message, indexCreatedAt: indexEntry ? indexEntry.comment.created_at : null });
+        // Prefer recordComment.created_at over indexEntry's — shepherd
+        // round 3, Codex-confirmed (P2): the record is always posted
+        // first (the index cannot name a comment id that doesn't exist
+        // yet), so once the record's OWN identity is confirmed to exist,
+        // its timestamp is the truer, earlier kickoff moment; the index's
+        // is later by however long that round-trip took, and using it
+        // instead could admit an issue whose real kickoff (the record's
+        // own time) actually predates a --since window. Falls back to the
+        // index's timestamp only when no record was ever identified (a
+        // deleted-entry case has nothing else to anchor to). shepherd
+        // round 2, Codex-confirmed (P2): firstKickoffEpoch only ever
+        // looked at status:"ok" runs, so an issue whose EARLIEST run
+        // turned out indeterminate reported kickoff:null, which the
+        // --since filter's `kickoff !== null` guard reads as "always
+        // inside the window" — inflating indeterminate_count for issues
+        // that actually predate the requested window. Recording this
+        // fallback whenever an identity was already confirmed closes that
+        // gap without trusting anything the failed verification didn't
+        // already establish.
+        const kickoffCreatedAt = recordComment ? recordComment.created_at : indexEntry ? indexEntry.comment.created_at : null;
+        results.push({ status: "indeterminate", runId, reason: err.message, kickoffCreatedAt });
         continue;
       }
       throw err;
@@ -631,6 +649,17 @@ function assembleListedEvidence(runRecord, allComments, withinCutoff, runRecordA
       currentMarker.seq === listed.sequence;
     if (!markersAgree) {
       throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} no longer matches its recorded marker, does not bind to run ${runRecord.run_id}, or claims a destination its comment was not actually fetched from (listed ${JSON.stringify(listed)}, current ${JSON.stringify(currentMarker)}, fetched from ${JSON.stringify(comment._fetchedFrom)}) — edited-entry tampering`);
+    }
+    // ai/schemas/README.md "Comment kinds": destination=pr is reserved for
+    // the per-STAGE rollup (round=null); every per-round comment is
+    // destination=issue. shepherd round 3, Codex-confirmed (P2): a
+    // dest=pr entry with a non-null round passed every check above (self-
+    // consistent, correctly fetched from the PR) yet is grammatically
+    // illegal — renderTrajectory's own rounds filter (dest === "issue")
+    // would then silently drop it from the trajectory entirely, an
+    // incomplete result rather than a reported one.
+    if (currentMarker.dest === "pr" && currentMarker.round !== null) {
+      throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} claims destination=pr with a non-null round (${currentMarker.round}) — pr is reserved for stage rollups (round=null), never a per-round comment`);
     }
     const payloadText = fencedPayloadText(comment.body || "");
     if (payloadText === null) {
@@ -1161,9 +1190,9 @@ function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, w
       // (its author/identity checks passed) — only the LATER chain/
       // projection verification failed here, so record.recordCreatedAt
       // is still a genuine kickoff-time fallback. shepherd round 2,
-      // Codex-confirmed (P2) — see findRunRecord's own indexCreatedAt for
-      // the general reasoning; this is the same fallback, one level up.
-      return { status: "indeterminate", runId: record.runId, issueNumber, reason: err.message, indexCreatedAt: record.recordCreatedAt };
+      // Codex-confirmed (P2) — see findRunRecord's own kickoffCreatedAt
+      // for the general reasoning; this is the same fallback, one level up.
+      return { status: "indeterminate", runId: record.runId, issueNumber, reason: err.message, kickoffCreatedAt: record.recordCreatedAt };
     }
     throw err;
   }
@@ -1198,7 +1227,7 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf }) {
   // need harvestOneRunRecord's further (evidence-level) processing.
   return records.map((record) =>
     record.status === "indeterminate"
-      ? { status: "indeterminate", runId: record.runId, issueNumber, reason: record.reason, indexCreatedAt: record.indexCreatedAt }
+      ? { status: "indeterminate", runId: record.runId, issueNumber, reason: record.reason, kickoffCreatedAt: record.kickoffCreatedAt }
       : harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, withinCutoff }),
   );
 }
@@ -1364,13 +1393,16 @@ function computePostReadyFix(repo, readyRun, cutoffEpoch) {
 // (chain broken, deleted record, ...) reported kickoff:null — which the
 // --since caller's `kickoff !== null` guard reads as "always inside the
 // window", inflating indeterminate_count for issues that actually predate
-// the window. indexCreatedAt (see findRunRecord/harvestOneRunRecord) is a
+// the window. kickoffCreatedAt (see findRunRecord/harvestOneRunRecord) is a
 // genuine fallback whenever it survives an indeterminate result: it comes
 // from the run's own trusted index/record identity, established before
-// whatever LATER check failed.
+// whatever LATER check failed — preferring the record's own created_at
+// over the index's when both are available (shepherd round 3,
+// Codex-confirmed: the record posts first, so its timestamp is always
+// the truer, earlier kickoff moment).
 function firstKickoffEpoch(issueRuns) {
   const started = issueRuns
-    .map((r) => (r.status === "ok" ? r.state.started_at : r.indexCreatedAt))
+    .map((r) => (r.status === "ok" ? r.state.started_at : r.kickoffCreatedAt))
     .filter((t) => t != null)
     .map((t) => Date.parse(t));
   return started.length > 0 ? Math.min(...started) : null;
@@ -1652,6 +1684,18 @@ function replayOneRun(run, { policyPath, exitScriptPath, tmpRoot, repoRoot }) {
   const runDir = runReplayDir(tmpRoot, run.runId);
   buildRunDirectory(run.record.body, run.rounds, runDir);
   const diffs = [];
+  // A stage that could not be recomputed at all (exec failure, or
+  // dev-flow-exit.mjs's own outcome:"indeterminate") makes the WHOLE run's
+  // replay result indeterminate, not merely one more diffs[] entry to
+  // compare against a recorded exit — shepherd round 3, Codex-confirmed
+  // (P1): round 2's fix pushed an error-shaped diffs[] entry for the
+  // indeterminate case but never set indeterminate on the RETURNED
+  // result, so cliReplay's own classification (results.filter(r =>
+  // !r.indeterminate && r.diffs.length > 0)) still counted the run among
+  // ordinary policy disagreements and reported zero indeterminate runs.
+  // The pre-existing exec-failure branch had the exact same gap; both are
+  // fixed together here rather than patching only the newer one.
+  let indeterminateReason = null;
   for (const stage of ["challenge", "review"]) {
     const hasRounds = run.rounds.some((r) => r.stage === stage && r.dest === "issue" && r.round !== null);
     if (!hasRounds) continue;
@@ -1661,6 +1705,7 @@ function replayOneRun(run, { policyPath, exitScriptPath, tmpRoot, repoRoot }) {
     const recorded = recordedOutcome(recordedText);
     if (error) {
       diffs.push({ stage, recorded: recordedText, recomputed: null, error });
+      indeterminateReason = indeterminateReason || `${stage}: ${error}`;
       continue;
     }
     // dev-flow-exit.mjs deliberately emits outcome:"indeterminate" (exit
@@ -1671,12 +1716,17 @@ function replayOneRun(run, { policyPath, exitScriptPath, tmpRoot, repoRoot }) {
     // a POLICY DISAGREEMENT, when the actual failure mode is "could not
     // verify at all", unrelated to the candidate policy under test.
     if (verdict.outcome === "indeterminate") {
-      diffs.push({ stage, recorded: recordedText, recomputed: null, error: `exit script could not verify this trajectory: ${verdict.reason || "indeterminate"}` });
+      const reason = `exit script could not verify this trajectory: ${verdict.reason || "indeterminate"}`;
+      diffs.push({ stage, recorded: recordedText, recomputed: null, error: reason });
+      indeterminateReason = indeterminateReason || `${stage}: ${reason}`;
       continue;
     }
     if (verdict.outcome !== recorded) {
       diffs.push({ stage, recorded: recordedText, recomputed: verdict.outcome, reason: verdict.reason });
     }
+  }
+  if (indeterminateReason !== null) {
+    return { runId: run.runId, issue: run.issueNumber, diffs, indeterminate: true, reason: indeterminateReason };
   }
   return { runId: run.runId, issue: run.issueNumber, diffs };
 }
@@ -1868,9 +1918,19 @@ function requiredArgValue(flagName, rawValue) {
   return { ok: true, value: rawValue };
 }
 
+// Same grammar as run.schema.json's own timestamp fields (UTC "Z" form
+// only, no other offset spelling) — shepherd round 3, Codex-confirmed
+// (P2): Date.parse() alone accepts values that are not the documented
+// ISO-8601 form at all (a bare "0", a US-style "09/03/2026") and, worse,
+// a timezone-less "2026-09-03T12:00:00" parses as LOCAL time — an
+// environment-dependent cutoff for a tool whose whole point is
+// reproducible historical scoping. Reject anything that doesn't match
+// the grammar before ever calling Date.parse on it.
+const ISO_TIMESTAMP_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/;
+
 function parseIsoDateArg(flagName, value) {
   if (value === null) return { ok: true, value: null };
-  if (Number.isNaN(Date.parse(value))) {
+  if (!ISO_TIMESTAMP_RE.test(value) || Number.isNaN(Date.parse(value))) {
     return { ok: false, error: `dev-flow-stats: --${flagName} is not a valid ISO-8601 timestamp: ${JSON.stringify(value)}` };
   }
   return { ok: true, value };
@@ -1931,6 +1991,13 @@ function cliMetrics(args) {
     console.log(`unattended-success: ${metric.unattended_success_count}/${metric.cohort_size} (${pct})`);
     console.log(`asked: ${metric.asked_count}`);
     console.log(`post-ready human fixes: ${metric.post_ready_fix_count}`);
+    // shepherd round 3, Codex-confirmed (P2): computeClosedCohortMetric
+    // explicitly preserves post-ready-fix uncertainty as its own count
+    // (a commit whose first_seen could not be resolved), but the
+    // human-readable form printed only the confirmed count — a reader
+    // saw "post-ready human fixes: 0" with no hint that some commits
+    // could not be determined at all.
+    if (metric.post_ready_fix_indeterminate_count > 0) console.log(`post-ready human fixes indeterminate (could not resolve commit visibility): ${metric.post_ready_fix_indeterminate_count}`);
     if (metric.indeterminate_count > 0) console.log(`indeterminate (broken/forged evidence, excluded above): ${metric.indeterminate_count}`);
     console.log("");
     console.log("issue  closed  success  interventions  asked");

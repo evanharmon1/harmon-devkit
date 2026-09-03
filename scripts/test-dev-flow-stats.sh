@@ -1855,6 +1855,72 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 41: an evidence marker claims destination=pr with a
+// non-null round — shepherd round 3, Codex-confirmed (P2), verified
+// against ai/schemas/README.md "Comment kinds": destination=pr is
+// reserved for the per-stage rollup (round=null); every per-round
+// comment is destination=issue. This entry is otherwise fully
+// self-consistent (correctly fetched from the PR, matches its listed
+// entry) — only the destination/round COMBINATION is illegal.
+{
+  const runId = "run-pr-dest-with-round-1";
+  const stagePayload = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
+  const prRoundComment = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "pr", 1, 1, stagePayload, "2026-09-01T00:03:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null,
+    pr: { number: 625, url: "https://example.invalid/pr/625" },
+    evidence_comments: [{
+      id: String(prRoundComment.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
+      digest: payloadDigest(JSON.stringify(stagePayload)),
+      marker: { run_id: runId, stage: "review", destination: "pr", round: 1, sequence: 1 },
+    }],
+    pr_bindings: chain([{ number: 625, url: "https://example.invalid/pr/625", bound_at: "2026-09-01T00:00:00Z" }]),
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("pr-dest-with-round", {
+    issues: [{ number: 155, pull_request: null }],
+    comments: { "155": [idx, rr], "625": [prRoundComment] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 155 },
+  });
+}
+
+// --- Scenario 42: a post-promotion commit with no resolvable first_seen
+// (no merged PR, no check-suite) must surface as
+// post_ready_fix_indeterminate_count, and shepherd round 3,
+// Codex-confirmed (P2): the human-readable --repo output must show it,
+// not just the JSON form.
+{
+  const runId = "run-postfix-unresolvable-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:01:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 626, url: "https://example.invalid/pr/626" },
+    evidence_comments: [],
+    promotion: { head: "6".repeat(40), promoted_at: "2026-09-01T00:10:00Z", gate_fingerprint: "unresolvable" },
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const promotedCommit = { sha: "6".repeat(40), commit: { committer: { date: "2026-09-01T00:10:00Z" } }, author: { id: TRUSTED_ORCHESTRATOR } };
+  // No mergedPrSeen/checkSuiteSeen for this commit at all — firstSeen
+  // resolves to null, unresolvable.
+  const unresolvableCommit = { sha: "d".repeat(40), commit: { committer: { date: "2026-09-01T00:20:00Z" } }, author: { id: 42 } };
+  writeScenario("postfix-unresolvable", {
+    issues: [{ number: 156, pull_request: null }],
+    comments: { "156": [idx, rr] },
+    commits: { "626": [promotedCommit, unresolvableCommit] },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 156 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -2169,6 +2235,15 @@ for flag_args in "--as-of not-a-date" "--since not-a-date" "--stale-after-days n
     [ "$rc" -eq 2 ] || fail "invalid arg ($flag_args): expected exit 2, got $rc: $out"
 done
 
+echo "== shepherd round 3: a timestamp that Date.parse() accepts but is not the documented ISO-8601 (Z) form is still a usage error =="
+for flag_args in "--as-of 0" "--as-of 09/03/2026" "--as-of 2026-09-03T12:00:00" "--since 2026-09-03T12:00:00+00:00"; do
+    set +e
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "parseable-but-non-ISO-8601 arg ($flag_args): expected exit 2, got $rc: $out"
+done
+
 echo "== review round 2: a value-taking flag followed by nothing (or another flag) is a usage error, not a silent default =="
 for flag_args in "--as-of" "--since" "--stale-after-days"; do
     set +e
@@ -2465,6 +2540,9 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy
 unset FAKE_EXIT_INDETERMINATE
 echo "$out" | jq -e '.[0].diffs[0].recomputed == null and (.[0].diffs[0].error | test("could not verify"))' >/dev/null || fail "indeterminate-exit-script: expected an error-shaped diff entry naming the verification failure, got: $out"
 echo "$out" | jq -e '.[0].diffs[0] | has("reason") | not' >/dev/null || fail "indeterminate-exit-script: expected no policy-disagreement 'reason' field on an indeterminate diff entry, got: $out"
+echo "== shepherd round 3: an indeterminate exit-script verdict marks the WHOLE replay result indeterminate, not just one diffs[] entry =="
+echo "$out" | jq -e '.[0].indeterminate == true' >/dev/null || fail "indeterminate-exit-script: expected the top-level result marked indeterminate, got: $out"
+echo "$out" | jq -e '.[0].reason | test("could not verify")' >/dev/null || fail "indeterminate-exit-script: expected the top-level reason to name the verification failure, got: $out"
 
 echo "== shepherd round 2: --since correctly excludes an issue whose indeterminate FIRST run predates the window, using the trusted index's own kickoff time =="
 export DFSTATS_DB="$tmp/scenarios/since-indeterminate-first.json"
@@ -2482,5 +2560,22 @@ rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "outcome-transitions-unbounded: expected indeterminate, got rc=$rc: $out"
 echo "$out" | grep -qi "outcome_transitions has 2 entries\|one terminal outcome" || fail "outcome-transitions-unbounded: expected an at-most-one-terminal-outcome reason, got: $out"
+
+echo "== shepherd round 3: a destination=pr marker with a non-null round is rejected, not silently dropped from the trajectory =="
+export DFSTATS_DB="$tmp/scenarios/pr-dest-with-round.json"
+run_id="$(meta pr-dest-with-round .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "pr-dest-with-round: expected indeterminate, got rc=$rc: $out"
+echo "$out" | grep -qi "destination=pr with a non-null round" || fail "pr-dest-with-round: expected a destination/round grammar reason, got: $out"
+
+echo "== shepherd round 3: post_ready_fix_indeterminate_count is shown in the human-readable --repo output, not just JSON =="
+export DFSTATS_DB="$tmp/scenarios/postfix-unresolvable.json"
+json_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$json_out" | jq -e '.post_ready_fix_indeterminate_count == 1' >/dev/null || fail "postfix-unresolvable: expected post_ready_fix_indeterminate_count 1 in JSON, got: $json_out"
+table_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001)"
+echo "$table_out" | grep -qi "post-ready human fixes indeterminate" || fail "postfix-unresolvable: expected the human-readable form to show post-ready-fix uncertainty, got: $table_out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"
