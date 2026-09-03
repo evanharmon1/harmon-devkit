@@ -6,11 +6,9 @@ description: >-
   incoming bot/human reviews, adjudicate findings as hypotheses (verify, fix
   only what's confirmed, explain rejections in per-thread replies), push, and
   re-dispatch, under the resolved integration and remediation caps (from
-  .devflow.toml's review policy). Promoting to ready-for-review is the
-  human-handoff point of the dev loop, so a human decides when to enter this
-  stage rather than a model triggering it on its own. Invoke as /integrate
-  [PR # or URL].
-disable-model-invocation: true
+  .devflow.toml's review policy). Use when a draft PR exists and the dev loop
+  calls for integrating it to ready-for-review. Invoke as /integrate [PR # or
+  URL].
 allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-current), Bash(git remote), Bash(git remote get-url:*), Bash(gh pr view:*), Bash(gh pr checks:*), Bash(gh pr list:*), Bash(gh run view:*), Bash(gh run list:*), Bash(${CLAUDE_SKILL_DIR}/assets/gh-ro.sh:*), Bash(${CLAUDE_SKILL_DIR}/assets/readiness-gate.sh:*)
 ---
 
