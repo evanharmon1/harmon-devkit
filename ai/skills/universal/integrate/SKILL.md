@@ -1,5 +1,5 @@
 ---
-name: shepherd
+name: integrate
 description: >-
   Shepherd a draft PR to ready for review — watch CI and incoming bot/human reviews,
   treat findings as hypotheses (verify, fix only what's confirmed, explain

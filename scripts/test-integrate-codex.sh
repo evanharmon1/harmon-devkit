@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Hermetic regression tests for the shepherd Codex cloud-review classifier.
+# Hermetic regression tests for the integrator's Codex cloud-review classifier
+# (formerly the shepherd stage's; renamed with the stage, see specs/dev-flow-v2.md).
 
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-helper="${repo_root}/ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
-test_tmp="$(mktemp -d -t shepherd-codex-test-XXXXXX)"
+helper="${repo_root}/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
+test_tmp="$(mktemp -d -t integrate-codex-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
 bin_dir="${test_tmp}/bin"
@@ -2961,4 +2962,4 @@ assert_status 0 clean
 printf '%s' "$check_out" | jq -e '.detail | test("settled: filed")' >/dev/null ||
     fail "the detail must name the surviving disposition: $check_out"
 # Last line on purpose: every case above must have run for this to print.
-echo "shepherd Codex cloud-review classifier: PASS"
+echo "integrator Codex cloud-review classifier: PASS"

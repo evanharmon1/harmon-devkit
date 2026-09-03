@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Hermetic regression tests for the shepherd readiness gate and the read-only
-# gh wrapper (ai/skills/universal/shepherd/assets/readiness-gate.sh, gh-ro.sh).
+# Hermetic regression tests for the integration-stage readiness gate and the
+# read-only gh wrapper (ai/skills/universal/integrate/assets/readiness-gate.sh,
+# gh-ro.sh) — formerly the shepherd stage's; renamed with the stage, see
+# specs/dev-flow-v2.md.
 #
 # The point of the gate is that no condition can be printed-and-promoted past:
 # every fixture below asserts an exit code AND the machine token naming the
@@ -10,8 +12,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-assets="${repo_root}/ai/skills/universal/shepherd/assets"
-test_tmp="$(mktemp -d -t shepherd-readiness-test-XXXXXX)"
+assets="${repo_root}/ai/skills/universal/integrate/assets"
+test_tmp="$(mktemp -d -t integrate-readiness-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
 bin_dir="${test_tmp}/bin"
@@ -48,7 +50,7 @@ exit "$rc"
 STUB
 chmod +x "${gate_dir}/check-codex-cloud-review.sh"
 
-# Watchdog for gate invocations, same idiom as test-shepherd-codex.sh: a
+# Watchdog for gate invocations, same idiom as test-integrate-codex.sh: a
 # fired watchdog means the helper hung, which is a distinct failure from any
 # assertion below.
 watchdog_bin=
@@ -1239,4 +1241,4 @@ set -e
 [ "$ro_rc" -eq 7 ] ||
     fail "gh-ro should propagate gh's exit 7, got $ro_rc"
 
-echo "shepherd readiness gate + gh-ro: PASS"
+echo "integration readiness gate + gh-ro: PASS"

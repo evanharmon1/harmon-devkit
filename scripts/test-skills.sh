@@ -2035,7 +2035,7 @@ echo "==> standardize-repo audit assets"
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
 GAUNTLET_SKILL="$repo/ai/skills/universal/gauntlet/SKILL.md"
-SHEPHERD_SKILL="$repo/ai/skills/universal/shepherd/SKILL.md"
+INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
 CLAIM_SKILL="$repo/ai/skills/universal/claim/SKILL.md"
 
@@ -2167,10 +2167,10 @@ assert_gauntlet_ledger_hooks() {
     grep -qF '⛔ blocked/escalating' "$file"
 }
 
-assert_shepherd_ledger_hooks() {
+assert_integrate_ledger_hooks() {
     local file="$1"
     awk '
-        /\*\*Shepherd round-entry ledger\.\*\*/ { entry = NR }
+        /\*\*Integrator round-entry ledger\.\*\*/ { entry = NR }
         /\*\*Codex-cycle result ledger\.\*\*/ { cycle = NR }
         /\*\*Ready-stop ledger\.\*\*/ { ready = NR }
         END { exit !(entry && cycle && ready && entry < cycle && cycle < ready) }
@@ -2205,7 +2205,7 @@ assert_shepherd_ledger_hooks() {
     grep -qF '`completed (no round ran)` at' "$file" || return 1
     grep -qF '`stopped (no round ran)` at a' "$file" || return 1
     [ "$(grep -cF 'skipped (cap 0)' "$file")" -ge 3 ] || return 1
-    grep -qF 'Shepherd-stage override transfer.' "$file" || return 1
+    grep -qF 'Integrator-stage override transfer.' "$file" || return 1
     grep -qF 'This stage starts after the draft PR' "$file" || return 1
     grep -qF 'override-carried' "$file" || return 1
     grep -qF 'Immediately before writing, fetch `state,isDraft,headRefOid,body` together' "$file" || return 1
@@ -2232,16 +2232,16 @@ assert_gauntlet_security_gate() {
 
 expect_ok "gauntlet carries the canonical ledger rows and glyph legend" \
     assert_ledger_contract "$GAUNTLET_SKILL"
-expect_ok "shepherd carries the canonical ledger rows and glyph legend" \
-    assert_ledger_contract "$SHEPHERD_SKILL"
-expect_ok "gauntlet and shepherd ledger contracts are byte-identical" \
-    assert_shared_ledger "$GAUNTLET_SKILL" "$SHEPHERD_SKILL"
+expect_ok "integrate carries the canonical ledger rows and glyph legend" \
+    assert_ledger_contract "$INTEGRATE_SKILL"
+expect_ok "gauntlet and integrate ledger contracts are byte-identical" \
+    assert_shared_ledger "$GAUNTLET_SKILL" "$INTEGRATE_SKILL"
 expect_ok "gauntlet hooks ledger entry and exit/escalation events" \
     assert_gauntlet_ledger_hooks "$GAUNTLET_SKILL"
 expect_ok "gauntlet uses security as its pre-PR gate and keeps CI on demand" \
     assert_gauntlet_security_gate "$GAUNTLET_SKILL"
-expect_ok "shepherd hooks round, push, Codex result, and ready events" \
-    assert_shepherd_ledger_hooks "$SHEPHERD_SKILL"
+expect_ok "integrate hooks round, push, Codex result, and ready events" \
+    assert_integrate_ledger_hooks "$INTEGRATE_SKILL"
 
 expect_fail "standardize-repo has no references to the deleted source follow-up doc" \
     grep -Riq 'sourceRepo''FollowUps' "$STANDARDIZE_REFS"
