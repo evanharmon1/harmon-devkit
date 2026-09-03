@@ -509,6 +509,14 @@ instance being validated:
   express any of that, since it validates every array entry against the
   same schema independently, blind to the entry's own position, its
   siblings, or anything outside the array.
+- **Lane assembly lives in the authenticated run transition**
+  (`checkLaneAssemblies`) — an `implement` transition may carry
+  `assembly: {canonical_head, integrated_lanes, discarded_lanes}`. The schema
+  requires a full commit SHA and both lane lists; the semantic validator keeps
+  each list unique, rejects overlap between selected and discarded lanes, and
+  refuses `assembly` on any non-implement transition. This keeps the feature
+  owner's selection and resulting head in the same authenticated run evidence
+  as the lifecycle transition it caused instead of an unauthenticated sidecar.
 - **Finding id round attribution without `--pass`**
   (`checkAdjudicationIdAttribution`) — a finding id's own
   `<stage>-r<round>` segments are part of its grammar, so they must equal
@@ -1964,7 +1972,7 @@ authenticated against the target repo.
 | `run.json` | One `run.schema.json` document | For `blocker-comment`, `readiness-input`; optional elsewhere |
 | `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
 | `passes/*.json` | Result envelopes (`role: challenger`, `reviewer`, or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location) when no matching pass is supplied. The "Evidence" column is always the adjudication's own `evidence` field — schema-required, never pass-dependent — never a pass's raw finding text (see "Evidence is always the adjudicated record's own" below). **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
-| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines. Shape-validated when present (`outcome` a non-empty string; `reason` a string; `rounds_counted` a non-negative integer; `next_round` a positive integer; `corrections` an array of strings — each only when present) |
+| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[], verified_findings[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines and authoritative verified provenance. Shape-validated when present: `corrections` accepts the exit evaluator's structured `{finding_id, field, asserted, corrected, evidence}` entries (legacy display strings remain accepted), while each `verified_findings` entry carries its id plus verified/corrected/unverified provenance and fingerprint facts. Rendered provenance comes from this verified projection when supplied, never the superseded producer assertion. |
 | `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present: `rigor.level`/`rigor.source` non-empty strings; `rounds` and every one of its five caps are **required** whenever `policy.json` exists at all — a partial or omitted `rounds` would let the rendered rigor line silently disclose an incomplete budget — each a non-negative integer, **except `min_rounds`, which must be positive** (AGENTS.md: every rigor level's floor is always `>= 1`; `0` is semantically invalid for that one key, not just a low value); `disclosures[]` stays optional, each entry `{kind, detail}` |
 
 Every file present is schema-validated (structural shape only — this

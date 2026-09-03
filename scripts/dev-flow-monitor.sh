@@ -11,14 +11,16 @@ Usage:
   dev-flow-monitor.sh state-path --run-id ID [--repo-root DIR]
   dev-flow-monitor.sh reserve --state FILE --event ID --action assembly|push|comment \
     --expected-head SHA --writer feature-owner \
-    [--trusted-actor-id ID --marker TEXT --payload-digest SHA256]
+    [--trusted-actor-id ID --registry-revision SHA --repo-root DIR \
+     --marker TEXT --payload-digest SHA256]
   dev-flow-monitor.sh reconcile --state FILE --event ID --observed FILE
 
 The state file is durable monitor state.  A reservation is written before an
 external action.  The observed file must be JSON with status landed, absent, or
 indeterminate; landed also requires matching event, action, and expected_head.
-Comment observations additionally require comment_id, trusted actor_id, marker,
-payload_digest, and body; the body is hashed again before adoption.
+Comment reservations authenticate the actor against the run-pinned registry
+revision. Comment observations provide a complete comments[] candidate set;
+the monitor filters and hashes it, then adopts the lowest matching comment ID.
 `reconcile` prints adopt, retry, or block and advances the event cursor only
 for an adopted landed action.  PR merges are never reservable.
 EOF
@@ -43,6 +45,7 @@ repo_root="."
 trusted_actor_id=""
 marker=""
 payload_digest=""
+registry_revision=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -90,6 +93,10 @@ while [ "$#" -gt 0 ]; do
         payload_digest="${2:-}"
         shift 2
         ;;
+    --registry-revision)
+        registry_revision="${2:-}"
+        shift 2
+        ;;
     *) usage ;;
     esac
 done
@@ -117,11 +124,27 @@ reserve)
     [ "$writer" = "feature-owner" ] || die "only the feature-branch owner may reserve $action"
     if [ "$action" = "comment" ]; then
         [[ "$trusted_actor_id" =~ ^[1-9][0-9]*$ ]] || die "comment reservation requires a trusted actor id"
+        [[ "$registry_revision" =~ ^[0-9a-f]{40}$ ]] ||
+            die "comment reservation requires a full run-pinned registry revision"
         [ -n "$marker" ] || die "comment reservation requires a deterministic marker"
         [[ "$payload_digest" =~ ^[0-9a-f]{64}$ ]] || die "comment reservation requires a SHA-256 payload digest"
+        # The actor ID is evidence, not authority. Resolve authority from the
+        # immutable registry snapshot captured for this run; accepting the ID
+        # merely because the caller repeated it would let a forged record
+        # vouch for its own comments. #741 may add a dedicated orchestrator
+        # allowlist later, but this lane deliberately consumes the registry's
+        # existing remote-finder trust roots instead of inventing that schema.
+        registry_json="$(git -C "$repo_root" show "${registry_revision}:agent-registry.json" 2>/dev/null)" ||
+            die "could not read agent-registry.json at the run-pinned revision"
+        jq -e --arg actor "$trusted_actor_id" '
+            [.finders[]?.trusted_actor_id | select(. != null)] | index($actor) != null
+        ' <<<"$registry_json" >/dev/null ||
+            die "comment actor id is not trusted by the run-pinned registry revision"
     fi
     if [ ! -e "$state" ]; then
-        jq -n '{version: 1, cursor: null, actions: []}' >"$state"
+        init_tmp="${state}.tmp.init.$$"
+        jq -n '{version: 1, cursor: null, actions: []}' >"$init_tmp"
+        mv "$init_tmp" "$state"
     fi
     jq -e --arg event "$event" --arg action "$action" --arg head "$expected_head" '
             (.version == 1) and
@@ -131,7 +154,8 @@ reserve)
         ' "$state" >/dev/null || die "invalid state, duplicate event, or invalid reservation"
     tmp="${state}.tmp.$$"
     jq --arg event "$event" --arg action "$action" --arg head "$expected_head" \
-        --arg actor "$trusted_actor_id" --arg marker "$marker" --arg digest "$payload_digest" '
+        --arg actor "$trusted_actor_id" --arg registry_revision "$registry_revision" \
+        --arg marker "$marker" --arg digest "$payload_digest" '
             .actions += [{
                 event: $event,
                 action: $action,
@@ -139,6 +163,7 @@ reserve)
                 state: "reserved",
                 comment_auth: (if $action == "comment" then {
                     trusted_actor_id: $actor,
+                    registry_revision: $registry_revision,
                     marker: $marker,
                     payload_digest: $digest
                 } else null end)
@@ -181,16 +206,26 @@ reconcile)
             expected_actor="$(jq -r '.comment_auth.trusted_actor_id' <<<"$reservation")"
             expected_marker="$(jq -r '.comment_auth.marker' <<<"$reservation")"
             expected_digest="$(jq -r '.comment_auth.payload_digest' <<<"$reservation")"
-            jq -e --arg actor "$expected_actor" --arg marker "$expected_marker" --arg digest "$expected_digest" '
-                (.comment_id | type == "number" and . > 0 and floor == .) and
-                (.actor_id | tostring) == $actor and
-                .marker == $marker and
-                .payload_digest == $digest and
-                (.body | type == "string" and contains($marker))
-            ' "$observed" >/dev/null || die "comment postcondition is not authenticated"
-            actual_digest="$(jq -j '.body' "$observed" | sha256sum | awk '{print $1}')"
-            [ "$actual_digest" = "$expected_digest" ] || die "comment body digest does not match reservation"
-            comment_id="$(jq -r '.comment_id' "$observed")"
+            jq -e '.comments | type == "array"' "$observed" >/dev/null ||
+                die "comment observation must contain the complete comments candidate set"
+            candidates="$(jq -c --arg actor "$expected_actor" --arg marker "$expected_marker" \
+                --arg digest "$expected_digest" '
+                    [.comments[] | select(
+                        (.comment_id | type == "number" and . > 0 and floor == .) and
+                        (.actor_id | tostring) == $actor and
+                        .marker == $marker and
+                        .payload_digest == $digest and
+                        (.body | type == "string" and contains($marker))
+                    )] | sort_by(.comment_id)[]
+                ' "$observed")"
+            while IFS= read -r candidate; do
+                [ -n "$candidate" ] || continue
+                actual_digest="$(jq -j '.body' <<<"$candidate" | sha256sum | awk '{print $1}')"
+                [ "$actual_digest" = "$expected_digest" ] || continue
+                comment_id="$(jq -r '.comment_id' <<<"$candidate")"
+                break
+            done <<<"$candidates"
+            [ -n "$comment_id" ] || die "comment postcondition is not authenticated"
         fi
         tmp="${state}.tmp.$$"
         jq --arg event "$event" --arg comment_id "$comment_id" '

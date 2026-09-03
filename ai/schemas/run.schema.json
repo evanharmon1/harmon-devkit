@@ -50,6 +50,26 @@
             "description": "Optional — set when this stage transition is known to have ended (e.g. 'converged', 'capped: 1 adjudicated P1 remaining'). Absent while the stage is still the run's current one.",
             "type": "string",
             "minLength": 1
+          },
+          "assembly": {
+            "description": "Feature-owner-authored lane assembly evidence. Present only on the implement transition whose output was assembled: the exact canonical feature head plus every selected and discarded lane. The semantic validator enforces implement-only placement, uniqueness, and disjoint lane sets.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["canonical_head", "integrated_lanes", "discarded_lanes"],
+            "properties": {
+              "canonical_head": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "integrated_lanes": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "discarded_lanes": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              }
+            }
           }
         }
       }

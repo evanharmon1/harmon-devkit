@@ -1353,6 +1353,37 @@ async function main() {
     throw err;
   }
 
+  const cap = resolved.rounds[args.stage];
+  const minRounds = effectiveMinRounds(resolved.rounds, cap);
+
+  // Cap integrity applies before BOTH output modes. --verification-only is a
+  // pre-adjudication projection, not permission to create/adjudicate a round
+  // the resolved policy forbids. Check retained and raw evidence here, before
+  // that mode can return successfully.
+  const overCapRound = rounds.find((r) => r.round > cap);
+  if (overCapRound) {
+    return indeterminate(args, `round ${overCapRound.round} exceeds the resolved ${args.stage} cap (${cap}) — trajectory inconsistent with its own policy`);
+  }
+  if (cap === 0 && rounds.length > 0) {
+    return indeterminate(args, `${args.stage} cap is 0 (disabled) but the trajectory contains round ${rounds[0].round} — trajectory inconsistent with its own policy`);
+  }
+  const rawOverCapPassRound = runDir.passes
+    .map((p) => p.envelope.payload)
+    .find((p) => p && p.stage === args.stage && typeof p.round === "number" && p.round > cap);
+  if (rawOverCapPassRound) {
+    return indeterminate(args, `a ${args.stage} pass names round ${rawOverCapPassRound.round}, exceeding the resolved cap (${cap}), even though it did not survive receipt validation — trajectory inconsistent with its own policy`);
+  }
+  const rawOverCapAdjRound = runDir.adjudications.find((a) => a.doc.stage === args.stage && a.doc.round > cap);
+  if (rawOverCapAdjRound) {
+    return indeterminate(args, `a ${args.stage} adjudication names round ${rawOverCapAdjRound.doc.round}, exceeding the resolved cap (${cap}), even though it did not survive validation — trajectory inconsistent with its own policy`);
+  }
+  const presentRoundNumbers = [...new Set(rounds.map((r) => r.round))].sort((a, b) => a - b);
+  for (let i = 0; i < presentRoundNumbers.length; i++) {
+    if (presentRoundNumbers[i] !== i + 1) {
+      return indeterminate(args, `${args.stage} rounds are not contiguous from 1 (present: ${presentRoundNumbers.join(", ")}) — trajectory inconsistent with its own policy`);
+    }
+  }
+
   // Every retained COMPLETE round needs its own adjudication document,
   // including a clean, zero-finding one — review round 2, confirmed: the
   // prior `findings.length > 0` guard meant a completed round with no
@@ -1449,57 +1480,6 @@ async function main() {
     return 0;
   }
 
-  const cap = resolved.rounds[args.stage];
-  const minRounds = effectiveMinRounds(resolved.rounds, cap);
-
-  // "No confidence pass or adjudication round number SHALL exceed its
-  // resolved stage cap, and a cap-zero confidence stage SHALL contain no
-  // rounds" (exit-computation spec, "Caps constrain retained trajectory
-  // records"). A trajectory that violates this is corrupt/inconsistent
-  // with its own resolved policy and must be rejected outright, never
-  // silently treated as "the round conveniently at the cap" or "disabled
-  // with 0 rounds" while ignoring rounds that actually exist.
-  const overCapRound = rounds.find((r) => r.round > cap);
-  if (overCapRound) {
-    return indeterminate(args, `round ${overCapRound.round} exceeds the resolved ${args.stage} cap (${cap}) — trajectory inconsistent with its own policy`);
-  }
-  if (cap === 0 && rounds.length > 0) {
-    return indeterminate(args, `${args.stage} cap is 0 (disabled) but the trajectory contains round ${rounds[0].round} — trajectory inconsistent with its own policy`);
-  }
-  // The two checks above inspect only `rounds` — assembled AFTER blocked or
-  // otherwise-rejected passes and orphaned adjudications have already
-  // disappeared (validateReceipts/the adjudication loop above both push a
-  // rejection to `diagnostics` and drop the entry, for reasons unrelated to
-  // round number). A receipt-backed pass or adjudication numbered cap + 1
-  // that happens to ALSO be rejected for some other reason — wrong status,
-  // schema failure, mismatched run_id — is therefore invisible to this
-  // guard, even though its mere existence proves dispatch continued past
-  // the cap. Check the raw, pre-filter evidence directly. Shepherd-stage
-  // cloud finding, confirmed.
-  const rawOverCapPassRound = runDir.passes
-    .map((p) => p.envelope.payload)
-    .find((p) => p && p.stage === args.stage && typeof p.round === "number" && p.round > cap);
-  if (rawOverCapPassRound) {
-    return indeterminate(args, `a ${args.stage} pass names round ${rawOverCapPassRound.round}, exceeding the resolved cap (${cap}), even though it did not survive receipt validation — trajectory inconsistent with its own policy`);
-  }
-  const rawOverCapAdjRound = runDir.adjudications.find((a) => a.doc.stage === args.stage && a.doc.round > cap);
-  if (rawOverCapAdjRound) {
-    return indeterminate(args, `a ${args.stage} adjudication names round ${rawOverCapAdjRound.doc.round}, exceeding the resolved cap (${cap}), even though it did not survive validation — trajectory inconsistent with its own policy`);
-  }
-  // Round numbers must be exactly 1..max with no gaps — trusting the
-  // largest producer-supplied round number alone (as capReached/capped-clean
-  // do) would let a missing earlier round (never received, or rejected by
-  // receipt validation) silently spend the cap as if every round up to it
-  // had actually happened. A gap of any kind — including one created by an
-  // earlier round's pass being rejected above — means the trajectory cannot
-  // be trusted to represent what it claims.
-  const presentRoundNumbers = [...new Set(rounds.map((r) => r.round))].sort((a, b) => a - b);
-  for (let i = 0; i < presentRoundNumbers.length; i++) {
-    if (presentRoundNumbers[i] !== i + 1) {
-      return indeterminate(args, `${args.stage} rounds are not contiguous from 1 (present: ${presentRoundNumbers.join(", ")}) — trajectory inconsistent with its own policy`);
-    }
-  }
-
   let verdict;
   if (cap === 0) {
     verdict = { stage: args.stage, outcome: "capped", reason: "disabled", action: "advance", rounds_counted: 0, next_round: null };
@@ -1540,7 +1520,7 @@ async function main() {
   // was simply confirmed as asserted — or left "unverified" because no
   // evidence could decide it — has no other way to reach a caller (or the
   // conformance corpus) short of exposing the full verified state here.
-  verdict.verified_findings = rounds.flatMap((r) =>
+  verdict.verified_findings = ancestryRetainedForVerification.flatMap((r) =>
     r.findings.map((f) => ({
       id: f.id,
       provenance_status: f.provenanceStatus,

@@ -48,9 +48,39 @@ set -e
 jq -e '.outcome == "verification" and .action == "adjudicate"' <<<"$pre_out" >/dev/null ||
     fail "pre-adjudication projection was not distinct from an exit"
 
+echo "==> pre-adjudication verification rejects a round beyond the cap"
+over_cap_record="$tmp/over-cap"
+mkdir -p "$over_cap_record/passes"
+cp "$fixture/run/run.json" "$over_cap_record/run.json"
+jq '.payload.round = 99' "$fixture/run/passes/review-r1-codex-cli.json" \
+    >"$over_cap_record/passes/review-r1-codex-cli.json"
+set +e
+over_cap_out="$(node scripts/dev-flow-exit.mjs --run "$over_cap_record" --stage review \
+    --policy "$fixture/policy.toml" --current-head \
+    "$(jq -r '.head' "$fixture/run/passes/review-r1-codex-cli.json")" --verification-only --json)"
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "over-cap pre-adjudication evidence returned $status"
+jq -e '.outcome == "indeterminate" and (.reason | contains("exceed"))' \
+    <<<"$over_cap_out" >/dev/null || fail "over-cap pre-adjudication evidence was accepted: $over_cap_out"
+
 echo "==> renderer projects the review record"
 rendered="$(scripts/render-dev-flow.sh adjudication-record --record "$render_record")"
 grep -Fq 'review-r1-codex-cli-1' <<<"$rendered" || fail "review finding was not rendered"
+
+echo "==> renderer publishes verified provenance rather than superseded pass provenance"
+verified_record="$tmp/verified-render"
+cp -R "$render_record" "$verified_record"
+jq '.corrections = [{finding_id: "review-r1-codex-cli-1", field: "provenance",
+      asserted: "original", corrected: "round:2", evidence: "trusted history"}] |
+    .verified_findings = [{id: "review-r1-codex-cli-1", provenance_status: "corrected",
+      verified_provenance: "round:2", fingerprint_status: "verified", verified_fingerprint: "new"}]' \
+    "$render_record/verdict.json" >"$verified_record/verdict.json"
+verified_rendered="$(scripts/render-dev-flow.sh round-table --record "$verified_record" --stage review --round 1)"
+grep -Fq 'round:2 (corrected)' <<<"$verified_rendered" ||
+    fail "renderer published the pass's superseded provenance"
+grep -Fq 'original → round:2' <<<"$verified_rendered" ||
+    fail "renderer did not accept the exit projection's structured correction"
 
 echo "==> durable publisher owns crash adoption and postcondition refusal"
 head="$(jq -r '.head' "$fixture/run/passes/review-r1-codex-cli.json")"
@@ -60,16 +90,28 @@ resolved_state="$("$monitor" state-path --run-id fixture-run)"
     fail "monitor state did not resolve through the git common directory"
 state="$tmp/monitor.json"
 trusted_actor_id="199175422"
+registry_revision="$(git rev-parse HEAD)"
 comment_marker="dev-flow:fixture-run:challenge:1"
 comment_body="<!-- $comment_marker --> fixture evidence"
 comment_digest="$(printf '%s' "$comment_body" | sha256sum | awk '{print $1}')"
+set +e
+"$monitor" reserve --state "$tmp/untrusted-reservation.json" --event forged-trust --action comment \
+    --expected-head "$head" --writer feature-owner --trusted-actor-id 1 \
+    --registry-revision "$registry_revision" --repo-root "$repo" \
+    --marker "$comment_marker" --payload-digest "$comment_digest" >"$tmp/forged-trust.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "caller-declared actor bypassed the run-pinned registry trust root"
+grep -Fq 'not trusted by the run-pinned registry revision' "$tmp/forged-trust.out" ||
+    fail "registry-rooted actor rejection was not reported"
 "$monitor" reserve --state "$state" --event crash-write --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
+    --registry-revision "$registry_revision" --repo-root "$repo" \
     --marker "$comment_marker" --payload-digest "$comment_digest" >/dev/null
 jq -n --arg head "$head" --arg marker "$comment_marker" --arg body "$comment_body" \
     --arg digest "$comment_digest" \
     '{status: "landed", event: "crash-write", action: "comment", head: $head,
-      comment_id: 42, actor_id: 1, marker: $marker, body: $body, payload_digest: $digest}' \
+      comments: [{comment_id: 42, actor_id: 1, marker: $marker, body: $body, payload_digest: $digest}]}' \
     >"$tmp/untrusted.json"
 set +e
 "$monitor" reconcile --state "$state" --event crash-write --observed "$tmp/untrusted.json" \
@@ -80,12 +122,17 @@ set -e
 jq -n --arg head "$head" --arg actor "$trusted_actor_id" --arg marker "$comment_marker" \
     --arg body "$comment_body" --arg digest "$comment_digest" \
     '{status: "landed", event: "crash-write", action: "comment", head: $head,
-      comment_id: 42, actor_id: $actor, marker: $marker, body: $body, payload_digest: $digest}' \
+      comments: [
+        {comment_id: 43, actor_id: $actor, marker: $marker, body: $body, payload_digest: $digest},
+        {comment_id: 42, actor_id: $actor, marker: $marker, body: $body, payload_digest: $digest}
+      ]}' \
     >"$tmp/landed.json"
 "$monitor" reconcile --state "$state" --event crash-write --observed "$tmp/landed.json" |
     grep -Fq 'adopt crash-write' || fail "crash-after-write action was not adopted"
 jq -e '.cursor == "crash-write" and .actions[0].state == "adopted"' "$state" >/dev/null ||
     fail "adoption did not durably advance the cursor"
+jq -e '.actions[0].postcondition.comment_id == "42"' "$state" >/dev/null ||
+    fail "monitor did not canonically adopt the lowest matching comment id"
 
 "$monitor" reserve --state "$state" --event absent-write --action push \
     --expected-head "$head" --writer feature-owner >/dev/null

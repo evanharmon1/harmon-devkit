@@ -70,7 +70,7 @@
 //                         silently wrong rather than merely thin.
 //   verdict.json          Optional. The exit-computation verdict (#636):
 //                         {outcome, reason, rounds_counted, next_round,
-//                         corrections[]}, consumed as-is.
+//                         corrections[], verified_findings[]}, consumed as-is.
 //   policy.json           Optional. Resolved-policy disclosure input (this
 //                         script's own contract, since no upstream schema
 //                         defines one yet):
@@ -393,8 +393,39 @@ function validateVerdictShape(verdict, file) {
     fail(`${file}: next_round, if present, must be a positive integer`)
   }
   if (verdict.corrections !== undefined) {
-    if (!Array.isArray(verdict.corrections) || !verdict.corrections.every((c) => typeof c === 'string')) {
-      fail(`${file}: corrections, if present, must be an array of strings`)
+    const validCorrection = (correction) =>
+      typeof correction === 'string' ||
+      (typeof correction === 'object' &&
+        correction !== null &&
+        typeof correction.finding_id === 'string' &&
+        (correction.field === 'provenance' || correction.field === 'fingerprint') &&
+        typeof correction.asserted === 'string' &&
+        typeof correction.corrected === 'string' &&
+        typeof correction.evidence === 'string')
+    if (!Array.isArray(verdict.corrections) || !verdict.corrections.every(validCorrection)) {
+      fail(`${file}: corrections, if present, must contain strings or exit-computation correction objects`)
+    }
+  }
+  if (verdict.verified_findings !== undefined) {
+    const validStatuses = new Set(['verified', 'corrected', 'unverified'])
+    const seen = new Set()
+    if (!Array.isArray(verdict.verified_findings)) {
+      fail(`${file}: verified_findings, if present, must be an array`)
+    }
+    for (const finding of verdict.verified_findings) {
+      if (
+        typeof finding !== 'object' ||
+        finding === null ||
+        typeof finding.id !== 'string' ||
+        !validStatuses.has(finding.provenance_status) ||
+        typeof finding.verified_provenance !== 'string' ||
+        !validStatuses.has(finding.fingerprint_status) ||
+        typeof finding.verified_fingerprint !== 'string'
+      ) {
+        fail(`${file}: each verified_findings entry must carry id, verified provenance, and verified fingerprint facts`)
+      }
+      if (seen.has(finding.id)) fail(`${file}: verified_findings contains duplicate id ${finding.id}`)
+      seen.add(finding.id)
     }
   }
 }
@@ -453,6 +484,7 @@ function validatePolicyShape(policy, file) {
 // adjudication side must not require passes/ to exist.
 function buildFindingIndex(record) {
   const passFindingsById = new Map()
+  const verificationById = new Map((record.verdict?.verified_findings ?? []).map((finding) => [finding.id, finding]))
   for (const { file, envelope } of record.passes) {
     const findings = envelope.payload.findings || []
     for (const finding of findings) {
@@ -520,7 +552,8 @@ function buildFindingIndex(record) {
         run_id: doc.run_id,
         finder: idMatch[3],
         n: Number.parseInt(idMatch[4], 10),
-        pass: passFindingsById.get(entry.finding_id) || null
+        pass: passFindingsById.get(entry.finding_id) || null,
+        verification: verificationById.get(entry.finding_id) || null
       })
     }
   }
@@ -817,6 +850,9 @@ function summary(row) {
 }
 
 function provenance(row) {
+  if (row.verification) {
+    return `${row.verification.verified_provenance} (${row.verification.provenance_status})`
+  }
   return hasFindingCore(row.pass) ? row.pass.finding.provenance : 'n/a'
 }
 
@@ -1085,7 +1121,11 @@ function verdictLine(verdict) {
   if (Number.isInteger(verdict.rounds_counted)) details.push(`rounds counted: ${verdict.rounds_counted}`)
   if (Number.isInteger(verdict.next_round)) details.push(`next round: ${verdict.next_round}`)
   if (Array.isArray(verdict.corrections) && verdict.corrections.length > 0) {
-    details.push(`corrections: ${verdict.corrections.map(neutralizeMarkers).join('; ')}`)
+    const correctionText = (correction) =>
+      typeof correction === 'string'
+        ? correction
+        : `${correction.finding_id} ${correction.field}: ${correction.asserted} → ${correction.corrected} (${correction.evidence})`
+    details.push(`corrections: ${verdict.corrections.map((c) => neutralizeMarkers(correctionText(c))).join('; ')}`)
   }
   return details.length > 0 ? `**Exit:** ${head} (${details.join('; ')})` : `**Exit:** ${head}`
 }

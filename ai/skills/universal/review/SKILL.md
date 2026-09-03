@@ -62,11 +62,18 @@ with the same trusted repository history and head map, persist its returned JSON
 
 After each adjudication, render immutable evidence through
 `scripts/render-dev-flow.sh round-table --record <record> --stage <stage>
---round <N>` and post it immediately on the issue with its deterministic run,
-stage, round, and sequence marker. Before a draft exists, that issue comment is
-the durable projection; terminal blockers are rendered with `blocker-comment`
-and posted beside it. At draft creation, use `scripts/render-dev-flow.sh
-publish` for the PR-body projection without deleting the local record.
+--round <N>`. Before any GitHub write, compute the exact body digest and reserve
+the comment through `scripts/dev-flow-monitor.sh reserve`, binding the expected
+head, deterministic run/stage/round/sequence marker, actor ID, and the run's
+kickoff-pinned registry revision. Only then post. On re-arm, fetch the complete
+bounded comment candidate set and pass it to `reconcile`; the monitor validates
+the actor against that pinned registry, hashes each candidate body, and adopts
+the lowest authenticated matching comment ID. Post once only after `reconcile`
+returns `retry`; `block` is terminal. Before a draft exists, that issue comment
+is the durable projection; terminal blockers are rendered with
+`blocker-comment` and use the same reserve-first path. At draft creation, use
+`scripts/render-dev-flow.sh publish` for the PR-body projection without deleting
+the local record.
 
 Act only on the second returned outcome. `continue` dispatches the next pass
 when no confirmed remediation exists (including an empty or entirely
