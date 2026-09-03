@@ -445,6 +445,21 @@ printf '%s' "$err" | grep -Fi "transport override" >/dev/null ||
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
     fail "a push whose gate installed an SSH transport override must not land"
 
+# Structural, not behavioral: this file's only hermetic transport-faking
+# mechanism is the SSH GIT_SSH_COMMAND stub (every fixture's pushurl is
+# ssh://git@github.com/...), and http.* config has no bearing on an
+# SSH-transport push at all — a URL-scoped http.https://github.com/.proxy
+# override genuinely has no effect on an ssh:// destination regardless of
+# whether transport_fingerprint resolves it, so there is no hermetic way
+# to drive a destination whose proxy/TLS/resolve settings actually
+# matter, the same reason the HTTPS-port and insteadOf-revalidation
+# checks above are structural.
+echo "  -> transport_fingerprint resolves URL-scoped HTTP config, not only the bare key"
+grep -F -- '--get-urlmatch http.proxy' "$helper" >/dev/null &&
+    grep -F -- '--get-urlmatch http.sslVerify' "$helper" >/dev/null &&
+    grep -F -- '--get-urlmatch http.curloptResolve' "$helper" >/dev/null ||
+    fail "transport_fingerprint must resolve each of proxy/sslVerify/curloptResolve against the destination URL via --get-urlmatch, not only as a bare key — a URL-scoped override like http.https://github.com/.proxy is invisible to a bare 'git config --get' even though git applies it to the actual connection to that URL (Codex cloud review, confirmed empirically: --get-urlmatch resolves it, a bare --get does not)"
+
 # Structural, not behavioral, for the same reason the push-URL-binding check
 # just above is structural: exercising resolve_push_url's HTTPS branch to a
 # real host needs an actual reachable server (unlike the SSH branch, there is
@@ -682,6 +697,44 @@ printf '%s' "$err" | grep -Fi "is a symlink" >/dev/null ||
     fail "a symlinked --devflow-policy-script must be refused even though its TARGET's bytes match the genuine closure member — Node resolves relative imports against the target's real directory, not the symlink's own (Codex cloud review, confirmed): $err"
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
     fail "a symlinked closure entrypoint must not push"
+
+echo "  -> a replace ref cannot substitute tampered content for --closure-base's own object"
+root="$(new_fixture replace-ref-tamper)"
+cd "${root}/work"
+mark_base "${root}/work"
+merge_base=$mark_base_tag
+merge_base_sha=$mark_base_sha
+code_sha="$(commit_on "${root}/work" "test: code" code.sh "code change")"
+# Build a replacement commit whose .devflow.toml is byte-different, graft
+# it onto the merge-base SHA via `git replace`, and point --policy at a
+# copy of THAT SAME tampered content -- simulating an attacker who
+# controls both the replace ref and the extracted closure file, making
+# them agree with EACH OTHER while both diverge from the TRUE, never-
+# replaced merge-base commit. Without GIT_NO_REPLACE_OBJECTS, `git show`
+# would follow the replace ref and see the SAME tampered bytes the
+# attacker's --policy file has, finding no mismatch at all.
+tampered_dir="${test_tmp}/replace-ref-tampered"
+mkdir -p "$tampered_dir"
+cp "${policy_args[1]}" "${tampered_dir}/.devflow.toml"
+printf '\n# tampered, matched via a replace ref\n' >>"${tampered_dir}/.devflow.toml"
+git -C "${root}/work" checkout -q --detach "$merge_base_sha"
+cp "${tampered_dir}/.devflow.toml" "${root}/work/.devflow.toml"
+git_q "${root}/work" add .devflow.toml
+git_q "${root}/work" commit -m "test: replacement commit matching the tampered .devflow.toml"
+replacement_sha="$(git -C "${root}/work" rev-parse HEAD)"
+git -C "${root}/work" replace "$merge_base_sha" "$replacement_sha"
+git -C "${root}/work" checkout -q main
+tampered_policy_args=("${policy_args[@]}")
+tampered_policy_args[1]="${tampered_dir}/.devflow.toml"
+run push --remote origin --branch main --host github.com --repo owner/repo \
+    --sha "$code_sha" --expect absent \
+    --against "$merge_base" --closure-base "$merge_base_sha" \
+    "${tampered_policy_args[@]}" "${scan_args[@]}"
+assert_rc 3
+printf '%s' "$err" | grep -Fi "does not match .devflow.toml" >/dev/null ||
+    fail "a replace ref matching the attacker's own tampered --policy file must not defeat verify_closure_member — git show follows refs/replace/<sha> by default (Codex cloud review, confirmed empirically), so every closure-authority read must run with replace refs disabled: $err"
+[ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
+    fail "a push whose closure verification could be defeated by a replace ref must not land"
 
 echo "  -> a gate that tampers the scanner closure during its own execution is caught before the scan"
 root="$(new_fixture scanner-closure-tamper)"
