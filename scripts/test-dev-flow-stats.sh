@@ -1121,6 +1121,58 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 21: the run-record's MARKER line names one run_id, but its
+// own JSON PAYLOAD declares a different run_id — review round 3, confirmed
+// P1: these are two independent pieces of text in one comment body, and
+// nothing previously required them to agree.
+{
+  const runId = "run-marker-payload-mismatch-1";
+  const runBody = {
+    schema: 2, run_id: "run-marker-payload-mismatch-DIFFERENT", initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("marker-payload-mismatch", {
+    issues: [{ number: 124, pull_request: null }],
+    comments: { "124": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 124 },
+  });
+}
+
+// --- Scenario 22: two stage_transitions entries share seq/prev_digest/
+// digest (what the OLD normalizeExactDuplicates compared), but have
+// DIFFERENT semantic content — content was edited after landing WITHOUT
+// recomputing the (now-stale) digest. review round 3, confirmed P1: the
+// old comparison would have silently kept the FIRST one and discarded the
+// tampered one before its digest was ever checked against ITS content —
+// this fixture proves the fix instead reports it as a fork.
+{
+  const runId = "run-tampered-duplicate-1";
+  const base = chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" }]);
+  const validContent = { stage: "claim", entered_at: "2026-09-01T00:01:00Z" };
+  const validDigest = entryDigest(validContent, base[0].digest);
+  const validEntry = { ...validContent, seq: 1, digest: validDigest, prev_digest: base[0].digest };
+  // Same seq/prev_digest/digest as validEntry, but different entered_at —
+  // simulating an edit that changed content without recomputing digest.
+  const tamperedEntry = { stage: "claim", entered_at: "2099-01-01T00:00:00Z", seq: 1, digest: validDigest, prev_digest: base[0].digest };
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: [...base, validEntry, tamperedEntry],
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("tampered-duplicate", {
+    issues: [{ number: 125, pull_request: null }],
+    comments: { "125": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 125 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -1526,5 +1578,25 @@ echo "== review round 2: fresh evidence_registrations activity keeps a long-in-o
 export DFSTATS_DB="$tmp/scenarios/active-not-stale.json"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2026-09-09T00:00:00Z --stale-after-days 7 --json)"
 echo "$out" | jq -e '.cohort_size == 0' >/dev/null || fail "active-not-stale: expected the run to stay open (not stale-terminalized, so not yet in the closed cohort), got: $out"
+
+echo "== review round 3: a run-record whose marker and JSON payload declare different run_id values is rejected as an identity mismatch =="
+export DFSTATS_DB="$tmp/scenarios/marker-payload-mismatch.json"
+run_id="$(meta marker-payload-mismatch .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "marker-payload-mismatch: expected exit 3 (indeterminate), got $rc: $out"
+echo "$out" | grep -qi "identity mismatch\|declares run_id" || fail "marker-payload-mismatch: expected an identity-mismatch reason, got: $out"
+
+echo "== review round 3: a duplicate chain entry sharing seq/digest/prev_digest but different content is a fork, not a silently-discarded duplicate =="
+export DFSTATS_DB="$tmp/scenarios/tampered-duplicate.json"
+run_id="$(meta tampered-duplicate .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "tampered-duplicate: expected exit 3 (indeterminate), got $rc: $out"
+echo "$out" | grep -qi "different content\|forked chain" || fail "tampered-duplicate: expected a forked-chain reason, got: $out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

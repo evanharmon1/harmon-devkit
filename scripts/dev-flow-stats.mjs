@@ -316,6 +316,16 @@ function findRunRecord(issueComments, { trustedActorIds }) {
       } catch (err) {
         throw new EvidenceError(`run record ${runId} (comment ${named.id}) is not valid JSON: ${err.message}`);
       }
+      // The MARKER line's run_id (checked above, recordMarker.runId) and
+      // the JSON PAYLOAD's own run_id field are two independent pieces of
+      // text in the same comment — nothing before this point requires
+      // them to agree. review round 3, confirmed (P1): a record whose
+      // payload names a different run_id than its own marker/index was
+      // accepted, processed, and rendered/replayed under the WRONG
+      // identity for its actual content.
+      if (body.run_id !== runId) {
+        throw new EvidenceError(`run-index ${runId} names comment ${named.id}, whose parsed payload declares run_id ${JSON.stringify(body.run_id)} — identity mismatch`);
+      }
       results.push({
         status: "ok",
         runId,
@@ -416,12 +426,30 @@ function assembleListedEvidence(runRecord, allComments, withinCutoff, runRecordA
     verified.push({ marker: listed, entryDigest: entry.digest, comment, payloadText });
   }
 
+  // Duplicate markers resolve by lowest comment id, unconditionally
+  // (ai/schemas/README.md "Duplicate markers") — a resumed writer that
+  // registered BOTH its original post and a retry under the identical
+  // marker (same stage/destination/round/sequence) is a harmless
+  // duplicate, not two segments. review round 3, confirmed (P1): this
+  // list-driven path had no duplicate resolution at all (resolveCanonical
+  // exists only for the marker-scanning path), so two verified entries
+  // sharing every marker field including sequence reached the
+  // sequence-gap check below as literal duplicate sequence numbers and
+  // were misreported as a gap instead of resolved.
+  const byFullMarkerKey = new Map();
+  for (const v of verified) {
+    const key = `${v.marker.stage} ${v.marker.destination} ${v.marker.round} ${v.marker.sequence}`;
+    const existing = byFullMarkerKey.get(key);
+    if (!existing || v.comment.id < existing.comment.id) byFullMarkerKey.set(key, v);
+  }
+  const deduped = [...byFullMarkerKey.values()];
+
   // Group by (stage, destination, round) — ignoring sequence, since a
   // split payload's segments share every marker field except that one
   // (ai/schemas/README.md "Segment reassembly"). Cutoff-filtered here,
   // AFTER every entry above was already verified unconditionally.
   const groups = new Map();
-  for (const v of verified) {
+  for (const v of deduped) {
     if (!withinCutoff(v.comment)) continue;
     const key = `${v.marker.stage} ${v.marker.destination} ${v.marker.round}`;
     const list = groups.get(key) || [];
@@ -493,7 +521,7 @@ function entryDigest(contentFields, prevDigest) {
 // carrying DIFFERENT digests are the opposite case — a genuine FORK — and
 // must still fail closed rather than have either one silently picked
 // (scenario "fork" in scripts/test-dev-flow-stats.sh proves this).
-function normalizeExactDuplicates(rawEntries) {
+function normalizeExactDuplicates(rawEntries, contentKeys) {
   const bySeq = new Map();
   for (const entry of rawEntries) {
     const list = bySeq.get(entry.seq) || [];
@@ -503,7 +531,23 @@ function normalizeExactDuplicates(rawEntries) {
   const normalized = [];
   for (const [seq, group] of bySeq) {
     const first = group[0];
-    const allIdentical = group.every((e) => e.digest === first.digest && e.prev_digest === first.prev_digest);
+    // Compare full canonical CONTENT (plus prev_digest), never the
+    // digest FIELD's value alone — review round 3, confirmed (P1): an
+    // entry edited after being appended, whose content no longer matches
+    // its own (now-stale) digest, would still equal a genuine original
+    // sharing that same stale digest, so the edited copy could be
+    // silently discarded here — DISCARDED, before verifyChain's own
+    // per-entry digest-vs-content check ever runs on it — hiding exactly
+    // the tampering that check exists to catch. Comparing content
+    // directly means an edited copy no longer equals the original at
+    // all, so it falls through to the fork branch below instead.
+    const canonicalOf = (e) => {
+      const content = {};
+      for (const k of contentKeys) content[k] = e[k];
+      return canonicalJson({ content, prev_digest: e.prev_digest });
+    };
+    const firstKey = canonicalOf(first);
+    const allIdentical = group.every((e) => canonicalOf(e) === firstKey);
     if (!allIdentical) {
       return { ok: false, reason: `two entries at seq ${seq} share a predecessor but carry different content — forked chain`, brokenAtSeq: seq };
     }
@@ -517,7 +561,7 @@ function normalizeExactDuplicates(rawEntries) {
 // or { ok: false, reason, brokenAtSeq }.
 function verifyChain(rawEntries, contentKeys) {
   if (!Array.isArray(rawEntries)) return { ok: false, reason: "not an array", brokenAtSeq: null };
-  const deduped = normalizeExactDuplicates(rawEntries);
+  const deduped = normalizeExactDuplicates(rawEntries, contentKeys);
   if (!deduped.ok) return deduped;
   const entries = deduped.entries.sort((a, b) => (a.seq ?? -1) - (b.seq ?? -1));
   for (let i = 0; i < entries.length; i++) {
@@ -1121,9 +1165,20 @@ function renderTrajectoryTable(trajectory) {
 const DEFAULT_EXIT_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "dev-flow-exit.mjs");
 
 function invokeExitScript(exitScriptPath, { runDir, stage, policyPath, currentHead }) {
+  // --repo-root lets dev-flow-exit.mjs resolve real ancestry via
+  // `git merge-base --is-ancestor` for any pass whose reviewed_head
+  // differs from currentHead — without it, every such pass is marked
+  // unknown-ancestry and dropped, so multi-round predicates (consecutive
+  // rounds, rising counts, repeat-after-fix) are recomputed from only the
+  // latest round. review round 3, confirmed (P1): this production path
+  // supplied neither --heads nor --repo-root at all. --heads would need a
+  // real commit-parent map this file has no way to build (no git graph
+  // traversal exists anywhere here) — --repo-root alone is sufficient,
+  // since dev-flow-exit.mjs's own ancestry check does a direct git query
+  // and never requires the heads-map to be present.
   const result = spawnSync(
     process.execPath,
-    [exitScriptPath, "--run", runDir, "--stage", stage, "--policy", policyPath, "--current-head", currentHead, "--json"],
+    [exitScriptPath, "--run", runDir, "--stage", stage, "--policy", policyPath, "--current-head", currentHead, "--repo-root", process.cwd(), "--json"],
     { encoding: "utf8" },
   );
   if (result.error) {
