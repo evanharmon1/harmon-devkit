@@ -56,6 +56,93 @@ function ghApiOne(endpoint) {
   }
 }
 
+// A field a pusher fully controls (committer/author date) cannot prove
+// when a commit became visible on GitHub — a cherry-pick can carry any
+// date its author chooses. `Commit.pushedDate` (an earlier version of
+// this fix) turned out not to be a working substitute — verified directly
+// against six real commits spanning two weeks in this repo, every one
+// null, so it is not an occasional gap here but a value this repo's
+// commits never carry. first_seen(sha) instead uses whichever of two
+// REST endpoints actually returns real, server-recorded data for a given
+// commit: the merging PR's own `merged_at` for a commit already on the
+// default branch (direct pushes to main are ruleset-blocked, so a commit
+// there has exactly one merging PR), or the earliest check-suite's
+// `created_at` for a commit not yet merged — both independently verified
+// against this branch's own history before use. review round 4 of #663,
+// maintainer-directed (twice-revised) fix for the two P1s deferred at
+// review's own cap. Resolves to null (indeterminate) when neither source
+// has data — every caller treats that as indeterminate, never a silent
+// "not yet visible".
+function firstSeen(repo, sha) {
+  const prs = ghApiPaginated(`repos/${repo}/commits/${sha}/pulls`);
+  const merged = prs.find((pr) => pr.merged_at);
+  if (merged) return merged.merged_at;
+  const suites = ghApiPaginated(`repos/${repo}/commits/${sha}/check-suites`);
+  // The check-suites endpoint wraps its array in a `check_suites` object
+  // per page rather than returning a bare array — ghApiPaginated's
+  // --slurp flattening only flattens the page array itself, not this
+  // endpoint's own nested field.
+  const flatSuites = suites.flatMap((page) => (Array.isArray(page.check_suites) ? page.check_suites : []));
+  const timestamps = flatSuites.map((s) => Date.parse(s.created_at)).filter((t) => Number.isFinite(t));
+  if (timestamps.length > 0) return new Date(Math.min(...timestamps)).toISOString();
+  return null;
+}
+
+// Repo-committed trust narrowing: issue #741 proposes a trusted-orchestrator
+// actor allowlist in agent-registry.json, pinned to the revision in effect
+// at evidence-write time — never the latest, which a later edit could
+// otherwise retroactively (re)grant trust to an actor a run's own evidence
+// never actually had. #741's acceptance criteria (the allowlist field
+// itself, historical pinning, fixtures) are all still unchecked as of this
+// writing: the field this resolves toward does not exist at any commit
+// yet. This function is the revision-SELECTION mechanism, ready the moment
+// #741 lands the field — every caller treats a still-absent field (or an
+// unreadable/unlisted revision) as "no registry opinion," falling back
+// unchanged to the --trusted-actor-id/--trusted-actors-file trust
+// requireTrustedActorIds already establishes. It only ever NARROWS that
+// trust, never widens it — the same direction assembleListedEvidence
+// already narrows evidence-comment trust to one run's own author rather
+// than the whole configured set.
+//
+// "Revision in effect" is selected by first_seen(sha), never a
+// committer/author date — the same spoofable-by-cherry-pick field review
+// round 4 already closed once for post-ready-fix detection above — so a
+// hostile revision cannot be backdated into looking like it predates the
+// write it is meant to govern. Among commits whose first_seen is on or
+// before atIso, the one with the LATEST first_seen wins (the newest
+// registry state actually visible by that moment).
+function resolveRegistryTrustedActorIds(repo, atIso) {
+  const cutoff = Date.parse(atIso);
+  let commits;
+  try {
+    commits = ghApiPaginated(`repos/${repo}/commits?path=agent-registry.json&sha=main`);
+  } catch {
+    return null;
+  }
+  let bestSha = null;
+  let bestSeen = -Infinity;
+  for (const c of commits) {
+    const seen = firstSeen(repo, c.sha);
+    if (seen === null) continue;
+    const seenEpoch = Date.parse(seen);
+    if (seenEpoch <= cutoff && seenEpoch > bestSeen) {
+      bestSeen = seenEpoch;
+      bestSha = c.sha;
+    }
+  }
+  if (bestSha === null) return null;
+  let doc;
+  try {
+    const file = ghApiOne(`repos/${repo}/contents/agent-registry.json?ref=${bestSha}`);
+    doc = JSON.parse(Buffer.from(file.content, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(doc.trusted_orchestrator_actor_ids)) return null;
+  const ids = doc.trusted_orchestrator_actor_ids.map(Number).filter((n) => Number.isInteger(n) && n >= 1);
+  return new Set(ids);
+}
+
 function fetchIssueList(repo) {
   // state=all: a closed (merged, capped, abandoned) issue's run still
   // belongs in the closed-cohort denominator — the metric explicitly
@@ -240,11 +327,33 @@ function resolveCanonical(markedTrusted) {
 // silently read as "this issue was never kicked off" — challenge round 1,
 // confirmed (the prior version scanned only for run-record markers, with
 // no independent anchor to notice the deletion at all).
-function findRunRecord(issueComments, { trustedActorIds }) {
+function findRunRecord(issueComments, { trustedActorIds, repo }) {
   const byId = new Map(issueComments.map((c) => [c.id, c]));
   const indexMarked = markedComments(issueComments).filter((e) => e.marker.kind === "run-index");
-  const trustedIndex = indexMarked.filter((e) => trustedActorIds.has(e.actorId));
-  const untrustedIndex = indexMarked.filter((e) => !trustedActorIds.has(e.actorId));
+
+  // Registry-revision pinning (issue #741, review round 4 of #663): narrows
+  // trustedActorIds to whichever ids the repo-committed registry also
+  // trusted AS OF each entry's own kickoff time — see
+  // resolveRegistryTrustedActorIds for why, and why it no-ops entirely
+  // until #741 lands its allowlist field. Evaluated per comment/run rather
+  // than once for the whole issue, because two runs on the same issue can
+  // kick off under two different registry revisions; cached by timestamp
+  // since the same kickoff time is looked up again below for the
+  // run-record author check.
+  const registryTrustCache = new Map();
+  const effectiveTrustAt = (atIso) => {
+    if (!registryTrustCache.has(atIso)) {
+      const registryIds = resolveRegistryTrustedActorIds(repo, atIso);
+      registryTrustCache.set(atIso, registryIds ? new Set([...trustedActorIds].filter((id) => registryIds.has(id))) : trustedActorIds);
+    }
+    return registryTrustCache.get(atIso);
+  };
+
+  const trustedIndex = [];
+  const untrustedIndex = [];
+  for (const e of indexMarked) {
+    (effectiveTrustAt(e.comment.created_at).has(e.actorId) ? trustedIndex : untrustedIndex).push(e);
+  }
 
   if (trustedIndex.length === 0) {
     if (untrustedIndex.length > 0) {
@@ -287,7 +396,7 @@ function findRunRecord(issueComments, { trustedActorIds }) {
       if (!recordComment) {
         throw new EvidenceError(`run-index ${runId} names run-record comment ${named.id}, which no longer exists — deleted-entry tampering`);
       }
-      if (!trustedActorIds.has(named.author_actor_id)) {
+      if (!effectiveTrustAt(indexEntry.comment.created_at).has(named.author_actor_id)) {
         throw new EvidenceError(`run-index ${runId} names run-record author ${named.author_actor_id}, which is not a configured trusted actor`);
       }
       if (commentActorId(recordComment) !== named.author_actor_id) {
@@ -874,7 +983,7 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf }) {
   // confirmed.
   let records;
   try {
-    records = findRunRecord(issueComments.filter(withinCutoff), { trustedActorIds });
+    records = findRunRecord(issueComments.filter(withinCutoff), { trustedActorIds, repo });
   } catch (err) {
     if (err instanceof EvidenceError) {
       return [{ status: "indeterminate", runId: null, issueNumber, reason: err.message }];
@@ -989,32 +1098,52 @@ function computeIssueVerdict(issueRuns, { staleAfterDays, asOfEpoch }) {
   return { closed: true, success, interventions: totalInterventions, asked: totalAsked, runs: terminalized };
 }
 
+// Returns { fixed, indeterminate } rather than a bare boolean: this is
+// explicitly a secondary, P2 signal (never the primary closed-cohort
+// determination), so an unresolvable first_seen must not make the WHOLE
+// run indeterminate the way a broken evidence chain does — it is reported
+// as its own separate count instead (the same "report separately, never
+// silently drop or silently count" shape this file already uses for
+// asked/interventions), fail-closed only for THIS signal.
 function computePostReadyFix(repo, readyRun, cutoffEpoch) {
   const promotion = readyRun.state.promotion;
-  if (!promotion) return false;
+  if (!promotion) return { fixed: false, indeterminate: false };
   const commits = ghApiPaginated(`repos/${repo}/pulls/${readyRun.state.pr.number}/commits?per_page=100`);
-  // Commit POSITION relative to promotion.head, not committer timestamp —
-  // challenge round 1, confirmed: a cherry-picked human fix can carry an
-  // older timestamp than the promotion, and a rebase can carry a newer one
-  // for a commit that predates it; only "does it come after promotion.head
-  // in the PR's own commit sequence" answers the actual question. A head
-  // that no longer appears (a force-push rewrote it) has no sequence to
-  // measure against, so this reports no fix rather than guessing — a
-  // known simplification for this P2 signal, not the primary cohort
-  // determination.
+  // Commit POSITION relative to promotion.head, not a self-reported
+  // timestamp — challenge round 1, confirmed: a cherry-picked human fix
+  // can carry an older timestamp than the promotion, and a rebase can
+  // carry a newer one for a commit that predates it; only "does it come
+  // after promotion.head in the PR's own commit sequence" answers the
+  // actual question. A head that no longer appears (a force-push rewrote
+  // it) has no sequence to measure against, so this reports no fix rather
+  // than guessing — a known simplification for this P2 signal, not the
+  // primary cohort determination.
   const headIndex = commits.findIndex((c) => c.sha === promotion.head);
-  if (headIndex === -1) return false;
+  if (headIndex === -1) return { fixed: false, indeterminate: false };
   // The commits API is always live — fetching "now" and never checking
   // --as-of meant re-running the SAME historical cutoff could report a
   // DIFFERENT post_ready_fix_count as new commits landed later, violating
   // the closed immutable cohort requirement (the same window and cutoff
   // must always report the same share) — challenge round 3, confirmed.
   // Position still decides WHETHER a commit is a genuine post-promotion
-  // fix (unaffected by rebases/cherry-picks); committer date additionally
-  // bounds WHICH of those were already visible as of the requested cutoff.
-  return commits
-    .slice(headIndex + 1)
-    .some((c) => Date.parse(c.commit.committer.date) <= cutoffEpoch);
+  // fix (unaffected by rebases/cherry-picks); first_seen additionally
+  // bounds WHICH of those were already visible as of the requested
+  // cutoff — review round 4, confirmed (P1, twice-revised): committer/
+  // author date is fully pusher-controlled and does not answer that,
+  // and Commit.pushedDate (an earlier attempted fix) turned out to never
+  // populate for this repo's commits at all.
+  const postPromotion = commits.slice(headIndex + 1);
+  let fixed = false;
+  let indeterminate = false;
+  for (const c of postPromotion) {
+    const seen = firstSeen(repo, c.sha);
+    if (seen === null) {
+      indeterminate = true;
+      continue;
+    }
+    if (Date.parse(seen) <= cutoffEpoch) fixed = true;
+  }
+  return { fixed, indeterminate };
 }
 
 // First kickoff = the earliest started_at among an issue's successfully
@@ -1039,6 +1168,7 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
   let successCount = 0;
   let askedTotal = 0;
   let postReadyFixCount = 0;
+  let postReadyFixIndeterminateCount = 0;
   let indeterminateCount = 0;
   const perIssue = [];
   for (const [issueNumber, issueRuns] of runsByIssue) {
@@ -1065,7 +1195,11 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
     // reached ready-for-review, then needed a post-ready fix too, was
     // never even checked — challenge round 2, confirmed.
     const readyRun = verdict.runs.find((r) => r.state.outcome === "ready-for-review");
-    if (readyRun && computePostReadyFix(repo, readyRun, asOfEpoch)) postReadyFixCount++;
+    if (readyRun) {
+      const { fixed, indeterminate } = computePostReadyFix(repo, readyRun, asOfEpoch);
+      if (fixed) postReadyFixCount++;
+      if (indeterminate) postReadyFixIndeterminateCount++;
+    }
     perIssue.push({ issueNumber, closed: true, success: verdict.success, interventions: verdict.interventions, asked: verdict.asked });
   }
   return {
@@ -1074,6 +1208,7 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
     unattended_success_rate: closedCount > 0 ? successCount / closedCount : null,
     asked_count: askedTotal,
     post_ready_fix_count: postReadyFixCount,
+    post_ready_fix_indeterminate_count: postReadyFixIndeterminateCount,
     indeterminate_count: indeterminateCount,
     per_issue: perIssue,
   };
@@ -1323,6 +1458,8 @@ export {
   findRunRecord,
   EvidenceError,
   RUN_STAGES,
+  firstSeen,
+  resolveRegistryTrustedActorIds,
 };
 
 // ---------------------------------------------------------------------------

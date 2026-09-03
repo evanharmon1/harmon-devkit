@@ -64,6 +64,21 @@ repos/*/pulls/*/commits\?per_page=100)
     n="$(echo "$endpoint" | sed -E 's#.*/pulls/([0-9]+)/commits.*#\1#')"
     jq --arg n "$n" '[(.commits[$n] // [])]' "$db"
     ;;
+repos/*/commits/*/pulls)
+    sha="$(echo "$endpoint" | sed -E 's#.*/commits/([0-9a-f]+)/pulls.*#\1#')"
+    jq --arg sha "$sha" '[(.commit_pulls[$sha] // [])]' "$db"
+    ;;
+repos/*/commits/*/check-suites)
+    sha="$(echo "$endpoint" | sed -E 's#.*/commits/([0-9a-f]+)/check-suites.*#\1#')"
+    jq --arg sha "$sha" '[{check_suites: (.commit_check_suites[$sha] // [])}]' "$db"
+    ;;
+repos/*/commits\?path=agent-registry.json\&sha=main)
+    jq '[(.registry_commits // [])]' "$db"
+    ;;
+repos/*/contents/agent-registry.json\?ref=*)
+    sha="$(echo "$endpoint" | sed -E 's#.*[?&]ref=([0-9a-f]+).*#\1#')"
+    jq --arg sha "$sha" '{content: (.registry_contents[$sha] // null)}' "$db"
+    ;;
 *)
     echo "fake gh: unhandled endpoint: $endpoint" >&2
     exit 1
@@ -190,6 +205,16 @@ function pass(finder, findings) {
     run: { run_id: "placeholder", initiated_by: "human" },
     payload: { finder, findings: findings.map((f, i) => ({ id: \`review-r1-\${finder}-\${i + 1}\`, class: "correctness", provenance: "original", severity: "P2", ...f })) },
   };
+}
+
+// review round 4: first_seen(sha) resolution data for the fake gh shim's
+// commits/{sha}/pulls and commits/{sha}/check-suites endpoints. Merged by
+// caller into the scenario db's commit_pulls/commit_check_suites maps.
+function mergedPrSeen(sha, prNumber, mergedAt) {
+  return { commit_pulls: { [sha]: [{ number: prNumber, merged_at: mergedAt }] } };
+}
+function checkSuiteSeen(sha, createdAts) {
+  return { commit_check_suites: { [sha]: createdAts.map((created_at) => ({ created_at })) } };
 }
 
 function writeScenario(name, db) {
@@ -446,6 +471,7 @@ function writeScenario(name, db) {
     issues: [{ number: 108, pull_request: null }],
     comments: { "108": [idx, rr] },
     commits: { "502": [promotedCommit, humanCommit] },
+    ...mergedPrSeen(humanCommit.sha, 502, "2026-09-01T00:20:00Z"),
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 108 },
   });
 }
@@ -475,6 +501,7 @@ function writeScenario(name, db) {
     issues: [{ number: 116, pull_request: null }],
     comments: { "116": [idx, rr] },
     commits: { "505": [promotedCommit, humanCommit] },
+    ...mergedPrSeen(humanCommit.sha, 505, "2026-09-01T00:20:00Z"),
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 116 },
   });
 }
@@ -482,11 +509,13 @@ function writeScenario(name, db) {
 // --- Scenario 9: multiple issues combined, for --repo cohort math ---
 {
   const dbs = ["happy", "postfix"].map((n) => JSON.parse(readFileSync(path.join("${tmp}/scenarios", \`\${n}.json\`), "utf8")));
-  const combined = { issues: [], comments: {}, commits: {}, meta: { trustedActorIds: [TRUSTED_ORCHESTRATOR] } };
+  const combined = { issues: [], comments: {}, commits: {}, commit_pulls: {}, commit_check_suites: {}, meta: { trustedActorIds: [TRUSTED_ORCHESTRATOR] } };
   for (const db of dbs) {
     combined.issues.push(...db.issues);
     Object.assign(combined.comments, db.comments);
     Object.assign(combined.commits, db.commits);
+    Object.assign(combined.commit_pulls, db.commit_pulls);
+    Object.assign(combined.commit_check_suites, db.commit_check_suites);
   }
   writeScenario("cohort", combined);
 }
@@ -846,6 +875,12 @@ function writeScenario(name, db) {
     issues: [{ number: 111, pull_request: null }],
     comments: { "111": [idx, rr] },
     commits: { "503": [promotedCommit, cherryPicked] },
+    // first_seen (2026-09-01) is when this cherry-picked commit actually
+    // became visible on GitHub — the committer.date above (2026-08-01) is
+    // what its own author claims and is not used for visibility at all
+    // anymore, only its role in proving position still decides whether a
+    // commit is a post-promotion fix in the first place.
+    ...mergedPrSeen(cherryPicked.sha, 503, "2026-09-01T00:31:00Z"),
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 111 },
   });
 }
@@ -1170,6 +1205,100 @@ function writeScenario(name, db) {
     comments: { "125": [idx, rr] },
     commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 125 },
+  });
+}
+
+// --- Scenario 23: registry-revision pinning (review round 4 of #663,
+// piece 2 — issue #741's not-yet-existent trusted-orchestrator allowlist,
+// resolved via resolveRegistryTrustedActorIds). One registry commit
+// narrows the CLI-configured trust set; two issues straddle its
+// first_seen, proving the revision applies to a run kicked off AFTER it
+// took effect and does NOT retroactively apply to one kicked off BEFORE —
+// #741's own acceptance criterion ("an actor removed after posting does
+// not invalidate already-authenticated historical evidence").
+{
+  const narrowSha = "a".repeat(40);
+  const registryCommits = [{ sha: narrowSha }];
+  const registryContents = {
+    [narrowSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
+  };
+  // Issue A: kicks off AFTER the narrowing commit's first_seen -> the
+  // registry opinion is eligible and applies -> TRUSTED_ORCHESTRATOR (the
+  // only CLI-trusted actor here) is narrowed OUT (the registry vouches
+  // only for OTHER_TRUSTED) -> rejected, even though --trusted-actor-id
+  // alone would have accepted it.
+  const runIdNarrowed = "run-registry-narrowed-1";
+  const bodyNarrowed = {
+    schema: 2, run_id: runIdNarrowed, initiated_by: "human", started_at: "2026-09-01T00:10:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:10:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const narrowedPair = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdNarrowed, bodyNarrowed, "2026-09-01T00:10:00Z");
+  // Issue B: kicks off BEFORE the narrowing commit's first_seen -> no
+  // registry revision is eligible yet -> falls back to full CLI trust,
+  // unchanged -> accepted normally.
+  const runIdNotYet = "run-registry-not-yet-narrowed-1";
+  const bodyNotYet = {
+    schema: 2, run_id: runIdNotYet, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const notYetPair = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdNotYet, bodyNotYet, "2026-09-01T00:00:00Z");
+  writeScenario("registry-revision-pin", {
+    issues: [{ number: 126, pull_request: null }, { number: 127, pull_request: null }],
+    comments: {
+      "126": [narrowedPair.index, narrowedPair.record],
+      "127": [notYetPair.index, notYetPair.record],
+    },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    // first_seen for the narrowing commit sits BETWEEN the two kickoffs.
+    ...mergedPrSeen(narrowSha, 601, "2026-09-01T00:05:00Z"),
+    meta: {
+      runIdNarrowed, runIdNotYet,
+      trustedActorIds: [TRUSTED_ORCHESTRATOR],
+      issueNumberNarrowed: 126, issueNumberNotYet: 127,
+    },
+  });
+}
+
+// --- Scenario 24: a cherry-picked registry commit that appears NEWEST in
+// commits-by-path listing order is still correctly excluded when its own
+// first_seen postdates the run's kickoff — selection is governed
+// exclusively by first_seen, never by listing position (a real cherry-pick
+// onto main typically appears newest in this listing despite carrying
+// older-looking content) and never by any committer/author date (never
+// even read here). An earlier, genuinely-eligible commit governs instead.
+{
+  const legitSha = "b".repeat(40);
+  const cherrypickSha = "c".repeat(40);
+  const registryCommits = [{ sha: cherrypickSha }, { sha: legitSha }]; // newest-first, as GitHub returns
+  const registryContents = {
+    [legitSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
+    [cherrypickSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
+  };
+  const runId = "run-registry-cherrypick-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("registry-revision-cherrypick", {
+    issues: [{ number: 128, pull_request: null }],
+    comments: { "128": [idx, rr] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: {
+      [legitSha]: [{ number: 602, merged_at: "2026-08-15T00:00:00Z" }],
+      [cherrypickSha]: [{ number: 603, merged_at: "2026-09-01T00:10:00Z" }],
+    },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 128 },
   });
 }
 
@@ -1598,5 +1727,25 @@ rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "tampered-duplicate: expected exit 3 (indeterminate), got $rc: $out"
 echo "$out" | grep -qi "different content\|forked chain" || fail "tampered-duplicate: expected a forked-chain reason, got: $out"
+
+echo "== review round 4 (piece 2 of #663): a registry revision eligible at kickoff time narrows a CLI-trusted actor out, even though --trusted-actor-id alone would have accepted it =="
+export DFSTATS_DB="$tmp/scenarios/registry-revision-pin.json"
+run_id_narrowed="$(meta registry-revision-pin .meta.runIdNarrowed)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_narrowed" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 1 ] || fail "registry-revision-pin: narrowed run should report not-found once the eligible registry revision excludes its only author, got rc=$rc: $out"
+
+echo "== review round 4 (piece 2 of #663): a registry revision landing AFTER kickoff is not applied retroactively — the run authenticates normally =="
+run_id_not_yet="$(meta registry-revision-pin .meta.runIdNotYet)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_not_yet" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "registry-revision-pin: pre-revision run should still authenticate cleanly"
+
+echo "== review round 4 (piece 2 of #663): a cherry-picked registry commit newest in listing order is still excluded by its own (later) first_seen; an earlier eligible commit governs instead =="
+export DFSTATS_DB="$tmp/scenarios/registry-revision-cherrypick.json"
+run_id="$(meta registry-revision-cherrypick .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "registry-revision-cherrypick: run governed by the earlier eligible commit should still authenticate cleanly"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"
