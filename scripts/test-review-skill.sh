@@ -120,6 +120,17 @@ git -C "$trust_repo" add agent-registry.json
 git -C "$trust_repo" -c user.name='Fixture Author' -c user.email='fixture@example.invalid' \
     commit -qm 'test: registry with orchestrator trust'
 registry_revision="$(git -C "$trust_repo" rev-parse HEAD)"
+echo "==> monitor reclaims a lock whose recorded owner is dead"
+stale_branch="feat/stale-lock-run"
+stale_active_state="$("$monitor" active-path --branch "$stale_branch" --repo-root "$trust_repo")"
+mkdir -p "$(dirname "$stale_active_state")"
+printf '999999|%s|%s|fixture-dead-owner|Mon Jan  1 00:00:00 2001\n' \
+    "$(hostname)" "$(id -u)" >"${stale_active_state}.lock"
+stale_generation="$("$monitor" activate --active-state "$stale_active_state" \
+    --run-id stale-lock-run --branch "$stale_branch" --expected-generation 0 \
+    --registry-revision "$registry_revision" --writer feature-owner --repo-root "$trust_repo")"
+[ "$stale_generation" -eq 1 ] || fail "stale owner recovery did not activate the run"
+[ ! -e "${stale_active_state}.lock" ] || fail "recovered monitor lock remained after activation"
 branch="feat/fixture-run"
 active_state="$("$monitor" active-path --branch "$branch" --repo-root "$trust_repo")"
 generation="$("$monitor" activate --active-state "$active_state" --run-id fixture-run \

@@ -49,27 +49,115 @@ sha256_stream() {
     fi
 }
 
-held_lock_dir=""
+lock_host="$(hostname)"
+lock_uid="$(id -u)"
+held_lock_file=""
+held_lock_owner=""
+lock_claim_file=""
+held_break_dir=""
 release_lock() {
-    if [ -n "$held_lock_dir" ]; then
-        rmdir "$held_lock_dir" 2>/dev/null || true
-        held_lock_dir=""
+    if [ -n "$lock_claim_file" ]; then
+        rm -f "$lock_claim_file"
+        lock_claim_file=""
+    fi
+    if [ -n "$held_lock_file" ] &&
+        [ "$(cat "$held_lock_file" 2>/dev/null || true)" = "$held_lock_owner" ]; then
+        rm -f "$held_lock_file"
+    fi
+    held_lock_file=""
+    held_lock_owner=""
+    if [ -n "$held_break_dir" ]; then
+        rmdir "$held_break_dir" 2>/dev/null || true
+        held_break_dir=""
     fi
 }
 
+lock_owner_stamp() {
+    owner_start="$(LC_ALL=C TZ=UTC ps -o lstart= -p $$ 2>/dev/null |
+        sed 's/^ *//;s/ *$//')"
+    [ -n "$owner_start" ] || die "could not identify the monitor lock owner"
+    printf '%s|%s|%s|%s|%s\n' "$$" "$lock_host" "$lock_uid" \
+        "n$$.$RANDOM$RANDOM$RANDOM" "$owner_start"
+}
+
+lock_owner_alive() {
+    owner_record="$1"
+    IFS='|' read -r owner_pid owner_host owner_uid _owner_nonce owner_start <<EOF
+$owner_record
+EOF
+    [ "$owner_host" = "$lock_host" ] || return 0
+    [ "$owner_uid" = "$lock_uid" ] || return 0
+    case "$owner_pid" in "" | *[!0-9]*) return 0 ;; esac
+    [ -n "$owner_start" ] || return 0
+    current_start="$(LC_ALL=C TZ=UTC ps -o lstart= -p "$owner_pid" 2>/dev/null |
+        sed 's/^ *//;s/ *$//')"
+    [ -n "$current_start" ] || return 1
+    [ "$current_start" = "$owner_start" ]
+}
+
+try_break_stale_lock() {
+    stale_lock_file="$1"
+    expected_owner="$2"
+    break_dir="${stale_lock_file}.break"
+    mkdir "$break_dir" 2>/dev/null || return 1
+    held_break_dir="$break_dir"
+    current_owner="$(cat "$stale_lock_file" 2>/dev/null || true)"
+    if [ "$current_owner" != "$expected_owner" ] || lock_owner_alive "$current_owner"; then
+        rmdir "$held_break_dir" 2>/dev/null || true
+        held_break_dir=""
+        return 1
+    fi
+    dead_lock_file="${stale_lock_file}.dead.$$.$RANDOM"
+    if mv "$stale_lock_file" "$dead_lock_file" 2>/dev/null; then
+        rm -f "$dead_lock_file"
+    fi
+    rmdir "$held_break_dir" 2>/dev/null || true
+    held_break_dir=""
+    return 0
+}
+
 acquire_lock() {
-    candidate_lock_dir="${1}.lock"
+    candidate_lock_file="${1}.lock"
+    candidate_owner="$(lock_owner_stamp)"
+    lock_claim_file="${candidate_lock_file}.claim.$$.$RANDOM"
+    printf '%s\n' "$candidate_owner" >"$lock_claim_file"
     lock_attempts=0
-    while ! mkdir "$candidate_lock_dir" 2>/dev/null; do
-        if [ -e "$candidate_lock_dir" ] && [ ! -d "$candidate_lock_dir" ]; then
-            die "cannot create monitor lock $candidate_lock_dir"
+    dead_owner=""
+    dead_observations=0
+    while ! ln "$lock_claim_file" "$candidate_lock_file" 2>/dev/null; do
+        if [ ! -e "$candidate_lock_file" ]; then
+            continue
+        fi
+        [ -f "$candidate_lock_file" ] || die "monitor lock is not a file: $candidate_lock_file"
+        observed_owner="$(cat "$candidate_lock_file" 2>/dev/null || true)"
+        if [ -n "$observed_owner" ] && ! lock_owner_alive "$observed_owner"; then
+            if [ "$observed_owner" = "$dead_owner" ]; then
+                dead_observations=$((dead_observations + 1))
+            else
+                dead_owner="$observed_owner"
+                dead_observations=1
+            fi
+            # A dead shell may leave its current git/jq/mv child behind. Give
+            # that bounded work two seconds to settle before reclaiming.
+            if [ "$dead_observations" -ge 20 ]; then
+                try_break_stale_lock "$candidate_lock_file" "$observed_owner" || true
+                dead_owner=""
+                dead_observations=0
+                continue
+            fi
+        else
+            dead_owner=""
+            dead_observations=0
         fi
         lock_attempts=$((lock_attempts + 1))
         [ "$lock_attempts" -lt 600 ] ||
-            die "monitor state remains locked; inspect $candidate_lock_dir before retrying"
+            die "monitor state remains locked; inspect $candidate_lock_file before retrying"
         sleep 0.1
     done
-    held_lock_dir="$candidate_lock_dir"
+    held_lock_file="$candidate_lock_file"
+    held_lock_owner="$candidate_owner"
+    rm -f "$lock_claim_file"
+    lock_claim_file=""
 }
 
 trap release_lock EXIT
