@@ -15,9 +15,11 @@
 #
 # Usage:
 #   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
-#       --record DIR --integrator-result FILE [--allow-edited-root ID]...
+#       --record DIR --integrator-result FILE [--integration-cap N]
+#       [--allow-edited-root ID]...
 #   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
-#       --record DIR --integrator-result FILE [--allow-edited-root ID]...
+#       --record DIR --integrator-result FILE [--integration-cap N]
+#       [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 #
 # `check` evaluates the gate for the adjudicated 40-hex head SHA and, on full
@@ -49,9 +51,10 @@
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled                                       (fail)
-#   codex-not-clean                                         (fail)
+#   codex-not-clean, disposition-unsettled                  (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
-#   malformed-data, codex-indeterminate, usage              (indeterminate)
+#   malformed-data, codex-indeterminate, codex-cap-mismatch,
+#   usage                                                   (indeterminate)
 #
 # Two readiness conditions are deliberately NOT verified here, because no
 # API answers them — the caller must hold them as prose prerequisites:
@@ -86,9 +89,11 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
-      --record DIR --integrator-result FILE [--allow-edited-root ID]...
+      --record DIR --integrator-result FILE [--integration-cap N]
+      [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
-      --record DIR --integrator-result FILE [--allow-edited-root ID]...
+      --record DIR --integrator-result FILE [--integration-cap N]
+      [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
@@ -98,13 +103,22 @@ never authorizes gh pr ready.
 fingerprint recomputes the five-surface content fingerprint for the
 post-promotion compare. --record DIR is the dev-flow-v2 record directory
 (run.json plus adjudications/*.json) render-dev-flow.mjs projects deferred-
-finding settlement from. --integrator-result FILE is the dispatched
-integrator agent's schema-valid result.envelope (role integrator) for this
-exact head; its payload's codex_cycle carries the current-head Codex verdict
-when the resolved integration cap is not 0, or is null when it is — a null
-codex_cycle is how the Codex condition is waived, so there is no separate
-disabled flag. Both are always required; there is no mode where either is
-skippable.
+finding settlement from, and this script separately reads run.json's own
+settlements[] from for the applied-disposition check below.
+--integrator-result FILE is the dispatched integrator agent's schema-valid
+result.envelope (role integrator) for this exact head; its payload's
+codex_cycle carries the current-head Codex verdict when the resolved
+integration cap is not 0, or is null when it is — a null codex_cycle is how
+the Codex condition is waived, so there is no separate disabled flag. Both
+--record and --integrator-result are always required; there is no mode
+where either is skippable.
+--integration-cap N is optional context (harmon-devkit#685): when given, it
+additionally enforces that a cap of 0 pairs only with a null codex_cycle,
+that a positive cap pairs only with a non-null one, and that
+codex_cycle.cycle never exceeds it — the resolved value is the caller's
+(this script does not read .devflow.toml), so omitting the flag simply
+skips this one extra guard rather than assuming a cap of any particular
+value.
 --allow-edited-root ID clears an edited-since-reply line for that thread
 root only — the named-exception rule: the caller's report must say why the
 edit needs no reply.
@@ -159,11 +173,12 @@ pr=
 head=
 record_dir=
 integrator_result=
+integration_cap=
 allowed_edited_roots='[]'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --head | --record | --integrator-result | --allow-edited-root)
+    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --allow-edited-root)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
@@ -171,6 +186,7 @@ while [ "$#" -gt 0 ]; do
         --head) head=$2 ;;
         --record) record_dir=$2 ;;
         --integrator-result) integrator_result=$2 ;;
+        --integration-cap) integration_cap=$2 ;;
         --allow-edited-root)
             printf '%s' "$2" | grep -Eq '^[1-9][0-9]*$' ||
                 die "--allow-edited-root must be a thread root comment ID"
@@ -193,6 +209,10 @@ valid_uint() {
     printf '%s' "$1" | grep -Eq '^[1-9][0-9]*$'
 }
 
+valid_uint_or_zero() {
+    printf '%s' "$1" | grep -Eq '^(0|[1-9][0-9]*)$'
+}
+
 valid_sha() {
     printf '%s' "$1" | grep -Eq '^[0-9a-fA-F]{40}$'
 }
@@ -201,6 +221,8 @@ valid_sha() {
 [ -n "$pr" ] || usage
 valid_repo "$repo" || die "invalid repository: $repo"
 valid_uint "$pr" || die "invalid PR number: $pr"
+[ -z "$integration_cap" ] || valid_uint_or_zero "$integration_cap" ||
+    die "--integration-cap must be a non-negative integer"
 
 # check gates promotion, so the PR must still be draft; audit answers the
 # reconcile question for a PR somebody already promoted, so it drops exactly
@@ -795,9 +817,26 @@ if [ "$codex_cycle" != null ]; then
         indeterminate malformed-data "codex_cycle carries no head"
     [ "$cycle_head" = "$head" ] ||
         indeterminate codex-indeterminate "codex_cycle head $cycle_head disagrees with the gated $head"
+    # harmon-devkit#685's "accepted-cycle reviewed commit" invariant
+    # (codex_cycle.accepted.reviewed_commit must equal this same head) is
+    # already enforced one step earlier, unconditionally, by
+    # validate-result-schemas.mjs's own envelope receipt validation above —
+    # it rejects any envelope whose accepted.reviewed_commit disagrees with
+    # the envelope's own head, and envelope_head is already checked against
+    # $head. A second check here would be unreachable dead code: nothing
+    # gets this far without both already having been proven equal.
     codex_exit="$(jq -er '.exit_code | select(type == "number")' \
         <<<"$codex_cycle" 2>/dev/null)" ||
         indeterminate malformed-data "codex_cycle carries no exit_code"
+    if [ -n "$integration_cap" ]; then
+        cycle_number="$(jq -er '.cycle | select(type == "number")' \
+            <<<"$codex_cycle" 2>/dev/null)" ||
+            indeterminate malformed-data "codex_cycle carries no cycle number"
+        [ "$integration_cap" -gt 0 ] ||
+            indeterminate codex-cap-mismatch "codex_cycle is non-null but --integration-cap is 0 (harmon-devkit#685: a cap-0 pass must report a null codex_cycle)"
+        [ "$cycle_number" -le "$integration_cap" ] ||
+            indeterminate codex-cap-mismatch "codex_cycle.cycle $cycle_number exceeds --integration-cap $integration_cap"
+    fi
     case "$codex_exit" in
     0) ;;
     10 | 11 | 12 | 13)
@@ -807,10 +846,44 @@ if [ "$codex_cycle" != null ]; then
         indeterminate codex-indeterminate "codex_cycle exit_code $codex_exit is not a recognized terminal or pending value"
         ;;
     esac
+elif [ -n "$integration_cap" ] && [ "$integration_cap" -gt 0 ]; then
+    # harmon-devkit#685: a positive cap requires a cycle to have been
+    # attempted — a null codex_cycle under a resolved cap above 0 means the
+    # dispatched pass never ran one, whatever its verdict claims.
+    indeterminate codex-cap-mismatch "codex_cycle is null but --integration-cap is $integration_cap (a positive cap requires a cycle)"
 fi
-# codex_cycle == null means the resolved integration cap was 0 — the Codex
-# condition is waived for this pass, exactly as a schema-valid, cap-0
-# integrator result always reports it; nothing further to check here.
+# codex_cycle == null with no --integration-cap given (or one of 0) means
+# the resolved integration cap was 0 — the Codex condition is waived for
+# this pass, exactly as a schema-valid, cap-0 integrator result always
+# reports it; nothing further to check here.
+
+# 9b. Every applied disposition that touches a deferred finding must have a
+# matching settlement in run.json, regardless of the disposition's outcome
+# (harmon-devkit#685: "the moment an integrator pass applies fix|decline|file
+# to a deferred finding, the matching append-only settlement exists"). Read
+# straight from run.json rather than the readiness-input projection: the
+# projection already filters to defer-dispositioned findings and settled
+# state is exactly what it exists to report, but this check additionally
+# needs applied_dispositions from a DIFFERENT document (the integrator
+# result), so the cross-reference happens here, not in the projection.
+applied_dispositions="$(jq -c '.payload.applied_dispositions // []' \
+    "$integrator_result" 2>/dev/null)" ||
+    indeterminate malformed-data "integrator result payload is unreadable"
+settleable_ids="$(jq -r '.[] | select(.disposition == "fix" or .disposition == "decline" or .disposition == "file") | .finding_id' \
+    <<<"$applied_dispositions" 2>/dev/null)"
+if [ -n "$settleable_ids" ]; then
+    run_json="${record_dir}/run.json"
+    [ -f "$run_json" ] ||
+        indeterminate malformed-data "no run.json in --record $record_dir to verify settlements against"
+    settlements="$(jq -c '.settlements // []' "$run_json" 2>/dev/null)" ||
+        indeterminate malformed-data "run.json's settlements could not be read"
+    while IFS= read -r finding_id; do
+        [ -n "$finding_id" ] || continue
+        jq -e --arg id "$finding_id" 'any(.[]; .finding_id == $id)' \
+            <<<"$settlements" >/dev/null 2>&1 ||
+            fail_condition disposition-unsettled "applied_dispositions names $finding_id but run.json's settlements[] has no matching entry"
+    done <<<"$settleable_ids"
+fi
 
 # 10. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
 # and require equality before any pass. The evaluated fingerprint hashes the

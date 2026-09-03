@@ -1087,6 +1087,148 @@ printf '%s\n' '{"not":"a valid envelope"}' >"$malformed_result"
 run_gate --integrator-result "$malformed_result"
 assert_gate 2 indeterminate codex-indeterminate
 
+# ── harmon-devkit#685 criteria owned by #639 ────────────────────────────────
+# codex_cycle.cycle <= [rounds.<policy>].integration; cap 0 <=> null cycle; a
+# clean verdict with a null cycle under a positive cap is not clean.
+# --integration-cap is optional context the caller supplies (this script
+# never reads .devflow.toml itself), so every case below is scoped to runs
+# that pass it.
+
+echo "==> --integration-cap is advisory: omitting it skips the cap checks entirely"
+write_defaults
+clean_result="$(write_integrator_result cap-omitted "$(codex_cycle_json 0)")"
+run_gate --integrator-result "$clean_result"
+assert_gate 0 pass ready
+
+echo "==> a non-null codex_cycle against --integration-cap 0 is codex-cap-mismatch"
+write_defaults
+clean_result="$(write_integrator_result cap-zero-nonnull "$(codex_cycle_json 0)")"
+run_gate --integrator-result "$clean_result" --integration-cap 0
+assert_gate 2 indeterminate codex-cap-mismatch
+
+echo "==> a null codex_cycle against a positive --integration-cap is codex-cap-mismatch"
+write_defaults
+run_gate --integration-cap 3
+assert_gate 2 indeterminate codex-cap-mismatch
+
+echo "==> a null codex_cycle against --integration-cap 0 passes (the waived case)"
+write_defaults
+run_gate --integration-cap 0
+assert_gate 0 pass ready
+
+echo "==> codex_cycle.cycle within --integration-cap passes"
+write_defaults
+cycle_two="$(jq -c '.cycle = 2' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-cycle-ok "$cycle_two")"
+run_gate --integrator-result "$clean_result" --integration-cap 2
+assert_gate 0 pass ready
+
+echo "==> codex_cycle.cycle exceeding --integration-cap is codex-cap-mismatch"
+write_defaults
+cycle_three="$(jq -c '.cycle = 3' <<<"$(codex_cycle_json 0)")"
+clean_result="$(write_integrator_result cap-cycle-exceeded "$cycle_three")"
+run_gate --integrator-result "$clean_result" --integration-cap 2
+assert_gate 2 indeterminate codex-cap-mismatch
+
+# promotion.head equals the final integrator result's head AND its
+# accepted-cycle reviewed commit; a stale pass cannot certify a newer head.
+# The gate never gets a chance to check this itself: validate-result-
+# schemas.mjs's own envelope receipt validation already rejects any envelope
+# whose accepted.reviewed_commit disagrees with the envelope's own head
+# (unconditionally, cap or no cap) — and the gate's separate envelope_head
+# == --head check closes the remaining leg, so the two together are what
+# make a stale reviewed_commit unable to certify a newer head. Prove the
+# upstream half directly, since the gate can never observe a fixture that
+# fails it (write_integrator_result's own validation step refuses first).
+echo "==> a schema-valid envelope cannot carry a stale accepted.reviewed_commit"
+stale_result="${fixtures}/integrator-result-stale-reviewed-commit.json"
+jq -cn --arg head "$head_sha" '
+  {schema:2, role:"integrator", status:"completed", head:$head,
+   produced_at:"2026-01-01T00:00:00Z",
+   producer:{harness:"claude-code",model:"test",tier:"economy"},
+   run:{run_id:"test-run",initiated_by:"human"},
+   payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+            codex_cycle:{head:$head, cycle:1, attempt:1,
+              trigger_comment_id:"1",
+              accepted:{surface:"review", id:"1",
+                reviewed_commit:"3333333333333333333333333333333333333333"},
+              exit_code:0},
+            integration_round:1, findings:[], unanswered_thread_roots:[],
+            settled_at:"2026-01-01T00:00:00Z", verdict:"clean",
+            applied_dispositions:[]}}' >"$stale_result"
+validator_out="$(node "$validator" envelope "$stale_result" 2>&1)" &&
+    fail "a stale accepted.reviewed_commit should fail schema validation, got: $validator_out"
+printf '%s\n' "$validator_out" | grep -Fq 'reviewed_commit' ||
+    fail "the validator's rejection does not name reviewed_commit: $validator_out"
+
+# The moment an integrator pass applies fix|decline|file to a deferred
+# finding, the matching append-only settlement exists, regardless of outcome.
+echo "==> applied_dispositions naming a finding with no matching settlement is disposition-unsettled"
+write_defaults
+undisclosed_result="${fixtures}/integrator-result-undisclosed.json"
+jq -cn --arg head "$head_sha" '
+  {schema:2, role:"integrator", status:"completed", head:$head,
+   produced_at:"2026-01-01T00:00:00Z",
+   producer:{harness:"claude-code",model:"test",tier:"economy"},
+   run:{run_id:"test-run",initiated_by:"human"},
+   payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+            codex_cycle:null, integration_round:1, findings:[],
+            unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+            verdict:"clean",
+            applied_dispositions:[{finding_id:"review-r1-codex-cli-9",
+                                    disposition:"fix"}]}}' \
+    >"$undisclosed_result"
+node "$validator" envelope "$undisclosed_result" >/dev/null ||
+    fail "undisclosed-disposition fixture failed schema validation"
+run_gate --integrator-result "$undisclosed_result"
+assert_gate 1 fail disposition-unsettled
+printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
+    fail "disposition-unsettled did not name the unsettled finding: $gate_out"
+
+echo "==> applied_dispositions naming a finding WITH a matching settlement passes"
+write_defaults
+# render-dev-flow.mjs's own cross-document consistency rejects an "orphan"
+# settlement (one naming a finding no adjudication document declares) and a
+# settlement for a finding never dispositioned defer — both real invariants,
+# so the fixture needs a genuine defer-dispositioned adjudication behind the
+# settlement, not just the settlement alone.
+jq -cn --arg head "$head_sha" \
+    '{schema:2, run_id:"test-run", stage:"review", round:1,
+      reviewed_head:$head,
+      adjudications:[{finding_id:"review-r1-codex-cli-9",
+        reviewer_priority:"P2", adjudicated_priority:"P2",
+        disposition:"defer", reason:"carrying to integration",
+        evidence:"needs a second look", override:null}]}' \
+    >"${record_dir}/adjudications/review-r1.json"
+jq -cn --arg head "$head_sha" \
+    '{schema:2, run_id:"test-run", initiated_by:"human",
+      started_at:"2026-01-01T00:00:00Z",
+      stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z"}],
+      interventions:[], outcome:null,
+      pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+      evidence_comments:[],
+      settlements:[{finding_id:"review-r1-codex-cli-9", disposition:"fix",
+        settled_at:"2026-01-01T00:01:00Z",
+        reference:{type:"sha",value:"c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff"}}],
+      promotion:null}' >"${record_dir}/run.json"
+disclosed_result="${fixtures}/integrator-result-disclosed.json"
+jq -cn --arg head "$head_sha" '
+  {schema:2, role:"integrator", status:"completed", head:$head,
+   produced_at:"2026-01-01T00:00:00Z",
+   producer:{harness:"claude-code",model:"test",tier:"economy"},
+   run:{run_id:"test-run",initiated_by:"human"},
+   payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+            codex_cycle:null, integration_round:1, findings:[],
+            unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+            verdict:"clean",
+            applied_dispositions:[{finding_id:"review-r1-codex-cli-9",
+                                    disposition:"fix"}]}}' \
+    >"$disclosed_result"
+node "$validator" envelope "$disclosed_result" >/dev/null ||
+    fail "disclosed-disposition fixture failed schema validation"
+run_gate --integrator-result "$disclosed_result"
+assert_gate 0 pass ready
+
 echo "==> a CHANGES_REQUESTED review landing mid-gate fails on the final re-read"
 write_defaults
 jq -cn --arg head "$head_sha" \

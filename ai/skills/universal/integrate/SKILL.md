@@ -1124,6 +1124,17 @@ that loops indefinitely:
    response can be lost after GitHub accepted the mutation. Success requires
    the verified head on both scalar reads, an open PR, `isDraft == false`,
    and a fingerprint identical to the passing gate's.
+
+   Once success is confirmed, record it in the run record (where one is kept
+   for this run — harmon-devkit#685's `promotion.head` invariant): append
+   `promotion: {head, promoted_at, gate_fingerprint}` to `run.json`, `head`
+   and `gate_fingerprint` copied verbatim from the confirmed reads above,
+   never re-derived. This is the write side of an invariant the readiness
+   gate's own `--integrator-result` and `--head` checks already enforce on
+   the read side (a schema-valid envelope's `head` — and, transitively, its
+   `codex_cycle.accepted.reviewed_commit` — can never disagree with the head
+   the gate just confirmed), so a `promotion` entry can never legitimately
+   name a head other than this one.
    If the open PR is non-draft on a changed head or content snapshot, or any
    other confirmation result cannot
    prove that exact successful transition, run
