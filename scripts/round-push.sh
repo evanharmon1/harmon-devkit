@@ -307,12 +307,21 @@ done
 # commit (default HEAD), one per line. Requires the current working
 # directory to be a real checkout of the feature branch: the closure has no
 # git history to diff, only extracted files.
+#
+# --no-renames is required, not cosmetic: with rename detection on (git's
+# own default), a 100%-similar rename reports ONLY the destination path —
+# renaming code/foo.sh to docs/foo.md would then classify as docs-only
+# with the source path outside docs_only_paths entirely invisible to the
+# classifier below, accepting the weaker round_docs gate for what is still
+# code content. --no-renames reports a rename as a delete of the old path
+# plus an add of the new one, so both sides are checked against
+# docs_only_paths.
 changed_paths() {
     local target=$1
 
     git_with_args merge-base --is-ancestor "$merge_base" "$target" 2>/dev/null ||
         refuse "--merge-base is not an ancestor of ${target}"
-    git_with_args diff --name-only "${merge_base}..${target}"
+    git_with_args diff --no-renames --name-only "${merge_base}..${target}"
 }
 
 # Matches a single repo-root-relative PATH against one docs_only_paths glob

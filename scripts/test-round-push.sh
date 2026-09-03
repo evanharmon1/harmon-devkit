@@ -307,6 +307,26 @@ assert_rc 0
 printf '%s' "$out" | grep -F '"diff_class": "docs"' >/dev/null ||
     fail "a root-level .md file must still match **/*.md: $out"
 
+echo "  -> a code-to-docs rename classifies as code, not docs (rename detection defeated)"
+root="$(new_fixture rename-plan)"
+cd "${root}/work"
+merge_base="$(git rev-parse HEAD)"
+mkdir -p src
+printf 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n' >src/run.sh
+git_q "${root}/work" add src/run.sh
+git_q "${root}/work" commit -m "test: add code file"
+premv_base="$(git rev-parse HEAD)"
+mkdir -p "${root}/work/docs"
+git_q "${root}/work" mv src/run.sh docs/run.md
+git_q "${root}/work" commit -m "test: rename code file into docs/"
+rename_sha="$(git rev-parse HEAD)"
+git -C "${root}/work" diff --name-status "${premv_base}..${rename_sha}" | grep -q '^R100' ||
+    fail "fixture setup did not produce a 100%-similarity rename to test against"
+run plan --merge-base "$premv_base" --sha "$rename_sha" "${policy_args[@]}" --json
+assert_rc 0
+printf '%s' "$out" | grep -F '"diff_class": "code"' >/dev/null ||
+    fail "a rename from a non-docs path into a docs-shaped path must still classify as code, not docs (source path must not be invisible to the classifier): $out"
+
 echo "  -> a docs-class push succeeds against the recomputed docs target"
 root="$(new_fixture docs-push)"
 cd "${root}/work"
