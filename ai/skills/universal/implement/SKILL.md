@@ -5,11 +5,11 @@ description: >-
   issue as a spec, work the repo's own dev loop (inner lint gate,
   definition-of-done gate, second-model review, security gate), tick acceptance
   criteria as they are verified, open the PR with its deferred findings
-  recorded, then stop and hand off for a human to run the integration stage.
-  Never claims, never merges, never enters the integration stage itself — that
-  stage is a human-triggered handoff point, not something this skill continues
-  into. Use when an issue is already claimed and the session is told to
-  implement it. Invoke as /implement [issue # or URL].
+  recorded, then continue into the integration stage (`/integrate`) and stop
+  at its own terminal condition (ready-for-review, or a blocker). Never
+  claims, never merges — merging stays the maintainer's decision after a
+  human review. Use when an issue is already claimed and the session is told
+  to implement it. Invoke as /implement [issue # or URL].
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branch --show-current), Bash(git rev-parse:*), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(gh label list:*)
 ---
 
@@ -17,19 +17,20 @@ allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branc
 
 **Arguments:** $ARGUMENTS
 
-Turn a claimed issue into a **draft PR ready for the integration stage**.
-`/claim` verified and claimed the issue; this skill owns everything from there
-through `gh pr create --draft`, with every deferred finding recorded in the PR
-body — and stops there.
+Turn a claimed issue into a **draft PR ready for the integration stage**, then
+continue into that stage. `/claim` verified and claimed the issue; this skill
+owns everything from there through `gh pr create --draft`, with every
+deferred finding recorded in the PR body — then hands off internally to
+`/integrate` (step 9) rather than stopping at the draft.
 
-That stop is deliberate, not a shortfall. Opening the PR is not a milestone to
-continue past into the integration stage: `/integrate` (the successor to the
-old shepherd stage) is a human-triggered stage, whose own description states
-that promoting to ready-for-review is the dev loop's human-handoff point, and
-whose `disable-model-invocation` flag enforces that no model session — this one
-included — may enter it on its own. Step 9 names that handoff explicitly
-rather than stopping in silence, so "draft opened, findings recorded" reads as
-this skill's actual finish line rather than as work abandoned mid-flight.
+Opening the PR is not this skill's finish line. `/integrate` (the successor
+to the old shepherd stage) dropped its `disable-model-invocation` flag: the
+originating session owns the integration stage, readiness evaluation, and
+promotion, and the human handoff is integration's own OUTPUT
+(ready-for-review) rather than a gate on entering it. Step 9 names that
+continuation explicitly rather than stopping in silence, so "draft opened,
+findings recorded" is a mid-session checkpoint, not this skill's actual
+finish line.
 
 **The repository's own policy outranks this file.** Where its `AGENTS.md`
 states different gates, loop caps, commit conventions, or PR-title rules,
@@ -402,29 +403,29 @@ second PR is the expensive way to find out.
   list it cannot know is short. Deleting is bookkeeping; do it after the thing
   it is bookkeeping for actually exists.
 
-## 9. Hand off to the integration stage
+## 9. Continue into the integration stage
 
-`gh pr create --draft` returning is **this skill's finish line, not a
-milestone to continue past**. Report the PR URL, confirm `isDraft == true` on
-the pushed SHA, confirm every deferred finding from step 6 is recorded in the
-PR body (step 8's re-read already established this), and stop.
+`gh pr create --draft` returning is **a checkpoint, not this skill's finish
+line**. Confirm `isDraft == true` on the pushed SHA and every deferred
+finding from step 6 is recorded in the PR body (step 8's re-read already
+established this), then continue into `/integrate` from the same session —
+where the harness exposes the Skill tool, invoke `integrate` through it;
+where it does not (a subagent, another harness), enter the stage by reading
+`/integrate`'s `SKILL.md` and following it directly, exactly as this file's
+own "repository's own policy outranks this file" paragraph already
+describes for a repo-policy fallback.
 
-**Do not enter the integration stage yourself, in any form.** Not through the
-Skill tool, and not by reading `/integrate`'s `SKILL.md` and following its
-procedure directly — a harness with no Skill tool, or a subagent, is not a
-gap in coverage to route around by hand-rolling the same steps. `/integrate`'s
-`disable-model-invocation` flag and its own description ("a human decides when
-to enter this stage rather than a model triggering it on its own") are the
-policy, not a tool-availability detail: watching CI, adjudicating reviews, and
-running the readiness gate are exactly the acts that flag withholds from a
-model session, so doing them here manually would defeat the reason the flag
-exists just as much as invoking the skill would.
+This is not this skill continuing to do implementation work: `/integrate` is
+its own stage with its own procedure (watching CI, adjudicating reviews,
+running the readiness gate, promoting), and once you enter it you are
+governed by its rules, not this file's. What changes here is only that
+nothing stops the session at the draft PR waiting for a separate invocation.
 
-Tell whoever reads the report plainly what is still open: the draft exists,
-checks and reviews are unpolled, and the next step is a human running
-`/integrate <PR#>` (or the repository's equivalent) when they are ready. That
-is this skill's normal, complete stopping point — not a blocker, and not
-unfinished work on your part.
+Stop where `/integrate` itself stops: ready-for-review, or one of its own
+blocker conditions (a cap reached, no progress, something only the
+maintainer can resolve). Report that outcome — the PR URL, its draft/ready
+state, and (if blocked) what remains open and why — rather than the draft
+PR's own state, which is no longer where the session ends.
 
 The one thing that was never yours anyway: **merging**. That does not change
 here — it was always the maintainer's decision, made after `/integrate`'s own

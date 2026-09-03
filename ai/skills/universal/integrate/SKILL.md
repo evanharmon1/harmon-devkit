@@ -552,17 +552,24 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     pass that comes back clean can echo them into a schema-valid result
     (empty list if this is the stage's first pass);
   - `previously_seen_source_ids` accumulated so far this integration stage —
-    every `source_id` from an integration finding you dispositioned `decline`
-    or `file` in an earlier round (never `fix`, which changed the code, or
-    `defer`, tracked separately). The dispatched agent is a fresh context
-    each time with no memory of a prior pass, and the GitHub comment or
-    review a declined or filed finding came from does not disappear, so
-    without this list every re-dispatch re-mints the same resolved finding
-    under a new id forever (`ai/agents/integrator.md` §1/§5) — a `findings`
-    verdict from your own adjudication history's own `source_id`s is exactly
-    what you accumulate here; there is no schema field for it yet, so track
-    it in your own working state for the run's duration (empty list if this
-    is the stage's first pass, or if nothing has been declined/filed yet);
+    every `source_id` from an integration finding you dispositioned `fix`,
+    `decline`, or `file` in an earlier round (never `defer`, tracked
+    separately). The dispatched agent is a fresh context each time with no
+    memory of a prior pass, and the GitHub comment or review a dispositioned
+    finding came from does not disappear regardless of which of those three
+    you chose — including `fix`, since the agent has no way to re-evaluate
+    whether the comment's text still applies to the new code, only whether
+    the comment itself is already accounted for (Codex cloud-review cycle on
+    harmon-devkit#758) — so without this list every re-dispatch re-mints the
+    same resolved finding under a new id forever (`ai/agents/integrator.md`
+    §1/§5). The actual code change from a `fix` still gets reviewed on its
+    own merits through the ordinary current-head Codex cycle; this list only
+    stops the *comment* from being re-litigated as a fresh finding. A
+    `findings` verdict from your own adjudication history's own `source_id`s
+    is exactly what you accumulate here; there is no schema field for it
+    yet, so track it in your own working state for the run's duration
+    (empty list if this
+    is the stage's first pass, or if nothing has been dispositioned yet);
   - any reply text already composed and ready to post this round — generate
     it deterministically rather than composing it by hand:
     `render-dev-flow.sh thread-reply-plan --record <dir>` emits

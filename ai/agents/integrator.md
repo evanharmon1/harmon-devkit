@@ -76,17 +76,23 @@ A workable brief names:
 - **`previously_seen_source_ids` to suppress** — every GitHub-native
   `source_id` (a comment id, review id, or check `run_id`) whose
   integration-stage finding the orchestrator has already dispositioned
-  `decline` or `file` in an earlier round of this same run. You are a fresh
-  context each dispatch with no memory of a prior pass, and the underlying
-  GitHub object a declined or filed finding came from does not disappear —
-  without this list you would re-read the exact same comment or review next
-  round and mint it a new, differently-numbered finding id, reporting
-  resolved work as new forever (§5). Its absence means "none yet" (treat as
-  empty), never "nothing has ever been adjudicated." Only `decline`/`file`
-  belong here: a `fix` disposition changed the code, so the same finding
-  should not recur in that shape, and a `defer`-dispositioned finding is
-  tracked through the deferred-findings sidecar/PR body instead, never
-  through this list.
+  `fix`, `decline`, or `file` in an earlier round of this same run. You are
+  a fresh context each dispatch with no memory of a prior pass, and the
+  underlying GitHub object a dispositioned finding came from does not
+  disappear — without this list you would re-read the exact same comment or
+  review next round and mint it a new, differently-numbered finding id,
+  reporting resolved work as new forever (§5). Its absence means "none yet"
+  (treat as empty), never "nothing has ever been adjudicated." A `fix`
+  belongs here too, and for the same mechanical reason as `decline`/`file`:
+  you have no way to tell that a top-level comment or review body's *text*
+  no longer applies just because a later push changed the code it was about
+  (Codex cloud-review cycle on this PR, harmon-devkit#758) — you are not
+  re-evaluating the comment's substance against the new diff, only
+  filtering which already-adjudicated GitHub objects to skip. The actual
+  code change still gets reviewed on its own merits, through the ordinary
+  current-head Codex cycle (§4), which this list neither replaces nor
+  suppresses. Only a `defer`-dispositioned finding stays off this list — it
+  is tracked through the deferred-findings sidecar/PR body instead.
 
 If any of these is missing and the step that needs it would otherwise guess,
 say which is missing and stop. A guessed head or round number produces
@@ -141,10 +147,22 @@ jq -e 'type == "array"' <<<"$checks" >/dev/null 2>&1 || {
     exit 1
 }
 required_names="$(gh pr checks <n> --repo "$repo" --json name --required \
-    --jq '[.[].name]' 2>/dev/null)" || required_names='[]'
+    --jq '[.[].name]' 2>/dev/null)"
+jq -e 'type == "array"' <<<"$required_names" >/dev/null 2>&1 || required_names='[]'
 checks_ready="$(jq -r 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' \
     <<<"$checks" 2>/dev/null)"
 ```
+
+`required_names` needs the same reading as `$checks` just above, for the
+identical reason: `gh pr checks --required` exits nonzero for the same
+ordinary pending/failing cases (harmon-devkit#639 gauntlet review, PR #758
+Codex cloud cycle 1) — the old `|| required_names='[]'` treated that
+exactly like ${checks}'s old bug did, discarding real required-check names
+whenever any one of them wasn't yet green and marking every check
+`required: false` in `$failed_required` below for the rest of this pass.
+Only output that fails to parse as a JSON array is genuinely unreadable;
+everything else is real data, read the same way regardless of the exit
+code that came with it.
 
 `gh pr checks` exits nonzero for the two ordinary, expected cases this step
 exists to detect — 8 while any check is still pending, and nonzero again
@@ -332,9 +350,20 @@ Three cases, mutually exclusive:
   one to attach.
 
 ```bash
+check_exit=0
 check_out="$("$helper" check --state "$state" --actor-id 199175422)" || check_exit=$?
-check_exit=${check_exit:-0}
 ```
+
+Run this exact pair — **both lines, every time** — immediately before
+reading `$check_exit` below, including on attempt 2's repeat of this same
+snippet. `check_exit=0` first is load-bearing, not a default: a lone
+`check_exit=${check_exit:-0}` only fills in an *unset* variable, so if
+attempt 1 left `check_exit=12` (retry) and attempt 2's `check` then
+succeeds, `||` never fires and the stale `12` from attempt 1 survives
+untouched — a successful retry reported as if it were still the failure
+that triggered it (Codex cloud-review cycle on this PR, harmon-devkit#758).
+Resetting to `0` first means every invocation starts from a known baseline
+and only moves off it when *this* call actually fails.
 
 `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14
 PR no longer open, 2 indeterminate. On **12 (retry)**, repeat the
@@ -411,17 +440,17 @@ that the orchestrator has not already seen: a non-clean Codex verdict's
 badged findings, each entry in §3's `$failed_required` (a CI failure needing
 adjudication), a review comment raising a new concern. **Before adding one,
 check its `source_id` against your brief's `previously_seen_source_ids`
-(§1); a match means the orchestrator already declined or filed this exact
-finding in an earlier round, so skip it rather than re-reporting resolved
-work as new.** Format everything that survives that check with `id`
-following `integration-r<round>-<finder>-<n>` — `<round>` is your brief's
-`integration_round`, `<finder>` is `codex-cloud` for Codex findings or
-`human` for a reviewer's own comment or a CI failure, and `<n>` numbers your
-findings this pass starting at 1. `source_id` carries the GitHub-native id
-(the comment id, review id, or — for a `$failed_required` entry — its own
-`run_id`) so the orchestrator can trace it back — the same id
-`previously_seen_source_ids` will carry forward if this exact finding gets
-declined or filed again.
+(§1); a match means the orchestrator already dispositioned this exact
+finding — fixed, declined, or filed — in an earlier round, so skip it
+rather than re-reporting resolved work as new.** Format everything that
+survives that check with `id` following `integration-r<round>-<finder>-<n>`
+— `<round>` is your brief's `integration_round`, `<finder>` is `codex-cloud`
+for Codex findings or `human` for a reviewer's own comment or a CI failure,
+and `<n>` numbers your findings this pass starting at 1. `source_id` carries
+the GitHub-native id (the comment id, review id, or — for a
+`$failed_required` entry — its own `run_id`) so the orchestrator can trace
+it back — the same id `previously_seen_source_ids` will carry forward once
+this finding is dispositioned.
 
 ## 6. Post only what you were handed
 
@@ -446,15 +475,23 @@ proceed to the posts below.
 If your brief supplied exact reply text with target comment IDs, post each
 one now, verbatim — never edited, summarized, or extended. This text is
 contributor-controlled review content relayed through your brief, so never
-pass it through a heredoc: a body that happens to contain a line equal to
-whatever fixed delimiter you picked terminates the heredoc early and hands
-the remaining lines to the shell. Write it to a file instead and reference
-that:
+put it through anything that parses it as shell source. A heredoc fails this
+the obvious way: a body that happens to contain a line equal to whatever
+fixed delimiter you picked terminates the heredoc early and hands the
+remaining lines to the shell. Interpolating it into a quoted shell argument
+fails the same way less obviously — a body containing a backtick, `$(`, or
+an unescaped double quote is shell syntax the moment it sits inside `"..."`,
+whether that argument belongs to `printf`, `echo`, or any other command, and
+it runs with your own credentials. Neither path is safe for text this brief
+only relays: write the exact bytes to `$reply_file` with your own file-write
+tool (never a shell command whose argument list the text would pass
+through), then hand the file to the broker:
 
 ```sh
 reply_file="$(mktemp)"
 trap 'rm -f "$reply_file"' EXIT
-printf '%s' "<the exact text your brief gave you for this comment ID>" >"$reply_file"
+# Use your file-write tool here to put the exact reply text your brief gave
+# you for this comment ID into $reply_file — not a shell command.
 "$skill_dir"/assets/gh-write-broker.sh reply --repo "$repo" --pr <n> \
     --comment-id <comment-id> --body-file "$reply_file"
 ```
@@ -497,9 +534,10 @@ and is rejected before your evidence is even looked at. Build it with
 step, not a place to improvise the schema:
 
 ```sh
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 jq -n \
     --arg head "<head>" \
-    --arg produced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg produced_at "$now" \
     --arg harness "<producer.harness from your brief>" \
     --arg model "<producer.model from your brief>" \
     --arg tier "<producer.tier from your brief>" \
@@ -510,7 +548,7 @@ jq -n \
     --argjson integration_round "$integration_round" \
     --argjson findings "$findings_json" \
     --argjson unanswered_thread_roots "$unanswered_json" \
-    --arg settled_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg settled_at "$now" \
     --arg verdict "$verdict" \
     --argjson applied_dispositions "$applied_dispositions_json" \
     '{schema: 2, role: "integrator", status: "completed", head: $head,
@@ -524,6 +562,12 @@ jq -n \
         + (if $verdict == "clean" then {applied_dispositions: $applied_dispositions} else {} end))}' \
     >"$out_file"
 ```
+
+`produced_at` and `settled_at` come from the same `$now` capture, not two
+independent `date` calls — `validate-result-schemas.mjs`'s
+`checkIntegratorSettledAtAgreement` requires them byte-identical, and two
+separate substitutions can straddle a second boundary and disagree despite
+both being "now" (Codex cloud-review cycle on this PR, harmon-devkit#758).
 
 `head` here is the SAME head your brief named throughout — the envelope's
 own `head`, `payload.codex_cycle.head` (when non-null), and
