@@ -11,7 +11,7 @@
     {
       "id": "2000000003",
       "author_actor_id": 12345678,
-      "digest": "sha256:abcdef0123456789",
+      "digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
       "marker": { "run_id": "run-6030-evidence-comments-missing-login", "stage": "challenge", "destination": "issue", "round": 1, "sequence": 1 }
     }
   ],

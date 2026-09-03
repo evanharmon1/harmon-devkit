@@ -1,0 +1,15 @@
+{
+  "schema": "dev-flow-render.thread-reply-plan.v1",
+  "entries": [
+    {
+      "finding_id": "integration-r1-human-1",
+      "root_comment_id": "IC_kwIarandom0001",
+      "reply_text": "Declined: already covered by the JSON result's own reason field; Markdown is a convenience, not the contract",
+      "head": "2222222222222222222222222222222222222222",
+      "adjudicated_priority": "P2",
+      "classification": "n/a",
+      "evidence": "readiness-input carries the same detail machine-readably",
+      "action": "decline — already covered by the JSON result's own reason field; Markdown is a convenience, not the contract"
+    }
+  ]
+}

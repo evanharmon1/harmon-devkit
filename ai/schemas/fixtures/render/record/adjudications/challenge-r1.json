@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "run_id": "run-637-fixture-0001",
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "1111111111111111111111111111111111111111",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed — reservation write and gh call need a lock",
+      "evidence": "reproduced by running two publishes concurrently against the fixture gh shim",
+      "override": null
+    },
+    {
+      "finding_id": "challenge-r1-codex-cli-2",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "decline",
+      "reason": "last-write-wins on a repeated positional flag is acceptable; no observed double-record usage",
+      "evidence": "no caller in this milestone passes --record twice",
+      "override": null
+    }
+  ]
+}

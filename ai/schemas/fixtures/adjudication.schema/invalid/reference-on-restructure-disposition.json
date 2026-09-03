@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "run_id": "run-6806-reference-on-restructure-disposition",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "6806a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-verification-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "restructure",
+      "reason": "confirmed, restructured to invariants this round",
+      "evidence": "verified against the actual implementation before restructuring",
+      "override": null,
+      "reference": { "type": "sha", "value": "6806aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+    }
+  ]
+}

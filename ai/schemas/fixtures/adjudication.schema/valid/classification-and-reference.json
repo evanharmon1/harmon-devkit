@@ -1,0 +1,20 @@
+{
+  "schema": 2,
+  "run_id": "run-6801-classification-and-reference",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "6801a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-verification-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P2",
+      "disposition": "file",
+      "reason": "confirmed but out of this lane's scope, tracked separately",
+      "evidence": "predates this PR on main and affects every role's envelope equally",
+      "override": { "reason": "downgraded from the reviewer's P1: real but not blocking, scope-bounded elsewhere" },
+      "classification": "confirmed",
+      "reference": { "type": "issue_number", "value": "636" }
+    }
+  ]
+}

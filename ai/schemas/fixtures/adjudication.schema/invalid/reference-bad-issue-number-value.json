@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "run_id": "run-6807-reference-bad-issue-number-value",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "6807a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-verification-1",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "file",
+      "reason": "real but out of scope",
+      "evidence": "tracked as a follow-up",
+      "override": null,
+      "reference": { "type": "issue_number", "value": "0" }
+    }
+  ]
+}

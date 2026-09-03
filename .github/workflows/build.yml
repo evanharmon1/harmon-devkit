@@ -38,6 +38,10 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           lint-tools: "true"
+          # test:render-dev-flow exercises render-dev-flow.mjs's secret-scan
+          # step, which shells out to gitleaks — without this the new test
+          # target below would fail for a missing binary, not a real defect.
+          gitleaks: "true"
       - name: Install devkit test tools
         run: |
           # yq comes from the setup action above (lint-tools: "true") — do not
@@ -107,6 +111,11 @@ jobs:
       - run: task test:link-claude-json
       - run: task test:image-staleness
       - run: task test:open-devcontainer
+      # This list is otherwise hand-enumerated per-target (see the comment
+      # above the first batch), which is a systemic gap tracked as #726 —
+      # test:result-schemas has the same omission. Adding only this lane's
+      # own target here rather than auditing the whole list.
+      - run: task test:render-dev-flow
 
   security:
     # Runner switch: CI_RUNS_ON repo/org variable unset -> the rendered

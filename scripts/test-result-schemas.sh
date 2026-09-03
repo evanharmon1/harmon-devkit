@@ -110,6 +110,11 @@ invalid_count=0
 for dir in "$fixtures_dir"/*/; do
     [ -d "$dir" ] || continue
     base="$(basename "${dir%/}")"
+    # render/ holds golden fixtures for scripts/render-dev-flow.mjs, a
+    # projection tool rather than one of this family's six schema kinds
+    # (ai/schemas/README.md "Rendering"); scripts/test-render-dev-flow.sh
+    # owns it, so it is not iterated here.
+    [ "$base" = "render" ] && continue
     kind="$(kind_for_dir "$base")"
     fixture_dirs_found=$((fixture_dirs_found + 1))
 
@@ -234,6 +239,7 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/findings-wrong-cycle.json',
   'result.integrator.schema/invalid/known-ids-collision.json',
   'result.integrator.schema/invalid/clean-with-fix-disposition.json',
+  'result.integrator.schema/invalid/clean-verdict-known-id-defer.json',
   'result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json',
   'result.integrator.schema/invalid/exit-code-13-with-pending.json',
   'result.integrator.schema/invalid/exit-code-14-with-clean.json',
@@ -328,6 +334,101 @@ for (const role of Object.keys(ROLE_DIRS)) {
     failures += 1
   } else {
     console.log(`PASS: result.schema.json's \$defs.${role} matches result.${role}.schema.json`)
+  }
+}
+
+// The role-fixture loop above proves the composed schema accepts/rejects
+// role-PAYLOAD-shaped violations, but exercises only the four role fixture
+// directories — it never runs the standalone envelope-invalid fixtures
+// (missing/malformed schema, role, status, head, produced_at, producer,
+// run) against the composed root, so an envelope-level regression there
+// (e.g. a required envelope field silently dropped from result.schema.json's
+// own root) would slip through this test file untouched. Every
+// envelope-invalid fixture is a violation of a field the composed root
+// ALSO carries directly (this file's own $comment: the composed root is
+// copied from result.envelope.schema.json, payload aside), so each one
+// must be schema-level rejectable by `composed` too — except the two named
+// below, whose violations need reasoning no JSON-Schema keyword (in either
+// copy of the field) can express at all, the same category as SEMANTIC_ONLY
+// above: produced_at-impossible-date is a calendar-validity check (the
+// pattern matches the STRING SHAPE of "2026-02-30T10:00:00Z"; only a real
+// date parse knows February has no 30th), and run-mismatch needs external
+// context (which run is "active") no single document carries.
+const ENVELOPE_SEMANTIC_ONLY = new Set(['produced_at-impossible-date.json', 'run-mismatch.json'])
+const envelopeInvalidDir = path.join(fixturesDir, 'result.envelope.schema', 'invalid')
+let envelopeChecked = 0
+const envelopeSemanticOnlySeen = new Set()
+for (const entry of readdirSync(envelopeInvalidDir)) {
+  if (!entry.endsWith('.json')) continue
+  if (ENVELOPE_SEMANTIC_ONLY.has(entry)) {
+    envelopeSemanticOnlySeen.add(entry)
+    continue
+  }
+  const file = path.join(envelopeInvalidDir, entry)
+  const instance = JSON.parse(readFileSync(file, 'utf8'))
+  const errors = engine.validate(instance, composed, '$result')
+  envelopeChecked += 1
+  if (errors.length === 0) {
+    console.error(
+      `FAIL: envelope-invalid fixture accepted by result.schema.json, expected a schema-level rejection: ${file}`
+    )
+    failures += 1
+  }
+}
+for (const name of ENVELOPE_SEMANTIC_ONLY) {
+  if (!envelopeSemanticOnlySeen.has(name)) {
+    console.error(`FAIL: ENVELOPE_SEMANTIC_ONLY names a fixture that no longer exists: ${name}`)
+    failures += 1
+  }
+}
+if (envelopeChecked === 0) {
+  console.error(`FAIL: no envelope-invalid fixtures found under ${envelopeInvalidDir} — the composed-root check ran nothing`)
+  failures += 1
+} else if (failures === 0) {
+  console.log(
+    `PASS: result.schema.json rejects all ${envelopeChecked} envelope-level invalid fixtures (${envelopeSemanticOnlySeen.size} left to the validator script)`
+  )
+}
+
+// $defs.<role> drift is checked above; the composed ROOT itself (everything
+// but the role-dispatched payload, which has no independent schema of its
+// own at this level) must never drift from result.envelope.schema.json
+// either — this is what actually caught the finding: removing `head` from
+// result.schema.json.required left every role-fixture and envelope-invalid
+// check above green, because none of those fixtures happens to omit head
+// AND rely on the composed root (rather than $defs) to reject it.
+{
+  const envelopeSchema = JSON.parse(
+    readFileSync(path.join(schemasDir, 'result.envelope.schema.json'), 'utf8')
+  )
+  const withoutPayload = (list) => (list ?? []).filter((name) => name !== 'payload')
+  const composedRequired = withoutPayload(composed.required).sort()
+  const envelopeRequired = withoutPayload(envelopeSchema.required).sort()
+  // Comparing Object.keys(...) alone (challenge r2 P2) proves only that the
+  // same NAMES exist on both sides — weakening just the composed copy's
+  // head.pattern to accept a 39-character SHA leaves the key lists equal and
+  // passes here, exactly the drift this check exists to catch. Compare the
+  // full property DEFINITION objects instead, canonicalized the same way the
+  // $defs.<role> drift check above already does, so a changed pattern/type/
+  // enum on either copy is caught, not only an added or removed key.
+  const withoutPayloadProps = (properties) => {
+    const { payload, ...rest } = properties ?? {}
+    return rest
+  }
+  const composedProperties = withoutPayloadProps(composed.properties)
+  const envelopeProperties = withoutPayloadProps(envelopeSchema.properties)
+  if (
+    canonicalJson(composedRequired) !== canonicalJson(envelopeRequired) ||
+    canonicalJson(composedProperties) !== canonicalJson(envelopeProperties)
+  ) {
+    console.error(
+      'FAIL: result.schema.json\'s root (required/properties, minus payload) has drifted from result.envelope.schema.json ' +
+        `(composed required=${JSON.stringify(composedRequired)} vs envelope required=${JSON.stringify(envelopeRequired)}; ` +
+        `composed properties=${JSON.stringify(composedProperties)} vs envelope properties=${JSON.stringify(envelopeProperties)})`
+    )
+    failures += 1
+  } else {
+    console.log('PASS: result.schema.json\'s root (required/properties, minus payload) matches result.envelope.schema.json')
   }
 }
 
@@ -1011,6 +1112,13 @@ accept_context_case \
     integrator \
     "$fixtures_dir/result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json" \
     --known-ids "$fixtures_dir/result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.known-ids.json"
+
+run_context_case \
+    "a clean-verdict defer on a --known-ids finding is rejected exactly like a defer on the payload's own findings" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/invalid/clean-verdict-known-id-defer.json" \
+    "incompatible with verdict clean, even when supplied via --known-ids" \
+    --known-ids "$fixtures_dir/result.integrator.schema/invalid/clean-verdict-known-id-defer.known-ids.json"
 
 usage_error_case \
     "--no-adjudications and --adjudication together are a usage error" \
