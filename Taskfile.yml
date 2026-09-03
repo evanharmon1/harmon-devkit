@@ -88,6 +88,7 @@ tasks:
       - task: test:integrate-marker
       - task: test:integrate-readiness
       - task: test:gauntlet-push
+      - task: test:round-push
       - task: test:lint-hygiene
       - task: test:release-title
       - task: test:notify-release
@@ -463,6 +464,11 @@ tasks:
     desc: Unit-test gauntlet's gated round-push helper (offline, local bare remotes)
     cmds:
       - ./scripts/test-gauntlet-push.sh
+
+  test:round-push:
+    desc: Unit-test the dev-flow-v2 diff-aware round-push broker (offline, local bare remotes)
+    cmds:
+      - ./scripts/test-round-push.sh
 
   test:lint-hygiene:
     desc: Behavioral fixtures for lint-hygiene's trigger-phrase adjacency scan

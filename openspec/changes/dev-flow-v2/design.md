@@ -93,8 +93,9 @@ broker was rejected because they would drift.
 
 The round-push broker and the secret scanner live at stable repository-owned
 script paths (`scripts/round-push.sh`; `scripts/gitleaks-scan.sh` with its
-`.gitleaks.toml` and the `scripts/summarize-gitleaks.mjs` helper it executes
-under `GITHUB_STEP_SUMMARY`; the extracted broker invokes that extracted
+`.gitleaks.toml`, `.gitleaksignore` if the merge base has one, and the
+`scripts/summarize-gitleaks.mjs` helper it executes under
+`GITHUB_STEP_SUMMARY`; the extracted broker invokes that extracted
 script by explicit path, never through the worktree's `security:secrets`
 Taskfile recipe, which exists for humans and CI) rather than inside a
 skill's assets: the merge-base rule materializes them with
