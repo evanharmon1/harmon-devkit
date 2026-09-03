@@ -27,13 +27,21 @@ echo "==> review skill names both role dispatches and record authority"
 for text in '[stage.challenge].finders' '[stage.review].finders' challenger reviewer \
     'scripts/dev-flow-exit.sh' 'scripts/render-dev-flow.sh' 'scripts/round-push.sh' \
     'run.json.evidence_comments' 'fenced JSON' 'git remote get-url origin' \
-    'gh repo view "$origin_url"' 'inline confidence-stage procedure'; do
+    'gh repo view "$origin_url"' 'inline confidence-stage procedure' \
+    'validated finding records'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing $text"
 done
 entry_gate_line="$(grep -n '^## Entry gate$' "$skill" | cut -d: -f1)"
 dispatch_line="$(grep -n '^## Dispatch and receipt$' "$skill" | cut -d: -f1)"
 [ -n "$entry_gate_line" ] && [ -n "$dispatch_line" ] && [ "$entry_gate_line" -lt "$dispatch_line" ] ||
     fail "review skill does not fail topology before dispatch"
+for role in challenger reviewer; do
+    agent="ai/agents/$role.md"
+    grep -Fq "ai/schemas/result.$role.schema.json" "$agent" ||
+        fail "$role does not name its result schema"
+    grep -Fq 'validated finding records' "$agent" ||
+        fail "$role cannot compare finding provenance across rounds"
+done
 grep -Fq 'synthesis_of' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not preserve council synthesis provenance"
 for model_skill in "$skill" ai/skills/universal/orchestrator/SKILL.md; do

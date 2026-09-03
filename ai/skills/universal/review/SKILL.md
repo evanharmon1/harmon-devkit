@@ -46,7 +46,10 @@ shell, git, `gh`, network write, and external credentials, except for the
 result-return channel. If that read/write split cannot be installed and
 verified, refuse the dispatch and record a blocker; prose in the agent file is
 never a substitute for this boundary. Give every pass the captured base/head,
-run identity, prior finding ids, policy, finder slot, and that snapshot.
+run identity, policy, finder slot, and that snapshot. Include the complete
+validated finding records from every earlier round of this same stage, not
+merely their IDs, so the role can compare evidence before asserting
+`repeat-of` or `supersedes`; an empty list is explicit in round 1.
 
 For `challenge`, dispatch every primary finder in `[stage.challenge].finders`
 to the `challenger` role. For `review`, do the same for
