@@ -52,9 +52,9 @@ record plus the work in flight.
 5. Carry on exactly as for the orchestrator's own work. The report ends the
    dispatch, not the claim: while review, CI, the PR, or another delegate is
    still in flight the claim stays live and follows the ordinary lifecycle:
-   `/shepherd` retires the `claim:*` label at ready-for-review, and the close
+   `/integrate` retires the `claim:*` label at ready-for-review, and the close
    event or `/wrap` releases the claim itself. With several delegates on one
-   issue, do not take any of its PRs through `/shepherd`'s ready-for-review
+   issue, do not take any of its PRs through `/integrate`'s ready-for-review
    stop until every delegate for that issue has reported — that stop retires
    the label, and "implementing right now" is still true while another
    delegate runs.

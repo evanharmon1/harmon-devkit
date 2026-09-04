@@ -15,7 +15,7 @@ run-name: sync-harmon-devkit reconciling the vendored skills pin
 on:
   # Weekly reconciliation: a harmon-devkit release must not leave this pin
   # stale. Sunday morning so its draft workbench is ready for agent/maintainer
-  # shepherding on Monday; AGENTS.md owns the readiness gate and promotion.
+  # integration on Monday; AGENTS.md owns the readiness gate and promotion.
   # Off the hour to avoid GitHub's scheduling pile-up.
   schedule:
     - cron: "17 6 * * 0"

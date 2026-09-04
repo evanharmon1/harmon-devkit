@@ -417,7 +417,9 @@ instance being validated:
   below `Z`).
 - **`run.schema.json`'s `settlements[].reference.type` must match
   `disposition`** — `fix → sha` (a 40-hex value), `file → issue_number`
-  (`^[1-9][0-9]*$`), `decline → comment_id` (non-empty) — the evidence a
+  (`^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9][0-9]*)$` — a bare
+  positive integer, or an `owner/repo#<n>` qualified form for a
+  cross-repository follow-up), `decline → comment_id` (non-empty) — the evidence a
   human or CI can actually follow has to be shaped for what it claims to be
   (`checkSettlementReferenceType`).
 - **`marker.destination` and `marker.round`** — spec § Evidence describes
@@ -1016,7 +1018,11 @@ decisions):
   shape (above) but validated it only structurally — `checkAdjudicationEntries`
   now applies the same per-type rule `run.schema.json`'s settlement
   reference already enforces: `type: "sha"` requires a 40-hex value,
-  `type: "issue_number"` requires a positive-integer string, `type:
+  `type: "issue_number"` requires a positive-integer string OR an
+  `owner/repo#<n>` qualified string (a cross-repository follow-up;
+  harmon-devkit#639 gauntlet challenge round 3 widened this from
+  bare-integer-only, which made a schema-valid settlement impossible for the
+  cross-repo case the integrate skill's own text requires), `type:
   "comment_id"` requires a non-empty-after-trim value. Without this, a
   `reference` claiming to be a commit SHA could carry any string at all,
   silently breaking any consumer that dereferences it. Covered by
@@ -2032,7 +2038,7 @@ every `run.json` settlement must name a finding some supplied adjudication
 document actually dispositioned `defer` (an "orphan" settlement is rejected),
 with a `reference.type` *and* value shape that agree with its own
 `disposition` (`fix`→ 40-hex `sha`, `decline`→`comment_id`,
-`file`→ positive-integer `issue_number`); no two settlements may name the
+`file`→ positive-integer or `owner/repo#<n>`-qualified `issue_number`); no two settlements may name the
 same finding (checked once, globally, rather than only inside the three
 projections that happen to build a settlement index for their own reasons —
 `adjudication-record`, `round-table`, and `policy-disclosure` benefit too);

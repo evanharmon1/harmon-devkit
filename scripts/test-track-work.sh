@@ -2916,7 +2916,7 @@ claim_skill="./ai/skills/universal/claim/SKILL.md"
 claim_lifecycle="./ai/skills/universal/track-work/references/claim-lifecycle.md"
 implement_skill="./ai/skills/universal/implement/SKILL.md"
 wrap_skill="./ai/skills/universal/wrap/SKILL.md"
-shepherd_skill="./ai/skills/universal/shepherd/SKILL.md"
+integrate_skill="./ai/skills/universal/integrate/SKILL.md"
 for field in harness model family 'runtime environment' session 'dispatched to'; do
     grep -Fq -- "  - $field:" "$claim_skill" ||
         fail "/claim must write the $field field"
@@ -2931,8 +2931,8 @@ grep -Fq '`dispatched to`' "./ai/skills/universal/retro/SKILL.md" ||
     fail "/retro must surface the dispatched-to field"
 grep -Fq -- '<track-work-dir>/assets/release-claim.sh' "$wrap_skill" ||
     fail "/wrap must delegate release writes to the lineage-validating helper"
-grep -Fq -- '--remove-label <the model label the claim record names' "$shepherd_skill" ||
-    fail "/shepherd must release a recorded model refinement separately"
+grep -Fq -- '--remove-label <the model label the claim record names' "$integrate_skill" ||
+    fail "/integrate must release a recorded model refinement separately"
 
 echo "==> wrap documents the attributable partial-delivery outcome"
 partial_contract="$tmp/wrap-partial-contract.md"
@@ -2983,8 +2983,8 @@ done
 if grep -Fq 'set-issue-status.sh' "$claim_skill"; then
     fail "/claim must not write Project status"
 fi
-if grep -Fq 'set-issue-status.sh' "$shepherd_skill"; then
-    fail "/shepherd must not write Project status"
+if grep -Fq 'set-issue-status.sh' "$integrate_skill"; then
+    fail "/integrate must not write Project status"
 fi
 
 echo "==> lifecycle reference distinguishes partial delivery from event release"

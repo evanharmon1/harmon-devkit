@@ -47,7 +47,12 @@ before any write, exactly as it does when a human types it; its writes are
 idempotent and released by the ordinary lifecycle, not gated behind a
 standing human-only rule) and `/wrap` join `/kickoff`, `/implement`,
 `/review`, `/integrate`, and `/orchestrator` covering orienting at the start of a session
-through driving a claimed issue to a shepherded PR, and `/triage` (also run
+through driving a claimed issue to a draft PR and on into the integration
+stage — the same session continues from `/implement` into `/integrate`
+without waiting for a separate human trigger, stopping only at
+`/integrate`'s own terminal condition (ready-for-review, or a blocker);
+ready-for-review is still the dev loop's human-handoff point, it is just the
+*output* of that stage rather than a gate on entering it. `/triage` (also run
 by `task triage` with a cheap headless model, or interactively) classifies
 the backlog. `track-work` is model-invocable too, and deliberately **not**
 slash-only. Tracking

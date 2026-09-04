@@ -946,7 +946,7 @@ unset STUB_CALLS
 
 echo "==> status:creds warns when the token is missing a required scope"
 # The whole point of #827: an under-scoped login is caught at session start
-# rather than days later, when a board write fails mid-shepherd.
+# rather than days later, when a board write fails mid-integration.
 make_codex_stub in
 scope_out="$(run_creds_section none "${CREDS_BOARD}")"
 case "$scope_out" in

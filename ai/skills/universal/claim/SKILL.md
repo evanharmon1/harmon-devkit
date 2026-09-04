@@ -707,7 +707,7 @@ running as the same user converges on the same assignee and label, and is
 invisible to this check. The claim is a signal, not a lock
 (`track-work` §6).
 
-A claim is a promise to release it. `/shepherd` releases the `claim:*` label at
+A claim is a promise to release it. `/integrate` releases the `claim:*` label at
 its stop-at-green; where the
 claim-release workflow is installed, the close event releases the rest; and
 `/wrap` flags a session that ends with live claim markers and nothing in flight

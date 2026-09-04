@@ -530,7 +530,7 @@
               "minimum": 1
             },
             "attempt": {
-              "description": "AGENTS.md's shepherd stage allows exactly two attempts per captured head before an incomplete cycle escalates. Distinct from `cycle` — see its description.",
+              "description": "AGENTS.md's integration stage allows exactly two attempts per captured head before an incomplete cycle escalates. Distinct from `cycle` — see its description.",
               "type": "integer",
               "minimum": 1,
               "maximum": 2
@@ -557,7 +557,7 @@
               }
             },
             "exit_code": {
-              "description": "The verbatim exit code from ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2 indeterminate.",
+              "description": "The verbatim exit code from ai/skills/universal/integrate/assets/check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2 indeterminate.",
               "enum": [0, 2, 10, 11, 12, 13, 14]
             }
           },

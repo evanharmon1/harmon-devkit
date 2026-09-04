@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # test-skill-index-lifecycle.sh — guard the three public skill indexes against
 # stale lifecycle language that contradicts the canonical /implement and
-# /shepherd skills. The accepted vocabulary is "ready-for-review PR" and
-# "shepherd a draft PR to ready for review"; the rejected patterns are the
+# /integrate skills. The accepted vocabulary is "ready-for-review PR" and
+# "integrate a draft PR to ready for review"; the rejected patterns are the
 # obsolete "green PR" / "to green" / "→ green" labels that predated the
 # draft-PR lifecycle.
 #
@@ -48,7 +48,7 @@ if [ "$fail" -ne 0 ]; then
     echo "The files above use obsolete 'green PR' vocabulary." >&2
     echo "The canonical skills define the lifecycle as:" >&2
     echo "  /implement → ready-for-review PR" >&2
-    echo "  /shepherd  → shepherd a draft PR to ready for review" >&2
+    echo "  /integrate → integrate a draft PR to ready for review" >&2
     exit 1
 fi
 
