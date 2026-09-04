@@ -684,12 +684,19 @@ verified_r1="$(jq '[.payload.findings[] | {
   }]' "$record_dir/passes/review-r1-codex-cli.json")"
 jq -n --argjson findings "$verified_r1" '{
     stage: "review", outcome: "capped", reason: "finder_unavailable",
-    rounds_counted: 1, next_round: null, corrections: [], verified_findings: $findings
+    rounds_counted: 1, incomplete_round: 2, next_round: null,
+    corrections: [], verified_findings: $findings
   }' >"$partial_blocker/verdict.json"
 run blocker-comment --record "$partial_blocker" --head "$render_head"
 assert_rc 0
 assert_contains "$out" "unadjudicated partial-round evidence"
 assert_contains "$out" "review-r2-codex-cli-1"
+wrong_partial_round="${test_tmp}/wrong-partial-round-verdict.json"
+jq '.incomplete_round = 1' "$partial_blocker/verdict.json" >"$wrong_partial_round"
+run blocker-comment --record "$partial_blocker" --head "$render_head" --verdict "$wrong_partial_round"
+assert_rc 1
+assert_contains "$err" "review-r2-codex-cli-1"
+assert_contains "$err" "never adjudicated by any supplied adjudication document"
 run adjudication-record --record "$partial_blocker"
 assert_rc 1
 assert_contains "$err" "never adjudicated by any supplied adjudication document"

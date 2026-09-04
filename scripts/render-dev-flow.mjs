@@ -396,6 +396,9 @@ function validateVerdictShape(verdict, file) {
   ) {
     fail(`${file}: next_round, if present, must be null or a positive integer`)
   }
+  if (verdict.incomplete_round !== undefined && !(Number.isInteger(verdict.incomplete_round) && verdict.incomplete_round >= 1)) {
+    fail(`${file}: incomplete_round, if present, must be a positive integer`)
+  }
   if (verdict.corrections !== undefined) {
     const validCorrection = (correction) =>
       typeof correction === 'string' ||
@@ -583,7 +586,11 @@ function buildFindingIndex(record, options = {}) {
   for (const [findingId, pass] of passFindingsById) {
     if (!seenFindingIds.has(findingId)) {
       const idMatch = FINDING_ID.exec(findingId)
-      if (idMatch && options.allowUnadjudicatedStage === idMatch[1]) {
+      if (
+        idMatch &&
+        options.allowUnadjudicatedStage === idMatch[1] &&
+        options.allowUnadjudicatedRound === Number.parseInt(idMatch[2], 10)
+      ) {
         if (options.unadjudicatedFindings) options.unadjudicatedFindings.push({ id: findingId, ...pass })
         continue
       }
@@ -1248,9 +1255,13 @@ function renderBlockerComment(record, options = {}) {
   }
   const outcome = neutralizeMarkers(verdict.outcome)
   const reason = neutralizeMarkers(verdict.reason || lastTransition.exit || 'unresolved')
-  const allowUnadjudicatedStage = incompleteBlockerStage(record, 'blocker-comment')
+  const incompleteScope = incompleteBlockerScope(record, 'blocker-comment')
   const unadjudicatedFindings = []
-  const rows = buildFindingIndex(record, { allowUnadjudicatedStage, unadjudicatedFindings })
+  const rows = buildFindingIndex(record, {
+    allowUnadjudicatedStage: incompleteScope?.stage,
+    allowUnadjudicatedRound: incompleteScope?.round,
+    unadjudicatedFindings
+  })
   const settlements = buildSettlementIndex(record.run)
   const unresolved = rows.filter((row) => {
     if (row.entry.disposition !== 'defer') return false
@@ -1292,12 +1303,14 @@ function renderBlockerComment(record, options = {}) {
 // deliberately have no adjudication and never enter verified_findings. Only
 // the terminal blocker projection may carry those partial findings forward;
 // every other projection retains the ordinary fail-closed orphan check.
-function incompleteBlockerStage(record, command) {
+function incompleteBlockerScope(record, command) {
   if (command !== 'blocker-comment') return null
   const verdict = record.verdict
   if (!verdict || verdict.outcome !== 'capped') return null
   if (verdict.reason !== 'finder_unavailable' && verdict.reason !== 'breadth_exhausted') return null
-  return verdict.stage === 'challenge' || verdict.stage === 'review' ? verdict.stage : null
+  if (verdict.stage !== 'challenge' && verdict.stage !== 'review') return null
+  if (!(Number.isInteger(verdict.incomplete_round) && verdict.incomplete_round >= 1)) return null
+  return { stage: verdict.stage, round: verdict.incomplete_round }
 }
 
 // Only a finding whose source_id is named in ITS OWN pass's
@@ -1763,8 +1776,10 @@ function main(argv) {
   // explicit override replaces the directory copy. Incomplete-round raw
   // findings are accepted only for their terminal blocker projection; all
   // other projections continue to reject an unadjudicated pass finding.
+  const incompleteScope = incompleteBlockerScope(record, options.command)
   validateCrossDocumentConsistency(record, {
-    allowUnadjudicatedStage: incompleteBlockerStage(record, options.command)
+    allowUnadjudicatedStage: incompleteScope?.stage,
+    allowUnadjudicatedRound: incompleteScope?.round
   })
 
   if (options.command === 'publish') {

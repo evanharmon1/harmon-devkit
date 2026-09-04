@@ -64,6 +64,7 @@ const VERDICT_EXPECTATION_KEYS = new Set([
   "outcome",
   "reason",
   "rounds_counted",
+  "incomplete_round",
   "diagnostic_contains",
   "corrections_field",
   "corrections_status",
@@ -92,6 +93,9 @@ function checkVerdict(expected, actual) {
   }
   if (expected.rounds_counted !== undefined && actual.rounds_counted !== expected.rounds_counted) {
     return `rounds_counted: expected ${expected.rounds_counted}, got ${actual.rounds_counted}`;
+  }
+  if (expected.incomplete_round !== undefined && actual.incomplete_round !== expected.incomplete_round) {
+    return `incomplete_round: expected ${expected.incomplete_round}, got ${actual.incomplete_round}`;
   }
   if (expected.diagnostic_contains) {
     const found = (actual.diagnostics || []).some((d) => d.reason && d.reason.includes(expected.diagnostic_contains));

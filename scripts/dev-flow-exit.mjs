@@ -1021,6 +1021,7 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
       reason: firstIncomplete.status.replace("capped/", ""),
       action: "escalate",
       unresolved_slot: firstIncomplete.unresolvedSlot,
+      incomplete_round: firstIncomplete.round,
       substitutions: firstIncomplete.substitutions,
     };
   }
