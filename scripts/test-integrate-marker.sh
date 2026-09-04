@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Hermetic tests for the shepherd gate-then-push marker parser
-# (require-marker.sh). A push must chain off the GATE's verdict, and readers
-# cannot stand in for it: `tail -1 file && git push` exits 0 by PRINTING a
-# FAILED marker. These tests pin the parser that replaces that pattern —
-# exit 0 only when the file's marker line equals the expected token.
+# Hermetic tests for the integration stage's gate-then-push marker parser
+# (require-marker.sh, formerly the shepherd stage's). A push must chain off
+# the GATE's verdict, and readers cannot stand in for it: `tail -1 file &&
+# git push` exits 0 by PRINTING a FAILED marker. These tests pin the parser
+# that replaces that pattern — exit 0 only when the file's marker line equals
+# the expected token.
 
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-helper="${repo_root}/ai/skills/universal/shepherd/assets/require-marker.sh"
-test_tmp="$(mktemp -d -t shepherd-marker-test-XXXXXX)"
+helper="${repo_root}/ai/skills/universal/integrate/assets/require-marker.sh"
+test_tmp="$(mktemp -d -t integrate-marker-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
 fail() {
@@ -208,4 +209,4 @@ fi
 [ "$(git -C "$guard_remote" rev-parse refs/heads/main)" = "$sha" ] ||
     fail "a FAILED marker must keep the remote on the gated commit"
 
-echo "shepherd gate-then-push marker parser: PASS"
+echo "integration gate-then-push marker parser: PASS"

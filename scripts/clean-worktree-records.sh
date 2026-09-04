@@ -221,7 +221,7 @@ remove_one_record() (
     # MERGE_AUTOSTASH extends the worktree-rm.sh op-state list: a merge
     # --autostash killed before MERGE_HEAD exists leaves the user's dirty
     # work referenced by that one file alone (challenge r6).
-    for sub in deferred-findings adjudication-ledger shepherd-codex refs rebase-merge rebase-apply MERGE_HEAD MERGE_AUTOSTASH CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG config.worktree info/sparse-checkout; do
+    for sub in deferred-findings adjudication-ledger integrate-codex refs rebase-merge rebase-apply MERGE_HEAD MERGE_AUTOSTASH CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG config.worktree info/sparse-checkout; do
         # A symlinked state path is carried state whatever it points at —
         # find would scan the target (or nothing, broken), not the link
         # (challenge r7).
@@ -272,7 +272,7 @@ remove_one_record() (
                 exit 3 # type mismatch refuses
             fi
             ;;
-        deferred-findings | adjudication-ledger | shepherd-codex | refs | rebase-merge | rebase-apply | MERGE_HEAD | MERGE_AUTOSTASH | CHERRY_PICK_HEAD | REVERT_HEAD | BISECT_LOG | config.worktree) : ;; # carried-state names: the scan above refused them when non-empty
+        deferred-findings | adjudication-ledger | integrate-codex | refs | rebase-merge | rebase-apply | MERGE_HEAD | MERGE_AUTOSTASH | CHERRY_PICK_HEAD | REVERT_HEAD | BISECT_LOG | config.worktree) : ;; # carried-state names: the scan above refused them when non-empty
         info)
             # As a regular file or symlink, the child globs below match
             # nothing and the entry would be accepted uninspected

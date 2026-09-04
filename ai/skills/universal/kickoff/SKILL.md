@@ -45,7 +45,7 @@ than blocking the session start. A missing or failed creds probe is a
 summary says what couldn't be checked.
 
 **Sweep for stale claims.** The claim `/claim` makes has no owner once its
-session ends: `/shepherd` stops before the merge, `/wrap` leaves an open PR
+session ends: `/integrate` stops before the merge, `/wrap` leaves an open PR
 alone, and a personal-account board has no automation — so when the maintainer
 merges later, the assignee, `claim:*` label, and card status all
 survive with nobody left to clear them. Session start is where that gets

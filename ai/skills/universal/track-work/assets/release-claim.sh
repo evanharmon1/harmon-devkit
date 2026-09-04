@@ -3,7 +3,7 @@
 # an event instead of a session.
 #
 # Why: a claim is written by a session, but its release is owed after the
-# merge — an event no session is guaranteed to witness (/shepherd stops before
+# merge — an event no session is guaranteed to witness (/integrate stops before
 # the merge on policy). Without an event-driven release, every claim whose
 # session ends before the human merges strands: the assignee, the claim label
 # (`agent:*` or `claim:*`), and the claim comment keep advertising an agent mid-flight on work

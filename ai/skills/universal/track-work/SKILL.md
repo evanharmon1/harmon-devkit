@@ -782,7 +782,7 @@ go-ahead authorizes the claim writes on their own. Subagents never
 claim: a brief is not a slash command, shared GitHub identities cannot
 distinguish their claims, and only the orchestrator knows when the work is
 done. The subagent's report-back ends the *dispatch*, not the claim, which
-follows the ordinary lifecycle: `/shepherd` retires the `claim:*` label at
+follows the ordinary lifecycle: `/integrate` retires the `claim:*` label at
 ready-for-review, and the close event or `/wrap` releases the claim itself
 once nothing is in flight. The orchestrator hands the issue back early only
 when the report leaves no work in flight — no PR open **and** no commits
@@ -818,7 +818,7 @@ not read or write Project fields. A one-way session projection cannot safely
 restore a planning value displaced before an independent edit, while the
 assignee, claim labels, and durable record already form the complete claim
 contract. Use the helper below only for an explicitly requested manual Project
-update, never as part of claiming, implementing, shepherding, or wrapping work.
+update, never as part of claiming, implementing, integrating, or wrapping work.
 
 ```sh
 <skill-dir>/assets/set-issue-status.sh --repo <owner/repo> --issue <n> \
@@ -835,7 +835,7 @@ The script never creates fields, options, or labels: the vocabulary belongs to
 repo is how vocabularies fork.
 
 **A claim must be released.** `/claim` creates the assignee/label/comment
-contract, `/shepherd` releases its active-work label at handoff, and `/wrap`
+contract, `/integrate` releases its active-work label at handoff, and `/wrap`
 catches what event-driven release did not. Project status never participates.
 
 ## Scope

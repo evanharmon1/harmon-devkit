@@ -1,13 +1,15 @@
 ---
 name: implement
 description: >-
-  Drive a claimed issue to a ready-for-review PR — read the issue as a spec, work the
-  repo's own dev loop (inner lint gate, definition-of-done gate, second-model
-  review, security gate), tick acceptance criteria as they are verified, open the
-  PR, then continue through the shepherd stage until it reaches a terminal
-  condition. Never claims, never merges. Use when an issue is already claimed
-  and the session is told to implement it. Invoke as /implement [issue # or
-  URL].
+  Drive a claimed issue to a draft PR ready for the integration stage — read the
+  issue as a spec, work the repo's own dev loop (inner lint gate,
+  definition-of-done gate, second-model review, security gate), tick acceptance
+  criteria as they are verified, open the PR with its deferred findings
+  recorded, then continue into the integration stage (`/integrate`) and stop
+  at its own terminal condition (ready-for-review, or a blocker). Never
+  claims, never merges — merging stays the maintainer's decision after a
+  human review. Use when an issue is already claimed and the session is told
+  to implement it. Invoke as /implement [issue # or URL].
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branch --show-current), Bash(git rev-parse:*), Bash(task --list-all:*), Bash(task status:*), Bash(gh issue view:*), Bash(gh pr list:*), Bash(gh pr view:*), Bash(gh repo view:*), Bash(gh label list:*)
 ---
 
@@ -15,16 +17,20 @@ allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git status:*), Bash(git branc
 
 **Arguments:** $ARGUMENTS
 
-Turn a claimed issue into a **ready-for-review PR**. `/claim` verified and
-claimed the issue; this skill owns everything from there until the draft has
-passed shepherd's readiness gate and is handed to the maintainer for review.
+Turn a claimed issue into a **draft PR ready for the integration stage**, then
+continue into that stage. `/claim` verified and claimed the issue; this skill
+owns everything from there through `gh pr create --draft`, with every
+deferred finding recorded in the PR body — then hands off internally to
+`/integrate` (step 9) rather than stopping at the draft.
 
-That span deliberately includes the shepherd stage. Opening the PR is a
-milestone inside this skill, not its exit — an open PR with unpolled checks and
-unanswered reviews is unfinished work, and the repos that mandate the transition
-(harmon-init among them) make `gh pr create` the *trigger* for it. Step 9 is
-where that happens: `/shepherd` is the procedure to follow there, not a separate
-errand to hand off and forget.
+Opening the PR is not this skill's finish line. `/integrate` (the successor
+to the old shepherd stage) dropped its `disable-model-invocation` flag: the
+originating session owns the integration stage, readiness evaluation, and
+promotion, and the human handoff is integration's own OUTPUT
+(ready-for-review) rather than a gate on entering it. Step 9 names that
+continuation explicitly rather than stopping in silence, so "draft opened,
+findings recorded" is a mid-session checkpoint, not this skill's actual
+finish line.
 
 **The repository's own policy outranks this file.** Where its `AGENTS.md`
 states different gates, loop caps, commit conventions, or PR-title rules,
@@ -388,40 +394,39 @@ second PR is the expensive way to find out.
   the same one — naming it explicitly costs nothing and removes the ambiguity.
 - `gh pr create --draft`, then fetch `headRefOid,isDraft` and require both the
   pushed SHA and `isDraft == true`. A non-draft result is not the normal
-  publication path; stop and reconcile it before shepherding.
+  publication path; stop and reconcile it before integrating.
 - **Delete the scratch file last** — only once `gh pr create` has returned a URL
   *and* you have re-read the PR body and confirmed the findings are in it. The
   file is the sole durable copy: a push rejected for auth, a validation error, a
   network blip, or a session lost to compaction between the delete and the
-  create takes every deferred finding with it, and shepherd then settles a list
-  it cannot know is short. Deleting is bookkeeping; do it after the thing it is
-  bookkeeping for actually exists.
+  create takes every deferred finding with it, and integration then settles a
+  list it cannot know is short. Deleting is bookkeeping; do it after the thing
+  it is bookkeeping for actually exists.
 
-## 9. Shepherd the draft to ready for review
+## 9. Continue into the integration stage
 
-`gh pr create --draft` returning is the trigger for the next stage, **not the
-end of this skill's work**. Continue into the shepherd stage while the PR stays
-draft — watch CI *and* incoming
-bot/human reviews, settle the deferred findings, reply per thread — and stop
-only when shepherd reaches one of its own terminal conditions. Where the repo's
-`AGENTS.md` mandates that stage (harmon-init does), enter it the way the
-harness allows: where the Skill tool is available, **invoke `shepherd`
-through it**; where it is not (a subagent, another harness), **read
-`/shepherd`'s `SKILL.md` and follow it directly**.
+`gh pr create --draft` returning is **a checkpoint, not this skill's finish
+line**. Confirm `isDraft == true` on the pushed SHA and every deferred
+finding from step 6 is recorded in the PR body (step 8's re-read already
+established this), then continue into `/integrate` from the same session —
+where the harness exposes the Skill tool, invoke `integrate` through it;
+where it does not (a subagent, another harness), enter the stage by reading
+`/integrate`'s `SKILL.md` and following it directly, exactly as this file's
+own "repository's own policy outranks this file" paragraph already
+describes for a repo-policy fallback.
 
-Do not treat "draft PR opened" as a stopping point. A draft with unpolled
-checks is the middle of the work, and the deferred findings from step 6 are
-still open — nothing else in the lifecycle settles them. A failed,
-unavailable, stale, or indeterminate shepherd gate leaves the PR draft and is
-reported as a blocker. Only shepherd's complete readiness gate may run
-`gh pr ready`, and it must re-confirm that the head did not change before and
-after promotion.
+This is not this skill continuing to do implementation work: `/integrate` is
+its own stage with its own procedure (watching CI, adjudicating reviews,
+running the readiness gate, promoting), and once you enter it you are
+governed by its rules, not this file's. What changes here is only that
+nothing stops the session at the draft PR waiting for a separate invocation.
 
-"All checks pass" is not a stopping point either. Reviews land *after* checks
-settle, so an empty comment list read the moment `gh pr checks` returns means
-"not reviewed yet", not "nothing to answer".
+Stop where `/integrate` itself stops: ready-for-review, or one of its own
+blocker conditions (a cap reached, no progress, something only the
+maintainer can resolve). Report that outcome — the PR URL, its draft/ready
+state, and (if blocked) what remains open and why — rather than the draft
+PR's own state, which is no longer where the session ends.
 
-The one thing that is never yours: **merging**. Report the PR URL, the gates
-that passed, and how each deferred finding was settled — then stop after the
-clean draft is promoted to ready for human review and let the maintainer decide
-whether to approve and merge.
+The one thing that was never yours anyway: **merging**. That does not change
+here — it was always the maintainer's decision, made after `/integrate`'s own
+readiness gate and a human review.

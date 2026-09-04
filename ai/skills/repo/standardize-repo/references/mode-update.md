@@ -538,21 +538,22 @@ important for a feature with a material footprint or an external capability:
   retaining CodeRabbit. The false path removes `.coderabbit.yaml` and bot trust,
   but a human must also remove the repository from the CodeRabbit App
   installation because deleting repository files does not revoke App access.
-- `use_codex_cloud_review` adds a required external shepherd signal and defaults
-  off. It is active only when `use_codex_review=true` — the sole precondition
-  Copier's own validator enforces. When active, a *consumer* repo must also set
-  `use_skills_sync=true` and include `universal` in `skill_categories`, because
-  there the classifier (`check-codex-cloud-review.sh`) reaches the repo only by
-  syncing the shepherd skill from the `universal` category. A skills-*source*
-  repo — one that authors the shepherd skill under `ai/skills/` rather than
+- `use_codex_cloud_review` adds a required external Codex cloud-review signal
+  and defaults off. It is active only when `use_codex_review=true` — the sole
+  precondition Copier's own validator enforces. When active, a *consumer* repo
+  must also set `use_skills_sync=true` and include `universal` in
+  `skill_categories`, because there the classifier
+  (`check-codex-cloud-review.sh`) reaches the repo only by syncing the
+  `integrate` skill from the `universal` category. A skills-*source* repo —
+  one that authors the `integrate` skill under `ai/skills/` rather than
   vendoring a released copy of it (harmon-devkit is the canonical case, and may
   therefore keep `use_skills_sync=false` since self-vendoring its own
   `ai/skills/` would be circular) — ships that classifier natively in its own
-  tree at `ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh`, so
-  it already satisfies that intent. The guard detects a usable classifier there
-  and waives both the skills-sync and universal-category requirements for it
-  while keeping them for every other repo. This carve-out is mirrored in
-  `mode-audit.md` (G4) and `standards-catalog.md` so audit mode does not then
+  tree at `ai/skills/universal/integrate/assets/check-codex-cloud-review.sh`,
+  so it already satisfies that intent. The guard detects a usable classifier
+  there and waives both the skills-sync and universal-category requirements
+  for it while keeping them for every other repo. This carve-out is mirrored
+  in `mode-audit.md` (G4) and `standards-catalog.md` so audit mode does not then
   report the same configuration as drift. Review it
   explicitly and keep it false unless the maintainer has
   connected Codex cloud review, accepts plan-dependent availability/quotas, and
@@ -619,7 +620,7 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # >>> classifier-detector >>>
 # use_codex_cloud_review's use_skills_sync / universal-category requirements are
 # a proxy for "the cloud-review classifier is installed": in a consumer repo the
-# shepherd skill and its check-codex-cloud-review.sh reach the repo only via
+# integrate skill and its check-codex-cloud-review.sh reach the repo only via
 # skills sync of the universal category. A skills-source repo hosts that
 # classifier natively in its own tree, so it satisfies the intent directly and
 # is exempt (matching Copier's validator, which gates the option on
@@ -637,16 +638,16 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # That tracked mode is necessary but nowhere near sufficient on its own: a
 # one-line stub committed `100755` at the right path would pass it and prove
 # nothing about the skill being usable. So "ships the classifier natively"
-# additionally requires the shepherd skill's entry point and the helper's own
+# additionally requires the integrate skill's entry point and the helper's own
 # structure, and it requires them from CODE rather than from prose.
 #
 # Anchoring on the usage strings (`reserve --state`, …) was the obvious version
 # of that and is not enough: a no-op helper whose comments merely PRINT those
 # five forms satisfies every one of them, and a waived config with such a stub
-# is worse than no waiver — shepherd's `check` would read its exit 0 as clean
+# is worse than no waiver — the integrator's `check` would read its exit 0 as clean
 # evidence and the composition fails OPEN. So the verb probes anchor on the
 # dispatch `case` arms in the helper's executable body, and are joined by two
-# pairs from the exit-code contract shepherd actually depends on: `emit pending`
+# pairs from the exit-code contract the integrator actually depends on: `emit pending`
 # with `exit 11`, and `emit escalate` with `exit 13`. Those two verdicts are the
 # bounded-attempt lifecycle — a helper that cannot say "still waiting" or "both
 # windows elapsed" cannot drive the stage no matter what its banner claims —
@@ -663,7 +664,7 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # closed on either — verified against yq v4, not assumed. Under
 # `--front-matter=extract`, a file with no frontmatter at all, and an unclosed
 # block whose body happens to be valid YAML, both parse happily and resolve
-# `.name`, so a bare `name: shepherd` sitting in a file's BODY would satisfy
+# `.name`, so a bare `name: integrate` sitting in a file's BODY would satisfy
 # the value probe. The two checks mirror `verify-skills.sh`'s `head -n 1` test
 # and its `frontmatter_is_closed`, which remains canonical for layout.
 #
@@ -695,8 +696,8 @@ yq 'with_entries(select(.key | test("^_") | not))' \
 # that residual explicitly. What the probes buy is the accidental case they
 # were written for: a stub, a stripped tree, or a half-vendored copy no longer
 # waives three guards by looking right from a distance.
-SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
-SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
+SKILLS_SOURCE_INTEGRATE_SKILL="ai/skills/universal/integrate/SKILL.md"
 # Match a POSIX ERE against the helper's code only: leading whitespace stripped,
 # every comment line dropped. Called only after the `-f` test above passes.
 #
@@ -727,7 +728,7 @@ classifier_code_has() {
 # point outside the skill tree entirely. Checked before the frontmatter awk,
 # which would happily read straight through the link.
 classifier_skill_is_regular_file() {
-  case "$(git ls-files --stage -- "$SKILLS_SOURCE_SHEPHERD_SKILL" 2>/dev/null | cut -c1-6)" in
+  case "$(git ls-files --stage -- "$SKILLS_SOURCE_INTEGRATE_SKILL" 2>/dev/null | cut -c1-6)" in
   100644 | 100755) return 0 ;;
   esac
   return 1
@@ -737,15 +738,15 @@ classifier_skill_frontmatter_ok() {
     NR == 1 && $0 != "---" { exit }
     $0 == "---" { fence++ }
     END { exit (fence >= 2) ? 0 : 1 }
-  ' "$SKILLS_SOURCE_SHEPHERD_SKILL" &&
+  ' "$SKILLS_SOURCE_INTEGRATE_SKILL" &&
     yq --front-matter=extract -e '
-      ((.name | tag) == "!!str") and (.name == "shepherd") and
+      ((.name | tag) == "!!str") and (.name == "integrate") and
       ((.description | tag) == "!!str") and (.description != "")
-    ' "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1
+    ' "$SKILLS_SOURCE_INTEGRATE_SKILL" >/dev/null 2>&1
 }
 if [ -f "$SKILLS_SOURCE_CLASSIFIER" ] &&
   [ "$(git ls-files --stage -- "$SKILLS_SOURCE_CLASSIFIER" 2>/dev/null | cut -c1-6)" = "100755" ] &&
-  git ls-files --error-unmatch -- "$SKILLS_SOURCE_SHEPHERD_SKILL" >/dev/null 2>&1 &&
+  git ls-files --error-unmatch -- "$SKILLS_SOURCE_INTEGRATE_SKILL" >/dev/null 2>&1 &&
   classifier_skill_is_regular_file &&
   classifier_skill_frontmatter_ok &&
   classifier_code_has '^reserve\)' &&

@@ -768,7 +768,7 @@ These labels ship with `task setup:github-labels`, which is generated only for
 families at all, so a claim there rests on the assignee and the claim comment.
 
 **During the rolling transition, the skills and the label/field provisioning move
-on separate clocks.** The vendored `claim` / `shepherd` / `wrap` skills arrive via
+on separate clocks.** The vendored `claim` / `integrate` / `wrap` skills arrive via
 `task sync:skills` and already speak `claim:*` / `suggest:*`. Migrating the
 *provisioning* to that vocabulary is a separate rollout unit (registry-driven —
 harmon-init#661/#663), so until it reaches a given repo, `task setup:github-labels`
@@ -834,7 +834,7 @@ approved, and never `Done`, which belongs to whoever merges. On org repos
 writing the card should defer to it there rather than racing it.
 
 **A session cannot be relied on to release it.** The release is owed after the
-merge, and no session is guaranteed to witness that: `/shepherd` stops before
+merge, and no session is guaranteed to witness that: `/integrate` stops before
 the merge on policy, so the session that claimed the issue is usually over by
 the time a human merges. `.github/workflows/claim-release.yml` is the release —
 on `issues closed` (by any means) and on `pull_request closed` **unmerged**, it
@@ -862,9 +862,10 @@ an inferred release.
 
 > **Whether this is automatic depends on the skills you have vendored.**
 > Writing and releasing these markers is implemented by harmon-devkit's
-> `claim` / `shepherd` / `wrap` skills; older releases only assign the issue,
+> `claim` / `integrate` / `wrap` skills; older releases only assign the issue,
 > and the three were named `preflight` / `shepherd` / `close` before
-> harmon-devkit v0.21.0. Check yours rather than assuming — the pin moves on
+> harmon-devkit v0.21.0, with `shepherd` later renamed `integrate`. Check
+> yours rather than assuming — the pin moves on
 > its own schedule, via the automated devkit-release sync:
 >
 > ```sh

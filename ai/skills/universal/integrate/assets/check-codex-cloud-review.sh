@@ -427,12 +427,19 @@ reap_record() {
 emit() {
     result=$1
     detail=$2
+    surface=${3:-}
+    accepted_id=${4:-}
     jq -cn \
         --arg status "$result" \
         --arg detail "$detail" \
         --arg head "${state_head:-}" \
         --argjson attempt "${state_attempt:-0}" \
-        '{status:$status,detail:$detail,head:$head,attempt:$attempt}'
+        --arg surface "$surface" \
+        --arg accepted_id "$accepted_id" \
+        '{status:$status,detail:$detail,head:$head,attempt:$attempt}
+         + (if $surface != "" and $accepted_id != "" then
+              {accepted:{surface:$surface,id:$accepted_id,reviewed_commit:$head}}
+            else {} end)'
 }
 
 bounded_wait() {
@@ -1674,6 +1681,7 @@ check)
 
     comment_result=none
     clean_comment_time=""
+    clean_comment_id=""
     while IFS='	' read -r prefix classification comment_id comment_created; do
         [ -n "$prefix" ] || continue
         printf '%s' "$prefix" | grep -Eq '^[0-9a-fA-F]{7,40}$' || {
@@ -1721,8 +1729,8 @@ check)
         if [ "$classification" = "clean" ] &&
             [ "$comment_created" \> "$clean_comment_time" ]; then
             clean_comment_time=$comment_created
+            clean_comment_id=$comment_id
         fi
-        : "$comment_id"
     done <"$comment_candidates"
 
     if [ "$comment_result" = "findings" ]; then
@@ -1760,8 +1768,15 @@ check)
         # reviewer that may post arbitrarily late defeats any polling design
         # — which is why the gate promotes to ready-for-review, not merge.
         clean_review_time=""
+        clean_review_id=""
         if [ "$review_result" = "clean" ]; then
-            clean_review_time=$(jq -r \
+            # One query for both the timestamp and the review id it belongs
+            # to (harmon-devkit#639 gauntlet challenge round 4, orchestrator-
+            # authorized: expose which review result.integrator's schema-
+            # required accepted.{surface,id} should report) — sort_by/last
+            # rather than two separate `max` queries, so the id can never
+            # drift from the timestamp that selected it.
+            clean_review_evidence=$(jq -c \
                 --argjson id "$actor_id" \
                 --arg head "$state_head" \
                 "$codex_verdict_defs"'
@@ -1770,18 +1785,26 @@ check)
                     (.commit_id? == $head) and
                     (body_text != "")
                   ) | select(verdict_class == "clean") |
-                  .submitted_at? | select(type == "string")] | max // ""
+                  select((.submitted_at? | type) == "string" and (.id? | type) == "number")] |
+                  sort_by(.submitted_at) | last // null
                 ' "$workdir/reviews.json")
+            clean_review_time=$(printf '%s' "$clean_review_evidence" | jq -r '.submitted_at? // ""')
+            clean_review_id=$(printf '%s' "$clean_review_evidence" | jq -r '.id? // "" | tostring')
         fi
         newest_clean=$clean_review_time
+        newest_clean_surface=review
+        newest_clean_id=$clean_review_id
         if [ "$clean_comment_time" \> "$newest_clean" ]; then
             newest_clean=$clean_comment_time
+            newest_clean_surface=comment
+            newest_clean_id=$clean_comment_id
         fi
         if [ -n "$shell_barrier" ] && ! [ "$newest_clean" \> "$shell_barrier" ]; then
             emit pending "a newer empty review shell is still in flight for this head"
             exit 11
         fi
-        emit clean "authenticated bot posted a current-head clean result"
+        emit clean "authenticated bot posted a current-head clean result" \
+            "$newest_clean_surface" "$newest_clean_id"
         exit 0
     fi
 
@@ -1808,7 +1831,26 @@ check)
             emit pending "a newer empty review shell is still in flight for this head"
             exit 11
         fi
-        emit clean "authenticated bot reacted +1 on the exact current-head trigger"
+        # The reaction sharing $like_time (the newest qualifying +1) — same
+        # filter as $like_time/$exact_like above, plus pinning to that exact
+        # timestamp, so this can never name a different reaction than the one
+        # that actually qualified the cycle. A tie at whole-second precision
+        # breaks toward the highest id, deterministically (harmon-devkit#639
+        # gauntlet challenge round 4).
+        like_id=$(jq -r \
+            --argjson id "$actor_id" \
+            --arg requested "$cycle_requested" \
+            --arg newest "$like_time" '
+              [.[] | select(
+                .user.id? == $id and
+                .content? == "+1" and
+                (.created_at? >= $requested) and
+                (.created_at? == $newest) and
+                ((.id? | type) == "number")
+              ) | .id] | max // empty | tostring
+            ' "$workdir/reactions.json")
+        emit clean "authenticated bot reacted +1 on the exact current-head trigger" \
+            reaction "$like_id"
         exit 0
     fi
 
