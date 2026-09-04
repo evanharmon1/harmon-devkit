@@ -389,8 +389,12 @@ function validateVerdictShape(verdict, file) {
   if (verdict.rounds_counted !== undefined && !(Number.isInteger(verdict.rounds_counted) && verdict.rounds_counted >= 0)) {
     fail(`${file}: rounds_counted, if present, must be a non-negative integer`)
   }
-  if (verdict.next_round !== undefined && !(Number.isInteger(verdict.next_round) && verdict.next_round >= 1)) {
-    fail(`${file}: next_round, if present, must be a positive integer`)
+  if (
+    verdict.next_round !== undefined &&
+    verdict.next_round !== null &&
+    !(Number.isInteger(verdict.next_round) && verdict.next_round >= 1)
+  ) {
+    fail(`${file}: next_round, if present, must be null or a positive integer`)
   }
   if (verdict.corrections !== undefined) {
     const validCorrection = (correction) =>
@@ -409,6 +413,9 @@ function validateVerdictShape(verdict, file) {
   if (verdict.verified_findings !== undefined) {
     const validStatuses = new Set(['verified', 'corrected', 'unverified'])
     const seen = new Set()
+    if (verdict.stage !== 'challenge' && verdict.stage !== 'review') {
+      fail(`${file}: stage must be challenge or review when verified_findings is present`)
+    }
     if (!Array.isArray(verdict.verified_findings)) {
       fail(`${file}: verified_findings, if present, must be an array`)
     }
@@ -482,18 +489,17 @@ function validatePolicyShape(policy, file) {
 // path/line/class/provenance when a pass is supplied, while still rendering
 // (with reduced fidelity) when it is not — a projection that only needs the
 // adjudication side must not require passes/ to exist.
-function buildFindingIndex(record) {
+function buildFindingIndex(record, options = {}) {
   const passFindingsById = new Map()
   const verificationById = new Map((record.verdict?.verified_findings ?? []).map((finding) => [finding.id, finding]))
-  const verificationStages = new Set()
+  const verificationStage = record.verdict?.verified_findings !== undefined ? record.verdict.stage : null
   if (record.verdict?.verified_findings !== undefined) {
     for (const finding of record.verdict.verified_findings) {
       const idMatch = FINDING_ID.exec(finding.id)
       if (!idMatch) fail(`verdict.json: verified finding has malformed id ${finding.id}`)
-      verificationStages.add(idMatch[1])
-    }
-    if (verificationStages.size > 1) {
-      fail('verdict.json: verified_findings must describe exactly one confidence stage')
+      if (idMatch[1] !== verificationStage) {
+        fail(`verdict.json: verified finding ${finding.id} does not belong to declared stage ${verificationStage}`)
+      }
     }
   }
   for (const { file, envelope } of record.passes) {
@@ -576,6 +582,11 @@ function buildFindingIndex(record) {
   // error at all (AGENTS.md: fail closed rather than under-report).
   for (const [findingId, pass] of passFindingsById) {
     if (!seenFindingIds.has(findingId)) {
+      const idMatch = FINDING_ID.exec(findingId)
+      if (idMatch && options.allowUnadjudicatedStage === idMatch[1]) {
+        if (options.unadjudicatedFindings) options.unadjudicatedFindings.push({ id: findingId, ...pass })
+        continue
+      }
       fail(`${pass.file}: finding ${findingId} was never adjudicated by any supplied adjudication document`)
     }
   }
@@ -585,7 +596,7 @@ function buildFindingIndex(record) {
   // interrupted verdict must fail closed instead of republishing unverified
   // reviewer assertions as authoritative evidence.
   for (const row of entries) {
-    if (verificationStages.has(row.stage) && row.verification === null) {
+    if (verificationStage === row.stage && row.verification === null) {
       fail(`verdict.json: verified_findings omits adjudicated finding ${row.entry.finding_id}`)
     }
   }
@@ -615,8 +626,8 @@ const REFERENCE_VALUE_PATTERN = { sha: /^[0-9a-f]{40}$/, issue_number: /^[1-9][0
 // would otherwise let a same-run_id-looking-but-actually-different finding
 // id (ids are unique only WITHIN a run, per specs/dev-flow-v2.md) satisfy a
 // settlement that was never really adjudicated by this run.
-function validateCrossDocumentConsistency(record) {
-  const rows = buildFindingIndex(record)
+function validateCrossDocumentConsistency(record, options = {}) {
+  const rows = buildFindingIndex(record, options)
   const byId = new Map(rows.map((row) => [row.entry.finding_id, row]))
 
   // buildSettlementIndex() itself rejects a duplicate settlement for one
@@ -1237,7 +1248,9 @@ function renderBlockerComment(record, options = {}) {
   }
   const outcome = neutralizeMarkers(verdict.outcome)
   const reason = neutralizeMarkers(verdict.reason || lastTransition.exit || 'unresolved')
-  const rows = buildFindingIndex(record)
+  const allowUnadjudicatedStage = incompleteBlockerStage(record, 'blocker-comment')
+  const unadjudicatedFindings = []
+  const rows = buildFindingIndex(record, { allowUnadjudicatedStage, unadjudicatedFindings })
   const settlements = buildSettlementIndex(record.run)
   const unresolved = rows.filter((row) => {
     if (row.entry.disposition !== 'defer') return false
@@ -1253,7 +1266,7 @@ function renderBlockerComment(record, options = {}) {
   // Both are validated required above, so this always renders now.
   lines.push(`- Spent: ${lastTransition.stage} ${verdict.rounds_counted}/${record.policy.rounds[lastTransition.stage]}`)
   lines.push('- Unresolved:')
-  if (unresolved.length === 0) {
+  if (unresolved.length === 0 && unadjudicatedFindings.length === 0) {
     lines.push('  - None.')
   } else {
     for (const row of unresolved.sort(compareRows)) {
@@ -1261,10 +1274,30 @@ function renderBlockerComment(record, options = {}) {
         `  - ${row.entry.finding_id} — ${location(row)} — ${neutralizeMarkers(summary(row))} (${row.entry.adjudicated_priority}, ${row.entry.disposition})`
       )
     }
+    for (const partial of unadjudicatedFindings.sort((a, b) => a.id.localeCompare(b.id))) {
+      const finding = partial.finding
+      const loc = finding.path ? `${finding.path}${finding.line ? `:${finding.line}` : ''}` : partial.id
+      lines.push(
+        `  - ${partial.id} — ${loc} — ${neutralizeMarkers(finding.evidence)} (${finding.priority}, unadjudicated partial-round evidence)`
+      )
+    }
   }
   const nextAction = Number.isInteger(verdict.next_round) ? `dispatch round ${verdict.next_round}` : 'escalate to a human'
   lines.push(`- Next action: ${nextAction}`)
   return lines.join('\n')
+}
+
+// A configured finder can return a valid pass before another slot exhausts
+// its fallback chain. That logical round is incomplete, so its raw findings
+// deliberately have no adjudication and never enter verified_findings. Only
+// the terminal blocker projection may carry those partial findings forward;
+// every other projection retains the ordinary fail-closed orphan check.
+function incompleteBlockerStage(record, command) {
+  if (command !== 'blocker-comment') return null
+  const verdict = record.verdict
+  if (!verdict || verdict.outcome !== 'capped') return null
+  if (verdict.reason !== 'finder_unavailable' && verdict.reason !== 'breadth_exhausted') return null
+  return verdict.stage === 'challenge' || verdict.stage === 'review' ? verdict.stage : null
 }
 
 // Only a finding whose source_id is named in ITS OWN pass's
@@ -1718,7 +1751,6 @@ function main(argv) {
   const options = parseArgs(argv)
   const schemasDir = options.schemasDir || process.env.RESULT_SCHEMAS_DIR || DEFAULT_SCHEMAS_DIR
   const record = loadRecord(options.record, schemasDir)
-  validateCrossDocumentConsistency(record)
   if (options.verdictFile) {
     record.verdict = loadJson(options.verdictFile)
     validateVerdictShape(record.verdict, options.verdictFile)
@@ -1727,17 +1759,13 @@ function main(argv) {
     record.policy = loadJson(options.policyFile)
     validatePolicyShape(record.policy, options.policyFile)
   }
-  // An override replaces record.policy/record.verdict AFTER the check above
-  // already ran against the record directory's own copies — a --policy
-  // override's caps would otherwise never get the cross-document
-  // round-consistency check (rounds.challenge: 0 alongside an actual
-  // challenge round 1 adjudication), since validateCrossDocumentConsistency
-  // only reads whatever record.policy/record.verdict held at the time it
-  // was called. Re-run it whenever an override was actually supplied,
-  // rather than unconditionally re-doing the (otherwise redundant) work.
-  if (options.verdictFile || options.policyFile) {
-    validateCrossDocumentConsistency(record)
-  }
+  // Cross-document checks apply once to the EFFECTIVE record, after any
+  // explicit override replaces the directory copy. Incomplete-round raw
+  // findings are accepted only for their terminal blocker projection; all
+  // other projections continue to reject an unadjudicated pass finding.
+  validateCrossDocumentConsistency(record, {
+    allowUnadjudicatedStage: incompleteBlockerStage(record, options.command)
+  })
 
   if (options.command === 'publish') {
     const result = publish(record, options)

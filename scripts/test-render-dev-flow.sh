@@ -647,7 +647,7 @@ assert_contains "$err" "outcome must be a non-empty string"
 
 echo "==> a supplied verified-finding projection must cover its whole stage"
 incomplete_verdict="${test_tmp}/incomplete-verified-verdict.json"
-jq '.verified_findings = [{
+jq '.stage = "review" | .verified_findings = [{
       id: "review-r1-codex-cli-1", provenance_status: "verified",
       verified_provenance: "original", fingerprint_status: "verified",
       verified_fingerprint: "new"
@@ -655,6 +655,44 @@ jq '.verified_findings = [{
 run round-table --record "$record_dir" --stage review --round 1 --verdict "$incomplete_verdict"
 assert_rc 1
 assert_contains "$err" "verified_findings omits adjudicated finding"
+
+echo "==> an empty verified-finding projection still binds and covers its declared stage"
+empty_verified_verdict="${test_tmp}/empty-verified-verdict.json"
+jq '.stage = "review" | .verified_findings = []' "$record_dir/verdict.json" >"$empty_verified_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$empty_verified_verdict"
+assert_rc 1
+assert_contains "$err" "verified_findings omits adjudicated finding"
+
+echo "==> verified findings require an explicit confidence stage"
+stageless_verified_verdict="${test_tmp}/stageless-verified-verdict.json"
+jq '.verified_findings = [] | del(.stage)' "$record_dir/verdict.json" >"$stageless_verified_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$stageless_verified_verdict"
+assert_rc 1
+assert_contains "$err" "stage must be challenge or review"
+
+echo "==> only a finder-exhausted blocker may render partial, unadjudicated findings"
+partial_blocker="${test_tmp}/partial-blocker"
+mkdir -p "$partial_blocker"
+cp -r "${record_dir}/." "$partial_blocker/"
+jq '.adjudications = []' "$record_dir/adjudications/review-r2.json" >"$partial_blocker/adjudications/review-r2.json"
+jq '.settlements |= map(select(.finding_id | startswith("review-r2-") | not)) |
+    .stage_transitions |= map(select(.stage != "integration"))' \
+    "$record_dir/run.json" >"$partial_blocker/run.json"
+verified_r1="$(jq '[.payload.findings[] | {
+    id, provenance_status: "verified", verified_provenance: .provenance,
+    fingerprint_status: "verified", verified_fingerprint: .fingerprint
+  }]' "$record_dir/passes/review-r1-codex-cli.json")"
+jq -n --argjson findings "$verified_r1" '{
+    stage: "review", outcome: "capped", reason: "finder_unavailable",
+    rounds_counted: 1, next_round: null, corrections: [], verified_findings: $findings
+  }' >"$partial_blocker/verdict.json"
+run blocker-comment --record "$partial_blocker" --head "$render_head"
+assert_rc 0
+assert_contains "$out" "unadjudicated partial-round evidence"
+assert_contains "$out" "review-r2-codex-cli-1"
+run adjudication-record --record "$partial_blocker"
+assert_rc 1
+assert_contains "$err" "never adjudicated by any supplied adjudication document"
 
 echo "==> verdict.json's round counters must be non-negative / at-least-1, not just integers"
 negative_rounds_counted="${test_tmp}/negative-rounds-counted.json"
@@ -667,7 +705,7 @@ zero_next_round="${test_tmp}/zero-next-round.json"
 echo '{"outcome": "capped", "next_round": 0}' >"$zero_next_round"
 run round-table --record "$record_dir" --stage review --round 2 --verdict "$zero_next_round"
 assert_rc 1
-assert_contains "$err" "next_round, if present, must be a positive integer"
+assert_contains "$err" "next_round, if present, must be null or a positive integer"
 
 bad_policy="${test_tmp}/bad-policy.json"
 echo '{"rigor": {"level": "standard"}}' >"$bad_policy"

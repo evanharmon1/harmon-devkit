@@ -106,7 +106,8 @@ verified_findings="$(jq -s '[.[].payload.findings[] | {
     id, provenance_status: "verified", verified_provenance: .provenance,
     fingerprint_status: "verified", verified_fingerprint: .fingerprint
   }]' "$verified_record"/passes/review-*.json)"
-jq --argjson findings "$verified_findings" '.corrections = [{finding_id: "review-r1-codex-cli-1", field: "provenance",
+jq --argjson findings "$verified_findings" '.stage = "review" |
+    .corrections = [{finding_id: "review-r1-codex-cli-1", field: "provenance",
       asserted: "original", corrected: "round:2", evidence: "trusted history"}] |
     .verified_findings = $findings |
     (.verified_findings[] | select(.id == "review-r1-codex-cli-1") |

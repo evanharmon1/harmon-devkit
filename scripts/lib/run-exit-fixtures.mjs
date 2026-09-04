@@ -69,6 +69,7 @@ const VERDICT_EXPECTATION_KEYS = new Set([
   "corrections_status",
   "no_corrections_for",
   "verified_provenance_for",
+  "verified_findings_count",
   "no_repeat_relationship",
   "unresolved_slot",
   "substitutions_json",
@@ -127,6 +128,12 @@ function checkVerdict(expected, actual) {
     const entry = (actual.verified_findings || []).find((f) => f.id === id);
     if (!entry || entry.verified_provenance !== value) {
       return `verified_findings[id=${id}].verified_provenance: expected "${value}", got ${JSON.stringify(entry)}`;
+    }
+  }
+  if (expected.verified_findings_count !== undefined) {
+    const count = (actual.verified_findings || []).length;
+    if (count !== expected.verified_findings_count) {
+      return `verified_findings count: expected ${expected.verified_findings_count}, got ${count}`;
     }
   }
   if (expected.no_repeat_relationship !== undefined) {

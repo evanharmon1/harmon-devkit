@@ -1,5 +1,6 @@
 {
   "outcome": "capped",
   "reason": "finder_unavailable",
-  "rounds_counted": 0
+  "rounds_counted": 0,
+  "verified_findings_count": 0
 }

@@ -1520,7 +1520,15 @@ async function main() {
   // was simply confirmed as asserted — or left "unverified" because no
   // evidence could decide it — has no other way to reach a caller (or the
   // conformance corpus) short of exposing the full verified state here.
-  verdict.verified_findings = ancestryRetainedForVerification.flatMap((r) =>
+  // The final confidence projection has the same evidence boundary as the
+  // pre-adjudication projection above: only complete logical rounds can
+  // contribute adjudicated, verified findings. A partial round can still
+  // contain a successful finder's raw findings when another configured
+  // slot exhausts its fallbacks, but those findings intentionally have no
+  // adjudication. They remain in passes/ for the blocker renderer; putting
+  // them here would falsely present them as verified adjudication evidence
+  // and make the blocker record internally inconsistent.
+  verdict.verified_findings = ancestryRetainedForVerification.filter((r) => r.status === "complete").flatMap((r) =>
     r.findings.map((f) => ({
       id: f.id,
       provenance_status: f.provenanceStatus,
