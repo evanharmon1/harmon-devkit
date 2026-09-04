@@ -645,6 +645,17 @@ run round-table --record "$record_dir" --stage review --round 2 --verdict "$bad_
 assert_rc 1
 assert_contains "$err" "outcome must be a non-empty string"
 
+echo "==> a supplied verified-finding projection must cover its whole stage"
+incomplete_verdict="${test_tmp}/incomplete-verified-verdict.json"
+jq '.verified_findings = [{
+      id: "review-r1-codex-cli-1", provenance_status: "verified",
+      verified_provenance: "original", fingerprint_status: "verified",
+      verified_fingerprint: "new"
+    }]' "$record_dir/verdict.json" >"$incomplete_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$incomplete_verdict"
+assert_rc 1
+assert_contains "$err" "verified_findings omits adjudicated finding"
+
 echo "==> verdict.json's round counters must be non-negative / at-least-1, not just integers"
 negative_rounds_counted="${test_tmp}/negative-rounds-counted.json"
 echo '{"outcome": "capped", "rounds_counted": -1}' >"$negative_rounds_counted"

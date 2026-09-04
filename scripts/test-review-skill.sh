@@ -102,10 +102,17 @@ grep -Fq 'review-r1-codex-cli-1' <<<"$rendered" || fail "review finding was not 
 echo "==> renderer publishes verified provenance rather than superseded pass provenance"
 verified_record="$tmp/verified-render"
 cp -R "$render_record" "$verified_record"
-jq '.corrections = [{finding_id: "review-r1-codex-cli-1", field: "provenance",
+verified_findings="$(jq -s '[.[].payload.findings[] | {
+    id, provenance_status: "verified", verified_provenance: .provenance,
+    fingerprint_status: "verified", verified_fingerprint: .fingerprint
+  }]' "$verified_record"/passes/review-*.json)"
+jq --argjson findings "$verified_findings" '.corrections = [{finding_id: "review-r1-codex-cli-1", field: "provenance",
       asserted: "original", corrected: "round:2", evidence: "trusted history"}] |
-    .verified_findings = [{id: "review-r1-codex-cli-1", provenance_status: "corrected",
-      verified_provenance: "round:2", fingerprint_status: "verified", verified_fingerprint: "new"}]' \
+    .verified_findings = $findings |
+    (.verified_findings[] | select(.id == "review-r1-codex-cli-1") |
+      .provenance_status) = "corrected" |
+    (.verified_findings[] | select(.id == "review-r1-codex-cli-1") |
+      .verified_provenance) = "round:2"' \
     "$render_record/verdict.json" >"$verified_record/verdict.json"
 verified_rendered="$(scripts/render-dev-flow.sh round-table --record "$verified_record" --stage review --round 1)"
 grep -Fq 'round:2 (corrected)' <<<"$verified_rendered" ||

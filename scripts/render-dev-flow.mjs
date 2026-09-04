@@ -485,6 +485,17 @@ function validatePolicyShape(policy, file) {
 function buildFindingIndex(record) {
   const passFindingsById = new Map()
   const verificationById = new Map((record.verdict?.verified_findings ?? []).map((finding) => [finding.id, finding]))
+  const verificationStages = new Set()
+  if (record.verdict?.verified_findings !== undefined) {
+    for (const finding of record.verdict.verified_findings) {
+      const idMatch = FINDING_ID.exec(finding.id)
+      if (!idMatch) fail(`verdict.json: verified finding has malformed id ${finding.id}`)
+      verificationStages.add(idMatch[1])
+    }
+    if (verificationStages.size > 1) {
+      fail('verdict.json: verified_findings must describe exactly one confidence stage')
+    }
+  }
   for (const { file, envelope } of record.passes) {
     const findings = envelope.payload.findings || []
     for (const finding of findings) {
@@ -566,6 +577,21 @@ function buildFindingIndex(record) {
   for (const [findingId, pass] of passFindingsById) {
     if (!seenFindingIds.has(findingId)) {
       fail(`${pass.file}: finding ${findingId} was never adjudicated by any supplied adjudication document`)
+    }
+  }
+  // dev-flow-exit emits verified_findings for every retained finding in the
+  // stage it evaluates. Once that projection is present, producer provenance
+  // is no longer an acceptable fallback for a same-stage omission: a stale or
+  // interrupted verdict must fail closed instead of republishing unverified
+  // reviewer assertions as authoritative evidence.
+  for (const row of entries) {
+    if (verificationStages.has(row.stage) && row.verification === null) {
+      fail(`verdict.json: verified_findings omits adjudicated finding ${row.entry.finding_id}`)
+    }
+  }
+  for (const findingId of verificationById.keys()) {
+    if (!seenFindingIds.has(findingId)) {
+      fail(`verdict.json: verified finding ${findingId} has no supplied adjudication`)
     }
   }
   return entries
