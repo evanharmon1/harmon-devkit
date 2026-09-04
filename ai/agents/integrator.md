@@ -156,14 +156,14 @@ jq -e 'type == "array"' <<<"$checks" >/dev/null 2>&1 || {
     echo 'cannot read check status — do not reserve or trigger'
     exit 1
 }
-required_names="$(gh pr checks <n> --repo "$repo" --json name --required \
-    --jq '[.[].name]' 2>/dev/null)"
-jq -e 'type == "array"' <<<"$required_names" >/dev/null 2>&1 || required_names='[]'
+required_checks="$(gh pr checks <n> --repo "$repo" --json name,link --required \
+    --jq '[.[] | {name, link}]' 2>/dev/null)"
+jq -e 'type == "array"' <<<"$required_checks" >/dev/null 2>&1 || required_checks='[]'
 checks_ready="$(jq -r 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' \
     <<<"$checks" 2>/dev/null)"
 ```
 
-`required_names` needs the same reading as `$checks` just above, for the
+`required_checks` needs the same reading as `$checks` just above, for the
 identical reason: `gh pr checks --required` exits nonzero for the same
 ordinary pending/failing cases (harmon-devkit#639 gauntlet review, PR #758
 Codex cloud cycle 1) — the old `|| required_names='[]'` treated that
@@ -213,11 +213,14 @@ statuses_pages="$("$skill_dir"/assets/gh-ro.sh --paginate --slurp \
     echo 'cannot fetch commit statuses — do not reserve or trigger'
     exit 1
 }
-checks_json="$(jq -c --argjson required "$required_names" \
+checks_json="$(jq -c --argjson required "$required_checks" \
     --slurpfile runs_sf <(printf '%s' "$check_runs_pages") \
     --slurpfile statuses_sf <(printf '%s' "$statuses_pages") '
-    ($runs_sf[0] | [.[] | .check_runs[]?]
-        | group_by(.name) | map({key: .[0].name, value: (max_by(.id) | .id | tostring)})
+    ($runs_sf[0] | [.[] | .check_runs[]? | . as $r
+            | [$r.details_url, $r.html_url] | unique | .[]
+            | select(. != null and . != "")
+            | {key: ., value: $r.id}]
+        | group_by(.key) | map({key: .[0].key, value: (max_by(.value) | .value | tostring)})
         | from_entries) as $run_ids |
     ($statuses_sf[0] | add // []
         | group_by(.context) | map({key: .[0].context, value: (max_by(.id) | .id | tostring)})
@@ -225,19 +228,28 @@ checks_json="$(jq -c --argjson required "$required_names" \
     [.[] | . as $c | {
         name: $c.name,
         bucket: $c.bucket,
-        run_id: ($run_ids[$c.name] // $status_ids[$c.name] // "0"),
-        required: ($required | index($c.name) != null)
+        run_id: ($run_ids[$c.link // ""] // $status_ids[$c.name] // "0"),
+        required: (($required | map(select(.name == $c.name and .link == $c.link)) | length) > 0)
     }]' <<<"$checks")" || checks_json='[]'
 ```
 
-`run_id` is only ever traceability metadata here — nothing downstream
-branches on which specific id a same-named rerun's check reports — so where
-two same-named check-runs or statuses both exist (the rerun case itself),
-`max_by(.id)` deterministically prefers the newer, and the `"0"` fallback
-(genuinely unreachable if `$checks` and the two raw sources agree, which they
-should for every check GitHub actually ran) never gates anything — it only
-means the id could not be traced back, not that the check's own bucket is in
-doubt. `--slurp` wraps every paginated page into one array first, so `.[]`
+`run_id` is keyed by the row's own `link` — the check run's `details_url` /
+`html_url`, which GitHub serves as the same job URL `gh pr checks` reports —
+**never by `name`**: a name is not unique across workflows, and a name-keyed
+lookup collapses same-named runs from different workflows into one maximum
+id (this repository's `release-content-guard.yml` and `tracking-guard.yml`
+both expose a `guard` job — Codex cloud-review cycle on PR
+harmon-devkit#758). That matters downstream: a `$failed_required` entry's
+`source_id` is its `run_id`, and `previously_seen_source_ids` (§5)
+suppresses by that id, so two failing `guard`s sharing one id would let one
+disposition silently suppress the other, and a failing guard could be
+reported under the *other* workflow's newer successful run. `required` is
+matched on the same `{name, link}` pair for the same reason. Where two runs
+genuinely share a URL, `max_by` deterministically prefers the newer, and the
+`"0"` fallback (unreachable if `$checks` and the two raw sources agree, which
+they should for every check GitHub actually ran) never gates anything — it
+only means the id could not be traced back, not that the check's own bucket
+is in doubt. `--slurp` wraps every paginated page into one array first, so `.[]`
 walks pages and `.check_runs[]?`/`add` walks each page's own array — the
 same two-step shape `readiness-gate.sh`'s own `evaluate_checks` reads, not a
 bare flatten assuming a single unpaginated page.
@@ -276,6 +288,28 @@ attempt already did rather than duplicating a trigger:
 ```sh
 state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")"
 ```
+
+**Re-read the PR immediately before every trigger write** — the fresh-cycle
+sequence below (run the read right before its `reserve`, so nothing but that
+local write sits between the read and the post) and the zero-candidate
+reconcile path — with the same three fields §6 checks before a reply, for the
+same reason: `reserve` verifies only that the PR is `OPEN` on this head,
+never that it is still a draft, and §3's checks-settlement wait is long
+enough for an external promotion to land in it (Codex cloud-review cycle on
+PR harmon-devkit#758):
+
+```sh
+pr_now="$(gh pr view <n> --repo "$repo" --json state,isDraft,headRefOid)" || exit
+```
+
+If `.state` is not `OPEN`, `.isDraft` is not `true`, or `.headRefOid`
+disagrees with the head your brief named, **post no trigger**: skip the rest
+of this section, report `codex_cycle: null` with the mismatch as a finding
+(§5), and leave any reservation you already hold untouched — the next
+dispatch's reconcile path runs this same read before it would post. A
+`@codex review` on an already-promoted PR starts a cloud cycle *after* the
+handoff the orchestrating skill is gating, which is exactly the review its
+own re-entry rule forbids starting on a non-draft.
 
 **The cycle's steps are non-chainable.** Run each of the following as its own
 command and check its exit status before the next external write — never
@@ -360,10 +394,11 @@ Three cases, mutually exclusive:
   "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
   ```
 
-  **Zero** means the process died before posting — post the trigger now and
-  attach it, exactly as the fresh-cycle case above does, still without
-  calling `reserve` (the reservation already exists; posting a second one is
-  what `reserve` itself would refuse). **More than one** is an anomaly this
+  **Zero** means the process died before posting — re-run the `pr_now` read
+  above first, then post the trigger and attach it, exactly as the
+  fresh-cycle case above does, still without calling `reserve` (the
+  reservation already exists; posting a second one is what `reserve` itself
+  would refuse). **More than one** is an anomaly this
   brief did not anticipate — stop and report it rather than guessing which
   one to attach.
 
@@ -623,10 +658,19 @@ required check is `pass` (or non-required and `skipping`), the Codex cycle
 `unanswered_thread_roots` and `findings` are both empty; `findings` when
 anything substantive surfaced that the orchestrator has not adjudicated away;
 `pending` when still waiting on CI or the Codex window with nothing else
-outstanding; `escalate` only when your brief tells you the remediation cap is
-already spent and something still needs a code fix — you do not decide the
-cap is spent yourself. `codex_cycle` carries `accepted` only when its
-`exit_code` is 0 or 10 (omit the key otherwise, never null).
+outstanding; `escalate` in exactly two cases — when your brief tells you the
+remediation cap is already spent and something still needs a code fix (you
+do not decide the cap is spent yourself), **or** when the Codex cycle ended
+on exit `13` (both attempts timed out) or `2` (indeterminate), independent of
+any cap: `validate-result-schemas.mjs`'s `EXIT_CODE_VERDICT_CONSTRAINTS`
+pairs those two exit codes with `escalate` and nothing else, because either
+way the orchestrator's next move is to stop and reconcile rather than
+re-dispatch, so a timed-out cycle reported under any other verdict fails
+validation instead of returning the escalation evidence §4 promises. Exit
+`14` (the PR is no longer open) forbids `clean` and `pending` — report
+`findings` (the closed PR is the finding) or `escalate`. `codex_cycle`
+carries `accepted` only when its `exit_code` is 0 or 10 (omit the key
+otherwise, never null).
 
 Validate before reporting it — as the full envelope, the same `envelope` kind
 the readiness gate itself validates, not the bare `integrator` payload kind:

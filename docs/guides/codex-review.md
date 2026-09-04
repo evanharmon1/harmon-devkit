@@ -271,10 +271,14 @@ The caps are not written down here, or in AGENTS.md. They live in
 [`.devflow.toml`](../../.devflow.toml) as `rigor` levels, and **AGENTS.md alone
 defines how a change resolves one** — restating that chain here would only give
 it a second place to drift from, and which inputs are even available depends on
-how the repository is set up. `challenge`, `review`, and the `min_rounds` floor vary by level; the
-integration and remediation caps are fixed, because they bound other people's
-findings rather than self-generated work. Announce the resolved caps — the
-floor included — when you enter the loop.
+how the repository is set up. `challenge`, `review`, and the `min_rounds` floor vary by level. Whether
+the integration and remediation caps vary depends on the file's shape: under
+the **legacy** shape the single `shepherd` cap (decoded as both) is fixed at
+every level, because it bounds other people's findings rather than
+self-generated work; under a **migrated** shape `integration` and
+`remediation` come from the resolved rigor level's own `[rounds.*]` policy and
+vary with it. Announce the resolved caps — the floor included — when you
+enter the loop.
 
 If Codex cloud review is connected to the repo, PRs
 get a cloud pass too: inline comments only for high-priority findings, a

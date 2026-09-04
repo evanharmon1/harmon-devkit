@@ -1036,6 +1036,32 @@ if [ -n "$settleable_tsv" ]; then
     done <<<"$settleable_tsv"
 fi
 
+# 9c. The pass itself must be a completed, clean one — independent of
+# whether the Codex condition above was waived (Codex cloud-review cycle on
+# PR harmon-devkit#758). Everything above reads PARTS of the result
+# (codex_cycle, findings[], applied_dispositions) and re-derives the rest
+# live, so a schema-valid envelope with status:"blocked" (the agent stopped
+# in its §1 before ever reading the threads or the top-level comments) or a
+# verdict of "pending" (CI unsettled when it looked, so it skipped the
+# cycle without driving one — a null codex_cycle that is NOT a cap-0
+# waiver) carrying empty findings[] passes every check above under
+# --integration-cap 0: the empty lists mean "never collected", not "nothing
+# found", and 9a's top-level-finding catch is only as good as the pass that
+# populated it. The validator already ties verdict:"clean" to green
+# required checks, a null-or-terminal-clean cycle, and empty
+# unanswered_thread_roots, so requiring it here is what makes those
+# guarantees apply to the gated pass at all.
+integrator_status="$(jq -er '.status | select(type == "string")' \
+    "$integrator_result" 2>/dev/null)" ||
+    indeterminate malformed-data "integrator result carries no status"
+[ "$integrator_status" = completed ] ||
+    fail_condition integrator-not-clean "integrator result status is $integrator_status, not completed — the pass never finished collecting evidence; re-dispatch against this head"
+integrator_verdict="$(jq -er '.payload.verdict | select(type == "string")' \
+    "$integrator_result" 2>/dev/null)" ||
+    indeterminate malformed-data "integrator result carries no verdict"
+[ "$integrator_verdict" = clean ] ||
+    fail_condition integrator-not-clean "integrator result verdict is $integrator_verdict, not clean — only a completed clean pass for this head can be gated; re-dispatch after what it is waiting on or reporting is settled"
+
 # 10. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
 # and require equality before any pass. The evaluated fingerprint hashes the
 # exact bytes the conditions above judged (the gated body, the classified

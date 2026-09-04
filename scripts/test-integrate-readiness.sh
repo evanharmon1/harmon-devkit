@@ -181,10 +181,11 @@ write_integrator_result() {
     local out="${fixtures}/integrator-result-${name}.json"
     # verdict is constrained against codex_cycle.exit_code by
     # validate-result-schemas.mjs's EXIT_CODE_VERDICT_CONSTRAINTS (0->clean,
-    # 10->findings, 11|12->pending, 13|2->escalate; the gate itself never
-    # reads `verdict` at all, only `codex_cycle`, but the fixture still has
-    # to satisfy the validator to be usable). A null codex_cycle (cap 0)
-    # takes the same "clean" path as exit_code 0.
+    # 10->findings, 11|12->pending, 13|2->escalate); the gate's own step 9c
+    # additionally requires status:"completed" and verdict:"clean" of the
+    # gated pass, after the codex_cycle/findings checks, so a non-clean
+    # fixture that gets past those still fails there. A null codex_cycle
+    # (cap 0) takes the same "clean" path as exit_code 0.
     local exit_code
     exit_code="$(jq -r '.exit_code // "null"' <<<"$codex_cycle")"
     local verdict findings='[]' checks='[]'
@@ -1002,6 +1003,54 @@ run_gate --integrator-result "$findings_result"
 assert_gate 1 fail unresolved-integrator-findings
 printf '%s\n' "$gate_out" | grep -Fq 'integration-r1-human-1' ||
     fail "unresolved-integrator-findings did not name the finding: $gate_out"
+
+# 9c (Codex cloud-review cycle on PR harmon-devkit#758): a pass that never
+# finished is not a waiver. Under --integration-cap 0 a null codex_cycle is
+# the legitimate waived case, but the SAME null cycle is what the agent
+# reports when it skipped the cycle because CI was still pending (verdict
+# "pending"), or when it stopped in its §1 before reading anything (status
+# "blocked") — and both can carry empty findings[]/unanswered_thread_roots
+# that mean "never collected". Live checks/threads above are green in these
+# fixtures, so nothing but the verdict/status requirement itself can catch
+# them.
+write_integrator_pass_fixture() {
+    local name="$1" status="$2" verdict="$3"
+    local out="${fixtures}/integrator-result-${name}.json"
+    jq -cn --arg head "$head_sha" --arg status "$status" --arg verdict "$verdict" '
+      {schema:2, role:"integrator", status:$status, head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"claude-code",model:"test",tier:"economy"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+                codex_cycle:null, integration_round:1, findings:[],
+                unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+                verdict:$verdict}}' >"$out"
+    node "$validator" envelope "$out" >/dev/null ||
+        fail "$name fixture failed schema validation"
+    printf '%s' "$out"
+}
+
+echo "==> a cap-0 pass with verdict pending (CI unsettled, cycle skipped) fails as integrator-not-clean"
+write_defaults
+pending_result="$(write_integrator_pass_fixture cap-zero-pending completed pending)"
+run_gate --integrator-result "$pending_result" --integration-cap 0
+assert_gate 1 fail integrator-not-clean
+printf '%s\n' "$gate_out" | grep -Fq 'verdict is pending' ||
+    fail "integrator-not-clean did not name the verdict: $gate_out"
+
+echo "==> a cap-0 pass with status blocked fails as integrator-not-clean"
+write_defaults
+blocked_result="$(write_integrator_pass_fixture cap-zero-blocked blocked pending)"
+run_gate --integrator-result "$blocked_result" --integration-cap 0
+assert_gate 1 fail integrator-not-clean
+printf '%s\n' "$gate_out" | grep -Fq 'status is blocked' ||
+    fail "integrator-not-clean did not name the status: $gate_out"
+
+echo "==> a cap-0 pass with verdict escalate fails as integrator-not-clean"
+write_defaults
+escalate_result="$(write_integrator_pass_fixture cap-zero-escalate completed escalate)"
+run_gate --integrator-result "$escalate_result" --integration-cap 0
+assert_gate 1 fail integrator-not-clean
 
 echo "==> an unanswered inline thread fails as threads-unanswered"
 write_defaults

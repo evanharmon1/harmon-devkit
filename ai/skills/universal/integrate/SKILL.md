@@ -26,9 +26,13 @@ shipped procedure until their pipeline migrates — no compat mode is added
 here for that transition, per the delta spec). **Until #638 and the
 `.devflow.toml` policy migration (harmon-devkit#711) land, shepherd a draft
 PR with the shipped procedure instead** — the vendored `shepherd` skill and
-its own `readiness-gate.sh` as merged to `main` (reads deferred findings from
-the PR body directly, no record directory). Do not fabricate a `run.json` to
-route around this; there is nothing yet that would keep it truthful.
+its own `readiness-gate.sh` from the last release tag that shipped them
+(harmon-devkit v0.39.0, `ai/skills/universal/shepherd/`; that skill reads
+deferred findings from the PR body directly, no record directory). This
+change retires that directory and its `.agents/skills/shepherd` link, so a
+consumer that still needs the fallback pins that tag rather than `main`.
+Do not fabricate a `run.json` to route around this; there is nothing yet
+that would keep it truthful.
 
 Opening a draft PR is not the end. Integrate it: dispatch the integrator agent
 to settle CI and drive the Codex cloud-review cycle (see
@@ -232,11 +236,13 @@ this stop condition 2 — never as a direct consequence of integration being
 
 **A resolved remediation cap of 0 means no fix push is ever available.** The
 cap bounds fix *pushes* specifically, not adjudication — a finding resolved
-by reply, decline, or filing still spends a round exactly per the
-round-accounting rule below, cap of 0 included. What a 0 cap forbids is the
-*other* half of that rule: the moment any finding's disposition would be
-`fix`, that is stop condition 2 on the spot, whatever round count has been
-reached by then — there was never a push available to make it.
+by reply, decline, or filing is still settled here, and whether that
+no-change cycle charges the cap is the shape question the round-accounting
+rule below answers (never under a migrated policy; one shared unit under the
+legacy decode). What a 0 cap forbids is the push itself: the moment any
+finding's disposition would be `fix`, that is stop condition 2 on the spot,
+whatever round count has been reached by then — there was never a push
+available to make it.
 
 **This stage settles the low-priority findings.** Where the earlier dev-flow
 loops gate only on high-priority findings (in repos that run a
@@ -248,13 +254,23 @@ follow-up issue.
 
 **Round accounting (read this first):** one round = one fix push, **or**
 one no-change adjudication cycle (everything rejected/external — replies
-posted, nothing to fix — then back to watching). Count rounds explicitly
-against the **remediation cap** (say "round 2 of `<remediation cap>`") —
-dispatching the integrator agent again for another look, or another Codex
-cycle, is never itself a round; only a fix push or a no-change cycle is. The
-counter only ever increases, every wait below is
-bounded, and every path ends in one of the stop conditions in step 6, so
-the loop cannot run forever.
+posted, nothing to fix — then back to watching). What a round **charges**
+depends on the config shape resolved above. Under a **migrated** policy,
+only a fix push charges the **remediation cap** — the v2 contract defines
+that cap over integration-stage fix pushes alone (`specs/dev-flow-v2.md`
+§ Configuration: "`remediation` independently bounds integration-stage fix
+pushes"), so a no-change cycle is a numbered round for the ledger's
+purposes but spends nothing, and two successive batches of declined human
+comments can never cap the stage on their own. Under the **legacy** decode,
+the one shared budget charges one unit per round of either kind, exactly as
+the old single-stage `shepherd` cap did. Count rounds explicitly against
+the **remediation cap** (say "round 2 of `<remediation cap>`"; under a
+migrated policy the counter is the number of pushes charged so far, so a
+no-change cycle closes with it unchanged) — dispatching the integrator agent
+again for another look, or another Codex cycle, is never itself a round;
+only a fix push or a no-change cycle is. The counter only ever increases,
+every wait below is bounded, and every path ends in one of the stop
+conditions in step 6, so the loop cannot run forever.
 
 **No-change round-end ledger.** When a no-change adjudication cycle completes
 — every finding is answered or settled and nothing needs a fix push — post the
@@ -561,20 +577,38 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   clears it. Thread `isResolved` state is a separate question the readiness
   gate reads via GraphQL directly (§6): resolution is the maintainer's act,
   never evidence that you replied.
-- **Where the resolved integration cap is not 0, dispatch the integrator
-  agent (`ai/agents/integrator.md`) to drive the current-head Codex cycle —
-  never hand-roll the reserve/trigger/attach/check protocol yourself.** That
-  file owns every mechanical detail (resumption after interruption, the one
-  bounded retry on a timed-out attempt, the four-surface classification that
-  makes `check-codex-cloud-review.sh` trustworthy, the `reap` cleanup
-  sweep); this skill's job is to give it the right inputs and act correctly
-  on what it returns. Hand the brief:
+- **Dispatch the integrator agent (`ai/agents/integrator.md`) every pass,
+  whatever the resolved integration cap — never hand-roll the
+  reserve/trigger/attach/check protocol yourself.** It settles checks and
+  lists unanswered threads at every cap, and drives the current-head Codex
+  cycle only where the cap is not 0 (at 0 its brief says so and it skips
+  its §4, reporting `codex_cycle: null` — the result §6's gate still
+  requires, since `--integrator-result` is mandatory there at every cap;
+  skipping the dispatch at 0 leaves an otherwise-ready PR with no result to
+  gate on). That file owns every mechanical detail (resumption after
+  interruption, the one bounded retry on a timed-out attempt, the
+  four-surface classification that makes `check-codex-cloud-review.sh`
+  trustworthy, the `reap` cleanup sweep); this skill's job is to give it
+  the right inputs and act correctly on what it returns. Hand the brief —
+  every item its §1 names, since it stops rather than guesses on a missing
+  one:
 
   - repo, PR, and this round's **verified head** — from §2's round-start
     fetch, never re-read at dispatch time (a mid-adjudication push would
     otherwise be laundered into "current");
-  - the resolved `integration_round` ordinal (this run-wide pass number) and
-    the resolved integration cap;
+  - the resolved `integration_round` ordinal (this run-wide pass number),
+    the resolved integration cap, and — where that cap is not 0 — this
+    pass's **Codex cycle number**: 1 for the stage's first cycle, one more
+    for each cycle a later pass actually drives, never above the cap (a
+    re-dispatch after a `pending` result continues the same cycle rather
+    than starting a new one). At cap 0 say so instead;
+  - `run_id` and `initiated_by` — the active run's identity, read from
+    `--record <dir>`'s own `run.json` (the same two values §6's gate binds
+    the result to before trusting it);
+  - `producer` — the `{harness, model, tier}` triple naming the harness and
+    model you are dispatching it with and the tier resolved for the
+    integrator role (economy by default); the agent cannot introspect this
+    and stamps it verbatim;
   - `applied_dispositions` accumulated so far this integration stage, so a
     pass that comes back clean can echo them into a schema-valid result
     (empty list if this is the stage's first pass);
@@ -622,10 +656,19 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
 
   Branch on the validated result:
 
-  - `codex_cycle: null` (cap 0) or `codex_cycle.exit_code` `0`/`10` —
-    terminal for this pass. A `10` (or any human finding the agent also
-    surfaced) feeds `findings[]` into §3; a clean `0` with no other open
-    finding and an empty `unanswered_thread_roots` proceeds toward §6.
+  - `verdict: "pending"` with `codex_cycle: null` — CI had not settled when
+    the agent read it, so it skipped the cycle without driving one
+    (`ai/agents/integrator.md` §4 skips on an unsettled `checks_ready`
+    exactly as it does on cap 0) — at **any** cap. This is not terminal and
+    not a cap-0 signal: treat it exactly like exit `11` below — bounded
+    wait, re-dispatch. Handing it to §6's gate under a positive cap is
+    `codex-cap-mismatch` by design, and under cap 0 the gate now refuses any
+    non-clean verdict outright.
+  - `codex_cycle: null` with verdict `clean` or `findings` (cap 0), or
+    `codex_cycle.exit_code` `0`/`10` — terminal for this pass. A `10` (or
+    any human finding the agent also surfaced) feeds `findings[]` into §3;
+    a clean `0` with no other open finding and an empty
+    `unanswered_thread_roots` proceeds toward §6.
   - `codex_cycle.exit_code: 11` (pending) — this pass ended without a
     terminal Codex result. Waiting is never a round (see "Round accounting"
     above): re-dispatch the agent after a bounded wait rather than
@@ -635,11 +678,14 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   - `codex_cycle.exit_code: 13` (both attempts timed out), `14` (the PR
     closed or merged — stop the **whole stage** immediately, matching §1's
     never-integrate-a-closed-PR rule), or `2` (indeterminate) — stop and
-    reconcile per §6 rather than re-dispatching to try again.
-  - `verdict: "escalate"` — the resolved **remediation** cap is spent and a
-    finding still needs a code fix (see "A resolved remediation cap of 0..."
-    above, which is the zero-cap instance of this same stop). Stop condition
-    2, whatever the Codex cycle's own state.
+    reconcile per §6 rather than re-dispatching to try again. A `13` or `2`
+    always arrives as `verdict: "escalate"` (the validator pairs those exit
+    codes with that verdict) — that is this stop, not the remediation one
+    below, and says nothing about the remediation cap.
+  - `verdict: "escalate"` with a terminal or null `codex_cycle` — the
+    resolved **remediation** cap is spent and a finding still needs a code
+    fix (see "A resolved remediation cap of 0..." above, which is the
+    zero-cap instance of this same stop). Stop condition 2.
 
   **A badged finding outside an inline thread is settled by this skill, not
   the agent** — the agent never calls `settle` (its brief has no disposition
@@ -1091,41 +1137,39 @@ that loops indefinitely:
    its failing checks in a snapshot and promoted anyway —
    harmon-devkit#384):
 
+   The four flags after `--head` are, in order (each continuation
+   backslash below is the last byte on its line — a comment after one
+   un-escapes the newline and runs the gate half-built):
+
+   - `--record <dir>` — the same dev-flow-v2 record directory §5's
+     `render-dev-flow.sh` calls read; required, never skippable.
+   - `--integrator-result <file>` — the LAST dispatched integrator agent's
+     validated `result.integrator` for this exact head — never a stale or a
+     different-head result. A null `codex_cycle` inside it (the resolved
+     integration cap was 0) is how the gate itself learns the Codex
+     condition is waived; there is no separate disabled flag to pass or
+     avoid, so the condition can never be skipped by silence nor by a false
+     claim.
+   - `--integration-cap <n>` — required, not advisory (harmon-devkit#685;
+     harmon-devkit#639 gauntlet challenge round 3): the resolved integration
+     cap, cross-checked against `codex_cycle`'s own cap-0/cycle-ceiling
+     invariants. Never omit it — a null `codex_cycle` with the flag missing
+     used to be trusted as "the cap must be 0" on the integrator's own
+     unverified word.
+   - `--codex-recheck <state file>` — the integrator's own
+     `check-codex-cloud-review.sh` state file for this repo/PR:
+     `git rev-parse --git-path "integrate-codex/$repo/<n>.json"`, the same
+     path §2's settle recipe resolves. Re-confirms a clean `codex_cycle`
+     against live GitHub state before trusting it, since a cached clean
+     result can go stale between the dispatched pass and this gate.
+
    ```sh
    "${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check \
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
-     --record <dir> \             # the same dev-flow-v2 record directory
-                                  # §5's render-dev-flow.sh calls read —
-                                  # required, never skippable
-     --integrator-result <file> \ # the LAST dispatched integrator agent's
-                                  # validated result.integrator for this
-                                  # exact head — never a stale or a
-                                  # different-head result. A null
-                                  # `codex_cycle` inside it (the resolved
-                                  # integration cap was 0) is how the gate
-                                  # itself learns the Codex condition is
-                                  # waived; there is no separate disabled
-                                  # flag to pass or avoid, so the condition
-                                  # can never be skipped by silence nor by a
-                                  # false claim
-     --integration-cap <n> \      # required, not advisory (harmon-devkit
-                                  # #685; harmon-devkit#639 gauntlet
-                                  # challenge round 3): the resolved
-                                  # integration cap, cross-checked against
-                                  # codex_cycle's own cap-0/cycle-ceiling
-                                  # invariants. Never omit it — a null
-                                  # codex_cycle with the flag missing used
-                                  # to be trusted as "the cap must be 0"
-                                  # on the integrator's own unverified word
-     --codex-recheck <state file> # the integrator's own check-codex-cloud-
-                                  # review.sh state file for this repo/PR —
-                                  # `git rev-parse --git-path
-                                  # "integrate-codex/$repo/<n>.json"`, the
-                                  # same path §2's settle recipe resolves.
-                                  # Re-confirms a clean codex_cycle against
-                                  # live GitHub state before trusting it,
-                                  # since a cached clean result can go stale
-                                  # between the dispatched pass and this gate
+     --record <dir> \
+     --integrator-result <file> \
+     --integration-cap <n> \
+     --codex-recheck <state file>
    ```
 
    `--head` is the head whose CI, Codex result, comments, and deferred
