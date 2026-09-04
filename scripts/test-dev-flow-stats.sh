@@ -1974,6 +1974,134 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 44: a registry-touching commit with NO merging PR (only
+// possible when the target repo permits direct pushes to its default
+// branch — this repo's own ruleset blocks that, but --repo is generic)
+// must void the WHOLE repo's registry history, not be silently skipped —
+// shepherd round 4, Codex-confirmed (P1). A narrowing revision that WOULD
+// exclude TRUSTED_ORCHESTRATOR exists and is independently resolvable, but
+// because a second, unresolvable (direct-push) commit also touches the
+// registry, the mechanism must admit "no registry opinion" entirely and
+// fall back to full CLI trust — TRUSTED_ORCHESTRATOR stays trusted, not
+// narrowed out by the (still real, still resolvable) other revision.
+{
+  const narrowSha = "5".repeat(40);
+  const directPushSha = "7".repeat(40);
+  const registryCommits = [{ sha: directPushSha }, { sha: narrowSha }]; // newest-first, as GitHub returns
+  const registryContents = {
+    [narrowSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
+    // directPushSha's own content is never read — resolution fails before
+    // ever reaching it, since it has no resolvable landing time at all.
+  };
+  const runId = "run-registry-direct-push-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:30:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:30:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:30:00Z");
+  writeScenario("registry-direct-push", {
+    issues: [{ number: 159, pull_request: null }],
+    comments: { "159": [idx, rr] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    // narrowSha DOES have a merging PR (independently resolvable);
+    // directPushSha deliberately has none: no commit_pulls entry for it at
+    // all, so the fake gh stub's empty-array fallback matches a real
+    // commits-sha-pulls response for a commit with no merging PR.
+    commit_pulls: {
+      [narrowSha]: [{ number: 613, merged_at: "2026-09-01T00:00:00Z" }],
+    },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 159 },
+  });
+}
+
+// --- Scenario 45: a run's last activity is EXACTLY staleAfterDays before
+// --as-of (to the millisecond) — shepherd round 4, Codex-confirmed (P2):
+// specs/dev-flow-v2.md defines staleness as "no run-record update for
+// [convergence].stale_after", a duration requirement already satisfied at
+// exact equality, but the strict greater-than comparison this replaced
+// left the run non-terminal for one extra millisecond at a reproducible
+// boundary.
+{
+  const runId = "run-stale-boundary-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-08-25T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-08-25T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-08-25T00:00:00Z");
+  writeScenario("stale-boundary", {
+    issues: [{ number: 160, pull_request: null }],
+    comments: { "160": [idx, rr] },
+    commits: {},
+    // Default --stale-after-days is 7; 2026-08-25T00:00:00Z + 7 days is
+    // exactly 2026-09-01T00:00:00Z.
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 160, atBoundary: "2026-09-01T00:00:00Z", beforeBoundary: "2026-08-31T23:59:59.999Z" },
+  });
+}
+
+// --- Scenario 46: --run --as-of C must cutoff-filter orphan/forged
+// reports the same way it filters everything else historical — shepherd
+// round 4, Codex-confirmed (P2): an orphan comment posted AFTER C
+// previously still appeared in the "as of C" trajectory, so re-running the
+// same --as-of C later (after the comment landed) could change the
+// report even though nothing about the as-of-C observation should.
+{
+  const runId = "run-orphan-cutoff-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "claim", entered_at: "2026-09-01T00:01:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  // A trusted-author evidence-shaped comment, correctly marked for this
+  // run, but never added to evidence_comments[] — an orphan by design.
+  // Posted well AFTER the cutoff this scenario queries with.
+  const orphan = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "claim", "issue", null, 1, { note: "posted late" }, "2026-09-05T00:00:00Z");
+  writeScenario("orphan-cutoff", {
+    issues: [{ number: 161, pull_request: null }],
+    comments: { "161": [idx, rr, orphan] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 161 },
+  });
+}
+
+// --- Scenario 47: a run-record comment's marker is edited to a
+// non-reserved tuple (stage/dest/round/seq other than kickoff/issue/-/1)
+// while keeping kind=run-record and the same run_id — shepherd round 4,
+// Codex-confirmed (P2): checking only kind and run_id let this pass as
+// the run's authenticated run-record, exactly the gap round 1 already
+// closed for run-INDEX discovery but missed on this sibling check.
+{
+  const runId = "run-record-marker-tamper-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  // Rewrite the record comment's marker line only, keeping its JSON
+  // payload (and the index's own pointer to this same comment id) intact.
+  const tamperedMarker = marker("run-record", runId, "review", "pr", 1, 9);
+  const payloadOnly = rr.body.slice(rr.body.indexOf("\n") + 1);
+  rr.body = \`\${tamperedMarker}\n\${payloadOnly}\`;
+  writeScenario("record-marker-tamper", {
+    issues: [{ number: 162, pull_request: null }],
+    comments: { "162": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 162 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -2296,6 +2424,18 @@ for flag_args in "--as-of 0" "--as-of 09/03/2026" "--as-of 2026-09-03T12:00:00" 
     set -e
     [ "$rc" -eq 2 ] || fail "parseable-but-non-ISO-8601 arg ($flag_args): expected exit 2, got $rc: $out"
 done
+
+echo "== shepherd round 4: a syntactically-ISO but CALENDAR-invalid timestamp (Date.parse silently normalizes it to a different day) is still a usage error =="
+for flag_args in "--as-of 2026-02-30T00:00:00Z" "--as-of 2026-13-01T00:00:00Z" "--as-of 2026-01-01T24:00:00Z" "--since 2026-02-30T00:00:00Z"; do
+    set +e
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 $flag_args 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "calendar-invalid ISO-8601 arg ($flag_args): expected exit 2, got $rc: $out"
+done
+echo "== ...but a genuinely valid leap-day timestamp is still accepted =="
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of 2024-02-29T00:00:00Z --json)"
+echo "$out" | jq -e '.cohort_size == 0' >/dev/null || fail "leap-day --as-of: expected acceptance (empty cohort against an empty repo), got: $out"
 
 echo "== review round 2: a value-taking flag followed by nothing (or another flag) is a usage error, not a silent default =="
 for flag_args in "--as-of" "--since" "--stale-after-days"; do
@@ -2646,5 +2786,38 @@ since_excluded="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 
 echo "$since_excluded" | jq -e '.indeterminate_count == 0 and (.per_issue | length) == 0' >/dev/null || fail "registry-trust-record-before-index: expected --since 00:15 to exclude the issue entirely (record posted 00:10, before the cutoff), got: $since_excluded"
 since_included="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-01T00:05:00Z --json)"
 echo "$since_included" | jq -e '.indeterminate_count == 1 and (.per_issue | length) == 1' >/dev/null || fail "registry-trust-record-before-index: expected --since 00:05 to include the issue as indeterminate (record posted 00:10, on/after the cutoff), got: $since_included"
+
+echo "== shepherd round 4: a registry-touching commit with no merging PR (direct push) voids the WHOLE repo's registry history, not just that commit =="
+export DFSTATS_DB="$tmp/scenarios/registry-direct-push.json"
+run_id="$(meta registry-direct-push .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001)"
+echo "$out" | grep -qi "run $run_id (issue #159) — outcome: in-flight" || fail "registry-direct-push: expected the run to validate normally (full CLI trust fallback, not narrowed out by the still-real other revision), got: $out"
+
+echo "== shepherd round 4: a run's last activity exactly staleAfterDays before --as-of terminalizes as abandoned; one ms earlier it does not =="
+export DFSTATS_DB="$tmp/scenarios/stale-boundary.json"
+at_boundary="$(meta stale-boundary .meta.atBoundary)"
+before_boundary="$(meta stale-boundary .meta.beforeBoundary)"
+at_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of "$at_boundary" --json)"
+echo "$at_out" | jq -e '.cohort_size == 1 and .unattended_success_count == 0' >/dev/null || fail "stale-boundary: expected terminalized-abandoned at the exact boundary, got: $at_out"
+before_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --as-of "$before_boundary" --json)"
+echo "$before_out" | jq -e '.cohort_size == 0' >/dev/null || fail "stale-boundary: expected the run still open (not yet stale) one ms before the boundary, got: $before_out"
+
+echo "== shepherd round 4: --run --as-of C cutoff-filters orphan/forged reports the same as everything else historical =="
+export DFSTATS_DB="$tmp/scenarios/orphan-cutoff.json"
+run_id="$(meta orphan-cutoff .meta.runId)"
+live_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$live_out" | jq -e '(.orphan_comments | length) == 1' >/dev/null || fail "orphan-cutoff: expected the orphan visible with no --as-of, got: $live_out"
+historical_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2026-09-02T00:00:00Z --json)"
+echo "$historical_out" | jq -e '(.orphan_comments | length) == 0' >/dev/null || fail "orphan-cutoff: expected the orphan EXCLUDED at an --as-of before it was posted, got: $historical_out"
+
+echo "== shepherd round 4: a run-record marker edited off the reserved kickoff/issue/-/1 tuple is rejected, not silently authenticated =="
+export DFSTATS_DB="$tmp/scenarios/record-marker-tamper.json"
+run_id="$(meta record-marker-tamper .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "record-marker-tamper: expected indeterminate, got rc=$rc: $out"
+echo "$out" | grep -qi "no longer identifies it as this run's run-record" || fail "record-marker-tamper: expected an edited-entry tampering reason, got: $out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

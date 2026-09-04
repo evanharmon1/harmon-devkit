@@ -154,25 +154,76 @@ function defaultBranchLandedAt(repo, sha) {
 // govern. Among commits whose landing time is on or before atIso, the one
 // with the LATEST landing time wins (the newest registry state actually
 // in effect on the default branch by that moment).
+//
+// The full per-repo revision history (every agent-registry.json-touching
+// commit reachable from the default branch, each with its own landed-at
+// time) is resolved and cached ONCE per repo, not once per (issue,
+// timestamp) pair — shepherd round 4, Codex-confirmed (P2): a --repo scan
+// of R runs against C registry revisions previously re-walked the full
+// commit list AND re-issued a commits/{sha}/pulls request per revision on
+// EVERY call (each run's kickoff typically needing at least two — its
+// record and its index), roughly 2×R×C synchronous API calls; a moderate
+// history could exhaust GitHub's rate limit before ordinary issue
+// harvesting even finished. History resolution is now O(C) once; every
+// subsequent atIso lookup is an O(C) in-memory scan.
+//
+// A commit with no merging PR (defaultBranchLandedAt returns null) is only
+// possible when the target --repo permits direct pushes to its default
+// branch — this repo's own ruleset blocks that (see defaultBranchLandedAt's
+// comment), but the CLI is explicitly repository-generic, so a permissive
+// target repo cannot be assumed away — shepherd round 4, Codex-confirmed
+// (P1). The unresolvable commit's OWN committer/author date is deliberately
+// never used as a fallback: this file's firstSeen already established that
+// a pusher-controlled date cannot prove when a commit became visible (see
+// firstSeen's own comment) and a cherry-picked commit can carry any date
+// its author chooses. Silently SKIPPING the unresolvable commit instead
+// (continuing the scan past it, as an earlier version of this function
+// did) is worse than either: a newer revision that happens to be a direct
+// push could be silently invisible forever, so the scan would keep
+// selecting a stale, resolvable, older revision as if it were current —
+// confidently wrong rather than admittedly unknown. Since this mechanism
+// only ever NARROWS trust (never widens it — see the block comment above),
+// admitting "unknown" costs nothing beyond the narrowing itself: the
+// caller's existing null-means-full-CLI-trust fallback is exactly the
+// pre-registry baseline, never a security downgrade. So: any unresolvable
+// commit voids the WHOLE repo's history (cached as null, same as an
+// unreadable registry file) rather than being skipped in isolation.
+const registryRevisionHistoryCache = new Map();
+
+function resolveRegistryRevisionHistory(repo) {
+  if (registryRevisionHistoryCache.has(repo)) return registryRevisionHistoryCache.get(repo);
+  let history;
+  try {
+    const defaultBranch = resolveDefaultBranch(repo);
+    const commits = ghApiPaginated(`repos/${repo}/commits?path=agent-registry.json&sha=${defaultBranch}`);
+    const resolved = [];
+    let unresolvable = false;
+    for (const c of commits) {
+      const seen = defaultBranchLandedAt(repo, c.sha);
+      if (seen === null) {
+        unresolvable = true;
+        break;
+      }
+      resolved.push({ sha: c.sha, landedAtEpoch: Date.parse(seen) });
+    }
+    history = unresolvable ? null : resolved;
+  } catch {
+    history = null;
+  }
+  registryRevisionHistoryCache.set(repo, history);
+  return history;
+}
+
 function resolveRegistryTrustedActorIds(repo, atIso) {
   const cutoff = Date.parse(atIso);
-  let defaultBranch;
-  let commits;
-  try {
-    defaultBranch = resolveDefaultBranch(repo);
-    commits = ghApiPaginated(`repos/${repo}/commits?path=agent-registry.json&sha=${defaultBranch}`);
-  } catch {
-    return null;
-  }
+  const history = resolveRegistryRevisionHistory(repo);
+  if (history === null) return null;
   let bestSha = null;
   let bestSeen = -Infinity;
-  for (const c of commits) {
-    const seen = defaultBranchLandedAt(repo, c.sha);
-    if (seen === null) continue;
-    const seenEpoch = Date.parse(seen);
-    if (seenEpoch <= cutoff && seenEpoch > bestSeen) {
-      bestSeen = seenEpoch;
-      bestSha = c.sha;
+  for (const { sha, landedAtEpoch } of history) {
+    if (landedAtEpoch <= cutoff && landedAtEpoch > bestSeen) {
+      bestSeen = landedAtEpoch;
+      bestSha = sha;
     }
   }
   if (bestSha === null) return null;
@@ -484,8 +535,25 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
       if (recordPayloadText === null) {
         throw new EvidenceError(`run-index ${runId} names run-record comment ${named.id}, which no longer carries a fenced payload — edited-entry tampering`);
       }
+      // The run-record comment's reserved tuple (ai/schemas/README.md
+      // "run-record": "stage is always kickoff... and round/seq are
+      // always -/1 — the run record has exactly one comment, never split,
+      // never duplicated by sequence") — the same rigor indexMarked's own
+      // filter already applies to run-index above, mirrored here — shepherd
+      // round 4, Codex-confirmed (P2): checking only kind and runId let an
+      // edited marker claim any stage/dest/round/seq (e.g. a comment
+      // physically on the issue claiming stage=review dest=pr round=1
+      // seq=9) and still authenticate as this run's one true run-record.
       const recordMarker = parseMarker(recordComment.body || "");
-      if (!recordMarker || recordMarker.kind !== "run-record" || recordMarker.runId !== runId) {
+      if (
+        !recordMarker ||
+        recordMarker.kind !== "run-record" ||
+        recordMarker.runId !== runId ||
+        recordMarker.stage !== "kickoff" ||
+        recordMarker.dest !== "issue" ||
+        recordMarker.round !== null ||
+        recordMarker.seq !== 1
+      ) {
         throw new EvidenceError(`run-index ${runId} names comment ${named.id}, whose current marker no longer identifies it as this run's run-record — edited-entry tampering`);
       }
       let body;
@@ -1173,7 +1241,17 @@ function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, w
     // producer never actually emitted — challenge round 1, confirmed.
     const rounds = assembleListedEvidence(record.body, allComments, withinCutoff, record.authorActorId);
     const listedIds = new Set((record.body.evidence_comments || []).map((e) => Number(e.id)));
-    const { trusted: orphans, forged: forgedMarkers } = findOrphanEvidence(allComments, { runId: record.runId, runRecordAuthorId: record.authorActorId, listedIds });
+    // Cutoff-filtered — shepherd round 4, Codex-confirmed (P2): unlike
+    // assembleListedEvidence just above (which verifies every LIVE
+    // evidence_comments[] entry unconditionally, by design — see its own
+    // comment), orphan/forged detection is reporting-only, never a trust
+    // decision (see this function's own block comment), so for a --run
+    // --as-of C read it must reflect only what existed AS OF C — otherwise
+    // a comment posted after C could appear in a supposedly historical
+    // trajectory, and re-running the SAME --as-of C later (after more
+    // comments land) could change its orphan/forged report even though
+    // nothing about "as of C" should change.
+    const { trusted: orphans, forged: forgedMarkers } = findOrphanEvidence(allComments.filter(withinCutoff), { runId: record.runId, runRecordAuthorId: record.authorActorId, listedIds });
     return {
       status: "ok",
       runId: record.runId,
@@ -1269,7 +1347,13 @@ function isStale(state, staleAfterDays, asOfEpoch) {
     const t = Date.parse(e.entered_at || e.at || e.settled_at || e.registered_at || e.bound_at);
     return t > max ? t : max;
   }, Date.parse(state.started_at));
-  return asOfEpoch - lastActivity > staleAfterDays * 24 * 60 * 60 * 1000;
+  // >= , not > — shepherd round 4, Codex-confirmed (P2): specs/dev-flow-v2.md
+  // defines staleness as "no run-record update for [convergence].stale_after"
+  // (a duration REQUIREMENT, satisfied once that much time has elapsed with
+  // no update), which is already true at exact equality; the strict `>`
+  // this replaced left a run non-terminal for one extra millisecond at a
+  // reproducible, exact --as-of boundary.
+  return asOfEpoch - lastActivity >= staleAfterDays * 24 * 60 * 60 * 1000;
 }
 
 function runInterventionCount(state) {
@@ -1926,11 +2010,40 @@ function requiredArgValue(flagName, rawValue) {
 // environment-dependent cutoff for a tool whose whole point is
 // reproducible historical scoping. Reject anything that doesn't match
 // the grammar before ever calling Date.parse on it.
-const ISO_TIMESTAMP_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$/;
+const ISO_TIMESTAMP_RE = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]+)?Z$/;
+
+// The regex above only proves DIGIT SHAPE, not calendar validity —
+// shepherd round 4, Codex-confirmed (P2): Date.parse("2026-02-30T00:00:00Z")
+// (calendar-invalid: February has no 30th) does not return NaN, it
+// silently NORMALIZES to 2026-03-02T00:00:00.000Z, so the regex-only check
+// let a mistyped cutoff silently scope a historical query to a different
+// day than the one requested. A round-trip string comparison against
+// toISOString() cannot detect this either without ALSO rejecting every
+// ordinary caller that omits fractional seconds (toISOString() always
+// emits exactly ".000", so "...T12:00:00Z" round-trips to
+// "...T12:00:00.000Z" — a real, common, valid input that never string-
+// matches its own round trip). Comparing each captured calendar component
+// against the PARSED date's own UTC getters sidesteps both problems: it
+// rejects an out-of-range date (JS Date arithmetic "fixes" it into a
+// different one instead of failing) while still accepting any valid
+// fractional-seconds spelling.
+function isCalendarValid(match, epoch) {
+  const d = new Date(epoch);
+  return (
+    d.getUTCFullYear() === Number(match[1]) &&
+    d.getUTCMonth() + 1 === Number(match[2]) &&
+    d.getUTCDate() === Number(match[3]) &&
+    d.getUTCHours() === Number(match[4]) &&
+    d.getUTCMinutes() === Number(match[5]) &&
+    d.getUTCSeconds() === Number(match[6])
+  );
+}
 
 function parseIsoDateArg(flagName, value) {
   if (value === null) return { ok: true, value: null };
-  if (!ISO_TIMESTAMP_RE.test(value) || Number.isNaN(Date.parse(value))) {
+  const match = ISO_TIMESTAMP_RE.exec(value);
+  const epoch = match ? Date.parse(value) : NaN;
+  if (!match || Number.isNaN(epoch) || !isCalendarValid(match, epoch)) {
     return { ok: false, error: `dev-flow-stats: --${flagName} is not a valid ISO-8601 timestamp: ${JSON.stringify(value)}` };
   }
   return { ok: true, value };

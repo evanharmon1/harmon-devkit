@@ -111,7 +111,59 @@
     "promoted_at": "2026-08-21T12:00:00Z",
     "gate_fingerprint": "sha256:fingerprint-of-pr-body-reviews-and-comments"
   },
-  "evidence_registrations": [],
-  "pr_bindings": [],
-  "outcome_transitions": []
+  "evidence_registrations": [
+    {
+      "seq": 0,
+      "digest": "4f4f700a3091ee3200564d084ebb0bb425733834b9abad67d0e3bb5a3b167ed8",
+      "prev_digest": "genesis",
+      "id": "2000000001",
+      "author_actor_id": 12345678,
+      "login": "evanharmon1",
+      "payload_digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "marker": {
+        "run_id": "run-6001-further-along",
+        "stage": "challenge",
+        "destination": "issue",
+        "round": 1,
+        "sequence": 1
+      },
+      "registered_at": "2026-08-20T13:00:30Z"
+    },
+    {
+      "seq": 1,
+      "digest": "67a78cb243acd67b1edd30085c2243e07fbc97e8e29369bf0187670deae7a353",
+      "prev_digest": "4f4f700a3091ee3200564d084ebb0bb425733834b9abad67d0e3bb5a3b167ed8",
+      "id": "2000000023",
+      "author_actor_id": 12345678,
+      "login": "evanharmon1",
+      "payload_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "marker": {
+        "run_id": "run-6001-further-along",
+        "stage": "challenge",
+        "destination": "pr",
+        "round": null,
+        "sequence": 1
+      },
+      "registered_at": "2026-08-20T13:05:00Z"
+    }
+  ],
+  "pr_bindings": [
+    {
+      "seq": 0,
+      "digest": "208f5a1cb61ebe121005ff420221a3e38a90c29b758dee86b3c7fe29e933b3a0",
+      "prev_digest": "genesis",
+      "number": 634,
+      "url": "https://github.com/evanharmon1/harmon-devkit/pull/634",
+      "bound_at": "2026-08-20T13:00:10Z"
+    }
+  ],
+  "outcome_transitions": [
+    {
+      "seq": 0,
+      "digest": "b2d86db8b307132856992f619a06bbe52075ab037433a45a93587f17529803e7",
+      "prev_digest": "genesis",
+      "outcome": "ready-for-review",
+      "at": "2026-08-21T12:00:00Z"
+    }
+  ]
 }

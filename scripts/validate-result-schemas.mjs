@@ -1639,6 +1639,30 @@ function checkRunPromotionOutcome(document, errors) {
   }
 }
 
+// checkRunOutcomeTransitionsBound — a run reaches exactly one terminal
+// outcome. run.schema.json bounds each ENTRY's own shape but nothing
+// structural stops two chain- and digest-valid entries at different `seq`
+// values (e.g. "capped" then "ready-for-review") from both validating —
+// a downstream reader taking the LAST entry as authoritative (run.schema.
+// json's own field description: "a derived projection: the last entry's
+// outcome") would then launder a real failure into a success.
+// scripts/dev-flow-stats.mjs's own harvester already rejects this (shepherd
+// round 2 of #663, Codex-confirmed P1); this ports the same bound to the
+// shared validator so any other writer or consumer catches the mistake
+// before ever posting a broken record, not after. Counting distinct `seq`
+// values (rather than raw array length) is deliberate: a resumed writer's
+// own retry re-appending an already-landed entry shares that entry's seq
+// and must not trip this — the same harmless-duplicate case
+// normalizeExactDuplicates collapses on the harvester side.
+function checkRunOutcomeTransitionsBound(document, errors) {
+  const entries = document.outcome_transitions
+  if (!Array.isArray(entries)) return
+  const seqs = new Set(entries.map((entry) => entry.seq).filter((seq) => typeof seq === 'number'))
+  if (seqs.size > 1) {
+    errors.push(`$run.outcome_transitions has ${seqs.size} distinct terminal entries — a run reaches exactly one terminal outcome`)
+  }
+}
+
 // checkEvidenceCommentsUniqueness — evidence_comments[].id is unique (it is
 // the harvester's own lookup key), and each (marker.destination, marker.stage,
 // marker.round, marker.sequence) tuple is unique (that tuple IS the
@@ -1983,6 +2007,7 @@ function main() {
       checkEvidenceMarkerSequenceContiguity(instance, errors)
       checkEvidenceCommentsUniqueness(instance, errors)
       checkRunPromotionOutcome(instance, errors)
+      checkRunOutcomeTransitionsBound(instance, errors)
       checkSettlementReferenceType(instance, errors)
       checkStageTransitionsOrder(instance, errors)
       checkRunChronology(instance, errors)
