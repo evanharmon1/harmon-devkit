@@ -591,6 +591,36 @@ function buildFindingIndex(record, options = {}) {
         options.allowUnadjudicatedStage === idMatch[1] &&
         options.allowUnadjudicatedRound === Number.parseInt(idMatch[2], 10)
       ) {
+        const stage = idMatch[1]
+        const round = Number.parseInt(idMatch[2], 10)
+        const finder = idMatch[3]
+        const expectedHead = options.expectedHead
+        const prefix = `${pass.file}: unadjudicated finding ${findingId}`
+        if (!record.run) fail(`${prefix} requires run.json to validate its run binding`)
+        if (!expectedHead) fail(`${prefix} requires the caller's canonical head`)
+        if (pass.runId !== record.run.run_id) {
+          fail(`${prefix} names run_id ${pass.runId}, but run.json names ${record.run.run_id}`)
+        }
+        if (pass.head !== expectedHead) {
+          fail(`${prefix} names envelope head ${pass.head}, but the caller's canonical head is ${expectedHead}`)
+        }
+        const allowedRoles = STAGE_ROLES[stage] || []
+        if (!allowedRoles.includes(pass.role)) {
+          fail(`${prefix} has role ${pass.role}, but stage ${stage} requires ${allowedRoles.join(' or ')}`)
+        }
+        if (pass.payloadStage !== stage || pass.payloadRound !== round) {
+          fail(
+            `${prefix} has payload stage/round ${pass.payloadStage}/${pass.payloadRound}, but its id encodes ${stage}/${round}`
+          )
+        }
+        if (pass.payloadFinder !== finder) {
+          fail(`${prefix} has payload finder ${pass.payloadFinder}, but its id encodes ${finder}`)
+        }
+        if (pass.payloadReviewedHead !== expectedHead) {
+          fail(
+            `${prefix} has payload reviewed_head ${pass.payloadReviewedHead}, but the caller's canonical head is ${expectedHead}`
+          )
+        }
         if (options.unadjudicatedFindings) options.unadjudicatedFindings.push({ id: findingId, ...pass })
         continue
       }
@@ -1260,6 +1290,7 @@ function renderBlockerComment(record, options = {}) {
   const rows = buildFindingIndex(record, {
     allowUnadjudicatedStage: incompleteScope?.stage,
     allowUnadjudicatedRound: incompleteScope?.round,
+    expectedHead: options.head,
     unadjudicatedFindings
   })
   const settlements = buildSettlementIndex(record.run)
@@ -1779,7 +1810,8 @@ function main(argv) {
   const incompleteScope = incompleteBlockerScope(record, options.command)
   validateCrossDocumentConsistency(record, {
     allowUnadjudicatedStage: incompleteScope?.stage,
-    allowUnadjudicatedRound: incompleteScope?.round
+    allowUnadjudicatedRound: incompleteScope?.round,
+    expectedHead: options.head
   })
 
   if (options.command === 'publish') {

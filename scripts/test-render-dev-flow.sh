@@ -691,6 +691,34 @@ run blocker-comment --record "$partial_blocker" --head "$render_head"
 assert_rc 0
 assert_contains "$out" "unadjudicated partial-round evidence"
 assert_contains "$out" "review-r2-codex-cli-1"
+
+assert_partial_pass_rejected() {
+    local case_name="$1"
+    local jq_filter="$2"
+    local expected="$3"
+    local case_dir="${test_tmp}/partial-${case_name}"
+    local pass_file="${case_dir}/passes/review-r2-codex-cli.json"
+
+    mkdir -p "$case_dir"
+    cp -r "${partial_blocker}/." "$case_dir/"
+    jq "$jq_filter" "$pass_file" >"${case_dir}/mutated-pass.json"
+    mv "${case_dir}/mutated-pass.json" "$pass_file"
+    run blocker-comment --record "$case_dir" --head "$render_head"
+    assert_rc 1
+    assert_contains "$err" "$expected"
+}
+
+echo "==> partial blocker evidence stays bound to its run, head, role, finder, and payload"
+assert_partial_pass_rejected stale-run '.run.run_id = "foreign-run"' 'but run.json names run-637-fixture-0001'
+assert_partial_pass_rejected stale-head '.head = "3333333333333333333333333333333333333333"' "but the caller's canonical head is"
+assert_partial_pass_rejected wrong-role '.role = "challenger"' 'missing required property attack_scenarios'
+assert_partial_pass_rejected wrong-finder '.payload.finder = "gemini-cli"' 'but its id encodes codex-cli'
+assert_partial_pass_rejected wrong-stage '.payload.stage = "challenge"' 'but its id encodes review/2'
+assert_partial_pass_rejected wrong-round '.payload.round = 3' 'but its id encodes review/2'
+assert_partial_pass_rejected wrong-reviewed-head \
+    '.payload.reviewed_head = "3333333333333333333333333333333333333333"' \
+    "but the caller's canonical head is"
+
 wrong_partial_round="${test_tmp}/wrong-partial-round-verdict.json"
 jq '.incomplete_round = 1' "$partial_blocker/verdict.json" >"$wrong_partial_round"
 run blocker-comment --record "$partial_blocker" --head "$render_head" --verdict "$wrong_partial_round"
