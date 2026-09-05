@@ -182,7 +182,7 @@ write_default_record() {
 # envelope/codex_cycle/accepted (defaults to $head_sha) so a head-mismatch
 # fixture can be built without hand-editing JSON.
 write_integrator_result() {
-    local name="$1" codex_cycle="$2" head="${3:-$head_sha}"
+    local name="$1" codex_cycle="$2" head="${3:-$head_sha}" finder_cycles="${4:-[]}"
     local out="${fixtures}/integrator-result-${name}.json"
     # verdict is constrained against codex_cycle.exit_code by
     # validate-result-schemas.mjs's EXIT_CODE_VERDICT_CONSTRAINTS (0->clean,
@@ -209,6 +209,7 @@ write_integrator_result() {
     esac
     jq -cn --arg head "$head" --argjson codex_cycle "$codex_cycle" \
         --argjson checks "$checks" --argjson findings "$findings" \
+        --argjson finder_cycles "$finder_cycles" \
         --arg verdict "$verdict" '
       {schema:2, role:"integrator", status:"completed", head:$head,
        produced_at:"2026-01-01T00:00:00Z",
@@ -217,6 +218,7 @@ write_integrator_result() {
        payload:({checks:$checks, codex_cycle:$codex_cycle, integration_round:1,
                  findings:$findings, unanswered_thread_roots:[],
                  settled_at:"2026-01-01T00:00:00Z", verdict:$verdict}
+         + (if ($finder_cycles | length) > 0 then {finder_cycles:$finder_cycles} else {} end)
          + (if $verdict == "clean" then {applied_dispositions:[]} else {} end))}' \
         >"$out"
     node "$validator" envelope "$out" >/dev/null ||
@@ -1837,5 +1839,125 @@ wb_rc=$?
 set -e
 [ "$wb_rc" -eq 7 ] ||
     fail "gh-write-broker should propagate gh's exit 7, got $wb_rc"
+
+# ── every configured PR-side finder (#796) ──────────────────────────────────
+# The gate is told the CONFIGURED set with --finder, because the integrator
+# payload alone cannot establish it: a pass that skipped a finder reports the
+# same payload as one never configured for it.
+finder_cycle_json() {
+    # $1 finder slug, $2 exit code, $3 head (defaults to the gated head)
+    local slug="$1" exit_code="$2" head="${3:-$head_sha}"
+    case "$exit_code" in
+    0 | 10)
+        jq -cn --arg slug "$slug" --arg head "$head" --argjson exit_code "$exit_code" \
+            '{finder:$slug, head:$head, cycle:1, attempt:1,
+              trigger_comment_id:"2", trigger_requested_at:null,
+              accepted:{surface:"review", id:"2", reviewed_commit:$head},
+              exit_code:$exit_code}'
+        ;;
+    *)
+        jq -cn --arg slug "$slug" --arg head "$head" --argjson exit_code "$exit_code" \
+            '{finder:$slug, head:$head, cycle:1, attempt:1,
+              trigger_comment_id:"2", trigger_requested_at:null,
+              exit_code:$exit_code}'
+        ;;
+    esac
+}
+coderabbit_recheck_state="${fixtures}/coderabbit-recheck-state.json"
+jq -cn --arg repo example/repo --argjson pr 493 --arg head "$head_sha" \
+    '{repo:$repo, pr:$pr, head:$head, finder:"coderabbit-cloud",
+      profile:{finder:"coderabbit-cloud", actor_id:"136622811"}}' \
+    >"$coderabbit_recheck_state"
+
+run_gate_multi_finder_clean() {
+    local saved_gate="$gate"
+    gate="$recheck_gate"
+    export RECHECK_FAKE_EXIT=0
+    run_gate --codex-recheck "$recheck_state" \
+        --finder-recheck "coderabbit-cloud:$coderabbit_recheck_state" "$@"
+    unset RECHECK_FAKE_EXIT
+    gate="$saved_gate"
+}
+
+echo "==> two configured finders, both terminal-clean, pass"
+write_defaults
+multi_clean="$(write_integrator_result multi-clean "$(codex_cycle_json 0)" "$head_sha" \
+    "[$(finder_cycle_json coderabbit-cloud 0)]")"
+run_gate_multi_finder_clean --integrator-result "$multi_clean" --integration-cap 1 \
+    --finder codex-cloud --finder coderabbit-cloud
+assert_gate 0 pass ready
+
+echo "==> a configured finder with no cycle at all blocks promotion"
+write_defaults
+missing_cycle="$(write_integrator_result missing-cycle "$(codex_cycle_json 0)")"
+run_gate_multi_finder_clean --integrator-result "$missing_cycle" --integration-cap 1 \
+    --finder codex-cloud --finder coderabbit-cloud
+assert_gate 2 indeterminate codex-cap-mismatch
+printf '%s\n' "$gate_out" | grep -Fq 'reports no cycle for it' ||
+    fail "the missing-cycle blocker did not name the finder: $gate_out"
+
+echo "==> a configured finder whose cycle carries findings blocks promotion"
+write_defaults
+findings_cycle="$(write_integrator_result findings-cycle "$(codex_cycle_json 0)" "$head_sha" \
+    "[$(finder_cycle_json coderabbit-cloud 10)]")"
+run_gate_multi_finder_clean --integrator-result "$findings_cycle" --integration-cap 1 \
+    --finder codex-cloud --finder coderabbit-cloud
+assert_gate 1 fail codex-not-clean
+
+echo "==> a configured finder's non-verdict exit code is indeterminate, never a pass"
+# 14 (PR no longer open) is a real checker code that is neither clean nor a
+# finding: it must stop the gate rather than fall through as "not 10/11/12/13".
+# A cycle about ANOTHER head cannot be exercised from here at all — the
+# envelope receipt check refuses to build one, exactly as it does for
+# codex_cycle — so the gate's own per-finder head comparison stays as the
+# same defence-in-depth its codex_cycle sibling is.
+write_defaults
+nonverdict_cycle="$(write_integrator_result nonverdict-finder-cycle "$(codex_cycle_json 0)" "$head_sha" \
+    "[$(finder_cycle_json coderabbit-cloud 14)]")"
+run_gate_multi_finder_clean --integrator-result "$nonverdict_cycle" --integration-cap 1 \
+    --finder codex-cloud --finder coderabbit-cloud
+assert_gate 2 indeterminate codex-indeterminate
+printf '%s\n' "$gate_out" | grep -Fq 'is not a recognized terminal or pending value' ||
+    fail "the non-verdict exit code was not reported as such: $gate_out"
+
+echo "==> a cycle reported for a finder nobody configured is indeterminate"
+write_defaults
+stray_cycle="$(write_integrator_result stray-cycle "$(codex_cycle_json 0)" "$head_sha" \
+    "[$(finder_cycle_json copilot-cloud 0)]")"
+run_gate_multi_finder_clean --integrator-result "$stray_cycle" --integration-cap 1 \
+    --finder codex-cloud
+assert_gate 2 indeterminate codex-indeterminate
+printf '%s\n' "$gate_out" | grep -Fq 'unconfigured finder' ||
+    fail "the stray-cycle blocker did not name it: $gate_out"
+
+echo "==> a clean finder cycle with no recheck state cannot be trusted"
+write_defaults
+run_gate_recheck_clean --integrator-result "$multi_clean" --integration-cap 1 \
+    --finder codex-cloud --finder coderabbit-cloud
+assert_gate 2 indeterminate codex-stale
+
+echo "==> a recheck state reserved for a different finder reconfirms nothing"
+write_defaults
+wrong_state="${fixtures}/wrong-finder-recheck-state.json"
+jq -cn --arg repo example/repo --argjson pr 493 --arg head "$head_sha" \
+    '{repo:$repo, pr:$pr, head:$head, finder:"copilot-cloud",
+      profile:{finder:"copilot-cloud", actor_id:"175728472"}}' >"$wrong_state"
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXIT=0
+run_gate --codex-recheck "$recheck_state" \
+    --finder-recheck "coderabbit-cloud:$wrong_state" \
+    --integrator-result "$multi_clean" --integration-cap 1 \
+    --finder codex-cloud --finder coderabbit-cloud
+unset RECHECK_FAKE_EXIT
+gate="$saved_gate"
+assert_gate 2 indeterminate codex-stale
+printf '%s\n' "$gate_out" | grep -Fq 'was reserved for finder copilot-cloud' ||
+    fail "the wrong-finder recheck was not refused by name: $gate_out"
+
+echo "==> naming no finder gates exactly as before"
+write_defaults
+run_gate_recheck_clean --integrator-result "$multi_clean" --integration-cap 1
+assert_gate 0 pass ready
 
 echo "integration readiness gate + gh-ro + gh-write-broker: PASS"

@@ -714,6 +714,54 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   of `fix`: fixing means a push, which moves the head and starts a fresh
   cycle reviewing the fix on its own merits.
 
+**More than one PR-side finder.** `[stage.integration].finders` is all-of,
+exactly as the confidence stages are, so a stage may configure Copilot code
+review or CodeRabbit beside Codex — and a per-run maintainer instruction may
+add one (`scripts/devflow-policy.mjs resolve … --add-finder
+integration:<slug>`, which unions onto the config and can never remove a
+configured finder). Resolve that set once, at stage entry, and disclose it in
+the PR body beside the rigor line.
+
+Each configured finder gets **its own cycle**: its own state file, its own
+trigger, its own two-attempt window, classified by its own registry profile.
+Nothing about Codex's cycle changes — it stays the default, and a stage
+configuring only `codex-cloud` behaves exactly as before.
+
+```bash
+helper="$skill_dir/assets/check-codex-cloud-review.sh"
+profile="$(mktemp)"
+jq -c --arg slug "<finder>" '.finders[] | select(.slug == $slug)' \
+  agent-registry.json >"$profile"
+state="$(git rev-parse --git-path "integrate-codex/$repo/<n>-<finder>.json")"
+"$helper" reserve --state "$state" --repo "$repo" --pr <n> \
+  --head "$head" --attempt 1 --profile "$profile"
+```
+
+The profile is **pinned into the state** by that `reserve`, so every later
+subcommand classifies the cycle with the profile it was reserved under and a
+restated one must match exactly. What the caller does between `reserve` and
+`attach` depends on the finder's own trigger mechanism, which the profile
+names:
+
+- `review-comment` — post the profile's `trigger.body` as a PR conversation
+  comment (`@codex review` for Codex, `@coderabbitai review` for CodeRabbit)
+  through the write broker, then `attach --trigger-id <id>`.
+- `requested-reviewer` — request the review through
+  `POST /repos/{owner}/{repo}/pulls/<n>/requested_reviewers` with the
+  profile's `trigger.reviewer_login`, then
+  `attach --requested-at <ISO8601>`. `attach` proves the request against
+  GitHub before recording it: the reviewer must be pending on the PR or have
+  already posted a review.
+
+`check` then takes that finder's own `--actor-id`/`--actor-login` — and
+refuses any that is not the identity the cycle was reserved for. Report
+codex-cloud's cycle in `codex_cycle` as before and **every other finder's in
+`finder_cycles[]`**, one entry each. Finally, name the configured set to the
+readiness gate with `--finder <slug>` (repeatable) and give each clean cycle
+its `--finder-recheck <slug>:<state file>`: the gate cannot infer the
+configured set from the payload, because a pass that silently skipped a
+finder reports exactly what a pass never configured for it reports.
+
 **Codex-cycle result ledger.** Immediately after every dispatched integrator
 result, regardless of whether it is clean, findings, pending, retry, escalation,
 closed, or indeterminate, post the fixed stage-ledger table in your own
@@ -1163,13 +1211,27 @@ that loops indefinitely:
      against live GitHub state before trusting it, since a cached clean
      result can go stale between the dispatched pass and this gate.
 
+   - `--finder <slug>` — repeatable, one per PR-side finder this stage
+     configured (§2's "More than one PR-side finder"). Omit it only where
+     `codex-cloud` is the whole configured set: naming nothing gates exactly
+     as it did before multi-finder support. Each named finder must have
+     driven a current-head cycle that reached a terminal clean result —
+     codex-cloud through `codex_cycle`, every other through its own
+     `finder_cycles[]` entry — and a cycle reported for a finder nobody
+     configured is indeterminate rather than a bonus.
+   - `--finder-recheck <slug>:<state file>` — the same re-confirmation
+     `--codex-recheck` performs, for one of those other finders. Required
+     wherever that finder's cycle is clean, for the identical reason.
+
    ```sh
    "${CLAUDE_SKILL_DIR}"/assets/readiness-gate.sh check \
      --repo "$repo" --pr <n> --head <the adjudicated headRefOid> \
      --record <dir> \
      --integrator-result <file> \
      --integration-cap <n> \
-     --codex-recheck <state file>
+     --codex-recheck <state file> \
+     --finder codex-cloud --finder <other configured finder> \
+     --finder-recheck <other finder>:<its state file>
    ```
 
    `--head` is the head whose CI, Codex result, comments, and deferred

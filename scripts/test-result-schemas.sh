@@ -247,6 +247,14 @@ const SEMANTIC_ONLY = new Set([
   'result.challenger.schema/invalid/attack-scenario-unknown-finding-reference.json',
   'result.challenger.schema/invalid/attack-scenario-duplicate-id.json',
   'result.integrator.schema/invalid/accepted-reviewed_commit-mismatch.json',
+  // #796's finder_cycles[] receipt checks: head agreement with the envelope,
+  // one entry per finder, and codex-cloud never appearing here (it reports
+  // through codex_cycle). All three are cross-field or cross-entry facts the
+  // composed schema cannot state on its own.
+  'result.integrator.schema/invalid/finder-cycles-head-mismatch.json',
+  'result.integrator.schema/invalid/finder-cycles-accepted-reviewed_commit-mismatch.json',
+  'result.integrator.schema/invalid/finder-cycles-duplicate-finder.json',
+  'result.integrator.schema/invalid/finder-cycles-codex-cloud-reported-twice.json',
   'result.integrator.schema/invalid/applied-dispositions-duplicate-finding-id.json',
   'result.integrator.schema/invalid/blocked-with-clean-verdict.json',
   'result.integrator.schema/invalid/clean-with-empty-checks.json',

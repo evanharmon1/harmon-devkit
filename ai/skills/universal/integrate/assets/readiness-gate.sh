@@ -17,9 +17,11 @@
 #   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
 #       --record DIR --integrator-result FILE --integration-cap N
 #       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
+#       [--finder SLUG]... [--finder-recheck SLUG:STATE_FILE]...
 #   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
 #       --record DIR --integrator-result FILE --integration-cap N
 #       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
+#       [--finder SLUG]... [--finder-recheck SLUG:STATE_FILE]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 #
 # `check` evaluates the gate for the adjudicated 40-hex head SHA and, on full
@@ -119,9 +121,11 @@ Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
+      [--finder SLUG]... [--finder-recheck SLUG:STATE_FILE]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
+      [--finder SLUG]... [--finder-recheck SLUG:STATE_FILE]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
@@ -163,6 +167,16 @@ have gone stale since. Omitting it skips this one extra guard — unlike
 --integration-cap, this one remains advisory, since resuming it needs an
 on-disk state file that can genuinely be absent for operational reasons the
 caller does not control; every real caller supplies it anyway.
+--finder SLUG names one PR-side finder the stage configured (#796),
+repeatable. Each named finder must have driven a current-head cycle that
+reached a terminal clean result — codex-cloud through `codex_cycle`, every
+other through its own `finder_cycles[]` entry — and each clean one is
+reconfirmed through --finder-recheck SLUG:STATE_FILE the way --codex-recheck
+reconfirms codex-cloud. Naming no finder gates exactly as before: the
+integrator payload alone cannot establish which finders were configured, since
+a pass that skipped one reports the same payload as one never configured for
+it.
+
 --allow-edited-root ID clears an edited-since-reply line for that thread
 root only — the named-exception rule: the caller's report must say why the
 edit needs no reply.
@@ -234,10 +248,15 @@ integrator_result=
 integration_cap=
 codex_recheck_state=
 allowed_edited_roots='[]'
+# The PR-side finders this stage configured (#796). Empty means "whatever the
+# integrator's own codex_cycle says", which is exactly the pre-#796 behaviour,
+# so a caller that names none is gated the way it always was.
+configured_finders='[]'
+finder_rechecks='[]'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --codex-recheck | --allow-edited-root)
+    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --codex-recheck | --allow-edited-root | --finder | --finder-recheck)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
@@ -253,6 +272,23 @@ while [ "$#" -gt 0 ]; do
             allowed_edited_roots=$(jq -cn \
                 --argjson prior "$allowed_edited_roots" \
                 --argjson id "$2" '$prior + [$id]')
+            ;;
+        --finder)
+            printf '%s' "$2" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$' ||
+                die "--finder must be a registry finder slug"
+            configured_finders=$(jq -cn \
+                --argjson prior "$configured_finders" \
+                --arg slug "$2" '$prior + [$slug]')
+            ;;
+        --finder-recheck)
+            recheck_slug=${2%%:*}
+            recheck_path=${2#*:}
+            { [ -n "$recheck_slug" ] && [ "$recheck_slug" != "$2" ] && [ -n "$recheck_path" ]; } ||
+                die "--finder-recheck expects <finder-slug>:<state-file>"
+            finder_rechecks=$(jq -cn \
+                --argjson prior "$finder_rechecks" \
+                --arg slug "$recheck_slug" --arg path "$recheck_path" \
+                '$prior + [{finder:$slug,state:$path}]')
             ;;
         esac
         shift 2
@@ -432,23 +468,41 @@ compute_fingerprint() {
 # (harmon-devkit#639 gauntlet challenge round 1, finding 3): 10/11/12/13
 # already fail or stay non-terminal on their own, and a null codex_cycle has
 # nothing cached to go stale.
-recheck_codex_freshness() {
-    [ -n "$codex_recheck_state" ] ||
-        indeterminate codex-stale "codex_cycle reports a clean exit_code 0 but no --codex-recheck was given to reconfirm it against current GitHub state — a clean result can go stale between the integrator pass and this gate"
+# $1 finder slug (for the message), $2 recheck state file, $3 actor id.
+# Generalized from the Codex-only version (#796): the recheck is the same read
+# for every PR-side finder, and the checker resolves that finder's own
+# terminal-result contract from the profile pinned in its state file, so the
+# only per-finder input here is which state file and which actor.
+recheck_finder_freshness() {
+    recheck_finder=$1
+    recheck_state=$2
+    recheck_actor=$3
+    [ -n "$recheck_state" ] ||
+        indeterminate codex-stale "the $recheck_finder cycle reports a clean exit_code 0 but no recheck state was given to reconfirm it against current GitHub state — a clean result can go stale between the integrator pass and this gate"
     [ -x "$codex_checker" ] ||
-        die "$codex_checker is missing or not executable — cannot honor --codex-recheck"
-    [ -f "$codex_recheck_state" ] ||
-        indeterminate codex-stale "--codex-recheck $codex_recheck_state does not exist — cannot reconfirm the cached clean result"
-    state_repo="$(jq -r '.repo // empty' "$codex_recheck_state" 2>/dev/null)"
-    state_pr="$(jq -r '.pr // empty' "$codex_recheck_state" 2>/dev/null)"
-    state_head="$(jq -r '.head // empty' "$codex_recheck_state" 2>/dev/null)"
+        die "$codex_checker is missing or not executable — cannot honor a cloud-review recheck"
+    [ -f "$recheck_state" ] ||
+        indeterminate codex-stale "recheck state $recheck_state does not exist — cannot reconfirm the cached clean $recheck_finder result"
+    state_repo="$(jq -r '.repo // empty' "$recheck_state" 2>/dev/null)"
+    state_pr="$(jq -r '.pr // empty' "$recheck_state" 2>/dev/null)"
+    state_head="$(jq -r '.head // empty' "$recheck_state" 2>/dev/null)"
     [ "$state_repo" = "$repo" ] && [ "$state_pr" = "$pr" ] && [ "$state_head" = "$head" ] ||
-        indeterminate codex-stale "--codex-recheck $codex_recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}, not the gated $repo#$pr@$head"
-    codex_recheck_exit=0
-    codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" 2>&1)" ||
-        codex_recheck_exit=$?
-    [ "$codex_recheck_exit" -eq 0 ] ||
-        indeterminate codex-stale "recheck of the cached clean Codex cycle no longer confirms it (check-codex-cloud-review.sh exited $codex_recheck_exit) — evidence went stale between the integrator pass and this gate; dispatch a fresh integrator pass rather than trusting the cached result: $codex_recheck_output"
+        indeterminate codex-stale "recheck state $recheck_state belongs to ${state_repo:-?}#${state_pr:-?}@${state_head:-?}, not the gated $repo#$pr@$head"
+    # A state pinned to a DIFFERENT finder would reconfirm the wrong cycle: it
+    # carries its own profile and would be classified under that, so a clean
+    # answer from it says nothing about the finder being gated here.
+    state_finder="$(jq -r '.finder // empty' "$recheck_state" 2>/dev/null)"
+    [ -z "$state_finder" ] || [ "$state_finder" = "$recheck_finder" ] ||
+        indeterminate codex-stale "recheck state $recheck_state was reserved for finder $state_finder, not $recheck_finder"
+    finder_recheck_exit=0
+    finder_recheck_output="$("$codex_checker" check --state "$recheck_state" --actor-id "$recheck_actor" 2>&1)" ||
+        finder_recheck_exit=$?
+    [ "$finder_recheck_exit" -eq 0 ] ||
+        indeterminate codex-stale "recheck of the cached clean $recheck_finder cycle no longer confirms it (check-codex-cloud-review.sh exited $finder_recheck_exit) — evidence went stale between the integrator pass and this gate; dispatch a fresh integrator pass rather than trusting the cached result: $finder_recheck_output"
+}
+
+recheck_codex_freshness() {
+    recheck_finder_freshness codex-cloud "$codex_recheck_state" "$codex_actor_id"
 }
 
 if [ "$command_name" = fingerprint ]; then
@@ -966,6 +1020,89 @@ fi
 # above, now that the flag is required rather than advisory) means the Codex
 # condition is genuinely waived for this pass; that is a statement about
 # codex_cycle specifically, not about the pass as a whole.
+
+# 8b. Every OTHER PR-side finder the stage configured (#796). The rule is the
+# same one codex_cycle carries: a configured finder must have driven a
+# current-head cycle that reached a terminal CLEAN result, and a clean one
+# must be reconfirmed against live GitHub state rather than trusted from the
+# integrator pass. What differs is only where the evidence is — codex-cloud's
+# is `codex_cycle` (kept as-is so nothing about the single-finder path moves),
+# every other finder's is an entry in `finder_cycles[]`.
+#
+# A caller that names no --finder is gated exactly as before. Naming one is
+# how the configured set reaches this gate at all: the integrator's own
+# payload cannot establish it, because a pass that silently skipped a finder
+# would report exactly the same payload as one that was never configured for
+# it.
+finder_cycles="$(jq -c '.payload.finder_cycles // []' "$integrator_result" 2>/dev/null)" ||
+    indeterminate malformed-data "integrator result payload is unreadable"
+jq -e 'type == "array"' <<<"$finder_cycles" >/dev/null 2>&1 ||
+    indeterminate malformed-data "integrator result finder_cycles is not an array"
+
+# A cycle reported for a finder nobody configured is not a bonus: either the
+# gate is being handed evidence for the wrong stage, or the configured set it
+# was told about is wrong. Both are indeterminate rather than a pass.
+if [ "$(jq -r 'length' <<<"$configured_finders")" -gt 0 ]; then
+    stray="$(jq -r --argjson configured "$configured_finders" '
+          [.[] | .finder as $slug | select(($configured | index($slug)) == null) | $slug] | join(", ")
+        ' <<<"$finder_cycles")"
+    [ -z "$stray" ] ||
+        indeterminate codex-indeterminate "integrator result reports cycles for unconfigured finder(s): $stray"
+fi
+duplicate_cycle="$(jq -r '[.[] | .finder] | group_by(.) | map(select(length > 1) | .[0]) | join(", ")' \
+    <<<"$finder_cycles")"
+[ -z "$duplicate_cycle" ] ||
+    indeterminate malformed-data "integrator result reports more than one cycle for finder(s): $duplicate_cycle"
+
+while IFS= read -r configured_finder; do
+    [ -n "$configured_finder" ] || continue
+    if [ "$configured_finder" = codex-cloud ]; then
+        # codex-cloud's condition is `codex_cycle`, evaluated above. All that
+        # is left is to refuse the one shape that block treats as a waiver:
+        # a null cycle is only legitimate under a cap of 0, and a stage that
+        # CONFIGURED this finder has not waived it whatever the cap says.
+        [ "$codex_cycle" != null ] ||
+            indeterminate codex-cap-mismatch "codex-cloud is a configured finder for this stage but the pass reports a null codex_cycle"
+        continue
+    fi
+    finder_cycle="$(jq -c --arg slug "$configured_finder" \
+        'map(select(.finder == $slug)) | first // null' <<<"$finder_cycles")"
+    [ "$finder_cycle" != null ] ||
+        indeterminate codex-cap-mismatch "$configured_finder is a configured finder for this stage but the pass reports no cycle for it"
+    finder_cycle_head="$(jq -er '.head | select(type == "string")' <<<"$finder_cycle" 2>/dev/null)" ||
+        indeterminate malformed-data "$configured_finder cycle carries no head"
+    [ "$finder_cycle_head" = "$head" ] ||
+        indeterminate codex-indeterminate "$configured_finder cycle head $finder_cycle_head disagrees with the gated $head"
+    finder_exit="$(jq -er '.exit_code | select(type == "number")' <<<"$finder_cycle" 2>/dev/null)" ||
+        indeterminate malformed-data "$configured_finder cycle carries no exit_code"
+    if [ -n "$integration_cap" ]; then
+        finder_cycle_number="$(jq -er '.cycle | select(type == "number")' <<<"$finder_cycle" 2>/dev/null)" ||
+            indeterminate malformed-data "$configured_finder cycle carries no cycle number"
+        [ "$integration_cap" -gt 0 ] ||
+            indeterminate codex-cap-mismatch "$configured_finder reports a cycle but --integration-cap is 0"
+        [ "$finder_cycle_number" -le "$integration_cap" ] ||
+            indeterminate codex-cap-mismatch "$configured_finder cycle $finder_cycle_number exceeds --integration-cap $integration_cap"
+    fi
+    case "$finder_exit" in
+    0)
+        finder_recheck_state="$(jq -r --arg slug "$configured_finder" \
+            'map(select(.finder == $slug)) | first.state // empty' <<<"$finder_rechecks")"
+        finder_recheck_actor="$(jq -r '.profile.actor_id // .actor_id // empty' \
+            "${finder_recheck_state:-/dev/null}" 2>/dev/null)"
+        [ -n "$finder_recheck_actor" ] ||
+            indeterminate codex-stale "the $configured_finder cycle is clean but its recheck state names no pinned actor — cannot reconfirm it"
+        recheck_finder_freshness "$configured_finder" "$finder_recheck_state" "$finder_recheck_actor"
+        ;;
+    10 | 11 | 12 | 13)
+        fail_condition codex-not-clean "the current-head $configured_finder cycle exited $finder_exit, not terminal-clean"
+        ;;
+    *)
+        indeterminate codex-indeterminate "$configured_finder cycle exit_code $finder_exit is not a recognized terminal or pending value"
+        ;;
+    esac
+done <<EOF
+$(jq -r '.[]' <<<"$configured_finders")
+EOF
 
 # 9a. The pass's own findings[] is unconditional evidence, independent of
 # codex_cycle — a null or clean codex_cycle says nothing about a NEW

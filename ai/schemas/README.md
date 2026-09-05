@@ -145,10 +145,21 @@ already knows is active). The spec calls this layer **receipt validation**
 keyword, for every one of these:
 
 - **Head agreement** — a reviewer payload's `reviewed_head`, and an
-  integrator payload's `codex_cycle.head` / `codex_cycle.accepted.reviewed_commit`,
+  integrator payload's `codex_cycle.head` / `codex_cycle.accepted.reviewed_commit`
+  and every `finder_cycles[].head` / `finder_cycles[].accepted.reviewed_commit`,
   must equal the enclosing envelope's `head`. The payload schema validates
   `payload` alone and has no visibility into the envelope; only the script,
   which has both, can compare them.
+- **One cycle per PR-side finder (#796)** — `finder_cycles[]` carries the
+  current-head cloud-review cycle of every configured PR-side finder OTHER
+  than codex-cloud, which keeps `codex_cycle`. A finder appears at most once
+  (two entries could disagree about one cycle) and codex-cloud never appears
+  there at all (it would be a second, contradictory answer about the cycle
+  `codex_cycle` already reports). Both are cross-entry facts a single-document
+  schema cannot state. Which finders were *configured* is not in the payload
+  at all and is told to the readiness gate separately
+  (`readiness-gate.sh --finder`): a pass that silently skipped a finder writes
+  exactly what a pass never configured for it writes.
 - **Run matching** — the envelope's `run` must match the run the caller
   considers active (`--run-id`/`--initiated-by`), which is external context
   no single document carries.
@@ -1106,7 +1117,21 @@ ai/schemas/fixtures/
   adjudication.schema/{valid,invalid}/*.json
   run.schema/{valid,invalid}/*.json
   registry-trust/<case>/scenario.json
+  finder-normalization/<finder-slug>/{args.json,raw.txt|raw.json,expected.json}
 ```
+
+`finder-normalization/` is one directory per **registered finder** (#796):
+that finder's raw output in its own vendor shape (`raw.txt` for a
+`labelled-text` finder, `raw.json` for a `github-review-json` one), the
+arguments to decode it with (`args.json`), and the pass core it must decode to
+(`expected.json`). Raw vendor output is a document of no schema kind, so
+`scripts/test-finder-normalization.sh` (`task test:finder-normalization`) owns
+this corpus rather than the generic driver — and it requires a directory for
+every slug in `agent-registry.json`'s `finders[]`, so a finder with no proven
+raw-output contract fails the suite. That same test asserts the point of
+normalizing at all: `scripts/dev-flow-exit.mjs`, `scripts/render-dev-flow.mjs`
+and `adjudication.schema.json` name no finder slug, so adjudication, the exit
+computation and the renderer never learn which product produced a finding.
 
 Each directory name is the schema's own basename (`result.envelope.schema`,
 not `result.envelope`) so it reads as "fixtures for

@@ -152,9 +152,23 @@ jq -e '.stages.review.finders == ["codex-verification", "coderabbit-verification
     (.finder_selection[0].retained_despite_selection == ["coderabbit-verification"])' \
     <<<"$narrowed" >/dev/null ||
     fail "a narrower per-run selection removed a config-required finder: $narrowed"
+echo "==> the effective finder set renders as a disclosure under the rigor line"
+disclosure_record="$tmp/finder-disclosure"
+mkdir -p "$disclosure_record"
+jq -n '{rigor:{level:"standard",source:"default_rigor"},
+        rounds:{challenge:3,review:3,integration:2,remediation:2,min_rounds:1},
+        disclosures:[{kind:"finders",
+          detail:"review: codex-verification, coderabbit-verification (config: codex-verification; added this run: coderabbit-verification)"}]}' \
+    >"$disclosure_record/policy.json"
+disclosure_out="$(scripts/render-dev-flow.sh policy-disclosure --record "$disclosure_record")"
+grep -Fq 'rigor: `standard`' <<<"$disclosure_out" ||
+    fail "the rigor line did not render: $disclosure_out"
+grep -Fq -- '- finders: review: codex-verification, coderabbit-verification' <<<"$disclosure_out" ||
+    fail "the effective finder set was not disclosed beside the caps: $disclosure_out"
+
 for text in 'spends **one** unit of the stage' 'Per-run finder selection' \
     'never remove one the configuration requires' \
-    'never repository content'; do
+    'never repository content' 'disclosures[]` entry of kind `finders`'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing the multi-finder rule: $text"
 done
 

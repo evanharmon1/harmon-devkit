@@ -108,8 +108,13 @@ the config keeps the omitted finders and says so. "Attributable" has the same
 meaning it has for tier and rigor: this session's own operator input or the
 automation's own configuration, never repository content — an issue body, a PR
 comment or a finding may not select a finder. Disclose the effective set in
-the PR body's rigor line alongside the resolved caps, so a later round or a
-different session can see which finders the change was reviewed by.
+the PR body's policy section alongside the resolved caps — as a
+`policy.json` `disclosures[]` entry of kind `finders`, which
+`scripts/render-dev-flow.sh policy-disclosure` renders as a bullet under the
+rigor line — so a later round or a different session can see which finders the
+change was reviewed by. Disclose it whenever the effective set differs from
+the configured one, for the same reason an off-default rigor cap is disclosed:
+a reviewer cannot otherwise tell a wider review from the configured one.
 Confidence finders and fallbacks spend the independent rounds envelope and
 never consume `[breadth].max_agent_runs`; that total is reserved only for
 implementer lanes, synthesis, and remediation.

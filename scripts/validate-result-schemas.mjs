@@ -642,6 +642,48 @@ function checkHeadAgreement(kind, envelope, errors) {
       }
     }
   }
+  // Every other PR-side finder's cycle (#796) carries the same head
+  // invariant codex_cycle does: a cycle stamped with a different commit is
+  // evidence about another tree, and the readiness gate reads these as
+  // current-head verdicts. Two further rules the schema cannot state: a
+  // finder appears at most once (two entries could disagree about one
+  // cycle), and codex-cloud is never here at all (it has its own field, and
+  // a second entry for it would be a second, contradictory answer).
+  if (kind === 'integrator' && Array.isArray(payload.finder_cycles)) {
+    const seenFinders = new Set()
+    payload.finder_cycles.forEach((cycle, index) => {
+      if (!cycle || typeof cycle !== 'object') return
+      if (typeof cycle.head === 'string' && cycle.head !== head) {
+        errors.push(
+          `$result.payload.finder_cycles[${index}].head: ${cycle.head} does not match envelope head ${head}`
+        )
+      }
+      const cycleAccepted = cycle.accepted
+      if (
+        cycleAccepted &&
+        typeof cycleAccepted === 'object' &&
+        typeof cycleAccepted.reviewed_commit === 'string' &&
+        cycleAccepted.reviewed_commit !== head
+      ) {
+        errors.push(
+          `$result.payload.finder_cycles[${index}].accepted.reviewed_commit: ${cycleAccepted.reviewed_commit} does not match envelope head ${head}`
+        )
+      }
+      if (typeof cycle.finder === 'string') {
+        if (cycle.finder === 'codex-cloud') {
+          errors.push(
+            `$result.payload.finder_cycles[${index}].finder: codex-cloud reports its cycle in codex_cycle, never here — two entries for one cycle could disagree`
+          )
+        }
+        if (seenFinders.has(cycle.finder)) {
+          errors.push(
+            `$result.payload.finder_cycles[${index}].finder: ${cycle.finder} already reported a cycle in this pass`
+          )
+        }
+        seenFinders.add(cycle.finder)
+      }
+    })
+  }
 }
 
 // checkIntegratorSettledAtAgreement — payload.settled_at ("when this
