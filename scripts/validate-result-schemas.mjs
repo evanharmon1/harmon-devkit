@@ -134,7 +134,13 @@ const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.
 const KINDS = ['envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run']
 const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
 const SHA_PATTERN = /^[0-9a-f]{40}$/
-const ISSUE_NUMBER_PATTERN = /^[1-9][0-9]*$/
+// A bare positive integer (same-repo follow-up) or an owner/repo#N qualified
+// form (a cross-repository follow-up) -- the same qualification track-work's
+// own convention already requires for a bare #<n> anywhere it could mean two
+// different trackers (harmon-devkit#639 gauntlet challenge round 3: the
+// bare-only pattern made a schema-valid settlement impossible for the
+// cross-repo case the integrate skill's own text documents).
+const ISSUE_NUMBER_PATTERN = /^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9][0-9]*)$/
 
 function usage() {
   console.error(
@@ -688,23 +694,31 @@ function checkCodexCycleAcceptedScope(payload, errors) {
 // EXIT_CODE_VERDICT_CONSTRAINTS — what codex_cycle.exit_code implies about
 // payload.verdict, per the SAME exit-code contract
 // result.integrator.schema.json's codex_cycle.exit_code description
-// documents, which is itself ai/skills/universal/shepherd/assets/
+// documents, which is itself ai/skills/universal/integrate/assets/
 // check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
 // 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
 // indeterminate. checkIntegratorCleanVerdict separately requires exit_code
-// 0 (with accepted present) when verdict IS clean — that is the OTHER
-// direction of this same equivalence (clean implies 0); the 0 entry here
-// is what closes the loop the other way (0 implies clean), the same
-// two-direction shape every other exit code in this table already gets.
-// 13 (escalate) and 2 (indeterminate) share the SAME equals rule: AGENTS.md's
-// shepherd stage escalates when both Codex-cycle attempts are incomplete,
-// which is exactly what an indeterminate result IS — there is no
-// meaningful difference between "explicitly escalate" and "couldn't tell,
-// so escalate" for what the orchestrator does next. Each entry is either
-// `equals` (verdict must be exactly this value) or `excludes` (a set
-// verdict must not be any member of).
+// 0 (with accepted present) when verdict IS clean — clean implies 0 — but
+// 0 does NOT imply clean: ai/agents/integrator.md §7's own verdict rule
+// says a substantive human finding or CI failure surfacing in the SAME
+// pass as a Codex-clean cycle still makes the overall verdict `findings`
+// (the routine mixed-source case), so 0 only excludes the two verdicts
+// that are incoherent with a terminal, non-retriable exit code — pending
+// (nothing left to wait for) and escalate (nothing here needs the
+// remediation cap) — not `findings` (Codex cloud-review cycle on
+// harmon-devkit#758, gauntlet round 5: an earlier `equals: 'clean'` here
+// made 0 and a fresh same-pass finding jointly unsatisfiable, since
+// checkIntegratorCleanVerdict also requires every listed finding to
+// already carry a decline/file disposition the integrator itself never
+// assigns). 13 (escalate) and 2 (indeterminate) share the SAME equals
+// rule: AGENTS.md's integration stage escalates when both Codex-cycle
+// attempts are incomplete, which is exactly what an indeterminate result
+// IS — there is no meaningful difference between "explicitly escalate" and
+// "couldn't tell, so escalate" for what the orchestrator does next. Each
+// entry is either `equals` (verdict must be exactly this value) or
+// `excludes` (a set verdict must not be any member of).
 const EXIT_CODE_VERDICT_CONSTRAINTS = {
-  0: { equals: 'clean' },
+  0: { excludes: new Set(['pending', 'escalate']) },
   10: { equals: 'findings' },
   11: { equals: 'pending' },
   12: { equals: 'pending' },
@@ -1044,7 +1058,7 @@ function checkAdjudicationEntries(document, errors) {
         !ISSUE_NUMBER_PATTERN.test(reference.value)
       ) {
         errors.push(
-          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference.value: type issue_number requires a positive integer string`
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference.value: type issue_number requires a positive integer string or an owner/repo#<n> qualified string`
         )
       } else if (
         reference.type === 'comment_id' &&
@@ -1377,7 +1391,7 @@ function checkSettlementReferenceType(document, errors) {
       typeof reference.value === 'string' &&
       !ISSUE_NUMBER_PATTERN.test(reference.value)
     ) {
-      errors.push(`$run.settlements[${index}].reference.value: type issue_number requires a positive integer string`)
+      errors.push(`$run.settlements[${index}].reference.value: type issue_number requires a positive integer string or an owner/repo#<n> qualified string`)
     } else if (reference.type === 'comment_id' && typeof reference.value === 'string' && reference.value.trim() === '') {
       errors.push(`$run.settlements[${index}].reference.value: type comment_id requires a non-empty value`)
     }
@@ -1473,7 +1487,7 @@ function checkStageTransitionsOrder(document, errors) {
     }
   }
   // Reaching ready-for-review always means the run got through integration
-  // (the readiness gate promotes a draft PR shepherded out of that stage —
+  // (the readiness gate promotes a draft PR integrated out of that stage —
   // AGENTS.md's Dev Loop), so the last stage_transitions entry must BE
   // integration, not merely have progressed at all.
   if (document.outcome === 'ready-for-review') {
@@ -1615,7 +1629,7 @@ function checkRunChronology(document, errors) {
 // promotion without one), so both of those states additionally require a
 // non-null `pr`. `pr` itself can go non-null earlier than either — AGENTS.md's
 // Dev Loop opens the draft PR and only then enters the `integration` stage
-// (that is what the draft PR's existence kicks off: shepherding, Codex
+// (that is what the draft PR's existence kicks off: integration, Codex
 // cloud review cycles) — so a non-null `pr`, on its own, always requires
 // stage_transitions to already record having reached `integration`; it is
 // never legitimate for the PR to exist ahead of the run's own record of

@@ -263,7 +263,7 @@ jobs:
               readiness gate — it runs headless as the CI app bot and cannot
               drive the current-head review cycle a human handoff requires — so
               promoting here would make "non-draft" stop meaning "ready for a
-              human". Promotion belongs to a shepherd session.
+              human". Promotion belongs to an integration session.
             - NEVER merge and never push to main, whatever CI says.
             - If `task verify` fails and you cannot resolve it within several
               attempts, commit the best-effort state, push the branch, open the
@@ -280,14 +280,14 @@ jobs:
                In the body, link to this issue with
                "Closes #${{ github.event.issue.number || github.event.pull_request.number }}", summarize
                what changed, note anything reviewers should pay attention to, and
-               say the PR is a draft awaiting shepherding. Confirm it with
+               say the PR is a draft awaiting integration. Confirm it with
                `gh pr view <n> --json isDraft,headRefOid`: isDraft must be true
                and the SHA must be the one you just pushed.
             6. Watch the PR's checks with `gh pr checks <n> --watch`. Fix what
                you can fix mechanically — commit, push, watch again — for at most
                3 such rounds. The PR stays draft throughout.
             7. Stop and report: the PR URL, the gates you ran, what CI said, and
-               what a shepherd session still has to settle (remaining check
+               what an integration session still has to settle (remaining check
                failures, unanswered review findings). A draft handed over with a
                clear report is a complete, successful run.
 

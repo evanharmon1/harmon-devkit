@@ -85,10 +85,11 @@ tasks:
       - task: test:gh-scopes
       - task: test:meta-install
       - task: test:codex-review
-      - task: test:shepherd-codex
-      - task: test:shepherd-marker
-      - task: test:shepherd-readiness
+      - task: test:integrate-codex
+      - task: test:integrate-marker
+      - task: test:integrate-readiness
       - task: test:gauntlet-push
+      - task: test:round-push
       - task: test:lint-hygiene
       - task: test:release-title
       - task: test:notify-release
@@ -451,25 +452,30 @@ tasks:
     cmds:
       - ./scripts/test-codex-review.sh
 
-  test:shepherd-codex:
+  test:integrate-codex:
     desc: Unit-test current-head Codex cloud-review evidence (offline, stubbed gh)
     cmds:
-      - ./scripts/test-shepherd-codex.sh
+      - ./scripts/test-integrate-codex.sh
 
-  test:shepherd-marker:
-    desc: Unit-test the shepherd gate-then-push marker parser (require-marker.sh)
+  test:integrate-marker:
+    desc: Unit-test the integration stage's gate-then-push marker parser (require-marker.sh)
     cmds:
-      - ./scripts/test-shepherd-marker.sh
+      - ./scripts/test-integrate-marker.sh
 
-  test:shepherd-readiness:
-    desc: Unit-test the shepherd readiness gate + read-only gh wrapper (offline, stubbed gh)
+  test:integrate-readiness:
+    desc: Unit-test the integration readiness gate + read-only gh wrapper (offline, stubbed gh)
     cmds:
-      - ./scripts/test-shepherd-readiness.sh
+      - ./scripts/test-integrate-readiness.sh
 
   test:gauntlet-push:
     desc: Unit-test gauntlet's gated round-push helper (offline, local bare remotes)
     cmds:
       - ./scripts/test-gauntlet-push.sh
+
+  test:round-push:
+    desc: Unit-test the dev-flow-v2 diff-aware round-push broker (offline, local bare remotes)
+    cmds:
+      - ./scripts/test-round-push.sh
 
   test:lint-hygiene:
     desc: Behavioral fixtures for lint-hygiene's trigger-phrase adjacency scan

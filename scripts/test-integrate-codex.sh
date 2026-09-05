@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Hermetic regression tests for the shepherd Codex cloud-review classifier.
+# Hermetic regression tests for the integrator's Codex cloud-review classifier
+# (formerly the shepherd stage's; renamed with the stage, see specs/dev-flow-v2.md).
 
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-helper="${repo_root}/ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
-test_tmp="$(mktemp -d -t shepherd-codex-test-XXXXXX)"
+helper="${repo_root}/ai/skills/universal/integrate/assets/check-codex-cloud-review.sh"
+test_tmp="$(mktemp -d -t integrate-codex-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
 bin_dir="${test_tmp}/bin"
@@ -273,6 +274,24 @@ assert_status() {
         fail "expected status $expected_status, got '$actual': $check_out"
 }
 
+# harmon-devkit#639 gauntlet challenge round 4 (orchestrator-authorized): a
+# clean/findings result must expose which review/comment/reaction was
+# accepted, so result.integrator's schema-required accepted.{surface,id,
+# reviewed_commit} can actually be built from it.
+assert_accepted() {
+    expected_surface=$1
+    expected_id=$2
+    actual_surface="$(printf '%s' "$check_out" | jq -r '.accepted.surface // empty')"
+    [ "$actual_surface" = "$expected_surface" ] ||
+        fail "expected accepted.surface $expected_surface, got '$actual_surface': $check_out"
+    actual_id="$(printf '%s' "$check_out" | jq -r '.accepted.id // empty')"
+    [ "$actual_id" = "$expected_id" ] ||
+        fail "expected accepted.id $expected_id, got '$actual_id': $check_out"
+    actual_reviewed_commit="$(printf '%s' "$check_out" | jq -r '.accepted.reviewed_commit // empty')"
+    [ "$actual_reviewed_commit" = "$head_sha" ] ||
+        fail "expected accepted.reviewed_commit $head_sha, got '$actual_reviewed_commit': $check_out"
+}
+
 echo "==> exact-trigger current-request +1 is clean"
 new_cycle
 jq -cn \
@@ -280,12 +299,13 @@ jq -cn \
     --arg login "$actor_login" \
     '[[
       {
-        user:{id:$id,login:$login,type:"User"},
+        id:9001,user:{id:$id,login:$login,type:"User"},
         content:"+1",created_at:"2026-07-31T08:00:00Z"
       }
     ]]' >"${fixtures}/reactions.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
+assert_accepted reaction 9001
 
 echo "==> stale +1 and PR-level reactions cannot satisfy the cycle"
 new_cycle
@@ -320,6 +340,7 @@ jq -cn \
     ]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
+assert_accepted comment 77
 
 # Codex does not emit the bare sentence — it appends a praise clause, and the
 # clause varies. "Keep it up!" (#239), "Nice work!" (#225) and "Chef's kiss."
@@ -380,6 +401,7 @@ jq -cn \
     ]]' >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
+assert_accepted review 104
 
 # The tail is NOT consulted. Everything above the "Reviewed commit" line after
 # the verdict sentence is stripped, so no corpus of caveat phrasings belongs
@@ -2961,4 +2983,4 @@ assert_status 0 clean
 printf '%s' "$check_out" | jq -e '.detail | test("settled: filed")' >/dev/null ||
     fail "the detail must name the surviving disposition: $check_out"
 # Last line on purpose: every case above must have run for this to print.
-echo "shepherd Codex cloud-review classifier: PASS"
+echo "integrator Codex cloud-review classifier: PASS"

@@ -18,7 +18,7 @@ allowed-tools: Read, Glob, Grep, Bash(gh issue view:*), Bash(gh issue list:*), B
 
 Turn a lump of work into GitHub issues an agent can execute and a human can
 review — the front end of the session suite. `/claim`, `/implement`,
-`/shepherd`, and `/wrap` all assume a PR-sized issue already exists;
+`/integrate`, and `/wrap` all assume a PR-sized issue already exists;
 `track-work` governs how to author a single non-rotting issue; foreman's
 `task foreman:vet` *validates* unit shape. None of them produces the issues.
 This skill does: it reads the goal, proposes a decomposition — chunks,
@@ -540,7 +540,7 @@ that breakdown deliberately withheld. A human or trusted dispatch control may
 arm those units after reviewing the handoff. On a foreman repo, suggest
 `task foreman:vet` as the independent check that the produced units are
 well-formed. Then the session suite takes over, one chunk at a time: `/claim`
-the first ready issue, `/implement`, `/shepherd`, `/wrap`.
+the first ready issue, `/implement`, `/integrate`, `/wrap`.
 
 ## Scope
 

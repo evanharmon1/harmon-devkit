@@ -2,7 +2,7 @@ name: Claim Release
 run-name: releasing claim markers after a close event
 
 # A claim is written by a session (/claim), but its release is owed after
-# the merge — an event no session is guaranteed to witness (/shepherd stops
+# the merge — an event no session is guaranteed to witness (/integrate stops
 # before the merge on policy). This workflow is the release: it undoes the
 # markers the claim record says the claim added and posts the `Claim
 # released —` supersede comment. Contract, design record, and accepted gaps:

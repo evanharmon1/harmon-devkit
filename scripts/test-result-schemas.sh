@@ -252,7 +252,6 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/exit-code-13-with-pending.json',
   'result.integrator.schema/invalid/exit-code-14-with-clean.json',
   'result.integrator.schema/invalid/exit-code-10-with-pending.json',
-  'result.integrator.schema/invalid/exit-code-0-with-findings.json',
   'result.integrator.schema/invalid/exit-code-2-with-pending.json',
   'result.integrator.schema/invalid/settled-at-produced-at-mismatch.json'
 ])

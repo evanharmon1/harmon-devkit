@@ -10,7 +10,7 @@
 #   2. gone-upstream branches, classified by merged-PR evidence
 #   3. worktrees other than this one — named, never touched
 #   4. review sidecars (deferred-findings / adjudication-ledger) left behind
-#   5. shepherd Codex cycle-state files
+#   5. integration Codex cycle-state files
 #   6. totals, so branch creep stays visible
 #
 # Squash-merge context: `git branch --merged` cannot see a squash-merged
@@ -348,12 +348,12 @@ while IFS=$'\t' read -r root_label root_path; do
 done <"$tmp/state-roots"
 [ "$sidecars_found" = true ] || echo "  none"
 
-# ── 5. Shepherd cycle state ─────────────────────────────────────────────────
+# ── 5. Integration cycle state ───────────────────────────────────────────────
 
-section "Shepherd Codex cycle-state files"
+section "Integration Codex cycle-state files"
 cycles_found=false
 while IFS=$'\t' read -r root_label root_path; do
-    cycles_dir="$root_path/shepherd-codex"
+    cycles_dir="$root_path/integrate-codex"
     [ -d "$cycles_dir" ] || continue
     find "$cycles_dir" -type f 2>/dev/null >"$tmp/cycles-list"
     [ -s "$tmp/cycles-list" ] || continue
@@ -363,7 +363,7 @@ while IFS=$'\t' read -r root_label root_path; do
     done <"$tmp/cycles-list"
 done <"$tmp/state-roots"
 if [ "$cycles_found" = true ]; then
-    echo "  (the shepherd checker's 'reap' subcommand sweeps states whose PR has closed)"
+    echo "  (the integrator checker's 'reap' subcommand sweeps states whose PR has closed)"
 else
     echo "  none"
 fi

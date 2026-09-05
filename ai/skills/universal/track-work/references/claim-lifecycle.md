@@ -26,7 +26,7 @@ consequences that hold independently of whether any session is running:
 | `kickoff` | none — detects drift, never fixes it |
 | `claim` | assignee, `claim:*` label, claim comment — nothing in GitHub knows an agent started before a PR exists, so these markers stay session-written |
 | `implement` | ticks criteria as verified; files follow-ups |
-| `shepherd` | review replies; releases the `claim:*` label at its terminal stop-at-green ("implementing right now" is false once the work is with a human) |
+| `integrate` | review replies; releases the `claim:*` label at its terminal stop-at-green ("implementing right now" is false once the work is with a human) |
 | `retro` | none — distinguishes a claim *pending release* from one that outlived its session |
 | `wrap` | releases what events did not; owns the abandoned/parked case |
 

@@ -86,7 +86,7 @@ jobs:
       - run: task test:label-registry
       - run: task test:codex-review
       - run: task test:meta-install
-      - run: task test:shepherd-codex
+      - run: task test:integrate-codex
       - run: task test:ci-results
       - run: task test:status
       - run: task test:gh-scopes

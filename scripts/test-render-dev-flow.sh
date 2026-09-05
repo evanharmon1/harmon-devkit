@@ -453,6 +453,38 @@ run deferred-findings --record "$bad_sha"
 assert_rc 1
 assert_contains "$err" "does not match the expected shape"
 
+echo "==> a cross-repository issue_number settlement (owner/repo#N) validates and renders without a double hash"
+cross_repo="${test_tmp}/settlement-value-cross-repo"
+mkdir -p "$cross_repo"
+cp -r "${record_dir}/." "$cross_repo/"
+node -e "
+const fs = require('fs');
+const p = '${cross_repo}/run.json';
+const run = JSON.parse(fs.readFileSync(p, 'utf8'));
+run.settlements[2].reference.value = 'evanharmon1/other-repo#900';
+fs.writeFileSync(p, JSON.stringify(run, null, 2));
+"
+run deferred-findings --record "$cross_repo"
+assert_rc 0
+assert_contains "$out" "filed as evanharmon1/other-repo#900"
+[[ "$out" != *"filed as #evanharmon1/other-repo#900"* ]] ||
+    fail "cross-repo reference rendered with a spurious leading '#': $out"
+
+echo "==> a malformed issue_number settlement (neither bare nor owner/repo#N) is still rejected"
+bad_issue="${test_tmp}/settlement-value-bad-issue"
+mkdir -p "$bad_issue"
+cp -r "${record_dir}/." "$bad_issue/"
+node -e "
+const fs = require('fs');
+const p = '${bad_issue}/run.json';
+const run = JSON.parse(fs.readFileSync(p, 'utf8'));
+run.settlements[2].reference.value = 'not-a-valid-ref';
+fs.writeFileSync(p, JSON.stringify(run, null, 2));
+"
+run deferred-findings --record "$bad_issue"
+assert_rc 1
+assert_contains "$err" "does not match the expected shape"
+
 echo "==> thread-reply-plan requires the matching integrator pass, never a silent omission"
 no_pass="${test_tmp}/integration-no-pass"
 mkdir -p "$no_pass"
