@@ -65,11 +65,18 @@ table, so no list of release numbers has to be kept current here.
 
 | Code | Status | Meaning and fix |
 |---|---|---|
-| 0 | `compatible` | The vendored skills' requirement and the policy shape agree (including "neither has migrated"). |
-| 0 | `not-vendored` | No `.SKILLS_PROVENANCE` under `dest`: nothing was vendored, so there is nothing to audit. Run `task sync:skills` first. |
-| 1 | `incompatible` | The vendored skills need a newer policy shape than the repository has. Run `copier update`; **do not** advance the pin. |
-| 2 | — | Usage error or indeterminate (no manifest, unreadable policy, missing reader). Never reported as a pass. |
-| 3 | `pin-lag` | The policy migrated but the vendored skills predate it. Advance `source.ref` and re-run `task sync:skills`. |
+| 0 | `compatible` | The vendored skills' declared version and the policy's agree (including "neither has migrated"). |
+| 0 | `not-vendored` | No `.SKILLS_PROVENANCE` under `dest` and no unstamped policy-consuming skill beside it: nothing was vendored. Run `task sync:skills` first. |
+| 0 | `no-policy-consumer` | The policy has migrated, but the vendored set contains none of the skills that resolve it, so there is no pin contract to satisfy. Advancing the pin would not add one; nothing needs to change. |
+| 1 | `incompatible` | The vendored skills declare a policy schema version the repository's policy does not have. Run `copier update`; **do not** advance the pin. |
+| 2 | — | Usage error or indeterminate. Never reported as a pass. Covers a missing manifest, an unreadable policy, a missing reader, a damaged provenance stamp (no `# ref:` or no `# managed:` line), vendored skills declaring two different schema versions, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. |
+| 3 | `pin-lag` | The policy migrated and the policy-consuming skills *are* vendored but predate the contract. Advance `source.ref` and re-run `task sync:skills`. |
+
+A schema version names an **incompatible shape**, not a minimum capability
+level — the reader itself requires `schema_version = 2` exactly — so the audit
+compares for equality rather than "at least". By the same reasoning, vendored
+skills declaring two different versions is a broken set that no single policy
+can satisfy, and is reported indeterminate rather than resolved to either one.
 
 `scripts/devflow-policy.mjs` has its own documented exit codes (`detect`: 0
 version 2, 1 an older or mixed shape, 2 unreadable; `resolve`: 0 resolved, 1

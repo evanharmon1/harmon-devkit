@@ -190,7 +190,7 @@ expect_not_says "a compatible run does not tell anyone to run copier update" "co
 
 echo
 echo "== consumer-pin-audit: migrated policy still on a pre-v2 pin =="
-c="$(make_consumer pin-lag "$V2_POLICY" v0.34.1 gauntlet:pre shepherd:pre)"
+c="$(make_consumer pin-lag "$V2_POLICY" v0.34.1 integrate:pre orchestrator:pre)"
 run_audit "$c"
 expect_status "a migrated policy under pre-v2 skills is pin lag, not a pass" 3
 expect_says "pin lag says to advance source.ref" "advance source.ref"
@@ -294,7 +294,7 @@ echo
 echo "== consumer-pin-audit: the required version is compared, not assumed =="
 # Challenge round 1: `satisfied` was set from `shape = v2` alone, so a skill
 # declaring a FUTURE schema version was reported satisfied by a v2 policy.
-c="$(make_consumer future-version "$V2_POLICY" v9.0.0 review:v3 integrate:v2)"
+c="$(make_consumer future-version "$V2_POLICY" v9.0.0 review:v3)"
 run_audit "$c"
 expect_status "a version-2 policy does not satisfy a skill declaring version 3" 1
 expect_says "the refusal names the version actually required" "require schema_version 3"
@@ -306,6 +306,70 @@ else
     bad "--json did not report the policy and required versions separately"
     printf '%s\n' "$out" | sed 's/^/      /' >&2
 fi
+
+echo
+echo "== consumer-pin-audit: an interrupted sync is not a never-vendored checkout =="
+# Challenge round 2, confirmed against sync-skills.sh's write order: it does
+# `rm -f "$prov"` before its `cp -R` loop and rewrites the stamp last, so
+# vendored v2 skills can sit on disk with no provenance — reported `not-vendored`
+# exit 0 over a legacy policy, the exact fail-open this audit exists to catch.
+c="$(make_consumer interrupted-sync "$LEGACY_POLICY" v0.41.0 review:v2 integrate:v2)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "vendored policy-consuming skills with no stamp are indeterminate" 2
+expect_says "the interrupted-sync error says the stamp is written last" "rewrites it last"
+expect_says "the interrupted-sync error names the skills it found" "review"
+
+# The counterpart that must NOT trip: local skills carry no policy contract,
+# and a checkout that simply never ran the sync is a clean exit 0.
+c="$(make_consumer local-only-no-stamp "$LEGACY_POLICY" v0.34.1 my-local:pre other-local:pre)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "local skills carrying no contract are not an interrupted sync" 0
+expect_says "it is still reported as never vendored" "vendored no skills"
+
+# Nor a source checkout whose skill entries are SYMLINKS (harmon-devkit's own
+# .claude/skills shape): `cp -R` makes real directories, a symlink never.
+c="$(make_consumer symlinked-source "$LEGACY_POLICY" v0.41.0)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+mkdir -p "$c/src/integrate/assets"
+printf -- '---\nname: integrate\ndescription: fixture\n---\n' >"$c/src/integrate/SKILL.md"
+printf '{"skill":"integrate","policy_schema_version":2}\n' >"$c/src/integrate/assets/policy-contract.json"
+ln -s ../../src/integrate "$c/.claude/skills/integrate"
+run_audit "$c"
+expect_status "a symlinked source tree is not an interrupted sync" 0
+expect_says "the symlinked source is reported as never vendored" "vendored no skills"
+
+echo
+echo "== consumer-pin-audit: a contract-free vendored subset is not pin lag =="
+# Challenge round 2, confirmed: a manifest vendoring only categories with no
+# policy-consuming skill returned pin-lag forever over a migrated policy,
+# telling the operator to advance and re-sync when that could never help.
+c="$(make_consumer no-policy-consumer "$V2_POLICY" v9.0.0 some-frontend-skill:pre another:pre)"
+run_audit "$c"
+expect_status "a vendored set with no policy-consuming skill is not pin lag" 0
+expect_says "it says advancing the pin would not add a contract" "advancing the pin would not add one"
+expect_not_says "it does not tell anyone to re-sync pointlessly" "task sync:skills"
+
+# The genuine pin-lag case must still fire: the policy-consuming skills ARE
+# vendored, they just predate the contract.
+c="$(make_consumer real-pin-lag "$V2_POLICY" v0.34.1 integrate:pre review:pre)"
+run_audit "$c"
+expect_status "policy-consuming skills without a contract over a migrated policy is pin lag" 3
+expect_says "real pin lag still says to advance source.ref" "advance source.ref"
+
+echo
+echo "== consumer-pin-audit: schema versions are shapes, not capability levels =="
+# Challenge round 2, confirmed: `-ge` treated a newer policy as satisfying an
+# older skill. The reader itself requires `schema_version === 2` exactly.
+c="$(make_consumer newer-policy "$V2_POLICY" v0.41.0 review:v2)"
+run_audit "$c"
+expect_status "an exactly-matching version pair is compatible" 0
+
+c="$(make_consumer mixed-declared "$V2_POLICY" v0.41.0 review:v2 integrate:v3)"
+run_audit "$c"
+expect_status "vendored skills declaring two different versions is indeterminate" 2
+expect_says "the mixed-set error names both versions" "more than one policy schema version"
 
 echo
 echo "== devflow-policy: an older shape is refused with one actionable message =="

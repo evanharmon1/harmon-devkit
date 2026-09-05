@@ -29,23 +29,23 @@ ships the version-2 template, and keep `.skills-sync.yaml` pinned to the last
 pre-v2 skills release until it has. No compatibility mode is added here and
 none is coming, per the delta spec.
 
-**A refusal is not a dead end, and reporting it is not the whole answer.**
-Say which message the reader gave, then hand the stage to whatever the
-repository's own `AGENTS.md` states for integrating a draft PR — that file is
-the policy and this skill is only the procedure, so its single-stage
-integration bullet is the path until the policy migrates. A consumer that has
-not advanced its pin still has the retired single-stage skill at the pin it is
-on, which is exactly why the pin waits for the policy;
-`scripts/consumer-pin-audit.sh` is the check that the two agree. Only where
-`AGENTS.md` names no such path is the refusal itself the stopping point, and
-then it is a blocker naming the migration, not a stall.
+**Report the migration blocker and terminate the stage.** Do not continue by
+another route: the contract is that a consumer exits non-zero on an older
+operating policy and never falls back, and "fall back" covers handing the
+stage onward as much as hand-decoding the file. A repository whose own
+instructions would answer by invoking this skill again makes that especially
+concrete — it recurses instead of stopping. Stopping is what makes the
+migration visible; a stage that finds another way to finish hides it.
 
-This is the delta spec's own "the tooling's own repository has not migrated"
-case, and harmon-devkit is in it: its `.devflow.toml` is still legacy and
-migrates only through the maintainer's `copier update` (harmon-devkit#711), so
-this skill refuses there by design while its own suites run against fixture
-policies. Do not fabricate a `run.json` to route around any of this; there is
-nothing that would keep it truthful.
+A consumer that has not advanced its pin still has the retired single-stage
+skill at the pin it is on, which is exactly why the pin waits for the policy;
+`scripts/consumer-pin-audit.sh` is the check that the two agree. This is the
+delta spec's own "the tooling's own repository has not migrated" case, and
+harmon-devkit is in it: its `.devflow.toml` is still legacy and migrates only
+through the maintainer's `copier update` (harmon-devkit#711), so this skill
+refuses there by design while its own suites run against fixture policies. Do
+not fabricate a `run.json` to route around any of this; there is nothing that
+would keep it truthful.
 
 Opening a draft PR is not the end. Integrate it: dispatch the integrator agent
 to settle CI and drive the Codex cloud-review cycle (see
@@ -210,11 +210,9 @@ way.
 exits 1 with one actionable message — `copier update`, the harmon-init release
 that ships the `schema_version = 2` template, and the instruction to keep
 `.skills-sync.yaml` pinned to the last pre-v2 skills release until the file
-has migrated. Report that message and leave this skill, per the preamble: the
-repository's own `AGENTS.md` integration bullet is the path until the policy
-migrates, and only where it names none is the refusal itself a blocker. What
-is never permitted either way is to hand-decode the file, guess caps, or
-advance the pin to get past it. `task devflow:policy -- detect --policy .devflow.toml --json` answers
+has migrated. Report that message as a blocker and terminate the stage, per
+the preamble — never hand-decode the file, guess caps, advance the pin, or
+continue by another route to get past it. `task devflow:policy -- detect --policy .devflow.toml --json` answers
 the same question on its own (exit 0 version 2, exit 1 an older or mixed
 shape with the message in `migration`, exit 2 unreadable), and
 `scripts/consumer-pin-audit.sh` is the standing check that a repository's

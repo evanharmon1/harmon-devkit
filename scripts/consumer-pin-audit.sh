@@ -36,7 +36,9 @@
 #
 # Exit codes:
 #   0  compatible — the vendored skills' policy requirement and the
-#      repository's policy shape agree (including "neither has migrated").
+#      repository's policy shape agree (including "neither has migrated"), or
+#      the vendored set contains no policy-consuming skill at all
+#      (`no-policy-consumer`), so there is no pin contract to satisfy.
 #   1  incompatible — the vendored skills require a newer policy shape than
 #      the repository has. Migrate with `copier update`; do NOT advance the
 #      pin to get past it.
@@ -47,6 +49,18 @@
 set -euo pipefail
 
 self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+
+# The skills that resolve `.devflow.toml` and therefore ship
+# `assets/policy-contract.json` in harmon-devkit. It is the pin-lag test, not
+# the requirement test: the requirement is read from the contracts actually on
+# disk (which is what makes a future policy-consuming skill work without
+# touching this list), but telling a consumer to advance its pin is only
+# actionable if advancing it could add a contract at all. Challenge round 2,
+# confirmed: a manifest vendoring only contract-free categories (`frontend`,
+# say) reported `pin-lag` forever over a migrated policy, instructing the
+# operator to advance and re-sync when repeating those steps could never
+# change the result.
+POLICY_CONSUMING_SKILLS="review integrate orchestrator"
 
 die() {
     echo "consumer-pin-audit: $*" >&2
@@ -151,15 +165,61 @@ if [ -f "$prov" ]; then
         die "provenance '$prov' has an empty '# ref:' line — the vendored pin is unknown; inspect it and re-run 'task sync:skills' before auditing"
     managed="$(sed -n 's/^# managed:[[:space:]]*//p' "$prov" | head -n 1 | tr ',' '\n' | tr -d ' ')"
 else
+    # No stamp is NOT proof that nothing was vendored. Challenge round 2,
+    # confirmed against sync-skills.sh's own write order: `cmd_sync` does
+    # `rm -f "$prov"` BEFORE the `cp -R` loop and rewrites the stamp last, so
+    # an interrupted sync leaves real vendored skill directories with no
+    # provenance at all.
+    #
+    # Directory PRESENCE cannot separate that from a checkout that simply has
+    # local skills and never ran the sync — sync-skills.sh's own rule is that
+    # anything not on `# managed:` is local, and with no stamp that is
+    # everything. The evidence that discriminates is a POLICY CONTRACT: the
+    # fail-open this closes is "version-2 skills over an unmigrated policy
+    # read as compatible", and a version-2 skill is exactly one carrying
+    # `assets/policy-contract.json`. A local skill carries none, so it is
+    # untouched.
+    #
+    # Symlinks are excluded: `cp -R` produces real directories, so a symlinked
+    # entry is a source checkout rather than an interrupted sync —
+    # harmon-devkit's own `.claude/skills/<name>` links into `ai/skills/` and
+    # must stay a clean exit 0.
+    unstamped=""
+    if [ -d "$dest" ]; then
+        for candidate in "$dest"/*; do
+            [ -d "$candidate" ] || continue
+            [ -L "$candidate" ] && continue
+            [ -f "$candidate/assets/policy-contract.json" ] || continue
+            unstamped="$unstamped $(basename "$candidate")"
+        done
+    fi
+    if [ -n "$unstamped" ]; then
+        # shellcheck disable=SC2086 # deliberate word-splitting into a CSV
+        die "'$dest' holds policy-consuming skills ($(printf '%s\n' $unstamped | sort -u | paste -sd, -)) but no '.SKILLS_PROVENANCE' stamp — sync-skills.sh removes the stamp before it copies and rewrites it last, so this is an interrupted sync rather than a never-vendored checkout, and their policy requirement cannot be trusted; re-run 'task sync:skills' before auditing"
+    fi
     vendored_ref="$manifest_ref"
 fi
 
 # ── what those skills require of the policy ──────────────────────────────────
 
+# A policy schema version names an INCOMPATIBLE SHAPE, not a minimum
+# capability level (the reader itself requires `schema_version === 2`
+# exactly), so the vendored skills must agree on ONE version and the policy
+# must equal it. Challenge round 2, confirmed: aggregating to the highest
+# declared version and comparing with `-ge` let a version-2 skill be reported
+# satisfied by a hypothetical version-3 policy — a shape it cannot read.
+# Two different declared versions among the vendored skills is a broken
+# vendored set that no single policy can satisfy, so it is indeterminate here
+# rather than silently resolved to either one.
 required=0
+declared_versions=""
 requiring_skills=""
+policy_consumers_present=no
 while IFS= read -r skill_name; do
     [ -n "$skill_name" ] || continue
+    case " $POLICY_CONSUMING_SKILLS " in
+    *" $skill_name "*) policy_consumers_present=yes ;;
+    esac
     contract="$dest/$skill_name/assets/policy-contract.json"
     [ -f "$contract" ] || continue
     declared="$(jq -r '.policy_schema_version // empty' "$contract" 2>/dev/null || true)"
@@ -168,11 +228,18 @@ while IFS= read -r skill_name; do
         die "'$contract' declares no integer policy_schema_version"
         ;;
     esac
-    [ "$declared" -le "$required" ] || required="$declared"
+    declared_versions="$declared_versions $declared"
     requiring_skills="$requiring_skills $skill_name"
 done <<EOF
 $managed
 EOF
+# shellcheck disable=SC2086 # deliberate word-splitting: collapse to a set
+declared_versions="$(printf '%s\n' $declared_versions | sort -u | paste -sd, -)"
+case "$declared_versions" in
+'') required=0 ;;
+*,*) die "the vendored skills declare more than one policy schema version ($declared_versions) — no single policy can satisfy that set; re-run 'task sync:skills' so every vendored skill comes from one pin" ;;
+*) required="$declared_versions" ;;
+esac
 # shellcheck disable=SC2086 # deliberate word-splitting: rebuild as a sorted CSV
 requiring_skills="$(printf '%s\n' $requiring_skills | sort -u | paste -sd, -)"
 [ -n "$requiring_skills" ] || requiring_skills=none
@@ -203,17 +270,15 @@ fi
 
 # ── verdict ──────────────────────────────────────────────────────────────────
 #
-# `required` is the highest schema version any vendored skill declares and
-# `policy_version` is the one the policy actually declares, so the comparison
-# is numeric. Challenge round 1, confirmed: testing `shape = v2` instead let a
-# version-2 policy satisfy a skill declaring version 3, reporting an
-# incompatible pair as compatible — the exact future-version case the
-# comparison exists to survive. `required = 0` (no vendored skill declares
-# anything) is handled by its own branch below, so it is excluded here rather
-# than being trivially satisfied by every policy.
+# `required` is the single schema version the vendored skills declare and
+# `policy_version` is the one the policy declares, compared for EQUALITY (see
+# the requirement block above). Challenge round 1, confirmed: testing
+# `shape = v2` instead reported an incompatible pair as compatible.
+# `required = 0` (no vendored skill declares anything) has its own branch
+# below rather than being trivially satisfied by every policy.
 
 satisfied=no
-[ "$required" -gt 0 ] && [ "$policy_version" -ge "$required" ] && satisfied=yes
+[ "$required" -gt 0 ] && [ "$policy_version" -eq "$required" ] && satisfied=yes
 
 if [ "$vendored" = no ]; then
     status=not-vendored
@@ -221,11 +286,17 @@ if [ "$vendored" = no ]; then
     detail="no '.SKILLS_PROVENANCE' stamp under '$dest', so this repository has vendored no skills — the source.ref '$manifest_ref' in $manifest states an intent, not a state. Run 'task sync:skills' to vendor them, then re-run this audit. In harmon-devkit itself, whose '$dest_rel' entries are symlinks into its own ai/skills/ source tree, there is nothing to audit: the pin contract binds consumers."
 elif [ "$required" -eq 0 ]; then
     # No vendored skill declares a requirement, so `satisfied` is not the
-    # question here — whether the POLICY has migrated ahead of the pin is.
-    if [ "$policy_version" -gt 0 ]; then
+    # question here — whether the POLICY has migrated ahead of the pin is, and
+    # that is only a pin question when the vendored set contains a skill that
+    # WOULD carry a contract at a newer pin.
+    if [ "$policy_version" -gt 0 ] && [ "$policy_consumers_present" = yes ]; then
         status=pin-lag
         code=3
-        detail="the policy has migrated to schema_version $policy_version but the skills vendored at $vendored_ref declare no policy contract, so they predate Dev flow v2 — advance source.ref in $manifest to a skills release that ships the version-2 stage skills, then re-run 'task sync:skills'"
+        detail="the policy has migrated to schema_version $policy_version but the policy-consuming skills vendored at $vendored_ref declare no policy contract, so they predate Dev flow v2 — advance source.ref in $manifest to a skills release that ships the version-2 stage skills, then re-run 'task sync:skills'"
+    elif [ "$policy_version" -gt 0 ]; then
+        status=no-policy-consumer
+        code=0
+        detail="the policy declares schema_version $policy_version and the skills vendored at $vendored_ref include none that resolve it ($POLICY_CONSUMING_SKILLS), so there is no pin contract to satisfy — advancing the pin would not add one, and nothing here needs to change"
     else
         status=compatible
         code=0
@@ -255,6 +326,7 @@ if [ "$as_json" = yes ]; then
         --arg shape "$shape" \
         --argjson policy_version "$policy_version" \
         --arg requiring_skills "$requiring_skills" \
+        --arg policy_consumers_present "$policy_consumers_present" \
         --arg detail "$detail" \
         --argjson required "$required" \
         --argjson exit_code "$code" \
@@ -263,7 +335,9 @@ if [ "$as_json" = yes ]; then
           manifest_ref: $manifest_ref, policy_shape: $shape,
           policy_schema_version: $policy_version,
           required_policy_schema_version: $required,
-          requiring_skills: $requiring_skills, detail: $detail}'
+          requiring_skills: $requiring_skills,
+          policy_consuming_skills_vendored: ($policy_consumers_present == "yes"),
+          detail: $detail}'
 else
     echo "pin:             $vendored_ref (from $pin_source; manifest declares $manifest_ref)"
     echo "policy shape:    $shape (declares schema_version $policy_version)"
