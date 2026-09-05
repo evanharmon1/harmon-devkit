@@ -951,7 +951,11 @@ active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_j
 # the minimal toolset its own no-GNU-timeout path already restricts PATH to,
 # and jq is the only thing here that is not a shell builtin.
 known_ids_file="${TMPDIR:-/tmp}/readiness-gate-known-ids.$$.json"
-trap 'rm -f "$known_ids_file"' EXIT
+# `|| :` so the trap's own last command always succeeds: this script's
+# verdict IS its exit code, and a cleanup that fails — `rm` missing from a
+# restricted PATH, a read-only TMPDIR — must never be what the caller reads
+# instead of fail/indeterminate/pass.
+trap 'rm -f "$known_ids_file" 2>/dev/null || :' EXIT
 {
     for known_ids_doc in "$record_dir"/passes/*.json; do
         [ -f "$known_ids_doc" ] || continue

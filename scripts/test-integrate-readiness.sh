@@ -1948,9 +1948,12 @@ mkdir -p "$restricted_bin"
 # gitleaks because render-dev-flow.mjs secret-scans every projection it
 # renders, unconditionally, before printing it), on top of the original
 # minimal toolset this fixture restricts PATH to. `rm` joined them with
-# harmon-devkit#685: the gate now materializes the run's known-finding-id
-# universe in a temp file and cleans it up in an EXIT trap, and a trap whose
-# command is not on PATH turns every run of this fixture into a bare 127.
+# harmon-devkit#685, when the gate started materializing the run's
+# known-finding-id universe in a temp file and cleaning it up in an EXIT
+# trap. The trap now ends in `|| :` so a missing `rm` can no longer become
+# the verdict the caller reads, but `rm` stays listed here deliberately:
+# this fixture is about running under a minimal toolset, not about proving
+# the cleanup degrades — the trap's own robustness is asserted just below.
 for tool in bash jq grep tr dirname cat node git gitleaks rm; do
     tool_path="$(command -v "$tool")" ||
         fail "missing $tool for the no-timeout fixture"
@@ -1977,6 +1980,22 @@ check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
 assert_gate 0 pass ready
 printf '%s\n' "$gate_out" | grep -Fq 'no GNU timeout' ||
     fail "the timeout fallback must warn that calls are unbounded: $gate_out"
+
+echo "==> #685: a cleanup that cannot run never becomes the verdict"
+# The gate's verdict IS its exit code, so its EXIT trap must not be able to
+# change it. Drop `rm` from the restricted toolset and the same green run
+# must still report pass/0 rather than the trap's own failure — this fixture
+# reproduced exactly that as a bare 127 while the trap lacked its `|| :`.
+rm -f "${restricted_bin}/rm"
+set +e
+gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" env PATH="$restricted_bin" RECHECK_FAKE_EXIT=0 \
+    "$recheck_gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" --integrator-result "$clean_result" \
+    --integration-cap 1 --remediation-cap 4 --codex-recheck "$recheck_state" 2>&1)"
+gate_rc=$?
+set -e
+check_watchdog "$gate_rc" no-rm-fallback "$gate_out"
+assert_gate 0 pass ready
 
 nondraft_pr_view() {
     jq -cn --arg head "$head_sha" \
