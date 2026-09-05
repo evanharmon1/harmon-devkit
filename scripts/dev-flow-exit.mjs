@@ -1471,6 +1471,7 @@ async function main() {
   // lacks an adjudication document.
   if (args["verification-only"]) {
     const incompleteRound = ancestryRetainedForVerification.find((r) => r.status !== "complete");
+    const currentHeadRound = retainedCompleteRounds.findLast((r) => r.reviewedHead === currentHead);
     const verification = incompleteRound
       ? {
           stage: args.stage,
@@ -1482,10 +1483,26 @@ async function main() {
           incomplete_round: incompleteRound.round,
           unresolved_slot: incompleteRound.unresolvedSlot,
           substitutions: incompleteRound.substitutions,
+          partial_findings: incompleteRound.findings.map((finding) => finding.id),
           corrections,
           diagnostics,
           verified_findings: verifiedFindings,
         }
+      : !currentHeadRound
+        ? {
+            ...computeVerdict({
+              stage: args.stage,
+              rounds,
+              convergence: resolved.convergence,
+              cap,
+              minRounds,
+              currentHead,
+              ancestryOpts,
+            }),
+            corrections,
+            diagnostics,
+            verified_findings: verifiedFindings,
+          }
       : {
           stage: args.stage,
           outcome: "verification",
@@ -1501,7 +1518,7 @@ async function main() {
         };
     if (retentionChanged) verification.retained_rounds = retainedRoundNumbers;
     if (args.json) console.log(JSON.stringify(verification, null, 2));
-    else console.log(`${args.stage}: verification (pre_adjudication)`);
+    else console.log(`${args.stage}: ${verification.outcome} (${verification.reason})`);
     return incompleteRound ? EXIT_CODES.capped : 0;
   }
 
@@ -1554,6 +1571,10 @@ async function main() {
   // them here would falsely present them as verified adjudication evidence
   // and make the blocker record internally inconsistent.
   verdict.verified_findings = verifiedFindings;
+  if (verdict.outcome === "capped" && (verdict.reason === "finder_unavailable" || verdict.reason === "breadth_exhausted")) {
+    const incompleteRound = ancestryRetainedForVerification.find((round) => round.status !== "complete");
+    verdict.partial_findings = incompleteRound ? incompleteRound.findings.map((finding) => finding.id) : [];
+  }
   if (retentionChanged) verdict.retained_rounds = retainedRoundNumbers;
 
   if (args.json) {

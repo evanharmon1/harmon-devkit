@@ -14,7 +14,12 @@ rigor, rounds, breadth, roles, strategy, and disclosures in the run. Dispatch
 only roles whose harness can enforce their registry write boundary: a judgment
 role receives a result-only channel with no ambient workspace, shell, git, gh,
 or write credential, otherwise the run blocks. Use one worktree and branch per
-lane, record ownership, scope, dependencies, and file overlap, and enforce one
+lane, record ownership, scope, dependencies, and the complete file overlap.
+Before dispatching overlapping scopes, either serialize them or record the
+explicit merge dependency in both lane briefs. Select implementers only from
+the resolved `[stage.implement].pool`, registry role eligibility, and resolved
+family/harness preferences; council dispatches also enforce its
+`distinct_families` requirement. Enforce one
 writer per feature branch. A lane can commit only its lane branch; the feature
 owner alone assembles selected lanes, then records the included/discarded lanes
 and canonical SHA in that assembly's `run.json` stage transition before pushing
@@ -24,6 +29,34 @@ implementer with the ordered source proposals and accept its artifact only when
 that same order; record every proposal's selection outcome in the assembly.
 Reject a lane that requests feature-branch write authority.
 
+Feature-owner authority comes from an orchestrator-installed capability
+boundary that is never exposed to lane agents; the monitor's `--writer` value
+is only a checked assertion inside that boundary, not a credential a lane may
+supply. If the harness cannot prevent a lane from invoking feature-owner
+assembly, reservation, or push capabilities, parallel dispatch is unavailable
+and the run blocks.
+
+## Persistent supervision
+
+Watching is the standing mode, not a one-shot step. Use the harness's
+session-lifetime persistent monitor primitive—never a background shell subject
+to an ordinary command timeout—to poll fresh lane-agent and PR state and emit
+only transitions (`idle`, `done`, `blocked`, `unknown`, and PR deltas). If it
+exits before the overall run reaches a terminal outcome, re-arm it immediately;
+never interpret monitor termination as human cancellation. If no persistent
+primitive is available, block instead of silently falling back to occasional
+manual polling.
+
+Every emitted transition terminates in a recorded action: idle reads and
+adjudicates the lane status (including any unsupported claim that the user was
+asked); done validates and assembles or records a blocker; blocked/unknown
+surfaces the evidence and stops or re-briefs within authority; a ready PR is
+reported with merge-queue externalities; a dirty PR returns to its owning lane;
+and an external merge releases dependents, recomputes the queue, and rechecks
+stacked branches. Keep a visible per-lane ledger of assignment, fresh state,
+last progress, and next action. Hand off the run record before primary-session
+context exhaustion so a fresh driver can re-arm the same monitor.
+
 Resolve the shared run directory with `git rev-parse --git-common-dir`, never by
 appending to a worktree's `.git` path (which is a file in linked worktrees).
 `scripts/dev-flow-monitor.sh state-path --run-id <run-id>` returns the canonical
@@ -31,12 +64,17 @@ appending to a worktree's `.git` path (which is a file in linked worktrees).
 the schema-valid `run.json` beside it. Resolve the branch's shared active pointer
 with `active-path`, and activate a new run by compare-and-swap from the prior
 generation while passing the kickoff-pinned registry revision; the resulting
-active pointer is the run's immutable registry binding. Every `reserve` and
+active pointer is the run's immutable registry binding. Activation also binds
+each run ID to exactly one branch before any branch-specific pointer can write
+its canonical monitor ledger. Every `reserve` and
 `reconcile` supplies that canonical active path, run ID, branch, and generation,
 and derives the canonical monitor-state path from the run ID; a superseded run
 blocks even when it presents the same expected head. Before assembly, push, or
-comment, first reserve an event/action/expected-head in monitor state; never
-reserve or replay a merge.
+comment, first reserve an event/action/expected-head in monitor state. An
+assembly reservation also persists the exact integrated and discarded lane
+identities, and reconciliation requires the landed observation to reproduce
+that selection before the run transition is written. Never reserve or replay a
+merge.
 For comments, also reserve the trusted immutable actor ID, deterministic marker,
 SHA-256 digest of the exact body, and kickoff-pinned registry revision; the
 monitor must resolve actor trust from that immutable registry snapshot, never

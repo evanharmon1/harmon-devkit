@@ -19,6 +19,12 @@ directory. Capture and refresh base and canonical head before every logical
 round. A changed head invalidates an unadjudicated pass rather than letting it
 describe a new tree.
 
+When the run has a lane assembly, the first confidence pass after that
+assembly must review the latest implement transition's exact
+`assembly.canonical_head`. Compare it before dispatch and again on receipt; a
+different head blocks until the feature owner records the actual assembly
+rather than certifying an unauthenticated tree.
+
 ## Entry gate
 
 The input must also name the canonical `owner/repo` that will receive the PR.
@@ -59,8 +65,9 @@ merely their IDs, so the role can compare evidence before asserting
 
 For `challenge`, dispatch every primary finder in `[stage.challenge].finders`
 to the `challenger` role. For `review`, do the same for
-`[stage.review].finders` using the `reviewer` role. Retry a failed finder only
-through its configured `finder_fallbacks`; do not silently reduce coverage.
+`[stage.review].finders` using the `reviewer` role. Retry an unavailable primary
+once as that same primary; only after that retry fails may the ordered
+`finder_fallbacks` chain be consumed. Do not silently reduce coverage.
 The registry invocation is the role's evidence source, not itself a result
 envelope: the dispatched role binds that output to the supplied run, scope,
 round, slot, and producer identity and returns `result.challenger` or
@@ -81,11 +88,14 @@ Before adjudication, run `scripts/dev-flow-exit.sh --run <record> --stage
 --json`. Materialize the trusted history and head map from the feature-owner's
 verified branch state before dispatch; never let a finder supply them. Its
 provenance and fingerprint corrections are preconditions, not an advisory
-reviewer assertion. If this projection reports `action: escalate` because the
-logical round is incomplete (`finder_unavailable` or `breadth_exhausted`),
-persist it as `verdict.json`, render the terminal blocker, and stop: an
-incomplete round has no adjudication target and must never reach the second
-exit call. Only an `action: adjudicate` projection authorizes the orchestrator
+reviewer assertion. If this projection reports `action: dispatch` because no
+complete round for the refreshed canonical head survived, invalidate the stale
+pass and dispatch the returned `next_round`; never adjudicate it. Any
+`action: escalate` projection is terminal: persist it as `verdict.json`, render
+the blocker, and stop. For an incomplete logical round (`finder_unavailable`
+or `breadth_exhausted`), that blocker carries the accepted partial finding IDs;
+the round has no adjudication target and must never reach the second exit call.
+Only an `action: adjudicate` projection authorizes the orchestrator
 to correct the finding facts and write one schema-valid
 `adjudications/<stage>-r<N>.json`, containing the schema-supported priority,
 disposition, classification, reason, and evidence for every finding, validated
@@ -99,9 +109,12 @@ that second outcome.
 After each adjudication, build the issue comment from the validated source
 result envelopes, that round's adjudication JSON, and its exit projection in
 fenced JSON, then append the human table from `scripts/render-dev-flow.sh
-round-table --record <record> --stage <stage> --round <N>`. Scan and redact that
-exact replayable body before posting; the rendered table alone is never the
-durable evidence. Before any GitHub write, compute the exact body digest and
+round-table --record <record> --stage <stage> --round <N>`. Append the canonical
+deterministic run/stage/round/sequence marker to that exact body before
+scanning, redacting, or hashing it; the marker reservation and posted body must
+be the same bytes. Scan and redact that replayable body before posting; the
+rendered table alone is never the durable evidence. Before any GitHub write,
+compute the exact body digest and
 reserve the comment through `scripts/dev-flow-monitor.sh reserve`, binding the
 active run generation, expected head, deterministic run/stage/round/sequence
 marker, actor ID, and the registry revision pinned into the active run at
@@ -127,7 +140,11 @@ Act only on the second returned outcome. `continue` dispatches the next pass
 when no confirmed remediation exists (including an empty or entirely
 declined/deferred round); otherwise it dispatches a fresh bounded implementer,
 commits the one fix round, and pushes only through `scripts/round-push.sh` by
-path. `diverging` permits only deletion or restructuring of round-created
+path. Before acting on round 2, classify every finding whose subject exists
+only because an earlier round of this same stage added it, and record exactly
+one of: delete the scaffolding, restructure it to an invariant, or keep it as
+genuinely in scope with the reason. Never harden round-1 scaffolding by reflex.
+`diverging` permits only deletion or restructuring of round-created
 scaffolding; `capped` with P0/P1 records an intervention and blocker, then
 stops before a PR. A `converged` result advances by default, but an attributable
 operator may override it upward to exactly one additional pass while the

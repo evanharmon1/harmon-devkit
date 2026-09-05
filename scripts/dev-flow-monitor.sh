@@ -16,6 +16,7 @@ Usage:
   dev-flow-monitor.sh reserve --state FILE --event ID --action assembly|push|comment \
     --expected-head SHA --writer feature-owner --active-state FILE --run-id ID \
     --branch BRANCH --generation N [--repo-root DIR] \
+    [--assembly-plan FILE] \
     [--trusted-actor-id ID --registry-revision SHA --repo-root DIR \
      --marker TEXT --payload-digest SHA256]
   dev-flow-monitor.sh reconcile --state FILE --event ID --observed FILE \
@@ -25,6 +26,8 @@ Usage:
 The state file is durable monitor state.  A reservation is written before an
 external action.  The observed file must be JSON with status landed, absent, or
 indeterminate; landed also requires matching event, action, and expected_head.
+Assembly reservations require a JSON plan naming integrated_lanes and
+discarded_lanes; a landed observation must reproduce both lists exactly.
 Comment reservations authenticate the actor against the run-pinned registry
 revision. Comment observations provide a complete comments[] candidate set;
 the monitor filters and hashes it, then adopts the lowest matching comment ID.
@@ -55,7 +58,12 @@ held_lock_file=""
 held_lock_owner=""
 lock_claim_file=""
 held_break_dir=""
+run_binding_claim=""
 release_lock() {
+    if [ -n "$run_binding_claim" ]; then
+        rm -f "$run_binding_claim"
+        run_binding_claim=""
+    fi
     if [ -n "$lock_claim_file" ]; then
         rm -f "$lock_claim_file"
         lock_claim_file=""
@@ -180,6 +188,7 @@ active_state=""
 branch=""
 generation=""
 expected_generation=""
+assembly_plan=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -247,6 +256,10 @@ while [ "$#" -gt 0 ]; do
         expected_generation="${2:-}"
         shift 2
         ;;
+    --assembly-plan)
+        assembly_plan="${2:-}"
+        shift 2
+        ;;
     *) usage ;;
     esac
 done
@@ -291,6 +304,23 @@ if [ "$command_name" = "activate" ]; then
     git -C "$repo_root" show "${registry_revision}:agent-registry.json" >/dev/null 2>&1 ||
         die "could not read agent-registry.json at the kickoff-pinned revision"
     [ "$active_state" = "$(active_path)" ] || die "active state path is not canonical for this branch"
+    # A run ID names one canonical monitor ledger in the git common dir. Bind
+    # that identity to its branch with an atomic hard link before taking the
+    # branch pointer lock, so two branch-specific active locks can never race
+    # writes into the same run ledger.
+    run_binding_file="$(dirname "$(state_path)")/branch.json"
+    mkdir -p "$(dirname "$run_binding_file")"
+    run_binding_claim="${run_binding_file}.claim.$$.$RANDOM"
+    jq -n --arg run "$run_id" --arg branch "$branch" \
+        '{version: 1, run_id: $run, branch: $branch}' >"$run_binding_claim"
+    if ! ln "$run_binding_claim" "$run_binding_file" 2>/dev/null; then
+        [ -f "$run_binding_file" ] || die "run branch binding is not a file"
+        jq -e --arg run "$run_id" --arg branch "$branch" '
+            .version == 1 and .run_id == $run and .branch == $branch
+        ' "$run_binding_file" >/dev/null || die "run id is already bound to a different branch"
+    fi
+    rm -f "$run_binding_claim"
+    run_binding_claim=""
     mkdir -p "$(dirname "$active_state")"
     acquire_lock "$active_state"
     if [ -e "$active_state" ]; then
@@ -341,6 +371,26 @@ reserve)
     [ -n "$action" ] && [ -n "$expected_head" ] && [ -n "$writer" ] || usage
     case "$action" in assembly | push | comment) ;; *) die "action $action is not replayable" ;; esac
     [ "$writer" = "feature-owner" ] || die "only the feature-branch owner may reserve $action"
+    assembly_plan_json="null"
+    if [ "$action" = "assembly" ]; then
+        [ -n "$assembly_plan" ] && [ -f "$assembly_plan" ] ||
+            die "assembly reservation requires an assembly plan file"
+        jq -e '
+            type == "object" and
+            (.integrated_lanes | type == "array" and all(.[]; type == "string" and length > 0)) and
+            (.discarded_lanes | type == "array" and all(.[]; type == "string" and length > 0)) and
+            ((.integrated_lanes + .discarded_lanes) | length > 0) and
+            ((.integrated_lanes | unique | length) == (.integrated_lanes | length)) and
+            ((.discarded_lanes | unique | length) == (.discarded_lanes | length)) and
+            (. as $plan |
+              [$plan.integrated_lanes[] |
+                select(. as $lane | ($plan.discarded_lanes | index($lane)) != null)] |
+              length == 0)
+        ' "$assembly_plan" >/dev/null || die "assembly plan must account for unique, disjoint lane identities"
+        assembly_plan_json="$(jq -c '{integrated_lanes, discarded_lanes}' "$assembly_plan")"
+    elif [ -n "$assembly_plan" ]; then
+        die "assembly plan is permitted only for an assembly reservation"
+    fi
     if [ "$action" = "comment" ]; then
         [[ "$trusted_actor_id" =~ ^[1-9][0-9]*$ ]] || die "comment reservation requires a trusted actor id"
         [[ "$registry_revision" =~ ^[0-9a-f]{40}$ ]] ||
@@ -368,6 +418,19 @@ reserve)
         jq -n '{version: 1, cursor: null, actions: []}' >"$init_tmp"
         mv "$init_tmp" "$state"
     fi
+    if [ "$action" = "comment" ]; then
+        jq -e --arg head "$expected_head" --arg actor "$trusted_actor_id" \
+            --arg registry "$registry_revision" --arg marker "$marker" \
+            --arg digest "$payload_digest" '
+            [.actions[] | select(
+                .action == "comment" and .expected_head == $head and
+                .comment_auth.trusted_actor_id == $actor and
+                .comment_auth.registry_revision == $registry and
+                .comment_auth.marker == $marker and
+                .comment_auth.payload_digest == $digest
+            )] | length == 0
+        ' "$state" >/dev/null || die "duplicate comment reservation identity"
+    fi
     jq -e --arg event "$event" --arg action "$action" --arg head "$expected_head" '
             (.version == 1) and
             ([.actions[] | select(.event == $event)] | length == 0) and
@@ -377,12 +440,14 @@ reserve)
     tmp="${state}.tmp.$$"
     jq --arg event "$event" --arg action "$action" --arg head "$expected_head" \
         --arg actor "$trusted_actor_id" --arg registry_revision "$registry_revision" \
-        --arg marker "$marker" --arg digest "$payload_digest" '
+        --arg marker "$marker" --arg digest "$payload_digest" \
+        --argjson assembly_plan "$assembly_plan_json" '
             .actions += [{
                 event: $event,
                 action: $action,
                 expected_head: $head,
                 state: "reserved",
+                assembly_plan: (if $action == "assembly" then $assembly_plan else null end),
                 comment_auth: (if $action == "comment" then {
                     trusted_actor_id: $actor,
                     registry_revision: $registry_revision,
@@ -457,6 +522,12 @@ reconcile)
                 break
             done <<<"$candidates"
             [ -n "$comment_id" ] || die "comment postcondition is not authenticated"
+        elif [ "$expected_action" = "assembly" ]; then
+            expected_plan="$(jq -c '.assembly_plan' <<<"$reservation")"
+            jq -e --argjson plan "$expected_plan" '
+                .integrated_lanes == $plan.integrated_lanes and
+                .discarded_lanes == $plan.discarded_lanes
+            ' "$observed" >/dev/null || die "assembled lane selection does not match reservation"
         fi
         tmp="${state}.tmp.$$"
         jq --arg event "$event" --arg comment_id "$comment_id" '

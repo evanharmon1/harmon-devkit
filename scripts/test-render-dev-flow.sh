@@ -742,10 +742,11 @@ verified_r1="$(jq '[.payload.findings[] | {
     id, provenance_status: "verified", verified_provenance: .provenance,
     fingerprint_status: "verified", verified_fingerprint: .fingerprint
   }]' "$record_dir/passes/review-r1-codex-cli.json")"
-jq -n --argjson findings "$verified_r1" '{
+partial_ids="$(jq '[.payload.findings[].id]' "$record_dir/passes/review-r2-codex-cli.json")"
+jq -n --argjson findings "$verified_r1" --argjson partial "$partial_ids" '{
     stage: "review", outcome: "capped", reason: "finder_unavailable",
     rounds_counted: 1, incomplete_round: 2, next_round: null,
-    corrections: [], verified_findings: $findings
+    corrections: [], verified_findings: $findings, partial_findings: $partial
   }' >"$partial_blocker/verdict.json"
 run blocker-comment --record "$partial_blocker" --head "$render_head"
 assert_rc 0
@@ -779,6 +780,17 @@ assert_partial_pass_rejected wrong-reviewed-head \
     '.payload.reviewed_head = "3333333333333333333333333333333333333333"' \
     "but the caller's canonical head is"
 
+echo "==> partial blocker evidence must be authenticated by the exit verdict"
+unaccepted_partial="${test_tmp}/unaccepted-partial"
+mkdir -p "$unaccepted_partial"
+cp -r "${partial_blocker}/." "$unaccepted_partial/"
+jq '.payload.findings += [(.payload.findings[0] | .id = "review-r2-codex-cli-99")]' \
+    "$unaccepted_partial/passes/review-r2-codex-cli.json" >"$unaccepted_partial/mutated-pass.json"
+mv "$unaccepted_partial/mutated-pass.json" "$unaccepted_partial/passes/review-r2-codex-cli.json"
+run blocker-comment --record "$unaccepted_partial" --head "$render_head"
+assert_rc 1
+assert_contains "$err" "is not authenticated by verdict.partial_findings"
+
 echo "==> partial blocker paths cannot forge renderer section markers"
 partial_marker="${test_tmp}/partial-marker"
 mkdir -p "$partial_marker"
@@ -797,7 +809,7 @@ jq '.incomplete_round = 1' "$partial_blocker/verdict.json" >"$wrong_partial_roun
 run blocker-comment --record "$partial_blocker" --head "$render_head" --verdict "$wrong_partial_round"
 assert_rc 1
 assert_contains "$err" "review-r2-codex-cli-1"
-assert_contains "$err" "never adjudicated by any supplied adjudication document"
+assert_contains "$err" "does not bind to the incomplete stage and round"
 run adjudication-record --record "$partial_blocker"
 assert_rc 1
 assert_contains "$err" "never adjudicated by any supplied adjudication document"

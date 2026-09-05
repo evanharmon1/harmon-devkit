@@ -296,7 +296,12 @@ accounting. It returns to this skill for security and draft publication; it
 does not open a PR or run integration. In the fork topology this
 skill supports where `origin` is the writable fork rather than the target,
 review's entry gate would stop by design, so the steps below remain the
-procedure there — as they do wherever the skill is not vendored.
+procedure there — as they do wherever the skill is not vendored. The hand-off
+also requires an already active dev-flow-v2 run: the orchestrator must supply
+its target repository, schema-valid record directory and policy projection,
+active run identity, branch, and generation. An ordinary `/implement` session
+with no such run uses the inline procedure below; it never invokes `/review`
+and expects that skill to invent authenticated run state.
 
 Where the repo runs one (harmon-init and harmon-devkit: `task challenge`, then
 `task review`), it belongs here — after `verify` is green, before the security

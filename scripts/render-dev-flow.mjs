@@ -418,6 +418,27 @@ function validateVerdictShape(verdict, file) {
       }
     }
   }
+  if (verdict.partial_findings !== undefined) {
+    if (
+      (verdict.reason !== 'finder_unavailable' && verdict.reason !== 'breadth_exhausted') ||
+      (verdict.stage !== 'challenge' && verdict.stage !== 'review') ||
+      !(Number.isInteger(verdict.incomplete_round) && verdict.incomplete_round >= 1)
+    ) {
+      fail(`${file}: partial_findings requires a confidence-stage finder-exhaustion blocker and incomplete_round`)
+    }
+    if (!Array.isArray(verdict.partial_findings)) {
+      fail(`${file}: partial_findings, if present, must be an array`)
+    }
+    const seen = new Set()
+    for (const findingId of verdict.partial_findings) {
+      const match = typeof findingId === 'string' ? FINDING_ID.exec(findingId) : null
+      if (!match || match[1] !== verdict.stage || Number.parseInt(match[2], 10) !== verdict.incomplete_round) {
+        fail(`${file}: partial finding ${findingId} does not bind to the incomplete stage and round`)
+      }
+      if (seen.has(findingId)) fail(`${file}: partial_findings contains duplicate id ${findingId}`)
+      seen.add(findingId)
+    }
+  }
   if (verdict.corrections !== undefined) {
     const validCorrection = (correction) =>
       typeof correction === 'string' ||
@@ -644,6 +665,9 @@ function buildFindingIndex(record, options = {}) {
           fail(
             `${prefix} has payload reviewed_head ${pass.payloadReviewedHead}, but the caller's canonical head is ${expectedHead}`
           )
+        }
+        if (!options.unadjudicatedFindingIds?.has(findingId)) {
+          fail(`${prefix} is not authenticated by verdict.partial_findings`)
         }
         if (options.unadjudicatedFindings) options.unadjudicatedFindings.push({ id: findingId, ...pass })
         continue
@@ -1338,6 +1362,7 @@ function renderBlockerComment(record, options = {}) {
     allowUnadjudicatedStage: incompleteScope?.stage,
     allowUnadjudicatedRound: incompleteScope?.round,
     expectedHead: options.head,
+    unadjudicatedFindingIds: incompleteScope?.findingIds,
     unadjudicatedFindings
   })
   const settlements = buildSettlementIndex(record.run)
@@ -1388,7 +1413,8 @@ function incompleteBlockerScope(record, command) {
   if (verdict.reason !== 'finder_unavailable' && verdict.reason !== 'breadth_exhausted') return null
   if (verdict.stage !== 'challenge' && verdict.stage !== 'review') return null
   if (!(Number.isInteger(verdict.incomplete_round) && verdict.incomplete_round >= 1)) return null
-  return { stage: verdict.stage, round: verdict.incomplete_round }
+  if (!Array.isArray(verdict.partial_findings)) return null
+  return { stage: verdict.stage, round: verdict.incomplete_round, findingIds: new Set(verdict.partial_findings) }
 }
 
 // Only a finding whose source_id is named in ITS OWN pass's
@@ -1858,7 +1884,8 @@ function main(argv) {
   validateCrossDocumentConsistency(record, {
     allowUnadjudicatedStage: incompleteScope?.stage,
     allowUnadjudicatedRound: incompleteScope?.round,
-    expectedHead: options.head
+    expectedHead: options.head,
+    unadjudicatedFindingIds: incompleteScope?.findingIds
   })
 
   if (options.command === 'publish') {

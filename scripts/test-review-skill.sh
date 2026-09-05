@@ -35,6 +35,14 @@ grep -Fq 'resolved cap is `0`' "$skill" ||
     fail "review skill does not skip finder dispatch for a disabled stage"
 grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"
+for text in 'Retry an unavailable primary' 'marker to that exact body before' \
+    'Before acting on round 2' 'already active dev-flow-v2 run' \
+    'session-lifetime persistent monitor primitive' 'distinct_families' \
+    'assembly.canonical_head'; do
+    grep -Fq "$text" "$skill" ai/skills/universal/implement/SKILL.md \
+        ai/skills/universal/orchestrator/SKILL.md ||
+        fail "review workflow documentation is missing $text"
+done
 entry_gate_line="$(grep -n '^## Entry gate$' "$skill" | cut -d: -f1)"
 dispatch_line="$(grep -n '^## Dispatch and receipt$' "$skill" | cut -d: -f1)"
 [ -n "$entry_gate_line" ] && [ -n "$dispatch_line" ] && [ "$entry_gate_line" -lt "$dispatch_line" ] ||
@@ -111,8 +119,23 @@ set -e
 [ "$status" -eq 22 ] || fail "incomplete pre-adjudication round returned $status: $incomplete_out"
 jq -e '.outcome == "capped" and .reason == "finder_unavailable" and
     .action == "escalate" and .incomplete_round == 1 and
+    .partial_findings == ["review-r1-codex-cli-1"] and
     (.verified_findings | length) == 0' <<<"$incomplete_out" >/dev/null ||
     fail "incomplete round incorrectly authorized adjudication: $incomplete_out"
+
+echo "==> pre-adjudication verification refuses a stale non-current-head round"
+invalidated_fixture="ai/schemas/fixtures/exit/continue-invalidated"
+set +e
+invalidated_out="$(node scripts/dev-flow-exit.mjs --run "$invalidated_fixture/run" --stage review \
+    --policy "$invalidated_fixture/policy.toml" \
+    --current-head 0202020202020202020202020202020202020202 \
+    --heads "$invalidated_fixture/heads.json" --verification-only --json)"
+status=$?
+set -e
+[ "$status" -eq 0 ] || fail "invalidated pre-adjudication projection returned $status: $invalidated_out"
+jq -e '.outcome == "continue" and .reason == "invalidated" and
+    .action == "dispatch" and .next_round == 2' <<<"$invalidated_out" >/dev/null ||
+    fail "stale round incorrectly authorized adjudication: $invalidated_out"
 
 echo "==> renderer projects the review record"
 rendered="$(scripts/render-dev-flow.sh adjudication-record --record "$render_record")"
@@ -199,6 +222,7 @@ monitor_reconcile() {
 comment_marker="dev-flow:fixture-run:challenge:1"
 comment_body="<!-- $comment_marker --> fixture evidence"
 comment_digest="$(printf '%s' "$comment_body" | sha256_stream)"
+jq -n '{integrated_lanes: ["lane-a"], discarded_lanes: []}' >"$tmp/assembly-plan.json"
 set +e
 monitor_reserve --state "$state" --event forged-revision --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
@@ -257,6 +281,17 @@ jq -e '.cursor == "crash-write" and .actions[0].state == "adopted"' "$state" >/d
 jq -e '.actions[0].postcondition.comment_id == "42"' "$state" >/dev/null ||
     fail "monitor did not canonically adopt the lowest matching comment id"
 
+set +e
+monitor_reserve --state "$state" --event duplicate-comment-auth --action comment \
+    --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
+    --registry-revision "$registry_revision" --marker "$comment_marker" \
+    --payload-digest "$comment_digest" >"$tmp/duplicate-comment-auth.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "duplicate comment reservation identity was accepted"
+grep -Fq 'duplicate comment reservation identity' "$tmp/duplicate-comment-auth.out" ||
+    fail "duplicate comment reservation refusal was not reported"
+
 monitor_reserve --state "$state" --event absent-write --action push \
     --expected-head "$head" --writer feature-owner >/dev/null
 jq -n '{status: "absent"}' >"$tmp/absent.json"
@@ -295,9 +330,9 @@ ordered_state="$("$monitor" state-path --run-id "$ordered_run_id" --repo-root "$
 ordered_args=(--active-state "$ordered_active_state" --run-id "$ordered_run_id"
     --branch "$ordered_branch" --generation "$ordered_generation" --repo-root "$trust_repo")
 "$monitor" reserve "${ordered_args[@]}" --state "$ordered_state" --event e1 --action assembly \
-    --expected-head "$head" --writer feature-owner >/dev/null
+    --expected-head "$head" --writer feature-owner --assembly-plan "$tmp/assembly-plan.json" >/dev/null
 "$monitor" reserve "${ordered_args[@]}" --state "$ordered_state" --event e2 --action assembly \
-    --expected-head "$head" --writer feature-owner >/dev/null
+    --expected-head "$head" --writer feature-owner --assembly-plan "$tmp/assembly-plan.json" >/dev/null
 jq -n '{status: "absent"}' >"$tmp/e2-absent.json"
 set +e
 "$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
@@ -307,7 +342,8 @@ set -e
 [ "$status" -eq 2 ] || fail "out-of-order absent action was authorized for retry"
 grep -Fq 'out of reservation order' "$tmp/e2-absent.out" ||
     fail "out-of-order retry refusal was not reported"
-jq -n --arg head "$head" '{status: "landed", event: "e2", action: "assembly", head: $head}' >"$tmp/e2.json"
+jq -n --arg head "$head" '{status: "landed", event: "e2", action: "assembly", head: $head,
+    integrated_lanes: ["lane-a"], discarded_lanes: []}' >"$tmp/e2.json"
 set +e
 "$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
     --observed "$tmp/e2.json" >"$tmp/e2.out" 2>&1
@@ -315,9 +351,20 @@ status=$?
 set -e
 [ "$status" -eq 2 ] || fail "out-of-order action advanced the monitor cursor"
 grep -Fq 'out of reservation order' "$tmp/e2.out" || fail "out-of-order refusal was not reported"
-jq -n --arg head "$head" '{status: "landed", event: "e1", action: "assembly", head: $head}' >"$tmp/e1.json"
+jq -n --arg head "$head" '{status: "landed", event: "e1", action: "assembly", head: $head,
+    integrated_lanes: ["lane-a"], discarded_lanes: []}' >"$tmp/e1.json"
 "$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e1 \
     --observed "$tmp/e1.json" >/dev/null
+jq -n --arg head "$head" '{status: "landed", event: "e2", action: "assembly", head: $head,
+    integrated_lanes: ["lane-b"], discarded_lanes: []}' >"$tmp/e2-wrong-plan.json"
+set +e
+"$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
+    --observed "$tmp/e2-wrong-plan.json" >"$tmp/e2-wrong-plan.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "assembly reconciliation accepted a different lane selection"
+grep -Fq 'assembled lane selection does not match reservation' "$tmp/e2-wrong-plan.out" ||
+    fail "assembly-plan mismatch was not reported"
 "$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
     --observed "$tmp/e2.json" >/dev/null
 jq -n '{status: "absent"}' >"$tmp/stale.json"
@@ -338,12 +385,26 @@ concurrent_args=(--active-state "$concurrent_active_state" --run-id "$concurrent
 for number in $(seq 1 20); do
     "$monitor" reserve "${concurrent_args[@]}" --state "$concurrent_state" \
         --event "concurrent-$number" --action assembly \
-        --expected-head "$head" --writer feature-owner >"$tmp/concurrent-$number.out" &
+        --expected-head "$head" --writer feature-owner \
+        --assembly-plan "$tmp/assembly-plan.json" >"$tmp/concurrent-$number.out" &
 done
 wait
 jq -e '[.actions[] | select(.state == "reserved")] | length == 20' "$concurrent_state" >/dev/null ||
     fail "concurrent reservations lost monitor state"
 [ ! -e "${concurrent_active_state}.lock" ] || fail "monitor left its portable lock behind"
+
+echo "==> one run id cannot bind two branch-specific active pointers"
+other_branch="feat/other-fixture-run"
+other_active_state="$("$monitor" active-path --branch "$other_branch" --repo-root "$trust_repo")"
+set +e
+"$monitor" activate --active-state "$other_active_state" --run-id fixture-run \
+    --branch "$other_branch" --expected-generation 0 --registry-revision "$registry_revision" \
+    --writer feature-owner --repo-root "$trust_repo" >"$tmp/other-branch.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "one run id was activated for two branches"
+grep -Fq 'already bound to a different branch' "$tmp/other-branch.out" ||
+    fail "cross-branch run binding refusal was not reported"
 
 echo "==> monitor rejects a superseded run at the same head"
 replacement_generation="$("$monitor" activate --active-state "$active_state" --run-id replacement-run \
