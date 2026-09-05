@@ -21,5 +21,8 @@
   "pr": null,
   "evidence_comments": [],
   "settlements": [],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }
