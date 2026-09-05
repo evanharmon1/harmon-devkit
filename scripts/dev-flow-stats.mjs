@@ -731,21 +731,35 @@ function findRunRecord(issueComments, { trustedActorIds, repo, effectiveTrustAt:
   }
   const selectionPool = [];
   for (const [runId, candidates] of byRun) {
-    let authenticated;
+    // Every write of a candidate — its post and, when edited later, its
+    // last edit — shepherd round 2 of #741, Codex-confirmed (P2): an index
+    // posted while listed but edited after removal is a post-removal
+    // write, and authenticating only created_at here let it win lowest-id
+    // selection and shadow a legitimate later index.
+    const authenticatedAtItsWrites = (c) => {
+      if (!effectiveTrustAt(c.comment.created_at).has(c.actorId)) return false;
+      const editedAt = typeof c.comment.updated_at === "string" ? c.comment.updated_at : null;
+      if (editedAt !== null && Date.parse(editedAt) > Date.parse(c.comment.created_at)) {
+        return effectiveTrustAt(editedAt).has(c.actorId);
+      }
+      return true;
+    };
+    // Ascending id, stopping at the first authenticated candidate —
+    // shepherd round 4 of #741, Codex-confirmed (P2): lowest id wins
+    // canonical selection, so once an authenticated candidate is found no
+    // higher-id duplicate can be canonical, and evaluating one anyway let
+    // a later duplicate with an unanswerable write time (posted in the
+    // snapshot-boundary second, say) throw and sink a run whose legitimate
+    // index was already established. Below that point an unanswerable
+    // lookup still fails the run closed, as before.
+    let authenticated = [];
     try {
-      // Every write of the candidate — its post and, when edited later,
-      // its last edit — shepherd round 2 of #741, Codex-confirmed (P2): an
-      // index posted while listed but edited after removal is a
-      // post-removal write, and authenticating only created_at here let
-      // it win lowest-id selection and shadow a legitimate later index.
-      authenticated = candidates.filter((c) => {
-        if (!effectiveTrustAt(c.comment.created_at).has(c.actorId)) return false;
-        const editedAt = typeof c.comment.updated_at === "string" ? c.comment.updated_at : null;
-        if (editedAt !== null && Date.parse(editedAt) > Date.parse(c.comment.created_at)) {
-          return effectiveTrustAt(editedAt).has(c.actorId);
+      for (const c of [...candidates].sort((a, b) => a.comment.id - b.comment.id)) {
+        if (authenticatedAtItsWrites(c)) {
+          authenticated = [c];
+          break;
         }
-        return true;
-      });
+      }
     } catch (err) {
       // Isolated per run_id, like every other per-run failure below: the
       // run stays discoverable (by id) as indeterminate rather than

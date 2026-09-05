@@ -2688,6 +2688,39 @@ function writeScenario(name, db) {
   });
 }
 
+// --- #741 shepherd round 4 (Codex-confirmed P2): a higher-id duplicate
+// index whose write time cannot be evaluated (posted in the far future
+// relative to the history snapshot) must not sink a run whose lower-id
+// index is already authenticated.
+{
+  const trustSha = "b".repeat(40);
+  const registryCommits = [{ sha: trustSha }];
+  const registryContents = {
+    [trustSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
+  };
+  const runId = "run-later-duplicate-unresolvable-1";
+  const at = "2026-09-01T00:00:00Z";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, at);
+  const im = marker("run-index", runId, "kickoff", "issue", null, 1);
+  const payload = { run_id: runId, initiated_by: "human", branch: null, run_record: { id: String(rr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator" } };
+  const laterDup = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${im}\n\${fence(JSON.stringify(payload))}\`, "2099-01-01T00:00:00Z");
+  writeScenario("later-duplicate-unresolvable", {
+    issues: [{ number: 184, pull_request: null }],
+    comments: { "184": [idx, rr, laterDup] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: { [trustSha]: [{ number: 624, merged_at: "2026-08-01T00:00:00Z" }] },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 184 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -3588,6 +3621,12 @@ rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "older-direct-push: run before the resolvable landing should be indeterminate, got rc=$rc: $out"
 echo "$out" | grep -qi "no agent-registry.json revision had landed" || fail "older-direct-push: expected the no-revision reason, got: $out"
+
+echo "== #741 shepherd round 4: a higher-id duplicate index with an unanswerable write time does not sink a run whose lower-id index is authenticated =="
+export DFSTATS_DB="$tmp/scenarios/later-duplicate-unresolvable.json"
+run_id="$(meta later-duplicate-unresolvable .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2099-06-01T00:00:00Z --json 2>&1)" || fail "later-duplicate-unresolvable: expected the run to harvest via its lower-id index, got: $out"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "later-duplicate-unresolvable: expected a clean in-flight run, got: $out"
 
 echo "== #741: registry allowlist fixture corpus (fail closed on missing/empty/malformed; per-write revision binding) =="
 corpus_count=0
