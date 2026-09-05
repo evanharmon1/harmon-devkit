@@ -215,6 +215,27 @@ grep -Eq 'Read-only file system|Permission denied' <<<"$out" ||
 [ ! -e "$work/TAMPERED.txt" ] ||
     fail "the degraded fallback let a write reach the real worktree"
 
+echo "==> the degraded path does not hand over the real home directory"
+# There is no mount namespace to replace HOME with a tmpfs here, so the
+# allowlist alone would have passed the real $HOME through — handing over
+# ~/.aws, ~/.config/gh and the rest, which is what the sandboxed path exists
+# to prevent.
+homeprobe_bin="$tmp/homeprobe-bin"
+mkdir -p "$homeprobe_bin"
+cat >"$homeprobe_bin/copilot" <<'EOF'
+#!/usr/bin/env bash
+echo "HOME_IS=$HOME"
+[ -e "$HOME/.config/gh" ] && echo "VISIBLE_GH"
+echo "P1 src/app.txt:1 — a finding"
+EOF
+chmod +x "$homeprobe_bin/copilot"
+out="$( (cd "$work" && PATH="$homeprobe_bin:$PATH" READONLY_SANDBOX_BWRAP=/nonexistent/bwrap \
+    ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+grep -Fq "HOME_IS=$HOME" <<<"$out" &&
+    fail "the degraded path handed the real home directory to the finder: $out"
+grep -q 'VISIBLE_GH' <<<"$out" &&
+    fail "host credentials were reachable through HOME in the degraded path"
+
 echo "==> the degraded path still fails a tampered tree"
 (
     cd "$work" || exit 1

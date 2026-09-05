@@ -218,11 +218,28 @@ sandbox_exec() {
     # above, and in docs/guides/codex-review.md rather than left implicit.
     if [ "${readonly_sandbox_degraded:-0}" = 1 ]; then
         # No kernel sandbox. Everything else still applies: the tree is
-        # read-only, the environment is an allowlist below, and the tamper
-        # check still runs. The caller discloses this.
+        # read-only, the environment is an allowlist, and the tamper check
+        # still runs. The caller discloses this.
+        #
+        # HOME is the one thing the allowlist alone got wrong here. With
+        # bubblewrap the real home is replaced by a tmpfs, but there is no
+        # mount to do that in this path — and passing the real $HOME through
+        # would hand over ~/.aws, ~/.config/gh and the rest, which is exactly
+        # what the sandboxed path exists to prevent. So HOME points at an
+        # empty per-run directory, with the finder's own credential path
+        # linked in and nothing else. It is not a mount namespace and does not
+        # pretend to be: a determined process can still name an absolute path.
+        # What it removes is the ambient one every tool reaches for first.
+        local degraded_home
+        degraded_home="$readonly_sandbox_dir.home"
+        mkdir -p "$degraded_home" 2>/dev/null || true
+        if [ -n "$readonly_sandbox_credential_dir" ] && [ -e "$readonly_sandbox_credential_dir" ]; then
+            ln -sfn "$readonly_sandbox_credential_dir" \
+                "$degraded_home/$(basename "$readonly_sandbox_credential_dir")" 2>/dev/null || true
+        fi
         (
             cd "$readonly_sandbox_dir" || exit 1
-            sandbox_clean_env "$@"
+            HOME="$degraded_home" sandbox_clean_env "$@"
         )
         return $?
     fi
@@ -301,6 +318,7 @@ sandbox_verify() {
 
 sandbox_cleanup() {
     [ -n "$readonly_sandbox_dir" ] || return 0
+    rm -rf "$readonly_sandbox_dir.home"
     chmod -R u+w "$readonly_sandbox_dir" 2>/dev/null || true
     git worktree remove --force "$readonly_sandbox_dir" >/dev/null 2>&1 ||
         rm -rf "$readonly_sandbox_dir"
