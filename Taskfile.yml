@@ -75,6 +75,7 @@ tasks:
       - task: test:dev-flow-stats
       - task: test:dev-flow-exit
       - task: test:render-dev-flow
+      - task: test:review-skill
       - task: test:registry-drift
       - task: test:registry-docs
       - task: test:label-registry
@@ -88,7 +89,6 @@ tasks:
       - task: test:integrate-codex
       - task: test:integrate-marker
       - task: test:integrate-readiness
-      - task: test:gauntlet-push
       - task: test:round-push
       - task: test:lint-hygiene
       - task: test:release-title
@@ -364,6 +364,11 @@ tasks:
     cmds:
       - ./scripts/test-render-dev-flow.sh
 
+  test:review-skill:
+    desc: Fixture-driven regression checks for the /review stage contract
+    cmds:
+      - ./scripts/test-review-skill.sh
+
   devflow:render:
     desc: 'Render a dev-flow-v2 projection or publish generated sections (task devflow:render -- <projection|publish> --record <dir> ...)'
     cmds:
@@ -466,11 +471,6 @@ tasks:
     desc: Unit-test the integration readiness gate + read-only gh wrapper (offline, stubbed gh)
     cmds:
       - ./scripts/test-integrate-readiness.sh
-
-  test:gauntlet-push:
-    desc: Unit-test gauntlet's gated round-push helper (offline, local bare remotes)
-    cmds:
-      - ./scripts/test-gauntlet-push.sh
 
   test:round-push:
     desc: Unit-test the dev-flow-v2 diff-aware round-push broker (offline, local bare remotes)

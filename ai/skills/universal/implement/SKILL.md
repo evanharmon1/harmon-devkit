@@ -286,17 +286,22 @@ say so.
 
 ## 6. Second-model review
 
-**Where the `gauntlet` skill is vendored and its supported topology holds —
-`origin` is the repository the PR will target — it is the procedure for this
-step through step 8**: where the harness exposes the Skill tool, invoke
-`gauntlet` through it; where it does not (a subagent, another harness),
-read `.agents/skills/gauntlet/SKILL.md` (or `.claude/skills/gauntlet/SKILL.md`)
+**Where the `review` skill is vendored and its supported topology holds —
+`origin` is the repository the PR will target — it is the procedure for the
+confidence stages in this step only**: where the harness exposes the Skill tool, invoke
+`review` through it; where it does not (a subagent, another harness),
+read `.agents/skills/review/SKILL.md` (or `.claude/skills/review/SKILL.md`)
 and follow it — it carries the adjudication ledger, durable round
-accounting, and the full PR-opening ceremony that the abbreviated steps
-below do not. In the fork topology this
+accounting. It returns to this skill for security and draft publication; it
+does not open a PR or run integration. In the fork topology this
 skill supports where `origin` is the writable fork rather than the target,
-gauntlet's entry gate would stop by design, so the steps below remain the
-procedure there — as they do wherever the skill is not vendored.
+review's entry gate would stop by design, so the steps below remain the
+procedure there — as they do wherever the skill is not vendored. The hand-off
+also requires an already active dev-flow-v2 run: the orchestrator must supply
+its target repository, schema-valid record directory and policy projection,
+active run identity, branch, and generation. An ordinary `/implement` session
+with no such run uses the inline procedure below; it never invokes `/review`
+and expects that skill to invent authenticated run state.
 
 Where the repo runs one (harmon-init and harmon-devkit: `task challenge`, then
 `task review`), it belongs here — after `verify` is green, before the security

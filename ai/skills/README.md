@@ -15,9 +15,10 @@ ai/skills/
 │   ├── kickoff/SKILL.md     # /kickoff — get oriented + name the session
 │   ├── breakdown/SKILL.md   # /breakdown — decompose work into session-sized issues
 │   ├── claim/SKILL.md       # /claim — sanity-check + claim the issue
-│   ├── implement/SKILL.md   # /implement — claimed issue → draft PR via the dev loop, then hands off
-│   ├── gauntlet/SKILL.md    # /gauntlet — second-model review to convergence → draft PR
-│   ├── integrate/SKILL.md   # /integrate — integrate a draft PR to ready for review
+│   ├── implement/SKILL.md   # /implement — claimed issue → ready-for-review PR via the dev loop
+│   ├── review/SKILL.md      # /review — challenge/review confidence stages
+│   ├── integrate/SKILL.md   # /integrate — draft integration to ready-for-review
+│   ├── orchestrator/SKILL.md # standing multi-lane operating mode
 │   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables
 │   ├── wrap/SKILL.md        # /wrap — wrap up + rename done-<name>
 │   ├── triage/SKILL.md      # /triage — manifest-governed backlog classifier
@@ -38,14 +39,14 @@ user-only (`disable-model-invocation: true`): `/breakdown`, because invoking
 it **is** the human consent for a bulk decomposition written to GitHub, so a
 model triggering it on its own would file a batch of issues nobody agreed
 to; and `/retro`, a human-timed session ritual — only the person at the
-keyboard knows a session is actually ending. The rest are
-model-invocable, so an agent following the repo's own dev loop (`AGENTS.md`)
-can enter a stage through the Skill tool instead of waiting for a human to
-type the command: `/claim` (the invocation still names and confirms the
-target issue before any write, exactly as it does when a human types it; its
-writes are idempotent and released by the ordinary lifecycle, not gated
-behind a standing human-only rule) and `/wrap` join `/kickoff`, `/implement`,
-`/gauntlet`, and `/integrate` covering orienting at the start of a session
+keyboard knows a session is actually ending. The rest are model-invocable,
+so an agent following the repo's own dev loop (`AGENTS.md`) can enter a
+stage through the Skill tool instead of waiting for a human to type the
+command: `/claim` (the invocation still names and confirms the target issue
+before any write, exactly as it does when a human types it; its writes are
+idempotent and released by the ordinary lifecycle, not gated behind a
+standing human-only rule) and `/wrap` join `/kickoff`, `/implement`,
+`/review`, `/integrate`, and `/orchestrator` covering orienting at the start of a session
 through driving a claimed issue to a draft PR and on into the integration
 stage — the same session continues from `/implement` into `/integrate`
 without waiting for a separate human trigger, stopping only at
