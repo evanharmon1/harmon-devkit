@@ -125,6 +125,13 @@ for dir in "$fixtures_dir"/*/; do
     # (ai/schemas/README.md "Rendering"); scripts/test-render-dev-flow.sh
     # owns it, so it is not iterated here.
     [ "$base" = "render" ] && continue
+    # registry-trust/ holds the harvester's registry-allowlist timeline
+    # corpus (#741; ai/schemas/README.md "Fixture layout"): declarative
+    # scenarios for scripts/dev-flow-stats.mjs's per-write trust binding,
+    # not documents of any schema kind; scripts/test-dev-flow-stats.sh
+    # (task test:dev-flow-stats) renders and runs them, so it is not
+    # iterated here.
+    [ "$base" = "registry-trust" ] && continue
     kind="$(kind_for_dir "$base")"
     fixture_dirs_found=$((fixture_dirs_found + 1))
 

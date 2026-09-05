@@ -1,0 +1,33 @@
+{
+  "description": "The operator's --trusted-actor-id selection names the author, but the registry revision in effect does not: the CLI set only ever narrows the registry's allowlist and never widens it, so the run is indeterminate \u2014 the registry is the sole root of trust.",
+  "cli_trusted_actor_ids": [
+    9001,
+    9002
+  ],
+  "registry_revisions": [
+    {
+      "sha": "9999999999999999999999999999999999999999",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "not a registry-trusted actor as of this run's kickoff"
+  }
+}

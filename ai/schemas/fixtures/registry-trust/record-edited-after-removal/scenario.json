@@ -1,0 +1,36 @@
+{
+  "description": "The run record is edited in place at every transition and each edit is a write: the author was listed at kickoff, was removed mid-run, and the record's server-side updated_at shows a later edit. The record's current content was written without authority, so the run is indeterminate.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "7777777777777777777777777777777777777777",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    },
+    {
+      "sha": "8888888888888888888888888888888888888888",
+      "landed_at": "2026-09-01T00:10:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [],
+    "record_edited_at": "2026-09-01T00:20:00Z"
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "was last edited at 2026-09-01T00:20:00Z, when its author 9001 was no longer on the trusted-orchestrator allowlist"
+  }
+}

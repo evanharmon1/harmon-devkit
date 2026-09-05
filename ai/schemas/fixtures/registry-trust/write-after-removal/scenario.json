@@ -1,0 +1,46 @@
+{
+  "description": "Per-write binding, not a run-wide kickoff snapshot: the author was listed at kickoff and for the first evidence write, was removed by a revision that landed mid-run, and then posted another evidence comment. The write after removal is rejected, so the run is indeterminate \u2014 kickoff-time presence does not authorize later writes.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "5555555555555555555555555555555555555555",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    },
+    {
+      "sha": "6666666666666666666666666666666666666666",
+      "landed_at": "2026-09-01T00:10:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      },
+      {
+        "stage": "review",
+        "round": 2,
+        "posted_at": "2026-09-01T00:20:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "was posted at 2026-09-01T00:20:00Z, when this run's author 9001 was not on the trusted-orchestrator allowlist in effect"
+  }
+}

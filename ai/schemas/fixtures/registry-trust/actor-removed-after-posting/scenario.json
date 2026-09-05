@@ -1,0 +1,41 @@
+{
+  "description": "The author WAS on the allowlist at the revision in effect when the run record and its evidence were written; a later revision removes them. Evidence authenticated while they were still listed stays authenticated \u2014 the current file never invalidates history.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "3333333333333333333333333333333333333333",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    },
+    {
+      "sha": "4444444444444444444444444444444444444444",
+      "landed_at": "2026-09-02T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "ok",
+    "rounds": 1
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "description": "The run record was posted while the author was listed; a revision removing them landed; the run-index anchor was posted after that. The index is a write of its own and is authenticated at its own post time, so the run is indeterminate \u2014 kickoff-time presence does not authorize the later index write.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    },
+    {
+      "sha": "ffffffffffffffffffffffffffffffffffffffff",
+      "landed_at": "2026-09-01T00:05:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "index_posted_at": "2026-09-01T00:10:00Z",
+    "evidence_writes": []
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "not a registry-trusted actor as of this run's kickoff (the index's own post time 2026-09-01T00:10:00Z)"
+  }
+}

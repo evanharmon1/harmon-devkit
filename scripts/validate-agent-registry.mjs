@@ -397,6 +397,39 @@ if (errors.length === 0) {
     }
   }
 
+  // ── trusted_orchestrator_actor_ids (#741; specs/dev-flow-v2.md 'Evidence')
+  // The structural schema already binds the shape (array, minItems 1,
+  // uniqueItems, integer items). Two things it cannot say: the >= 1 bound
+  // (no `minimum` — the breakdown skill's restrictive schema-subset engine
+  // for fetched remote registries does not support it, and a 0/negative id
+  // is not a GitHub actor), and DISTINCTNESS from finder identities — the
+  // allowlist authenticates run records and evidence comments, a finder's
+  // trusted_actor_id authenticates that bot's findings, and one id must
+  // never serve both: a review bot listed here could vouch for a forged run
+  // record. Absence is schema-legal (a consumer registry predating the field
+  // still validates) and is instead fail-closed by every consumer at the
+  // registry revision in effect for a write — see the schema's own
+  // description and ai/schemas/README.md 'Trust'.
+  if (Object.hasOwn(registry, 'trusted_orchestrator_actor_ids')) {
+    const finderIds = new Map(
+      registry.finders
+        .filter((finder) => typeof finder.trusted_actor_id === 'string')
+        .map((finder) => [finder.trusted_actor_id, finder.slug])
+    )
+    for (const id of registry.trusted_orchestrator_actor_ids) {
+      if (!Number.isInteger(id) || id < 1) {
+        semanticError(`trusted_orchestrator_actor_ids entry ${JSON.stringify(id)} must be a positive integer GitHub actor id`)
+        continue
+      }
+      const finderSlug = finderIds.get(String(id))
+      if (finderSlug) {
+        semanticError(
+          `trusted_orchestrator_actor_ids entry ${id} is finder ${finderSlug}'s own trusted_actor_id — a finder identity vouches for findings, never for a run record, and the two allowlists must stay distinct`
+        )
+      }
+    }
+  }
+
   // ── model tiers (specs/dev-flow-v2.md 'Model strata live in registry
   // inventory', #635) — group every model by (family, tier); a rung with more
   // than one model needs exactly one default, a singleton rung needs none. ──

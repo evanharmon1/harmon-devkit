@@ -203,6 +203,42 @@ switch (mutation) {
     // so a role-less finder could still name a real result_schema.
     finder('codex-cloud').result_schema = 'ai/schemas/result.integrator.schema.json'
     break
+  // ── trusted_orchestrator_actor_ids (#741) ─────────────────────────────
+  case 'allowlist-missing':
+    // Schema-legal by design (a consumer registry predating the field still
+    // validates); consumers fail closed at the revision in effect instead.
+    // Exercised through accepts(), not rejects().
+    delete registry.trusted_orchestrator_actor_ids
+    break
+  case 'allowlist-empty':
+    registry.trusted_orchestrator_actor_ids = []
+    break
+  case 'allowlist-string-id':
+    // The finder field is a digits-only STRING; this one is integers only —
+    // a digits-only string here is the plausible copy-paste mistake and
+    // must be rejected structurally, never coerced.
+    registry.trusted_orchestrator_actor_ids = ['37220977']
+    break
+  case 'allowlist-float-id':
+    registry.trusted_orchestrator_actor_ids = [37220977.5]
+    break
+  case 'allowlist-duplicate-id':
+    registry.trusted_orchestrator_actor_ids = [37220977, 37220977]
+    break
+  case 'allowlist-zero-id':
+    registry.trusted_orchestrator_actor_ids = [0]
+    break
+  case 'allowlist-negative-id':
+    registry.trusted_orchestrator_actor_ids = [-1]
+    break
+  case 'allowlist-finder-identity':
+    // codex-cloud's own bot id — a finder identity vouches for findings,
+    // never for a run record; the two allowlists must stay distinct.
+    registry.trusted_orchestrator_actor_ids = [Number(finder('codex-cloud').trusted_actor_id)]
+    break
+  case 'allowlist-not-an-array':
+    registry.trusted_orchestrator_actor_ids = 37220977
+    break
   // ── model tier defaults (#635) ─────────────────────────────────────────
   case 'tier-rung-no-default':
     delete modelOf('qwen', 'coder-plus').default
@@ -230,6 +266,35 @@ NODE
     *) fail "$description failed for the wrong reason: $output" ;;
     esac
     echo "PASS: rejects $description"
+}
+
+accepts() {
+    local description="$1"
+    local mutation="$2"
+    local output
+
+    if ! node --input-type=module - "$registry" "$mutated" "$mutation" <<'NODE'; then
+import { readFile, writeFile } from 'node:fs/promises'
+
+const [inputPath, outputPath, mutation] = process.argv.slice(2)
+const registry = JSON.parse(await readFile(inputPath, 'utf8'))
+
+switch (mutation) {
+  case 'allowlist-missing':
+    delete registry.trusted_orchestrator_actor_ids
+    break
+  default:
+    throw new Error(`unknown accepted mutation: ${mutation}`)
+}
+
+await writeFile(outputPath, `${JSON.stringify(registry, null, 2)}\n`)
+NODE
+        fail "could not build accepted mutation: $description"
+    fi
+    if ! output="$(node "$validator" "$mutated" "$schema" 2>&1)"; then
+        fail "validator rejected $description: $output"
+    fi
+    echo "PASS: accepts $description"
 }
 
 build_schema_case() {
@@ -441,6 +506,51 @@ rejects "a multi-model family-tier rung with two defaults" \
 rejects "a write-restricted role on a harness that cannot restrict writes" \
     'harness-write-restricted-without-capability' \
     'must not dispatch a write-restricted role'
+
+# ── trusted_orchestrator_actor_ids (#741) ───────────────────────────────────
+# The registry's own copy must carry the maintainer's live actor id (looked
+# up, never guessed), and it must be exactly the shape consumers read: JSON
+# integers. A consumer's jq reader compares against a number, so a
+# digits-only string here would silently authenticate nobody.
+node --input-type=module - "$registry" <<'NODE'
+import { readFile } from 'node:fs/promises'
+
+const registry = JSON.parse(await readFile(process.argv[2], 'utf8'))
+const ids = registry.trusted_orchestrator_actor_ids
+if (!Array.isArray(ids) || ids.length === 0) {
+  throw new Error('this repository must populate trusted_orchestrator_actor_ids')
+}
+if (!ids.every((id) => Number.isInteger(id) && id >= 1)) {
+  throw new Error(`trusted_orchestrator_actor_ids must be positive integers: ${JSON.stringify(ids)}`)
+}
+NODE
+echo "PASS: the shipped registry populates trusted_orchestrator_actor_ids with integer ids"
+accepts "a registry with no trusted_orchestrator_actor_ids at all (schema-legal; consumers fail closed at the revision in effect)" \
+    'allowlist-missing'
+rejects "an empty trusted_orchestrator_actor_ids allowlist" \
+    'allowlist-empty' \
+    'trusted_orchestrator_actor_ids: must contain at least 1 item(s)'
+rejects "a digits-only STRING in trusted_orchestrator_actor_ids (integers only, never coerced)" \
+    'allowlist-string-id' \
+    'trusted_orchestrator_actor_ids[0]: expected integer, found string'
+rejects "a non-integer number in trusted_orchestrator_actor_ids" \
+    'allowlist-float-id' \
+    'trusted_orchestrator_actor_ids[0]: expected integer, found number'
+rejects "a duplicate id in trusted_orchestrator_actor_ids" \
+    'allowlist-duplicate-id' \
+    'trusted_orchestrator_actor_ids: items must be unique'
+rejects "a zero id in trusted_orchestrator_actor_ids" \
+    'allowlist-zero-id' \
+    'must be a positive integer GitHub actor id'
+rejects "a negative id in trusted_orchestrator_actor_ids" \
+    'allowlist-negative-id' \
+    'must be a positive integer GitHub actor id'
+rejects "a finder's own trusted_actor_id listed as a trusted orchestrator" \
+    'allowlist-finder-identity' \
+    "is finder codex-cloud's own trusted_actor_id"
+rejects "a scalar trusted_orchestrator_actor_ids (must be an array)" \
+    'allowlist-not-an-array' \
+    'trusted_orchestrator_actor_ids: expected array, found integer'
 
 node --input-type=module - "$schema" "$mutated_schema" <<'NODE'
 import { readFile, writeFile } from 'node:fs/promises'

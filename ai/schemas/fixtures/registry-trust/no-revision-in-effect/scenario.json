@@ -1,0 +1,32 @@
+{
+  "description": "The only registry revision that lists the author landed on the default branch AFTER the run's kickoff: nothing was in effect at the write's time, so there is no allowlist to validate against and the run is indeterminate \u2014 the later listing does not reach back.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "landed_at": "2026-09-02T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "no agent-registry.json revision had landed on the default branch by"
+  }
+}
