@@ -148,20 +148,35 @@ out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_READONLY=1 
 grep -Fq 'command: copilot --prompt --no-color' <<<"$out" ||
     fail "the vendor argument override was ignored: $out"
 
-echo "==> a diff past the prompt bound refuses rather than reviewing part of the change"
+echo "==> a prompt past the bound refuses rather than reviewing part of the change"
 # This finder is handed the diff and needs no tools, so a truncated prompt is
 # a review of part of the change reported as a review of all of it.
 set +e
 out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_READONLY=1 \
-    FINDER_REVIEW_MAX_DIFF_BYTES=10 \
+    FINDER_REVIEW_MAX_PROMPT_BYTES=10 \
     ./scripts/finder-review.sh challenge copilot --uncommitted 2>&1)"
 status=$?
 set -e
-[ "$status" -eq 1 ] || fail "an oversized diff was truncated rather than refused (rc $status): $out"
-grep -Fq 'past the 10-byte prompt bound' <<<"$out" ||
+[ "$status" -eq 1 ] || fail "an oversized prompt was truncated rather than refused (rc $status): $out"
+grep -Fq 'past the 10-byte bound' <<<"$out" ||
     fail "the oversized-diff refusal did not name the bound: $out"
 grep -Fq 'Narrow the scope' <<<"$out" ||
-    fail "the oversized-diff refusal offered no way forward: $out"
+    fail "the oversized-prompt refusal offered no way forward: $out"
+
+# The bound is on the ASSEMBLED argument, not the diff alone: the manifest,
+# the mode prose, the severity scale and the focus text all ride in the same
+# argv element, and measuring only the diff left them unbounded.
+set +e
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_READONLY=1 \
+    FINDER_REVIEW_MAX_PROMPT_BYTES=2000 \
+    ./scripts/finder-review.sh challenge copilot --uncommitted \
+    "$(head -c 2500 /dev/zero | tr '\0' 'x')" 2>&1)"
+status=$?
+set -e
+[ "$status" -eq 1 ] ||
+    fail "focus text alone pushed the prompt past the bound without refusing (rc $status)"
+grep -Fq 'assembled prompt' <<<"$out" ||
+    fail "the refusal did not say it measured the assembled prompt: $out"
 
 echo "==> a missing binary refuses non-zero rather than reading as a clean pass"
 set +e

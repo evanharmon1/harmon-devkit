@@ -1,3 +1,0 @@
-Codex verification checkpoint.
-
-There are no P0 or P1 findings.

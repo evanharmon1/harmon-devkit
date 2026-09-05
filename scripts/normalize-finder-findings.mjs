@@ -2,6 +2,26 @@
 // normalize-finder-findings.mjs — decode ONE finder's raw output into the
 // shared pass core every stage consumer already understands.
 //
+// It decodes MACHINE-SHAPED output only — a GitHub review and its comments.
+// A local-CLI finder's free text is deliberately NOT decoded here, and that is
+// a boundary rather than a gap: `/review`'s own contract already says "the
+// registry invocation is the role's evidence source, not itself a result
+// envelope: the dispatched role binds that output to the supplied run, scope,
+// round, slot, and producer identity and returns `result.challenger` or
+// `result.reviewer`". Reading that text is the ROLE's job, with the judgement
+// a parser does not have.
+//
+// An earlier revision did decode it, and could not converge. Loosening the
+// rule turned narration into findings ("Reviewing branch changes against
+// origin/main."); tightening it dropped real ones (an unbadged file-level
+// finding, two badged findings on consecutive lines). That is the same failure
+// family this repository already documents at length above `verdict_class` in
+// ai/skills/universal/integrate/assets/check-codex-cloud-review.sh — free text
+// "is not a channel that can be parsed reliably" — and the fix there was the
+// same one taken here: stop trying.
+//
+// A finder's `severity_map` still governs a local pass; the ROLE applies it.
+//
 // The point of this script is what it makes unnecessary. Adjudication,
 // scripts/dev-flow-exit.mjs and scripts/render-dev-flow.mjs read
 // `findings[]` — id, path, line, class, provenance, fingerprint, priority,
@@ -132,6 +152,13 @@ function matchesRule(text, rule) {
 
 // Did any rule fire at all? Distinct from priorityOf, which cannot say whether
 // it returned a matched priority or the default.
+//
+// `matchesRule` still implements BOTH anchors although only `anywhere` is
+// reachable from here now: a leading-token badge is what this repo's own
+// prompt asks a local-CLI finder for, and those are decoded by the dispatched
+// role, not by this script. The anchor stays generic because it is the
+// registry's vocabulary, not this decoder's, and a future machine-shaped
+// finder may well badge that way.
 function isLabelled(text) {
   return finder.severity_map.rules.some((rule) => matchesRule(text, rule))
 }
@@ -230,16 +257,18 @@ function splitLabelledSegments(body) {
     .filter((segment) => segment.length > 0)
 }
 
-const EVIDENCE_MAX = 4000
+// Findings are carried VERBATIM. Neither result schema bounds a finding body,
+// and result.integrator's own contract says the integrator "never authors or
+// interprets finding text" — an earlier revision truncated at 4,000
+// characters, which silently removed the end of a long finding, where a
+// remedy or the supporting context usually is. Only trailing whitespace per
+// line is trimmed, and a blank LINE is content (see the note below).
 function evidenceOf(text) {
   // Trailing spaces and tabs per line only. A blank LINE is content: an
   // integration finding is carried verbatim into adjudication, and collapsing
   // the paragraph breaks out of a review body rewrites the text a human is
   // being asked to adjudicate.
-  const trimmed = text.trim().replace(/[ \t]+$/gm, '')
-  return trimmed.length > EVIDENCE_MAX
-    ? `${trimmed.slice(0, EVIDENCE_MAX)}\n... [evidence truncated at ${EVIDENCE_MAX} characters]`
-    : trimmed
+  return text.trim().replace(/[ \t]+$/gm, '')
 }
 
 const findings = []
@@ -270,28 +299,12 @@ function pushFinding(text, sourceLabel, location, sourceId) {
 }
 
 if (finder.raw_shape === 'labelled-text') {
-  // Blank-line-separated blocks. Every local-CLI finder reports this way:
-  // the ones driven with this repo's own prompt badge each finding P0-P3, and
-  // CodeRabbit's CLI, which takes no instructions of ours, states its own
-  // labels in the same block. Which of the two a block is, is the severity
-  // map's problem, not this loop's.
-  const blocks = raw
-    .split(/\n\s*\n/)
-    .map((block) => block.trim())
-    .filter((block) => block.length > 0)
-  for (const [index, block] of blocks.entries()) {
-    // What makes a block a finding rather than narration. A severity label is
-    // the primary signal. An UNLABELLED block still counts when it names a
-    // path AND a line, because AGENTS.md adjudicates an unlabelled finding as
-    // at least a P2 and dropping one would be worse than over-reporting —
-    // but a bare path with no line is not enough: a narration line like
-    // "Reviewing branch changes against origin/main." names something
-    // path-shaped and is not a finding (#796 challenge round 4, after the
-    // location pattern widened to admit extensionless files).
-    const blockLocation = locationOf(block)
-    if (!isLabelled(block) && !(blockLocation && blockLocation.line !== null)) continue
-    pushFinding(block, `block ${index + 1}`, blockLocation, `block-${index + 1}`)
-  }
+  die(
+    `finder '${opts.finder}' produces free text (raw_shape labelled-text), which this decoder does not read. ` +
+      `That output is the dispatched role's evidence source under /review's own contract — the role binds it to ` +
+      `the run, scope, round, slot and producer identity and returns the result envelope, applying this finder's ` +
+      `severity_map itself. Only machine-shaped output (github-review-json) is decoded here.`
+  )
 } else if (finder.raw_shape === 'github-review-json') {
   // The PR-side shape: one review plus the inline comments attributed to it.
   // Only this finder's own trusted actor and only the reviewed head count —

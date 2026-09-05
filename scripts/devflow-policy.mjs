@@ -1385,6 +1385,27 @@ export function applyFinderSelection(resolved, addRequests, selectRequests) {
   const disclosures = [];
   for (const [stage, entry] of requested) {
     const configured = [...(resolved.stages?.[stage]?.finders ?? [])];
+    const fallbacks = resolved.stages?.[stage]?.finder_fallbacks ?? [];
+    // A finder already in this stage's fallback chain cannot simply be
+    // promoted to a primary. specs/dev-flow-v2.md is explicit that "an actor
+    // already serving as a primary or substitute in the round cannot satisfy
+    // a second slot", so the promoted finder would fill its own slot and then
+    // be unavailable to substitute for the primary it was the fallback FOR —
+    // turning a previously viable chain into capped/finder_unavailable. The
+    // selection is refused rather than silently reshaping the chain: which
+    // finder should stop being a fallback is a configuration decision, not
+    // one a per-run request can make on the operator's behalf.
+    for (const slug of [...entry.added, ...entry.selected]) {
+      if (configured.includes(slug)) continue;
+      if (fallbacks.includes(slug)) {
+        return {
+          error:
+            `cannot add "${slug}" as a primary finder for stage "${stage}": it is already in ` +
+            `[stage.${stage}].finder_fallbacks, and one actor cannot fill two slots in a round — ` +
+            `remove it from the fallback chain in the config first`,
+        };
+      }
+    }
     const wanted = [...entry.added, ...entry.selected];
     const effective = [...configured];
     for (const slug of wanted) if (!effective.includes(slug)) effective.push(slug);

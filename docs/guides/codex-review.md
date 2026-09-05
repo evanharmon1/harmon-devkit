@@ -123,11 +123,23 @@ code review states no severity at all, so every finding of its enters
 adjudication at P2. **Every one of those is a hypothesis**: the adjudicated
 priority is the verdict, whichever finder produced it.
 
-`scripts/normalize-finder-findings.mjs` is what applies the map, decoding each
-finder's raw output into the shared finding core so that adjudication, the exit
-computation and the record renderer never learn which product produced a
-finding. `scripts/test-finder-normalization.sh` holds a conformance fixture of
-every registered finder's own raw shape.
+`scripts/normalize-finder-findings.mjs` applies the map to a **cloud** finder's
+output — a GitHub review, its inline comments, and the top-level comments bound
+by their `Reviewed commit:` line — decoding it into the shared finding core so
+that adjudication, the exit computation and the record renderer never learn
+which product produced a finding.
+`scripts/test-finder-normalization.sh` holds a conformance fixture per
+registered cloud finder, and asserts those three consumers name no finder slug.
+
+A **local-CLI** finder's free text is deliberately not decoded there. Reading
+it is the dispatched role's job — `/review`'s contract says the registry
+invocation "is the role's evidence source, not itself a result envelope", and
+the role applies the same `severity_map`. That is a boundary, not a gap, and
+it is drawn from experience: an earlier revision parsed the text and could not
+converge. Loosening the rule turned narration into findings; tightening it
+dropped real ones. The same conclusion is recorded at length above
+`verdict_class` in `check-codex-cloud-review.sh` — free text "is not a channel
+that can be parsed reliably".
 
 **What is not verified here.** No CodeRabbit or Copilot account is configured
 in this repository, so their cloud contracts — the exact trigger, the exact
@@ -208,10 +220,13 @@ authenticated (nothing here installs one; a missing binary refuses non-zero):
 It resolves **the same scope** as Codex (`scripts/lib/review-scope.sh`) and
 accepts the same target flags, so the second finder always reviews exactly what
 Codex would have. Copilot is a general agent, so it is driven with this repo's
-own mode and severity prompt and handed the resolved diff, which is why a diff
-past `FINDER_REVIEW_MAX_DIFF_BYTES` (60,000 by default) is **refused** rather
-than truncated: the pass could not fetch what was cut, and a partial review
-that exits 0 reads as a clean one.
+own mode and severity prompt and handed the resolved diff, which is why an
+assembled prompt past `FINDER_REVIEW_MAX_PROMPT_BYTES` (60,000 by default;
+`FINDER_REVIEW_MAX_DIFF_BYTES` is the older name and still works) is
+**refused** rather than truncated: the pass could not fetch what was cut, and
+a partial review that exits 0 reads as a clean one. The bound is on the whole
+prompt — diff, manifest, prose and focus text together — because they all ride
+in one argv element.
 
 **It refuses to run until you attest the tool boundary.** `/review` requires a
 confidence pass to run with shell, git, network write and credentials denied,

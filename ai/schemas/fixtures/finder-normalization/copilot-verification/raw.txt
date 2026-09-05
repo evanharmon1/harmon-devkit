@@ -1,9 +1,0 @@
-I reviewed the change against the manifest.
-
-P1 scripts/normalize-finder-findings.mjs:118 — the leading-token anchor strips
-punctuation from both ends, so a block opening with "(P1)" matches but one
-opening with "P1)" and no leading paren also matches; that asymmetry is fine,
-but a block opening with "P1-ish" silently does not.
-
-P3 docs/glossary.md — the finder row now runs long enough to wrap in a
-terminal.

@@ -64,7 +64,10 @@
 #                                is configured to grant no tools (see above)
 #   FINDER_REVIEW_COPILOT_BIN    (default: copilot)
 #   FINDER_REVIEW_COPILOT_ARGS   (default: -p)     prompt appended as one arg
-#   FINDER_REVIEW_MAX_DIFF_BYTES (default: 60000)  refusal bound, in BYTES
+#   FINDER_REVIEW_MAX_PROMPT_BYTES (default: 60000) refusal bound on the WHOLE
+#                                assembled prompt, in bytes
+#                                (FINDER_REVIEW_MAX_DIFF_BYTES is the older
+#                                name for it and still works)
 #   FINDER_REVIEW_DRY_RUN=1      print the resolved command and instructions,
 #                                invoke nothing, exit 0
 #
@@ -207,19 +210,30 @@ every entry is in scope, including untracked files):
 ${manifest}"
 
 # The prompt travels as a single argv element, which the kernel caps (~128 KiB
-# per argument on Linux), so the embedded diff needs a bound. That bound is a
-# REFUSAL, not a truncation. This run grants the agent no tools, so it cannot
-# fetch what was cut — an earlier revision truncated with a marker telling the
+# per argument on Linux), so it needs a bound — and the bound is a REFUSAL,
+# not a truncation. This run grants the agent no tools, so it cannot fetch
+# what was cut: an earlier revision truncated with a marker telling the
 # reviewer to ask for the rest, which it had no way to do, and the pass could
 # still come back clean and be banked as a complete round. A partial review
 # that exits 0 is indistinguishable from a clean one.
-diff_bytes="${FINDER_REVIEW_MAX_DIFF_BYTES:-60000}"
-case "$diff_bytes" in
+#
+# The measurement is of the ASSEMBLED argument, after the diff, manifest,
+# mode prose, severity scale and any focus text are all in it. Measuring the
+# diff alone left the rest unbounded — the manifest repeats most of the
+# diff's path bytes and the focus text has no cap at all — so a diff just
+# under the limit could still fail the exec with E2BIG, which is the
+# uncontrolled failure this bound exists to replace.
+# FINDER_REVIEW_MAX_DIFF_BYTES is the older name, kept working because the
+# guide documented it and an operator may have set it; what it bounds is the
+# whole prompt, which is what the name FINDER_REVIEW_MAX_PROMPT_BYTES says.
+prompt_bytes="${FINDER_REVIEW_MAX_PROMPT_BYTES:-${FINDER_REVIEW_MAX_DIFF_BYTES:-60000}}"
+case "$prompt_bytes" in
 '' | *[!0-9]*)
-    echo "FINDER_REVIEW_MAX_DIFF_BYTES must be a non-negative integer (got: '${diff_bytes}')" >&2
+    echo "FINDER_REVIEW_MAX_PROMPT_BYTES must be a non-negative integer (got: '${prompt_bytes}')" >&2
     exit 2
     ;;
 esac
+
 # A failing diff is a refusal, never an empty one: `set -e` does not apply
 # inside a command substitution's assignment on every shell, so the status is
 # checked explicitly.
@@ -231,24 +245,26 @@ if [ "$diff_status" -ne 0 ]; then
     echo "to be complete." >&2
     exit 1
 fi
-# BYTES, via LC_ALL=C wc -c, not `${#diff_text}`: the shell counts characters
-# and the kernel's per-argument limit counts bytes, so on a diff carrying
-# multi-byte UTF-8 a character count passes this guard and then fails the exec
-# with E2BIG — an uncontrolled failure in place of the bounded refusal.
-diff_size="$(printf '%s' "$diff_text" | LC_ALL=C wc -c | tr -d ' ')"
-if [ "$diff_bytes" -gt 0 ] && [ "$diff_size" -gt "$diff_bytes" ]; then
-    echo "The change is ${diff_size} bytes, past the ${diff_bytes}-byte prompt bound for $slug." >&2
-    echo "This finder is handed the diff and granted no tools, so a truncated prompt is a" >&2
-    echo "review of part of the change reported as a review of all of it. Narrow the scope" >&2
-    echo "(--base <ref>, --commit <sha>, --uncommitted) or raise FINDER_REVIEW_MAX_DIFF_BYTES" >&2
-    echo "if your CLI and kernel accept a larger single argument." >&2
-    exit 1
-fi
+
 instructions="${instructions}
 
 The change itself:
 
 ${diff_text}"
+
+# BYTES, via LC_ALL=C wc -c, not `${#instructions}`: the shell counts
+# characters and the kernel's per-argument limit counts bytes, so on
+# multi-byte content a character count passes this guard and then fails the
+# exec.
+prompt_size="$(printf '%s' "$instructions" | LC_ALL=C wc -c | tr -d ' ')"
+if [ "$prompt_bytes" -gt 0 ] && [ "$prompt_size" -gt "$prompt_bytes" ]; then
+    echo "The assembled prompt for $slug is ${prompt_size} bytes, past the ${prompt_bytes}-byte bound." >&2
+    echo "This finder is handed the change and granted no tools, so a truncated prompt is a" >&2
+    echo "review of part of it reported as a review of all of it. Narrow the scope" >&2
+    echo "(--base <ref>, --commit <sha>, --uncommitted) or raise FINDER_REVIEW_MAX_PROMPT_BYTES" >&2
+    echo "if your CLI and kernel accept a larger single argument." >&2
+    exit 1
+fi
 
 # shellcheck disable=SC2206 # deliberate word-splitting: the override is a flag
 # list, not one argument.

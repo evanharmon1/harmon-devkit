@@ -40,16 +40,40 @@ run_fixture() {
         --input "$raw"
 }
 
-echo "==> every registered finder has a raw-output conformance fixture"
+echo "==> every MACHINE-SHAPED finder has a raw-output conformance fixture"
+# Only github-review-json is decoded here. A local-CLI finder's free text is
+# the dispatched role's evidence source under /review's own contract, so it has
+# no fixture in this corpus and the decoder refuses it outright (asserted
+# below) rather than half-parsing it.
 missing=0
 while IFS= read -r slug; do
     [ -d "$fixtures/$slug" ] || {
-        echo "  no fixture directory for registered finder $slug" >&2
+        echo "  no fixture directory for machine-shaped finder $slug" >&2
         missing=1
     }
-done < <(jq -r '.finders[].slug' "$registry")
+done < <(jq -r '.finders[] | select(.raw_shape == "github-review-json") | .slug' "$registry")
 [ "$missing" -eq 0 ] ||
-    fail "a registered finder with no fixture has no proven raw-output contract"
+    fail "a machine-shaped finder with no fixture has no proven raw-output contract"
+
+echo "==> a free-text finder is refused, not half-parsed"
+while IFS= read -r slug; do
+    [ ! -d "$fixtures/$slug" ] ||
+        fail "$slug produces free text and must not have a decode fixture"
+    # That finder's OWN stage, so the refusal under test is the raw-shape one
+    # and not the stage-affinity check that runs before it.
+    finder_stage="$(jq -r --arg slug "$slug" '.finders[] | select(.slug == $slug) | .stages[0]' "$registry")"
+    set +e
+    printf 'P1 scripts/x.sh:1 — nope.\n' |
+        node "$normalizer" --finder "$slug" --stage "$finder_stage" --round 1 \
+            --reviewed-head 0808080808080808080808080808080808080808 \
+            >/dev/null 2>"$tmp/free-text-$slug.err"
+    status=$?
+    set -e
+    [ "$status" -eq 2 ] ||
+        fail "$slug free text was decoded rather than refused (exit $status)"
+    grep -Fq "the dispatched role's evidence source" "$tmp/free-text-$slug.err" ||
+        fail "$slug refusal did not name where that output is read instead"
+done < <(jq -r '.finders[] | select(.raw_shape == "labelled-text") | .slug' "$registry")
 
 echo "==> each fixture decodes to its pinned pass core"
 cases=0
@@ -84,26 +108,6 @@ for dir in "$fixtures"/*/; do
         fail "$slug fixture has a finding id that does not carry its stage, round and finder"
 done
 
-echo "==> a review-stage decode is a schema-valid reviewer payload"
-review_case=""
-for dir in "$fixtures"/*/; do
-    dir="${dir%/}"
-    [ "$(jq -r '.stage' "$dir/args.json")" = review ] || continue
-    [ "$(jq -r '.findings | length' "$dir/expected.json")" -gt 0 ] || continue
-    review_case="$dir"
-    break
-done
-[ -n "$review_case" ] || fail "no review-stage fixture with findings to validate as a payload"
-jq -n --slurpfile payload "$review_case/expected.json" '
-    {schema: 2, role: "reviewer", status: "completed",
-     head: $payload[0].reviewed_head,
-     produced_at: "2026-09-05T00:00:00Z",
-     producer: {harness: "codex-cli", model: "gpt-5.6-codex", tier: "frontier"},
-     run: {run_id: "finder-normalization-fixture", initiated_by: "human"},
-     payload: $payload[0]}' >"$tmp/reviewer-envelope.json"
-node scripts/validate-result-schemas.mjs envelope "$tmp/reviewer-envelope.json" >"$tmp/envelope.out" 2>&1 ||
-    fail "a normalized review pass is not a schema-valid reviewer payload: $(cat "$tmp/envelope.out")"
-
 echo "==> an integration decode is result.integrator's own verbatim finding slice"
 for dir in "$fixtures"/*/; do
     dir="${dir%/}"
@@ -114,51 +118,6 @@ for dir in "$fixtures"/*/; do
     ' "$dir/expected.json" >/dev/null ||
         fail "$(basename "$dir") integration decode is not the integrator finding slice plus one hypothesis per finding"
 done
-
-echo "==> narration is not decoded as a finding"
-printf 'Codex verification checkpoint.\n\nThere are no P0 or P1 findings.\n' |
-    node "$normalizer" --finder codex-verification --stage review --round 1 \
-        --reviewed-head 0808080808080808080808080808080808080808 >"$tmp/clean.json" ||
-    fail "a clean pass exited non-zero"
-jq -e '.findings == [] and .counts == {P0: 0, P1: 0, P2: 0, P3: 0}' "$tmp/clean.json" >/dev/null ||
-    fail "narration saying there are no P0 findings was decoded as one"
-
-echo "==> an extensionless repository file decodes like any other path"
-# Requiring a dotted extension made a finder unusable the moment it reported
-# Dockerfile, Makefile or a docs/ file without one (#796 challenge round 4).
-printf 'P1 Dockerfile:12 — the base image is unpinned.\n\nP0 docs/CHECKLIST:4 — a step is missing.\n' |
-    node "$normalizer" --finder codex-verification --stage review --round 1 \
-        --reviewed-head 0808080808080808080808080808080808080808 >"$tmp/extensionless.json" ||
-    fail "an extensionless path did not decode"
-jq -e '[.findings[] | {path, line}] ==
-    [{path: "Dockerfile", line: 12}, {path: "docs/CHECKLIST", line: 4}]' \
-    "$tmp/extensionless.json" >/dev/null ||
-    fail "an extensionless path decoded to the wrong location: $(cat "$tmp/extensionless.json")"
-
-echo "==> narration naming something path-shaped is still not a finding"
-# The counterpart to widening the pattern: "…against origin/main." names a
-# path-shaped token and is a header, not a finding.
-printf 'Reviewing branch changes against origin/main.\n\nP1 scripts/x.sh:3 — the lock leaks.\n' |
-    node "$normalizer" --finder codex-verification --stage review --round 1 \
-        --reviewed-head 0808080808080808080808080808080808080808 >"$tmp/narration.json" ||
-    fail "a narration header made the decode fail"
-jq -e '(.findings | length) == 1 and .findings[0].path == "scripts/x.sh"' \
-    "$tmp/narration.json" >/dev/null ||
-    fail "narration was decoded as a finding: $(cat "$tmp/narration.json")"
-
-echo "==> a labelled finding with no decodable path fails closed"
-set +e
-printf 'P0 the whole approach is wrong and no file is named.\n' |
-    node "$normalizer" --finder codex-verification --stage review --round 1 \
-        --reviewed-head 0808080808080808080808080808080808080808 \
-        >"$tmp/undecoded.json" 2>"$tmp/undecoded.err"
-status=$?
-set -e
-[ "$status" -eq 3 ] || fail "an undecodable finding did not fail closed (exit $status)"
-grep -Fq 'could not be decoded' "$tmp/undecoded.err" ||
-    fail "the undecodable finding was not reported"
-jq -e '.findings == []' "$tmp/undecoded.json" >/dev/null ||
-    fail "an undecodable finding leaked into the pass"
 
 echo "==> an inline comment carried forward from an older commit is not current-head evidence"
 # GitHub advances an inline comment's commit_id when it still applies after a
