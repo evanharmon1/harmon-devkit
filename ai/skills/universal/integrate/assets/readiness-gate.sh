@@ -964,7 +964,19 @@ trap 'rm -f "$known_ids_file" 2>/dev/null || :' EXIT
 {
     for known_ids_doc in "$record_dir"/passes/*.json; do
         [ -f "$known_ids_doc" ] || continue
-        jq -r '.payload.findings[]?.id // empty' "$known_ids_doc" 2>/dev/null || true
+        # A blocked CONFIDENCE-role pass contributes no pass and no finding
+        # (specs/dev-flow-v2.md § Results; validate-result-schemas.mjs's
+        # checkReviewerBlockedStatus forces its findings empty), so its ids
+        # are not part of the run's known universe — and render-dev-flow's
+        # readiness-input does not run that semantic check, so an unvalidated
+        # one can sit in the record carrying findings. A blocked INTEGRATOR is
+        # deliberately different: checkIntegratorBlockedStatus permits
+        # findings while blocked (evidence gathered before being cut short),
+        # and those are real. Codex cloud-review cycle 1 on PR #800,
+        # confirmed — with that role distinction added, which the finding did
+        # not draw.
+        jq -r 'select(.status == "completed" or .role == "integrator")
+               | .payload.findings[]?.id // empty' "$known_ids_doc" 2>/dev/null || true
     done
     for known_ids_doc in "$record_dir"/adjudications/*.json; do
         [ -f "$known_ids_doc" ] || continue
@@ -1189,6 +1201,27 @@ remediation_loops="$(jq -r '[.stage_transitions[]? | select(.stage == "integrati
     indeterminate malformed-data "run.json's stage_transitions could not be read for the remediation-loop count"
 [ "$remediation_loops" -le "$remediation_cap" ] ||
     fail_condition remediation-capped "the record shows $remediation_loops integration -> implement -> integration remediation loop(s), exceeding --remediation-cap $remediation_cap — escalate rather than promote (harmon-devkit#685)"
+# The LOWER bound, and the complement of the ceiling above. A code-changing
+# disposition (fix/restructure/delete) means code changed during integration,
+# and integration's ONLY outgoing edge is implement (run.schema.json's
+# ALLOWED_EDGES, with no self-loop and no repeated consecutive stage) — so such
+# a disposition cannot exist without the record showing at least one
+# integration -> implement -> integration re-entry. Zero loops alongside one is
+# an internally inconsistent record that would promote having spent no
+# remediation round at all, which at --remediation-cap 0 is the whole budget.
+# Codex cloud-review cycle 1 on PR #800, confirmed.
+#
+# Distinct from the at-cap branch challenge round 2 deleted: that one refused a
+# pass AT the ceiling for echoing the very fix that caused its final loop. This
+# refuses a record claiming a code change with no loop recorded anywhere, which
+# no legitimate trajectory produces.
+if [ "$remediation_loops" -eq 0 ]; then
+    code_changing="$(jq -r '[.[] | select(.disposition == "fix" or .disposition == "restructure" or .disposition == "delete") | .finding_id] | join(", ")' \
+        <<<"$applied_dispositions" 2>/dev/null)" ||
+        indeterminate malformed-data "applied_dispositions could not be read for the remediation-loop lower bound"
+    [ -z "$code_changing" ] ||
+        fail_condition remediation-capped "the gated pass applies code-changing disposition(s) ($code_changing) but the record shows no integration -> implement -> integration remediation loop at all — a code change during integration always records one (harmon-devkit#685)"
+fi
 
 # 9e. Every adjudicated round has its own issue evidence comment
 # (harmon-devkit#685: "every adjudicated round has a matching issue evidence
@@ -1216,7 +1249,10 @@ for evidence_adj in "$record_dir"/adjudications/*.json; do
     [ -n "$evidence_stage" ] && [ -n "$evidence_round" ] &&
         [ "$evidence_stage" != null ] && [ "$evidence_round" != null ] || continue
     evidence_destinations="$(jq -r --arg stage "$evidence_stage" --argjson round "$evidence_round" \
-        '[.evidence_comments[]?.marker | select(.stage == $stage and .round == $round) | .destination] | unique | join(",")' \
+        --arg run_id "$active_run_id" \
+        '[.evidence_comments[]?.marker
+          | select(.run_id == $run_id and .stage == $stage and .round == $round)
+          | .destination] | unique | join(",")' \
         "$run_json" 2>/dev/null)" ||
         indeterminate malformed-data "run.json's evidence_comments could not be read"
     case ",${evidence_destinations}," in
@@ -1229,6 +1265,28 @@ for evidence_adj in "$record_dir"/adjudications/*.json; do
         ;;
     esac
 done
+
+# Authenticity backstop, deliberately AFTER the per-round conditions above so
+# the specific, actionable one reports first. The flat evidence_comments[]
+# projection is not self-authenticating: it is derived from the append-only
+# evidence_registrations[] chain, and render-dev-flow's readiness-input
+# validates structure only — so a record can carry an out-of-band marker with
+# the right stage/round/destination that the chain never registered, or a
+# settlement the adjudications do not support. The record's own SEMANTIC
+# validation recomputes the chain digests (checkRunChainIntegrity), binds every
+# marker's run_id (checkEvidenceMarkerRunId), and re-applies the
+# adjudication/marker rule for an ended run. Codex cloud-review cycle 1 on
+# PR #800, confirmed.
+evidence_validate_args=()
+for evidence_adj in "$record_dir"/adjudications/*.json; do
+    [ -f "$evidence_adj" ] || continue
+    evidence_validate_args+=(--adjudication "$evidence_adj")
+done
+[ "${#evidence_validate_args[@]}" -gt 0 ] || evidence_validate_args=(--no-adjudications)
+if ! record_semantic_err="$(node "$validate_result_schemas" run "$run_json" \
+    "${evidence_validate_args[@]}" 2>&1 >/dev/null)"; then
+    indeterminate malformed-data "run.json fails its own semantic validation against the record's adjudication set — its evidence chain, markers, or settlements cannot be trusted: $(printf '%s' "$record_semantic_err" | head -1)"
+fi
 
 # 10. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
 # and require equality before any pass. The evaluated fingerprint hashes the

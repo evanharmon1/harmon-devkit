@@ -2191,10 +2191,15 @@ function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
 // marker — an unconditional "marker or error" would fault the normal
 // sequence rather than an attack:
 //
-//   - MISSING ENTIRELY is faulted only once the run is PROMOTED, the point
-//     at which the record stops being in flight and becomes the durable
-//     artifact a harvester reads. Same gate, and the same reasoning, as
-//     checkDeferredFindingsSettledBeforePromotion below.
+//   - MISSING ENTIRELY is faulted once the run has ENDED — any non-null
+//     outcome, not `ready-for-review` alone. The in-flight window this
+//     relaxation exists for is exactly `outcome: null`; a `capped`,
+//     `escalated`, or `abandoned` run is just as finished as a promoted
+//     one, and its evidence is just as durable a thing to be missing.
+//     A capped run that never opened a PR is the sharpest case: its issue
+//     comments are the ONLY harvestable record it will ever have. Codex
+//     cloud-review cycle 1 on PR #800, confirmed — the first version of
+//     this check treated only `ready-for-review` as terminal.
 //   - A `pr` MARKER WITHOUT ITS `issue` SIBLING is faulted at any time. The
 //     ordering above is fixed by the schema's own description, so a rollup
 //     that exists while the per-round comment it links back to does not is
@@ -2216,7 +2221,7 @@ function checkAdjudicationEvidenceMarkers(document, adjudications, errors) {
     if (marker.destination === 'issue') issueMarkers.add(key)
     else if (marker.destination === 'pr') prMarkers.add(key)
   }
-  const promoted = document.outcome === 'ready-for-review'
+  const ended = document.outcome !== null && document.outcome !== undefined
   const seen = new Set()
   for (const { file, data } of adjudications) {
     if (typeof data.stage !== 'string' || typeof data.round !== 'number') continue
@@ -2229,10 +2234,10 @@ function checkAdjudicationEvidenceMarkers(document, adjudications, errors) {
       )
       continue
     }
-    if (!promoted) continue
+    if (!ended) continue
     seen.add(key)
     errors.push(
-      `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, but no evidence marker with destination "issue" records it — required once outcome is "ready-for-review"`
+      `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, but no evidence marker with destination "issue" records it — required once the run has ended (outcome ${JSON.stringify(document.outcome)})`
     )
   }
 }

@@ -67,6 +67,7 @@ is_context_only_fixture() {
     */adjudication.schema/invalid/integration-round-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/known-adjudicated-collision.json) return 0 ;;
     */run.schema/invalid/adjudicated-round-without-issue-evidence-marker.json) return 0 ;;
+    */run.schema/invalid/adjudicated-round-capped-without-issue-evidence-marker.json) return 0 ;;
     */run.schema/invalid/adjudicated-round-only-pr-evidence-marker.json) return 0 ;;
     */run.schema/invalid/settlement-of-fixed-finding.json) return 0 ;;
     */run.schema/invalid/settlement-of-unknown-finding.json) return 0 ;;
@@ -935,6 +936,17 @@ accept_context_case \
     "an UNPROMOTED run whose adjudicated round has not published its evidence yet is accepted (#685)" \
     run \
     "$fixtures_dir/run.schema/valid/settlement-of-deferred.json" \
+    --adjudication "$settlement_cross_check_adjudication"
+
+# The in-flight window is `outcome: null` specifically, not "not promoted".
+# A capped/escalated/abandoned run has ENDED, and a capped run that never
+# opened a PR relies on its issue comments as the only harvestable record it
+# will ever have (Codex cloud-review cycle 1 on PR #800, confirmed).
+run_context_case \
+    "a CAPPED run with an adjudicated round and no issue evidence marker is rejected (#685)" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudicated-round-capped-without-issue-evidence-marker.json" \
+    'required once the run has ended' \
     --adjudication "$settlement_cross_check_adjudication"
 
 run_context_case \

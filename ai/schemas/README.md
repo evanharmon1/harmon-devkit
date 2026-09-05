@@ -2524,6 +2524,13 @@ it — reading that as "a code change still needs applying" refuses precisely
 the run that converged exactly on budget. A pass that genuinely still owes a
 code change is not `clean`, and the gate's own step 9c refuses it there.
 
+**Row 7's document check faults a missing marker once the run has ENDED, not
+once it is promoted.** The in-flight window the relaxation exists for is
+exactly `outcome: null`; a `capped`, `escalated`, or `abandoned` run is as
+finished as a promoted one, and a capped run that never opened a PR is the
+sharpest case — its issue comments are the only harvestable record it will
+ever have (Codex cloud-review cycle 1 on PR #800, confirmed).
+
 **Row 7 is checked in two places because it holds at two different times.**
 The document check's missing-marker half deliberately waits for
 `outcome: ready-for-review`, since a run adjudicates a round and *then*
@@ -2538,6 +2545,33 @@ as a promotion condition, from the record it already holds. The
 the rollup link *back* to the per-round comments, so it is posted after them
 and their absence is an inconsistency at any point in a run.
 
+Three further things the gate's own conditions learned from that same cycle.
+A marker satisfies row 7 only when its `run_id` is the **active run's** — the
+flat `evidence_comments[]` projection is derived from the append-only
+`evidence_registrations[]` chain, and `render-dev-flow readiness-input`
+validates structure only, so an out-of-band or foreign-run marker with the
+right stage/round/destination would otherwise pass. Behind that, the gate runs
+the record's **own semantic validation** against its adjudication set as an
+authenticity backstop — recomputing the chain digests, binding every marker's
+run_id, re-applying this same rule for an ended run — deliberately *after* the
+per-round conditions, so the specific, actionable failure reports first and
+the backstop catches everything else. And row 4 gained its **lower** bound:
+integration's only outgoing edge is `implement`, so a code-changing
+disposition (`fix`/`restructure`/`delete`) cannot exist without the record
+showing at least one `integration -> implement -> integration` re-entry — zero
+loops alongside one is an inconsistent record that would promote having spent
+no remediation round at all. That is the complement of the ceiling, not a
+revival of the at-cap branch challenge round 2 deleted: this refuses a record
+claiming a code change with no loop recorded anywhere, which no legitimate
+trajectory produces.
+
+One row-4 gap is filed rather than closed here:
+[#801](https://github.com/evanharmon1/harmon-devkit/issues/801) — under a
+**legacy** decoded policy the shared budget charges a no-change adjudication
+cycle too, and those record no transition, so the loop count undercounts.
+Criterion 4 defines the count as the loop, and closing the gap needs a policy
+shape the gate is not given.
+
 **Row 10's universe is the record's own evidence, and the gate builds it.**
 A check gated on a flag its production caller never passes enforces nothing
 (challenge round 2, confirmed): the readiness gate validated each integrator
@@ -2545,8 +2579,11 @@ envelope without `--known-ids`, so only the impossible half — a future
 integration round — was ever caught, and a clean pass could claim
 dispositions for findings that never existed. The gate now assembles the
 universe from `--record`'s own `passes/` (ids those passes raised) and
-`adjudications/` (ids those documents adjudicated) and passes it. Both halves
-are needed: a finding an *earlier* integrator pass raised and this one is now
+`adjudications/` (ids those documents adjudicated) and passes it — skipping a
+**blocked confidence-role** pass, which contributes no pass and no finding,
+while keeping a blocked integrator's, which legitimately carries evidence
+gathered before it was cut short (Codex cloud-review cycle 1 on PR #800).
+Both halves are needed: a finding an *earlier* integrator pass raised and this one is now
 resolving lives in `passes/`, while a challenge/review finding carried here
 as a `defer` lives in an adjudication. An unreadable or absent record yields
 an empty universe rather than a skipped check.

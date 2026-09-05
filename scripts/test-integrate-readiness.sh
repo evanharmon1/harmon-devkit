@@ -174,14 +174,23 @@ BODY
 skip_evidence_markers=0
 
 add_issue_evidence_marker() {
-    local stage="$1" round="$2"
+    add_evidence_marker "$1" "$2" issue
+}
+
+# $3 = destination (issue|pr). A `pr` marker must be chain-registered exactly
+# like an issue one: the gate's authenticity check rejects any marker the
+# append-only chain never registered, so an injected one would never reach the
+# destination condition it is meant to exercise.
+add_evidence_marker() {
+    local stage="$1" round="$2" destination="${3:-issue}"
     local marker comment_id payload_digest registered_at prev content digest
-    comment_id="21${stage}$(printf '%04d' "$round")"
+    comment_id="21${stage}${destination}$(printf '%04d' "$round")"
     comment_id="$(printf '%s' "$comment_id" | tr -cd '0-9')0"
     payload_digest="sha256:$(printf '%064d' "$round")"
     registered_at="2026-01-01T00:30:00Z"
     marker="$(jq -cn --arg stage "$stage" --argjson round "$round" \
-        '{run_id:"test-run", stage:$stage, destination:"issue",
+        --arg destination "$destination" \
+        '{run_id:"test-run", stage:$stage, destination:$destination,
           round:$round, sequence:1}')"
     prev="$(jq -r '(.evidence_registrations | last | .digest) // "genesis"' "${record_dir}/run.json")"
     content="$(jq -cn --arg id "$comment_id" --arg digest "$payload_digest" \
@@ -228,11 +237,20 @@ ensure_issue_evidence_markers() {
 # stage to appear here — so a record that adjudicates a review round must
 # record having been in review. $1 = "ended" gives the last entry an exit too,
 # required once outcome is non-null.
+# $2 = number of integration -> implement -> integration remediation loops to
+# record (default 0). A record whose gated pass applies a code-changing
+# disposition needs at least one: integration's only outgoing edge is
+# implement, so a code change during integration always records the re-entry
+# (Codex cloud-review cycle 1 on PR #800).
 lifecycle_transitions() {
-    jq -cn --arg ended "${1:-}" '
-      [["kickoff","claimed"],["claim","planned"],["plan","briefed"],
-       ["implement","verified"],["verify","green"],["challenge","converged"],
-       ["review","converged"],["security","clean"],["integration","converged"]]
+    jq -cn --arg ended "${1:-}" --argjson loops "${2:-0}" '
+      ([["kickoff","claimed"],["claim","planned"],["plan","briefed"],
+        ["implement","verified"],["verify","green"],["challenge","converged"],
+        ["review","converged"],["security","clean"]]
+       + ([range(0; $loops)] | map(
+           [["integration","remediating"],["implement","fixed"],
+            ["verify","green"],["security","clean"]]) | add // [])
+       + [["integration","converged"]])
       | to_entries
       | map({stage: .value[0],
              entered_at: ("2026-01-01T00:" + (.key | tostring | ("0" * (2 - length)) + .) + ":00Z"),
@@ -260,6 +278,44 @@ write_default_record() {
          bound_at:"2026-01-01T00:00:00Z"}]}' \
         >"${record_dir}/run.json"
     rm -f "${record_dir}"/adjudications/*.json "${record_dir}"/passes/*.json
+}
+
+write_record_with_integration_entries() {
+    jq -cn --argjson n "$1" '
+      # A minute counter keeps entered_at non-decreasing across the whole
+      # array (checkRunChronology) while the edges stay on ALLOWED_EDGES'"'"'s
+      # own graph: kickoff -> claim -> plan -> implement -> verify ->
+      # security -> integration, then $n loops of
+      # integration -> implement -> verify -> security -> integration.
+      def at($m): "2026-01-01T" + (($m / 60 | floor) | tostring | ("0" * (2 - length)) + .) + ":" + (($m % 60) | tostring | ("0" * (2 - length)) + .) + ":00Z";
+      [{stage:"kickoff",exit:"claimed"},
+       {stage:"claim",exit:"planned"},
+       {stage:"plan",exit:"briefed"},
+       {stage:"implement",exit:"verified"},
+       {stage:"verify",exit:"green"},
+       {stage:"security",exit:"clean"}]
+      + ([range(0; $n)] | map(
+          [{stage:"integration",exit:"remediating"},
+           {stage:"implement",exit:"fixed"},
+           {stage:"verify",exit:"green"},
+           {stage:"security",exit:"clean"}]) | flatten)
+      + [{stage:"integration"}]
+      | to_entries | map(.value + {entered_at: at(.key)})
+      | . as $transitions
+      | {schema:2, run_id:"test-run", initiated_by:"human",
+         started_at:"2026-01-01T00:00:00Z",
+         stage_transitions:$transitions,
+         interventions:[], outcome:null,
+         pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+         evidence_comments:[], settlements:[], promotion:null,
+         evidence_registrations:[], outcome_transitions:[],
+         pr_bindings:[{seq:0,prev_digest:"genesis",
+           digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
+           number:493,url:"https://github.com/example/repo/pull/493",
+           bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
+    node "$validator" run "${record_dir}/run.json" >/dev/null ||
+        fail "#685(4) record fixture with $1 remediation loop(s) is not a valid run record"
+    rm -f "${record_dir}"/adjudications/*.json
 }
 
 # A schema-valid result.envelope (role integrator) at
@@ -1474,6 +1530,12 @@ node "$validator" envelope "$mixed_source_result" >/dev/null ||
 # first, before proving the deferred case below still requires one.
 echo "==> applied_dispositions naming a FRESH (never-deferred) finding needs no settlement and passes"
 write_defaults
+# One remediation loop, because this pass applies `fix`: a code change during
+# integration always records an integration -> implement -> integration
+# re-entry (Codex cloud-review cycle 1 on PR #800), so a record claiming the
+# fix with zero loops is internally inconsistent. This case is about
+# settlement, not remediation, so give it the consistent record.
+write_record_with_integration_entries 1
 fresh_result="${fixtures}/integrator-result-fresh-disposition.json"
 jq -cn --arg head "$head_sha" '
   {schema:2, role:"integrator", status:"completed", head:$head,
@@ -1580,7 +1642,10 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
-jq -cn --arg head "$head_sha" --argjson transitions "$(lifecycle_transitions)" \
+# One remediation loop: this pass settles the deferred finding with `fix`, and
+# a code change during integration always records the integration -> implement
+# -> integration re-entry (Codex cloud-review cycle 1 on PR #800).
+jq -cn --arg head "$head_sha" --argjson transitions "$(lifecycle_transitions "" 1)" \
     '{schema:2, run_id:"test-run", initiated_by:"human",
       started_at:"2026-01-01T00:00:00Z",
       stage_transitions:$transitions,
@@ -1588,7 +1653,7 @@ jq -cn --arg head "$head_sha" --argjson transitions "$(lifecycle_transitions)" \
       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
       evidence_comments:[],
       settlements:[{finding_id:"review-r1-codex-cli-9", disposition:"fix",
-        settled_at:"2026-01-01T00:12:00Z",
+        settled_at:"2026-01-01T00:16:00Z",
         reference:{type:"sha",value:"c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff"}}],
       promotion:null,
       evidence_registrations:[], outcome_transitions:[],
@@ -1721,7 +1786,7 @@ done
 # whole record rather than patching: write_defaults resets run.json via
 # write_default_record, so every case here restates it in full.
 write_record_with_settlement() {
-    jq -cn --arg disp "$1" --arg reftype "$2" --arg refvalue "$3" --argjson transitions "$(lifecycle_transitions)" '
+    jq -cn --arg disp "$1" --arg reftype "$2" --arg refvalue "$3" --argjson transitions "$(lifecycle_transitions "" 1)" '
       {schema:2, run_id:"test-run", initiated_by:"human",
        started_at:"2026-01-01T00:00:00Z",
        stage_transitions:$transitions,
@@ -1775,13 +1840,7 @@ echo "==> #685(7): a pr-destination marker for that round does not substitute"
 write_defaults
 write_deferred_adjudication
 write_record_with_settlement decline comment_id 9001
-jq -c '.evidence_comments += [{id:"2200000001", author_actor_id:12345678,
-        login:"evanharmon1",
-        digest:"sha256:0000000000000000000000000000000000000000000000000000000000000001",
-        marker:{run_id:"test-run", stage:"review", destination:"pr",
-                round:1, sequence:1}}]' \
-    "${record_dir}/run.json" >"${record_dir}/run.json.tmp"
-mv "${record_dir}/run.json.tmp" "${record_dir}/run.json"
+add_evidence_marker review 1 pr
 skip_evidence_markers=1
 run_gate --integrator-result "$disposition_result"
 skip_evidence_markers=0
@@ -1857,43 +1916,6 @@ assert_gate 2 indeterminate promotion-head-mismatch
 # --- with escalation, and code-changing integration dispositions past the cap
 # --- are rejected. --remediation-cap is what supplies the resolved value.
 # $1 = number of integration entries in stage_transitions
-write_record_with_integration_entries() {
-    jq -cn --argjson n "$1" '
-      # A minute counter keeps entered_at non-decreasing across the whole
-      # array (checkRunChronology) while the edges stay on ALLOWED_EDGES'"'"'s
-      # own graph: kickoff -> claim -> plan -> implement -> verify ->
-      # security -> integration, then $n loops of
-      # integration -> implement -> verify -> security -> integration.
-      def at($m): "2026-01-01T" + (($m / 60 | floor) | tostring | ("0" * (2 - length)) + .) + ":" + (($m % 60) | tostring | ("0" * (2 - length)) + .) + ":00Z";
-      [{stage:"kickoff",exit:"claimed"},
-       {stage:"claim",exit:"planned"},
-       {stage:"plan",exit:"briefed"},
-       {stage:"implement",exit:"verified"},
-       {stage:"verify",exit:"green"},
-       {stage:"security",exit:"clean"}]
-      + ([range(0; $n)] | map(
-          [{stage:"integration",exit:"remediating"},
-           {stage:"implement",exit:"fixed"},
-           {stage:"verify",exit:"green"},
-           {stage:"security",exit:"clean"}]) | flatten)
-      + [{stage:"integration"}]
-      | to_entries | map(.value + {entered_at: at(.key)})
-      | . as $transitions
-      | {schema:2, run_id:"test-run", initiated_by:"human",
-         started_at:"2026-01-01T00:00:00Z",
-         stage_transitions:$transitions,
-         interventions:[], outcome:null,
-         pr:{number:493,url:"https://github.com/example/repo/pull/493"},
-         evidence_comments:[], settlements:[], promotion:null,
-         evidence_registrations:[], outcome_transitions:[],
-         pr_bindings:[{seq:0,prev_digest:"genesis",
-           digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
-           number:493,url:"https://github.com/example/repo/pull/493",
-           bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
-    node "$validator" run "${record_dir}/run.json" >/dev/null ||
-        fail "#685(4) record fixture with $1 remediation loop(s) is not a valid run record"
-    rm -f "${record_dir}"/adjudications/*.json
-}
 
 echo "==> #685(4): remediation loops within --remediation-cap pass"
 write_defaults
