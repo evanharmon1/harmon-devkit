@@ -65,10 +65,57 @@ self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 # change the result.
 POLICY_CONSUMING_SKILLS="review integrate orchestrator"
 
+# The schema version the shipped reader can operate under. Used only to warn
+# when a policy has moved ahead of the toolchain — the requirement itself is
+# still read from the vendored contracts, never from this constant.
+POLICY_SCHEMA_VERSION_SUPPORTED=2
+
 die() {
     echo "consumer-pin-audit: $*" >&2
     exit 2
 }
+
+# ── THE COHERENCE INVARIANT ─────────────────────────────────────────────────
+#
+#   An input the shared reader refuses, or a stamp inconsistent with the tree,
+#   is INDETERMINATE: exit 2, never `compatible`.
+#
+# This is one rule, not a list of special cases. The audit compares a pin
+# against a policy, and that comparison is only meaningful on inputs that are
+# internally coherent; anything else has no pin verdict to give, and guessing
+# one is precisely the fail-open this script exists to prevent.
+#
+# It is stated here and enforced through `indeterminate` below because the
+# case-by-case alternative demonstrably regresses: `mixed` was closed while
+# `unknown` stayed open, a missing managed directory was closed while a
+# missing `SKILL.md` payload stayed open, each fix drawing the next round's
+# finding. `scripts/test-consumer-pin-audit.sh` tests it as a PROPERTY over
+# every incoherent input rather than as one assertion per case, so a newly
+# discovered incoherent input is a new row in that table, not a new branch here.
+#
+# Two classes are covered:
+#
+#   * the POLICY is not exactly one shape the reader recognizes — `mixed` or
+#     `unknown` (an incomplete marker set), which
+#     `openspec/changes/dev-flow-v2/specs/config/spec.md` requires be rejected
+#     "not guessed into either shape". `legacy` and `v1` are NOT incoherent:
+#     they are coherent older shapes, and reporting on them is the audit's
+#     whole job.
+#   * the VENDORED STATE disagrees with itself — a provenance stamp missing
+#     its `# ref:`/`# managed:` lines, a managed name with no directory or no
+#     `SKILL.md` payload, vendored contract-carrying skills with no stamp at
+#     all (an interrupted sync), a contract whose version is not a positive
+#     integer, or managed contracts that do not agree on one version.
+indeterminate() {
+    echo "consumer-pin-audit: indeterminate — $*" >&2
+    echo "consumer-pin-audit: an input the shared reader refuses, or a stamp inconsistent with the tree, is never a pass" >&2
+    exit 2
+}
+
+# The policy shapes the audit can give a pin verdict on. `absent` is this
+# script's own sentinel for "no policy file"; every other value the reader can
+# return (`mixed`, `unknown`) is incoherent by the invariant above.
+COHERENT_POLICY_SHAPES="v2 v1 legacy absent"
 
 repo_root="."
 manifest=""
@@ -167,12 +214,12 @@ if [ -f "$prov" ]; then
     # empty `# managed:` is what sync-skills.sh writes when it legitimately
     # manages nothing, and must stay a valid zero-skill answer.
     grep -q '^# ref:' "$prov" ||
-        die "provenance '$prov' has no '# ref:' line — the vendored pin is unknown; inspect it and re-run 'task sync:skills' before auditing"
+        indeterminate "provenance '$prov' has no '# ref:' line, so the vendored pin is unknown; re-run 'task sync:skills'"
     grep -q '^# managed:' "$prov" ||
-        die "provenance '$prov' has no '# managed:' line — the vendored skill set is unknown, so no policy requirement can be read from it; inspect it and re-run 'task sync:skills' before auditing"
+        indeterminate "provenance '$prov' has no '# managed:' line, so the vendored skill set is unknown; re-run 'task sync:skills'"
     vendored_ref="$(sed -n 's/^# ref:[[:space:]]*//p' "$prov" | head -n 1 | sed 's/[[:space:]]*(.*)$//')"
     [ -n "$vendored_ref" ] ||
-        die "provenance '$prov' has an empty '# ref:' line — the vendored pin is unknown; inspect it and re-run 'task sync:skills' before auditing"
+        indeterminate "provenance '$prov' has an empty '# ref:' line, so the vendored pin is unknown; re-run 'task sync:skills'"
     managed="$(sed -n 's/^# managed:[[:space:]]*//p' "$prov" | head -n 1 | tr ',' '\n' | tr -d ' ')"
 else
     # No stamp is NOT proof that nothing was vendored. Challenge round 2,
@@ -205,7 +252,7 @@ else
     fi
     if [ -n "$unstamped" ]; then
         # shellcheck disable=SC2086 # deliberate word-splitting into a CSV
-        die "'$dest' holds policy-consuming skills ($(printf '%s\n' $unstamped | sort -u | paste -sd, -)) but no '.SKILLS_PROVENANCE' stamp — sync-skills.sh removes the stamp before it copies and rewrites it last, so this is an interrupted sync rather than a never-vendored checkout, and their policy requirement cannot be trusted; re-run 'task sync:skills' before auditing"
+        indeterminate "'$dest' holds policy-consuming skills ($(printf '%s\n' $unstamped | sort -u | paste -sd, -)) but no '.SKILLS_PROVENANCE' stamp — sync-skills.sh removes the stamp before it copies and rewrites it last, so this is an interrupted sync, not a never-vendored checkout; re-run 'task sync:skills'"
     fi
     vendored_ref="$manifest_ref"
 fi
@@ -230,21 +277,29 @@ while IFS= read -r skill_name; do
     case " $POLICY_CONSUMING_SKILLS " in
     *" $skill_name "*) policy_consumers_present=yes ;;
     esac
+    # The stamp is authoritative for WHICH skills are vendored, so a managed
+    # name the tree does not actually hold is the stamp disagreeing with the
+    # tree — the coherence invariant, not "a pre-v2 skill with no contract".
+    # `sync-skills.sh` only ever manages a directory containing `SKILL.md`, so
+    # that file is what "the tree holds this skill" means; checking the
+    # directory alone left a half-deleted payload passing.
+    if [ ! -d "$dest/$skill_name" ] || [ ! -f "$dest/$skill_name/SKILL.md" ]; then
+        indeterminate "provenance '$prov' lists managed skill '$skill_name' but '$dest/$skill_name' is not a vendored skill directory (no SKILL.md) — the stamp and the tree disagree; re-run 'task sync:skills'"
+    fi
     contract="$dest/$skill_name/assets/policy-contract.json"
     [ -f "$contract" ] || continue
     declared="$(jq -r '.policy_schema_version // empty' "$contract" 2>/dev/null || true)"
-    # POSITIVE integer: challenge round 4, confirmed by reproduction. A
-    # contract declaring `0` passed a digit-only check and then collapsed into
-    # `required = 0`, which this file reads as "no contract at all" — so a
-    # damaged contract over a legacy policy reported `compatible` exit 0 in
-    # place of the documented indeterminate result.
+    # A contract version must be a POSITIVE integer — the coherence invariant
+    # again: `0` and a non-integer are both indistinguishable from "declares
+    # no contract", so trusting either would let a damaged contract read as a
+    # legitimate pre-v2 skill.
     case "$declared" in
     '' | *[!0-9]*)
-        die "'$contract' declares no integer policy_schema_version"
+        indeterminate "'$contract' declares no integer policy_schema_version"
         ;;
     esac
     [ "$declared" -gt 0 ] ||
-        die "'$contract' declares policy_schema_version $declared — it must be a positive integer; 0 is indistinguishable from a skill that declares no contract at all"
+        indeterminate "'$contract' declares policy_schema_version $declared — it must be positive; 0 is indistinguishable from a skill that declares no contract at all"
     declared_versions="$declared_versions $declared"
     requiring_skills="$requiring_skills $skill_name"
 done <<EOF
@@ -254,7 +309,7 @@ EOF
 declared_versions="$(printf '%s\n' $declared_versions | sort -u | paste -sd, -)"
 case "$declared_versions" in
 '') required=0 ;;
-*,*) die "the vendored skills declare more than one policy schema version ($declared_versions) — no single policy can satisfy that set; re-run 'task sync:skills' so every vendored skill comes from one pin" ;;
+*,*) indeterminate "the vendored skills declare more than one policy schema version ($declared_versions) — no single policy can satisfy that set; re-run 'task sync:skills' so every vendored skill comes from one pin" ;;
 *) required="$declared_versions" ;;
 esac
 # shellcheck disable=SC2086 # deliberate word-splitting: rebuild as a sorted CSV
@@ -287,13 +342,26 @@ fi
 
 # ── verdict ──────────────────────────────────────────────────────────────────
 #
-# A MIXED marker set is refused outright, before any pin comparison. The
-# config delta spec requires it ("A mixed or incomplete marker set SHALL be
-# rejected with the markers it actually contains, not guessed into either
-# shape"), and it is not a pin question at all: no pin is right for a policy
-# that is two shapes at once.
-if [ "$shape" = mixed ]; then
-    die "policy '$policy' carries markers from more than one shape at once — $migration"
+# The coherence invariant applied to the policy: a shape the reader cannot
+# classify as exactly one recognized shape has no pin verdict, so it is
+# refused before any comparison. This replaces what were separate `mixed` and
+# `unknown` special cases — `COHERENT_POLICY_SHAPES` is the whole rule, and a
+# future shape is added there rather than as another branch.
+# One exception, and it is a distinction in kind rather than a special case: a
+# policy that DECLARES a positive `schema_version` this reader cannot operate
+# (say 3) is coherent — it is a policy ahead of the toolchain, and the audit
+# reports it as pin lag or incompatible. What the delta spec requires rejecting
+# is an incomplete or contradictory MARKER SET, which is `unknown` with no
+# declared version at all, or `mixed` whatever it declares.
+policy_is_coherent=no
+case " $COHERENT_POLICY_SHAPES " in
+*" $shape "*) policy_is_coherent=yes ;;
+esac
+if [ "$shape" = unknown ] && [ "$policy_version" -gt 0 ]; then
+    policy_is_coherent=yes
+fi
+if [ "$policy_is_coherent" = no ]; then
+    indeterminate "policy '$policy' has shape '$shape' and declares no usable schema version — the reader cannot classify it as exactly one recognized shape, and the delta spec requires such a marker set be rejected rather than guessed into one. ${migration:-}"
 fi
 
 # Satisfaction needs BOTH a successful detection and an equal version.
@@ -323,7 +391,15 @@ elif [ "$required" -eq 0 ]; then
     if [ "$policy_version" -gt 0 ] && [ "$policy_consumers_present" = yes ]; then
         status=pin-lag
         code=3
-        detail="the policy has migrated to schema_version $policy_version but the policy-consuming skills vendored at $vendored_ref declare no policy contract, so they predate Dev flow v2 — advance source.ref in $manifest to a skills release that ships the version-2 stage skills, then re-run 'task sync:skills'"
+        # Name the version the policy ACTUALLY declares, not "version-2".
+        # Review round 2, confirmed by reproduction: a version-3 policy was
+        # told to install version-2 stage skills, which exact-equality
+        # comparison can never satisfy — the remedy would leave the repository
+        # incompatible no matter how faithfully it was followed.
+        detail="the policy has migrated to schema_version $policy_version but the policy-consuming skills vendored at $vendored_ref declare no policy contract, so they predate it — advance source.ref in $manifest to a skills release whose stage skills declare policy_schema_version $policy_version, then re-run 'task sync:skills'"
+        if [ "$policy_version" -ne "$POLICY_SCHEMA_VERSION_SUPPORTED" ]; then
+            detail="$detail. Note that this reader supports schema_version $POLICY_SCHEMA_VERSION_SUPPORTED, so no released skill set is known to declare $policy_version yet — treat this as a policy ahead of the toolchain rather than a pin you can simply advance"
+        fi
     elif [ "$policy_version" -gt 0 ]; then
         status=no-policy-consumer
         code=0

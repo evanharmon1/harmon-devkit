@@ -267,33 +267,6 @@ else
 fi
 
 echo
-echo "== consumer-pin-audit: a damaged provenance stamp is indeterminate =="
-# Challenge round 1: with the `# managed:` line gone, the managed set read as
-# empty, nothing declared a requirement, and genuinely-vendored v2 skills over
-# a legacy policy were reported compatible. A stamp this audit treats as
-# authoritative must fail closed when it is unreadable.
-c="$(make_consumer damaged-managed "$LEGACY_POLICY" v0.41.0 review:v2 integrate:v2)"
-grep -v '^# managed:' "$c/.claude/skills/.SKILLS_PROVENANCE" >"$c/prov.tmp"
-mv "$c/prov.tmp" "$c/.claude/skills/.SKILLS_PROVENANCE"
-run_audit "$c"
-expect_status "provenance with no '# managed:' line is indeterminate, not a pass" 2
-expect_says "the damaged-provenance error names the missing line" "no '# managed:' line"
-
-c="$(make_consumer damaged-ref "$LEGACY_POLICY" v0.41.0 review:v2)"
-grep -v '^# ref:' "$c/.claude/skills/.SKILLS_PROVENANCE" >"$c/prov.tmp"
-mv "$c/prov.tmp" "$c/.claude/skills/.SKILLS_PROVENANCE"
-run_audit "$c"
-expect_status "provenance with no '# ref:' line is indeterminate, not a pass" 2
-expect_says "the missing-ref error names the missing line" "no '# ref:' line"
-
-# The counterpart that must NOT fail: an EMPTY `# managed:` is what
-# sync-skills.sh writes when it legitimately manages nothing.
-c="$(make_consumer empty-managed "$LEGACY_POLICY" v0.34.1)"
-run_audit "$c"
-expect_status "an empty '# managed:' line is a valid zero-skill answer, not damage" 0
-expect_says "an empty managed set requires nothing" "requiring skills: none"
-
-echo
 echo "== consumer-pin-audit: the required version is compared, not assumed =="
 # Challenge round 1: `satisfied` was set from `shape = v2` alone, so a skill
 # declaring a FUTURE schema version was reported satisfied by a v2 policy.
@@ -397,6 +370,15 @@ c="$(make_consumer future-policy "$future_policy" v0.34.1 integrate:pre review:p
 run_audit "$c"
 expect_status "pre-v2 skills under a version-3 policy is pin lag, not compatible" 3
 expect_says "pin lag reports the version the policy actually declares" "schema_version 3"
+# Review round 2: the remedy must name the version the policy declares. Telling
+# the operator to install version-2 skills for a version-3 policy is advice
+# exact-equality comparison can never satisfy.
+expect_says "the remedy names the version the skills must declare" \
+    "declare policy_schema_version 3"
+expect_not_says "the remedy does not send them after version-2 skills" \
+    "ships the version-2 stage skills"
+expect_says "it warns that the policy is ahead of this toolchain" \
+    "ahead of the toolchain"
 
 c="$(make_consumer v2-skills-future-policy "$future_policy" v0.41.0 review:v2)"
 run_audit "$c"
@@ -417,47 +399,88 @@ else
 fi
 
 echo
-echo "== consumer-pin-audit: a mixed policy fails closed, never compatible =="
-# Challenge round 4, confirmed by reproduction: a policy declaring
-# `schema_version = 2` alongside a legacy marker detects as `mixed` (reader
-# exits 1) while still reporting version 2, so the equality-only test set
-# satisfied=yes and the audit exited 0 `compatible` on a policy the reader had
-# just refused — a fail-open introduced by round 3's own fix.
-mixed_policy="$TMPROOT/mixed-policy.toml"
-printf 'schema_version = 2\ndefault_method = "plan"\n[method]\nrank = ["oneshot"]\n' >"$mixed_policy"
-set +e
-out="$(node "$READER" detect --policy "$mixed_policy" --json 2>/dev/null)"
-status=$?
-set -e
-expect_status "the reader refuses a mixed policy" 1
-if printf '%s' "$out" | jq -e '.shape == "mixed" and .policy_schema_version == 2' >/dev/null 2>&1; then
-    ok "the reader reports a mixed shape while still naming its declared version"
-else
-    bad "the mixed fixture did not reproduce the reader state this case guards"
-    printf '%s\n' "$out" | sed 's/^/      /' >&2
-fi
+echo "== consumer-pin-audit: THE COHERENCE INVARIANT, as a property =="
+# The audit states one rule: an input the shared reader refuses, or a stamp
+# inconsistent with the tree, is indeterminate — exit 2, never `compatible`.
+# This is tested as a PROPERTY over every incoherent input rather than as one
+# assertion per case, because the case-by-case form demonstrably regressed:
+# `mixed` was closed while `unknown` stayed open, a missing managed directory
+# was closed while a missing SKILL.md payload stayed open, each fix drawing the
+# next review round's finding. A newly discovered incoherent input belongs in
+# the table below, not in a new branch of the script.
+#
+# Each row builds a consumer that is incoherent in exactly one way and asserts
+# BOTH halves of the invariant: exit 2, and the word `compatible` never
+# appears. Rows deliberately vary the policy shape (legacy and v2) so no row
+# passes merely because some other branch happened to fire first.
+incoherent_policy="$TMPROOT/incoherent"
+mkdir -p "$incoherent_policy"
+printf 'schema_version = 2\ndefault_method = "plan"\n[method]\nrank = ["oneshot"]\n' \
+    >"$incoherent_policy/mixed.toml"
+printf '[rigor.standard]\nchallenge = 3\n' >"$incoherent_policy/partial.toml"
 
-c="$(make_consumer mixed-over-v2-skills "$mixed_policy" v0.41.0 review:v2 integrate:v2)"
-run_audit "$c"
-expect_status "a mixed policy is indeterminate, never compatible" 2
-expect_says "the mixed refusal says the policy is two shapes at once" "more than one shape at once"
+# name|policy fixture|skill specs|mutation applied to the built consumer
+INCOHERENT_CASES="
+policy-is-mixed|$incoherent_policy/mixed.toml|review:v2 integrate:v2|none
+policy-is-incomplete|$incoherent_policy/partial.toml|integrate:pre|none
+policy-incomplete-with-v2-skills|$incoherent_policy/partial.toml|review:v2|none
+contract-version-zero|LEGACY|review:v2|zero_contract
+contract-version-noninteger|LEGACY|review:v2|noninteger_contract
+contract-versions-disagree|V2|review:v2 integrate:v3|none
+stamp-has-no-managed-line|LEGACY|review:v2|strip_managed
+stamp-has-no-ref-line|LEGACY|review:v2|strip_ref
+managed-name-has-no-directory|LEGACY|review:v2|drop_dir
+managed-name-has-no-payload|LEGACY|review:v2|drop_skill_md
+vendored-skills-with-no-stamp|LEGACY|review:v2 integrate:v2|drop_stamp
+"
 
-# A mixed policy is not a pin question either: it must refuse whatever the pin.
-c="$(make_consumer mixed-over-pre-v2-skills "$mixed_policy" v0.34.1 integrate:pre)"
-run_audit "$c"
-expect_status "a mixed policy refuses under a pre-v2 pin too, rather than reporting pin lag" 2
+apply_mutation() {
+    local root="$1" how="$2" d="$1/.claude/skills"
+    case "$how" in
+    none) ;;
+    zero_contract) printf '{"skill":"review","policy_schema_version":0}\n' >"$d/review/assets/policy-contract.json" ;;
+    noninteger_contract) printf '{"skill":"review","policy_schema_version":"two"}\n' >"$d/review/assets/policy-contract.json" ;;
+    strip_managed) grep -v '^# managed:' "$d/.SKILLS_PROVENANCE" >"$root/p.tmp" && mv "$root/p.tmp" "$d/.SKILLS_PROVENANCE" ;;
+    strip_ref) grep -v '^# ref:' "$d/.SKILLS_PROVENANCE" >"$root/p.tmp" && mv "$root/p.tmp" "$d/.SKILLS_PROVENANCE" ;;
+    drop_dir) rm -rf "$d/review" ;;
+    drop_skill_md) rm -f "$d/review/SKILL.md" ;;
+    drop_stamp) rm -f "$d/.SKILLS_PROVENANCE" ;;
+    *)
+        echo "test bug: unknown mutation '$how'" >&2
+        exit 1
+        ;;
+    esac
+}
 
-echo
-echo "== consumer-pin-audit: a contract version must be a positive integer =="
-# Challenge round 4, confirmed: `0` passed the digit-only check and then
-# collapsed into `required = 0`, which reads as "no contract at all", so a
-# damaged contract over a legacy policy reported compatible exit 0.
-c="$(make_consumer zero-contract "$LEGACY_POLICY" v0.41.0 review:v2)"
-printf '{"skill":"review","policy_schema_version":0}\n' \
-    >"$c/.claude/skills/review/assets/policy-contract.json"
+while IFS='|' read -r case_name policy_ref skill_specs mutation; do
+    [ -n "$case_name" ] || continue
+    case "$policy_ref" in
+    LEGACY) policy_src="$LEGACY_POLICY" ;;
+    V2) policy_src="$V2_POLICY" ;;
+    *) policy_src="$policy_ref" ;;
+    esac
+    # shellcheck disable=SC2086 # skill specs are a deliberate word-split list
+    c="$(make_consumer "inv-$case_name" "$policy_src" v0.41.0 $skill_specs)"
+    apply_mutation "$c" "$mutation"
+    run_audit "$c"
+    expect_status "invariant: $case_name is indeterminate" 2
+    expect_not_says "invariant: $case_name is never reported compatible" "compatible"
+done <<INCOHERENT
+$INCOHERENT_CASES
+INCOHERENT
+
+# The invariant must not swallow the coherent inputs it sits beside: a legacy
+# or v1 policy is a coherent older shape the audit reports on, not an
+# incoherent one, and an empty `# managed:` line is a valid zero-skill answer.
+c="$(make_consumer inv-coherent-legacy "$LEGACY_POLICY" v0.34.1 integrate:pre)"
 run_audit "$c"
-expect_status "a contract declaring version 0 is indeterminate, not 'no contract'" 2
-expect_says "the zero-version error says it must be positive" "must be a positive integer"
+expect_status "invariant: a coherent legacy policy still gets a verdict, not exit 2" 0
+c="$(make_consumer inv-coherent-v1 "$V1_POLICY" v0.34.1 integrate:pre)"
+run_audit "$c"
+expect_status "invariant: a coherent v1 policy still gets a verdict, not exit 2" 0
+c="$(make_consumer inv-empty-managed "$LEGACY_POLICY" v0.34.1)"
+run_audit "$c"
+expect_status "invariant: an empty '# managed:' line is coherent, not damage" 0
 
 echo
 echo "== devflow-policy: an older shape is refused with one actionable message =="

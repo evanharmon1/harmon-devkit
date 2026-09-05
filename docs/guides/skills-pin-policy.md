@@ -49,8 +49,10 @@ It reads three things and compares them:
 - **the pin actually vendored** — the `# ref:` line of
   `<dest>/.SKILLS_PROVENANCE`, which outranks `source.ref` in the manifest
   because anyone can edit the manifest without re-running the sync;
-- **what those skills require** — the highest `policy_schema_version` declared
-  by any *managed* skill's `assets/policy-contract.json`. Only directories on
+- **what those skills require** — the single `policy_schema_version` that every
+  *managed* skill's `assets/policy-contract.json` agrees on (a set declaring
+  two different versions is refused as indeterminate, not resolved to either).
+  Only directories on
   the provenance `# managed:` line count, so a local skill (or, in
   harmon-devkit itself, a `.claude/skills/<name>` symlink into `ai/skills/`) is
   correctly excluded. A pre-Dev-flow-v2 skill ships no contract file and so
@@ -69,14 +71,38 @@ table, so no list of release numbers has to be kept current here.
 | 0 | `not-vendored` | No `.SKILLS_PROVENANCE` under `dest` and no unstamped policy-consuming skill beside it: nothing was vendored. Run `task sync:skills` first. |
 | 0 | `no-policy-consumer` | The policy has migrated, but the vendored set contains none of the skills that resolve it, so there is no pin contract to satisfy. Advancing the pin would not add one; nothing needs to change. |
 | 1 | `incompatible` | The vendored skills declare a policy schema version the repository's policy does not have. Run `copier update`; **do not** advance the pin. |
-| 2 | — | Usage error or indeterminate. Never reported as a pass. Covers a missing manifest (including one that is not parseable YAML), an unreadable policy, a missing reader, a damaged provenance stamp (no `# ref:` or no `# managed:` line), vendored skills declaring two different schema versions, a contract declaring a non-positive version (`0` is indistinguishable from "no contract"), a **mixed policy** carrying markers from more than one shape at once, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. |
-| 3 | `pin-lag` | The policy migrated and the policy-consuming skills *are* vendored but predate the contract. Advance `source.ref` and re-run `task sync:skills`. |
+| 2 | — | Usage error, or **indeterminate under the coherence invariant**. Never reported as a pass. Covers a missing manifest (including one that is not parseable YAML), an unreadable policy, a missing reader, a damaged provenance stamp (no `# ref:` or no `# managed:` line), vendored skills declaring two different schema versions, a contract declaring a non-positive version (`0` is indistinguishable from "no contract"), a **mixed policy** carrying markers from more than one shape at once, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. |
+| 3 | `pin-lag` | The policy migrated and the policy-consuming skills *are* vendored but predate the contract. Advance `source.ref` to a release whose stage skills declare the version the policy declares, then re-run `task sync:skills`. Where the policy has moved ahead of this toolchain entirely (a version the shipped reader does not support), the audit says so rather than sending you after a pin that cannot exist yet. |
 
 A schema version names an **incompatible shape**, not a minimum capability
 level — the reader itself requires `schema_version = 2` exactly — so the audit
 compares for equality rather than "at least". By the same reasoning, vendored
 skills declaring two different versions is a broken set that no single policy
 can satisfy, and is reported indeterminate rather than resolved to either one.
+
+### The coherence invariant
+
+The audit states one rule rather than a list of special cases:
+
+> An input the shared reader refuses, or a stamp inconsistent with the tree, is
+> **indeterminate — exit 2, never a pass.**
+
+A pin verdict is only meaningful on inputs that are internally coherent, so
+anything else has no verdict to give and guessing one is the fail-open the
+script exists to prevent. It covers a policy that is not exactly one shape the
+reader recognizes (`mixed`, or `unknown` declaring no version at all), a
+contract whose version is not a positive integer, managed contracts that
+disagree on a version, and a provenance stamp that disagrees with the tree
+(missing `# ref:`/`# managed:` lines, a managed name with no directory or no
+`SKILL.md`, or vendored contract-carrying skills with no stamp at all).
+`legacy` and `v1` are **not** incoherent — they are coherent older shapes, and
+reporting on them is the audit's whole job. Neither is a policy declaring a
+positive version this reader cannot operate: that is a policy ahead of the
+toolchain, reported as such.
+
+`scripts/test-consumer-pin-audit.sh` tests this as a **property** over every
+incoherent input, so a newly discovered one is a new row in that table rather
+than a new branch in the script.
 
 Compatibility needs **both** a successful shape detection and an equal version,
 not either alone. A policy declaring `schema_version = 2` while still carrying
