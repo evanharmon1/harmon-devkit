@@ -1,0 +1,96 @@
+{
+  "schema": 2,
+  "run_id": "run-6040-settlement-cross-check",
+  "initiated_by": "human",
+  "started_at": "2026-08-29T09:00:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-08-29T09:00:00Z",
+      "exit": "claimed"
+    },
+    {
+      "stage": "claim",
+      "entered_at": "2026-08-29T09:05:00Z",
+      "exit": "planned"
+    },
+    {
+      "stage": "plan",
+      "entered_at": "2026-08-29T09:10:00Z",
+      "exit": "briefed"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-08-29T09:15:00Z",
+      "exit": "verified"
+    },
+    {
+      "stage": "verify",
+      "entered_at": "2026-08-29T09:20:00Z",
+      "exit": "green"
+    },
+    {
+      "stage": "challenge",
+      "entered_at": "2026-08-29T09:25:00Z",
+      "exit": "converged, one deferred"
+    },
+    {
+      "stage": "review",
+      "entered_at": "2026-08-29T09:35:00Z",
+      "exit": "converged"
+    },
+    {
+      "stage": "security",
+      "entered_at": "2026-08-29T09:45:00Z",
+      "exit": "clean"
+    },
+    {
+      "stage": "integration",
+      "entered_at": "2026-08-29T10:00:00Z",
+      "exit": "converged"
+    }
+  ],
+  "interventions": [],
+  "outcome": "ready-for-review",
+  "pr": {
+    "number": 634,
+    "url": "https://github.com/evanharmon1/harmon-devkit/pull/634"
+  },
+  "evidence_comments": [],
+  "settlements": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "disposition": "fix",
+      "settled_at": "2026-08-29T10:30:00Z",
+      "reference": {
+        "type": "sha",
+        "value": "6040a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
+      }
+    }
+  ],
+  "promotion": {
+    "head": "6040a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+    "promoted_at": "2026-08-29T11:00:00Z",
+    "gate_fingerprint": "sha256:fingerprint"
+  },
+  "evidence_registrations": [],
+  "pr_bindings": [
+    {
+      "seq": 0,
+      "digest": "8cee3b34ffd9832b720a26b065042f1dd9c8a011e08f35d4c159f74fd7d6bda6",
+      "prev_digest": "genesis",
+      "number": 634,
+      "url": "https://github.com/evanharmon1/harmon-devkit/pull/634",
+      "bound_at": "2026-08-29T09:25:00Z"
+    }
+  ],
+  "outcome_transitions": [
+    {
+      "seq": 0,
+      "digest": "c5ca26d0eec58e4e7705f8c628461749349279bd11fe612904d52d704393eccf",
+      "prev_digest": "genesis",
+      "outcome": "ready-for-review",
+      "at": "2026-08-29T11:00:00Z"
+    }
+  ]
+}

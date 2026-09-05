@@ -142,6 +142,9 @@ export GH_FIXTURES="$fixtures"
 export GH_LOG="$log"
 
 head_sha="1111111111111111111111111111111111111111"
+# A second, distinct full SHA for the fixtures that need one head to disagree
+# with another (harmon-devkit#685's promotion-head binding).
+stale_head_sha="2222222222222222222222222222222222222222"
 moved_sha="2222222222222222222222222222222222222222"
 
 default_body() {
@@ -169,7 +172,7 @@ write_default_record() {
        evidence_comments:[], settlements:[], promotion:null,
        evidence_registrations:[], outcome_transitions:[],
        pr_bindings:[{seq:0,prev_digest:"genesis",
-         digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+         digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
          number:493,url:"https://github.com/example/repo/pull/493",
          bound_at:"2026-01-01T00:00:00Z"}]}' \
         >"${record_dir}/run.json"
@@ -971,7 +974,7 @@ jq -cn --arg head "$head_sha" \
       promotion:null,
       evidence_registrations:[], outcome_transitions:[],
       pr_bindings:[{seq:0,prev_digest:"genesis",
-        digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+        digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
         number:493,url:"https://github.com/example/repo/pull/493",
         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
 run_gate
@@ -1467,7 +1470,7 @@ jq -cn --arg head "$head_sha" \
       promotion:null,
       evidence_registrations:[], outcome_transitions:[],
       pr_bindings:[{seq:0,prev_digest:"genesis",
-        digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+        digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
         number:493,url:"https://github.com/example/repo/pull/493",
         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
 disclosed_result="${fixtures}/integrator-result-disclosed.json"
@@ -1514,7 +1517,7 @@ jq -cn --arg head "$head_sha" \
       promotion:null,
       evidence_registrations:[], outcome_transitions:[],
       pr_bindings:[{seq:0,prev_digest:"genesis",
-        digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+        digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
         number:493,url:"https://github.com/example/repo/pull/493",
         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
 mismatched_disposition_result="${fixtures}/integrator-result-mismatched-disposition.json"
@@ -1536,6 +1539,297 @@ run_gate --integrator-result "$mismatched_disposition_result"
 assert_gate 1 fail disposition-unsettled
 printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
     fail "disposition-unsettled did not name the mismatched finding: $gate_out"
+
+# ---------------------------------------------------------------------------
+# harmon-devkit#685 — run-trajectory receipt invariants de-scoped from #634,
+# carried here as required test cases. Each block below names the acceptance
+# criterion it discharges and pairs the attack with its legitimate neighbour,
+# so a check cannot be satisfied by an over-broad reading of either half.
+# ---------------------------------------------------------------------------
+
+# --- #685 criterion 9: the moment an integrator pass applies fix|decline|file
+# --- to a deferred finding, the matching append-only settlement exists,
+# --- REGARDLESS OF OUTCOME. The `fix` case is covered above; decline and file
+# --- are the two dispositions that leave the head alone, so nothing else in
+# --- this gate would ever notice them going unrecorded.
+write_deferred_adjudication() {
+    jq -cn --arg head "$head_sha" \
+        '{schema:2, run_id:"test-run", stage:"review", round:1,
+          reviewed_head:$head,
+          adjudications:[{finding_id:"review-r1-codex-cli-9",
+            reviewer_priority:"P2", adjudicated_priority:"P2",
+            disposition:"defer", reason:"carrying to integration",
+            evidence:"needs a second look", override:null}]}' \
+        >"${record_dir}/adjudications/review-r1.json"
+}
+
+# $1 name, $2 disposition
+write_disposition_result() {
+    local out="${fixtures}/integrator-result-685-$1.json"
+    jq -cn --arg head "$head_sha" --arg disp "$2" '
+      {schema:2, role:"integrator", status:"completed", head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"claude-code",model:"test",tier:"economy"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+                codex_cycle:null, integration_round:1, findings:[],
+                unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+                verdict:"clean",
+                applied_dispositions:[{finding_id:"review-r1-codex-cli-9",
+                                        disposition:$disp}]}}' \
+        >"$out"
+    node "$validator" envelope "$out" >/dev/null ||
+        fail "#685 disposition fixture ($2) failed schema validation"
+    printf '%s\n' "$out"
+}
+
+for disposition in decline file; do
+    echo "==> #685(9): a DEFERRED finding ${disposition}d in applied_dispositions with no settlement fails"
+    write_defaults
+    write_deferred_adjudication
+    disposition_result="$(write_disposition_result "unsettled-${disposition}" "$disposition")"
+    run_gate --integrator-result "$disposition_result"
+    assert_gate 1 fail deferred-unsettled
+    printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
+        fail "#685(9) ${disposition}: gate did not name the unsettled finding: $gate_out"
+done
+
+# $1 settlement disposition, $2 reference type, $3 reference value. Writes a
+# whole record rather than patching: write_defaults resets run.json via
+# write_default_record, so every case here restates it in full.
+write_record_with_settlement() {
+    jq -cn --arg disp "$1" --arg reftype "$2" --arg refvalue "$3" '
+      {schema:2, run_id:"test-run", initiated_by:"human",
+       started_at:"2026-01-01T00:00:00Z",
+       stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z"}],
+       interventions:[], outcome:null,
+       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+       evidence_comments:[],
+       settlements:[{finding_id:"review-r1-codex-cli-9", disposition:$disp,
+                     settled_at:"2026-01-01T01:00:00Z",
+                     reference:{type:$reftype, value:$refvalue}}],
+       promotion:null, evidence_registrations:[], outcome_transitions:[],
+       pr_bindings:[{seq:0,prev_digest:"genesis",
+         digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
+         number:493,url:"https://github.com/example/repo/pull/493",
+         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
+}
+
+echo "==> #685(9): the same decline, once settled in run.json with the SAME disposition, passes"
+write_defaults
+write_record_with_settlement decline comment_id 9001
+write_deferred_adjudication
+disposition_result="$(write_disposition_result settled-decline decline)"
+run_gate --integrator-result "$disposition_result"
+assert_gate 0 pass ready
+
+echo "==> #685(9): a settlement recording file where the pass applied decline is disposition-unsettled"
+write_defaults
+write_record_with_settlement file issue_number 9002
+write_deferred_adjudication
+run_gate --integrator-result "$disposition_result"
+assert_gate 1 fail disposition-unsettled
+
+# --- #685 criterion 6: promotion.head equals the head of the final integrator
+# --- result and its accepted-cycle reviewed commit; a stale integration pass
+# --- cannot certify a newer promoted head. The envelope-head and
+# --- accepted.reviewed_commit halves are proven elsewhere in this file; this
+# --- is the record's own promotion entry, which was bound to nothing.
+# $1 = the head the record claims it promoted (a promoted record is
+# outcome: ready-for-review, which run.schema.json ties to a non-null
+# promotion and a last stage_transitions entry of integration).
+write_promoted_record() {
+    jq -cn --arg head "$1" '
+      {schema:2, run_id:"test-run", initiated_by:"human",
+       started_at:"2026-01-01T00:00:00Z",
+       stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z",
+                           exit:"converged"}],
+       interventions:[], outcome:"ready-for-review",
+       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+       evidence_comments:[], settlements:[],
+       promotion:{head:$head, promoted_at:"2026-01-01T02:00:00Z",
+                  gate_fingerprint:"sha256:fingerprint"},
+       evidence_registrations:[],
+       outcome_transitions:[{seq:0,prev_digest:"genesis",
+         digest:"c8d2ee4b1c0a3fd0cd5d6ffc3e5f1c1ba1d5b21b0f4c2ad2b0cbb35c6a9b8f2e",
+         outcome:"ready-for-review", at:"2026-01-01T02:00:00Z"}],
+       pr_bindings:[{seq:0,prev_digest:"genesis",
+         digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
+         number:493,url:"https://github.com/example/repo/pull/493",
+         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
+    rm -f "${record_dir}"/adjudications/*.json
+}
+
+write_promoted_pr_view() {
+    jq -cn --arg head "$head_sha" \
+        '{state:"OPEN",isDraft:false,headRefOid:$head,
+          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+          headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
+}
+
+echo "==> #685(6): audit passes when run.json's promotion.head IS the gated head"
+write_defaults
+write_promoted_record "$head_sha"
+write_promoted_pr_view
+run_audit
+assert_gate 0 pass audit
+
+echo "==> #685(6): a promotion.head naming a different commit is promotion-head-mismatch"
+write_defaults
+write_promoted_record "$stale_head_sha"
+write_promoted_pr_view
+run_audit
+assert_gate 2 indeterminate promotion-head-mismatch
+
+echo "==> #685(6): the same stale promotion.head is refused by check too, not only audit"
+write_defaults
+write_promoted_record "$stale_head_sha"
+run_gate
+assert_gate 2 indeterminate promotion-head-mismatch
+
+# --- #685 criterion 4: integration -> implement -> integration loops are
+# --- counted against [rounds.<policy>].remediation; exceeding it is capped
+# --- with escalation, and code-changing integration dispositions past the cap
+# --- are rejected. --remediation-cap is what supplies the resolved value.
+# $1 = number of integration entries in stage_transitions
+write_record_with_integration_entries() {
+    jq -cn --argjson n "$1" '
+      # A minute counter keeps entered_at non-decreasing across the whole
+      # array (checkRunChronology) while the edges stay on ALLOWED_EDGES'"'"'s
+      # own graph: kickoff -> claim -> plan -> implement -> verify ->
+      # security -> integration, then $n loops of
+      # integration -> implement -> verify -> security -> integration.
+      def at($m): "2026-01-01T" + (($m / 60 | floor) | tostring | ("0" * (2 - length)) + .) + ":" + (($m % 60) | tostring | ("0" * (2 - length)) + .) + ":00Z";
+      [{stage:"kickoff",exit:"claimed"},
+       {stage:"claim",exit:"planned"},
+       {stage:"plan",exit:"briefed"},
+       {stage:"implement",exit:"verified"},
+       {stage:"verify",exit:"green"},
+       {stage:"security",exit:"clean"}]
+      + ([range(0; $n)] | map(
+          [{stage:"integration",exit:"remediating"},
+           {stage:"implement",exit:"fixed"},
+           {stage:"verify",exit:"green"},
+           {stage:"security",exit:"clean"}]) | flatten)
+      + [{stage:"integration"}]
+      | to_entries | map(.value + {entered_at: at(.key)})
+      | . as $transitions
+      | {schema:2, run_id:"test-run", initiated_by:"human",
+         started_at:"2026-01-01T00:00:00Z",
+         stage_transitions:$transitions,
+         interventions:[], outcome:null,
+         pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+         evidence_comments:[], settlements:[], promotion:null,
+         evidence_registrations:[], outcome_transitions:[],
+         pr_bindings:[{seq:0,prev_digest:"genesis",
+           digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
+           number:493,url:"https://github.com/example/repo/pull/493",
+           bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
+    node "$validator" run "${record_dir}/run.json" >/dev/null ||
+        fail "#685(4) record fixture with $1 remediation loop(s) is not a valid run record"
+    rm -f "${record_dir}"/adjudications/*.json
+}
+
+echo "==> #685(4): remediation loops within --remediation-cap pass"
+write_defaults
+write_record_with_integration_entries 2
+run_gate --remediation-cap 3
+assert_gate 0 pass ready
+
+echo "==> #685(4): remediation loops exceeding --remediation-cap fail as remediation-capped"
+write_defaults
+write_record_with_integration_entries 2
+run_gate --remediation-cap 1
+assert_gate 1 fail remediation-capped
+
+echo "==> #685(4): omitting --remediation-cap leaves the same record promotable (the flag is the only source)"
+write_defaults
+write_record_with_integration_entries 2
+run_gate
+assert_gate 0 pass ready
+
+# A record that is exactly AT one remediation loop (two integration entries)
+# and carries a settlement for the deferred finding, so the at-cap cases
+# below turn only on the disposition the gated pass applies.
+# $1 settlement disposition, $2 reference type, $3 reference value.
+write_at_cap_record() {
+    jq -cn --arg disp "$1" --arg reftype "$2" --arg refvalue "$3" '
+      {schema:2, run_id:"test-run", initiated_by:"human",
+       started_at:"2026-01-01T00:00:00Z",
+       stage_transitions:[
+         {stage:"kickoff",entered_at:"2026-01-01T00:00:00Z",exit:"claimed"},
+         {stage:"claim",entered_at:"2026-01-01T00:01:00Z",exit:"planned"},
+         {stage:"plan",entered_at:"2026-01-01T00:02:00Z",exit:"briefed"},
+         {stage:"implement",entered_at:"2026-01-01T00:03:00Z",exit:"verified"},
+         {stage:"verify",entered_at:"2026-01-01T00:04:00Z",exit:"green"},
+         {stage:"security",entered_at:"2026-01-01T00:05:00Z",exit:"clean"},
+         {stage:"integration",entered_at:"2026-01-01T00:06:00Z",exit:"remediating"},
+         {stage:"implement",entered_at:"2026-01-01T00:07:00Z",exit:"fixed"},
+         {stage:"verify",entered_at:"2026-01-01T00:08:00Z",exit:"green"},
+         {stage:"security",entered_at:"2026-01-01T00:09:00Z",exit:"clean"},
+         {stage:"integration",entered_at:"2026-01-01T00:10:00Z"}],
+       interventions:[], outcome:null,
+       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+       evidence_comments:[],
+       settlements:[{finding_id:"review-r1-codex-cli-9", disposition:$disp,
+                     settled_at:"2026-01-01T00:11:00Z",
+                     reference:{type:$reftype, value:$refvalue}}],
+       promotion:null, evidence_registrations:[], outcome_transitions:[],
+       pr_bindings:[{seq:0,prev_digest:"genesis",
+         digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
+         number:493,url:"https://github.com/example/repo/pull/493",
+         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
+    node "$validator" run "${record_dir}/run.json" >/dev/null ||
+        fail "#685(4) at-cap record fixture is not a valid run record"
+}
+
+echo "==> #685(4): AT the cap, a code-changing disposition is rejected"
+write_defaults
+write_at_cap_record fix sha "$head_sha"
+write_deferred_adjudication
+fix_result="$(write_disposition_result at-cap-fix fix)"
+run_gate --integrator-result "$fix_result" --remediation-cap 1
+assert_gate 1 fail remediation-capped
+printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
+    fail "#685(4) at-cap: gate did not name the code-changing disposition: $gate_out"
+
+echo "==> #685(4): AT the cap, a decline (which never moves the head) still passes"
+write_defaults
+write_at_cap_record decline comment_id 9003
+write_deferred_adjudication
+decline_result="$(write_disposition_result at-cap-decline decline)"
+run_gate --integrator-result "$decline_result" --remediation-cap 1
+assert_gate 0 pass ready
+
+echo "==> #685(4): a non-integer --remediation-cap is a usage error, never silently ignored"
+write_defaults
+write_default_record
+set +e
+bad_cap_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" check \
+    --repo example/repo --pr 493 --head "$head_sha" --record "$record_dir" \
+    --integrator-result "${fixtures}/integrator-result-disabled.json" \
+    --integration-cap 0 --remediation-cap not-a-number 2>&1)"
+bad_cap_rc=$?
+set -e
+[ "$bad_cap_rc" -eq 2 ] ||
+    fail "#685(4): a malformed --remediation-cap should exit 2, got $bad_cap_rc: $bad_cap_out"
+printf '%s\n' "$bad_cap_out" | grep -Fq -- '--remediation-cap must be a non-negative integer' ||
+    fail "#685(4): malformed --remediation-cap did not name the flag: $bad_cap_out"
+
+# --- #685 criterion 5: codex_cycle.cycle <= [rounds].integration; cap 0 =>
+# --- null cycle; a clean verdict with a null cycle under a positive cap is
+# --- not clean. The five `check`-mode cases above cover all three clauses;
+# --- this pins that `audit` — the mode the connector-flip reconcile path
+# --- uses — waives none of them just because the PR is already promoted.
+echo "==> #685(5): audit refuses a null codex_cycle under a positive --integration-cap too"
+write_defaults
+write_default_record
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
+run_audit --integration-cap 3
+assert_gate 2 indeterminate codex-cap-mismatch
 
 echo "==> a CHANGES_REQUESTED review landing mid-gate fails on the final re-read"
 write_defaults

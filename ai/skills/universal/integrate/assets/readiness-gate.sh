@@ -118,10 +118,12 @@ usage() {
 Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
-      [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
+      [--remediation-cap N] [--codex-recheck STATE_FILE]
+      [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
-      [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
+      [--remediation-cap N] [--codex-recheck STATE_FILE]
+      [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
@@ -155,6 +157,16 @@ pairs only with a non-null one, and that codex_cycle.cycle never exceeds it
 process, so there is no legitimate case for omitting it: a null codex_cycle
 with the flag missing used to be silently trusted as proof the resolved cap
 was 0, when it was really just the integrator's own unverified claim.
+--remediation-cap N is optional and, when given, enforces
+harmon-devkit#685's remediation-loop invariant: each integration ->
+implement -> integration loop the record's own stage_transitions[] records
+is one remediation round, the count may not exceed the cap, and at the cap
+the gated pass may not still be applying a code-changing disposition (fix/
+restructure/delete), which would require a further loop the cap forbids.
+Unlike --integration-cap it stays optional: that flag pairs with a field
+every integrator pass carries, so its absence could be mistaken for a cap
+of 0, whereas this one is derived entirely from the record and omitting it
+skips exactly one guard rather than waiving a claim.
 --codex-recheck STATE_FILE is optional and, when codex_cycle reports a clean
 exit_code 0, re-confirms it read-only by re-running check-codex-cloud-
 review.sh's own `check` against STATE_FILE (the same on-disk state the
@@ -232,12 +244,13 @@ head=
 record_dir=
 integrator_result=
 integration_cap=
+remediation_cap=
 codex_recheck_state=
 allowed_edited_roots='[]'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --codex-recheck | --allow-edited-root)
+    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --remediation-cap | --codex-recheck | --allow-edited-root)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
@@ -246,6 +259,7 @@ while [ "$#" -gt 0 ]; do
         --record) record_dir=$2 ;;
         --integrator-result) integrator_result=$2 ;;
         --integration-cap) integration_cap=$2 ;;
+        --remediation-cap) remediation_cap=$2 ;;
         --codex-recheck) codex_recheck_state=$2 ;;
         --allow-edited-root)
             printf '%s' "$2" | grep -Eq '^[1-9][0-9]*$' ||
@@ -283,6 +297,8 @@ valid_repo "$repo" || die "invalid repository: $repo"
 valid_uint "$pr" || die "invalid PR number: $pr"
 [ -z "$integration_cap" ] || valid_uint_or_zero "$integration_cap" ||
     die "--integration-cap must be a non-negative integer"
+[ -z "$remediation_cap" ] || valid_uint_or_zero "$remediation_cap" ||
+    die "--remediation-cap must be a non-negative integer"
 
 # check gates promotion, so the PR must still be draft; audit answers the
 # reconcile question for a PR somebody already promoted, so it drops exactly
@@ -909,6 +925,31 @@ active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_j
 node "$validate_result_schemas" envelope "$integrator_result" \
     --run-id "$active_run_id" --initiated-by "$active_initiated_by" >/dev/null 2>&1 ||
     indeterminate codex-indeterminate "--integrator-result $integrator_result is not a schema-valid result.envelope for the active run ($active_run_id/$active_initiated_by)"
+
+# harmon-devkit#685: "promotion.head equals the head of the final integrator
+# result and its accepted-cycle reviewed commit; a stale integration pass
+# cannot certify a newer promoted head". Two of those three equalities are
+# already proven — the envelope head against the gated head just below, and
+# accepted.reviewed_commit against the envelope head by the validator's own
+# receipt pass above. The third, run.json's own recorded promotion.head, was
+# bound to nothing at all: `audit` judges an already-promoted PR, so its
+# record carries a promotion entry, and nothing compared that entry's head
+# against the head being judged. A record whose promotion names an older
+# commit is either a promotion of a different head or a record that has
+# fallen behind its PR — either way the gate is not judging what was
+# actually promoted, and `audit`'s verdict would be about the wrong commit.
+#
+# `check` runs before promotion, so a non-null promotion there is itself
+# inconsistent — but only when it disagrees with this head: a re-run of
+# `check` after a promotion that was undone legitimately still carries the
+# entry for this same head. Both modes therefore apply the identical rule
+# (equality when present), rather than one forbidding what the other
+# requires.
+record_promotion_head="$(jq -r '.promotion.head // ""' "$run_json" 2>/dev/null)" ||
+    indeterminate malformed-data "run.json's promotion could not be read"
+if [ -n "$record_promotion_head" ] && [ "$record_promotion_head" != "$head" ]; then
+    indeterminate promotion-head-mismatch "run.json records promotion.head $record_promotion_head, not the gated $head — a stale integration pass cannot certify a newer promoted head (harmon-devkit#685)"
+fi
 integrator_role="$(jq -er '.role | select(type == "string")' \
     "$integrator_result" 2>/dev/null)" ||
     indeterminate malformed-data "integrator result carries no role"
@@ -1061,6 +1102,43 @@ integrator_verdict="$(jq -er '.payload.verdict | select(type == "string")' \
     indeterminate malformed-data "integrator result carries no verdict"
 [ "$integrator_verdict" = clean ] ||
     fail_condition integrator-not-clean "integrator result verdict is $integrator_verdict, not clean — only a completed clean pass for this head can be gated; re-dispatch after what it is waiting on or reporting is settled"
+
+# 9d. Remediation loops against the resolved remediation cap
+# (harmon-devkit#685: "integration -> implement -> integration loops are
+# counted against [rounds.<policy>].remediation; exceeding it is capped with
+# escalation, and code-changing integration dispositions past the cap are
+# rejected"). The count is the record's own, not a claim the pass makes:
+# stage_transitions[] records every stage the run entered, so every
+# `integration` entry AFTER the first is a return to it, and the count of
+# returns is the number of remediation loops. Every return necessarily went
+# back through implement, because integration's only outgoing edge IS
+# implement (run.schema.json's ALLOWED_EDGES, enforced by
+# validate-result-schemas.mjs's checkStageTransitionsOrder, which also
+# refuses a first-visit implement -> integration as a premature remediation
+# return). The path back in may then run implement -> verify -> ... ->
+# integration or implement -> integration; either way it is one loop.
+#
+# Two conditions, matching the criterion's two halves. Exceeding the cap is
+# terminal — the run owes a human escalation, not a promotion. AT the cap,
+# a code-changing disposition (fix/restructure/delete — each one moves the
+# head) is refused for the same reason the integration stage refuses one on
+# its last round: applying it needs another push and another cycle, which
+# is precisely the loop the cap has already spent. decline/file/defer leave
+# the head alone and are unaffected.
+if [ -n "$remediation_cap" ]; then
+    remediation_loops="$(jq -r '[.stage_transitions[]? | select(.stage == "integration")] | length | if . > 0 then . - 1 else 0 end' \
+        "$run_json" 2>/dev/null)" ||
+        indeterminate malformed-data "run.json's stage_transitions could not be read for the remediation-loop count"
+    if [ "$remediation_loops" -gt "$remediation_cap" ]; then
+        fail_condition remediation-capped "the record shows $remediation_loops integration -> implement -> integration remediation loop(s), exceeding --remediation-cap $remediation_cap — escalate rather than promote (harmon-devkit#685)"
+    elif [ "$remediation_loops" -eq "$remediation_cap" ]; then
+        code_changing="$(jq -r '[.[] | select(.disposition == "fix" or .disposition == "restructure" or .disposition == "delete") | .finding_id] | join(", ")' \
+            <<<"$applied_dispositions" 2>/dev/null)" ||
+            indeterminate malformed-data "applied_dispositions could not be read for the remediation-cap check"
+        [ -z "$code_changing" ] ||
+            fail_condition remediation-capped "the record is already at --remediation-cap $remediation_cap remediation loop(s), but the gated pass still applies code-changing disposition(s): $code_changing — each needs a further loop the cap forbids (harmon-devkit#685)"
+    fi
+fi
 
 # 10. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
 # and require equality before any pass. The evaluated fingerprint hashes the

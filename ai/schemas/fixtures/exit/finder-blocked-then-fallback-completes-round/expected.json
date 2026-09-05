@@ -1,0 +1,6 @@
+{
+  "outcome": "converged",
+  "reason": "empty_round",
+  "rounds_counted": 1,
+  "substitutions_json": "[{\"slot\":\"gemini-cli\",\"ran\":\"copilot-cli\",\"round\":1}]"
+}

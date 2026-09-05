@@ -241,6 +241,79 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
     return active;
   }
 
+  // The transition receipt that was active when a pass arrived — same walk
+  // as activeStageBefore, but returning the whole entry so the chronology
+  // bound below can read its optional `entered_at`.
+  function activeTransitionBefore(seq) {
+    let active = null;
+    for (const t of transitionsInOrder) {
+      if (t.seq >= seq) break;
+      active = t;
+    }
+    return active;
+  }
+
+  // harmon-devkit#685: "source passes' produced_at fall between run start
+  // and promotion and not before their stage entry". Ordering itself is
+  // never taken from a timestamp — that is the trusted receipt sequence's
+  // job (specs/dev-flow-v2.md: producer-supplied produced_at "SHALL be
+  // only a bounded sanity check ... never an ordering ... boundary"), and
+  // the receipt-order checks above are unchanged. This is exactly that
+  // bounded sanity check: a pass claiming to have been produced before the
+  // run existed, after it was promoted, or before the stage it names was
+  // even entered, is evidence from outside the run's own span however
+  // well-formed it is otherwise.
+  //
+  // Every bound is OPTIONAL and checked only when the run directory
+  // actually supplies it: `run.json`'s own `started_at` and
+  // `promotion.promoted_at`, and a transition receipt's own `entered_at`.
+  // The run directory is a documented SUBSET of the full run record
+  // (ai/schemas/README.md "Run directory layout") — a caller that carries
+  // those fields gets them enforced; one that does not is unchanged, so
+  // this can never turn a legitimate trajectory that simply omits them
+  // into a failure.
+  // A bound that is PRESENT but unparseable fails the whole trajectory
+  // rather than silently disabling itself: "the field is absent" and "the
+  // field is there but nonsense" must not reach the same outcome, or a
+  // typo'd started_at would waive exactly the check it was written to
+  // request. (Absent stays absent — see the OPTIONAL note above.)
+  function boundOrThrow(value, label) {
+    if (typeof value !== "string") return null;
+    const parsed = Date.parse(value);
+    if (Number.isNaN(parsed)) {
+      throw new ExitIndeterminate(`run.json's ${label} "${value}" is not a parseable instant — cannot bound any pass against it`);
+    }
+    return parsed;
+  }
+  const runStartedAt = boundOrThrow(runRecord.started_at, "started_at");
+  const runPromotedAt = boundOrThrow(
+    runRecord.promotion && typeof runRecord.promotion === "object" ? runRecord.promotion.promoted_at : undefined,
+    "promotion.promoted_at",
+  );
+
+  function chronologyViolation(producedAt, seq) {
+    // The envelope's own produced_at shape is result.envelope.schema.json's
+    // job — validatePassSchema below rejects a malformed one on its own
+    // terms, with its own message, so this bound has nothing to add.
+    if (typeof producedAt !== "string") return null;
+    const t = Date.parse(producedAt);
+    if (Number.isNaN(t)) return null;
+    if (runStartedAt !== null && t < runStartedAt) {
+      return `produced_at "${producedAt}" is before the run's own started_at "${runRecord.started_at}"`;
+    }
+    if (runPromotedAt !== null && t > runPromotedAt) {
+      return `produced_at "${producedAt}" is after the run's promotion.promoted_at "${runRecord.promotion.promoted_at}"`;
+    }
+    const entry = activeTransitionBefore(seq);
+    if (entry && typeof entry.entered_at === "string") {
+      const enteredAt = boundOrThrow(entry.entered_at, `receipts[${entry.seq}].entered_at`);
+      if (t < enteredAt) {
+        return `produced_at "${producedAt}" is before its own stage "${entry.stage}" was entered at "${entry.entered_at}"`;
+      }
+    }
+    return null;
+  }
+
   const decorated = [];
   const seenIds = new Set();
   const knownIdsFile = tmpDir ? path.join(tmpDir, "known-ids.json") : null;
@@ -301,6 +374,12 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
         level: "reject",
         reason: `stage "${payload.stage}" was not the active stage when this pass arrived (seq ${seq}; active stage was ${active ? `"${active}"` : "none"})`,
       });
+      continue;
+    }
+
+    const chronology = chronologyViolation(env.produced_at, seq);
+    if (chronology) {
+      diagnostics.push({ pass: pass.name, level: "reject", reason: `${chronology} — evidence from outside this run's own span` });
       continue;
     }
 
@@ -1272,6 +1351,51 @@ async function main() {
     );
   }
 
+  // harmon-devkit#685: "stage-skipping in stage_transitions (verify ->
+  // review without challenge, verify -> security without review) is valid
+  // only under the corresponding cap-0 policy". The check above catches
+  // review being computed while challenge is STILL ACTIVE; this catches
+  // the other, quieter shape — a trajectory that records having gone
+  // straight past a confidence stage that its own resolved policy still
+  // budgets rounds for.
+  //
+  // Deliberately keyed on a RECORDED verify -> <stage> edge, i.e. two
+  // consecutive transition receipts, never on "no challenge transition
+  // exists anywhere in this receipt list". The run directory's receipts
+  // array is a documented SUBSET (ai/schemas/README.md "Run directory
+  // layout") — the ordinary case records only the transition(s) for the
+  // stage under test, and inferring a skip from an absence would reject
+  // every such trajectory. An explicit verify -> review edge is a positive
+  // claim about what the run did, and the resolved policy is exactly what
+  // decides whether that claim is legal.
+  //
+  // verify -> security is checked here too even though this script never
+  // computes security's own exit: the trajectory being read is what makes
+  // the claim, and this process holds the policy that settles it — the
+  // same reasoning as every other internal-consistency refusal in this
+  // file (duplicate transitions, over-cap rounds, duplicate adjudications).
+  //
+  // A Map, not an object literal: `stage` is branch-controlled content, and
+  // a plain object's inherited keys ("constructor", "toString", ...) resolve
+  // to truthy values that are not stages at all — the same hazard
+  // lib/toml-lite.mjs's own __proto__ handling exists for.
+  const SKIP_EDGE_GUARDS = new Map([
+    ["review", "challenge"],
+    ["security", "review"],
+  ]);
+  const transitionStages = (runDir.runRecord.receipts || []).filter((r) => r.kind === "transition");
+  for (let i = 1; i < transitionStages.length; i++) {
+    if (transitionStages[i - 1].stage !== "verify") continue;
+    const skipped = SKIP_EDGE_GUARDS.get(transitionStages[i].stage);
+    if (!skipped) continue;
+    if (resolved.rounds[skipped] !== 0) {
+      return indeterminate(
+        args,
+        `the trusted receipt sequence records a "verify" -> "${transitionStages[i].stage}" transition, skipping "${skipped}", but the resolved ${skipped} cap is ${resolved.rounds[skipped]} (not disabled) — stage-skipping is legal only under a cap-0 policy for the skipped stage`,
+      );
+    }
+  }
+
   const validatorPath = args.validator || DEFAULT_VALIDATOR;
   // Preflight the validator's own existence before ever spawning it.
   // Shepherd-stage cloud finding (round 2, about pre-existing code),
@@ -1383,6 +1507,51 @@ async function main() {
     if (presentRoundNumbers[i] !== i + 1) {
       return indeterminate(args, `${args.stage} rounds are not contiguous from 1 (present: ${presentRoundNumbers.join(", ")}) — trajectory inconsistent with its own policy`);
     }
+  }
+
+  // The OTHER direction of the one-to-one pass/adjudication requirement
+  // (harmon-devkit#685: "every retained pass has exactly one adjudication
+  // document and vice versa (both directions); an unmatched pass is an
+  // error, not ignored"). The pass -> adjudication direction is the
+  // `missingAdjudication` check below; this is adjudication -> pass, and
+  // nothing enforced it: assembleLogicalRounds derives its round numbers
+  // from the stage's passes and slot_failures ONLY, so an adjudication
+  // naming a round the run has no evidence of at all was silently dropped
+  // and the trajectory converged as if the document did not exist —
+  // adjudicating findings no pass ever produced.
+  //
+  // Deliberately measured against every pass the run directory HOLDS for
+  // this stage (plus its slot_failures), not against the assembled/
+  // retained rounds: a round whose every pass was REJECTED by receipt
+  // validation legitimately assembles no logical round while its
+  // adjudication document survives, and the considered behavior there is
+  // to continue with a diagnostic so the round can be re-dispatched (the
+  // no-receipt-transition-rejected and stale-run-id-rejected fixtures).
+  // What has no legitimate reading is an adjudication for a round that
+  // was never dispatched at all.
+  //
+  // Placed with the other cap-integrity checks so it applies before BOTH
+  // output modes: --verification-only is a pre-adjudication projection,
+  // not permission to hold an adjudication the trajectory cannot account
+  // for.
+  const dispatchedRoundNumbers = new Set();
+  for (const p of runDir.passes) {
+    const payload = p.envelope.payload;
+    if (payload && payload.stage === args.stage && typeof payload.round === "number") {
+      dispatchedRoundNumbers.add(payload.round);
+    }
+  }
+  for (const sf of Array.isArray(runDir.runRecord.slot_failures) ? runDir.runRecord.slot_failures : []) {
+    if (sf.stage === args.stage && typeof sf.round === "number") dispatchedRoundNumbers.add(sf.round);
+  }
+  const orphanAdjudication = validAdjudications.find(
+    (a) => a.doc.stage === args.stage && !dispatchedRoundNumbers.has(a.doc.round),
+  );
+  if (orphanAdjudication) {
+    return indeterminate(
+      args,
+      `adjudication document "${orphanAdjudication.name}" names ${args.stage} round ${orphanAdjudication.doc.round}, but no pass or slot_failures record in this run ever named that round — an adjudication with no source pass is an error, not something to ignore`,
+    );
   }
 
   // Every retained COMPLETE round needs its own adjudication document,

@@ -1,0 +1,21 @@
+{
+  "run_id": "run-pass-before-stage-entry",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review",
+      "entered_at": "2026-08-29T14:30:00Z"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    }
+  ],
+  "started_at": "2026-08-29T09:00:00Z",
+  "promotion": {
+    "head": "0101010101010101010101010101010101010101",
+    "promoted_at": "2026-08-29T18:00:00Z",
+    "gate_fingerprint": "sha256:fingerprint"
+  }
+}

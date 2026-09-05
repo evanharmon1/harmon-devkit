@@ -844,6 +844,41 @@ function checkAppliedDispositionsKnownFindingIds(payload, knownIds, errors) {
   }
 }
 
+// checkAppliedDispositionsIntegrationRound — the part of the run's known
+// finding universe that needs NO run context at all
+// (harmon-devkit#685: "nested integrator passes' applied_dispositions ids
+// are validated against the run's known finding universe").
+// checkAppliedDispositionsKnownFindingIds above is the full check and is
+// gated on --known-ids for a good reason: without the run's finding set
+// there is no way to tell a legitimate reference to an older finding from
+// a typo. One case needs no such set, though — an `integration-r<N>-...`
+// id whose own round segment is LATER than this pass's own
+// `integration_round`. `integration_round` is the run-wide ordinal of THIS
+// integrator pass, so a finding from integration round N > this one has
+// not happened yet: no run, with any --known-ids, can contain it. Rejecting
+// it here means the impossible half of the check holds on the no-flag path
+// too, rather than the whole invariant going unchecked whenever the caller
+// omits --known-ids.
+//
+// Scoped to integration-stage ids only: a challenge/review finding id's
+// round segment counts rounds of a DIFFERENT stage, unrelated to this
+// pass's ordinal, and an integrator pass legitimately disposes of findings
+// from any challenge/review round.
+function checkAppliedDispositionsIntegrationRound(payload, errors) {
+  const expectedRound = payload.integration_round
+  if (typeof expectedRound !== 'number') return
+  for (const entry of payload.applied_dispositions ?? []) {
+    if (typeof entry.finding_id !== 'string') continue
+    const parsed = parseFindingId(entry.finding_id)
+    if (!parsed || parsed.stage !== 'integration') continue
+    if (parsed.round > expectedRound) {
+      errors.push(
+        `$result.payload.applied_dispositions: finding_id ${entry.finding_id} names integration round ${parsed.round}, later than this pass's own integration_round ${expectedRound} — no run can already know that finding`
+      )
+    }
+  }
+}
+
 // checkIntegratorCleanVerdict — a `clean` verdict is a claim about the
 // WHOLE payload, not just its own field: at least one check must actually
 // have run (AGENTS.md's readiness gate: an empty check list is
@@ -965,6 +1000,7 @@ function validateEnvelopeInstance(instance, kind, options) {
           checkCodexCycleExitCodeVerdict(instance.payload, errors)
           checkAppliedDispositionsUnique(instance.payload, errors)
           checkAppliedDispositionsKnownFindingIds(instance.payload, options.knownIds, errors)
+          checkAppliedDispositionsIntegrationRound(instance.payload, errors)
           checkIntegratorCleanVerdict(instance.payload, errors)
           checkIntegratorFindingIds(instance, options, errors)
           checkIntegratorSettledAtAgreement(instance, errors)
@@ -2132,6 +2168,51 @@ function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
   }
 }
 
+// checkAdjudicationEvidenceMarkers — harmon-devkit#685: "every adjudicated
+// round has a matching issue evidence marker (destination: issue, same
+// stage/round); a `pr`-destination marker does not substitute". The spec is
+// explicit that "each round's evidence is posted to the issue" with no
+// exception (run.schema.json's own marker.destination description says so),
+// and the `pr` destination is documented there as the per-stage ROLLUP
+// comment that links back to those per-round issue comments — a rollup is
+// therefore never a substitute for the per-round record it links to.
+//
+// Nothing enforced this: checkAdjudicationStagesVisited only proves the
+// adjudicated STAGE was visited, and checkEvidenceMarker* only constrain
+// markers that happen to exist. A run could adjudicate every round, settle
+// every deferral, promote, and carry an entirely empty evidence_comments[]
+// — leaving the harvester (scripts/dev-flow-stats.mjs) nothing to read back
+// and authenticate for rounds that demonstrably happened.
+//
+// Runs only alongside --adjudication/--no-adjudications, like every other
+// cross-document check here: the adjudicated (stage, round) pairs are the
+// input, and without them there is nothing to require a marker for. A
+// per-stage rollup marker carries round: null and is not a per-round
+// comment at all, so it never satisfies (and is never faulted by) this.
+function checkAdjudicationEvidenceMarkers(document, adjudications, errors) {
+  const issueMarkers = new Set()
+  const prOnlyMarkers = new Set()
+  for (const comment of document.evidence_comments ?? []) {
+    const marker = comment.marker
+    if (!marker || typeof marker.stage !== 'string' || typeof marker.round !== 'number') continue
+    const key = `${marker.stage}/r${marker.round}`
+    if (marker.destination === 'issue') issueMarkers.add(key)
+    else if (marker.destination === 'pr') prOnlyMarkers.add(key)
+  }
+  const seen = new Set()
+  for (const { file, data } of adjudications) {
+    if (typeof data.stage !== 'string' || typeof data.round !== 'number') continue
+    const key = `${data.stage}/r${data.round}`
+    if (issueMarkers.has(key) || seen.has(key)) continue
+    seen.add(key)
+    errors.push(
+      prOnlyMarkers.has(key)
+        ? `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, whose only evidence marker has destination "pr" — a per-stage rollup does not substitute for the per-round issue comment`
+        : `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, but no evidence marker with destination "issue" records it`
+    )
+  }
+}
+
 // checkDeferredFindingsSettledBeforePromotion — the converse of
 // checkSettlementsAgainstAdjudications above (which forbids a settlement
 // of anything but a deferred finding): a run cannot claim
@@ -2250,6 +2331,7 @@ function main() {
         checkAdjudicationStagesVisited(instance, options.adjudications, errors)
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
         checkDeferredFindingsSettledBeforePromotion(instance, options.adjudications, errors)
+        checkAdjudicationEvidenceMarkers(instance, options.adjudications, errors)
       }
     }
     checkTimestampRealness(instance, errors, '$run')

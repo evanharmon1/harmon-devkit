@@ -1156,6 +1156,17 @@ that loops indefinitely:
      invariants. Never omit it — a null `codex_cycle` with the flag missing
      used to be trusted as "the cap must be 0" on the integrator's own
      unverified word.
+   - `--remediation-cap <n>` — the resolved `[rounds.<policy>].remediation`
+     cap. Optional, and unlike `--integration-cap` its absence waives
+     nothing the pass claimed: the loop count is derived entirely from the
+     record's own `stage_transitions[]` (every `integration` entry after
+     the first is one `integration -> implement -> integration` loop), so
+     omitting it skips exactly one guard. Supply it — the same resolution
+     that gives you `--integration-cap` gives you this. Over the cap is a
+     `remediation-capped` fail; **at** the cap, so is a gated pass still
+     applying a code-changing disposition (`fix`/`restructure`/`delete`),
+     each of which needs a further loop the cap has already spent
+     (harmon-devkit#685).
    - `--codex-recheck <state file>` — the integrator's own
      `check-codex-cloud-review.sh` state file for this repo/PR:
      `git rev-parse --git-path "integrate-codex/$repo/<n>.json"`, the same
@@ -1169,6 +1180,7 @@ that loops indefinitely:
      --record <dir> \
      --integrator-result <file> \
      --integration-cap <n> \
+     --remediation-cap <n> \
      --codex-recheck <state file>
    ```
 

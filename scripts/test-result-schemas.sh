@@ -66,6 +66,8 @@ is_context_only_fixture() {
     */adjudication.schema/invalid/integration-head-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/integration-round-mismatch.json) return 0 ;;
     */adjudication.schema/invalid/known-adjudicated-collision.json) return 0 ;;
+    */run.schema/invalid/adjudicated-round-without-issue-evidence-marker.json) return 0 ;;
+    */run.schema/invalid/adjudicated-round-only-pr-evidence-marker.json) return 0 ;;
     */run.schema/invalid/settlement-of-fixed-finding.json) return 0 ;;
     */run.schema/invalid/settlement-of-unknown-finding.json) return 0 ;;
     */run.schema/invalid/ready-with-unsettled-deferral.json) return 0 ;;
@@ -253,7 +255,8 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/exit-code-14-with-clean.json',
   'result.integrator.schema/invalid/exit-code-10-with-pending.json',
   'result.integrator.schema/invalid/exit-code-2-with-pending.json',
-  'result.integrator.schema/invalid/settled-at-produced-at-mismatch.json'
+  'result.integrator.schema/invalid/settled-at-produced-at-mismatch.json',
+  'result.integrator.schema/invalid/applied-dispositions-future-integration-round.json'
 ])
 
 let failures = 0
@@ -901,6 +904,27 @@ accept_context_case \
     "$fixtures_dir/run.schema/valid/ready-with-settled-deferral.json" \
     --adjudication "$settlement_cross_check_adjudication"
 
+# harmon-devkit#685 (de-scoped receipt invariant, acceptance criterion 7):
+# "every adjudicated round has a matching issue evidence marker
+# (destination: issue, same stage/round); a `pr`-destination marker does not
+# substitute". The two rejections and the acceptance above are one pair: the
+# accepted fixture carries exactly the per-round issue marker the two
+# rejected ones lack, so the check cannot be satisfied by an over-broad
+# reading of either failure.
+run_context_case \
+    "an adjudicated round with no issue evidence marker at all is rejected (#685)" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudicated-round-without-issue-evidence-marker.json" \
+    'but no evidence marker with destination "issue" records it' \
+    --adjudication "$settlement_cross_check_adjudication"
+
+run_context_case \
+    "a per-stage pr rollup marker does not substitute for the per-round issue comment (#685)" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudicated-round-only-pr-evidence-marker.json" \
+    'a per-stage rollup does not substitute for the per-round issue comment' \
+    --adjudication "$settlement_cross_check_adjudication"
+
 # --- Argument validation: fail closed, never silently skip a check --------
 
 # A malformed --known-ids / --known-adjudicated file (valid JSON, but not an
@@ -1119,6 +1143,25 @@ accept_context_case \
     integrator \
     "$fixtures_dir/result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.json" \
     --known-ids "$fixtures_dir/result.integrator.schema/invalid/applied-dispositions-unknown-finding-id.known-ids.json"
+
+# harmon-devkit#685 (de-scoped receipt invariant, acceptance criterion 10):
+# "nested integrator passes' applied_dispositions ids are validated against
+# the run's known finding universe". The --known-ids pair above is the full
+# check; this pair is the half that needs no run context at all, so it holds
+# on the flagless path too — an integration finding from a round LATER than
+# this pass's own integration_round cannot be in any run's universe, while
+# one from an earlier round (and any challenge/review round, which counts a
+# different stage's rounds entirely) is ordinary and must stay accepted.
+run_context_case \
+    "an applied_dispositions id naming a later integration round than this pass is rejected without --known-ids (#685)" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/invalid/applied-dispositions-future-integration-round.json" \
+    "later than this pass's own integration_round"
+
+accept_context_case \
+    "an applied_dispositions id naming an earlier integration round, or any challenge round, stays accepted (#685)" \
+    integrator \
+    "$fixtures_dir/result.integrator.schema/valid/applied-dispositions-earlier-integration-round.json"
 
 run_context_case \
     "a clean-verdict defer on a --known-ids finding is rejected exactly like a defer on the payload's own findings" \

@@ -37,7 +37,21 @@
   "interventions": [],
   "outcome": null,
   "pr": null,
-  "evidence_comments": [],
+  "evidence_comments": [
+    {
+      "id": "2100000001",
+      "author_actor_id": 12345678,
+      "login": "evanharmon1",
+      "digest": "sha256:aaaa111122223333aaaa111122223333aaaa111122223333aaaa111122223333",
+      "marker": {
+        "run_id": "run-6040-settlement-cross-check",
+        "stage": "challenge",
+        "destination": "issue",
+        "round": 1,
+        "sequence": 1
+      }
+    }
+  ],
   "settlements": [
     {
       "finding_id": "challenge-r1-codex-cli-1",
@@ -50,7 +64,25 @@
     }
   ],
   "promotion": null,
-  "evidence_registrations": [],
+  "evidence_registrations": [
+    {
+      "seq": 0,
+      "digest": "ed54ef31c64d21a33327abfbe7867ad0bef3e381dc1b22421e8627dc97987270",
+      "prev_digest": "genesis",
+      "id": "2100000001",
+      "author_actor_id": 12345678,
+      "login": "evanharmon1",
+      "payload_digest": "sha256:aaaa111122223333aaaa111122223333aaaa111122223333aaaa111122223333",
+      "marker": {
+        "run_id": "run-6040-settlement-cross-check",
+        "stage": "challenge",
+        "destination": "issue",
+        "round": 1,
+        "sequence": 1
+      },
+      "registered_at": "2026-08-29T09:30:00Z"
+    }
+  ],
   "pr_bindings": [],
   "outcome_transitions": []
 }
