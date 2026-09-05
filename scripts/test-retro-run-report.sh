@@ -642,7 +642,8 @@ contains "$OUT" "PR binding: bound to PR #$PR" &&
 contains "$OUT" "harmon-devkit#753" &&
     ok "the override-detail gap names its follow-up issue" || bad "override gap not named"
 contains "$OUT" "keyed by stage" &&
-    ok "the run-wide class/provenance limitation is stated" || bad "class/provenance limitation not stated"
+    bad "a gap was declared for a measurement this run actually rendered per stage" ||
+    ok "no per-stage gap is claimed when the breakdown was attributed to a stage"
 contains "$(cat "$d/stats.log")" "--trusted-actor-id $ACTOR" &&
     ok "the caller's trust root reaches the harvester" || bad "trusted actor id not passed through"
 contains "$(cat "$d/gh.log")" "api user" &&
@@ -906,6 +907,9 @@ contains "$OUT" "- Adjudication overrides: not derivable" &&
 contains "$OUT" "belongs to stage" &&
     bad "a multi-stage run claimed single-stage attribution" ||
     ok "no single-stage claim is made when two stages found things"
+contains "$OUT" "keyed by stage" &&
+    ok "the per-stage gap IS declared when no split is derivable" ||
+    bad "a genuine per-stage gap went unreported"
 
 echo "==> the report names the actual trust root, not just where it came from"
 d="$TMPROOT/trustnamed"
@@ -1009,8 +1013,8 @@ marker_file "$d/bogus" example run-6001-further-along challenge pr -
 set_comments "$d/comments" "$PR" "$d/bogus"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
-[ "$RC" -eq 10 ] && ok "a non-canonical kind never names a run" ||
-    bad "devflow:example selected a run, got $RC: $ERR"
+contains "$OUT" "run-6001-further-along" &&
+    bad "devflow:example selected a run" || ok "a non-canonical kind never names a run"
 contains "$ERR" 'kind "example" is not run-index, run-record or evidence' &&
     ok "the malformed marker is reported with its reason" || bad "the malformed marker was dropped silently"
 
@@ -1021,26 +1025,126 @@ printf '<!-- devflow:evidence v2 run_id=run-6001-further-along seq=1 -->\n' >"$d
 set_comments "$d/comments" "$PR" "$d/short"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
-[ "$RC" -eq 10 ] && contains "$ERR" "missing required marker field stage" &&
+[ "$RC" -eq 11 ] && contains "$ERR" "missing required marker field stage" &&
     ok "a marker without stage/dest/round is refused by name" ||
     bad "an incomplete marker participated in discovery, got $RC: $ERR"
 printf '<!-- devflow:evidence v2 run_id=r stage=nonsense dest=pr round=- seq=1 -->\n' >"$d/badstage"
 set_comments "$d/comments" "$PR" "$d/badstage"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
-[ "$RC" -eq 10 ] && contains "$ERR" 'stage "nonsense" is not a run stage' &&
+[ "$RC" -eq 11 ] && contains "$ERR" 'stage "nonsense" is not a run stage' &&
     ok "a marker with an unknown stage is refused by name" || bad "got $RC: $ERR"
 
-echo "==> a malformed marker alone does not make discovery indeterminate"
-d="$TMPROOT/malformed-only"
+echo "==> a TRUSTED actor's malformed marker is corrupted evidence, not absence"
+d="$TMPROOT/malformed-trusted"
 scaffold "$d" further-along "body"
 marker_file "$d/bogus" example some-run challenge pr -
 set_comments "$d/comments" "$PR" "$d/bogus"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] &&
+    ok "a trusted actor's unparseable marker is indeterminate, never 'no run record'" ||
+    bad "a trusted actor's corrupted evidence read as absence, got $RC"
+contains "$ERR" "corrupted evidence rather than absence" &&
+    ok "the reason says why it is not absence" || bad "the corrupted-evidence reasoning is missing"
+
+echo "==> an UNTRUSTED author's malformed marker is still noise"
+d="$TMPROOT/malformed-untrusted"
+scaffold "$d" further-along "body"
+marker_file "$d/bogus" example some-run challenge pr -
+COMMENT_ACTOR=888888 set_comments "$d/comments" "$PR" "$d/bogus"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 10 ] &&
-    ok "noise is exit 10, not the exit 11 reserved for a refused claim" ||
-    bad "a malformed marker was treated as a refused claim, got $RC"
+    ok "noise from an untrusted author stays exit 10" ||
+    bad "an untrusted author's malformed marker was treated as corrupted evidence, got $RC"
+contains "$ERR" "from an untrusted author" &&
+    ok "the report distinguishes whose malformed marker it was" ||
+    bad "the malformed-marker report does not name the author's trust"
+
+echo "==> --run with no --pr reads the disclosure off the run's OWN bound PR"
+d="$TMPROOT/runonly-policy"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" \
+    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":1,"has_adjudication":true}]' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "$POLICY_SECTION"
+make_pr_json "$d/pr.json" "$d/body"
+GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --run run-6001-further-along --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "- Rounds spent: 1 / cap 3 (disclosed, unverified)" &&
+    ok "a --run-only report still measures rounds against the disclosed cap" ||
+    bad "a --run-only report lost its rounds-versus-cap measurement"
+contains "$OUT" "PR binding: bound to PR #$PR" &&
+    ok "the binding comes from the run record itself" || bad "the record's own PR binding was not used"
+contains "$(cat "$d/gh.log")" "pr view $PR" &&
+    ok "the run's own PR was fetched for its disclosure" || bad "the bound PR was never fetched"
+
+echo "==> a --run-only report survives an unreadable bound PR"
+d="$TMPROOT/runonly-prfail"
+mkdir -p "$d/bin"
+cat >"$d/bin/gh" <<'FAILGH'
+#!/usr/bin/env bash
+case "${1:-}" in
+pr) echo "gh stub: PR unreadable" >&2; exit 1 ;;
+*) echo '[[]]' ;;
+esac
+FAILGH
+chmod +x "$d/bin/gh"
+ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+run_report "$d" --repo o/r --run run-6001-further-along --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "an unreadable bound PR degrades rather than failing the report" ||
+    bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "Caps unknown" &&
+    ok "the caps fall back to unknown" || bad "the caps were not reported unknown"
+contains "$ERR" "could not read PR #$PR for its policy disclosure" &&
+    ok "the degradation is stated, not silent" || bad "the failed PR read was silent"
+
+echo "==> linked issues are scanned for anomalies even when the PR names the run"
+d="$TMPROOT/scanboth"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" \
+    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "body"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+marker_file "$d/i1" evidence run-a-redirect challenge issue 1
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+COMMENT_ACTOR=777777 set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
+    ok "the PR's own run is still the one selected" || bad "expected the PR run, got $RC: $ERR"
+contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
+    ok "the linked issue was scanned despite the PR already naming a run" ||
+    bad "the linked issue was skipped, so its anomalies went unseen"
+contains "$OUT" "Untrusted evidence markers ignored during discovery: 1" &&
+    ok "the redirect marker on the linked issue reaches the integrity count" ||
+    bad "an anomaly on the authoritative issue was invisible"
+contains "$OUT" "run-a-redirect" &&
+    ok "the ignored marker names the run it tried to redirect to" ||
+    bad "the ignored marker is unidentified"
+
+echo "==> the skill separates the two exit-10 fallbacks and gates issue filing"
+grep -q '| 10 · `no-run-record` |' ai/skills/universal/retro/SKILL.md &&
+    ok "no-run-record has its own exit-table row" || bad "the exit-10 row still conflates two cases"
+grep -q '| 10 · `run-not-found` |' ai/skills/universal/retro/SKILL.md &&
+    ok "run-not-found has its own exit-table row" || bad "run-not-found has no row of its own"
+grep -A 1 '| 10 · `run-not-found` |' ai/skills/universal/retro/SKILL.md |
+    grep -q 'do \*\*not\*\* say the session has no run record' &&
+    ok "the run-not-found row forbids the unestablished absence claim" ||
+    bad "the run-not-found row still permits claiming no run record"
+grep -A 1 '| 11 | evidence exists' ai/skills/universal/retro/SKILL.md |
+    grep -q 'do not create it unless asked' &&
+    ok "exit 11 drafts the follow-up rather than filing it unbidden" ||
+    bad "exit 11 still orders an unrequested GitHub write"
 
 # ---------------------------------------------------------------------------
 # 4. Harvester failure modes and usage

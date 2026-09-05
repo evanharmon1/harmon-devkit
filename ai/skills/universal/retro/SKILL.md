@@ -110,14 +110,16 @@ fourth time.
 | Exit | Meaning | What the retro does |
 | --- | --- | --- |
 | 0 | a report is on stdout | Paste it as §2, then carry on |
-| 10 | it **looked** and found nothing — `no-run-record` (no evidence marker at all) or `run-not-found` for an unverified `--run` id | Fall back: skip §2, and **say plainly** that this session has no run record so the improvements in §5 rest on the conversation rather than on measurements |
+| 10 · `no-run-record` | it **looked** and found no evidence marker at all | Fall back: skip §2, and **say plainly** that this session has no run record, so the improvements in §5 rest on the conversation rather than on measurements |
+| 10 · `run-not-found` | an id supplied with `--run` was not found; **discovery never ran** | Fall back for the measurements, but do **not** say the session has no run record — nothing looked. Say the supplied id was not found, and consider that it may be mistyped or that the record lives on the issue. §5's `run-not-found` provenance wording is the matching phrasing |
 | 12 | `no-stats-script` — this checkout has no harvester, so whether a run record exists is **unknown** | Fall back for the measurements, but report the gap: say the evidence *could not be read here*, never that there is none, and use §5's exit-12 provenance wording. stderr says whether discovery found a trusted marker (evidence the run is recorded) or only an unverified `--run` argument |
-| 11 | evidence exists but is **indeterminate** — a broken or forged digest chain; two trusted runs on one PR; a run bound to a different PR; markers that exist but none from a trusted actor; or a trusted marker naming a run the harvester cannot find (the evidence contract's deleted-entry case) | Not a fallback. Make it the retro's first finding, quote the reason from stderr, and file it. Never downgrade any of these to "no run record" |
+| 11 | evidence exists but is **indeterminate** — a broken or forged digest chain; two trusted runs on one PR; a run bound to a different PR; markers that exist but none from a trusted actor; a trusted actor's own marker that does not parse; or a trusted marker naming a run the harvester cannot find (the evidence contract's deleted-entry case) | Not a fallback. Make it the retro's first finding and quote the reason from stderr. **Draft** the follow-up issue — do not create it unless asked, exactly as §5 requires of every other follow-up. Never downgrade any of these to "no run record" |
 | 1 or 2 | operational or usage error | Fix the invocation, or report that the tool failed. Never silently downgrade to memory |
 
-Exit 10 is the ordinary pre-v2 session and costs the retro only its evidence
-section — it is the **only** exit that licenses the sentence "this session has
-no run record". Exit 12 is a fact about the checkout, not about the run:
+`no-run-record` is the ordinary pre-v2 session and costs the retro only its
+evidence section — it is the **only** outcome that licenses the sentence "this
+session has no run record", which is why it and `run-not-found` are separate
+rows above even though the process exit is the same number. Exit 12 is a fact about the checkout, not about the run:
 reporting it as 10 would let a vendoring gap masquerade as work nobody
 recorded. Exit 11 is a finding in its own right — treating it as "no evidence"
 is how tampered evidence would read as an ordinary memory-based retro.
@@ -359,6 +361,13 @@ interchangeable, and only one of them may claim there was no run record:
   discovery entirely, so a mistyped id, or the documented pre-PR case where
   the record lives on the issue, would otherwise be tracked forever as an
   absence nobody established.
+An **exit 11** integrity problem is worth a follow-up more than most things a
+retro turns up — but "worth filing" is not "file it": §5's rule that
+follow-ups are drafted and not created unless asked has no exception here, and
+an unrequested write is exactly what a session asked only for a retrospective
+did not consent to. Draft it with the run id, the stderr reason, and the head
+it was observed on, and say plainly that it is waiting on a go-ahead.
+
 - **Exit 12** — "Retro of the session on `<date>`; a run record may exist but
   this checkout has no `scripts/dev-flow-stats.*` to read it, so the run was
   not measured." Never write "there was no run record" here: §1 exits 12

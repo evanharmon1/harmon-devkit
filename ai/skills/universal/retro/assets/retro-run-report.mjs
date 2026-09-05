@@ -358,11 +358,18 @@ function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
       actor_id: Number.isInteger(actorId) ? actorId : null,
       where
     }
+    const isTrusted = Number.isInteger(actorId) && trustedActorIds.has(actorId)
     if (parsed.malformed) {
-      malformed.push({ ...entry, reason: parsed.malformed })
+      // Whose marker it is decides what a malformed one MEANS. From an
+      // untrusted author it is noise that never named a run. From a TRUSTED
+      // orchestrator it is this run's own evidence, truncated or edited —
+      // corrupted evidence, not absence — and reporting it as "no marker at
+      // all" would license the memory fallback over a run that plainly
+      // happened (cloud review round 1, confirmed P1).
+      malformed.push({ ...entry, reason: parsed.malformed, trusted: isTrusted })
       continue
     }
-    if (!Number.isInteger(actorId) || !trustedActorIds.has(actorId)) {
+    if (!isTrusted) {
       untrusted.push({ ...entry, run_id: parsed.runId })
       continue
     }
@@ -389,9 +396,6 @@ function discoverRun(args, trustedActorIds) {
     'number,url,title,state,isDraft,body,closingIssuesReferences'
   ])
   const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number, asOf), trustedActorIds, `PR #${pr.number}`, untrusted, malformed)].sort()
-  if (fromPr.length === 1) {
-    return { pr, runId: fromPr[0], source: `evidence marker on PR #${pr.number}`, untrusted, malformed }
-  }
   if (fromPr.length > 1) {
     throw new IndeterminateError(
       `PR #${pr.number} carries trusted evidence for more than one run (${fromPr.join(', ')}) — rerun with --run <run_id>`
@@ -418,6 +422,15 @@ function discoverRun(args, trustedActorIds) {
       seen.add(issue.number)
       fromIssues.set(runId, seen)
     }
+  }
+  // The PR's own run wins, but the linked issues are still SCANNED — the
+  // early return that used to skip them meant a redirect attempt or a
+  // corrupted marker sitting on the authoritative issue never reached the
+  // integrity counts, while the skill promises every ignored marker is
+  // reported (cloud review round 1, confirmed P2). Selection preference and
+  // anomaly reporting are different jobs; only the first one short-circuits.
+  if (fromPr.length === 1) {
+    return { pr, runId: fromPr[0], source: `evidence marker on PR #${pr.number}`, untrusted, malformed }
   }
   if (fromIssues.size === 1) {
     const [runId, seen] = [...fromIssues.entries()][0]
@@ -715,13 +728,21 @@ function measure(trajectory, policy) {
 // supply. Named here, with the issue that would close each, rather than
 // silently omitted — an absent section reads as "nothing to report".
 function unavailableMeasurements(measured) {
-  const gaps = [
-    {
+  const gaps = []
+  // Only a gap when it actually remains one. Where exactly one stage found
+  // anything the breakdown IS rendered per stage, and declaring it missing
+  // anyway would manufacture a follow-up for a measurement the report just
+  // made — the skill carries every listed gap into improvements (cloud review
+  // round 1, confirmed P2).
+  if (measured.class_provenance_attribution.scope !== 'stage') {
+    gaps.push({
       measurement: 'findings by class and provenance, keyed by stage',
       reason:
-        "the run trajectory's findings_by_class_and_provenance aggregates over the whole run, so this report's breakdown is run-wide unless exactly one stage found anything",
+        "the run trajectory's findings_by_class_and_provenance aggregates over the whole run, and more than one stage found something here, so no per-stage split is derivable",
       issue: 'harmon-devkit#779'
-    },
+    })
+  }
+  gaps.push(
     {
       measurement: 'remediation rounds spent against the remediation cap',
       reason:
@@ -734,7 +755,7 @@ function unavailableMeasurements(measured) {
         'the run trajectory reduces each round\'s adjudication document to a has_adjudication boolean, dropping reviewer_priority, adjudicated_priority and override',
       issue: 'harmon-devkit#753'
     }
-  ]
+  )
   if (measured.settlements.every((entry) => entry.finder === null)) {
     gaps.push({
       measurement: 'findings by finder slug (agent-registry.json finders[].slug)',
@@ -989,7 +1010,7 @@ function reportIgnoredMarkers(untrusted, malformed) {
   }
   for (const marker of malformed) {
     console.error(
-      `${TOOL}: ignoring a malformed devflow marker on ${marker.where} (comment ${marker.comment_id ?? 'unknown'}): ${marker.reason}`
+      `${TOOL}: ignoring a malformed devflow marker on ${marker.where} from ${marker.trusted ? 'a TRUSTED actor' : 'an untrusted author'} (comment ${marker.comment_id ?? 'unknown'}): ${marker.reason}`
     )
   }
 }
@@ -1043,10 +1064,22 @@ function run(argv) {
       // (harmon-devkit#741). Reporting either as "no run record" would
       // reinterpret a run that plainly happened as one that did not
       // (review round 1, confirmed P1).
-      if (untrustedMarkers.length > 0) {
-        const runs = [...new Set(untrustedMarkers.map((m) => m.run_id))].sort().join(', ')
+      const corrupted = malformedMarkers.filter((m) => m.trusted)
+      if (untrustedMarkers.length > 0 || corrupted.length > 0) {
+        const parts = []
+        if (untrustedMarkers.length > 0) {
+          const runs = [...new Set(untrustedMarkers.map((m) => m.run_id))].sort().join(', ')
+          parts.push(
+            `${untrustedMarkers.length} evidence marker(s) naming ${runs} whose authors are not trusted (${trusted.source}) — either a redirect attempt or a trust root that changed after the run, since this tool authenticates against the ids you supplied rather than the run's kickoff-time registry revision (harmon-devkit#741)`
+          )
+        }
+        if (corrupted.length > 0) {
+          parts.push(
+            `${corrupted.length} marker(s) from a TRUSTED actor that do not parse (${[...new Set(corrupted.map((m) => m.reason))].join('; ')}) — a trusted orchestrator's own evidence, truncated or edited, which is corrupted evidence rather than absence`
+          )
+        }
         console.error(
-          `${TOOL}: indeterminate — PR #${args.pr} and its linked issues carry ${untrustedMarkers.length} evidence marker(s) naming ${runs}, none authored by a trusted actor (${trusted.source}). That is either a redirect attempt or a trust root that changed after the run: this tool authenticates against the ids you supplied, not the run's kickoff-time registry revision (harmon-devkit#741). Rerun naming the run's own orchestrator with --trusted-actor-id, or with --run <run_id> — do NOT conclude the session has no run record.`
+          `${TOOL}: indeterminate — PR #${args.pr} and its linked issues carry ${parts.join('; and ')}. Rerun naming the run's own orchestrator with --trusted-actor-id, or with --run <run_id> — do NOT conclude the session has no run record.`
         )
         return 11
       }
@@ -1058,6 +1091,12 @@ function run(argv) {
   } else if (args.pr !== undefined) {
     pr = ghJson(['pr', 'view', String(args.pr), '--repo', args.repo, '--json', 'number,url,title,state,isDraft,body'])
   }
+  // In --run-only mode the trajectory may still name its own PR, and that
+  // binding comes from the authenticated run record rather than a caller's
+  // argument — a better source than --pr, not a worse one. Fetching it is
+  // what stops a perfectly ordinary `--run <id>` report from declaring every
+  // cap unknown (cloud review round 1, confirmed P2). Resolved after the
+  // harvest below, since the trajectory is where the PR number comes from.
 
   const stats = resolveStatsCommand(args.statsScript)
   if (stats.missingReason) {
@@ -1114,9 +1153,21 @@ function run(argv) {
   // one run's rounds to another's budget (challenge round 2, confirmed P2 —
   // fixed in place rather than deferred: it is the same false-claim class as
   // the exit-12 message above and costs one branch).
+  // ...and here is that resolution: --run with no --pr, but a record that
+  // names one. The PR is fetched for its policy disclosure only; nothing
+  // about selection changes, and a fetch failure degrades to caps-unknown
+  // rather than failing the report.
+  if (pr === null && boundPr) {
+    try {
+      pr = ghJson(['pr', 'view', String(boundPr.number), '--repo', args.repo, '--json', 'number,url,title,state,isDraft,body'])
+    } catch (error) {
+      if (!(error instanceof OperationalError)) throw error
+      console.error(`${TOOL}: could not read PR #${boundPr.number} for its policy disclosure — caps will be reported unknown (${error.message})`)
+    }
+  }
   const unbound = Boolean(args.run) && !boundPr
   const prBinding =
-    args.pr === undefined
+    args.pr === undefined && !boundPr
       ? null
       : boundPr
         ? `bound to PR #${boundPr.number}`
