@@ -166,7 +166,12 @@ write_default_record() {
        stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z"}],
        interventions:[], outcome:null,
        pr:{number:493,url:"https://github.com/example/repo/pull/493"},
-       evidence_comments:[], settlements:[], promotion:null}' \
+       evidence_comments:[], settlements:[], promotion:null,
+       evidence_registrations:[], outcome_transitions:[],
+       pr_bindings:[{seq:0,prev_digest:"genesis",
+         digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+         number:493,url:"https://github.com/example/repo/pull/493",
+         bound_at:"2026-01-01T00:00:00Z"}]}' \
         >"${record_dir}/run.json"
     rm -f "${record_dir}"/adjudications/*.json
 }
@@ -963,7 +968,12 @@ jq -cn --arg head "$head_sha" \
       settlements:[{finding_id:"review-r1-codex-cli-1", disposition:"decline",
         settled_at:"2026-01-01T00:01:00Z",
         reference:{type:"comment_id",value:"555"}}],
-      promotion:null}' >"${record_dir}/run.json"
+      promotion:null,
+      evidence_registrations:[], outcome_transitions:[],
+      pr_bindings:[{seq:0,prev_digest:"genesis",
+        digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+        number:493,url:"https://github.com/example/repo/pull/493",
+        bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
 run_gate
 assert_gate 0 pass ready
 
@@ -1454,7 +1464,12 @@ jq -cn --arg head "$head_sha" \
       settlements:[{finding_id:"review-r1-codex-cli-9", disposition:"fix",
         settled_at:"2026-01-01T00:01:00Z",
         reference:{type:"sha",value:"c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff"}}],
-      promotion:null}' >"${record_dir}/run.json"
+      promotion:null,
+      evidence_registrations:[], outcome_transitions:[],
+      pr_bindings:[{seq:0,prev_digest:"genesis",
+        digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+        number:493,url:"https://github.com/example/repo/pull/493",
+        bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
 disclosed_result="${fixtures}/integrator-result-disclosed.json"
 jq -cn --arg head "$head_sha" '
   {schema:2, role:"integrator", status:"completed", head:$head,
@@ -1496,7 +1511,12 @@ jq -cn --arg head "$head_sha" \
       settlements:[{finding_id:"review-r1-codex-cli-9", disposition:"decline",
         settled_at:"2026-01-01T00:01:00Z",
         reference:{type:"comment_id",value:"555"}}],
-      promotion:null}' >"${record_dir}/run.json"
+      promotion:null,
+      evidence_registrations:[], outcome_transitions:[],
+      pr_bindings:[{seq:0,prev_digest:"genesis",
+        digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+        number:493,url:"https://github.com/example/repo/pull/493",
+        bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
 mismatched_disposition_result="${fixtures}/integrator-result-mismatched-disposition.json"
 jq -cn --arg head "$head_sha" '
   {schema:2, role:"integrator", status:"completed", head:$head,
