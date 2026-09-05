@@ -1180,7 +1180,8 @@ challenge round 1, a staging-branch merge that must not backdate a landing
 and a same-second landing whose order is unknowable (indeterminate); and,
 from challenge round 2, a run-index anchor posted after its author's
 removal; and, from challenge round 3, an unlisted post-removal comment
-reported as forged-class rather than as a trusted orphan.
+reported as forged-class rather than as a trusted orphan; and, from review
+round 2, a duplicate id in a historical allowlist (malformed, indeterminate).
 
 `ai/schemas/fixtures/result.reviewer.schema/valid/omator-397-*.json` and
 `ai/schemas/fixtures/adjudication.schema/valid/omator-397-*-adjudication.json`

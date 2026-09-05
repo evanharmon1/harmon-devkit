@@ -1,0 +1,33 @@
+{
+  "description": "The revision in effect lists the author twice. agent-registry.schema.json requires unique items, and a historical or hand-edited revision is read without the validator's gate, so a duplicate is a malformed allowlist that poisons the whole list rather than being collapsed: the run is indeterminate, like every other schema-invalid shape.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "3333333333333333333333333333333333333333",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001,
+          9001
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "duplicate entry 9001"
+  }
+}

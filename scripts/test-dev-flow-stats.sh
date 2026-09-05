@@ -3491,6 +3491,6 @@ for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
     echo "PASS: registry-trust/$name"
     corpus_count=$((corpus_count + 1))
 done
-[ "$corpus_count" -ge 14 ] || fail "registry-trust corpus: expected at least 14 cases, found $corpus_count"
+[ "$corpus_count" -ge 15 ] || fail "registry-trust corpus: expected at least 15 cases, found $corpus_count"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

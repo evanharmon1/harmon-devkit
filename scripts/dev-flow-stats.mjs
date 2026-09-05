@@ -268,7 +268,17 @@ function readRegistryAllowlist(doc) {
   if (bad !== undefined) {
     return { problem: `declares a malformed trusted_orchestrator_actor_ids entry ${JSON.stringify(bad)} (every entry must be a positive JSON integer; a string is never coerced)` };
   }
-  return { ids: new Set(raw) };
+  // uniqueItems is part of the declared shape too — review round 2 of
+  // #741, confirmed (P2): collapsing duplicates into the Set silently
+  // accepted a revision the schema rejects, unlike every other malformed
+  // shape above. A duplicate is not a security widening on its own, but
+  // "schema-invalid history fails closed" has to mean the whole shape.
+  const seen = new Set();
+  const dup = raw.find((v) => seen.has(v) || (seen.add(v), false));
+  if (dup !== undefined) {
+    return { problem: `declares a malformed trusted_orchestrator_actor_ids allowlist (duplicate entry ${dup}; the schema requires unique items)` };
+  }
+  return { ids: seen };
 }
 
 // The registry allowlist in effect at atIso: { ids: Set, sha } when a
