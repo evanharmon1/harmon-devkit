@@ -2521,8 +2521,11 @@ function writeScenario(name, db) {
     // by the run's own author that the record never lists — reported, never
     // assembled; the fixture says whether each is an orphan (trusted at its
     // write time) or forged-class (not trusted at its write time).
-    const unindexed = (fixture.run.unindexed_writes || []).map((w) =>
-      evidenceComment(author, "orchestrator", runId, w.stage, "issue", w.round, 1, { passes: [] }, w.posted_at));
+    const unindexed = (fixture.run.unindexed_writes || []).map((w) => {
+      const c = evidenceComment(author, "orchestrator", runId, w.stage, "issue", w.round, 1, { passes: [] }, w.posted_at);
+      if (w.edited_at) c.updated_at = w.edited_at;
+      return c;
+    });
     const runBody = {
       schema: 2, run_id: runId, initiated_by: "human", started_at: fixture.run.kickoff_at,
       stage_transitions: chain([{ stage: "kickoff", entered_at: fixture.run.kickoff_at }]),
@@ -2560,6 +2563,45 @@ function writeScenario(name, db) {
       commit_pulls: commitPulls,
       meta: { runId, trustedActorIds: fixture.cli_trusted_actor_ids, issueNumber, expect: fixture.expect, description: fixture.description },
     });
+  });
+}
+
+// --- #741 shepherd round 1 (Codex-confirmed P2): a CLI-selected but
+// registry-unauthorized actor posts a LOWER-id index for the run; the
+// legitimate author posts the same marker later. Canonical selection must
+// run among candidates authenticated at their own write time, so the
+// forged index never shadows the legitimate one and the run harvests.
+{
+  const trustSha = "4".repeat(40);
+  const registryCommits = [{ sha: trustSha }];
+  const registryContents = {
+    [trustSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
+  };
+  const runId = "run-forged-index-shadow-1";
+  const at = "2026-09-01T00:00:00Z";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const body = { ...runBody, ...deriveDefaultChains(runBody) };
+  const rm = marker("run-record", runId, "kickoff", "issue", null, 1);
+  const rr = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${rm}\n\${fence(JSON.stringify(body))}\`, at);
+  const im = marker("run-index", runId, "kickoff", "issue", null, 1);
+  const forgedPayload = { run_id: runId, initiated_by: "human", branch: null, run_record: { id: String(rr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator" } };
+  // Forged index FIRST (lower comment id) by OTHER_TRUSTED, who is in the
+  // operator's CLI selection but NOT in the registry allowlist.
+  const forgedIdx = comment(OTHER_TRUSTED, "impostor", \`\${im}\n\${fence(JSON.stringify(forgedPayload))}\`, "2026-09-01T00:00:30Z");
+  const legitIdx = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${im}\n\${fence(JSON.stringify(forgedPayload))}\`, "2026-09-01T00:01:00Z");
+  writeScenario("forged-index-shadow", {
+    issues: [{ number: 180, pull_request: null }],
+    comments: { "180": [rr, forgedIdx, legitIdx] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: { [trustSha]: [{ number: 620, merged_at: "2026-08-01T00:00:00Z" }] },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED], issueNumber: 180, legitIdxId: legitIdx.id },
   });
 }
 
@@ -3439,6 +3481,12 @@ echo "$out" | jq -e '(.[0].diffs | length) == 0' >/dev/null || fail "outcome-tra
 # lives in the fixture itself (expect.status / expect.reason_contains /
 # expect.rounds), so adding a case is one directory, never a bash edit.
 # ---------------------------------------------------------------------------
+echo "== #741 shepherd round 1: a registry-unauthorized lower-id index never shadows the legitimate later one =="
+export DFSTATS_DB="$tmp/scenarios/forged-index-shadow.json"
+run_id="$(meta forged-index-shadow .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)" || fail "forged-index-shadow: expected the run to harvest via the legitimate index, got: $out"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "forged-index-shadow: expected a clean in-flight run, got: $out"
+
 echo "== #741: registry allowlist fixture corpus (fail closed on missing/empty/malformed; per-write revision binding) =="
 corpus_count=0
 for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
@@ -3491,6 +3539,6 @@ for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
     echo "PASS: registry-trust/$name"
     corpus_count=$((corpus_count + 1))
 done
-[ "$corpus_count" -ge 15 ] || fail "registry-trust corpus: expected at least 15 cases, found $corpus_count"
+[ "$corpus_count" -ge 18 ] || fail "registry-trust corpus: expected at least 18 cases, found $corpus_count"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

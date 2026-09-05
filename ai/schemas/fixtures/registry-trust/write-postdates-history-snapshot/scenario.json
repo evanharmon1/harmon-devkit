@@ -1,0 +1,32 @@
+{
+  "description": "An evidence write carries a server-side time later than the moment this process resolved the registry revision history (here, a timestamp in the future). No revision can be proven in effect for a write the snapshot could not have seen, so the write is indeterminate rather than evaluated against stale history.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "6666666666666666666666666666666666666666",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2099-01-01T00:00:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "postdates the registry revision history snapshot"
+  }
+}

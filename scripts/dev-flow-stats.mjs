@@ -236,7 +236,7 @@ function resolveRegistryRevisionHistory(repo) {
       }
       resolved.push({ sha: c.sha, landedAtEpoch: Date.parse(seen) });
     }
-    history = unresolvable ? null : resolved;
+    history = unresolvable ? null : { revisions: resolved, resolvedAtEpoch: Date.now() };
   } catch {
     history = null;
   }
@@ -278,6 +278,20 @@ function readRegistryAllowlist(doc) {
   if (dup !== undefined) {
     return { problem: `declares a malformed trusted_orchestrator_actor_ids allowlist (duplicate entry ${dup}; the schema requires unique items)` };
   }
+  // The two trust roles stay distinct at every revision, not only at the
+  // validator's commit-time gate — shepherd round 1 of #741, Codex-
+  // confirmed (P2): a historical or hand-edited revision listing a
+  // finder's own trusted_actor_id (a review bot) as a trusted orchestrator
+  // would let that bot authenticate run records. A revision predating
+  // finders[] (pre-#635) has no finder identities to collide with.
+  if (Array.isArray(doc.finders)) {
+    for (const finder of doc.finders) {
+      const id = finder && typeof finder.trusted_actor_id === "string" && /^[1-9][0-9]*$/.test(finder.trusted_actor_id) ? Number(finder.trusted_actor_id) : null;
+      if (id !== null && seen.has(id)) {
+        return { problem: `declares a malformed trusted_orchestrator_actor_ids allowlist (entry ${id} is finder ${finder.slug}'s own trusted_actor_id; a finder identity never vouches for a run record)` };
+      }
+    }
+  }
   return { ids: seen };
 }
 
@@ -290,13 +304,28 @@ function resolveRegistryTrustedActorIds(repo, atIso) {
   if (!Number.isFinite(cutoff)) {
     return { indeterminate: `write time ${JSON.stringify(atIso)} is not a parseable timestamp, so no registry revision can be selected for it` };
   }
-  const history = resolveRegistryRevisionHistory(repo);
+  let history = resolveRegistryRevisionHistory(repo);
+  // The cached history is a snapshot taken at resolvedAtEpoch; a write
+  // newer than that snapshot may be governed by a revision the snapshot
+  // never saw — shepherd round 1 of #741, Codex-confirmed (P2): a live
+  // (no --as-of) scan spans wall-clock time, so a removal landing after the
+  // first lookup but before a later issue's comments were fetched would be
+  // evaluated against stale, pre-removal history. Refresh once for such a
+  // write; a write still newer than the refreshed snapshot is in this
+  // process's future and has no provable revision — indeterminate.
+  if (history !== null && cutoff > history.resolvedAtEpoch) {
+    registryRevisionHistoryCache.delete(repo);
+    history = resolveRegistryRevisionHistory(repo);
+  }
   if (history === null) {
     return { indeterminate: "the agent-registry.json revision history could not be resolved (a registry-touching commit with no merging PR, or an API failure), so no revision can be proven in effect" };
   }
+  if (cutoff > history.resolvedAtEpoch) {
+    return { indeterminate: `write time ${atIso} postdates the registry revision history snapshot (${new Date(history.resolvedAtEpoch).toISOString()}), so no revision can be proven in effect for it` };
+  }
   let bestSha = null;
   let bestSeen = -Infinity;
-  for (const { sha, landedAtEpoch } of history) {
+  for (const { sha, landedAtEpoch } of history.revisions) {
     // Strictly BEFORE the write, never at the same instant — challenge
     // round 1 of #741, confirmed (P2, fixed in place): GitHub's REST
     // merged_at and created_at carry second precision, so a revision that
@@ -647,7 +676,43 @@ function findRunRecord(issueComments, { trustedActorIds, repo, effectiveTrustAt:
   // issue's OTHER runs — each run_id is isolated exactly the way
   // harvestOneRunRecord already isolates later per-run failures.
   const results = [];
-  for (const indexEntry of resolveCanonical(indexCandidates).values()) {
+  // Lowest-id canonical selection runs among candidates authenticated at
+  // their OWN write time, per run — shepherd round 1 of #741, Codex-
+  // confirmed (P2): selecting first and authenticating the winner let a
+  // CLI-selected but registry-unauthorized actor's lower-id index shadow a
+  // legitimate later one, turning the run indeterminate — exactly the
+  // "forged-author markers never suppress or shadow" rule ai/schemas/
+  // README.md states. When a run has NO authenticated candidate at all,
+  // the unauthenticated ones still go through the per-entry checks below,
+  // which report that run indeterminate (an untrusted-at-kickoff author is
+  // evidence of a problem, never silently "no run"). An unanswerable trust
+  // lookup throws here and reports the whole issue indeterminate — fail
+  // closed, as everywhere else.
+  const byRun = new Map();
+  for (const c of indexCandidates) {
+    const list = byRun.get(c.marker.runId) ?? [];
+    list.push(c);
+    byRun.set(c.marker.runId, list);
+  }
+  const selectionPool = [];
+  for (const [runId, candidates] of byRun) {
+    let authenticated;
+    try {
+      authenticated = candidates.filter((c) => effectiveTrustAt(c.comment.created_at).has(c.actorId));
+    } catch (err) {
+      // Isolated per run_id, like every other per-run failure below: the
+      // run stays discoverable (by id) as indeterminate rather than
+      // vanishing into a whole-issue failure with no run_id attached.
+      if (err instanceof EvidenceError) {
+        const kickoffCreatedAt = candidates.map((c) => c.comment.created_at).sort()[0] ?? null;
+        results.push({ status: "indeterminate", runId, reason: err.message, kickoffCreatedAt });
+        continue;
+      }
+      throw err;
+    }
+    selectionPool.push(...(authenticated.length > 0 ? authenticated : candidates));
+  }
+  for (const indexEntry of resolveCanonical(selectionPool).values()) {
     const runId = indexEntry.marker.runId;
     // Declared outside the try so the catch below can still read it —
     // shepherd round 2/3, Codex-confirmed (P2): see the catch block's own
@@ -1387,7 +1452,16 @@ function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds, eff
     if (!isTrustedFor(comment, { runRecordAuthorId })) return false;
     if (typeof effectiveTrustAt !== "function") return true;
     try {
-      return effectiveTrustAt(comment.created_at).has(runRecordAuthorId);
+      if (!effectiveTrustAt(comment.created_at).has(runRecordAuthorId)) return false;
+      // An orphan has no run-record digest to expose a later edit, so its
+      // server-side updated_at is the only trace — shepherd round 1 of
+      // #741, Codex-confirmed (P2): the same edit-time check the record
+      // and index get applies before an orphan is reported as trusted.
+      const editedAt = typeof comment.updated_at === "string" ? comment.updated_at : null;
+      if (editedAt !== null && Date.parse(editedAt) > Date.parse(comment.created_at)) {
+        return effectiveTrustAt(editedAt).has(runRecordAuthorId);
+      }
+      return true;
     } catch (err) {
       if (err instanceof EvidenceError) return false;
       throw err;

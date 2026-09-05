@@ -1,0 +1,45 @@
+{
+  "description": "The run's author posted an unlisted evidence-shaped comment while listed, was then removed, and later edited that comment (server-side updated_at after the removal). An orphan has no run-record digest to expose the edit, so its updated_at is checked like the record's and the index's: the comment is reported as forged-class, not as a trusted orphan.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "7777777777777777777777777777777777777777",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    },
+    {
+      "sha": "8888888888888888888888888888888888888888",
+      "landed_at": "2026-09-01T00:10:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [],
+    "unindexed_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z",
+        "edited_at": "2026-09-01T00:20:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "ok",
+    "rounds": 0,
+    "orphan_count": 0,
+    "forged_count": 1
+  }
+}

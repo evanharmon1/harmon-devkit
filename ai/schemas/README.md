@@ -1181,7 +1181,10 @@ and a same-second landing whose order is unknowable (indeterminate); and,
 from challenge round 2, a run-index anchor posted after its author's
 removal; and, from challenge round 3, an unlisted post-removal comment
 reported as forged-class rather than as a trusted orphan; and, from review
-round 2, a duplicate id in a historical allowlist (malformed, indeterminate).
+round 2, a duplicate id in a historical allowlist (malformed, indeterminate);
+and, from the PR's first cloud-review round, a finder identity listed as an
+orchestrator at a historical revision, a write newer than the history
+snapshot, and an orphan edited after its author's removal.
 
 `ai/schemas/fixtures/result.reviewer.schema/valid/omator-397-*.json` and
 `ai/schemas/fixtures/adjudication.schema/valid/omator-397-*-adjudication.json`
@@ -1444,10 +1447,16 @@ orchestrates runs in the repository: a human maintainer's own user id, and
 Foreman's service account where one exists. Look each one up rather than
 guessing (`gh api users/<login> --jq .id`); a login is display-only
 everywhere in this protocol because a rename would otherwise turn valid
-evidence into "tampered". The field is **distinct from each finder's own
+evidence into "tampered". This repository lists its maintainer and the
+`expected_login` account `.foreman.toml` asserts before every Foreman
+write — a writer identity missing from the list fails closed on its very
+first run record. The field is **distinct from each finder's own
 `trusted_actor_id`** (a review bot's identity, which vouches for that bot's
-findings and never for a run record), and `scripts/validate-agent-registry.mjs`
-rejects an id that appears in both. The schema makes it optional — a
+findings and never for a run record): `scripts/validate-agent-registry.mjs`
+rejects an id that appears in both at commit time, and the harvester
+treats a historical revision that lists a finder identity as malformed
+(indeterminate), since a hand-edited or pre-validator revision never
+passed that gate. The schema makes it optional — a
 consumer registry predating the field still validates — but every consumer
 **fails closed** when it is absent, empty, or malformed at the revision in
 effect for a write: there is then no authority to validate against, so the
@@ -1480,7 +1489,12 @@ answer never changes afterwards:
   `evidence_comments[]` entry at *that comment's* own `created_at`; and
   because the run record is edited in place at every transition, its
   server-side `updated_at` — the only trace its last edit leaves — is
-  checked too (as is the index's, should it ever be edited). An actor removed mid-run therefore stays
+  checked too (as is the index's, should it ever be edited, and an
+  unlisted orphan's before it is reported as trusted). Where a run has
+  more than one run-index candidate, lowest-id canonical selection runs
+  among the candidates authenticated at their own write time, so a
+  registry-unauthorized actor's earlier index never shadows the legitimate
+  one. An actor removed mid-run therefore stays
   authenticated for everything they wrote while listed and is rejected for
   every write after removal; an actor added later never retroactively
   authenticates older writes. The three fixture cases the evidence delta
@@ -1493,8 +1507,11 @@ answer never changes afterwards:
   skipped, so a stale revision is never mistaken for current), an unreadable
   file, or an allowlist that is absent/empty/malformed (a digits-only
   string or a float poisons the whole list rather than being coerced —
-  the same rule `--trusted-actors-file` applies). Each yields
-  `indeterminate` with a reason naming the revision and the write time.
+  the same rule `--trusted-actors-file` applies), or a write newer than
+  the process's own snapshot of the revision history (the harvester
+  refreshes the snapshot once for such a write; one still newer is in its
+  future). Each yields `indeterminate` with a reason naming the revision
+  and the write time.
 - The revision is **derived, never declared**: the run record carries no
   registry-revision field, because a value inside the record would be a
   payload claim a forged record could set to whatever revision trusts its
