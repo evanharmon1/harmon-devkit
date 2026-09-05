@@ -1,0 +1,30 @@
+{
+  "run_id": "run-remediation-reentry-into-review",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "challenge"
+    },
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "transition",
+      "stage": "implement"
+    },
+    {
+      "kind": "transition",
+      "stage": "verify"
+    },
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    }
+  ]
+}

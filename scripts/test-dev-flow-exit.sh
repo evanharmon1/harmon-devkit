@@ -293,6 +293,219 @@ outcome="$(grep -v -e '^::group::' -e '^::endgroup::' "/tmp/dfe-task-$$.out" | n
 rm -f "/tmp/dfe-task-$$.out" "/tmp/dfe-task-$$.err"
 echo "OK: task devflow:exit produces the correct verdict JSON through the Taskfile wrapper"
 
+# `|| true` on every dev-flow-exit.mjs invocation below: its exit code IS
+# its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
+# 22 capped), so under this file's `set -e` a converged control run would
+# abort the suite. Each assertion reads the JSON body instead, exactly as
+# the corpus runner and the Taskfile-wrapper cases above do.
+#
+# harmon-devkit#685 — the two run-span chronology bounds and the second
+# stage-skip edge, which the fixture corpus does not reach: a fixture
+# exercises exactly one pass timestamp and one --stage, while these are
+# variations on the SAME run directory. The stage-entry bound and the
+# verify -> review edge are fixtures
+# (pass-produced-before-stage-entry-rejected,
+# stage-skip-to-review-under-nonzero-challenge-cap-rejected); these are
+# their siblings.
+echo "== #685: produced_at outside the run's own span rejects the pass; inside it does not =="
+span_fixture="ai/schemas/fixtures/exit/pass-produced-within-run-span-accepted"
+span_dir="$(mktemp -d)"
+cp -r "${span_fixture}/." "${span_dir}/"
+span_head=0101010101010101010101010101010101010101
+
+# The unmodified copy is the control: it must still converge, so a failure
+# below is the timestamp under test and never the copy itself.
+node scripts/dev-flow-exit.mjs --run "${span_dir}/run" --stage review \
+    --policy "${span_dir}/policy.toml" --current-head "${span_head}" --json \
+    >"/tmp/dfe-span-control-$$.out" 2>/dev/null || true
+[ "$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).outcome)' "/tmp/dfe-span-control-$$.out")" = converged ] || {
+    cat "/tmp/dfe-span-control-$$.out" >&2
+    rm -rf "${span_dir}" "/tmp/dfe-span-control-$$.out"
+    fail "the unmodified run-span fixture no longer converges — the control for the two bounds below is broken"
+}
+rm -f "/tmp/dfe-span-control-$$.out"
+
+# $1 = produced_at to plant, $2 = the phrase the diagnostic must carry.
+assert_span_rejection() {
+    node -e '
+      const fs = require("node:fs");
+      const file = process.argv[1];
+      const pass = JSON.parse(fs.readFileSync(file, "utf8"));
+      pass.produced_at = process.argv[2];
+      fs.writeFileSync(file, JSON.stringify(pass, null, 2) + "\n");
+    ' "${span_dir}/run/passes/review-r1-codex-cli.json" "$1"
+    node scripts/dev-flow-exit.mjs --run "${span_dir}/run" --stage review \
+        --policy "${span_dir}/policy.toml" --current-head "${span_head}" --json \
+        >"/tmp/dfe-span-$$.out" 2>/dev/null || true
+    node -e '
+      const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+      const phrase = process.argv[2];
+      const hit = (body.diagnostics || []).some((d) => d.reason && d.reason.includes(phrase));
+      if (!hit) {
+        console.error(`no diagnostic contains "${phrase}": ${JSON.stringify(body.diagnostics)}`);
+        process.exit(1);
+      }
+      if (body.outcome === "converged") {
+        console.error("the pass was rejected but the stage still converged on it");
+        process.exit(1);
+      }
+    ' "/tmp/dfe-span-$$.out" "$2" || {
+        cat "/tmp/dfe-span-$$.out" >&2
+        rm -rf "${span_dir}" "/tmp/dfe-span-$$.out"
+        fail "#685: produced_at $1 was not rejected as $2"
+    }
+    rm -f "/tmp/dfe-span-$$.out"
+}
+
+assert_span_rejection "2026-08-29T08:00:00Z" "is before the run's own started_at"
+assert_span_rejection "2026-08-29T19:00:00Z" "is after the run's promotion.promoted_at"
+rm -rf "${span_dir}"
+echo "OK: a pass produced before the run started, or after it was promoted, contributes nothing"
+
+echo "== #685: a bound that is PRESENT but malformed refuses the trajectory, never silently disabling itself =="
+# Challenge round 1, confirmed: the first version of this check treated any
+# non-string as absent, so `started_at: 12345` in a run directory that is not
+# schema-validated on this path quietly turned the bound off. Absent stays
+# absent (the fixture above proves that); present-and-wrong is terminal.
+bound_dir="$(mktemp -d)"
+# $1 = a jq program mutating run.json, $2 = the phrase the refusal must carry.
+assert_bound_refusal() {
+    rm -rf "${bound_dir:?}/"*
+    cp -r "${span_fixture}/." "${bound_dir}/"
+    jq "$1" "${bound_dir}/run/run.json" >"${bound_dir}/run/run.json.tmp"
+    mv "${bound_dir}/run/run.json.tmp" "${bound_dir}/run/run.json"
+    node scripts/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
+        --policy "${bound_dir}/policy.toml" --current-head "${span_head}" --json \
+        >"/tmp/dfe-bound-$$.out" 2>/dev/null || true
+    node -e '
+      const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+      if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
+      if (!body.reason.includes(process.argv[2])) { console.error(`reason did not name the malformed bound: ${body.reason}`); process.exit(1); }
+    ' "/tmp/dfe-bound-$$.out" "$2" || {
+        cat "/tmp/dfe-bound-$$.out" >&2
+        rm -rf "${bound_dir}" "/tmp/dfe-bound-$$.out"
+        fail "#685: a malformed bound ($1) did not refuse the trajectory"
+    }
+    rm -f "/tmp/dfe-bound-$$.out"
+}
+
+assert_bound_refusal '.started_at = 12345' "started_at is present but not a string"
+assert_bound_refusal '.promotion = "nope"' "promotion is present but not an object"
+assert_bound_refusal '.promotion = {}' "promotion has no promoted_at"
+assert_bound_refusal '.receipts[0].entered_at = 7' "entered_at is present but not a string"
+# A null promotion is the schema's own "not promoted yet", not malformed.
+rm -rf "${bound_dir:?}/"*
+cp -r "${span_fixture}/." "${bound_dir}/"
+jq '.promotion = null' "${bound_dir}/run/run.json" >"${bound_dir}/run/run.json.tmp"
+mv "${bound_dir}/run/run.json.tmp" "${bound_dir}/run/run.json"
+node scripts/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
+    --policy "${bound_dir}/policy.toml" --current-head "${span_head}" --json \
+    >"/tmp/dfe-bound-null-$$.out" 2>/dev/null || true
+[ "$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).outcome)' "/tmp/dfe-bound-null-$$.out")" = converged ] || {
+    cat "/tmp/dfe-bound-null-$$.out" >&2
+    rm -rf "${bound_dir}" "/tmp/dfe-bound-null-$$.out"
+    fail "#685: a null promotion is the not-promoted-yet case and must not refuse the trajectory"
+}
+rm -rf "${bound_dir}" "/tmp/dfe-bound-null-$$.out"
+echo "OK: a present-but-malformed bound is terminal; a null promotion is not"
+
+echo "== #685: a present-but-non-array receipts/slot_failures is a structured indeterminate, never a stack trace =="
+# Review round 1 (P2), confirmed and reproduced: `receipts` is read before
+# validateReceipts applies its own Array.isArray guard, so a non-array value
+# threw a raw TypeError — exit 1, EMPTY stdout under --json — exactly where
+# the machine contract promises a structured body on every exit.
+array_dir="$(mktemp -d)"
+# $1 = jq program poisoning run.json, $2 = the phrase the refusal must carry.
+assert_array_refusal() {
+    rm -rf "${array_dir:?}/"*
+    cp -r "${span_fixture}/." "${array_dir}/"
+    jq "$1" "${array_dir}/run/run.json" >"${array_dir}/run/run.json.tmp"
+    mv "${array_dir}/run/run.json.tmp" "${array_dir}/run/run.json"
+    node scripts/dev-flow-exit.mjs --run "${array_dir}/run" --stage review \
+        --policy "${array_dir}/policy.toml" --current-head "${span_head}" --json \
+        >"/tmp/dfe-array-$$.out" 2>/dev/null || true
+    node -e '
+      const fs = require("node:fs");
+      const raw = fs.readFileSync(process.argv[1], "utf8");
+      if (raw.trim() === "") { console.error("--json produced NO stdout body at all"); process.exit(1); }
+      const body = JSON.parse(raw);
+      if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
+      if (!body.reason.includes(process.argv[2])) { console.error(`reason did not name the malformed field: ${body.reason}`); process.exit(1); }
+    ' "/tmp/dfe-array-$$.out" "$2" || {
+        cat "/tmp/dfe-array-$$.out" >&2
+        rm -rf "${array_dir}" "/tmp/dfe-array-$$.out"
+        fail "#685: a non-array collection ($1) did not produce a structured indeterminate"
+    }
+    rm -f "/tmp/dfe-array-$$.out"
+}
+
+assert_array_refusal '.receipts = {"kind":"transition"}' "receipts is present but not an array"
+assert_array_refusal '.slot_failures = "none"' "slot_failures is present but not an array"
+rm -rf "${array_dir}"
+echo "OK: a malformed receipts/slot_failures collection exits with a verdict body, not a stack trace"
+
+echo "== #685: a pass file holding JSON null is a structured indeterminate, not a stack trace =="
+# Integrate cycle 3 on PR #800 (P2), confirmed: the cross-stage cap-0 scan
+# dereferences every pass's envelope before receipt validation runs, so a
+# pass file containing valid JSON `null` threw a raw TypeError — exit 1,
+# EMPTY stdout under --json — where the machine contract promises a body.
+null_pass_dir="$(mktemp -d)"
+cp -r "${span_fixture}/." "${null_pass_dir}/"
+printf 'null\n' >"${null_pass_dir}/run/passes/review-r1-codex-cli.json"
+node scripts/dev-flow-exit.mjs --run "${null_pass_dir}/run" --stage review \
+    --policy "${null_pass_dir}/policy.toml" --current-head "${span_head}" --json \
+    >"/tmp/dfe-nullpass-$$.out" 2>/dev/null || true
+node -e '
+  const fs = require("node:fs");
+  const raw = fs.readFileSync(process.argv[1], "utf8");
+  if (raw.trim() === "") { console.error("--json produced NO stdout body at all"); process.exit(1); }
+  const body = JSON.parse(raw);
+  if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
+  if (!body.reason.includes("does not contain a JSON object")) { console.error(`reason did not name the malformed pass: ${body.reason}`); process.exit(1); }
+' "/tmp/dfe-nullpass-$$.out" || {
+    cat "/tmp/dfe-nullpass-$$.out" >&2
+    rm -rf "${null_pass_dir}" "/tmp/dfe-nullpass-$$.out"
+    fail "#685: a JSON-null pass file did not produce a structured indeterminate"
+}
+rm -rf "${null_pass_dir}" "/tmp/dfe-nullpass-$$.out"
+echo "OK: a malformed pass envelope exits with a verdict body, not a stack trace"
+
+echo "== #685: a recorded verify -> security edge needs a cap-0 review policy, exactly like verify -> review =="
+skip_fixture="ai/schemas/fixtures/exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected"
+skip_dir="$(mktemp -d)"
+cp -r "${skip_fixture}/." "${skip_dir}/"
+node -e '
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  const run = JSON.parse(fs.readFileSync(file, "utf8"));
+  // Record verify -> security instead of verify -> review, and drop the
+  // review pass with it: the point is the recorded EDGE, not the round.
+  run.receipts = [
+    { kind: "transition", stage: "verify" },
+    { kind: "transition", stage: "security" },
+  ];
+  delete run.slot_failures;
+  fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
+' "${skip_dir}/run/run.json"
+rm -f "${skip_dir}"/run/passes/*.json "${skip_dir}"/run/adjudications/*.json
+node scripts/dev-flow-exit.mjs --run "${skip_dir}/run" --stage review \
+    --policy "${skip_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 --json \
+    >"/tmp/dfe-skip-sec-$$.out" 2>/dev/null || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
+  if (!body.reason.includes(process.argv[2])) {
+    console.error(`reason did not name the skipped review stage and its cap: ${body.reason}`);
+    process.exit(1);
+  }
+' "/tmp/dfe-skip-sec-$$.out" 'with no earlier transition into "review", but the resolved review cap is 3' || {
+    cat "/tmp/dfe-skip-sec-$$.out" >&2
+    rm -rf "${skip_dir}" "/tmp/dfe-skip-sec-$$.out"
+    fail "#685: a recorded verify -> security edge under a nonzero review cap was not refused"
+}
+rm -rf "${skip_dir}" "/tmp/dfe-skip-sec-$$.out"
+echo "OK: verify -> security is refused under a nonzero review cap"
+
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="
 [ -d ai/schemas/fixtures/exit ] || fail "missing ai/schemas/fixtures/exit/"
 node scripts/lib/run-exit-fixtures.mjs

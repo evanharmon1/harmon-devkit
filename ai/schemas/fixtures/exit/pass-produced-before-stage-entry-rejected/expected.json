@@ -1,0 +1,6 @@
+{
+  "outcome": "continue",
+  "reason": "no_rounds_yet",
+  "rounds_counted": 0,
+  "diagnostic_contains": "is before its own stage \"review\" was entered at"
+}

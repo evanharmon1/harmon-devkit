@@ -2418,6 +2418,238 @@ explicit, reasoned scope decision (validate only the fields a
 demonstrated exploit path reads, not the full vocabulary), and re-raising
 the same boundary a round later doesn't change that reasoning.
 
+## Run-trajectory receipt invariants (harmon-devkit#685)
+
+[#634](https://github.com/evanharmon1/harmon-devkit/issues/634)/PR #678 grew a
+**run-trajectory** receipt layer inside the document validator — checks that
+need the run record *plus* every pass and adjudication *plus* the resolved
+`.devflow.toml`. The validator was de-scoped back to single-document and
+envelope receipt checks, and those ten invariants were carried to
+[#685](https://github.com/evanharmon1/harmon-devkit/issues/685) as required
+test cases. This is where each one now lives — the check, the surface that
+holds the inputs it needs, and the fixture pair (attack + its legitimate
+neighbour) that proves it.
+
+Read this table as the answer to "where did that check go": nothing here is a
+new requirement, and every row is an invariant the de-scope deliberately
+moved rather than dropped.
+
+| # | Invariant (the attack it rejects) | Check | Fixture pair |
+| - | --------------------------------- | ----- | ------------ |
+| 1 | A round is complete only when every finder in `[stage.<stage>].finders[]` returned a `completed` pass at the same `reviewed_head`; a missing or `blocked` finder is `finder_unavailable` **on the evidence of a `slot_failures` record**, never synthesized, and never a round one finder short | `assembleLogicalRounds` (`dev-flow-exit.mjs`) | `exit/finder-blocked-without-failure-record-indeterminate` / `exit/finder-blocked-then-fallback-completes-round`; the disagreeing-head half is `exit/mismatched-head-round-rejected` |
+| 2 | Every retained pass has exactly one adjudication document **and vice versa** — an adjudication naming a round no pass or `slot_failures` record ever named is an error, not something to ignore | the orphan-adjudication check in `dev-flow-exit.mjs`'s `main()`, beside the `missingAdjudication` check that covers the other direction | `exit/adjudication-without-source-pass-rejected` / `exit/adjudication-for-rejected-pass-round-accepted` |
+| 3 | `round` never exceeds the stage's resolved cap; a cap-0 stage has no rounds; **stage-skipping is legal only under the corresponding cap-0 policy** | the cap-integrity checks and the `SKIP_EDGE_GUARDS` check in `dev-flow-exit.mjs`'s `main()` | `exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected` / `exit/stage-skip-to-review-legal-under-cap-zero-challenge` and `exit/remediation-reentry-into-review-is-not-a-stage-skip`; the `verify -> security` edge is a named case in `scripts/test-dev-flow-exit.sh` |
+| 4 | `integration -> implement -> integration` loops are counted against `[rounds.<policy>].remediation`; exceeding it escalates, and code-changing dispositions past the cap are rejected | `readiness-gate.sh` step 9d, under the required `--remediation-cap` | the `#685(4)` cases in `scripts/test-integrate-readiness.sh` |
+| 5 | `codex_cycle.cycle` ≤ `[rounds.<policy>].integration`; cap 0 ⇒ null cycle; a clean verdict with a null cycle under a positive cap is not clean | `readiness-gate.sh` step 9, under `--integration-cap` | the five `--integration-cap` cases plus the `#685(5)` `audit` case in `scripts/test-integrate-readiness.sh` |
+| 6 | `promotion.head` equals the final integrator result's head and its accepted-cycle reviewed commit; a stale integration pass cannot certify a newer promoted head | three bindings: the validator's own `accepted.reviewed_commit` receipt check, `readiness-gate.sh`'s envelope-head compare, and its `promotion-head-mismatch` condition | the `#685(6)` cases in `scripts/test-integrate-readiness.sh` |
+| 7 | Every adjudicated round has a matching **issue** evidence marker (same stage/round); a `pr`-destination rollup does not substitute | `checkAdjudicationEvidenceMarkers` (`validate-result-schemas.mjs`, with `--adjudication`) over a run record, and `readiness-gate.sh` step 9e as a promotion condition | `run.schema/invalid/adjudicated-round-without-issue-evidence-marker` and `…-only-pr-evidence-marker` / `run.schema/valid/ready-with-settled-deferral` and `…/settlement-of-deferred`, plus the `#685(7)` gate cases |
+| 8 | Source passes' `produced_at` falls between run start and promotion and not before their own stage entry; run↔pass `initiated_by` agree | `chronologyViolation` inside `validateReceipts` (`dev-flow-exit.mjs`), beside the pre-existing `run_id`/`initiated_by` binding | `exit/pass-produced-before-stage-entry-rejected` / `exit/pass-produced-within-run-span-accepted`, plus the two run-span bounds as named cases in `scripts/test-dev-flow-exit.sh` |
+| 9 | The moment an integrator pass applies `fix\|decline\|file` to a **deferred** finding, the matching append-only settlement exists — regardless of outcome | `readiness-gate.sh` step 9b (`deferred-unsettled` / `disposition-unsettled`) | the `#685(9)` cases in `scripts/test-integrate-readiness.sh` |
+| 10 | An integrator pass's `applied_dispositions` ids lie within the run's known finding universe | `checkAppliedDispositionsKnownFindingIds` (with `--known-ids`) and `checkAppliedDispositionsIntegrationRound` (unconditional) in `validate-result-schemas.mjs`, with `readiness-gate.sh` building the universe from the record and passing the flag | `result.integrator.schema/invalid/applied-dispositions-future-integration-round` / `…/valid/applied-dispositions-earlier-integration-round`, the existing `applied-dispositions-unknown-finding-id` pair, and the `#685(10)` gate case |
+
+Three of those rows deserve their reasoning spelled out, because each drew a
+boundary that a broader reading of the criterion would have got wrong.
+
+**Row 2 measures against what was DISPATCHED, not what was assembled.** A
+round whose every pass was rejected by receipt validation legitimately
+assembles no logical round while its adjudication document survives, and the
+considered behavior there is to continue with a diagnostic so the round can
+be re-dispatched (`exit/no-receipt-transition-rejected`,
+`exit/stale-run-id-rejected`). Keying the orphan check on the assembled
+rounds would have turned both of those into refusals. What has no legitimate
+reading is an adjudication for a round nothing in the run ever named.
+
+**Row 3 keys on a RECORDED `verify -> <stage>` edge, never on an absence.**
+The run directory's `receipts` array is a documented subset (see "Run
+directory layout" above): the ordinary case records only the transition(s)
+for the stage under test, so inferring a skip from "no challenge transition
+exists" would reject nearly every fixture in this corpus. Two consecutive
+transition receipts are a positive claim about what the run did, and the
+resolved policy is what decides whether that claim is legal.
+
+The edge alone is still not enough, though, and this is the part worth
+knowing: `verify -> review` is *also* what a legitimate **remediation
+re-entry** records. `review -> implement -> verify -> review` is a path
+entirely on `ALLOWED_EDGES`, and it recognizably skips nothing — challenge
+already ran and exited earlier in the same run (the identical shape takes
+`security -> implement -> verify -> security` back into security). So the
+refusal additionally requires that no earlier transition into the skipped
+stage exists. `exit/remediation-reentry-into-review-is-not-a-stage-skip` is
+that neighbour, and it carries the same edge as the rejected fixture.
+
+**Row 8's bounds are optional-if-ABSENT, never optional-if-malformed.**
+`started_at`, `promotion.promoted_at`, and a transition receipt's
+`entered_at` are all fields the run directory *may* carry; a caller that
+supplies them gets them enforced, and one that omits them is unchanged. Only
+`undefined` (and, for `promotion`, the schema's own `null`) counts as
+omitted, though: a number, an object, or a null where a timestamp belongs
+refuses the whole trajectory. The run directory is not schema-validated on
+this path, so treating malformed producer data as absent would silently
+disable exactly the bound it was written to request — challenge round 1,
+confirmed against the first version of this check, which did.
+
+`Date.parse` alone is not enough to decide "present and well-formed",
+either. It silently normalizes an impossible calendar date, so a
+`started_at` of `2026-02-30T00:00:00Z` would bound every pass against March
+2nd — accepting or rejecting passes on a date nobody wrote (challenge round
+2, confirmed against round 1's own fix). The bound applies the same shape
+plus round-trip real-instant test `validate-result-schemas.mjs` already
+applies to every `*_at` field. This never becomes an ordering
+authority — that stays the trusted receipt sequence's job
+(`specs/dev-flow-v2.md`: producer-supplied `produced_at` "SHALL be only a
+bounded sanity check … never an ordering … boundary"). It is exactly that
+bounded sanity check: a pass claiming to predate the run, postdate its
+promotion, or precede the stage it names is evidence from outside the run's
+own span.
+
+Two flags exist only to carry a resolved policy value into a surface that
+deliberately does not read `.devflow.toml` itself, and **both are required**.
+`--integration-cap` (row 5) pairs with a field every integrator pass carries,
+so its absence could be — and once was — mistaken for a cap of 0, silently
+waiving the Codex condition. `--remediation-cap` (row 4) shipped optional on
+the reasoning that it is derived from the record rather than from a claim the
+pass makes, and challenge round 1 was right to reject that: an optional
+policy check is one a caller skips by saying nothing, and a skipped
+remediation check promotes an over-cap run. Derivation says where the number
+comes from, not whether the check may be waived.
+
+Row 4's second half — "code-changing integration dispositions past the cap
+are rejected" — deliberately has **no branch of its own**, and the branch
+written for it was wrong. Past the cap, the loop-count condition already
+rejects the pass whatever its dispositions say. *At* the cap it must not
+fire: the integrate skill has each integrator pass echo the
+`applied_dispositions` "accumulated so far this integration stage", so the
+fix that CAUSED the final loop is still listed on the clean pass that closes
+it — reading that as "a code change still needs applying" refuses precisely
+the run that converged exactly on budget. A pass that genuinely still owes a
+code change is not `clean`, and the gate's own step 9c refuses it there.
+
+**Row 7's document check faults a missing marker once the run has ENDED, not
+once it is promoted.** The in-flight window the relaxation exists for is
+exactly `outcome: null`; a `capped`, `escalated`, or `abandoned` run is as
+finished as a promoted one, and a capped run that never opened a PR is the
+sharpest case — its issue comments are the only harvestable record it will
+ever have (Codex cloud-review cycle 1 on PR #800, confirmed).
+
+**Row 7 is checked in two places because it holds at two different times.**
+The document check's missing-marker half deliberately waits for
+`outcome: ready-for-review`, since a run adjudicates a round and *then*
+publishes its evidence — an unconditional rule would fault the normal
+in-flight sequence rather than an attack. That relaxation leaves the
+invariant unenforced at the moment it matters most, though: promotion is
+what turns the record into the durable artifact a harvester reads back, and
+validating *after* `outcome` flips is too late to stop the promotion
+(challenge round 3, confirmed). So the readiness gate applies the same rule
+as a promotion condition, from the record it already holds. The
+`pr`-without-`issue` half needs no such gate in either place: the schema has
+the rollup link *back* to the per-round comments, so it is posted after them
+and their absence is an inconsistency at any point in a run.
+
+Three further things the gate's own conditions learned from that same cycle.
+A marker satisfies row 7 only when its `run_id` is the **active run's** — the
+flat `evidence_comments[]` projection is derived from the append-only
+`evidence_registrations[]` chain, and `render-dev-flow readiness-input`
+validates structure only, so an out-of-band or foreign-run marker with the
+right stage/round/destination would otherwise pass. Behind that, the gate runs
+the record's **own semantic validation** against its adjudication set as an
+authenticity backstop — recomputing the chain digests, binding every marker's
+run_id, re-applying this same rule for an ended run — deliberately *after* the
+per-round conditions, so the specific, actionable failure reports first and
+the backstop catches everything else. And row 4 gained its **lower** bound:
+integration's only outgoing edge is `implement`, so a code-changing
+disposition (`fix`/`restructure`/`delete`) cannot exist without the record
+showing at least one `integration -> implement -> integration` re-entry — zero
+loops alongside one is an inconsistent record that would promote having spent
+no remediation round at all. That is the complement of the ceiling, not a
+revival of the at-cap branch challenge round 2 deleted: this refuses a record
+claiming a code change with no loop recorded anywhere, which no legitimate
+trajectory produces.
+
+The stronger, round-indexed form of that bound (`loops >= the round the fixed
+finding came from`) is worth recording as a **dead end**, because it looks
+right. Integrate cycle 2 asked for it and it was implemented; cycle 3 showed
+it unsound and it was withdrawn in the same PR. A finding id's round segment
+is its pass's `integration_round`, and that field counts **passes, not
+rounds** — `result.integrator.schema.json` says so outright. Waiting on CI and
+re-dispatching advance the pass ordinal while spending no remediation round,
+so a finding first raised by pass 2 and fixed by the first fix push has one
+legitimate loop and the round-indexed bound rejects that clean pass
+permanently. Closing the residual it reached for needs per-finding loop
+attribution the record does not carry:
+[#808](https://github.com/evanharmon1/harmon-devkit/issues/808).
+
+Two row-4 gaps are filed rather than closed here. The first is
+[#801](https://github.com/evanharmon1/harmon-devkit/issues/801) — under a
+**legacy** decoded policy the shared budget charges a no-change adjudication
+cycle too, and those record no transition, so the loop count undercounts.
+Criterion 4 defines the count as the loop, and closing the gap needs a policy
+shape the gate is not given.
+
+**Row 10's universe is the record's own evidence, and the gate builds it.**
+A check gated on a flag its production caller never passes enforces nothing
+(challenge round 2, confirmed): the readiness gate validated each integrator
+envelope without `--known-ids`, so only the impossible half — a future
+integration round — was ever caught, and a clean pass could claim
+dispositions for findings that never existed. The gate now assembles the
+universe from `--record`'s own `passes/` — the ids those passes raised, and
+nothing else — skipping a **blocked confidence-role** pass, which contributes
+no pass and no finding, while keeping a blocked integrator's, which
+legitimately carries evidence gathered before it was cut short (Codex
+cloud-review cycle 1 on PR #800). An unreadable or absent record yields an
+empty universe rather than a skipped check.
+
+The universe deliberately does **not** include adjudication ids, though an
+earlier revision of this work did harvest them. An adjudication is a judgement
+*about* a finding, never evidence that one was produced, and
+`render-dev-flow readiness-input` explicitly continues past an adjudication
+row with no pass behind it — so harvesting those let a fabricated same-run
+adjudication whitelist an arbitrary id (integrate cycle 2 on PR #800).
+Narrowing to passes removes that class rather than patching it: every
+legitimately adjudicated finding was raised by a pass, so a complete record
+already contains it, and a record missing that pass is incomplete in a way the
+gate should fail closed on.
+
+Each of those passes is then **semantically validated** before its ids are
+trusted, rather than approximated with a status/role filter. `status:
+"completed"` does not establish validity — a structurally valid pass whose
+`counts` disagree with its findings is rejected by
+`validate-result-schemas.mjs` while `render-dev-flow readiness-input`, which
+is only structural, lets it through (integrate cycle 3 on PR #800). Running
+the real validator is both stricter and less code: it subsumes the
+blocked-role rule the filter used to hand-roll, including the distinction that
+a blocked confidence-role pass carries no findings while a blocked integrator
+legitimately does.
+
+Two smaller decisions ride along with that. The assembly uses a plain glob
+and `jq`, never `find`/`xargs`, because the gate must keep working under the
+minimal PATH its own no-GNU-timeout path restricts itself to — and the temp
+file it writes needs `rm` on that PATH for its cleanup trap, which is why the
+restricted toolset in `scripts/test-integrate-readiness.sh` names it.
+
+**Cap integrity is a property of the whole trajectory, not of the stage being
+computed.** Every over-cap check was originally scoped to `args.stage`, so a
+challenge round 4 under a challenge cap of 3 stayed invisible while review's
+exit was computed, and review could converge on a trajectory its own policy
+forbids (integrate cycle 3 on PR #800). Both confidence stages are now checked
+for over-cap passes and adjudications, whatever stage is requested — the same
+shape the cap-0 rule below already had.
+`exit/cross-stage-over-cap-challenge-round-rejected` is the fixture.
+
+**A cap-0 confidence stage must be inert across the whole run, not just the
+one being computed.** Every cap-integrity check in `dev-flow-exit.mjs` is
+scoped to `args.stage`, so a policy disabling challenge while the trajectory
+plainly showed challenge having run was invisible whenever review was the
+stage under computation — and the cap-0 branch of row 3's skip guard would
+then accept the skip on the strength of the very cap the trajectory
+contradicts (challenge round 2, confirmed). Both confidence stages are now
+checked for a transition, pass, adjudication, or `slot_failures` record
+naming a stage its own resolved cap disables.
+
+`expected.json` in the exit corpus gained a `reason_contains` key for this
+work. A fixture declaring only `{"indeterminate": true}` passes for *any*
+refusal, so two completely different bugs satisfy it identically; every
+invariant carried here names the refusal it is actually about.
+
 ## The Foreman conformance contract
 
 harmon-devkit is the single source of truth for this schema family, vendored

@@ -33,7 +33,7 @@ bin_dir="${test_tmp}/bin"
 fixtures="${test_tmp}/fixtures"
 record_dir="${test_tmp}/record"
 log="${test_tmp}/gh.log"
-mkdir -p "$bin_dir" "$fixtures" "$record_dir/adjudications"
+mkdir -p "$bin_dir" "$fixtures" "$record_dir/adjudications" "$record_dir/passes"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -142,6 +142,9 @@ export GH_FIXTURES="$fixtures"
 export GH_LOG="$log"
 
 head_sha="1111111111111111111111111111111111111111"
+# A second, distinct full SHA for the fixtures that need one head to disagree
+# with another (harmon-devkit#685's promotion-head binding).
+stale_head_sha="2222222222222222222222222222222222222222"
 moved_sha="2222222222222222222222222222222222222222"
 
 default_body() {
@@ -154,26 +157,191 @@ What/why prose.
 BODY
 }
 
+# ensure_issue_evidence_markers — harmon-devkit#685 (challenge round 3) makes
+# a per-round issue evidence comment a promotion condition, so a record the
+# gate is handed must carry one for every adjudication document in it. Rather
+# than making ~10 cases remember that, run_gate/run_audit complete the record
+# themselves; the cases that are ABOUT the marker being missing set
+# skip_evidence_markers=1 for exactly one invocation.
+#
+# The registration digest is the canonical-JSON sha256 over
+# {id, author_actor_id, login, payload_digest, marker, registered_at,
+# prev_digest} that validate-result-schemas.mjs's checkRunChainIntegrity
+# recomputes — `jq -Sc` is that canonical form. The marker's stage must also
+# appear in stage_transitions (checkEvidenceMarkerStageVisited), which is why
+# every default record below carries the full lifecycle path rather than a
+# lone integration entry.
+skip_evidence_markers=0
+
+add_issue_evidence_marker() {
+    add_evidence_marker "$1" "$2" issue
+}
+
+# $3 = destination (issue|pr). A `pr` marker must be chain-registered exactly
+# like an issue one: the gate's authenticity check rejects any marker the
+# append-only chain never registered, so an injected one would never reach the
+# destination condition it is meant to exercise.
+add_evidence_marker() {
+    local stage="$1" round="$2" destination="${3:-issue}"
+    local marker comment_id payload_digest registered_at prev content digest
+    comment_id="21${stage}${destination}$(printf '%04d' "$round")"
+    comment_id="$(printf '%s' "$comment_id" | tr -cd '0-9')0"
+    payload_digest="sha256:$(printf '%064d' "$round")"
+    registered_at="2026-01-01T00:30:00Z"
+    marker="$(jq -cn --arg stage "$stage" --argjson round "$round" \
+        --arg destination "$destination" \
+        '{run_id:"test-run", stage:$stage, destination:$destination,
+          round:$round, sequence:1}')"
+    prev="$(jq -r '(.evidence_registrations | last | .digest) // "genesis"' "${record_dir}/run.json")"
+    content="$(jq -cn --arg id "$comment_id" --arg digest "$payload_digest" \
+        --arg at "$registered_at" --argjson marker "$marker" --arg prev "$prev" \
+        '{id:$id, author_actor_id:12345678, login:"evanharmon1",
+          payload_digest:$digest, marker:$marker, registered_at:$at,
+          prev_digest:$prev}')"
+    digest="$(printf '%s' "$content" | jq -Sc . | tr -d '\n' | sha256sum | cut -d' ' -f1)"
+    jq -c --arg id "$comment_id" --arg digest "$payload_digest" \
+        --arg at "$registered_at" --argjson marker "$marker" \
+        --arg prev "$prev" --arg entry_digest "$digest" '
+      .evidence_comments += [{id:$id, author_actor_id:12345678,
+                              login:"evanharmon1", digest:$digest,
+                              marker:$marker}]
+      | .evidence_registrations += [{seq:(.evidence_registrations | length),
+          digest:$entry_digest, prev_digest:$prev, id:$id,
+          author_actor_id:12345678, login:"evanharmon1",
+          payload_digest:$digest, marker:$marker, registered_at:$at}]' \
+        "${record_dir}/run.json" >"${record_dir}/run.json.tmp"
+    mv "${record_dir}/run.json.tmp" "${record_dir}/run.json"
+}
+
+ensure_issue_evidence_markers() {
+    local adj stage round
+    [ "$skip_evidence_markers" -eq 0 ] || return 0
+    for adj in "${record_dir}"/adjudications/*.json; do
+        [ -f "$adj" ] || continue
+        stage="$(jq -r '.stage' "$adj" 2>/dev/null)" || continue
+        round="$(jq -r '.round' "$adj" 2>/dev/null)" || continue
+        [ "$stage" != null ] && [ "$round" != null ] || continue
+        jq -e --arg stage "$stage" --argjson round "$round" \
+            'any(.evidence_comments[]?.marker;
+                 .stage == $stage and .round == $round and .destination == "issue")' \
+            "${record_dir}/run.json" >/dev/null 2>&1 && continue
+        add_issue_evidence_marker "$stage" "$round"
+    done
+    node "$validator" run "${record_dir}/run.json" >/dev/null ||
+        fail "completing the record's issue evidence markers produced an invalid run record"
+}
+
+# The full, legal lifecycle path every default record carries: run.schema.json
+# requires the first entry to be kickoff and every consecutive pair to be an
+# ALLOWED_EDGES edge, and checkEvidenceMarkerStageVisited requires a marker's
+# stage to appear here — so a record that adjudicates a review round must
+# record having been in review. $1 = "ended" gives the last entry an exit too,
+# required once outcome is non-null.
+# $2 = number of integration -> implement -> integration remediation loops to
+# record (default 0). A record whose gated pass applies a code-changing
+# disposition needs at least one: integration's only outgoing edge is
+# implement, so a code change during integration always records the re-entry
+# (Codex cloud-review cycle 1 on PR #800).
+lifecycle_transitions() {
+    jq -cn --arg ended "${1:-}" --argjson loops "${2:-0}" '
+      ([["kickoff","claimed"],["claim","planned"],["plan","briefed"],
+        ["implement","verified"],["verify","green"],["challenge","converged"],
+        ["review","converged"],["security","clean"]]
+       + ([range(0; $loops)] | map(
+           [["integration","remediating"],["implement","fixed"],
+            ["verify","green"],["security","clean"]]) | add // [])
+       + [["integration","converged"]])
+      | to_entries
+      | map({stage: .value[0],
+             entered_at: ("2026-01-01T00:" + (.key | tostring | ("0" * (2 - length)) + .) + ":00Z"),
+             exit: .value[1]})
+      | if $ended == "ended" then . else (.[-1] |= del(.exit)) end'
+}
+
 # A minimal valid run.json (ai/schemas/run.schema.json) with no findings at
 # all — zero adjudications means readiness-input's finding index has nothing
 # disposition:"defer" to report, so deferred_findings.{settled,unsettled} are
 # always [] against it. This is the default record for every test that is
 # not itself about deferred-finding settlement.
 write_default_record() {
-    jq -cn --arg head "$head_sha" '
+    jq -cn --arg head "$head_sha" --argjson transitions "$(lifecycle_transitions)" '
       {schema:2, run_id:"test-run", initiated_by:"human",
        started_at:"2026-01-01T00:00:00Z",
-       stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z"}],
+       stage_transitions:$transitions,
        interventions:[], outcome:null,
        pr:{number:493,url:"https://github.com/example/repo/pull/493"},
        evidence_comments:[], settlements:[], promotion:null,
        evidence_registrations:[], outcome_transitions:[],
        pr_bindings:[{seq:0,prev_digest:"genesis",
-         digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+         digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
          number:493,url:"https://github.com/example/repo/pull/493",
          bound_at:"2026-01-01T00:00:00Z"}]}' \
         >"${record_dir}/run.json"
-    rm -f "${record_dir}"/adjudications/*.json
+    rm -f "${record_dir}"/adjudications/*.json "${record_dir}"/passes/*.json
+}
+
+write_record_with_integration_entries() {
+    jq -cn --argjson n "$1" '
+      # A minute counter keeps entered_at non-decreasing across the whole
+      # array (checkRunChronology) while the edges stay on ALLOWED_EDGES'"'"'s
+      # own graph: kickoff -> claim -> plan -> implement -> verify ->
+      # security -> integration, then $n loops of
+      # integration -> implement -> verify -> security -> integration.
+      def at($m): "2026-01-01T" + (($m / 60 | floor) | tostring | ("0" * (2 - length)) + .) + ":" + (($m % 60) | tostring | ("0" * (2 - length)) + .) + ":00Z";
+      [{stage:"kickoff",exit:"claimed"},
+       {stage:"claim",exit:"planned"},
+       {stage:"plan",exit:"briefed"},
+       {stage:"implement",exit:"verified"},
+       {stage:"verify",exit:"green"},
+       {stage:"security",exit:"clean"}]
+      + ([range(0; $n)] | map(
+          [{stage:"integration",exit:"remediating"},
+           {stage:"implement",exit:"fixed"},
+           {stage:"verify",exit:"green"},
+           {stage:"security",exit:"clean"}]) | flatten)
+      + [{stage:"integration"}]
+      | to_entries | map(.value + {entered_at: at(.key)})
+      | . as $transitions
+      | {schema:2, run_id:"test-run", initiated_by:"human",
+         started_at:"2026-01-01T00:00:00Z",
+         stage_transitions:$transitions,
+         interventions:[], outcome:null,
+         pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+         evidence_comments:[], settlements:[], promotion:null,
+         evidence_registrations:[], outcome_transitions:[],
+         pr_bindings:[{seq:0,prev_digest:"genesis",
+           digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
+           number:493,url:"https://github.com/example/repo/pull/493",
+           bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
+    node "$validator" run "${record_dir}/run.json" >/dev/null ||
+        fail "#685(4) record fixture with $1 remediation loop(s) is not a valid run record"
+    rm -f "${record_dir}"/adjudications/*.json "${record_dir}"/passes/*.json
+}
+
+# write_review_r1_pass — the reviewer pass that RAISED review-r1-codex-cli-9.
+# The known-ids universe is derived from passes, not adjudications (integrate
+# cycle 2 on PR #800: an adjudication is a judgement ABOUT a finding, never
+# evidence one was produced), so every fixture whose gated pass disposes of
+# that finding needs the pass behind it or its record is incomplete.
+# $1 = the finding id this pass raises (default review-r1-codex-cli-9); it
+# must match whatever the accompanying adjudication document adjudicates, or
+# render-dev-flow rejects the pass as carrying an unadjudicated finding.
+write_review_r1_pass() {
+    jq -cn --arg head "$head_sha" --arg fid "${1:-review-r1-codex-cli-9}" '
+      {schema:2, role:"reviewer", status:"completed", head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"codex-cli",model:"test",tier:"standard"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:{stage:"review", round:1, reviewed_head:$head,
+                slot:"codex-cli", finder:"codex-cli",
+                findings:[{id:$fid,
+                           path:"scripts/example.mjs", line:10,
+                           class:"correctness", provenance:"original",
+                           fingerprint:"new", priority:"P2",
+                           recommended_disposition:"defer",
+                           evidence:"needs a second look"}],
+                counts:{P0:0,P1:0,P2:1,P3:0}}}' \
+        >"${record_dir}/passes/review-r1-codex-cli.json"
 }
 
 # A schema-valid result.envelope (role integrator) at
@@ -288,12 +456,13 @@ write_defaults() {
 # integrator result appends its own "$@" override — the gate's flag parser
 # overwrites on repeat, so the last occurrence of either flag wins.
 run_gate() {
+    ensure_issue_evidence_markers
     set +e
     gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" check \
         --repo example/repo --pr 493 --head "$head_sha" \
         --record "$record_dir" \
         --integrator-result "${fixtures}/integrator-result-disabled.json" \
-        --integration-cap 0 \
+        --integration-cap 0 --remediation-cap 4 \
         "$@" 2>&1)"
     gate_rc=$?
     set -e
@@ -301,12 +470,13 @@ run_gate() {
 }
 
 run_audit() {
+    ensure_issue_evidence_markers
     set +e
     gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" audit \
         --repo example/repo --pr 493 --head "$head_sha" \
         --record "$record_dir" \
         --integrator-result "${fixtures}/integrator-result-disabled.json" \
-        --integration-cap 0 \
+        --integration-cap 0 --remediation-cap 4 \
         "$@" 2>&1)"
     gate_rc=$?
     set -e
@@ -941,6 +1111,7 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
+write_review_r1_pass review-r1-codex-cli-1
 # run.json's settlements[] stays empty from write_default_record — nothing
 # has settled the one deferred finding the adjudication above declares.
 run_gate
@@ -958,20 +1129,21 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
-jq -cn --arg head "$head_sha" \
+write_review_r1_pass review-r1-codex-cli-1
+jq -cn --arg head "$head_sha" --argjson transitions "$(lifecycle_transitions)" \
     '{schema:2, run_id:"test-run", initiated_by:"human",
       started_at:"2026-01-01T00:00:00Z",
-      stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z"}],
+      stage_transitions:$transitions,
       interventions:[], outcome:null,
       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
       evidence_comments:[],
       settlements:[{finding_id:"review-r1-codex-cli-1", disposition:"decline",
-        settled_at:"2026-01-01T00:01:00Z",
+        settled_at:"2026-01-01T00:12:00Z",
         reference:{type:"comment_id",value:"555"}}],
       promotion:null,
       evidence_registrations:[], outcome_transitions:[],
       pr_bindings:[{seq:0,prev_digest:"genesis",
-        digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+        digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
         number:493,url:"https://github.com/example/repo/pull/493",
         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
 run_gate
@@ -1386,6 +1558,12 @@ node "$validator" envelope "$mixed_source_result" >/dev/null ||
 # first, before proving the deferred case below still requires one.
 echo "==> applied_dispositions naming a FRESH (never-deferred) finding needs no settlement and passes"
 write_defaults
+# One remediation loop, because this pass applies `fix`: a code change during
+# integration always records an integration -> implement -> integration
+# re-entry (Codex cloud-review cycle 1 on PR #800), so a record claiming the
+# fix with zero loops is internally inconsistent. This case is about
+# settlement, not remediation, so give it the consistent record.
+write_record_with_integration_entries 1
 fresh_result="${fixtures}/integrator-result-fresh-disposition.json"
 jq -cn --arg head "$head_sha" '
   {schema:2, role:"integrator", status:"completed", head:$head,
@@ -1401,8 +1579,46 @@ jq -cn --arg head "$head_sha" '
     >"$fresh_result"
 node "$validator" envelope "$fresh_result" >/dev/null ||
     fail "fresh-disposition fixture failed schema validation"
+# The record must hold the evidence for integration-r1-human-1, or the
+# gate's known-ids universe (harmon-devkit#685, challenge round 2) has
+# nothing to account for it — which is the separate thing the next case
+# asserts. This case is about settlement, so give it the earlier integrator
+# pass that surfaced the finding AND the adjudication that dispositioned it:
+# render-dev-flow.mjs's own cross-document check rejects a pass whose
+# finding no adjudication document covers, so a record carrying one without
+# the other is not a record at all.
+write_earlier_integration_finding() {
+    jq -cn --arg head "$head_sha" '
+      {schema:2, role:"integrator", status:"completed", head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"claude-code",model:"test",tier:"economy"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+                codex_cycle:null, integration_round:1,
+                findings:[{id:"integration-r1-human-1",
+                           body:"a human review finding",source_id:"9100"}],
+                unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+                verdict:"findings"}}' \
+        >"${record_dir}/passes/integration-r1.json"
+    jq -cn --arg head "$head_sha" '
+      {schema:2, run_id:"test-run", stage:"integration", round:1,
+       reviewed_head:$head,
+       adjudications:[{finding_id:"integration-r1-human-1",
+         reviewer_priority:null, adjudicated_priority:"P2",
+         disposition:"fix", reason:"confirmed against the code",
+         evidence:"reproduced locally", override:null}]}' \
+        >"${record_dir}/adjudications/integration-r1.json"
+}
+write_earlier_integration_finding
 run_gate --integrator-result "$fresh_result"
 assert_gate 0 pass ready
+
+echo "==> #685(10): an applied_disposition the record has no evidence for anywhere is refused"
+write_defaults
+run_gate --integrator-result "$fresh_result"
+assert_gate 2 indeterminate codex-indeterminate
+printf '%s\n' "$gate_out" | grep -Fq "known finding universe" ||
+    fail "#685(10): the gate did not name the finding universe: $gate_out"
 
 # A disposition claim alone, with no durable settlement behind it, cannot
 # promote a genuinely deferred finding — check 6 (deferred-unsettled) already
@@ -1419,6 +1635,7 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
+write_review_r1_pass
 undisclosed_result="${fixtures}/integrator-result-undisclosed.json"
 jq -cn --arg head "$head_sha" '
   {schema:2, role:"integrator", status:"completed", head:$head,
@@ -1454,20 +1671,24 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
-jq -cn --arg head "$head_sha" \
+write_review_r1_pass
+# One remediation loop: this pass settles the deferred finding with `fix`, and
+# a code change during integration always records the integration -> implement
+# -> integration re-entry (Codex cloud-review cycle 1 on PR #800).
+jq -cn --arg head "$head_sha" --argjson transitions "$(lifecycle_transitions "" 1)" \
     '{schema:2, run_id:"test-run", initiated_by:"human",
       started_at:"2026-01-01T00:00:00Z",
-      stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z"}],
+      stage_transitions:$transitions,
       interventions:[], outcome:null,
       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
       evidence_comments:[],
       settlements:[{finding_id:"review-r1-codex-cli-9", disposition:"fix",
-        settled_at:"2026-01-01T00:01:00Z",
+        settled_at:"2026-01-01T00:16:00Z",
         reference:{type:"sha",value:"c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff"}}],
       promotion:null,
       evidence_registrations:[], outcome_transitions:[],
       pr_bindings:[{seq:0,prev_digest:"genesis",
-        digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+        digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
         number:493,url:"https://github.com/example/repo/pull/493",
         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
 disclosed_result="${fixtures}/integrator-result-disclosed.json"
@@ -1501,20 +1722,21 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
-jq -cn --arg head "$head_sha" \
+write_review_r1_pass
+jq -cn --arg head "$head_sha" --argjson transitions "$(lifecycle_transitions)" \
     '{schema:2, run_id:"test-run", initiated_by:"human",
       started_at:"2026-01-01T00:00:00Z",
-      stage_transitions:[{stage:"integration",entered_at:"2026-01-01T00:00:00Z"}],
+      stage_transitions:$transitions,
       interventions:[], outcome:null,
       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
       evidence_comments:[],
       settlements:[{finding_id:"review-r1-codex-cli-9", disposition:"decline",
-        settled_at:"2026-01-01T00:01:00Z",
+        settled_at:"2026-01-01T00:12:00Z",
         reference:{type:"comment_id",value:"555"}}],
       promotion:null,
       evidence_registrations:[], outcome_transitions:[],
       pr_bindings:[{seq:0,prev_digest:"genesis",
-        digest:"df4196c99de13032bbb745e09f669c998c9f767205f771b8193c020656d6e813",
+        digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
         number:493,url:"https://github.com/example/repo/pull/493",
         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
 mismatched_disposition_result="${fixtures}/integrator-result-mismatched-disposition.json"
@@ -1536,6 +1758,325 @@ run_gate --integrator-result "$mismatched_disposition_result"
 assert_gate 1 fail disposition-unsettled
 printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
     fail "disposition-unsettled did not name the mismatched finding: $gate_out"
+
+# ---------------------------------------------------------------------------
+# harmon-devkit#685 — run-trajectory receipt invariants de-scoped from #634,
+# carried here as required test cases. Each block below names the acceptance
+# criterion it discharges and pairs the attack with its legitimate neighbour,
+# so a check cannot be satisfied by an over-broad reading of either half.
+# ---------------------------------------------------------------------------
+
+# --- #685 criterion 9: the moment an integrator pass applies fix|decline|file
+# --- to a deferred finding, the matching append-only settlement exists,
+# --- REGARDLESS OF OUTCOME. The `fix` case is covered above; decline and file
+# --- are the two dispositions that leave the head alone, so nothing else in
+# --- this gate would ever notice them going unrecorded.
+write_deferred_adjudication() {
+    write_review_r1_pass
+    jq -cn --arg head "$head_sha" \
+        '{schema:2, run_id:"test-run", stage:"review", round:1,
+          reviewed_head:$head,
+          adjudications:[{finding_id:"review-r1-codex-cli-9",
+            reviewer_priority:"P2", adjudicated_priority:"P2",
+            disposition:"defer", reason:"carrying to integration",
+            evidence:"needs a second look", override:null}]}' \
+        >"${record_dir}/adjudications/review-r1.json"
+}
+
+# $1 name, $2 disposition
+write_disposition_result() {
+    local out="${fixtures}/integrator-result-685-$1.json"
+    jq -cn --arg head "$head_sha" --arg disp "$2" '
+      {schema:2, role:"integrator", status:"completed", head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"claude-code",model:"test",tier:"economy"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+                codex_cycle:null, integration_round:1, findings:[],
+                unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+                verdict:"clean",
+                applied_dispositions:[{finding_id:"review-r1-codex-cli-9",
+                                        disposition:$disp}]}}' \
+        >"$out"
+    node "$validator" envelope "$out" >/dev/null ||
+        fail "#685 disposition fixture ($2) failed schema validation"
+    printf '%s\n' "$out"
+}
+
+for disposition in decline file; do
+    echo "==> #685(9): a DEFERRED finding ${disposition}d in applied_dispositions with no settlement fails"
+    write_defaults
+    write_deferred_adjudication
+    disposition_result="$(write_disposition_result "unsettled-${disposition}" "$disposition")"
+    run_gate --integrator-result "$disposition_result"
+    assert_gate 1 fail deferred-unsettled
+    printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
+        fail "#685(9) ${disposition}: gate did not name the unsettled finding: $gate_out"
+done
+
+# $1 settlement disposition, $2 reference type, $3 reference value. Writes a
+# whole record rather than patching: write_defaults resets run.json via
+# write_default_record, so every case here restates it in full.
+write_record_with_settlement() {
+    jq -cn --arg disp "$1" --arg reftype "$2" --arg refvalue "$3" --argjson transitions "$(lifecycle_transitions "" 1)" '
+      {schema:2, run_id:"test-run", initiated_by:"human",
+       started_at:"2026-01-01T00:00:00Z",
+       stage_transitions:$transitions,
+       interventions:[], outcome:null,
+       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+       evidence_comments:[],
+       settlements:[{finding_id:"review-r1-codex-cli-9", disposition:$disp,
+                     settled_at:"2026-01-01T00:13:00Z",
+                     reference:{type:$reftype, value:$refvalue}}],
+       promotion:null, evidence_registrations:[], outcome_transitions:[],
+       pr_bindings:[{seq:0,prev_digest:"genesis",
+         digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
+         number:493,url:"https://github.com/example/repo/pull/493",
+         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
+}
+
+echo "==> #685(9): the same decline, once settled in run.json with the SAME disposition, passes"
+write_defaults
+write_record_with_settlement decline comment_id 9001
+write_deferred_adjudication
+disposition_result="$(write_disposition_result settled-decline decline)"
+run_gate --integrator-result "$disposition_result"
+assert_gate 0 pass ready
+
+echo "==> #685(9): a settlement recording file where the pass applied decline is disposition-unsettled"
+write_defaults
+write_record_with_settlement file issue_number 9002
+write_deferred_adjudication
+run_gate --integrator-result "$disposition_result"
+assert_gate 1 fail disposition-unsettled
+
+# --- #685 criterion 7: every adjudicated round has a matching issue evidence
+# --- marker, and a pr-destination marker does not substitute. The validator
+# --- enforces this over a run record once it is promoted; this is the
+# --- pre-promotion half, so an otherwise-clean PR cannot be promoted before
+# --- the invariant holds (challenge round 3, confirmed). run_gate completes
+# --- the markers for every other case, so these three opt out of that.
+echo "==> #685(7): an adjudicated round with no issue evidence marker cannot promote"
+write_defaults
+write_deferred_adjudication
+write_record_with_settlement decline comment_id 9001
+skip_evidence_markers=1
+disposition_result="$(write_disposition_result marker-missing decline)"
+run_gate --integrator-result "$disposition_result"
+skip_evidence_markers=0
+assert_gate 1 fail evidence-marker-missing
+printf '%s\n' "$gate_out" | grep -Fq 'review round 1' ||
+    fail "#685(7): the gate did not name the unrecorded round: $gate_out"
+
+echo "==> #685(7): a pr-destination marker for that round does not substitute"
+write_defaults
+write_deferred_adjudication
+write_record_with_settlement decline comment_id 9001
+add_evidence_marker review 1 pr
+skip_evidence_markers=1
+run_gate --integrator-result "$disposition_result"
+skip_evidence_markers=0
+assert_gate 1 fail evidence-marker-missing
+printf '%s\n' "$gate_out" | grep -Fq 'never substitutes' ||
+    fail "#685(7): the gate did not say a pr comment never substitutes: $gate_out"
+
+echo "==> #685(7): the same round, once its issue evidence is recorded, promotes"
+write_defaults
+write_deferred_adjudication
+write_record_with_settlement decline comment_id 9001
+run_gate --integrator-result "$disposition_result"
+assert_gate 0 pass ready
+
+# --- #685 criterion 6: promotion.head equals the head of the final integrator
+# --- result and its accepted-cycle reviewed commit; a stale integration pass
+# --- cannot certify a newer promoted head. The envelope-head and
+# --- accepted.reviewed_commit halves are proven elsewhere in this file; this
+# --- is the record's own promotion entry, which was bound to nothing.
+# $1 = the head the record claims it promoted (a promoted record is
+# outcome: ready-for-review, which run.schema.json ties to a non-null
+# promotion and a last stage_transitions entry of integration).
+write_promoted_record() {
+    jq -cn --arg head "$1" --argjson transitions "$(lifecycle_transitions ended)" '
+      {schema:2, run_id:"test-run", initiated_by:"human",
+       started_at:"2026-01-01T00:00:00Z",
+       stage_transitions:$transitions,
+       interventions:[], outcome:"ready-for-review",
+       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+       evidence_comments:[], settlements:[],
+       promotion:{head:$head, promoted_at:"2026-01-01T02:00:00Z",
+                  gate_fingerprint:"sha256:fingerprint"},
+       evidence_registrations:[],
+       outcome_transitions:[{seq:0,prev_digest:"genesis",
+         digest:"9e521465a134c406ecae9a38eab52d859721d5c0307652016f2d02d0c5a96bcf",
+         outcome:"ready-for-review", at:"2026-01-01T02:00:00Z"}],
+       pr_bindings:[{seq:0,prev_digest:"genesis",
+         digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
+         number:493,url:"https://github.com/example/repo/pull/493",
+         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
+    rm -f "${record_dir}"/adjudications/*.json "${record_dir}"/passes/*.json
+}
+
+write_promoted_pr_view() {
+    jq -cn --arg head "$head_sha" \
+        '{state:"OPEN",isDraft:false,headRefOid:$head,
+          reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+          headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
+}
+
+echo "==> #685(6): audit passes when run.json's promotion.head IS the gated head"
+write_defaults
+write_promoted_record "$head_sha"
+write_promoted_pr_view
+run_audit
+assert_gate 0 pass audit
+
+echo "==> #685(6): a promotion.head naming a different commit is promotion-head-mismatch"
+write_defaults
+write_promoted_record "$stale_head_sha"
+write_promoted_pr_view
+run_audit
+assert_gate 2 indeterminate promotion-head-mismatch
+
+echo "==> #685(6): the same stale promotion.head is refused by check too, not only audit"
+write_defaults
+write_promoted_record "$stale_head_sha"
+run_gate
+assert_gate 2 indeterminate promotion-head-mismatch
+
+# --- #685 criterion 4: integration -> implement -> integration loops are
+# --- counted against [rounds.<policy>].remediation; exceeding it is capped
+# --- with escalation, and code-changing integration dispositions past the cap
+# --- are rejected. --remediation-cap is what supplies the resolved value.
+# $1 = number of integration entries in stage_transitions
+
+echo "==> #685(4): remediation loops within --remediation-cap pass"
+write_defaults
+write_record_with_integration_entries 2
+run_gate --remediation-cap 3
+assert_gate 0 pass ready
+
+echo "==> #685(4): remediation loops exceeding --remediation-cap fail as remediation-capped"
+write_defaults
+write_record_with_integration_entries 2
+run_gate --remediation-cap 1
+assert_gate 1 fail remediation-capped
+
+echo "==> #685(4): omitting --remediation-cap is a usage error, never a skipped check"
+write_defaults
+write_record_with_integration_entries 2
+set +e
+missing_cap_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" check \
+    --repo example/repo --pr 493 --head "$head_sha" --record "$record_dir" \
+    --integrator-result "${fixtures}/integrator-result-disabled.json" \
+    --integration-cap 0 2>&1)"
+missing_cap_rc=$?
+set -e
+[ "$missing_cap_rc" -eq 2 ] ||
+    fail "#685(4): omitting --remediation-cap should exit 2, got $missing_cap_rc: $missing_cap_out"
+
+# A record that is exactly AT one remediation loop (two integration entries)
+# and carries a settlement for the deferred finding, so the cases below turn
+# only on the disposition the gated pass applies.
+# $1 settlement disposition, $2 reference type, $3 reference value.
+write_at_cap_record() {
+    jq -cn --arg disp "$1" --arg reftype "$2" --arg refvalue "$3" '
+      {schema:2, run_id:"test-run", initiated_by:"human",
+       started_at:"2026-01-01T00:00:00Z",
+       # Exactly one remediation loop, on the full lifecycle path — review
+       # included, because a record that adjudicates a review round must
+       # record having been in review (checkEvidenceMarkerStageVisited).
+       stage_transitions:[
+         {stage:"kickoff",entered_at:"2026-01-01T00:00:00Z",exit:"claimed"},
+         {stage:"claim",entered_at:"2026-01-01T00:01:00Z",exit:"planned"},
+         {stage:"plan",entered_at:"2026-01-01T00:02:00Z",exit:"briefed"},
+         {stage:"implement",entered_at:"2026-01-01T00:03:00Z",exit:"verified"},
+         {stage:"verify",entered_at:"2026-01-01T00:04:00Z",exit:"green"},
+         {stage:"challenge",entered_at:"2026-01-01T00:05:00Z",exit:"converged"},
+         {stage:"review",entered_at:"2026-01-01T00:06:00Z",exit:"converged"},
+         {stage:"security",entered_at:"2026-01-01T00:07:00Z",exit:"clean"},
+         {stage:"integration",entered_at:"2026-01-01T00:08:00Z",exit:"remediating"},
+         {stage:"implement",entered_at:"2026-01-01T00:09:00Z",exit:"fixed"},
+         {stage:"verify",entered_at:"2026-01-01T00:10:00Z",exit:"green"},
+         {stage:"security",entered_at:"2026-01-01T00:11:00Z",exit:"clean"},
+         {stage:"integration",entered_at:"2026-01-01T00:12:00Z"}],
+       interventions:[], outcome:null,
+       pr:{number:493,url:"https://github.com/example/repo/pull/493"},
+       evidence_comments:[],
+       settlements:[{finding_id:"review-r1-codex-cli-9", disposition:$disp,
+                     settled_at:"2026-01-01T00:11:00Z",
+                     reference:{type:$reftype, value:$refvalue}}],
+       promotion:null, evidence_registrations:[], outcome_transitions:[],
+       pr_bindings:[{seq:0,prev_digest:"genesis",
+         digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
+         number:493,url:"https://github.com/example/repo/pull/493",
+         bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
+    node "$validator" run "${record_dir}/run.json" >/dev/null ||
+        fail "#685(4) at-cap record fixture is not a valid run record"
+}
+
+# The regression that the criterion's "code-changing dispositions past the
+# cap" clause invites and that must NOT happen (challenge round 1,
+# confirmed): a run that spends its whole remediation budget converges with
+# the fix that caused the final loop still listed in applied_dispositions —
+# SKILL.md has the dispatched agent echo everything "accumulated so far this
+# integration stage" onto the clean pass that closes the stage. Reading that
+# as "a code change still needs applying" would refuse exactly the run that
+# converged on budget.
+echo "==> #685(4): AT the cap, a clean pass still echoing its historical fix converges"
+write_defaults
+write_at_cap_record fix sha "$head_sha"
+write_deferred_adjudication
+fix_result="$(write_disposition_result at-cap-fix fix)"
+run_gate --integrator-result "$fix_result" --remediation-cap 1
+assert_gate 0 pass ready
+
+echo "==> #685(4): one loop OVER the cap fails whatever the dispositions say"
+write_defaults
+write_at_cap_record fix sha "$head_sha"
+write_deferred_adjudication
+run_gate --integrator-result "$fix_result" --remediation-cap 0
+assert_gate 1 fail remediation-capped
+
+# The round-indexed form of this bound (`loops >= the finding's own round`)
+# was implemented at integrate cycle 2 and WITHDRAWN at cycle 3: a finding
+# id's round segment is its pass's `integration_round`, which counts passes
+# rather than rounds, so a finding first raised by pass 2 and fixed by the
+# first fix push has one legitimate loop and the round-indexed bound rejected
+# it forever. Its two cases are deleted with it rather than left asserting a
+# property the gate no longer has. The residual it reached for — one loop
+# covering several later code-changing cycles — needs per-finding loop
+# attribution the record does not carry, and is filed as
+# harmon-devkit#808.
+
+echo "==> #685(4): a non-integer --remediation-cap is a usage error, never silently ignored"
+write_defaults
+write_default_record
+set +e
+bad_cap_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" check \
+    --repo example/repo --pr 493 --head "$head_sha" --record "$record_dir" \
+    --integrator-result "${fixtures}/integrator-result-disabled.json" \
+    --integration-cap 0 --remediation-cap not-a-number 2>&1)"
+bad_cap_rc=$?
+set -e
+[ "$bad_cap_rc" -eq 2 ] ||
+    fail "#685(4): a malformed --remediation-cap should exit 2, got $bad_cap_rc: $bad_cap_out"
+printf '%s\n' "$bad_cap_out" | grep -Fq -- '--remediation-cap must be a non-negative integer' ||
+    fail "#685(4): malformed --remediation-cap did not name the flag: $bad_cap_out"
+
+# --- #685 criterion 5: codex_cycle.cycle <= [rounds].integration; cap 0 =>
+# --- null cycle; a clean verdict with a null cycle under a positive cap is
+# --- not clean. The five `check`-mode cases above cover all three clauses;
+# --- this pins that `audit` — the mode the connector-flip reconcile path
+# --- uses — waives none of them just because the PR is already promoted.
+echo "==> #685(5): audit refuses a null codex_cycle under a positive --integration-cap too"
+write_defaults
+write_default_record
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
+run_audit --integration-cap 3
+assert_gate 2 indeterminate codex-cap-mismatch
 
 echo "==> a CHANGES_REQUESTED review landing mid-gate fails on the final re-read"
 write_defaults
@@ -1603,8 +2144,16 @@ mkdir -p "$restricted_bin"
 # to locate scripts/render-dev-flow.sh from the checkout's own toplevel,
 # gitleaks because render-dev-flow.mjs secret-scans every projection it
 # renders, unconditionally, before printing it), on top of the original
-# minimal toolset this fixture restricts PATH to.
-for tool in bash jq grep tr dirname cat node git gitleaks; do
+# minimal toolset this fixture restricts PATH to. `rm` joined them with
+# harmon-devkit#685, when the gate started materializing the run's
+# known-finding-id universe in a temp file and cleaning it up in an EXIT
+# trap. The trap now ends in `|| :` so a missing `rm` can no longer become
+# the verdict the caller reads, but `rm` stays listed here deliberately:
+# this fixture is about running under a minimal toolset, not about proving
+# the cleanup degrades — the trap's own robustness is asserted just below.
+# `mktemp` joined it for the same reason at challenge round 3, when that temp
+# file stopped being a predictable $$-derived path.
+for tool in bash jq grep tr dirname cat node git gitleaks rm mktemp; do
     tool_path="$(command -v "$tool")" ||
         fail "missing $tool for the no-timeout fixture"
     ln -s "$tool_path" "${restricted_bin}/$tool"
@@ -1623,13 +2172,29 @@ set +e
 gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" env PATH="$restricted_bin" RECHECK_FAKE_EXIT=0 \
     "$recheck_gate" check --repo example/repo --pr 493 --head "$head_sha" \
     --record "$record_dir" --integrator-result "$clean_result" \
-    --integration-cap 1 --codex-recheck "$recheck_state" 2>&1)"
+    --integration-cap 1 --remediation-cap 4 --codex-recheck "$recheck_state" 2>&1)"
 gate_rc=$?
 set -e
 check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
 assert_gate 0 pass ready
 printf '%s\n' "$gate_out" | grep -Fq 'no GNU timeout' ||
     fail "the timeout fallback must warn that calls are unbounded: $gate_out"
+
+echo "==> #685: a cleanup that cannot run never becomes the verdict"
+# The gate's verdict IS its exit code, so its EXIT trap must not be able to
+# change it. Drop `rm` from the restricted toolset and the same green run
+# must still report pass/0 rather than the trap's own failure — this fixture
+# reproduced exactly that as a bare 127 while the trap lacked its `|| :`.
+rm -f "${restricted_bin}/rm"
+set +e
+gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" env PATH="$restricted_bin" RECHECK_FAKE_EXIT=0 \
+    "$recheck_gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" --integrator-result "$clean_result" \
+    --integration-cap 1 --remediation-cap 4 --codex-recheck "$recheck_state" 2>&1)"
+gate_rc=$?
+set -e
+check_watchdog "$gate_rc" no-rm-fallback "$gate_out"
+assert_gate 0 pass ready
 
 nondraft_pr_view() {
     jq -cn --arg head "$head_sha" \
@@ -1663,7 +2228,7 @@ write_defaults
 run_audit
 assert_gate 1 fail pr-draft
 
-echo "==> --record, --integrator-result, and --integration-cap are never skippable by silence"
+echo "==> --record, --integrator-result, and the two caps are never skippable by silence"
 write_defaults
 clean_result="$(write_integrator_result skip-check "$(codex_cycle_json 0)")"
 set +e
@@ -1674,32 +2239,40 @@ set -e
     fail "omitting --record and --integrator-result should exit 2, got $usage_rc: $usage_out"
 set +e
 no_record_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --integrator-result "$clean_result" --integration-cap 1 2>&1)"
+    --integrator-result "$clean_result" --integration-cap 1 --remediation-cap 4 2>&1)"
 no_record_rc=$?
 set -e
 [ "$no_record_rc" -eq 2 ] ||
     fail "omitting --record alone should exit 2, got $no_record_rc: $no_record_out"
 set +e
 no_result_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --record "$record_dir" --integration-cap 1 2>&1)"
+    --record "$record_dir" --integration-cap 1 --remediation-cap 4 2>&1)"
 no_result_rc=$?
 set -e
 [ "$no_result_rc" -eq 2 ] ||
     fail "omitting --integrator-result alone should exit 2, got $no_result_rc: $no_result_out"
 set +e
 no_cap_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --record "$record_dir" --integrator-result "$clean_result" 2>&1)"
+    --record "$record_dir" --integrator-result "$clean_result" --remediation-cap 4 2>&1)"
 no_cap_rc=$?
 set -e
 [ "$no_cap_rc" -eq 2 ] ||
     fail "omitting --integration-cap alone should exit 2, got $no_cap_rc: $no_cap_out"
+set +e
+no_remediation_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" --integrator-result "$clean_result" --integration-cap 1 2>&1)"
+no_remediation_rc=$?
+set -e
+[ "$no_remediation_rc" -eq 2 ] ||
+    fail "omitting --remediation-cap alone should exit 2, got $no_remediation_rc: $no_remediation_out"
 
 echo "==> a short --head is a usage error, exit 2"
 write_defaults
 clean_result="$(write_integrator_result short-head "$(codex_cycle_json 0)")"
 set +e
 short_out="$("$gate" check --repo example/repo --pr 493 --head abc123 \
-    --record "$record_dir" --integrator-result "$clean_result" 2>&1)"
+    --record "$record_dir" --integrator-result "$clean_result" \
+    --integration-cap 1 --remediation-cap 4 2>&1)"
 short_rc=$?
 set -e
 [ "$short_rc" -eq 2 ] ||

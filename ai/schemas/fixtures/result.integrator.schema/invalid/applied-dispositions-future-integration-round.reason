@@ -1,0 +1,1 @@
+$result.payload.applied_dispositions: finding_id integration-r2-codex-cli-1 names integration round 2, later than this pass's own integration_round 1 — no run can already know that finding
