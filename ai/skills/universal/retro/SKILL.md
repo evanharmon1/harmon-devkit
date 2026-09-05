@@ -83,11 +83,27 @@ committed actors file.
 Other useful arguments: `--run <run_id>` when you already know it (a run that
 capped before its PR existed has no PR to discover from — its record is on the
 issue, and note that an id supplied this way is *unverified*: nothing checks it
-against a marker); `--as-of <iso8601>` to reconstruct the run as it stood at an
-earlier instant, which filters discovery's comments by the same cutoff;
-`--json` for the machine form; and `--stats-script <path>` to point at a
+against a marker); `--json` for the machine form; and `--stats-script <path>` to point at a
 harvester this checkout does not carry at the usual place — the case below,
 where the repository has not vendored `scripts/dev-flow-stats.*` at all.
+
+**`--as-of <iso8601>` reconstructs the run record and its comment evidence at
+that instant — and nothing else.** Comments are filtered by the cutoff, and
+the harvester replays the record's append-only chain to it. But two discovery
+inputs are things GitHub does not version, so they are read as they stand now
+and are **not** reconstructed:
+
+- the **linked-issue set** (the PR's closing references), which decides which
+  issues a fallback search reaches — re-linking one changes a historical read;
+- the **PR body** the disclosed caps come from, which is mutable and
+  unauthenticated anyway (§2).
+
+The report states both wherever it uses one, so a reader never has to infer
+the boundary. This is the honest form of the guarantee rather than a wider one
+the mechanism cannot keep: three separate review rounds each found another
+current-state input feeding a promise of total immutability, so the promise
+was narrowed to what the evidence actually supports instead of being patched a
+fourth time.
 
 **Branch on the exit code. Do not read the text and guess.**
 

@@ -59,7 +59,13 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
                                --trusted-actors-file): there is no default.
   --trusted-actors-file <path> A JSON {"trusted_actor_ids": [...]} document,
                                passed through to the harvester.
-  --as-of <iso8601>            Reconstruct the run as of this instant.
+  --as-of <iso8601>            Reconstruct the RUN RECORD and its comment
+                               evidence as of this instant. Discovery inputs
+                               GitHub does not version are NOT reconstructed
+                               and stay current-state: the linked-issue set
+                               (the PR's closing references) and the PR body
+                               the disclosed caps are read from. The report
+                               says so wherever it uses one.
   --stats-script <path>        Override harvester discovery (tests, or a
                                checkout that keeps it somewhere else).
   --json                       Emit the machine form instead of Markdown.`
@@ -265,14 +271,46 @@ function statsCommandFor(file) {
 // ---------------------------------------------------------------------------
 
 // ai/schemas/README.md "Evidence marker and digest grammar": every evidence
-// comment OPENS with one marker line. Anchoring the match to the start of the
-// comment body (harmon-devkit#752) is what stops a marker quoted inside prose
-// — a real risk on a PR that discusses this protocol — from inventing a run.
+// comment OPENS with one marker line, and the grammar is
+//
+//   <!-- devflow:<kind> v2 run_id=<id> stage=<stage> dest=<issue|pr> round=<n|-> seq=<n> -->
+//
+// Anchoring the match to the start of the comment body (harmon-devkit#752) is
+// what stops a marker quoted inside prose — a real risk on a PR that discusses
+// this protocol — from inventing a run.
 const EVIDENCE_MARKER_RE = /^<!--\s+devflow:([a-z][a-z-]*)\s+v2\s+([^>]*?)-->/
 
-const RUN_ID_ATTR_RE = /(?:^|\s)run_id=([^\s>]+)/
+// Only these three kinds are evidence. An earlier revision accepted any
+// lowercase kind carrying a run_id, so a trusted `devflow:example` comment on
+// a protocol-discussion PR could select a run or force the multi-run
+// indeterminate path (review round 4, confirmed P2).
+const EVIDENCE_KINDS = new Set(['run-index', 'run-record', 'evidence'])
 
-function runIdFromCommentBody(body) {
+// run.schema.json's stage_transitions[].stage enum — the run's own span.
+const MARKER_STAGES = new Set([
+  'kickoff',
+  'claim',
+  'explore',
+  'plan',
+  'implement',
+  'verify',
+  'challenge',
+  'review',
+  'security',
+  'integration'
+])
+
+function parseMarkerAttributes(chunk) {
+  const attrs = {}
+  for (const [, key, value] of chunk.matchAll(/([a-z_]+)=([^\s>]+)/g)) attrs[key] = value
+  return attrs
+}
+
+// Returns {runId} for a canonical marker, {malformed: <why>} for a first-line
+// devflow marker that is not one, or null for a comment that carries no marker
+// at all. The three are genuinely different: only the first names a run, and
+// only the second is worth reporting as an anomaly.
+function parseMarker(body) {
   if (typeof body !== 'string') return null
   // Horizontal indentation only: `\s` would eat NEWLINES too, so a comment
   // that opens with blank lines and then quotes a marker would read as one
@@ -280,8 +318,19 @@ function runIdFromCommentBody(body) {
   // leading spaces/tabs on that line may be skipped.
   const marker = EVIDENCE_MARKER_RE.exec(body.replace(/\r/g, '').replace(/^[ \t]+/, ''))
   if (!marker) return null
-  const runId = RUN_ID_ATTR_RE.exec(marker[2])
-  return runId ? { kind: marker[1], runId: runId[1] } : null
+  const kind = marker[1]
+  if (!EVIDENCE_KINDS.has(kind)) return { malformed: `kind "${kind}" is not run-index, run-record or evidence` }
+  const attrs = parseMarkerAttributes(marker[2])
+  for (const required of ['run_id', 'stage', 'dest', 'round', 'seq']) {
+    if (attrs[required] === undefined) return { malformed: `missing required marker field ${required}` }
+  }
+  if (!MARKER_STAGES.has(attrs.stage)) return { malformed: `stage "${attrs.stage}" is not a run stage` }
+  if (attrs.dest !== 'issue' && attrs.dest !== 'pr') return { malformed: `dest "${attrs.dest}" is not issue or pr` }
+  if (attrs.round !== '-' && !/^[1-9][0-9]*$/.test(attrs.round)) {
+    return { malformed: `round "${attrs.round}" is neither "-" nor a positive integer` }
+  }
+  if (!/^[1-9][0-9]*$/.test(attrs.seq)) return { malformed: `seq "${attrs.seq}" is not a positive integer` }
+  return { kind, runId: attrs.run_id }
 }
 
 // Which run a report is about is chosen by a marker, and a marker is just
@@ -293,17 +342,31 @@ function runIdFromCommentBody(body) {
 // harvester ("a forged-author comment: reported, ignored"); discovery is the
 // same trust boundary one step earlier, so it applies the same rule and
 // REPORTS what it ignored rather than dropping it silently.
-function collectRunIds(comments, trustedActorIds, where, ignored) {
+//
+// Malformed and untrusted are kept apart on purpose. A malformed marker is
+// noise — it never named a run, so it cannot make discovery indeterminate. A
+// canonical marker from an untrusted author IS a claim, and refusing it is
+// exactly what the indeterminate exit exists to surface.
+function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
   const found = new Set()
   for (const comment of comments || []) {
-    const hit = runIdFromCommentBody(comment && comment.body)
-    if (!hit) continue
+    const parsed = parseMarker(comment && comment.body)
+    if (!parsed) continue
     const actorId = comment.user && Number(comment.user.id)
-    if (!Number.isInteger(actorId) || !trustedActorIds.has(actorId)) {
-      ignored.push({ comment_id: comment.id ?? null, actor_id: Number.isInteger(actorId) ? actorId : null, run_id: hit.runId, where })
+    const entry = {
+      comment_id: comment.id ?? null,
+      actor_id: Number.isInteger(actorId) ? actorId : null,
+      where
+    }
+    if (parsed.malformed) {
+      malformed.push({ ...entry, reason: parsed.malformed })
       continue
     }
-    found.add(hit.runId)
+    if (!Number.isInteger(actorId) || !trustedActorIds.has(actorId)) {
+      untrusted.push({ ...entry, run_id: parsed.runId })
+      continue
+    }
+    found.add(parsed.runId)
   }
   return found
 }
@@ -314,7 +377,8 @@ function collectRunIds(comments, trustedActorIds, where, ignored) {
 // where a run that capped before its PR existed keeps everything.
 function discoverRun(args, trustedActorIds) {
   const asOf = args.asOf || null
-  const ignored = []
+  const untrusted = []
+  const malformed = []
   const pr = ghJson([
     'pr',
     'view',
@@ -324,15 +388,24 @@ function discoverRun(args, trustedActorIds) {
     '--json',
     'number,url,title,state,isDraft,body,closingIssuesReferences'
   ])
-  const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number, asOf), trustedActorIds, `PR #${pr.number}`, ignored)].sort()
+  const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number, asOf), trustedActorIds, `PR #${pr.number}`, untrusted, malformed)].sort()
   if (fromPr.length === 1) {
-    return { pr, runId: fromPr[0], source: `evidence marker on PR #${pr.number}`, ignored }
+    return { pr, runId: fromPr[0], source: `evidence marker on PR #${pr.number}`, untrusted, malformed }
   }
   if (fromPr.length > 1) {
     throw new IndeterminateError(
       `PR #${pr.number} carries trusted evidence for more than one run (${fromPr.join(', ')}) — rerun with --run <run_id>`
     )
   }
+  // NOT reconstructed by --as-of, and the report says so. The linked-issue
+  // set comes from the PR's closing references as they stand NOW: GitHub does
+  // not version that link, so a re-link after the cutoff changes which issues
+  // a historical read searches. Rather than patch a fourth current-state
+  // input into the cutoff (review round 4's P1, after r2's comment filter and
+  // r3's cutoff validation), --as-of is restructured to the invariant it can
+  // actually keep: it reconstructs the RUN RECORD and its comment evidence at
+  // the cutoff, and every discovery input GitHub does not version is
+  // current-state and disclosed as such in the output.
   const issues = Array.isArray(pr.closingIssuesReferences) ? pr.closingIssuesReferences : []
   // Which issues carried a given run id, not just which ids exist: a run whose
   // record sits on a different issue than the reader expects is worth naming
@@ -340,7 +413,7 @@ function discoverRun(args, trustedActorIds) {
   const fromIssues = new Map()
   for (const issue of issues) {
     const comments = fetchComments(args.repo, issue.number, asOf)
-    for (const runId of collectRunIds(comments, trustedActorIds, `issue #${issue.number}`, ignored)) {
+    for (const runId of collectRunIds(comments, trustedActorIds, `issue #${issue.number}`, untrusted, malformed)) {
       const seen = fromIssues.get(runId) || new Set()
       seen.add(issue.number)
       fromIssues.set(runId, seen)
@@ -349,14 +422,14 @@ function discoverRun(args, trustedActorIds) {
   if (fromIssues.size === 1) {
     const [runId, seen] = [...fromIssues.entries()][0]
     const where = [...seen].sort((a, b) => a - b).map((n) => `#${n}`).join(', ')
-    return { pr, runId, source: `evidence marker on issue ${where}`, ignored }
+    return { pr, runId, source: `evidence marker on issue ${where}`, untrusted, malformed }
   }
   if (fromIssues.size > 1) {
     throw new IndeterminateError(
       `the issues linked to PR #${pr.number} carry trusted evidence for more than one run (${[...fromIssues.keys()].sort().join(', ')}) — rerun with --run <run_id>`
     )
   }
-  return { pr, runId: null, source: null, ignored }
+  return { pr, runId: null, source: null, untrusted, malformed }
 }
 
 // ---------------------------------------------------------------------------
@@ -396,13 +469,23 @@ function resolveTrustedActorArgs(args) {
     }
     // Parsed here as well as passed through, because discovery gates on the
     // same set the harvester will use. Reading it twice is the price of not
-    // having two different notions of "trusted" one step apart.
+    // having two different notions of "trusted" one step apart — and that is
+    // exactly why FILE entries are type-checked rather than coerced. An
+    // earlier revision ran Number() over them, so `[true]` became trusted
+    // actor 1 and `["555"]` was accepted, while dev-flow-stats.mjs at its
+    // current head (origin/feat/663-dev-flow-stats cce024c) reads
+    // doc.trusted_actor_ids WITHOUT .map(Number) and rejects both. Coercing
+    // here therefore produced two different trust sets from one file — the
+    // divergence this comment claims not to have (review round 4, confirmed
+    // P2). Command-line ids stay coerced: argv is always a string, and the
+    // harvester's own fromFlags maps Number over them too.
     for (const id of doc.trusted_actor_ids) {
-      const n = Number(id)
-      if (!Number.isInteger(n) || n < 1) {
-        throw new UsageError(`--trusted-actors-file entries must be positive integers, got ${JSON.stringify(id)}`)
+      if (typeof id !== 'number' || !Number.isInteger(id) || id < 1) {
+        throw new UsageError(
+          `--trusted-actors-file entries must be JSON integers, got ${JSON.stringify(id)} — the harvester type-checks them without coercion, so a coerced value here would build a trust set it will reject`
+        )
       }
-      ids.add(n)
+      ids.add(id)
     }
     passthrough.push('--trusted-actors-file', args.trustedActorsFile)
   }
@@ -696,7 +779,12 @@ function renderMarkdown(report) {
   l.push(`- Evidence source: \`${safe(report.source.harvester)}\`, run id from ${safe(report.source.run_id_from)}`)
   l.push(`- Trust root: ${safe(report.source.trusted_actors)}`)
   if (report.source.pr_binding) l.push(`- PR binding: ${safe(report.source.pr_binding)}`)
-  if (report.as_of) l.push(`- Reconstructed as of: ${safe(report.as_of)}`)
+  if (report.as_of) {
+    l.push(`- Reconstructed as of: ${safe(report.as_of)} — **the run record and its comment evidence only.**`)
+    l.push(
+      '  Discovery inputs GitHub does not version are **not** reconstructed and are read as they stand now: the **linked-issue set** (the PR\'s closing references, which decide which issues a fallback search reaches) and the **PR body** the disclosed caps above come from. Re-linking an issue, or editing the body, changes those even for a fixed cutoff.'
+    )
+  }
   l.push('')
 
   l.push('### Policy the PR discloses (unverified)')
@@ -866,6 +954,16 @@ function renderMarkdown(report) {
       )
     }
   }
+  if (report.source.malformed_markers.length === 0) {
+    l.push('- Malformed `devflow:` markers ignored during discovery: 0')
+  } else {
+    l.push(`- Malformed \`devflow:\` markers ignored during discovery: ${report.source.malformed_markers.length}`)
+    for (const marker of report.source.malformed_markers) {
+      l.push(
+        `  - ${cell(marker.where)}, comment ${cell(marker.comment_id ?? 'unknown')}: ${cell(marker.reason)}`
+      )
+    }
+  }
   l.push('')
 
   l.push('### Not measurable from this run\'s evidence')
@@ -882,10 +980,15 @@ function renderMarkdown(report) {
 
 // Never silently: an ignored marker is either a misconfigured trust root or
 // somebody trying to redirect the report, and both are worth saying out loud.
-function reportIgnoredMarkers(ignored) {
-  for (const marker of ignored) {
+function reportIgnoredMarkers(untrusted, malformed) {
+  for (const marker of untrusted) {
     console.error(
       `${TOOL}: ignoring an untrusted evidence marker naming run ${marker.run_id} on ${marker.where} (comment ${marker.comment_id ?? 'unknown'}, actor ${marker.actor_id ?? 'unknown'})`
+    )
+  }
+  for (const marker of malformed) {
+    console.error(
+      `${TOOL}: ignoring a malformed devflow marker on ${marker.where} (comment ${marker.comment_id ?? 'unknown'}): ${marker.reason}`
     )
   }
 }
@@ -910,14 +1013,16 @@ function run(argv) {
   let pr = null
   let runId = args.run || null
   let runIdFrom = args.run ? '--run on the command line' : null
-  let ignoredMarkers = []
+  let untrustedMarkers = []
+  let malformedMarkers = []
   if (!runId) {
     try {
       const discovered = discoverRun(args, trusted.ids)
       pr = discovered.pr
       runId = discovered.runId
       runIdFrom = discovered.source
-      ignoredMarkers = discovered.ignored
+      untrustedMarkers = discovered.untrusted
+      malformedMarkers = discovered.malformed
     } catch (error) {
       if (!(error instanceof IndeterminateError)) throw error
       console.error(`${TOOL}: indeterminate — ${error.message}`)
@@ -925,7 +1030,7 @@ function run(argv) {
     }
     // Before the no-run-record return, not after: "nothing was found" and
     // "something was found and refused" must never look the same on stderr.
-    reportIgnoredMarkers(ignoredMarkers)
+    reportIgnoredMarkers(untrustedMarkers, malformedMarkers)
     if (!runId) {
       // "No trusted marker" and "no marker at all" are different answers, and
       // only the second one licenses the fallback. Markers that exist but do
@@ -937,10 +1042,10 @@ function run(argv) {
       // (harmon-devkit#741). Reporting either as "no run record" would
       // reinterpret a run that plainly happened as one that did not
       // (review round 1, confirmed P1).
-      if (ignoredMarkers.length > 0) {
-        const runs = [...new Set(ignoredMarkers.map((m) => m.run_id))].sort().join(', ')
+      if (untrustedMarkers.length > 0) {
+        const runs = [...new Set(untrustedMarkers.map((m) => m.run_id))].sort().join(', ')
         console.error(
-          `${TOOL}: indeterminate — PR #${args.pr} and its linked issues carry ${ignoredMarkers.length} evidence marker(s) naming ${runs}, none authored by a trusted actor (${trusted.source}). That is either a redirect attempt or a trust root that changed after the run: this tool authenticates against the ids you supplied, not the run's kickoff-time registry revision (harmon-devkit#741). Rerun naming the run's own orchestrator with --trusted-actor-id, or with --run <run_id> — do NOT conclude the session has no run record.`
+          `${TOOL}: indeterminate — PR #${args.pr} and its linked issues carry ${untrustedMarkers.length} evidence marker(s) naming ${runs}, none authored by a trusted actor (${trusted.source}). That is either a redirect attempt or a trust root that changed after the run: this tool authenticates against the ids you supplied, not the run's kickoff-time registry revision (harmon-devkit#741). Rerun naming the run's own orchestrator with --trusted-actor-id, or with --run <run_id> — do NOT conclude the session has no run record.`
         )
         return 11
       }
@@ -1035,7 +1140,8 @@ function run(argv) {
       run_id_from: runIdFrom,
       trusted_actors: trusted.source,
       pr_binding: prBinding,
-      ignored_markers: ignoredMarkers
+      ignored_markers: untrustedMarkers,
+      malformed_markers: malformedMarkers
     },
     trajectory: harvested.trajectory,
     policy,

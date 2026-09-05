@@ -752,6 +752,7 @@ node -e '
   if (report.policy.verified !== false) problems.push("policy.verified must be false")
   if (typeof report.policy.source !== "string") problems.push("policy.source")
   if (!Array.isArray(report.source.ignored_markers)) problems.push("source.ignored_markers")
+  if (!Array.isArray(report.source.malformed_markers)) problems.push("source.malformed_markers")
   if (typeof report.source.pr_binding !== "string") problems.push("source.pr_binding")
   const challenge = report.measurements.stages.find((s) => s.stage === "challenge")
   if (!challenge || challenge.rounds_spent !== 1 || challenge.cap !== 3) problems.push("stages.challenge")
@@ -941,6 +942,102 @@ grep -A 6 'Exit 10, `run-not-found`' ai/skills/universal/retro/SKILL.md |
 grep -q -- '--stats-script <path>' ai/skills/universal/retro/SKILL.md &&
     ok "--stats-script is documented in the skill, not only in --help" ||
     bad "--stats-script is an undocumented escape hatch"
+
+echo "==> --as-of discloses in the OUTPUT what it does and does not reconstruct"
+d="$TMPROOT/asof-scope"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" \
+    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "$POLICY_SECTION"
+write_file "$d/c1" "no marker on the PR"
+marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --as-of 2026-08-25T00:00:00Z
+[ "$RC" -eq 0 ] && ok "exit 0 on the linked-issue discovery path" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "the run record and its comment evidence only" &&
+    ok "the report narrows what --as-of reconstructs" ||
+    bad "--as-of still implies it reconstructs everything"
+contains "$OUT" "linked-issue set" &&
+    ok "the linked-issue set is named as current-state in the output, not just the docs" ||
+    bad "the un-versioned linked-issue input is not disclosed in the report"
+contains "$OUT" "closing references" &&
+    ok "the disclosure names where the linked-issue set comes from" ||
+    bad "the disclosure does not say what the linked-issue set is"
+
+echo "==> without --as-of no reconstruction is claimed, so no disclaimer is printed"
+d="$TMPROOT/noasof"
+scaffold "$d" further-along "$POLICY_SECTION"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "the run record and its comment evidence only" &&
+    bad "an --as-of disclaimer appeared with no --as-of" ||
+    ok "the disclaimer is scoped to the flag that needs it"
+
+echo "==> trust-file entries are type-checked, not coerced (matches #751 head cce024c)"
+d="$TMPROOT/trustcoerce"
+scaffold "$d" further-along "body"
+for bad_entry in 'true' '"555"' '1.5' '0'; do
+    printf '{"trusted_actor_ids":[%s]}' "$bad_entry" >"$d/actors.json"
+    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --trusted-actors-file "$d/actors.json"
+    [ "$RC" -eq 2 ] && contains "$ERR" "must be JSON integers" &&
+        ok "a $bad_entry entry is rejected" || bad "a $bad_entry entry gave $RC: $ERR"
+done
+printf '{"trusted_actor_ids":[%s]}' "$ACTOR" >"$d/actors.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --trusted-actors-file "$d/actors.json"
+[ "$RC" -eq 0 ] && ok "a genuine JSON integer is still accepted" || bad "expected exit 0, got $RC: $ERR"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --trusted-actor-id "$ACTOR"
+[ "$RC" -eq 0 ] && ok "command-line ids stay coerced from argv strings, as the harvester does" ||
+    bad "a valid --trusted-actor-id was rejected: $ERR"
+
+echo "==> only run-index, run-record and evidence markers participate in discovery"
+d="$TMPROOT/kinds"
+scaffold "$d" further-along "body"
+marker_file "$d/bogus" example run-6001-further-along challenge pr -
+set_comments "$d/comments" "$PR" "$d/bogus"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && ok "a non-canonical kind never names a run" ||
+    bad "devflow:example selected a run, got $RC: $ERR"
+contains "$ERR" 'kind "example" is not run-index, run-record or evidence' &&
+    ok "the malformed marker is reported with its reason" || bad "the malformed marker was dropped silently"
+
+echo "==> a canonical kind missing required fields is malformed, not evidence"
+d="$TMPROOT/fields"
+scaffold "$d" further-along "body"
+printf '<!-- devflow:evidence v2 run_id=run-6001-further-along seq=1 -->\n' >"$d/short"
+set_comments "$d/comments" "$PR" "$d/short"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "missing required marker field stage" &&
+    ok "a marker without stage/dest/round is refused by name" ||
+    bad "an incomplete marker participated in discovery, got $RC: $ERR"
+printf '<!-- devflow:evidence v2 run_id=r stage=nonsense dest=pr round=- seq=1 -->\n' >"$d/badstage"
+set_comments "$d/comments" "$PR" "$d/badstage"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" 'stage "nonsense" is not a run stage' &&
+    ok "a marker with an unknown stage is refused by name" || bad "got $RC: $ERR"
+
+echo "==> a malformed marker alone does not make discovery indeterminate"
+d="$TMPROOT/malformed-only"
+scaffold "$d" further-along "body"
+marker_file "$d/bogus" example some-run challenge pr -
+set_comments "$d/comments" "$PR" "$d/bogus"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] &&
+    ok "noise is exit 10, not the exit 11 reserved for a refused claim" ||
+    bad "a malformed marker was treated as a refused claim, got $RC"
 
 # ---------------------------------------------------------------------------
 # 4. Harvester failure modes and usage
