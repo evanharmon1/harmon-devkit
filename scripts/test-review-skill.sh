@@ -31,6 +31,12 @@ for text in '[stage.challenge].finders' '[stage.review].finders' challenger revi
     'validated finding records' 'override it upward' 'run.json.interventions'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing $text"
 done
+grep -Fq 'display login is non-authoritative metadata' "$skill" ||
+    fail "review skill treats mutable display login as evidence identity"
+grep -Fq 'Immediately before that remediation dispatch' "$skill" ||
+    fail "review skill does not enforce breadth before remediation"
+grep -Fq 'Immediately before every agent invocation' ai/skills/universal/orchestrator/SKILL.md ||
+    fail "orchestrator skill does not account for total agent-run breadth"
 grep -Fq 'resolved cap is `0`' "$skill" ||
     fail "review skill does not skip finder dispatch for a disabled stage"
 grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
@@ -322,6 +328,59 @@ set -e
 [ "$status" -eq 2 ] || fail "duplicate comment reservation identity was accepted"
 grep -Fq 'duplicate comment reservation identity' "$tmp/duplicate-comment-auth.out" ||
     fail "duplicate comment reservation refusal was not reported"
+
+conflicting_digest="$(printf '%s' 'changed evidence body' | sha256_stream)"
+set +e
+monitor_reserve --state "$state" --event conflicting-comment-auth --action comment \
+    --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
+    --registry-revision "$registry_revision" --marker "$comment_marker" \
+    --payload-digest "$conflicting_digest" >"$tmp/conflicting-comment-auth.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "comment marker reuse with a changed digest was accepted"
+grep -Fq 'duplicate comment reservation identity' "$tmp/conflicting-comment-auth.out" ||
+    fail "conflicting comment marker refusal was not reported"
+
+echo "==> monitor durably enforces the total agent-run budget"
+monitor_agent_run() {
+    "$monitor" reserve-agent-run "${active_args[@]}" --state "$state" "$@"
+}
+monitor_agent_run --event initial-implementer --max-agent-runs 2 --writer feature-owner |
+    grep -Fq 'reserved agent-run initial-implementer 1/2' ||
+    fail "first agent run was not reserved"
+monitor_agent_run --event initial-implementer --max-agent-runs 2 --writer feature-owner |
+    grep -Fq 'adopt agent-run initial-implementer 1/2' ||
+    fail "agent-run re-arm spent a duplicate slot"
+monitor_agent_run --event remediation-r1 --max-agent-runs 2 --writer feature-owner |
+    grep -Fq 'reserved agent-run remediation-r1 2/2' ||
+    fail "remediation agent run was not reserved"
+jq -e '.agent_run_budget.max_agent_runs == 2 and
+    (.agent_run_budget.reservations | length) == 2' "$state" >/dev/null ||
+    fail "agent-run accounting was not persisted"
+set +e
+monitor_agent_run --event remediation-r2 --max-agent-runs 2 --writer feature-owner \
+    >"$tmp/exhausted-agent-run.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "agent run beyond max_agent_runs was accepted"
+grep -Fq 'agent-run budget exhausted (2/2)' "$tmp/exhausted-agent-run.out" ||
+    fail "agent-run budget exhaustion was not reported"
+set +e
+monitor_agent_run --event changed-budget --max-agent-runs 3 --writer feature-owner \
+    >"$tmp/changed-agent-budget.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "run-pinned agent budget was changed"
+grep -Fq 'max agent runs changed (recorded 2, supplied 3)' "$tmp/changed-agent-budget.out" ||
+    fail "agent-run budget mutation was not reported"
+set +e
+monitor_agent_run --event lane-dispatch --max-agent-runs 2 --writer lane \
+    >"$tmp/lane-agent-run.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "lane could reserve an agent run as feature owner"
+grep -Fq 'only the feature-branch owner may reserve an agent run' "$tmp/lane-agent-run.out" ||
+    fail "agent-run single-writer rejection was not reported"
 
 monitor_reserve --state "$state" --event absent-write --action push \
     --expected-head "$head" --writer feature-owner >/dev/null

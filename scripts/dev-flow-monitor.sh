@@ -13,6 +13,9 @@ Usage:
   dev-flow-monitor.sh activate --active-state FILE --run-id ID --branch BRANCH \
     --expected-generation N --registry-revision SHA --writer feature-owner \
     [--repo-root DIR]
+  dev-flow-monitor.sh reserve-agent-run --state FILE --event ID \
+    --max-agent-runs N --writer feature-owner --active-state FILE --run-id ID \
+    --branch BRANCH --generation N [--repo-root DIR]
   dev-flow-monitor.sh reserve --state FILE --event ID --action assembly|push|comment \
     --expected-head SHA --writer feature-owner --active-state FILE --run-id ID \
     --branch BRANCH --generation N [--repo-root DIR] \
@@ -31,6 +34,8 @@ discarded_lanes; a landed observation must reproduce both lists exactly.
 Comment reservations authenticate the actor against the run-pinned registry
 revision. Comment observations provide a complete comments[] candidate set;
 the monitor filters and hashes it, then adopts the lowest matching comment ID.
+Agent-run reservations durably enforce the run-wide max_agent_runs ceiling;
+an exact event re-arm adopts the already-spent slot without consuming another.
 `reconcile` prints adopt, retry, or block and advances the event cursor only
 for an adopted landed action.  PR merges are never reservable.
 EOF
@@ -189,6 +194,7 @@ branch=""
 generation=""
 expected_generation=""
 assembly_plan=""
+max_agent_runs=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -258,6 +264,10 @@ while [ "$#" -gt 0 ]; do
         ;;
     --assembly-plan)
         assembly_plan="${2:-}"
+        shift 2
+        ;;
+    --max-agent-runs)
+        max_agent_runs="${2:-}"
         shift 2
         ;;
     *) usage ;;
@@ -367,6 +377,52 @@ jq -e --arg run "$run_id" --arg branch "$branch" --argjson generation "$generati
 ' "$active_state" >/dev/null || die "run is no longer active for this branch generation"
 mkdir -p "$(dirname "$state")"
 case "$command_name" in
+reserve-agent-run)
+    [ "$writer" = "feature-owner" ] || die "only the feature-branch owner may reserve an agent run"
+    [[ "$max_agent_runs" =~ ^(0|[1-9][0-9]*)$ ]] ||
+        die "max agent runs must be a non-negative integer"
+    if [ ! -e "$state" ]; then
+        init_tmp="${state}.tmp.init.$$"
+        jq -n '{version: 1, cursor: null, actions: []}' >"$init_tmp"
+        mv "$init_tmp" "$state"
+    fi
+    jq -e '
+        .version == 1 and (.actions | type == "array") and
+        ((.agent_run_budget // null) == null or
+          (.agent_run_budget | type == "object" and
+           (.max_agent_runs | type == "number" and floor == . and . >= 0) and
+           (.reservations | type == "array") and
+           all(.reservations[];
+             (.event | type == "string" and length > 0) and
+             (.ordinal | type == "number" and floor == . and . > 0))))
+    ' "$state" >/dev/null || die "invalid agent-run budget state"
+    recorded_max="$(jq -r '.agent_run_budget.max_agent_runs // empty' "$state")"
+    if [ -n "$recorded_max" ] && [ "$recorded_max" -ne "$max_agent_runs" ]; then
+        die "max agent runs changed (recorded $recorded_max, supplied $max_agent_runs)"
+    fi
+    reserved_ordinal="$(jq -r --arg event "$event" '
+        [.agent_run_budget.reservations[]? | select(.event == $event) | .ordinal][0] // empty
+    ' "$state")"
+    if [ -n "$reserved_ordinal" ]; then
+        printf 'adopt agent-run %s %s/%s\n' "$event" "$reserved_ordinal" "$max_agent_runs"
+        exit 0
+    fi
+    consumed="$(jq -r '(.agent_run_budget.reservations // []) | length' "$state")"
+    [ "$consumed" -lt "$max_agent_runs" ] ||
+        die "agent-run budget exhausted ($consumed/$max_agent_runs)"
+    next_ordinal=$((consumed + 1))
+    tmp="${state}.tmp.$$"
+    jq --arg event "$event" --argjson max "$max_agent_runs" \
+        --argjson ordinal "$next_ordinal" '
+            .agent_run_budget = (.agent_run_budget // {
+                max_agent_runs: $max,
+                reservations: []
+            }) |
+            .agent_run_budget.reservations += [{event: $event, ordinal: $ordinal}]
+        ' "$state" >"$tmp"
+    mv "$tmp" "$state"
+    printf 'reserved agent-run %s %s/%s\n' "$event" "$next_ordinal" "$max_agent_runs"
+    ;;
 reserve)
     [ -n "$action" ] && [ -n "$expected_head" ] && [ -n "$writer" ] || usage
     case "$action" in assembly | push | comment) ;; *) die "action $action is not replayable" ;; esac
@@ -419,15 +475,9 @@ reserve)
         mv "$init_tmp" "$state"
     fi
     if [ "$action" = "comment" ]; then
-        jq -e --arg head "$expected_head" --arg actor "$trusted_actor_id" \
-            --arg registry "$registry_revision" --arg marker "$marker" \
-            --arg digest "$payload_digest" '
+        jq -e --arg marker "$marker" '
             [.actions[] | select(
-                .action == "comment" and .expected_head == $head and
-                .comment_auth.trusted_actor_id == $actor and
-                .comment_auth.registry_revision == $registry and
-                .comment_auth.marker == $marker and
-                .comment_auth.payload_digest == $digest
+                .action == "comment" and .comment_auth.marker == $marker
             )] | length == 0
         ' "$state" >/dev/null || die "duplicate comment reservation identity"
     fi

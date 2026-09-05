@@ -29,6 +29,15 @@ implementer with the ordered source proposals and accept its artifact only when
 that same order; record every proposal's selection outcome in the assembly.
 Reject a lane that requests feature-branch write authority.
 
+Immediately before every agent invocation—initial implementer lanes, council
+proposals and synthesis, confidence finders and fallbacks, and remediation—the
+feature owner calls `scripts/dev-flow-monitor.sh reserve-agent-run` with a
+deterministic dispatch event and the resolved `[breadth].max_agent_runs`. The
+monitor pins that total ceiling on the first reservation and durably accounts
+every slot under the active-run lock. A crash after reservation spends the slot;
+an exact event re-arm adopts it without spending twice. A changed or exhausted
+budget blocks before dispatch.
+
 Feature-owner authority comes from an orchestrator-installed capability
 boundary that is never exposed to lane agents; the monitor's `--writer` value
 is only a checked assertion inside that boundary, not a credential a lane may

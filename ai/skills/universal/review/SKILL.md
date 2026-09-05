@@ -68,6 +68,11 @@ to the `challenger` role. For `review`, do the same for
 `[stage.review].finders` using the `reviewer` role. Retry an unavailable primary
 once as that same primary; only after that retry fails may the ordered
 `finder_fallbacks` chain be consumed. Do not silently reduce coverage.
+Immediately before every finder or fallback invocation, have the feature owner
+call `scripts/dev-flow-monitor.sh reserve-agent-run` with a deterministic
+dispatch event and the resolved `[breadth].max_agent_runs`. An exact event
+re-arm adopts its already-spent slot; an exhausted or changed budget renders a
+`breadth_exhausted` blocker and dispatches nothing.
 The registry invocation is the role's evidence source, not itself a result
 envelope: the dispatched role binds that output to the supplied run, scope,
 round, slot, and producer identity and returns `result.challenger` or
@@ -128,9 +133,11 @@ terminal.
 After adoption, append the canonical comment ID, immutable actor ID, display
 login, `sha256:` body digest, and marker fields to
 `run.json.evidence_comments` only when it is absent. On re-arm, first search by
-both comment ID and canonical marker: when ID, actor ID, login, digest, and every
-marker field match exactly, adopt the existing entry without appending; when an
-ID or marker matches with conflicting content, block. Validate the run record,
+both comment ID and canonical marker: when ID, immutable actor ID, digest, and
+every marker field match exactly, adopt the existing entry without appending;
+display login is non-authoritative metadata and never participates in evidence
+identity or tamper comparison. When an ID or marker matches with conflicting
+authenticated content, block. Validate the run record,
 then reserve and apply an update to its issue comment through the same monitor.
 A crash between evidence creation and run-record publication therefore resumes
 from the adopted monitor postcondition and cannot orphan an unindexed comment or
@@ -144,7 +151,12 @@ Act only on the second returned outcome. `continue` dispatches the next pass
 when no confirmed remediation exists (including an empty or entirely
 declined/deferred round); otherwise it dispatches a fresh bounded implementer,
 commits the one fix round, and pushes only through `scripts/round-push.sh` by
-path. Before acting on round 2, classify every finding whose subject exists
+path. Immediately before that remediation dispatch, the feature owner must
+reserve its deterministic dispatch event through `reserve-agent-run` against
+the same run-pinned `[breadth].max_agent_runs`; an exact re-arm adopts the
+reservation, while exhaustion records `breadth_exhausted`, renders the blocker,
+and stops before invoking the implementer. Before acting on round 2, classify
+every finding whose subject exists
 only because an earlier round of this same stage added it, and record exactly
 one of: delete the scaffolding, restructure it to an invariant, or keep it as
 genuinely in scope with the reason. Never harden round-1 scaffolding by reflex.
