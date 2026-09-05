@@ -25,10 +25,21 @@ many finders it names).
 | `codex-adversarial` | local CLI (`task challenge`) | challenge | Codex CLI, authenticated |
 | `codex-verification` | local CLI (`task review`) | review | Codex CLI, authenticated |
 | `codex-cloud` | PR review | integration | Codex connected to the repo through ChatGPT |
-| `coderabbit-cloud` | PR review | integration | the CodeRabbit GitHub app installed on the repo |
+| `coderabbit-cloud` | PR review | integration† | the CodeRabbit GitHub app installed on the repo |
 | `copilot-adversarial` | local CLI (`task challenge:copilot`) | challenge | GitHub Copilot CLI, authenticated |
 | `copilot-verification` | local CLI (`task review:copilot`) | review | GitHub Copilot CLI, authenticated |
-| `copilot-cloud` | PR review | integration | GitHub Copilot code review enabled for the repo |
+| `copilot-cloud` | PR review | integration† | GitHub Copilot code review enabled for the repo |
+
+† **Registered, not yet driven.** `coderabbit-cloud` and `copilot-cloud` are
+declared here — trigger mechanism, trusted actor, terminal-result signals and
+severity map — and their raw output normalizes like any other finder's. What
+does not exist yet is the integration-stage machinery that would *drive* them:
+the trigger broker, the per-finder cycle state and the readiness condition are
+still Codex-only. Naming one in `[stage.integration].finders` therefore
+configures a finder nothing will collect. That work is tracked as
+[#804](https://github.com/evanharmon1/harmon-devkit/issues/804), with the
+trust constraints it has to satisfy; until it lands, the integration stage runs
+Codex alone.
 
 **Codex is the shipped default and the only finder anything here assumes.**
 Nothing installs a CodeRabbit or Copilot CLI, nothing enables either app, and
@@ -90,13 +101,13 @@ round is cheaper than the defect it might catch:
 
 - *Ordinary change* — Codex alone, on all three stages. Two reviewers on a
   small change mostly produces two versions of the same finding to adjudicate.
-- *Security, migrations, data paths* — Codex plus CodeRabbit on
-  `integration`, where CodeRabbit reviews the PR head. They disagree usefully:
-  Codex attacks the design, CodeRabbit is stronger on line-level correctness
-  and test gaps, and the round still costs one cap unit.
-- *A PR that a human will read closely anyway* — Codex plus Copilot on
-  `integration`. Copilot's review is inline-comment shaped, so it lands where
-  a human reviewer is already looking.
+- *Security, migrations, data paths* — Codex plus Copilot on `review`. They
+  disagree usefully: Codex attacks the design, Copilot is stronger on
+  line-level correctness and test gaps, and the round still costs one cap
+  unit.
+- *The PR-side pairings* — Codex plus CodeRabbit or Copilot on `integration` —
+  are the ones the † above defers: the finders are registered, but nothing
+  drives them yet.
 - *Never* more than one finder from the same family on one stage: the registry
   refuses two finders sharing one actor identity, and two passes from the same
   product mostly repeat each other.

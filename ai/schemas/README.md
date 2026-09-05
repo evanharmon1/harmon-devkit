@@ -145,21 +145,10 @@ already knows is active). The spec calls this layer **receipt validation**
 keyword, for every one of these:
 
 - **Head agreement** — a reviewer payload's `reviewed_head`, and an
-  integrator payload's `codex_cycle.head` / `codex_cycle.accepted.reviewed_commit`
-  and every `finder_cycles[].head` / `finder_cycles[].accepted.reviewed_commit`,
+  integrator payload's `codex_cycle.head` / `codex_cycle.accepted.reviewed_commit`,
   must equal the enclosing envelope's `head`. The payload schema validates
   `payload` alone and has no visibility into the envelope; only the script,
   which has both, can compare them.
-- **One cycle per PR-side finder (#796)** — `finder_cycles[]` carries the
-  current-head cloud-review cycle of every configured PR-side finder OTHER
-  than codex-cloud, which keeps `codex_cycle`. A finder appears at most once
-  (two entries could disagree about one cycle) and codex-cloud never appears
-  there at all (it would be a second, contradictory answer about the cycle
-  `codex_cycle` already reports). Both are cross-entry facts a single-document
-  schema cannot state. Which finders were *configured* is not in the payload
-  at all and is told to the readiness gate separately
-  (`readiness-gate.sh --finder`): a pass that silently skipped a finder writes
-  exactly what a pass never configured for it writes.
 - **Run matching** — the envelope's `run` must match the run the caller
   considers active (`--run-id`/`--initiated-by`), which is external context
   no single document carries.

@@ -66,11 +66,12 @@ cat >"${bin_dir}/gh" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
 
-# `pr view` is served BEFORE the ro-exit short-circuit below. That switch
-# exists to make `gh api` exit-code propagation observable, and the broker now
-# reads the PR's base branch through `pr view` on its way to resolving the
-# trusted registry — short-circuiting that read would answer "this PR has no
-# base branch" and refuse before the api call the case is actually about.
+# gh-ro pass-through cases: exit with a scripted code so propagation is
+# observable without any endpoint dispatch.
+if [ -f "$GH_FIXTURES/ro-exit" ]; then
+    exit "$(cat "$GH_FIXTURES/ro-exit")"
+fi
+
 if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     count_file="$GH_FIXTURES/pr-view-count"
     count=0
@@ -83,12 +84,6 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
         cat "$GH_FIXTURES/pr-view.json"
     fi
     exit 0
-fi
-
-# gh-ro / gh-write-broker pass-through cases: exit with a scripted code so
-# propagation is observable without any endpoint dispatch.
-if [ -f "$GH_FIXTURES/ro-exit" ]; then
-    exit "$(cat "$GH_FIXTURES/ro-exit")"
 fi
 
 [ "${1:-}" = api ] || exit 90
@@ -187,7 +182,7 @@ write_default_record() {
 # envelope/codex_cycle/accepted (defaults to $head_sha) so a head-mismatch
 # fixture can be built without hand-editing JSON.
 write_integrator_result() {
-    local name="$1" codex_cycle="$2" head="${3:-$head_sha}" finder_cycles="${4:-[]}"
+    local name="$1" codex_cycle="$2" head="${3:-$head_sha}"
     local out="${fixtures}/integrator-result-${name}.json"
     # verdict is constrained against codex_cycle.exit_code by
     # validate-result-schemas.mjs's EXIT_CODE_VERDICT_CONSTRAINTS (0->clean,
@@ -198,24 +193,13 @@ write_integrator_result() {
     # (cap 0) takes the same "clean" path as exit_code 0.
     local exit_code
     exit_code="$(jq -r '.exit_code // "null"' <<<"$codex_cycle")"
-    # Every cycle in the payload constrains the verdict, not just codex_cycle
-    # (#796 challenge round 4) — a finder cycle reporting findings while the
-    # payload claims clean is exactly the contradiction the validator rejects.
-    # The strongest constraint present wins, so a fixture stays self-consistent
-    # whichever cycle carries the interesting exit code.
-    local finder_exit
-    finder_exit="$(jq -r '[.[] | .exit_code] | map(select(. != 0)) | first // "none"' <<<"$finder_cycles")"
-    [ "$finder_exit" = none ] || exit_code="$finder_exit"
     local verdict findings='[]' checks='[]'
     case "$exit_code" in
     null | 0)
         verdict=clean
         checks='[{"name":"build","bucket":"pass","run_id":"1","required":true}]'
         ;;
-    10 | 14)
-        # 14 (PR no longer open) excludes clean AND pending, and a codex_cycle
-        # of 0 excludes pending and escalate, so `findings` is the only verdict
-        # coherent with both.
+    10)
         verdict=findings
         findings='[{"id":"integration-r1-codex-cloud-1","body":"a finding","source_id":"1"}]'
         ;;
@@ -225,7 +209,6 @@ write_integrator_result() {
     esac
     jq -cn --arg head "$head" --argjson codex_cycle "$codex_cycle" \
         --argjson checks "$checks" --argjson findings "$findings" \
-        --argjson finder_cycles "$finder_cycles" \
         --arg verdict "$verdict" '
       {schema:2, role:"integrator", status:"completed", head:$head,
        produced_at:"2026-01-01T00:00:00Z",
@@ -234,7 +217,6 @@ write_integrator_result() {
        payload:({checks:$checks, codex_cycle:$codex_cycle, integration_round:1,
                  findings:$findings, unanswered_thread_roots:[],
                  settled_at:"2026-01-01T00:00:00Z", verdict:$verdict}
-         + (if ($finder_cycles | length) > 0 then {finder_cycles:$finder_cycles} else {} end)
          + (if $verdict == "clean" then {applied_dispositions:[]} else {} end))}' \
         >"$out"
     node "$validator" envelope "$out" >/dev/null ||
@@ -265,7 +247,7 @@ write_defaults() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch",baseRefName:"main"}' \
+          headRefName:"feature-branch"}' \
         >"${fixtures}/pr-view.json"
     jq -cn --arg head "$head_sha" --arg body "$(default_body)" \
         '{number:493,title:"feat: change",body:$body,
@@ -1846,79 +1828,6 @@ printf '0\n' >"${fixtures}/ro-exit"
 grep -Fxq "api repos/example/repo/pulls/493/comments/900/replies -F body=@${reply_body}" "$log" ||
     fail "gh-write-broker reply forwarded unexpected arguments: $(cat "$log")"
 
-# The broker resolves the registry ITSELF, at the merge base with the
-# remote-tracking base branch — it takes no registry path from its caller, and
-# that is the point (#796 challenge round 3): the caller is the party it
-# narrows. So these cases need a real git fixture with a registry committed at
-# the base, and they run with that repo as the working directory.
-wb_repo="${test_tmp}/broker-repo"
-git init -q "$wb_repo"
-git -C "$wb_repo" config user.name "Broker Test"
-git -C "$wb_repo" config user.email "broker-test@example.invalid"
-cp "${repo_root}/agent-registry.json" "$wb_repo/agent-registry.json"
-git -C "$wb_repo" add agent-registry.json
-git -C "$wb_repo" commit -q -m "test: registry at the base"
-git -C "$wb_repo" update-ref refs/remotes/origin/main HEAD
-git -C "$wb_repo" commit -q --allow-empty -m "test: PR head"
-wb_in_repo() {
-    (cd "$wb_repo" && "$ghwb" "$@")
-}
-
-echo "==> gh-write-broker posts a registry-declared trigger for another finder"
-write_defaults
-printf '0\n' >"${fixtures}/ro-exit"
-wb_in_repo trigger --repo example/repo --pr 493 --finder coderabbit-cloud >/dev/null
-grep -Fxq "api repos/example/repo/issues/493/comments -f body=@coderabbitai review --jq .id" "$log" ||
-    fail "gh-write-broker did not post the registry's own trigger body: $(cat "$log")"
-
-echo "==> gh-write-broker requests a registry-declared reviewer for a request-triggered finder"
-write_defaults
-printf '0\n' >"${fixtures}/ro-exit"
-wb_in_repo request-review --repo example/repo --pr 493 --finder copilot-cloud >/dev/null
-grep -Fxq "api repos/example/repo/pulls/493/requested_reviewers -f reviewers[]=copilot-pull-request-reviewer[bot] --jq .number" "$log" ||
-    fail "gh-write-broker did not request the registry's own reviewer: $(cat "$log")"
-
-echo "==> gh-write-broker refuses a finder whose trigger is the other mechanism"
-# wb_refuse_case asserts the gh log is empty, so clear the two successful
-# calls above before running them.
-write_defaults
-wb_refuse_in_repo() {
-    local label=$1
-    shift
-    set +e
-    wb_out="$( (cd "$wb_repo" && "$ghwb" "$@") 2>&1)"
-    wb_rc=$?
-    set -e
-    [ "$wb_rc" -eq 2 ] ||
-        fail "gh-write-broker $label: expected refusal rc 2, got $wb_rc: $wb_out"
-    printf '%s\n' "$wb_out" | grep -qE 'refused|Usage:' ||
-        fail "gh-write-broker $label: refusal did not say refused or print usage: $wb_out"
-    if grep -q '^api ' "$log"; then
-        fail "gh-write-broker $label: a refused invocation still reached gh: $(cat "$log")"
-    fi
-}
-wb_refuse_in_repo "trigger on a request-triggered finder" trigger --repo example/repo --pr 493 \
-    --finder copilot-cloud
-wb_refuse_in_repo "request-review on a comment-triggered finder" request-review --repo example/repo --pr 493 \
-    --finder coderabbit-cloud
-wb_refuse_in_repo "an unregistered finder" trigger --repo example/repo --pr 493 \
-    --finder not-a-finder
-wb_refuse_case "request-review with no finder" request-review --repo example/repo --pr 493
-
-echo "==> gh-write-broker takes no registry path from its caller"
-# The one property the broker is for: no argument may change what it posts.
-# A --registry flag would hand exactly that back to the party being narrowed.
-wb_refuse_in_repo "a caller-named registry" trigger --repo example/repo --pr 493 \
-    --finder coderabbit-cloud --registry "$repo_root/agent-registry.json"
-
-echo "==> gh-write-broker refuses when the trusted base is not in the checkout"
-# refs/heads is writable by the change under review, so only the
-# remote-tracking base counts; without it there is no trusted revision to read.
-git -C "$wb_repo" update-ref -d refs/remotes/origin/main
-wb_refuse_in_repo "a missing remote-tracking base" trigger --repo example/repo --pr 493 \
-    --finder coderabbit-cloud
-git -C "$wb_repo" update-ref refs/remotes/origin/main "$(git -C "$wb_repo" rev-parse HEAD~1)"
-
 echo "==> gh-write-broker propagates gh's own exit code"
 write_defaults
 printf '7\n' >"${fixtures}/ro-exit"
@@ -1928,171 +1837,5 @@ wb_rc=$?
 set -e
 [ "$wb_rc" -eq 7 ] ||
     fail "gh-write-broker should propagate gh's exit 7, got $wb_rc"
-
-# ── every configured PR-side finder (#796) ──────────────────────────────────
-# The gate is told the CONFIGURED set with --finder, because the integrator
-# payload alone cannot establish it: a pass that skipped a finder reports the
-# same payload as one never configured for it.
-finder_cycle_json() {
-    # $1 finder slug, $2 exit code, $3 head (defaults to the gated head)
-    local slug="$1" exit_code="$2" head="${3:-$head_sha}"
-    case "$exit_code" in
-    0 | 10)
-        jq -cn --arg slug "$slug" --arg head "$head" --argjson exit_code "$exit_code" \
-            '{finder:$slug, head:$head, cycle:1, attempt:1,
-              trigger_comment_id:"2", trigger_requested_at:null,
-              accepted:{surface:"review", id:"2", reviewed_commit:$head},
-              exit_code:$exit_code}'
-        ;;
-    *)
-        jq -cn --arg slug "$slug" --arg head "$head" --argjson exit_code "$exit_code" \
-            '{finder:$slug, head:$head, cycle:1, attempt:1,
-              trigger_comment_id:"2", trigger_requested_at:null,
-              exit_code:$exit_code}'
-        ;;
-    esac
-}
-coderabbit_recheck_state="${fixtures}/coderabbit-recheck-state.json"
-jq -cn --arg repo example/repo --argjson pr 493 --arg head "$head_sha" \
-    '{repo:$repo, pr:$pr, head:$head, finder:"coderabbit-cloud",
-      profile:{finder:"coderabbit-cloud", actor_id:"136622811"}}' \
-    >"$coderabbit_recheck_state"
-
-run_gate_multi_finder_clean() {
-    local saved_gate="$gate"
-    gate="$recheck_gate"
-    export RECHECK_FAKE_EXIT=0
-    run_gate --codex-recheck "$recheck_state" \
-        --finder-recheck "coderabbit-cloud:$coderabbit_recheck_state" "$@"
-    unset RECHECK_FAKE_EXIT
-    gate="$saved_gate"
-}
-
-echo "==> two configured finders, both terminal-clean, pass"
-write_defaults
-multi_clean="$(write_integrator_result multi-clean "$(codex_cycle_json 0)" "$head_sha" \
-    "[$(finder_cycle_json coderabbit-cloud 0)]")"
-run_gate_multi_finder_clean --integrator-result "$multi_clean" --integration-cap 1 \
-    --finder codex-cloud --finder coderabbit-cloud
-assert_gate 0 pass ready
-
-echo "==> a configured finder with no cycle at all blocks promotion"
-write_defaults
-missing_cycle="$(write_integrator_result missing-cycle "$(codex_cycle_json 0)")"
-run_gate_multi_finder_clean --integrator-result "$missing_cycle" --integration-cap 1 \
-    --finder codex-cloud --finder coderabbit-cloud
-assert_gate 2 indeterminate codex-cap-mismatch
-printf '%s\n' "$gate_out" | grep -Fq 'reports no cycle for it' ||
-    fail "the missing-cycle blocker did not name the finder: $gate_out"
-
-echo "==> a configured finder whose cycle carries findings blocks promotion"
-write_defaults
-findings_cycle="$(write_integrator_result findings-cycle "$(codex_cycle_json 0)" "$head_sha" \
-    "[$(finder_cycle_json coderabbit-cloud 10)]")"
-run_gate_multi_finder_clean --integrator-result "$findings_cycle" --integration-cap 1 \
-    --finder codex-cloud --finder coderabbit-cloud
-assert_gate 1 fail codex-not-clean
-
-echo "==> a configured finder's non-verdict exit code is indeterminate, never a pass"
-# 14 (PR no longer open) is a real checker code that is neither clean nor a
-# finding: it must stop the gate rather than fall through as "not 10/11/12/13".
-# A cycle about ANOTHER head cannot be exercised from here at all — the
-# envelope receipt check refuses to build one, exactly as it does for
-# codex_cycle — so the gate's own per-finder head comparison stays as the
-# same defence-in-depth its codex_cycle sibling is.
-write_defaults
-nonverdict_cycle="$(write_integrator_result nonverdict-finder-cycle "$(codex_cycle_json 0)" "$head_sha" \
-    "[$(finder_cycle_json coderabbit-cloud 14)]")"
-run_gate_multi_finder_clean --integrator-result "$nonverdict_cycle" --integration-cap 1 \
-    --finder codex-cloud --finder coderabbit-cloud
-assert_gate 2 indeterminate codex-indeterminate
-printf '%s\n' "$gate_out" | grep -Fq 'is not a recognized terminal or pending value' ||
-    fail "the non-verdict exit code was not reported as such: $gate_out"
-
-echo "==> a cycle reported for a finder nobody configured is indeterminate"
-write_defaults
-stray_cycle="$(write_integrator_result stray-cycle "$(codex_cycle_json 0)" "$head_sha" \
-    "[$(finder_cycle_json copilot-cloud 0)]")"
-run_gate_multi_finder_clean --integrator-result "$stray_cycle" --integration-cap 1 \
-    --finder codex-cloud
-assert_gate 2 indeterminate codex-indeterminate
-printf '%s\n' "$gate_out" | grep -Fq 'unconfigured finder' ||
-    fail "the stray-cycle blocker did not name it: $gate_out"
-
-echo "==> a clean finder cycle with no recheck state cannot be trusted"
-write_defaults
-run_gate_recheck_clean --integrator-result "$multi_clean" --integration-cap 1 \
-    --finder codex-cloud --finder coderabbit-cloud
-assert_gate 2 indeterminate codex-stale
-
-echo "==> a recheck state reserved for a different finder reconfirms nothing"
-write_defaults
-wrong_state="${fixtures}/wrong-finder-recheck-state.json"
-jq -cn --arg repo example/repo --argjson pr 493 --arg head "$head_sha" \
-    '{repo:$repo, pr:$pr, head:$head, finder:"copilot-cloud",
-      profile:{finder:"copilot-cloud", actor_id:"175728472"}}' >"$wrong_state"
-saved_gate="$gate"
-gate="$recheck_gate"
-export RECHECK_FAKE_EXIT=0
-run_gate --codex-recheck "$recheck_state" \
-    --finder-recheck "coderabbit-cloud:$wrong_state" \
-    --integrator-result "$multi_clean" --integration-cap 1 \
-    --finder codex-cloud --finder coderabbit-cloud
-unset RECHECK_FAKE_EXIT
-gate="$saved_gate"
-assert_gate 2 indeterminate codex-stale
-printf '%s\n' "$gate_out" | grep -Fq 'was reserved for finder copilot-cloud' ||
-    fail "the wrong-finder recheck was not refused by name: $gate_out"
-
-echo "==> a policy that configures no Codex finder promotes on its own finders"
-# A stage whose [stage.integration].finders omits codex-cloud correctly
-# reports a null codex_cycle. Demanding one would make every non-Codex-only
-# policy unpromotable, and the only alternative would be running a reviewer
-# the resolved finder set does not name.
-write_defaults
-no_codex="$(write_integrator_result no-codex null "$head_sha" \
-    "[$(finder_cycle_json coderabbit-cloud 0)]")"
-saved_gate="$gate"
-gate="$recheck_gate"
-export RECHECK_FAKE_EXIT=0
-run_gate --integrator-result "$no_codex" --integration-cap 1 \
-    --finder coderabbit-cloud \
-    --finder-recheck "coderabbit-cloud:$coderabbit_recheck_state"
-unset RECHECK_FAKE_EXIT
-gate="$saved_gate"
-assert_gate 0 pass ready
-
-echo "==> a null Codex cycle still blocks when codex-cloud IS configured"
-write_defaults
-run_gate_multi_finder_clean --integrator-result "$no_codex" --integration-cap 1 \
-    --finder codex-cloud --finder coderabbit-cloud
-assert_gate 2 indeterminate codex-cap-mismatch
-
-echo "==> naming no finder keeps the pre-#796 positive-cap requirement"
-write_defaults
-run_gate --integrator-result "$no_codex" --integration-cap 1
-assert_gate 2 indeterminate codex-cap-mismatch
-
-echo "==> a cap of 0 waives every configured finder's cycle, not only codex-cloud"
-# A zero cap dispatches no cloud cycle at all — that is what the null
-# codex_cycle waiver means. Configuring a finder cannot un-waive it: there is
-# no round in which to trigger or wait one out, so requiring a cycle here
-# would deadlock every cap-0 policy that names a finder.
-write_defaults
-run_gate --integration-cap 0 --finder codex-cloud --finder coderabbit-cloud
-assert_gate 0 pass ready
-
-echo "==> a cap of 0 still refuses a pass that reports cycles anyway"
-write_defaults
-cap_zero_cycles="$(write_integrator_result cap-zero-cycles null "$head_sha" \
-    "[$(finder_cycle_json coderabbit-cloud 0)]")"
-run_gate --integrator-result "$cap_zero_cycles" --integration-cap 0 \
-    --finder codex-cloud --finder coderabbit-cloud
-assert_gate 2 indeterminate codex-cap-mismatch
-
-echo "==> naming no finder gates exactly as before"
-write_defaults
-run_gate_recheck_clean --integrator-result "$multi_clean" --integration-cap 1
-assert_gate 0 pass ready
 
 echo "integration readiness gate + gh-ro + gh-write-broker: PASS"

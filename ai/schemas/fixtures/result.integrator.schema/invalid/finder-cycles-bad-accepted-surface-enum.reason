@@ -1,1 +1,0 @@
-$result.payload.finder_cycles[0].accepted.surface: must be one of "review", "comment", "reaction"

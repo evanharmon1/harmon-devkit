@@ -1,1 +1,0 @@
-$result.payload.finder_cycles[0].accepted: must be absent when exit_code is 13 (only 0/10 are terminal)

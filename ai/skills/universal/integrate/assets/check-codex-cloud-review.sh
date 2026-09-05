@@ -1,17 +1,8 @@
 #!/usr/bin/env bash
-# Persist and classify current-head cloud-review evidence, for ANY configured
-# PR-side finder (#796). Codex is the default and the only one this file names
-# constants for; every other finder arrives as a `--profile` extracted from
-# `agent-registry.json` `finders[].collection` — its trigger mechanism, the
-# GitHub surfaces its evidence lives on, how a result binds to a head, and
-# which of three verdict modes classifies it. The filename is Codex's for
-# compatibility: AGENTS.md and readiness-gate.sh name this path, and both are
-# copier-owned upstream.
+# Persist and classify current-head Codex cloud-review evidence.
 #
-# This helper never writes to GitHub. The caller owns the trigger between
-# `reserve` and `attach` — the explicit `@codex review` comment for Codex, the
-# profile's own `trigger.body` comment for another comment-triggered finder,
-# or the pulls/requested_reviewers write for a `requested-reviewer` one.
+# This helper never writes to GitHub. The caller owns the explicit
+# `@codex review` comment between `reserve` and `attach`.
 #
 # Exit codes from `check`:
 #   0  clean
@@ -39,31 +30,15 @@
 
 set -euo pipefail
 
-# This script's own directory, resolved before anything changes cwd: the
-# trusted-registry resolver is its sibling asset.
-asset_dir="$(cd "$(dirname "$0")" && pwd)"
-
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
+  check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
-  check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601   (requested-reviewer finders)
   check-codex-cloud-review.sh check --state FILE --actor-id N [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
   check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--covers N] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
-
---finder SLUG names which registered finder this cycle is for. Its profile —
-trigger mechanism, terminal-result surfaces, head binding, verdict mode and
-trusted actor — is read from agent-registry.json AT THE MERGE BASE, resolved
-by this script (assets/trusted-registry.sh), never from a caller-named file:
-a forged profile could otherwise label an unrelated bot as the finder, pick a
-lenient verdict classifier, and so satisfy a required cycle without that
-finder ever reviewing the PR. Omit it for Codex, whose values are this
-script default. The resolved profile is pinned into the state at `reserve`, so
-every later subcommand classifies the cycle with the profile it was reserved
-under.
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
 14 PR no longer open, 2 indeterminate. Exit 14 means GitHub answered and
@@ -110,7 +85,6 @@ attempt=
 trigger_id=
 actor_id=
 actor_login='chatgpt-codex-connector[bot]'
-actor_login_set=0
 timeout_min=15
 timeout_min_set=0
 timeout_min_adopted=0
@@ -120,8 +94,6 @@ target_id=
 disposition=
 note=
 covers=
-finder_slug=
-requested_at_flag=
 lock_dir=
 reap_entries=
 reap_lock=
@@ -130,7 +102,7 @@ reap_deadline_epoch=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -141,10 +113,7 @@ while [ "$#" -gt 0 ]; do
         --attempt) attempt=$2 ;;
         --trigger-id) trigger_id=$2 ;;
         --actor-id) actor_id=$2 ;;
-        --actor-login)
-            actor_login=$2
-            actor_login_set=1
-            ;;
+        --actor-login) actor_login=$2 ;;
         --timeout-min)
             timeout_min=$2
             timeout_min_set=1
@@ -156,8 +125,6 @@ while [ "$#" -gt 0 ]; do
         --disposition) disposition=$2 ;;
         --covers) covers=$2 ;;
         --note) note=$2 ;;
-        --finder) finder_slug=$2 ;;
-        --requested-at) requested_at_flag=$2 ;;
         esac
         shift 2
         ;;
@@ -172,215 +139,6 @@ case "$command_name" in
 reap) [ -n "$root_dir" ] || usage ;;
 *) [ -n "$state_file" ] || usage ;;
 esac
-
-# ── finder profile (#796) ───────────────────────────────────────────────────
-# WHICH cloud reviewer this cycle is for, and what makes one of ITS results
-# terminal. Everything below used to be a Codex constant somewhere in this
-# file; a second cloud finder is now a registry entry (agent-registry.json
-# `finders[].collection.trigger` / `.terminal_signals`) rather than a second
-# checker, and this script never reads the registry itself — the caller
-# extracts the entry and passes it as --profile, so the checker keeps working
-# in a vendored consumer with no registry of its own.
-#
-# The defaults are codex-cloud's, verbatim, so every existing call site that
-# passes neither --finder nor --profile behaves exactly as it did before.
-#
-# The resolved profile is PINNED INTO THE STATE at `reserve` and read back
-# from there afterwards. A cycle is therefore classified by the profile it was
-# reserved under: a later --profile may restate it but never change it
-# mid-cycle, which is the same discipline --timeout-min already follows.
-profile_finder='codex-cloud'
-profile_actor_id='199175422'
-profile_actor_login='chatgpt-codex-connector[bot]'
-profile_trigger_mechanism='review-comment'
-profile_trigger_body='@codex review'
-profile_trigger_reviewer=''
-profile_surfaces='reaction comment review inline'
-profile_head_binding='reviewed-commit-line'
-profile_verdict_mode='clean-sentence'
-profile_clean_verdict="codex review: didn't find any major issues."
-profile_actionable_pattern=''
-profile_severity_marker='\bp[0-9]+\b'
-profile_metadata_line='^\*\*reviewed commit:\*\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$'
-profile_about_summary='about codex'
-profile_heading='^#{1,6}[^a-z0-9]*codex review$'
-profile_carrier_sentence='here are some automated review suggestions for this pull request.'
-profile_success_reaction='+1'
-profile_pending_reaction='eyes'
-
-# Every profile field, as one canonical JSON object. Used to pin the profile
-# into the state and to compare a restated one against it.
-profile_json() {
-    jq -cn \
-        --arg finder "$profile_finder" \
-        --arg actor_id "$profile_actor_id" \
-        --arg actor_login "$profile_actor_login" \
-        --arg trigger_mechanism "$profile_trigger_mechanism" \
-        --arg trigger_body "$profile_trigger_body" \
-        --arg trigger_reviewer "$profile_trigger_reviewer" \
-        --arg surfaces "$profile_surfaces" \
-        --arg head_binding "$profile_head_binding" \
-        --arg verdict_mode "$profile_verdict_mode" \
-        --arg clean_verdict "$profile_clean_verdict" \
-        --arg actionable_pattern "$profile_actionable_pattern" \
-        --arg severity_marker "$profile_severity_marker" \
-        --arg metadata_line "$profile_metadata_line" \
-        --arg about_summary "$profile_about_summary" \
-        --arg heading "$profile_heading" \
-        --arg carrier_sentence "$profile_carrier_sentence" \
-        --arg success_reaction "$profile_success_reaction" \
-        --arg pending_reaction "$profile_pending_reaction" \
-        '{finder:$finder,actor_id:$actor_id,actor_login:$actor_login,
-          trigger_mechanism:$trigger_mechanism,
-          trigger_body:$trigger_body,trigger_reviewer:$trigger_reviewer,
-          surfaces:$surfaces,head_binding:$head_binding,
-          verdict_mode:$verdict_mode,clean_verdict:$clean_verdict,
-          actionable_pattern:$actionable_pattern,severity_marker:$severity_marker,
-          metadata_line:$metadata_line,about_summary:$about_summary,
-          heading:$heading,carrier_sentence:$carrier_sentence,
-          success_reaction:$success_reaction,pending_reaction:$pending_reaction}'
-}
-
-profile_field() {
-    # A null registry value means "this mode does not consume that signal",
-    # which is the empty string here — every consumer below tests for "".
-    jq -r --arg key "$1" '(.[$key] // "") | tostring' "$2"
-}
-
-load_profile_from_file() {
-    # A finder's registry entry, or the collection object alone. Both shapes
-    # are accepted so a caller can pipe `jq '.finders[] | select(...)'`
-    # straight through without reshaping it.
-    [ -f "$1" ] || die "profile file not found: $1"
-    normalized=$(jq -c '
-          (if has("collection") then .collection else . end) as $c |
-          {
-            finder: (.slug // ""),
-            actor_id: ((.trusted_actor_id // "") | tostring),
-            actor_login: (.trusted_actor_login // ""),
-            trigger_mechanism: ($c.trigger.mechanism // ""),
-            trigger_body: ($c.trigger.body // ""),
-            trigger_reviewer: ($c.trigger.reviewer_login // ""),
-            surfaces: (($c.terminal_signals.surfaces // []) | join(" ")),
-            head_binding: ($c.terminal_signals.head_binding // ""),
-            verdict_mode: ($c.terminal_signals.verdict_mode // ""),
-            clean_verdict: ($c.terminal_signals.clean_verdict // ""),
-            actionable_pattern: ($c.terminal_signals.actionable_pattern // ""),
-            severity_marker: ($c.terminal_signals.severity_marker // ""),
-            metadata_line: ($c.terminal_signals.metadata_line // ""),
-            about_summary: ($c.terminal_signals.about_summary // ""),
-            heading: ($c.terminal_signals.heading // ""),
-            carrier_sentence: ($c.terminal_signals.carrier_sentence // ""),
-            success_reaction: ($c.terminal_signals.success_reaction // ""),
-            pending_reaction: ($c.terminal_signals.pending_reaction // "")
-          }' "$1") || die "profile file is not readable JSON: $1"
-    normalized_file="$(mktemp)" || die "cannot create a temporary file"
-    printf '%s' "$normalized" >"$normalized_file"
-    profile_finder=$(profile_field finder "$normalized_file")
-    profile_actor_id=$(profile_field actor_id "$normalized_file")
-    profile_actor_login=$(profile_field actor_login "$normalized_file")
-    profile_trigger_mechanism=$(profile_field trigger_mechanism "$normalized_file")
-    profile_trigger_body=$(profile_field trigger_body "$normalized_file")
-    profile_trigger_reviewer=$(profile_field trigger_reviewer "$normalized_file")
-    profile_surfaces=$(profile_field surfaces "$normalized_file")
-    profile_head_binding=$(profile_field head_binding "$normalized_file")
-    profile_verdict_mode=$(profile_field verdict_mode "$normalized_file")
-    profile_clean_verdict=$(profile_field clean_verdict "$normalized_file")
-    profile_actionable_pattern=$(profile_field actionable_pattern "$normalized_file")
-    profile_severity_marker=$(profile_field severity_marker "$normalized_file")
-    profile_metadata_line=$(profile_field metadata_line "$normalized_file")
-    profile_about_summary=$(profile_field about_summary "$normalized_file")
-    profile_heading=$(profile_field heading "$normalized_file")
-    profile_carrier_sentence=$(profile_field carrier_sentence "$normalized_file")
-    profile_success_reaction=$(profile_field success_reaction "$normalized_file")
-    profile_pending_reaction=$(profile_field pending_reaction "$normalized_file")
-    rm -f "$normalized_file"
-    # A profile that names no verdict mode is not a profile; falling back to
-    # Codex's would classify another product's output with Codex's parser and
-    # report a verdict nothing supports.
-    case "$profile_verdict_mode" in
-    clean-sentence | actionable-count | inline-comment-count) ;;
-    *) die "profile declares no usable verdict_mode (got '${profile_verdict_mode}')" ;;
-    esac
-    case "$profile_trigger_mechanism" in
-    review-comment | requested-reviewer) ;;
-    *) die "profile declares no usable trigger mechanism (got '${profile_trigger_mechanism}')" ;;
-    esac
-    [ -n "$profile_surfaces" ] || die "profile names no terminal-result surface"
-}
-
-# Resolve --finder into a profile, from the registry revision the change under
-# review cannot alter. The caller names a slug; it never names a file.
-apply_profile_argument() {
-    [ -n "$finder_slug" ] || return 0
-    [ "$finder_slug" != "codex-cloud" ] || return 0
-    printf '%s' "$finder_slug" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$' ||
-        die "invalid finder slug: $finder_slug"
-    [ -n "$repo" ] && [ -n "$pr" ] ||
-        die "--finder needs --repo and --pr to resolve its trusted registry"
-    # shellcheck source=ai/skills/universal/integrate/assets/trusted-registry.sh
-    . "$asset_dir/trusted-registry.sh"
-    trusted_registry="$(mktemp)" || die "cannot create a temporary file"
-    resolve_trusted_registry "$repo" "$pr" "$trusted_registry" ||
-        die "cannot resolve the trusted registry for finder $finder_slug"
-    entry="$(mktemp)" || die "cannot create a temporary file"
-    jq -c --arg slug "$finder_slug" '
-          [.finders[] | select(.slug == $slug)] as $entries |
-          if ($entries | length) != 1 then empty else $entries[0] end
-        ' "$trusted_registry" >"$entry" || die "cannot read the trusted registry"
-    [ -s "$entry" ] ||
-        die "finder $finder_slug is not registered at the merge base — it cannot be reserved for a cycle"
-    load_profile_from_file "$entry"
-    rm -f "$entry" "$trusted_registry"
-    [ "$finder_slug" = "$profile_finder" ] ||
-        die "the merge-base registry entry for $finder_slug names finder $profile_finder"
-}
-
-# The profile the CYCLE was reserved under always wins. A restated one must
-# match it exactly; a state written before profiles existed carries none and
-# keeps the codex-cloud defaults, so an in-flight cycle is not invalidated by
-# this script being upgraded underneath it.
-adopt_pinned_profile() {
-    pinned=$(jq -c '.profile // empty' "$state_file")
-    if [ -z "$pinned" ]; then
-        apply_profile_argument
-        return 0
-    fi
-    # A restated --finder is checked against the pin (at the end of this
-    # function), never re-resolved: the cycle is classified by the profile it
-    # was RESERVED under, so a merge base that moved mid-cycle cannot change
-    # how already-collected evidence is read.
-    pinned_file="$(mktemp)" || die "cannot create a temporary file"
-    printf '%s' "$pinned" >"$pinned_file"
-    profile_finder=$(profile_field finder "$pinned_file")
-    profile_actor_id=$(profile_field actor_id "$pinned_file")
-    profile_actor_login=$(profile_field actor_login "$pinned_file")
-    profile_trigger_mechanism=$(profile_field trigger_mechanism "$pinned_file")
-    profile_trigger_body=$(profile_field trigger_body "$pinned_file")
-    profile_trigger_reviewer=$(profile_field trigger_reviewer "$pinned_file")
-    profile_surfaces=$(profile_field surfaces "$pinned_file")
-    profile_head_binding=$(profile_field head_binding "$pinned_file")
-    profile_verdict_mode=$(profile_field verdict_mode "$pinned_file")
-    profile_clean_verdict=$(profile_field clean_verdict "$pinned_file")
-    profile_actionable_pattern=$(profile_field actionable_pattern "$pinned_file")
-    profile_severity_marker=$(profile_field severity_marker "$pinned_file")
-    profile_metadata_line=$(profile_field metadata_line "$pinned_file")
-    profile_about_summary=$(profile_field about_summary "$pinned_file")
-    profile_heading=$(profile_field heading "$pinned_file")
-    profile_carrier_sentence=$(profile_field carrier_sentence "$pinned_file")
-    profile_success_reaction=$(profile_field success_reaction "$pinned_file")
-    profile_pending_reaction=$(profile_field pending_reaction "$pinned_file")
-    rm -f "$pinned_file"
-    [ -z "$finder_slug" ] || [ "$finder_slug" = "$profile_finder" ] ||
-        die "--finder ${finder_slug} does not name the finder this cycle was reserved for (${profile_finder})"
-}
-
-has_surface() {
-    case " $profile_surfaces " in
-    *" $1 "*) return 0 ;;
-    *) return 1 ;;
-    esac
-}
 
 valid_repo() {
     printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
@@ -744,8 +502,10 @@ fetch_evidence() {
     esac
 }
 
-verdict_defs=$(
+codex_verdict_defs=$(
     cat <<'JQDEFS'
+          def clean_sentence:
+            "codex review: didn't find any major issues.";
           def body_text: (.body // "");
           # `first // ""`, never `[0]`: jq's `"" | split("\n")` is `[]`, so an
           # empty body would pipe null into gsub and crash the whole program
@@ -755,31 +515,18 @@ verdict_defs=$(
             (body_text | split("\n") | first // "" |
               gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
           def has_severity_marker:
-            ($severity_marker != "") and
-            (body_text | ascii_downcase | test($severity_marker));
-          # The finder's own count of what it is reporting, for
-          # verdict_mode actionable-count. null when this finder states none.
-          def actionable_count:
-            if $actionable_pattern == "" then null
-            else
-              ((body_text | ascii_downcase) as $body |
-                if ($body | test($actionable_pattern))
-                then ($body | match($actionable_pattern) |
-                      .captures[0].string | tonumber)
-                else null end)
-            end;
+            (body_text | ascii_downcase | test("\\bp[0-9]+\\b"));
           # Factored out of `rest_is_boilerplate` so the carrier defs below can
           # reuse the exact same removal and the exact same metadata pattern
           # instead of restating them. Same regexes, same flags, same order —
           # `rest_is_boilerplate` behaves identically to before the split.
           def strip_about_block:
-            if $about_summary == "" then .
-            else
-              gsub("<details.*?<summary>.*?" + $about_summary +
-                   ".*?</summary>.*?</details>"; ""; "im")
-            end;
+            gsub("<details.*?<summary>.*?about codex.*?</summary>.*?</details>";
+                 ""; "im");
           def is_reviewed_commit_line:
-            ($metadata_line != "") and test($metadata_line);
+            test(
+              "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$"
+            );
           def rest_is_boilerplate:
             (body_text | split("\n") | .[1:] | join("\n") |
               strip_about_block |
@@ -855,7 +602,8 @@ verdict_defs=$(
           # reworded sentence fails to match, the review is not settled, and
           # the check re-blocks. Drift in Codex's format costs a false block,
           # never a false green.
-          def carrier_sentence: $carrier_sentence;
+          def carrier_sentence:
+            "here are some automated review suggestions for this pull request.";
           def drop_leading_blanks:
             if (length > 0) and (.[0] == "") then .[1:] | drop_leading_blanks
             else . end;
@@ -864,8 +612,8 @@ verdict_defs=$(
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               drop_leading_blanks);
           def carrier_heading:
-            ($heading != "") and
-            ((carrier_lines | first) // "" | test($heading));
+            ((carrier_lines | first) // "" |
+              test("^#{1,6}[^a-z0-9]*codex review$"));
           def is_carrier_only:
             carrier_heading and
             (carrier_lines | .[1:] | join("\n") |
@@ -874,54 +622,12 @@ verdict_defs=$(
               map(select(. != "")) |
               all(is_reviewed_commit_line or (. == carrier_sentence)));
           def verdict_class:
-            if $verdict_mode == "clean-sentence" then
-              (if (first_line | startswith($clean_verdict) | not) then "findings"
-               elif has_severity_marker then "findings"
-               elif (rest_is_boilerplate | not) then "unrecognized"
-               else "clean" end)
-            elif $verdict_mode == "actionable-count" then
-              # This finder states its own finding count. Nothing else in the
-              # body is read: the count is machine-emitted and the prose
-              # around it is a walkthrough, so there is no free-text clause to
-              # parse and none of the failure family documented above applies.
-              # A body with NO count is `unrecognized` rather than `none` —
-              # fail closed, exactly as an unparseable clean-sentence body is,
-              # because a body this check cannot classify may be stating a
-              # finding it would otherwise never see.
-              (actionable_count as $n |
-                if $n == null then "unrecognized"
-                elif $n > 0 then "findings"
-                elif has_severity_marker then "findings"
-                else "clean" end)
-            else
-              # inline-comment-count: this finder posts no verdict sentence
-              # and no count. Its INLINE COMMENTS are the verdict, so a review
-              # body is a summary and carries no verdict of its own — "none",
-              # not "clean", or an overview would clear a head whose findings
-              # are hanging off that same review.
-              (if has_severity_marker then "findings" else "none" end)
-            end;
+            if (first_line | startswith(clean_sentence) | not) then "findings"
+            elif has_severity_marker then "findings"
+            elif (rest_is_boilerplate | not) then "unrecognized"
+            else "clean" end;
 JQDEFS
 )
-
-# Every jq program that includes $verdict_defs needs the profile values those
-# definitions read. Assembled once so no call site can render the defs against
-# a different — or an empty — profile; an unset jq variable is a hard error, so
-# a forgotten call site fails loudly rather than classifying on a default.
-verdict_args=()
-build_verdict_args() {
-    verdict_args=(
-        --arg verdict_mode "$profile_verdict_mode"
-        --arg clean_verdict "$profile_clean_verdict"
-        --arg actionable_pattern "$profile_actionable_pattern"
-        --arg severity_marker "$profile_severity_marker"
-        --arg metadata_line "$profile_metadata_line"
-        --arg about_summary "$profile_about_summary"
-        --arg heading "$profile_heading"
-        --arg carrier_sentence "$profile_carrier_sentence"
-    )
-}
-build_verdict_args
 
 case "$command_name" in
 reserve)
@@ -932,7 +638,6 @@ reserve)
     valid_sha "$head" || die "head must be a full 40-hex commit"
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     case "$attempt" in 1 | 2) ;; *) die "attempt must be 1 or 2" ;; esac
-    apply_profile_argument
     acquire_state_lock
 
     provider_status=0
@@ -955,14 +660,6 @@ reserve)
             die "state belongs to a different PR"
         [ "$old_phase" != "reserved" ] ||
             die "an unresolved reservation must be reconciled before replacing its head"
-        # Attempt 2 is the SAME cycle, so it must be the same finder: a second
-        # attempt under a different profile would classify attempt 1's
-        # evidence with attempt 2's parser.
-        old_profile=$(jq -c '.profile // empty' "$state_file")
-        if [ -n "$old_profile" ] && [ "$old_head" = "$head" ]; then
-            [ "$(profile_json)" = "$old_profile" ] ||
-                die "attempt 2 must reserve under the same finder profile as attempt 1"
-        fi
         if [ "$old_head" = "$head" ]; then
             [ "$old_attempt" = "1" ] && [ "$attempt" = "2" ] &&
                 [ "$old_phase" = "attached" ] ||
@@ -994,15 +691,8 @@ reserve)
             die "attempt 1 state has an invalid cycle request time"
         valid_time "$previous_reserved_at" ||
             die "attempt 1 state has an invalid reservation time"
-        # A requested-reviewer trigger has no comment to carry forward, so
-        # there is no previous trigger id to validate or to re-read reactions
-        # from; the state keeps null.
-        if [ "$profile_trigger_mechanism" = review-comment ]; then
-            valid_uint "$previous_trigger_id" ||
-                die "attempt 1 state has an invalid trigger ID"
-        else
-            previous_trigger_id=null
-        fi
+        valid_uint "$previous_trigger_id" ||
+            die "attempt 1 state has an invalid trigger ID"
         previous_reserved_epoch=$(jq -nr \
             --arg value "$previous_reserved_at" '$value | fromdateiso8601') ||
             die "cannot parse attempt 1 reservation time"
@@ -1052,7 +742,6 @@ reserve)
         --argjson previous_trigger_id "$previous_trigger_id" \
         --argjson timeout_min "$payload_timeout_min" \
         --argjson settled "$carried_settled" \
-        --argjson profile "$(profile_json)" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
@@ -1061,9 +750,7 @@ reserve)
             (if $cycle_requested_at == "" then null else $cycle_requested_at end),
           previous_trigger_comment_id:$previous_trigger_id,
           timeout_min:$timeout_min,
-          settled:$settled,
-          finder:$profile.finder,
-          profile:$profile
+          settled:$settled
         }')
     write_state "$state_file" "$payload"
     release_state_lock
@@ -1071,25 +758,11 @@ reserve)
     ;;
 
 attach)
+    [ -n "$trigger_id" ] || usage
+    valid_uint "$trigger_id" || die "invalid trigger comment ID"
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     acquire_state_lock
     read_state
-    adopt_pinned_profile
-    build_verdict_args
-    if [ "$profile_trigger_mechanism" = review-comment ]; then
-        [ -n "$trigger_id" ] || usage
-        valid_uint "$trigger_id" || die "invalid trigger comment ID"
-    else
-        # A requested-reviewer trigger leaves no comment to attach: the write
-        # the caller made was a review REQUEST. --requested-at names when it
-        # made it, and the request itself is verified against GitHub below —
-        # a caller-supplied timestamp is a claim, and an unverified claim is
-        # not a trigger.
-        [ -z "$trigger_id" ] ||
-            die "this finder is triggered by a review request, not a comment — use --requested-at"
-        [ -n "$requested_at_flag" ] || usage
-        valid_time "$requested_at_flag" || die "invalid --requested-at time"
-    fi
     # harmon-devkit#223: every `run_gh` call below (the head re-check and the
     # trigger-comment fetch) is budgeted off `$timeout_min` via the
     # `state_reserved` arithmetic in `run_gh` itself — it is not just the
@@ -1118,94 +791,10 @@ attach)
         die "PR head changed before trigger attachment"
     phase=$(jq -r '.phase' "$state_file")
     if [ "$phase" = "attached" ]; then
-        if [ "$profile_trigger_mechanism" = review-comment ]; then
-            existing_id=$(jq -r '.trigger_comment_id' "$state_file")
-            [ "$existing_id" = "$trigger_id" ] ||
-                die "state is already attached to a different trigger"
-        else
-            existing_requested=$(jq -r '.requested_at' "$state_file")
-            [ "$existing_requested" = "$requested_at_flag" ] ||
-                die "state is already attached to a different review request"
-        fi
+        existing_id=$(jq -r '.trigger_comment_id' "$state_file")
+        [ "$existing_id" = "$trigger_id" ] ||
+            die "state is already attached to a different trigger"
         cat "$state_file"
-        exit 0
-    fi
-
-    if [ "$profile_trigger_mechanism" = requested-reviewer ]; then
-        # The request is proven, not asserted. GitHub removes a reviewer from
-        # requested_reviewers once it has reviewed, so EITHER it is still
-        # pending on this PR OR its review already exists — both prove the
-        # caller actually made the request. Neither being true means the
-        # trigger was never posted, and attaching it anyway would start a
-        # cycle waiting for a review nobody asked for.
-        [ -n "$profile_trigger_reviewer" ] ||
-            die "profile declares a requested-reviewer trigger but names no reviewer login"
-        requested=$(run_gh api "repos/$state_repo/pulls/$state_pr/requested_reviewers") ||
-            die "cannot read this PR's requested reviewers"
-        # Matched on the immutable actor ID first. GitHub lists a requested
-        # reviewer under its CANONICAL login, which is not always the slug a
-        # request is made with (Copilot code review is requested as
-        # copilot-pull-request-reviewer[bot] and listed back as Copilot), so a
-        # login-only comparison reads a real pending request as absent. Either
-        # login is accepted as a fallback for a profile that names no actor ID.
-        pending=$(printf '%s' "$requested" | jq -r \
-            --arg actor "$profile_actor_id" \
-            --arg actor_login "$profile_actor_login" \
-            --arg login "$profile_trigger_reviewer" '
-              [(.users // [])[] | select(
-                (($actor != "") and ((.id // "") | tostring) == $actor) or
-                (((.login // "") | ascii_downcase) == ($actor_login | ascii_downcase)) or
-                (((.login // "") | ascii_downcase) == ($login | ascii_downcase))
-              )] | length
-            ') || die "requested-reviewer data is malformed"
-        if [ "$pending" -eq 0 ]; then
-            # Paginated like every other review read in this script, so a PR
-            # whose reviews spill past one page cannot report "no review" and
-            # refuse a request that was genuinely made.
-            attach_workdir=$(mktemp -d -t cloud-review-attach-XXXXXX) ||
-                die "cannot create a working directory"
-            fetch_pages "repos/$state_repo/pulls/$state_pr/reviews?per_page=100" \
-                "$attach_workdir/reviews.json" || {
-                rm -rf "$attach_workdir"
-                die "cannot read this PR reviews to confirm the review request"
-            }
-            landed=$(jq -r \
-                --arg actor "$profile_actor_id" \
-                --arg actor_login "$profile_actor_login" \
-                --arg login "$profile_trigger_reviewer" '
-                  [.[] | select(
-                    (($actor != "") and ((.user.id // "") | tostring) == $actor) or
-                    (((.user.login // "") | ascii_downcase) == ($actor_login | ascii_downcase)) or
-                    (((.user.login // "") | ascii_downcase) == ($login | ascii_downcase))
-                  )] | length
-                ' "$attach_workdir/reviews.json") || {
-                rm -rf "$attach_workdir"
-                die "review data is malformed"
-            }
-            rm -rf "$attach_workdir"
-            [ "$landed" -gt 0 ] ||
-                die "no review request for ${profile_trigger_reviewer} is pending and it has posted no review — the trigger was never made"
-        fi
-        current_epoch=$(date -u '+%s')
-        requested_epoch=$(jq -nr --arg value "$requested_at_flag" '$value | fromdateiso8601') ||
-            die "cannot parse --requested-at"
-        reserved_epoch=$(jq -nr --arg value "$state_reserved" '$value | fromdateiso8601') ||
-            die "cannot parse the reservation time"
-        [ "$requested_epoch" -ge "$reserved_epoch" ] ||
-            die "--requested-at predates this cycle's reservation"
-        [ "$requested_epoch" -le "$current_epoch" ] ||
-            die "--requested-at is in the future"
-        payload=$(jq \
-            --arg requested_at "$requested_at_flag" '
-              .version = 2 |
-              .phase = "attached" |
-              .trigger_comment_id = null |
-              .requested_at = $requested_at |
-              .cycle_requested_at = (.cycle_requested_at // $requested_at)
-            ' "$state_file")
-        write_state "$state_file" "$payload"
-        release_state_lock
-        printf '%s\n' "$payload"
         exit 0
     fi
 
@@ -1213,10 +802,9 @@ attach)
         die "cannot fetch exact trigger comment $trigger_id"
     printf '%s' "$comment" | jq -e \
         --argjson id "$trigger_id" \
-        --arg body "$profile_trigger_body" \
         --arg suffix "/issues/$state_pr" '
           (.id == $id) and
-          ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == $body) and
+          ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "@codex review") and
           ((.issue_url // "") | endswith($suffix)) and
           (.created_at | type == "string")
         ' >/dev/null || die "comment $trigger_id is not this PR's exact review trigger"
@@ -1293,19 +881,6 @@ reap)
         path_repo="${candidate_grandparent##*/}/${candidate_parent##*/}"
         path_pr=${candidate##*/}
         path_pr=${path_pr%.json}
-        # A multi-finder cycle stores its state as <pr>-<finder>.json (#796),
-        # one file per finder, so the PR is the segment before the first
-        # hyphen. Without this every such file disagrees with its own path
-        # forever and is skipped, and a closed PR leaks one state file per
-        # configured finder. A bare <pr>.json is unaffected: it contains no
-        # hyphen, so the strip is a no-op.
-        path_finder=
-        case "$path_pr" in
-        *-*)
-            path_finder=${path_pr#*-}
-            path_pr=${path_pr%%-*}
-            ;;
-        esac
 
         state_repo=$(jq -er '
               select(
@@ -1336,23 +911,7 @@ reap)
         # them to agree means a state file that was moved, hand-edited, or
         # dropped in from elsewhere is left alone rather than driving a delete
         # against whatever PR its contents happen to name.
-        # The finder suffix has to agree too, for the same reason the PR does:
-        # a state whose contents name a different finder than its filename has
-        # been moved or hand-edited, and reaping it would delete a record for
-        # a cycle other than the one the path claims.
-        state_finder=$(jq -r '.finder // empty' "$candidate" 2>/dev/null) || state_finder=
-        # A suffixed path must name the state's own finder. An UNsuffixed one
-        # may only hold the default cycle: a bare <pr>.json whose contents name
-        # another finder is the same moved-or-hand-edited case, and reaping it
-        # would delete a record belonging to a cycle the path does not claim.
-        # A state written before finders were recorded has none, and is fine.
-        path_finder_expected=$path_finder
-        [ -n "$path_finder_expected" ] || path_finder_expected=codex-cloud
-        finder_agrees=1
-        [ -z "$state_finder" ] || [ "$state_finder" = "$path_finder_expected" ] || finder_agrees=0
-        [ -z "$path_finder" ] || [ -n "$state_finder" ] || finder_agrees=0
-        if [ "$state_repo" != "$path_repo" ] || [ "$state_pr" != "$path_pr" ] ||
-            [ "$finder_agrees" -eq 0 ]; then
+        if [ "$state_repo" != "$path_repo" ] || [ "$state_pr" != "$path_pr" ]; then
             reap_record "$candidate" "$state_repo" "$state_pr" "" skipped \
                 "state contents disagree with the path they are stored under"
             continue
@@ -1472,24 +1031,6 @@ check)
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     acquire_state_lock
     read_state
-    adopt_pinned_profile
-    build_verdict_args
-    # The actor is the finder identity this cycle was reserved for, not
-    # whatever the caller passes now. Without this, a cycle reserved for one
-    # finder could be closed by another bot's clean verdict — the profile
-    # would classify one product's output while the actor filter admitted a
-    # different one.
-    [ -z "$profile_actor_id" ] || [ "$actor_id" = "$profile_actor_id" ] ||
-        die "--actor-id ${actor_id} is not the actor this cycle was reserved for (${profile_actor_id}, ${profile_finder})"
-    # An unpassed --actor-login takes the PINNED profile's login rather than
-    # this script's Codex default. Without that, every caller of a non-Codex
-    # cycle that supplies only --actor-id (the readiness gate's recheck, for
-    # one) fails the guard below on a login it never chose, and the whole
-    # multi-finder path becomes unpromotable.
-    [ "$actor_login_set" -eq 1 ] || [ -z "$profile_actor_login" ] ||
-        actor_login="$profile_actor_login"
-    [ -z "$profile_actor_login" ] || [ "$actor_login" = "$profile_actor_login" ] ||
-        die "--actor-login ${actor_login} is not the login this cycle was reserved for (${profile_actor_login})"
 
     state_repo=$(jq -r '.repo' "$state_file")
     state_pr=$(jq -r '.pr' "$state_file")
@@ -1505,12 +1046,7 @@ check)
     state_requested=$(jq -r '.requested_at' "$state_file")
     cycle_requested=$(jq -r '.cycle_requested_at' "$state_file")
     previous_trigger=$(jq -r '.previous_trigger_comment_id // empty' "$state_file")
-    if [ "$profile_trigger_mechanism" = review-comment ]; then
-        valid_uint "$state_trigger" || die "state has an invalid trigger ID"
-    else
-        state_trigger=
-        previous_trigger=
-    fi
+    valid_uint "$state_trigger" || die "state has an invalid trigger ID"
     valid_time "$state_reserved" || die "state has an invalid reservation time"
     valid_time "$state_requested" || die "state has an invalid request time"
     valid_time "$cycle_requested" || die "state has an invalid cycle request time"
@@ -1547,67 +1083,49 @@ check)
     trap 'rm -rf "$workdir"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
     actor=$(run_gh api "users/$actor_login") || {
-        bounded_wait "cannot authenticate the configured finder actor"
+        bounded_wait "cannot authenticate the configured Codex actor"
     }
     printf '%s' "$actor" | jq -e \
         --argjson id "$actor_id" \
         --arg login "$actor_login" '
           (.id == $id) and (.login == $login) and (.type == "Bot")
         ' >/dev/null || {
-        emit indeterminate "configured finder login does not resolve to the pinned Bot actor ID"
+        emit indeterminate "configured Codex login does not resolve to the pinned Bot actor ID"
         exit 2
     }
 
-    # A comment trigger is re-verified every cycle; a review-request trigger
-    # has no comment to re-verify, and `attach` proved the request against
-    # GitHub when it recorded it.
-    if [ "$profile_trigger_mechanism" = review-comment ]; then
-        trigger=$(run_gh api "repos/$state_repo/issues/comments/$state_trigger") || {
-            bounded_wait "cannot re-fetch the exact trigger comment"
-        }
-        printf '%s' "$trigger" | jq -e \
-            --argjson id "$state_trigger" \
-            --arg created "$state_requested" \
-            --arg body "$profile_trigger_body" \
-            --arg suffix "/issues/$state_pr" '
-              (.id == $id) and (.created_at == $created) and
-              ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == $body) and
-              ((.issue_url // "") | endswith($suffix))
-            ' >/dev/null || {
-            emit indeterminate "exact trigger metadata changed or is malformed"
-            exit 2
-        }
-    fi
+    trigger=$(run_gh api "repos/$state_repo/issues/comments/$state_trigger") || {
+        bounded_wait "cannot re-fetch the exact trigger comment"
+    }
+    printf '%s' "$trigger" | jq -e \
+        --argjson id "$state_trigger" \
+        --arg created "$state_requested" \
+        --arg suffix "/issues/$state_pr" '
+          (.id == $id) and (.created_at == $created) and
+          ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "@codex review") and
+          ((.issue_url // "") | endswith($suffix))
+        ' >/dev/null || {
+        emit indeterminate "exact trigger metadata changed or is malformed"
+        exit 2
+    }
 
-    # Only the surfaces this finder's profile declares are fetched, and the
-    # rest stay empty. A surface a finder never writes to carries no evidence
-    # in either direction, so polling it would spend calls to prove nothing —
-    # and, worse, an unrelated actor's activity there would have to be
-    # reasoned about. Skipped surfaces are written as `[]` so every consumer
-    # below reads a real file whatever the profile says.
-    printf '%s\n' '[]' >"$workdir/reactions.json"
-    printf '%s\n' '[]' >"$workdir/comments.json"
-    if has_surface reaction && [ "$profile_trigger_mechanism" = review-comment ]; then
+    fetch_evidence \
+        "repos/$state_repo/issues/comments/$state_trigger/reactions?per_page=100" \
+        "$workdir/current-reactions.json" \
+        "exact-trigger reactions"
+    printf '%s\n' '[]' >"$workdir/previous-reactions.json"
+    if [ -n "$previous_trigger" ]; then
         fetch_evidence \
-            "repos/$state_repo/issues/comments/$state_trigger/reactions?per_page=100" \
-            "$workdir/current-reactions.json" \
-            "exact-trigger reactions"
-        printf '%s\n' '[]' >"$workdir/previous-reactions.json"
-        if [ -n "$previous_trigger" ]; then
-            fetch_evidence \
-                "repos/$state_repo/issues/comments/$previous_trigger/reactions?per_page=100" \
-                "$workdir/previous-reactions.json" \
-                "previous-trigger reactions"
-        fi
-        jq -s 'add' \
-            "$workdir/current-reactions.json" \
-            "$workdir/previous-reactions.json" >"$workdir/reactions.json"
+            "repos/$state_repo/issues/comments/$previous_trigger/reactions?per_page=100" \
+            "$workdir/previous-reactions.json" \
+            "previous-trigger reactions"
     fi
-    if has_surface comment; then
-        fetch_evidence \
-            "repos/$state_repo/issues/$state_pr/comments?per_page=100" \
-            "$workdir/comments.json" "PR conversation comments"
-    fi
+    jq -s 'add' \
+        "$workdir/current-reactions.json" \
+        "$workdir/previous-reactions.json" >"$workdir/reactions.json"
+    fetch_evidence \
+        "repos/$state_repo/issues/$state_pr/comments?per_page=100" \
+        "$workdir/comments.json" "PR conversation comments"
     fetch_evidence \
         "repos/$state_repo/pulls/$state_pr/reviews?per_page=100" \
         "$workdir/reviews.json" "PR reviews"
@@ -1640,7 +1158,7 @@ check)
                 ((.user.login? == $login) | not) or (.user.id? == $id)
               )
             ' "$workdir/$evidence.json" >/dev/null || {
-            emit indeterminate "finder-looking activity has an unexpected immutable actor identity"
+            emit indeterminate "Codex-looking activity has an unexpected immutable actor identity"
             exit 2
         }
     done
@@ -1775,7 +1293,6 @@ check)
     adjudicated_findings=0
     settled_reviews='[]'
     attributed_reviews='[]'
-    attributed_counts='{}'
     unattributed_findings=0
     if [ "$inline_head_findings" -gt 0 ]; then
         # Fetched lazily and only once: the PR author identity is needed solely
@@ -1870,17 +1387,6 @@ check)
                   ([$classified[] | select(.review == null)] | length),
                 attributed:
                   ([$classified[] | select(.review != null) | .review] | unique),
-                # How many current-head inline findings this check actually saw
-                # for each review, keyed by review id as a string.
-                # `actionable-count` settlement compares this against the count
-                # the review body itself declares: settling on "every comment I
-                # fetched is answered" alone would suppress a review whose
-                # second finding simply had not appeared in the snapshot yet.
-                attributed_counts:
-                  ([$classified[] | select(.review != null) | .review] |
-                    group_by(.) |
-                    map({key: (.[0] | tostring), value: length}) |
-                    from_entries),
                 settled: (
                   if ([$classified[] | select(.review == null)] | length) > 0
                   then []
@@ -1910,11 +1416,6 @@ check)
         }
         attributed_reviews=$(printf '%s' "$inline_partition" |
             jq -ce '.attributed | select(type == "array")') || {
-            emit indeterminate "current-head inline findings could not be partitioned"
-            exit 2
-        }
-        attributed_counts=$(printf '%s' "$inline_partition" |
-            jq -ce '.attributed_counts | select(type == "object")') || {
             emit indeterminate "current-head inline findings could not be partitioned"
             exit 2
         }
@@ -2089,11 +1590,10 @@ check)
     # exists to end.
     disposed_applied=0
     disposed_review_hits=$(jq -r \
-        "${verdict_args[@]}" \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
         --argjson disposed "$disposed_reviews" \
-        "$verdict_defs"'
+        "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head) and
@@ -2107,13 +1607,11 @@ check)
     [ "$disposed_review_hits" -eq 0 ] || disposed_applied=1
 
     review_result=$(jq -r \
-        "${verdict_args[@]}" \
-        --argjson attributed_counts "$attributed_counts" \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
         --argjson settled "$settled_reviews" \
         --argjson disposed "$disposed_reviews" \
-        "$verdict_defs"'
+        "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head) and
@@ -2131,37 +1629,7 @@ check)
              elif (($review.id? | type) == "number") and
                 ($settled | index($review.id)) and
                 ((has_severity_marker) | not) and
-                # The carrier-only test belongs to clean-sentence mode alone.
-                # There it is what stops an UNBADGED concern hiding in prose
-                # the badge scan cannot see. Under actionable-count the body
-                # is a walkthrough — prose by construction — and its
-                # "findings" classification comes from a COUNT of the very
-                # inline comments this branch has just established are all
-                # adjudicated, so there is no separately-stated finding left
-                # to lose and requiring carrier-only prose would deadlock
-                # every such cycle instead. Under inline-comment-count the
-                # body is never "findings" at all, so this branch is
-                # unreachable there. Residual, stated rather than
-                # rediscovered: an unbadged concern written into an
-                # actionable-count walkthrough passes. That is the same
-                # residual clean-sentence mode accepts inside its own About
-                # block, and the count itself still blocks while any inline
-                # comment is unanswered.
-                (if $verdict_mode == "clean-sentence" then is_carrier_only
-                 elif $verdict_mode == "actionable-count" then
-                   # The body declares HOW MANY actionable findings it posted.
-                   # Settling requires that number to equal the number of
-                   # current-head inline comments this check actually saw
-                   # attributed to this review — otherwise "every comment I
-                   # fetched is answered" would suppress a review whose second
-                   # finding is simply not in the snapshot yet, and the
-                   # adjudicated-clean fallback would then promote before it
-                   # was ever seen. A body whose count cannot be parsed is
-                   # already `unrecognized` upstream and never reaches here.
-                   (actionable_count as $declared |
-                     ($declared != null) and
-                     ($declared == (($attributed_counts[($review.id | tostring)]) // 0)))
-                 else true end)
+                is_carrier_only
              then "settled" else "findings" end)
           else $class end
           ] |
@@ -2183,27 +1651,6 @@ check)
             ((.id? | type) == "number")
           ) | .id] | unique
         ' "$workdir/reviews.json")
-    # A finder whose verdict IS its inline-comment count states nothing in
-    # prose, so `verdict_class` returns "none" for every body it posts and the
-    # aggregate above can never reach "clean" on its own. Its clean result is
-    # the conjunction of two facts this check already has: it reviewed this
-    # head, and it left no inline comment on it. The presence of the review is
-    # not optional — an absent review means "not reviewed yet", never "nothing
-    # to report", which is the one reading that would let an unreviewed head
-    # promote.
-    if [ "$profile_verdict_mode" = "inline-comment-count" ] &&
-        [ "$review_result" = "none" ] && [ "$inline_head_findings" -eq 0 ]; then
-        head_reviews=$(jq -r \
-            --argjson id "$actor_id" \
-            --arg head "$state_head" '
-              [.[] | select(
-                .user.id? == $id and
-                (.commit_id? == $head) and
-                ((.body // "") != "")
-              )] | length
-            ' "$workdir/reviews.json")
-        [ "$head_reviews" -eq 0 ] || review_result=clean
-    fi
     if [ "$review_result" = "findings" ]; then
         emit findings "authenticated current-head review requires adjudication"
         exit 10
@@ -2215,9 +1662,8 @@ check)
 
     comment_candidates="$workdir/comment-candidates.tsv"
     jq -r \
-        "${verdict_args[@]}" \
         --argjson id "$actor_id" \
-        "$verdict_defs"'
+        "$codex_verdict_defs"'
           .[] | select(.user.id? == $id) |
           ((.body // "") |
             try match(
@@ -2331,21 +1777,14 @@ check)
             # rather than two separate `max` queries, so the id can never
             # drift from the timestamp that selected it.
             clean_review_evidence=$(jq -c \
-                "${verdict_args[@]}" \
                 --argjson id "$actor_id" \
                 --arg head "$state_head" \
-                "$verdict_defs"'
+                "$codex_verdict_defs"'
                   [.[] | select(
                     .user.id? == $id and
                     (.commit_id? == $head) and
                     (body_text != "")
-                  ) |
-                  # Under inline-comment-count the clean evidence is that
-                  # the review EXISTS (established just above), not a verdict
-                  # in its body: verdict_class never says "clean" in that
-                  # mode, so selecting on it would find nothing to name.
-                  select(if $verdict_mode == "inline-comment-count"
-                         then true else verdict_class == "clean" end) |
+                  ) | select(verdict_class == "clean") |
                   select((.submitted_at? | type) == "string" and (.id? | type) == "number")] |
                   sort_by(.submitted_at) | last // null
                 ' "$workdir/reviews.json")
@@ -2369,31 +1808,23 @@ check)
         exit 0
     fi
 
-    # The success reaction is the finder's own, and only for a finder whose
-    # profile lists the reaction surface at all: `reactions.json` is empty for
-    # every other one, so this evaluates to "no reaction" rather than being
-    # skipped by a branch that could drift out of step with the fetch above.
     like_time=$(jq -r \
         --argjson id "$actor_id" \
-        --arg reaction "$profile_success_reaction" \
         --arg requested "$cycle_requested" '
-          if $reaction == "" then "" else
-          ([.[] | select(
+          [.[] | select(
             .user.id? == $id and
-            .content? == $reaction and
+            .content? == "+1" and
             (.created_at? >= $requested)
-          ) | .created_at? | select(type == "string")] | max // "") end
+          ) | .created_at? | select(type == "string")] | max // ""
         ' "$workdir/reactions.json")
     exact_like=$(jq \
         --argjson id "$actor_id" \
-        --arg reaction "$profile_success_reaction" \
         --arg requested "$cycle_requested" '
-          if $reaction == "" then 0 else
-          ([.[] | select(
+          [.[] | select(
             .user.id? == $id and
-            .content? == $reaction and
+            .content? == "+1" and
             (.created_at? >= $requested)
-          )] | length) end
+          )] | length
         ' "$workdir/reactions.json")
     if [ "$exact_like" -gt 0 ]; then
         if [ -n "$shell_barrier" ] && ! [ "$like_time" \> "$shell_barrier" ]; then
@@ -2408,18 +1839,17 @@ check)
         # gauntlet challenge round 4).
         like_id=$(jq -r \
             --argjson id "$actor_id" \
-            --arg reaction "$profile_success_reaction" \
             --arg requested "$cycle_requested" \
             --arg newest "$like_time" '
               [.[] | select(
                 .user.id? == $id and
-                .content? == $reaction and
+                .content? == "+1" and
                 (.created_at? >= $requested) and
                 (.created_at? == $newest) and
                 ((.id? | type) == "number")
               ) | .id] | max // empty | tostring
             ' "$workdir/reactions.json")
-        emit clean "authenticated bot reacted ${profile_success_reaction} on the exact current-head trigger" \
+        emit clean "authenticated bot reacted +1 on the exact current-head trigger" \
             reaction "$like_id"
         exit 0
     fi
@@ -2537,24 +1967,6 @@ settle)
     settled_at=$(now_utc)
     acquire_state_lock
     read_state
-    # `settle` proves its target is a badged finding, and what counts as a
-    # badge is the finder's own (`terminal_signals.severity_marker`) — so the
-    # profile this cycle was reserved under governs here exactly as it governs
-    # `check`.
-    adopt_pinned_profile
-    build_verdict_args
-    # A disposition on a surface this finder never writes to settles nothing:
-    # `check` does not poll that surface for this profile, so the entry could
-    # only ever be dead state — and recording one would read as an answered
-    # finding that no cycle can confirm was ever there.
-    has_surface "$surface" ||
-        die "finder ${profile_finder} carries no evidence on the ${surface} surface (its surfaces: ${profile_surfaces})"
-    # `settle` exists because these two surfaces carry no reply linkage. A
-    # profile whose findings are stated with no severity badge at all has no
-    # badged target for this command to prove, so there is nothing here it
-    # could record honestly.
-    [ -n "$profile_severity_marker" ] ||
-        die "finder ${profile_finder} states no severity marker, so a badged non-thread finding cannot be identified — answer it on the PR and let the next cycle re-read the head"
 
     state_repo=$(jq -r '.repo' "$state_file")
     state_pr=$(jq -r '.pr' "$state_file")
@@ -2579,7 +1991,7 @@ settle)
               (.id == $target) and (.user.id? == $id) and
               ((.issue_url // "") | endswith($suffix))
             ' >/dev/null ||
-            die "comment $target_id is not a ${profile_finder} comment on this PR"
+            die "comment $target_id is not a Codex comment on this PR"
         # Same discipline `check` applies to a top-level result: the comment
         # must name a commit prefix that GitHub resolves to this head. A
         # disposition recorded against some other head answers nothing.
@@ -2621,7 +2033,7 @@ settle)
             --arg head "$state_head" '
               (.id == $target) and (.user.id? == $id) and (.commit_id? == $head)
             ' >/dev/null ||
-            die "review $target_id is not a current-head ${profile_finder} review"
+            die "review $target_id is not a current-head Codex review"
         ;;
     esac
 
@@ -2630,7 +2042,7 @@ settle)
     # carry — a clean verdict, a carrier body, an unrecognized one — none of
     # which a disposition would mean anything about.
     printf '%s' "$target" |
-        jq -e "${verdict_args[@]}" "$verdict_defs"' has_severity_marker' >/dev/null ||
+        jq -e "$codex_verdict_defs"' has_severity_marker' >/dev/null ||
         die "target $target_id carries no severity badge, so it is not a finding to settle"
 
     # A disposition settles the TARGET, and a target can hold more than one

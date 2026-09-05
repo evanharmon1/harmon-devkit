@@ -642,48 +642,6 @@ function checkHeadAgreement(kind, envelope, errors) {
       }
     }
   }
-  // Every other PR-side finder's cycle (#796) carries the same head
-  // invariant codex_cycle does: a cycle stamped with a different commit is
-  // evidence about another tree, and the readiness gate reads these as
-  // current-head verdicts. Two further rules the schema cannot state: a
-  // finder appears at most once (two entries could disagree about one
-  // cycle), and codex-cloud is never here at all (it has its own field, and
-  // a second entry for it would be a second, contradictory answer).
-  if (kind === 'integrator' && Array.isArray(payload.finder_cycles)) {
-    const seenFinders = new Set()
-    payload.finder_cycles.forEach((cycle, index) => {
-      if (!cycle || typeof cycle !== 'object') return
-      if (typeof cycle.head === 'string' && cycle.head !== head) {
-        errors.push(
-          `$result.payload.finder_cycles[${index}].head: ${cycle.head} does not match envelope head ${head}`
-        )
-      }
-      const cycleAccepted = cycle.accepted
-      if (
-        cycleAccepted &&
-        typeof cycleAccepted === 'object' &&
-        typeof cycleAccepted.reviewed_commit === 'string' &&
-        cycleAccepted.reviewed_commit !== head
-      ) {
-        errors.push(
-          `$result.payload.finder_cycles[${index}].accepted.reviewed_commit: ${cycleAccepted.reviewed_commit} does not match envelope head ${head}`
-        )
-      }
-      if (typeof cycle.finder === 'string') {
-        if (cycle.finder === 'codex-cloud') {
-          errors.push(
-            `$result.payload.finder_cycles[${index}].finder: codex-cloud reports its cycle in codex_cycle, never here — two entries for one cycle could disagree`
-          )
-        }
-        if (seenFinders.has(cycle.finder)) {
-          errors.push(
-            `$result.payload.finder_cycles[${index}].finder: ${cycle.finder} already reported a cycle in this pass`
-          )
-        }
-        seenFinders.add(cycle.finder)
-      }
-    })
-  }
 }
 
 // checkIntegratorSettledAtAgreement — payload.settled_at ("when this
@@ -724,35 +682,13 @@ function checkIntegratorBlockedStatus(envelope, errors) {
 // here, in the validator, the same way "required when" and "forbidden
 // otherwise" are two separate assertions throughout this family.
 function checkCodexCycleAcceptedScope(payload, errors) {
-  // Every cloud cycle in the payload, by the path a message should name it
-  // with. #796 added finder_cycles[] beside codex_cycle, and every semantic
-  // rule below is about what one CYCLE's fields mean — nothing in any of them
-  // is Codex-specific — so they all iterate this rather than reading
-  // codex_cycle alone. A rule that applied to one cycle and not the others
-  // would let a non-Codex entry carry exactly the contradiction it forbids.
-  for (const { path, cycle } of integratorCycles(payload)) {
-    if (![0, 10].includes(cycle.exit_code) && Object.hasOwn(cycle, 'accepted')) {
-      errors.push(
-        `$result.payload.${path}.accepted: must be absent when exit_code is ${cycle.exit_code} (only 0/10 are terminal)`
-      )
-    }
+  const cycle = payload.codex_cycle
+  if (!cycle || typeof cycle !== 'object') return
+  if (![0, 10].includes(cycle.exit_code) && Object.hasOwn(cycle, 'accepted')) {
+    errors.push(
+      `$result.payload.codex_cycle.accepted: must be absent when exit_code is ${cycle.exit_code} (only 0/10 are terminal)`
+    )
   }
-}
-
-// Every cloud-review cycle an integrator payload carries: codex_cloud's own
-// `codex_cycle`, plus one entry per other configured PR-side finder (#796).
-function integratorCycles(payload) {
-  const cycles = []
-  const codex = payload.codex_cycle
-  if (codex && typeof codex === 'object') cycles.push({ path: 'codex_cycle', cycle: codex })
-  if (Array.isArray(payload.finder_cycles)) {
-    payload.finder_cycles.forEach((cycle, index) => {
-      if (cycle && typeof cycle === 'object') {
-        cycles.push({ path: `finder_cycles[${index}]`, cycle })
-      }
-    })
-  }
-  return cycles
 }
 
 // EXIT_CODE_VERDICT_CONSTRAINTS — what codex_cycle.exit_code implies about
@@ -801,19 +737,19 @@ const EXIT_CODE_VERDICT_CONSTRAINTS = {
 // shape cannot encode as one schema-level rule the way
 // checkIntegratorCleanVerdict's fixed verdict:clean condition can.
 function checkCodexCycleExitCodeVerdict(payload, errors) {
-  for (const { path, cycle } of integratorCycles(payload)) {
-    const constraint = EXIT_CODE_VERDICT_CONSTRAINTS[cycle.exit_code]
-    if (!constraint) continue
-    if (constraint.equals && payload.verdict !== constraint.equals) {
-      errors.push(
-        `$result.payload.verdict: must be ${JSON.stringify(constraint.equals)} when ${path}.exit_code is ${cycle.exit_code}, found ${JSON.stringify(payload.verdict)}`
-      )
-    }
-    if (constraint.excludes && constraint.excludes.has(payload.verdict)) {
-      errors.push(
-        `$result.payload.verdict: must not be ${JSON.stringify(payload.verdict)} when ${path}.exit_code is ${cycle.exit_code}`
-      )
-    }
+  const cycle = payload.codex_cycle
+  if (!cycle || typeof cycle !== 'object') return
+  const constraint = EXIT_CODE_VERDICT_CONSTRAINTS[cycle.exit_code]
+  if (!constraint) return
+  if (constraint.equals && payload.verdict !== constraint.equals) {
+    errors.push(
+      `$result.payload.verdict: must be ${JSON.stringify(constraint.equals)} when codex_cycle.exit_code is ${cycle.exit_code}, found ${JSON.stringify(payload.verdict)}`
+    )
+  }
+  if (constraint.excludes && constraint.excludes.has(payload.verdict)) {
+    errors.push(
+      `$result.payload.verdict: must not be ${JSON.stringify(payload.verdict)} when codex_cycle.exit_code is ${cycle.exit_code}`
+    )
   }
 }
 
@@ -941,10 +877,11 @@ function checkIntegratorCleanVerdict(payload, errors) {
   if (Array.isArray(payload.unanswered_thread_roots) && payload.unanswered_thread_roots.length > 0) {
     errors.push('$result.payload.unanswered_thread_roots: must be empty when verdict is clean')
   }
-  for (const { path, cycle } of integratorCycles(payload)) {
+  const cycle = payload.codex_cycle
+  if (cycle !== null && cycle !== undefined) {
     if (cycle.exit_code !== 0 || !cycle.accepted) {
       errors.push(
-        `$result.payload.${path}: must be null, or exit_code 0 with accepted present, when verdict is clean`
+        '$result.payload.codex_cycle: must be null, or exit_code 0 with accepted present, when verdict is clean'
       )
     }
   }
