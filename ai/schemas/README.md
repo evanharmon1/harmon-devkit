@@ -2565,7 +2565,20 @@ revival of the at-cap branch challenge round 2 deleted: this refuses a record
 claiming a code change with no loop recorded anywhere, which no legitimate
 trajectory produces.
 
-One row-4 gap is filed rather than closed here:
+The stronger, round-indexed form of that bound (`loops >= the round the fixed
+finding came from`) is worth recording as a **dead end**, because it looks
+right. Integrate cycle 2 asked for it and it was implemented; cycle 3 showed
+it unsound and it was withdrawn in the same PR. A finding id's round segment
+is its pass's `integration_round`, and that field counts **passes, not
+rounds** — `result.integrator.schema.json` says so outright. Waiting on CI and
+re-dispatching advance the pass ordinal while spending no remediation round,
+so a finding first raised by pass 2 and fixed by the first fix push has one
+legitimate loop and the round-indexed bound rejects that clean pass
+permanently. Closing the residual it reached for needs per-finding loop
+attribution the record does not carry:
+[#808](https://github.com/evanharmon1/harmon-devkit/issues/808).
+
+Two row-4 gaps are filed rather than closed here. The first is
 [#801](https://github.com/evanharmon1/harmon-devkit/issues/801) — under a
 **legacy** decoded policy the shared budget charges a no-change adjudication
 cycle too, and those record no transition, so the loop count undercounts.
@@ -2596,11 +2609,31 @@ legitimately adjudicated finding was raised by a pass, so a complete record
 already contains it, and a record missing that pass is incomplete in a way the
 gate should fail closed on.
 
+Each of those passes is then **semantically validated** before its ids are
+trusted, rather than approximated with a status/role filter. `status:
+"completed"` does not establish validity — a structurally valid pass whose
+`counts` disagree with its findings is rejected by
+`validate-result-schemas.mjs` while `render-dev-flow readiness-input`, which
+is only structural, lets it through (integrate cycle 3 on PR #800). Running
+the real validator is both stricter and less code: it subsumes the
+blocked-role rule the filter used to hand-roll, including the distinction that
+a blocked confidence-role pass carries no findings while a blocked integrator
+legitimately does.
+
 Two smaller decisions ride along with that. The assembly uses a plain glob
 and `jq`, never `find`/`xargs`, because the gate must keep working under the
 minimal PATH its own no-GNU-timeout path restricts itself to — and the temp
 file it writes needs `rm` on that PATH for its cleanup trap, which is why the
 restricted toolset in `scripts/test-integrate-readiness.sh` names it.
+
+**Cap integrity is a property of the whole trajectory, not of the stage being
+computed.** Every over-cap check was originally scoped to `args.stage`, so a
+challenge round 4 under a challenge cap of 3 stayed invisible while review's
+exit was computed, and review could converge on a trajectory its own policy
+forbids (integrate cycle 3 on PR #800). Both confidence stages are now checked
+for over-cap passes and adjudications, whatever stage is requested — the same
+shape the cap-0 rule below already had.
+`exit/cross-stage-over-cap-challenge-round-rejected` is the fixture.
 
 **A cap-0 confidence stage must be inert across the whole run, not just the
 one being computed.** Every cap-integrity check in `dev-flow-exit.mjs` is

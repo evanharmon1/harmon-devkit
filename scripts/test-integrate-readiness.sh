@@ -2037,70 +2037,16 @@ write_deferred_adjudication
 run_gate --integrator-result "$fix_result" --remediation-cap 0
 assert_gate 1 fail remediation-capped
 
-# The generalised lower bound (integrate cycle 2 on PR #800): one recorded
-# loop must not cover a LATER code-changing cycle. A fix applied to an
-# `integration-r2-...` finding needs two loops, not the one that round 1's
-# own fix already spent — the finding-id grammar carries the round, so the
-# bound is "loops >= the round the fixed finding came from" rather than the
-# "loops >= 1" special case it started as.
-# The round-2 integration finding the case below disposes of, with the pass
-# that raised it and its adjudication — the known-ids universe is
-# pass-derived, so a disposition naming a finding the record never produced
-# is refused before the remediation bound is ever reached.
-write_round2_integration_finding() {
-    jq -cn --arg head "$head_sha" '
-      {schema:2, role:"integrator", status:"completed", head:$head,
-       produced_at:"2026-01-01T00:00:00Z",
-       producer:{harness:"claude-code",model:"test",tier:"economy"},
-       run:{run_id:"test-run",initiated_by:"human"},
-       payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
-                codex_cycle:null, integration_round:2,
-                findings:[{id:"integration-r2-codex-cli-1",
-                           body:"a round-2 finding",source_id:"9200"}],
-                unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
-                verdict:"findings"}}' \
-        >"${record_dir}/passes/integration-r2.json"
-    jq -cn --arg head "$head_sha" '
-      {schema:2, run_id:"test-run", stage:"integration", round:2,
-       reviewed_head:$head,
-       adjudications:[{finding_id:"integration-r2-codex-cli-1",
-         reviewer_priority:null, adjudicated_priority:"P1",
-         disposition:"fix", reason:"confirmed", evidence:"reproduced",
-         override:null}]}' \
-        >"${record_dir}/adjudications/integration-r2.json"
-    add_issue_evidence_marker integration 2
-}
-
-echo "==> #685(4): one loop does not cover a fix applied to a round-2 integration finding"
-write_defaults
-write_record_with_integration_entries 1
-write_earlier_integration_finding
-write_round2_integration_finding
-r2_fix_result="${fixtures}/integrator-result-r2-fix.json"
-jq -cn --arg head "$head_sha" '
-  {schema:2, role:"integrator", status:"completed", head:$head,
-   produced_at:"2026-01-01T00:00:00Z",
-   producer:{harness:"claude-code",model:"test",tier:"economy"},
-   run:{run_id:"test-run",initiated_by:"human"},
-   payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
-            codex_cycle:null, integration_round:2, findings:[],
-            unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
-            verdict:"clean",
-            applied_dispositions:[{finding_id:"integration-r2-codex-cli-1",
-                                    disposition:"fix"}]}}' \
-    >"$r2_fix_result"
-run_gate --integrator-result "$r2_fix_result" --remediation-cap 4
-assert_gate 1 fail remediation-capped
-printf '%s\n' "$gate_out" | grep -Fq 'at least 2' ||
-    fail "#685(4): the gate did not name the implied loop count: $gate_out"
-
-echo "==> #685(4): two loops DO cover it"
-write_defaults
-write_record_with_integration_entries 2
-write_earlier_integration_finding
-write_round2_integration_finding
-run_gate --integrator-result "$r2_fix_result" --remediation-cap 4
-assert_gate 0 pass ready
+# The round-indexed form of this bound (`loops >= the finding's own round`)
+# was implemented at integrate cycle 2 and WITHDRAWN at cycle 3: a finding
+# id's round segment is its pass's `integration_round`, which counts passes
+# rather than rounds, so a finding first raised by pass 2 and fixed by the
+# first fix push has one legitimate loop and the round-indexed bound rejected
+# it forever. Its two cases are deleted with it rather than left asserting a
+# property the gate no longer has. The residual it reached for — one loop
+# covering several later code-changing cycles — needs per-finding loop
+# attribution the record does not carry, and is filed as
+# harmon-devkit#808.
 
 echo "==> #685(4): a non-integer --remediation-cap is a usage error, never silently ignored"
 write_defaults

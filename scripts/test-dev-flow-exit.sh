@@ -444,6 +444,32 @@ assert_array_refusal '.slot_failures = "none"' "slot_failures is present but not
 rm -rf "${array_dir}"
 echo "OK: a malformed receipts/slot_failures collection exits with a verdict body, not a stack trace"
 
+echo "== #685: a pass file holding JSON null is a structured indeterminate, not a stack trace =="
+# Integrate cycle 3 on PR #800 (P2), confirmed: the cross-stage cap-0 scan
+# dereferences every pass's envelope before receipt validation runs, so a
+# pass file containing valid JSON `null` threw a raw TypeError — exit 1,
+# EMPTY stdout under --json — where the machine contract promises a body.
+null_pass_dir="$(mktemp -d)"
+cp -r "${span_fixture}/." "${null_pass_dir}/"
+printf 'null\n' >"${null_pass_dir}/run/passes/review-r1-codex-cli.json"
+node scripts/dev-flow-exit.mjs --run "${null_pass_dir}/run" --stage review \
+    --policy "${null_pass_dir}/policy.toml" --current-head "${span_head}" --json \
+    >"/tmp/dfe-nullpass-$$.out" 2>/dev/null || true
+node -e '
+  const fs = require("node:fs");
+  const raw = fs.readFileSync(process.argv[1], "utf8");
+  if (raw.trim() === "") { console.error("--json produced NO stdout body at all"); process.exit(1); }
+  const body = JSON.parse(raw);
+  if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
+  if (!body.reason.includes("does not contain a JSON object")) { console.error(`reason did not name the malformed pass: ${body.reason}`); process.exit(1); }
+' "/tmp/dfe-nullpass-$$.out" || {
+    cat "/tmp/dfe-nullpass-$$.out" >&2
+    rm -rf "${null_pass_dir}" "/tmp/dfe-nullpass-$$.out"
+    fail "#685: a JSON-null pass file did not produce a structured indeterminate"
+}
+rm -rf "${null_pass_dir}" "/tmp/dfe-nullpass-$$.out"
+echo "OK: a malformed pass envelope exits with a verdict body, not a stack trace"
+
 echo "== #685: a recorded verify -> security edge needs a cap-0 review policy, exactly like verify -> review =="
 skip_fixture="ai/schemas/fixtures/exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected"
 skip_dir="$(mktemp -d)"

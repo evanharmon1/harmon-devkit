@@ -161,11 +161,23 @@ function loadRunDir(dir) {
     );
   }
 
+  // A pass file holding valid JSON that is not an object — `null` is the
+  // easy one — would otherwise be dereferenced by every later reader
+  // (`p.envelope.payload`, `p.envelope.head`) as a raw TypeError, which
+  // under --json means exit 1 with EMPTY stdout instead of the structured
+  // indeterminate body the machine contract promises. Guarded once here
+  // rather than at each use. Integrate cycle 3 on PR #800 (P2), confirmed.
   const passesDir = path.join(dir, "passes");
   const passes = existsSync(passesDir)
     ? readdirSync(passesDir)
       .filter((f) => f.endsWith(".json"))
-      .map((f) => ({ name: f.replace(/\.json$/, ""), file: path.join(passesDir, f), envelope: loadJson(path.join(passesDir, f)) }))
+      .map((f) => {
+        const envelope = loadJson(path.join(passesDir, f));
+        if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) {
+          throw new ExitIndeterminate(`pass file "${f}" does not contain a JSON object — it cannot be read as a result envelope`);
+        }
+        return { name: f.replace(/\.json$/, ""), file: path.join(passesDir, f), envelope };
+      })
     : [];
 
   const adjDir = path.join(dir, "adjudications");
@@ -1608,15 +1620,26 @@ async function main() {
   if (cap === 0 && rounds.length > 0) {
     return indeterminate(args, `${args.stage} cap is 0 (disabled) but the trajectory contains round ${rounds[0].round} — trajectory inconsistent with its own policy`);
   }
-  const rawOverCapPassRound = runDir.passes
-    .map((p) => p.envelope.payload)
-    .find((p) => p && p.stage === args.stage && typeof p.round === "number" && p.round > cap);
-  if (rawOverCapPassRound) {
-    return indeterminate(args, `a ${args.stage} pass names round ${rawOverCapPassRound.round}, exceeding the resolved cap (${cap}), even though it did not survive receipt validation — trajectory inconsistent with its own policy`);
-  }
-  const rawOverCapAdjRound = runDir.adjudications.find((a) => a.doc.stage === args.stage && a.doc.round > cap);
-  if (rawOverCapAdjRound) {
-    return indeterminate(args, `a ${args.stage} adjudication names round ${rawOverCapAdjRound.doc.round}, exceeding the resolved cap (${cap}), even though it did not survive validation — trajectory inconsistent with its own policy`);
+  // Over-cap evidence anywhere in the trajectory, not only in the stage
+  // being computed. Every one of these checks used to be scoped to
+  // args.stage, so a challenge round 4 under a challenge cap of 3 stayed
+  // invisible while review's exit was computed and review could converge on
+  // a trajectory its own policy forbids (integrate cycle 3 on PR #800,
+  // confirmed). The cap-0 emptiness rule above is already cross-stage; this
+  // is the same rule for a positive cap.
+  for (const otherStage of ["challenge", "review"]) {
+    const otherCap = resolved.rounds[otherStage];
+    if (typeof otherCap !== "number" || otherCap === 0) continue; // cap 0 handled above
+    const overCapPass = runDir.passes
+      .map((p) => p.envelope.payload)
+      .find((p) => p && p.stage === otherStage && typeof p.round === "number" && p.round > otherCap);
+    if (overCapPass) {
+      return indeterminate(args, `a ${otherStage} pass names round ${overCapPass.round}, exceeding the resolved ${otherStage} cap (${otherCap}), even though it did not survive receipt validation — trajectory inconsistent with its own policy`);
+    }
+    const overCapAdj = runDir.adjudications.find((a) => a.doc.stage === otherStage && a.doc.round > otherCap);
+    if (overCapAdj) {
+      return indeterminate(args, `a ${otherStage} adjudication names round ${overCapAdj.doc.round}, exceeding the resolved ${otherStage} cap (${otherCap}), even though it did not survive validation — trajectory inconsistent with its own policy`);
+    }
   }
   const presentRoundNumbers = [...new Set(rounds.map((r) => r.round))].sort((a, b) => a - b);
   for (let i = 0; i < presentRoundNumbers.length; i++) {
