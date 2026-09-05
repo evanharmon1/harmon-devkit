@@ -472,9 +472,10 @@ function resolveTrustedActorArgs(args) {
     // having two different notions of "trusted" one step apart — and that is
     // exactly why FILE entries are type-checked rather than coerced. An
     // earlier revision ran Number() over them, so `[true]` became trusted
-    // actor 1 and `["555"]` was accepted, while dev-flow-stats.mjs at its
-    // current head (origin/feat/663-dev-flow-stats cce024c) reads
-    // doc.trusted_actor_ids WITHOUT .map(Number) and rejects both. Coercing
+    // actor 1 and `["555"]` was accepted, while dev-flow-stats.mjs (on `main`
+    // since #751) reads doc.trusted_actor_ids WITHOUT .map(Number) and
+    // rejects both — scripts/test-retro-run-report.sh section 5 asserts that
+    // agreement against the real script rather than restating it. Coercing
     // here therefore produced two different trust sets from one file — the
     // divergence this comment claims not to have (review round 4, confirmed
     // P2). Command-line ids stay coerced: argv is always a string, and the

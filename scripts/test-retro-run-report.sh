@@ -8,8 +8,11 @@
 #     endpoint, and `api user` from canned JSON, logging every argv it was
 #     called with so a test can assert what the asset asked for as well as
 #     what it did with the answer.
-#   * the harvester — a stub standing in for scripts/dev-flow-stats.mjs (#663),
-#     which is not on `main` yet. The stub's trajectory takes its RUN-RECORD
+#   * the harvester — a stub standing in for scripts/dev-flow-stats.mjs (#663)
+#     so the unit cases stay hermetic and can drive its 0/1/3 exits at will.
+#     Section 5 runs the REAL script, now that #751 has merged, so neither the
+#     stub's fidelity nor the resolution path is taken on trust.
+#     The stub's trajectory takes its RUN-RECORD
 #     half verbatim from ai/schemas/fixtures/run.schema/valid/*.json, so the
 #     fixture corpus stays the single description of a run's shape; the
 #     HARVEST half (rounds[], findings_by_class_and_provenance, orphan/forged
@@ -980,7 +983,7 @@ contains "$OUT" "the run record and its comment evidence only" &&
     bad "an --as-of disclaimer appeared with no --as-of" ||
     ok "the disclaimer is scoped to the flag that needs it"
 
-echo "==> trust-file entries are type-checked, not coerced (matches #751 head cce024c)"
+echo "==> trust-file entries are type-checked, not coerced (§5 proves the harvester agrees)"
 d="$TMPROOT/trustcoerce"
 scaffold "$d" further-along "body"
 for bad_entry in 'true' '"555"' '1.5' '0'; do
@@ -1109,35 +1112,96 @@ contains "$(cat "$d/stats.log")" "--trusted-actors-file" &&
     ok "the file is passed through to the harvester as well" || bad "the actors file did not reach the harvester"
 
 # ---------------------------------------------------------------------------
-# 5. Seam guard: the real harvester's CLI contract, when it is present
+# 5. The real harvester: contract, discovery and trust agreement
 # ---------------------------------------------------------------------------
 #
-# #664 depends on #663's CLI, which is not on `main` yet. When the harvester
-# lands, this asserts the exact flag set this asset sends is still accepted:
-# a usage exit (2) here means the contract drifted, while "run not found" (1)
-# means the flags parsed and only the fixture run is missing.
+# #663 (PR #751) merged on 2026-09-05, so scripts/dev-flow-stats.mjs is on `main` and
+# these run for real — the skip-when-absent guard is gone deliberately. Its
+# absence is now a FAILURE, not a skip: this asset's whole evidence path runs
+# through that script, and a silent skip would let its removal pass unnoticed.
 
-echo "==> the real harvester still accepts the flags this asset sends"
-if [ ! -f "$REAL_STATS" ]; then
-    skipped "scripts/dev-flow-stats.mjs is not in this checkout (#663 not merged)"
-else
-    d="$TMPROOT/contract"
-    mkdir -p "$d/bin"
-    cat >"$d/bin/gh" <<'CONTRACT_GH'
+echo "==> the real harvester is present"
+[ -f "$REAL_STATS" ] &&
+    ok "scripts/dev-flow-stats.mjs is in the checkout" ||
+    bad "scripts/dev-flow-stats.mjs is missing — the evidence path this asset exists to drive cannot run"
+
+# A gh stub permissive enough for the real harvester's own API walk: the
+# comments endpoint answers from $GH_COMMENTS_DIR, `pr view` from $GH_PR_JSON,
+# and every other endpoint returns an empty page set so discoverAllRuns simply
+# finds nothing rather than erroring.
+make_permissive_gh() {
+    mkdir -p "$1/bin"
+    cat >"$1/bin/gh" <<'REAL_GH'
 #!/usr/bin/env bash
 set -euo pipefail
-echo '[]'
-CONTRACT_GH
-    chmod +x "$d/bin/gh"
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "${1:-}" in
+pr)
+    cat "$GH_PR_JSON"
+    ;;
+api)
+    case "$*" in
+    */issues/*/comments*)
+        n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\)/comments.*|\1|p')"
+        file="${GH_COMMENTS_DIR:-/nonexistent}/$n.json"
+        if [ -f "$file" ]; then cat "$file"; else echo '[[]]'; fi
+        ;;
+    *--slurp*) echo '[]' ;;
+    *) echo '[]' ;;
+    esac
+    ;;
+*)
+    echo '[]'
+    ;;
+esac
+REAL_GH
+    chmod +x "$1/bin/gh"
+}
+
+echo "==> the real harvester accepts the exact flag set this asset sends"
+d="$TMPROOT/contract"
+make_permissive_gh "$d"
+RC=0
+PATH="$d/bin:$PATH" node "$REAL_STATS" --repo o/r --run no-such-run --json \
+    --trusted-actor-id 1 --as-of 2026-01-01T00:00:00Z >/dev/null 2>"$d/stderr" || RC=$?
+[ "$RC" -eq 2 ] &&
+    bad "the harvester rejected this asset's flag set as a usage error: $(cat "$d/stderr")" ||
+    ok "the flag set parses (exit $RC, not a usage error)"
+
+echo "==> the asset auto-discovers and INVOKES the real harvester, no --stats-script"
+d="$TMPROOT/realpath"
+mkdir -p "$d"
+make_permissive_gh "$d"
+write_file "$d/body" "$POLICY_SECTION"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+RC=0
+OUT="$(PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    node "$REPORT" --repo o/r --pr "$PR" --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
+ERR="$(cat "$d/stderr")"
+# 12 would mean the harvester was never found; 2 a usage error. 11 is the
+# correct end-to-end answer: a trusted marker named a run the REAL harvester
+# cannot find in the stubbed repo, which is the deleted-entry case.
+[ "$RC" -ne 12 ] &&
+    ok "the real scripts/dev-flow-stats.mjs is resolved from the git top level" ||
+    bad "the asset did not find the harvester now on main: $ERR"
+[ "$RC" -eq 11 ] && contains "$ERR" "deleted-entry tampering" &&
+    ok "the real harvester ran and its exit code was mapped end to end" ||
+    bad "expected exit 11 from the real harvester's run-not-found, got $RC: $ERR"
+
+echo "==> the real harvester rejects the trust-file entries this asset now rejects"
+d="$TMPROOT/trustagree"
+make_permissive_gh "$d"
+for bad_entry in 'true' '"555"'; do
+    printf '{"trusted_actor_ids":[%s]}' "$bad_entry" >"$d/actors.json"
     RC=0
-    PATH="$d/bin:$PATH" node "$REAL_STATS" --repo o/r --run no-such-run --json \
-        --trusted-actor-id 1 --as-of 2026-01-01T00:00:00Z >/dev/null 2>"$d/stderr" || RC=$?
-    if [ "$RC" -eq 2 ]; then
-        bad "the harvester rejected this asset's flag set as a usage error: $(cat "$d/stderr")"
-    else
-        ok "the flag set parses (exit $RC, not a usage error)"
-    fi
-fi
+    PATH="$d/bin:$PATH" node "$REAL_STATS" --repo o/r --run x --json \
+        --trusted-actors-file "$d/actors.json" >/dev/null 2>"$d/stderr" || RC=$?
+    [ "$RC" -eq 2 ] &&
+        ok "the harvester also rejects a $bad_entry entry — the two trust sets agree" ||
+        bad "the harvester accepted $bad_entry (exit $RC) where this asset rejects it: the trust sets diverge"
+done
 
 # ---------------------------------------------------------------------------
 # 6. Seam guard: the renderer's own published policy line
