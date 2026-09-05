@@ -3159,6 +3159,70 @@ printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
 run_finder_check "$copilot_actor" "$copilot_login" '2026-07-31T08:01:00Z'
 assert_status 11 pending
 
+echo "==> an actionable-count review whose inline findings are all answered stops blocking"
+# The #275 deadlock, in this mode: the body says "Actionable comments posted:
+# N", which is a COUNT of the inline comments — so once every one of those is
+# answered in its own thread, the body has nothing left to state and must stop
+# reading as findings. Requiring the carrier-only prose the Codex path
+# requires would deadlock every CodeRabbit cycle instead, because its body is
+# a walkthrough by construction.
+new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
+finder_review "$coderabbit_actor" "$coderabbit_login" "**Actionable comments posted: 1**
+
+<details><summary>Review details</summary>walkthrough prose</details>" '2026-07-31T08:00:30Z'
+jq -cn --argjson id "$coderabbit_actor" --arg login "$coderabbit_login" --argjson author "$pr_author_id" --arg head "$head_sha" '[[{id:960,user:{id:$id,login:$login},original_commit_id:$head,commit_id:$head,
+        pull_request_review_id:900,path:"a.txt",line:1,
+        body:"_⚠️ Potential issue_
+
+The lock is released too early.",
+        created_at:"2026-07-31T08:00:40Z",in_reply_to_id:null},
+       {id:961,user:{id:$author,login:"pr-author"},original_commit_id:$head,commit_id:$head,
+        pull_request_review_id:900,path:"a.txt",line:1,
+        body:"Fixed in the next push; the release now follows the write.",
+        created_at:"2026-07-31T08:00:50Z",in_reply_to_id:960}]]' >"${fixtures}/inline.pages.json"
+run_finder_check "$coderabbit_actor" "$coderabbit_login" '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> an actionable count larger than the comments seen does not settle"
+# The counterpart to the case above: the body declares two findings but only
+# one is in the inline snapshot. Answering that one must NOT suppress the
+# review — the second finding has simply not appeared yet.
+new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
+finder_review "$coderabbit_actor" "$coderabbit_login" \
+    "**Actionable comments posted: 2**" '2026-07-31T08:00:30Z'
+jq -cn --argjson id "$coderabbit_actor" --arg login "$coderabbit_login" \
+    --argjson author "$pr_author_id" --arg head "$head_sha" \
+    '[[{id:970,user:{id:$id,login:$login},original_commit_id:$head,commit_id:$head,
+        pull_request_review_id:900,path:"a.txt",line:1,
+        body:"_⚠️ Potential issue_ the lock is released too early.",
+        created_at:"2026-07-31T08:00:40Z",in_reply_to_id:null},
+       {id:971,user:{id:$author,login:"pr-author"},original_commit_id:$head,commit_id:$head,
+        pull_request_review_id:900,path:"a.txt",line:1,
+        body:"Fixed in the next push.",
+        created_at:"2026-07-31T08:00:50Z",in_reply_to_id:970}]]' \
+    >"${fixtures}/inline.pages.json"
+run_finder_check "$coderabbit_actor" "$coderabbit_login" '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> settle refuses a surface this finder never writes to"
+new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
+set +e
+settle_surface_out="$("$helper" settle --state "$state" --actor-id "$coderabbit_actor" --surface comment --id 77 --disposition declined --note "nope" 2>&1)"
+settle_surface_rc=$?
+set -e
+[ "$settle_surface_rc" -eq 2 ] || fail "settle accepted an unpolled surface (rc $settle_surface_rc)"
+grep -Fq 'carries no evidence on the comment surface' <<<"$settle_surface_out" ||
+    fail "the unpolled-surface refusal was not reported: $settle_surface_out"
+
+echo "==> settle refuses a finder that badges nothing to identify"
+set +e
+settle_badge_out="$("$helper" settle --state "$state" --actor-id "$coderabbit_actor" --surface review --id 900 --disposition declined --note "nope" 2>&1)"
+settle_badge_rc=$?
+set -e
+[ "$settle_badge_rc" -eq 2 ] || fail "settle recorded a disposition it cannot prove (rc $settle_badge_rc)"
+grep -Fq 'states no severity marker' <<<"$settle_badge_out" ||
+    fail "the unbadgeable-finder refusal was not reported: $settle_badge_out"
+
 echo "==> a restated profile that differs from the pinned one is refused"
 new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
 set +e

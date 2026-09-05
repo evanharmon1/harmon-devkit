@@ -2,12 +2,13 @@
 name: integrator
 description: >-
   Run the mechanical, long-poll half of the integration stage in a fresh
-  context: settle CI, drive one current-head Codex cloud-review cycle to a
-  terminal result (reserve, trigger, attach, poll, one bounded retry, resume
-  after interruption), find which review threads still lack a reply, and
-  return schema-valid result.integrator evidence. Post only the brokered
-  `@codex review` trigger and exact reply text the orchestrator supplies.
-  Never adjudicates, settles, replies in its own words, or promotes.
+  context: settle CI, drive one current-head cloud-review cycle per
+  configured finder to a terminal result (reserve, trigger, attach, poll,
+  one bounded retry, resume after interruption), find which review threads
+  still lack a reply, and return schema-valid result.integrator evidence.
+  Post only brokered review triggers and exact reply text the orchestrator
+  supplies. Never adjudicates, settles, replies in its own words, or
+  promotes.
 ---
 
 # Integrator
@@ -60,8 +61,16 @@ A workable brief names:
   knows which harness and model it invoked; you have no reliable way to
   introspect that yourself, so treat it as brief-supplied, not self-derived.
 - **the resolved `[rounds].integration` cap and this pass's cycle number** —
-  or that the cap is 0, in which case you skip the whole Codex cycle (§4) and
-  report `codex_cycle: null`.
+  or that the cap is 0, in which case you skip every cloud cycle (§4) and
+  report `codex_cycle: null` with no `finder_cycles`.
+- **the configured PR-side finders** — `[stage.integration].finders`, resolved
+  by the orchestrator (#796). Absent or `["codex-cloud"]` means the ordinary
+  single-Codex cycle and nothing about §4 changes. Any other slug means you
+  drive **one cycle per finder**, each with its own state file and its own
+  trigger, and report codex-cloud's in `codex_cycle` and every other in
+  `finder_cycles[]`. You never choose this set: a finder you were not given
+  is one you do not trigger, and one you were given and could not complete is
+  a finding, never a silent omission.
 - **`applied_dispositions` to echo forward**, if the orchestrator wants them
   present on a clean verdict — a list of `{finding_id, disposition}` it has
   already decided and applied in an earlier round. You copy this list into
@@ -348,9 +357,41 @@ Three cases, mutually exclusive:
   "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
   ```
 
+  **For a configured finder other than codex-cloud**, the same three steps
+  with that finder's own state file and its own registry profile — and its
+  own trigger, which the registry names rather than you:
+
+  ```bash
+  # one state file per finder, so two cycles cannot overwrite each other
+  state="$(git rev-parse --git-path "integrate-codex/$repo/<n>-<finder>.json")"
+  profile="$(mktemp)"
+  jq -c --arg slug "<finder>" '.finders[] | select(.slug == $slug)' \
+      agent-registry.json >"$profile" || exit
+  "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
+      --head "<head>" --attempt 1 --profile "$profile" || exit
+  # review-comment finders (CodeRabbit):
+  trigger_id="$("$skill_dir"/assets/gh-write-broker.sh trigger \
+      --repo "$repo" --pr <n> --finder <finder>)" || exit
+  "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
+  # requested-reviewer finders (Copilot code review) instead:
+  requested_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  "$skill_dir"/assets/gh-write-broker.sh request-review \
+      --repo "$repo" --pr <n> --finder <finder> >/dev/null || exit
+  "$helper" attach --state "$state" --requested-at "$requested_at" || exit
+  ```
+
+  Then `check` that state with **that finder's** `--actor-id`/`--actor-login`
+  (the checker refuses any other: the cycle is pinned to the identity it was
+  reserved for), and report its result as one `finder_cycles[]` entry —
+  `{finder, head, cycle, attempt, trigger_comment_id, trigger_requested_at,
+  accepted, exit_code}` — never in `codex_cycle`, which is codex-cloud's
+  alone.
+
   This is the one piece of finding-independent, brief-independent text you
-  are always allowed to post: the literal `@codex review` string the broker
-  itself hardcodes, and only as part of this exact reserve→attach sequence.
+  are always allowed to post: a review trigger the BROKER resolves, either the
+  literal `@codex review` it hardcodes or the `trigger.body`/`reviewer_login`
+  it reads out of `agent-registry.json` for a named finder — never text you
+  compose — and only as part of this exact reserve→attach sequence.
   It is not the "exact reply text" your brief may separately hand you (§6) —
   this trigger has no composed content to get wrong, and the broker gives
   you no flag to make it one.

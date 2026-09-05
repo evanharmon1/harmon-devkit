@@ -137,6 +137,21 @@ grep -Fq 'could not be decoded' "$tmp/undecoded.err" ||
 jq -e '.findings == []' "$tmp/undecoded.json" >/dev/null ||
     fail "an undecodable finding leaked into the pass"
 
+echo "==> an inline comment carried forward from an older commit is not current-head evidence"
+# GitHub advances an inline comment's commit_id when it still applies after a
+# push; original_commit_id is the commit it was written against, and is what
+# the integrate checker binds on. Binding on commit_id here would accept a
+# comment about an older tree as this head's evidence.
+jq --arg head "$(jq -r '."reviewed-head"' "$fixtures/codex-cloud/args.json")" '
+      .comments[0].original_commit_id = "0000000000000000000000000000000000000000" |
+      .comments[0].commit_id = $head' \
+    "$fixtures/codex-cloud/raw.json" >"$tmp/carried-forward.json"
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --reviewed-head "$(jq -r '."reviewed-head"' "$fixtures/codex-cloud/args.json")" \
+    --input "$tmp/carried-forward.json" >"$tmp/carried-forward.out.json"
+jq -e '[.findings[].source_id] | index("9101") == null' "$tmp/carried-forward.out.json" >/dev/null ||
+    fail "an inline comment written against an older commit was accepted as current-head evidence"
+
 echo "==> another actor's comment on the same head is not this finder's evidence"
 jq '.comments[0].user.id = 999999' "$fixtures/codex-cloud/raw.json" >"$tmp/foreign.json"
 node "$normalizer" --finder codex-cloud --stage integration --round 1 \

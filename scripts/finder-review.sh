@@ -141,16 +141,32 @@ read_instruction() {
 dry_run="${FINDER_REVIEW_DRY_RUN:-0}"
 
 if [ "$TOOL" = coderabbit ]; then
-    # CodeRabbit's CLI takes no review instructions of ours, so there is no
-    # prompt to build. The resolved scope is still printed: it is what the
-    # round is supposed to cover, and a reader comparing it against what the
-    # CLI actually reported is how a scope mismatch gets noticed at all.
-    echo "==> $slug over: $scope" >&2
+    # CodeRabbit's CLI takes no review instructions of ours AND no target from
+    # us: it resolves its own scope. So an explicit target flag here would be
+    # a claim this runner cannot honour — `--base main` and `--uncommitted`
+    # select deliberately disjoint content, and running the same unscoped
+    # command for both would let a pass that reviewed the wrong change count
+    # as a complete finder pass for the one that was asked for. Refuse the
+    # flag instead, and leave the escape to an operator who knows their own
+    # CLI's scope flags.
+    if [ -n "$target_kind" ]; then
+        echo "$TOOL resolves its own review scope; this runner cannot pass --${target_kind} through to it." >&2
+        echo "Run it with no target flag, or set FINDER_REVIEW_CODERABBIT_ARGS to the vendor" >&2
+        echo "flags that express the scope you want. Refusing rather than reviewing a" >&2
+        echo "different change than the one you named and reporting it as that one." >&2
+        exit 2
+    fi
+    # The repo-resolved scope is printed as an advisory CROSS-CHECK, never as
+    # a claim about what the CLI reviewed: a reader comparing the two is how a
+    # scope mismatch gets noticed at all.
+    echo "==> $slug — this repo resolves: $scope" >&2
+    echo "    (the CodeRabbit CLI resolves its own scope; compare its report against the above)" >&2
     # shellcheck disable=SC2206 # deliberate word-splitting: the override is a
     # flag list, not one argument.
     args=(${FINDER_REVIEW_CODERABBIT_ARGS:-$default_args})
     if [ "$dry_run" = 1 ]; then
-        printf 'finder: %s\ncommand: %s %s\nscope: %s\n' "$slug" "$bin" "${args[*]}" "$scope"
+        printf 'finder: %s\ncommand: %s %s\nrepo-resolved scope (advisory): %s\n' \
+            "$slug" "$bin" "${args[*]}" "$scope"
         printf 'manifest:\n%s\n' "$manifest"
         exit 0
     fi
@@ -183,9 +199,12 @@ every entry is in scope, including untracked files):
 ${manifest}"
 
 # The prompt travels as a single argv element, which the kernel caps (~128 KiB
-# per argument on Linux). Bound the embedded diff rather than letting a large
-# change fail the exec with a confusing E2BIG, and MARK the truncation so the
-# reviewer knows the manifest above is the complete list and the diff is not.
+# per argument on Linux), so the embedded diff needs a bound. That bound is a
+# REFUSAL, not a truncation. This run grants the agent no tools, so it cannot
+# fetch what was cut — an earlier revision truncated with a marker telling the
+# reviewer to ask for the rest, which it had no way to do, and the pass could
+# still come back clean and be banked as a complete round. A partial review
+# that exits 0 is indistinguishable from a clean one.
 diff_bytes="${FINDER_REVIEW_MAX_DIFF_BYTES:-60000}"
 case "$diff_bytes" in
 '' | *[!0-9]*)
@@ -195,8 +214,12 @@ case "$diff_bytes" in
 esac
 diff_text="$(collect_review_diff)"
 if [ "$diff_bytes" -gt 0 ] && [ "${#diff_text}" -gt "$diff_bytes" ]; then
-    diff_text="$(printf '%s' "$diff_text" | LC_ALL=C cut -c "1-${diff_bytes}")
-... [diff truncated at ${diff_bytes} bytes; the manifest above is complete — ask for the rest by file]"
+    echo "The change is ${#diff_text} bytes, past the ${diff_bytes}-byte prompt bound for $slug." >&2
+    echo "This finder is handed the diff and granted no tools, so a truncated prompt is a" >&2
+    echo "review of part of the change reported as a review of all of it. Narrow the scope" >&2
+    echo "(--base <ref>, --commit <sha>, --uncommitted) or raise FINDER_REVIEW_MAX_DIFF_BYTES" >&2
+    echo "if your CLI and kernel accept a larger single argument." >&2
+    exit 1
 fi
 instructions="${instructions}
 

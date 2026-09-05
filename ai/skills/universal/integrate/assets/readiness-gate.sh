@@ -1054,8 +1054,20 @@ duplicate_cycle="$(jq -r '[.[] | .finder] | group_by(.) | map(select(length > 1)
 [ -z "$duplicate_cycle" ] ||
     indeterminate malformed-data "integrator result reports more than one cycle for finder(s): $duplicate_cycle"
 
+# A resolved cap of 0 dispatches NO cloud cycle at all — that is what the
+# `codex_cycle: null` waiver above means, and AGENTS.md's readiness gate says
+# the cloud condition "drops out" there. Configuring a finder does not
+# un-waive it: at cap 0 there is no round in which to trigger or wait one out,
+# so requiring a cycle per configured finder would deadlock every cap-0 policy
+# that names one. The other readiness conditions are untouched.
+cap_dispatches_cycles=1
+[ -n "$integration_cap" ] && [ "$integration_cap" -eq 0 ] && cap_dispatches_cycles=0
+if [ "$cap_dispatches_cycles" -eq 0 ] && [ "$(jq -r 'length' <<<"$finder_cycles")" -gt 0 ]; then
+    indeterminate codex-cap-mismatch "the pass reports finder cycles but --integration-cap is 0 (a cap-0 pass drives no cloud cycle)"
+fi
 while IFS= read -r configured_finder; do
     [ -n "$configured_finder" ] || continue
+    [ "$cap_dispatches_cycles" -eq 1 ] || continue
     if [ "$configured_finder" = codex-cloud ]; then
         # codex-cloud's condition is `codex_cycle`, evaluated above. All that
         # is left is to refuse the one shape that block treats as a waiver:
@@ -1087,10 +1099,18 @@ while IFS= read -r configured_finder; do
     0)
         finder_recheck_state="$(jq -r --arg slug "$configured_finder" \
             'map(select(.finder == $slug)) | first.state // empty' <<<"$finder_rechecks")"
-        finder_recheck_actor="$(jq -r '.profile.actor_id // .actor_id // empty' \
-            "${finder_recheck_state:-/dev/null}" 2>/dev/null)"
+        [ -n "$finder_recheck_state" ] ||
+            indeterminate codex-stale "the $configured_finder cycle reports a clean exit_code 0 but no --finder-recheck $configured_finder:<state file> was given to reconfirm it against current GitHub state"
+        [ -f "$finder_recheck_state" ] ||
+            indeterminate codex-stale "--finder-recheck $configured_finder:$finder_recheck_state does not exist — cannot reconfirm the cached clean result"
+        # The ACTOR comes from the state the cycle was reserved with, never
+        # from a flag: the checker refuses an actor that is not the identity
+        # the cycle was reserved for, and taking it from anywhere else here
+        # would just move that decision somewhere it is not checked.
+        finder_recheck_actor="$(jq -r '.profile.actor_id // empty' \
+            "$finder_recheck_state" 2>/dev/null)"
         [ -n "$finder_recheck_actor" ] ||
-            indeterminate codex-stale "the $configured_finder cycle is clean but its recheck state names no pinned actor — cannot reconfirm it"
+            indeterminate codex-stale "the $configured_finder recheck state names no pinned actor (its cycle predates profile pinning, or the file is malformed) — cannot reconfirm it"
         recheck_finder_freshness "$configured_finder" "$finder_recheck_state" "$finder_recheck_actor"
         ;;
     10 | 11 | 12 | 13)

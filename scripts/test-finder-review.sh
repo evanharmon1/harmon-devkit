@@ -75,20 +75,46 @@ grep -Fq 'finder: copilot-verification' <<<"$out" || fail "review mode resolved 
 grep -Fq 'Run a VERIFICATION-CHECKPOINT review' <<<"$out" || fail "review mode instruction missing"
 grep -Fq 'Run an ADVERSARIAL review' <<<"$out" && fail "review mode rendered the adversarial instruction"
 
+echo "==> coderabbit refuses a target flag it cannot pass through to its own CLI"
+# --base and --uncommitted select deliberately disjoint content; running the
+# same unscoped `coderabbit review` for both would let a pass that reviewed
+# the wrong change be banked as the one that was asked for.
+set +e
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh review coderabbit --uncommitted 2>&1)"
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "coderabbit accepted a target it cannot honour (rc $status): $out"
+grep -Fq 'resolves its own review scope' <<<"$out" ||
+    fail "the refusal did not say why: $out"
+
 echo "==> coderabbit takes no instructions of ours and is not handed a prompt"
-out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh review coderabbit --uncommitted 2>/dev/null)"
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh review coderabbit 2>/dev/null)"
 grep -Fq 'finder: coderabbit-verification' <<<"$out" || fail "coderabbit slug not resolved: $out"
 grep -Fq 'command: coderabbit review --plain' <<<"$out" || fail "coderabbit command not resolved: $out"
 grep -Fq 'Only P0 and P1 decide' <<<"$out" &&
     fail "a CLI that takes no instructions of ours was handed the severity prompt"
-grep -Fq 'scope: Review the uncommitted work' <<<"$out" ||
-    fail "the resolved scope was not reported for a finder that resolves its own"
+grep -Fq 'repo-resolved scope (advisory):' <<<"$out" ||
+    fail "the repo-resolved scope was not reported as an advisory cross-check"
 
 echo "==> the vendor invocation is overridable without editing the runner"
 out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_CODERABBIT_ARGS='review --prompt-only' \
-    ./scripts/finder-review.sh review coderabbit --uncommitted 2>/dev/null)"
+    ./scripts/finder-review.sh review coderabbit 2>/dev/null)"
 grep -Fq 'command: coderabbit review --prompt-only' <<<"$out" ||
     fail "the vendor argument override was ignored: $out"
+
+echo "==> a diff past the prompt bound refuses rather than reviewing part of the change"
+# This finder is handed the diff and granted no tools, so a truncated prompt
+# is a review of part of the change reported as a review of all of it.
+set +e
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_MAX_DIFF_BYTES=10 \
+    ./scripts/finder-review.sh challenge copilot --uncommitted 2>&1)"
+status=$?
+set -e
+[ "$status" -eq 1 ] || fail "an oversized diff was truncated rather than refused (rc $status): $out"
+grep -Fq 'past the 10-byte prompt bound' <<<"$out" ||
+    fail "the oversized-diff refusal did not name the bound: $out"
+grep -Fq 'Narrow the scope' <<<"$out" ||
+    fail "the oversized-diff refusal offered no way forward: $out"
 
 echo "==> a missing binary refuses non-zero rather than reading as a clean pass"
 set +e

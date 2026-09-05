@@ -244,10 +244,23 @@ if (finder.raw_shape === 'labelled-text') {
   }
   const actorId = finder.trusted_actor_id
   const byThisFinder = (node) => String(node?.user?.id ?? '') === String(actorId)
+  // A REVIEW is bound by its own commit_id. An INLINE comment is bound by
+  // `original_commit_id` — the commit it was actually written against —
+  // because GitHub advances `commit_id` on a comment that still applies after
+  // a push, so binding on that would accept a comment about an older tree as
+  // current-head evidence. This is the same field the integrate checker's own
+  // `inline_head_findings` selects on; the two must not disagree about which
+  // comments belong to a head. A payload carrying only `commit_id` (a
+  // hand-built fixture, an older capture) falls back to it rather than being
+  // dropped.
   const atThisHead = (node) => String(node?.commit_id ?? '') === opts.reviewedHead
+  const inlineAtThisHead = (node) =>
+    node?.original_commit_id === undefined || node?.original_commit_id === null
+      ? atThisHead(node)
+      : String(node.original_commit_id) === opts.reviewedHead
 
   for (const comment of payload.comments ?? []) {
-    if (!byThisFinder(comment) || !atThisHead(comment)) continue
+    if (!byThisFinder(comment) || !inlineAtThisHead(comment)) continue
     const body = String(comment.body ?? '')
     const location = comment.path
       ? { path: comment.path, line: comment.line === null || comment.line === undefined ? null : Number(comment.line) }

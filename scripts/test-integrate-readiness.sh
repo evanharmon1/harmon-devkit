@@ -1830,6 +1830,36 @@ printf '0\n' >"${fixtures}/ro-exit"
 grep -Fxq "api repos/example/repo/pulls/493/comments/900/replies -F body=@${reply_body}" "$log" ||
     fail "gh-write-broker reply forwarded unexpected arguments: $(cat "$log")"
 
+echo "==> gh-write-broker posts a registry-declared trigger for another finder"
+write_defaults
+printf '0\n' >"${fixtures}/ro-exit"
+"$ghwb" trigger --repo example/repo --pr 493 --finder coderabbit-cloud \
+    --registry "$repo_root/agent-registry.json" >/dev/null
+grep -Fxq "api repos/example/repo/issues/493/comments -f body=@coderabbitai review --jq .id" "$log" ||
+    fail "gh-write-broker did not post the registry's own trigger body: $(cat "$log")"
+
+echo "==> gh-write-broker requests a registry-declared reviewer for a request-triggered finder"
+write_defaults
+printf '0\n' >"${fixtures}/ro-exit"
+"$ghwb" request-review --repo example/repo --pr 493 --finder copilot-cloud \
+    --registry "$repo_root/agent-registry.json" >/dev/null
+grep -Fxq "api repos/example/repo/pulls/493/requested_reviewers -f reviewers[]=copilot-pull-request-reviewer[bot] --jq .number" "$log" ||
+    fail "gh-write-broker did not request the registry's own reviewer: $(cat "$log")"
+
+echo "==> gh-write-broker refuses a finder whose trigger is the other mechanism"
+# wb_refuse_case asserts the gh log is empty, so clear the two successful
+# calls above before running them.
+write_defaults
+wb_refuse_case "trigger on a request-triggered finder" trigger --repo example/repo --pr 493 \
+    --finder copilot-cloud --registry "$repo_root/agent-registry.json"
+wb_refuse_case "request-review on a comment-triggered finder" request-review --repo example/repo --pr 493 \
+    --finder coderabbit-cloud --registry "$repo_root/agent-registry.json"
+wb_refuse_case "an unregistered finder" trigger --repo example/repo --pr 493 \
+    --finder not-a-finder --registry "$repo_root/agent-registry.json"
+wb_refuse_case "a registry that does not exist" trigger --repo example/repo --pr 493 \
+    --finder coderabbit-cloud --registry "${fixtures}/no-such-registry.json"
+wb_refuse_case "request-review with no finder" request-review --repo example/repo --pr 493
+
 echo "==> gh-write-broker propagates gh's own exit code"
 write_defaults
 printf '7\n' >"${fixtures}/ro-exit"
@@ -1954,6 +1984,23 @@ gate="$saved_gate"
 assert_gate 2 indeterminate codex-stale
 printf '%s\n' "$gate_out" | grep -Fq 'was reserved for finder copilot-cloud' ||
     fail "the wrong-finder recheck was not refused by name: $gate_out"
+
+echo "==> a cap of 0 waives every configured finder's cycle, not only codex-cloud"
+# A zero cap dispatches no cloud cycle at all — that is what the null
+# codex_cycle waiver means. Configuring a finder cannot un-waive it: there is
+# no round in which to trigger or wait one out, so requiring a cycle here
+# would deadlock every cap-0 policy that names a finder.
+write_defaults
+run_gate --integration-cap 0 --finder codex-cloud --finder coderabbit-cloud
+assert_gate 0 pass ready
+
+echo "==> a cap of 0 still refuses a pass that reports cycles anyway"
+write_defaults
+cap_zero_cycles="$(write_integrator_result cap-zero-cycles null "$head_sha" \
+    "[$(finder_cycle_json coderabbit-cloud 0)]")"
+run_gate --integrator-result "$cap_zero_cycles" --integration-cap 0 \
+    --finder codex-cloud --finder coderabbit-cloud
+assert_gate 2 indeterminate codex-cap-mismatch
 
 echo "==> naming no finder gates exactly as before"
 write_defaults

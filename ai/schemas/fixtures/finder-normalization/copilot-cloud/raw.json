@@ -2,7 +2,10 @@
   "review": {
     "id": 9300,
     "commit_id": "0505050505050505050505050505050505050505",
-    "user": { "id": 175728472, "login": "Copilot" },
+    "user": {
+      "id": 175728472,
+      "login": "Copilot"
+    },
     "body": "## Pull Request Overview\n\nThis PR adds two finders. Reviewed 12 files."
   },
   "comments": [
@@ -11,8 +14,12 @@
       "commit_id": "0505050505050505050505050505050505050505",
       "path": "scripts/finder-review.sh",
       "line": 173,
-      "user": { "id": 175728472, "login": "Copilot" },
-      "body": "The diff is truncated by character count but the cap is documented in bytes; on a multi-byte diff the two differ."
+      "user": {
+        "id": 175728472,
+        "login": "Copilot"
+      },
+      "body": "The diff is truncated by character count but the cap is documented in bytes; on a multi-byte diff the two differ.",
+      "original_commit_id": "0505050505050505050505050505050505050505"
     }
   ]
 }

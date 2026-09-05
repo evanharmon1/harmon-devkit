@@ -1709,6 +1709,7 @@ check)
     adjudicated_findings=0
     settled_reviews='[]'
     attributed_reviews='[]'
+    attributed_counts='{}'
     unattributed_findings=0
     if [ "$inline_head_findings" -gt 0 ]; then
         # Fetched lazily and only once: the PR author identity is needed solely
@@ -1803,6 +1804,17 @@ check)
                   ([$classified[] | select(.review == null)] | length),
                 attributed:
                   ([$classified[] | select(.review != null) | .review] | unique),
+                # How many current-head inline findings this check actually saw
+                # for each review, keyed by review id as a string.
+                # `actionable-count` settlement compares this against the count
+                # the review body itself declares: settling on "every comment I
+                # fetched is answered" alone would suppress a review whose
+                # second finding simply had not appeared in the snapshot yet.
+                attributed_counts:
+                  ([$classified[] | select(.review != null) | .review] |
+                    group_by(.) |
+                    map({key: (.[0] | tostring), value: length}) |
+                    from_entries),
                 settled: (
                   if ([$classified[] | select(.review == null)] | length) > 0
                   then []
@@ -1832,6 +1844,11 @@ check)
         }
         attributed_reviews=$(printf '%s' "$inline_partition" |
             jq -ce '.attributed | select(type == "array")') || {
+            emit indeterminate "current-head inline findings could not be partitioned"
+            exit 2
+        }
+        attributed_counts=$(printf '%s' "$inline_partition" |
+            jq -ce '.attributed_counts | select(type == "object")') || {
             emit indeterminate "current-head inline findings could not be partitioned"
             exit 2
         }
@@ -2025,6 +2042,7 @@ check)
 
     review_result=$(jq -r \
         "${verdict_args[@]}" \
+        --argjson attributed_counts "$attributed_counts" \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
         --argjson settled "$settled_reviews" \
@@ -2047,7 +2065,37 @@ check)
              elif (($review.id? | type) == "number") and
                 ($settled | index($review.id)) and
                 ((has_severity_marker) | not) and
-                is_carrier_only
+                # The carrier-only test belongs to clean-sentence mode alone.
+                # There it is what stops an UNBADGED concern hiding in prose
+                # the badge scan cannot see. Under actionable-count the body
+                # is a walkthrough — prose by construction — and its
+                # "findings" classification comes from a COUNT of the very
+                # inline comments this branch has just established are all
+                # adjudicated, so there is no separately-stated finding left
+                # to lose and requiring carrier-only prose would deadlock
+                # every such cycle instead. Under inline-comment-count the
+                # body is never "findings" at all, so this branch is
+                # unreachable there. Residual, stated rather than
+                # rediscovered: an unbadged concern written into an
+                # actionable-count walkthrough passes. That is the same
+                # residual clean-sentence mode accepts inside its own About
+                # block, and the count itself still blocks while any inline
+                # comment is unanswered.
+                (if $verdict_mode == "clean-sentence" then is_carrier_only
+                 elif $verdict_mode == "actionable-count" then
+                   # The body declares HOW MANY actionable findings it posted.
+                   # Settling requires that number to equal the number of
+                   # current-head inline comments this check actually saw
+                   # attributed to this review — otherwise "every comment I
+                   # fetched is answered" would suppress a review whose second
+                   # finding is simply not in the snapshot yet, and the
+                   # adjudicated-clean fallback would then promote before it
+                   # was ever seen. A body whose count cannot be parsed is
+                   # already `unrecognized` upstream and never reaches here.
+                   (actionable_count as $declared |
+                     ($declared != null) and
+                     ($declared == (($attributed_counts[($review.id | tostring)]) // 0)))
+                 else true end)
              then "settled" else "findings" end)
           else $class end
           ] |
@@ -2429,6 +2477,18 @@ settle)
     # `check`.
     adopt_pinned_profile
     build_verdict_args
+    # A disposition on a surface this finder never writes to settles nothing:
+    # `check` does not poll that surface for this profile, so the entry could
+    # only ever be dead state — and recording one would read as an answered
+    # finding that no cycle can confirm was ever there.
+    has_surface "$surface" ||
+        die "finder ${profile_finder} carries no evidence on the ${surface} surface (its surfaces: ${profile_surfaces})"
+    # `settle` exists because these two surfaces carry no reply linkage. A
+    # profile whose findings are stated with no severity badge at all has no
+    # badged target for this command to prove, so there is nothing here it
+    # could record honestly.
+    [ -n "$profile_severity_marker" ] ||
+        die "finder ${profile_finder} states no severity marker, so a badged non-thread finding cannot be identified — answer it on the PR and let the next cycle re-read the head"
 
     state_repo=$(jq -r '.repo' "$state_file")
     state_pr=$(jq -r '.pr' "$state_file")
