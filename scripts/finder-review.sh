@@ -22,19 +22,21 @@
 # THE TOOL BOUNDARY. `/review`'s dispatch contract requires a confidence pass
 # to run with shell, git, gh, network write and external credentials DENIED,
 # and says that where that split "cannot be installed and verified, refuse the
-# dispatch and record a blocker". This runner cannot verify it: it invokes a
-# general-agent CLI which reads the operator's own configuration, and its
-# arguments are overridable, so a pre-approved tool set or a tool-enabling
-# override would put a writable agent in the checkout while its output was
-# banked as a read-only confidence pass.
+# dispatch and record a blocker". A third-party CLI will not install it for us:
+# its capability model is its own and its configuration is the operator's.
 #
-# So it refuses by default. FINDER_REVIEW_COPILOT_READONLY=1 is the operator
-# attesting that THEIR configuration grants this CLI no tools; nothing here
-# claims to have checked it, and the variable exists so the decision is made
-# explicitly by someone who can check it, rather than assumed by a comment.
-# An earlier revision of this file simply asserted "no tools are granted and
-# none are needed" — the second half is true (the diff is in the prompt), the
-# first was never enforced.
+# So the boundary is built AROUND it instead, by scripts/lib/readonly-sandbox.sh
+# — a per-run scratch `git worktree` checkout, made unwritable, entered with
+# write credentials and git credential helpers stripped from the environment,
+# under `bwrap --ro-bind` where bubblewrap exists — and then PROVEN: the pass
+# is accepted only if that tree is byte-identical afterwards. Two earlier
+# revisions tried to stand in for this, first with a comment claiming no tools
+# were granted and then with an operator attestation; neither is verification,
+# and a drifted configuration crossed the boundary in both.
+#
+# What it does not bound is network egress: the CLI must reach its model, so
+# this denies writes to the checkout and to git, not exfiltration. A finder is
+# handed the diff either way. Stated here rather than left to be discovered.
 #
 # What a finder here must be able to do is take OUR scope. A confidence-stage
 # slot is complete only when its pass reviewed the round's exact
@@ -60,8 +62,6 @@
 #
 # The vendor invocation is overridable, because a vendor flag change must be a
 # config edit rather than a code change here:
-#   FINDER_REVIEW_COPILOT_READONLY=1  REQUIRED: the operator attests this CLI
-#                                is configured to grant no tools (see above)
 #   FINDER_REVIEW_COPILOT_BIN    (default: copilot)
 #   FINDER_REVIEW_COPILOT_ARGS   (default: -p)     prompt appended as one arg
 #   FINDER_REVIEW_MAX_PROMPT_BYTES (default: 60000) refusal bound on the WHOLE
@@ -144,6 +144,22 @@ copilot)
     default_args="-p"
     install_hint="Install the GitHub Copilot CLI (npm install -g @github/copilot), authenticate it, then re-run."
     ;;
+coderabbit)
+    # Registered on purpose, and refused on purpose. CodeRabbit's CLI resolves
+    # its own review scope and takes no target from us, so a local pass could
+    # not be bound to the round's `reviewed_head` — and a confidence slot is
+    # complete only when its pass reviewed exactly that head. Running it anyway
+    # would bank a pass over some other change as a pass over this one, which
+    # is worse than not running it. The finder stays registered because the
+    # requirement is that CodeRabbit be runnable locally AND on the PR; what is
+    # missing is the binding, tracked as harmon-devkit#809.
+    echo "finder '$slug' is registered but cannot be run locally yet." >&2
+    echo "The CodeRabbit CLI resolves its own review scope and takes no target from us," >&2
+    echo "so a local pass cannot be bound to this round's reviewed_head — every target" >&2
+    echo "flag would run the identical command over a scope nobody chose." >&2
+    echo "Tracked as harmon-devkit#809. Use coderabbit-cloud on the PR meanwhile." >&2
+    exit 2
+    ;;
 *)
     # Registered, but this runner does not know how to drive it. Refusing is
     # the only honest answer: guessing an invocation would produce a pass
@@ -182,14 +198,7 @@ dry_run="${FINDER_REVIEW_DRY_RUN:-0}"
 # which lets the CLI collect it — so this pass NEEDS no tools, whether or not
 # the operator's configuration grants any. Whether it is actually denied them
 # is the attestation checked below, not something this file can assert.
-if [ "${FINDER_REVIEW_COPILOT_READONLY:-0}" != 1 ]; then
-    echo "Refusing to run $slug: this runner cannot verify that the $TOOL CLI is denied" >&2
-    echo "shell, git, network-write and credential tools, and /review requires a confidence" >&2
-    echo "pass to run with those denied or the dispatch refused." >&2
-    echo "The change is embedded in the prompt, so the pass needs no tools; if your" >&2
-    echo "configuration grants it none, attest that with FINDER_REVIEW_COPILOT_READONLY=1." >&2
-    exit 1
-fi
+
 instructions="${scope}
 
 $(read_instruction "$MODE")
@@ -274,5 +283,30 @@ if [ "$dry_run" = 1 ]; then
     printf '%s\n' "$instructions"
     exit 0
 fi
+
+# shellcheck source=scripts/lib/readonly-sandbox.sh
+. "$script_dir/lib/readonly-sandbox.sh"
+sandbox_create >/dev/null || {
+    echo "Refusing to run $slug: the read-only scratch checkout could not be built, and" >&2
+    echo "/review requires the capability split to be installed and verified or the" >&2
+    echo "dispatch refused." >&2
+    exit 1
+}
+trap 'sandbox_cleanup' EXIT
+
 echo "==> $slug over: $scope" >&2
-exec "$bin" "${args[@]}" "$instructions"
+echo "    (read-only scratch checkout; the tree is verified unchanged afterwards)" >&2
+finder_status=0
+sandbox_exec "$bin" "${args[@]}" "$instructions" || finder_status=$?
+
+# The verification is unconditional and runs BEFORE the exit status is
+# honoured: a pass whose tree changed is not a pass, whatever the CLI
+# returned, and reporting its findings would mean trusting output produced by
+# something that just wrote to the checkout.
+if ! sandbox_verify; then
+    echo "Refusing $slug's output: the read-only checkout it ran against was modified," >&2
+    echo "so this pass crossed the confidence-stage capability boundary. Nothing it" >&2
+    echo "reported is accepted." >&2
+    exit 1
+fi
+exit "$finder_status"

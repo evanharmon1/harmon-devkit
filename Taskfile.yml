@@ -670,11 +670,22 @@ tasks:
   # in the shipped default set, and a missing binary refuses rather than exiting
   # 0 — a skipped finder reads as a clean pass. Codex stays the default.
   #
-  # CodeRabbit has no entry here on purpose. Its CLI resolves its own review
-  # scope and takes no target from us, so a local pass could not be bound to
-  # the round's reviewed_head the way a confidence-stage slot requires — see
-  # docs/guides/codex-review.md. CodeRabbit is registered as a PR-side finder
-  # (`coderabbit-cloud`), where the head IS the scope.
+  # The CodeRabbit targets exist and REFUSE, by design: its CLI resolves its own
+  # review scope and takes no target from us, so a local pass could not be bound
+  # to the round's reviewed_head the way a confidence-stage slot requires. The
+  # finder stays registered and the target stays here — the requirement is that
+  # it be runnable locally and on the PR — so what is missing is visible rather
+  # than silently absent. Tracked as harmon-devkit#809.
+  review:coderabbit:
+    desc: "CodeRabbit verification review (registered; refuses locally pending harmon-devkit#809)"
+    cmds:
+      - ./scripts/finder-review.sh review coderabbit {{.CLI_ARGS}}
+
+  challenge:coderabbit:
+    desc: "CodeRabbit adversarial review (registered; refuses locally pending harmon-devkit#809)"
+    cmds:
+      - ./scripts/finder-review.sh challenge coderabbit {{.CLI_ARGS}}
+
   review:copilot:
     desc: "Copilot verification review (usage: task review:copilot -- [--base <ref>|--uncommitted] [focus text])"
     cmds:

@@ -25,6 +25,8 @@ many finders it names).
 | `codex-adversarial` | local CLI (`task challenge`) | challenge | Codex CLI, authenticated |
 | `codex-verification` | local CLI (`task review`) | review | Codex CLI, authenticated |
 | `codex-cloud` | PR review | integration | Codex connected to the repo through ChatGPT |
+| `coderabbit-adversarial` | local CLI (`task challenge:coderabbit`) | challenge‡ | CodeRabbit CLI, authenticated |
+| `coderabbit-verification` | local CLI (`task review:coderabbit`) | review‡ | CodeRabbit CLI, authenticated |
 | `coderabbit-cloud` | PR review | integration† | the CodeRabbit GitHub app installed on the repo |
 | `copilot-adversarial` | local CLI (`task challenge:copilot`) | challenge | GitHub Copilot CLI, authenticated |
 | `copilot-verification` | local CLI (`task review:copilot`) | review | GitHub Copilot CLI, authenticated |
@@ -48,14 +50,16 @@ no trial and no paid dependency. Enabling one is a maintainer decision with a
 cost attached: CodeRabbit is a paid product beyond its free tier, and Copilot
 code review needs a Copilot subscription that covers the repository.
 
-**Why CodeRabbit is PR-side only here.** A confidence-stage slot is complete
-only when its pass reviewed the round's exact `reviewed_head`, and CodeRabbit's
-CLI resolves its own review scope and takes no target from us — so a local
-CodeRabbit pass could not be bound to the round it was counted for, and
-`--base`/`--uncommitted` would all run the identical command. On the PR the
-head *is* the scope, so `coderabbit-cloud` has no such problem. The local-CLI
-finders here are the ones that can be handed our scope: Codex, which takes the
-target through its own CLI, and Copilot, a general agent we hand the diff to.
+‡ **Registered, and refuses locally with its reason.** A confidence-stage slot
+is complete only when its pass reviewed the round's exact `reviewed_head`, and
+CodeRabbit's CLI resolves its own review scope and takes no target from us — so
+`--base`, `--commit` and `--uncommitted` would all run the identical command
+over a scope nobody chose, and the pass would be banked as covering the round
+it does not. `task challenge:coderabbit` therefore refuses, names that reason,
+and points at [#809](https://github.com/evanharmon1/harmon-devkit/issues/809),
+where the binding is tracked. The finder stays registered rather than being
+dropped: what is missing is the binding, not the finder. On the PR the head
+*is* the scope, so `coderabbit-cloud` has no such problem.
 
 **Enabling one is two steps, and both are yours.**
 
@@ -228,13 +232,18 @@ a partial review that exits 0 reads as a clean one. The bound is on the whole
 prompt — diff, manifest, prose and focus text together — because they all ride
 in one argv element.
 
-**It refuses to run until you attest the tool boundary.** `/review` requires a
-confidence pass to run with shell, git, network write and credentials denied,
-or the dispatch refused — and this runner cannot verify that, because the CLI
-reads your own configuration. Set `FINDER_REVIEW_COPILOT_READONLY=1` once you
-have confirmed your Copilot CLI grants it no tools. The pass NEEDS none (the
-change is in the prompt); the variable is you, not this script, asserting that
-it HAS none. The vendor invocation is overridable without editing the runner,
+**The tool boundary is enforced around the CLI, not asked of it.** `/review`
+requires a confidence pass to run with shell, git, network write and
+credentials denied, or the dispatch refused — and no third-party CLI will
+install that for us. So `scripts/lib/readonly-sandbox.sh` builds it: a per-run
+scratch `git worktree` checkout, made unwritable, entered with write
+credentials and git credential helpers stripped from the environment, under
+`bwrap --ro-bind` where bubblewrap is available. Afterwards the scratch tree is
+**proven** unchanged, and a pass that modified it is refused whatever it
+returned. Nothing here depends on the vendor's own capability model or on your
+configuration being what you think it is. What it does not bound is network
+egress — the CLI has to reach its model — so this denies writes to the checkout
+and to git, not exfiltration; the finder is handed the diff either way. The vendor invocation is overridable without editing the runner,
 so a vendor flag change is a config edit: `FINDER_REVIEW_COPILOT_ARGS` and
 `FINDER_REVIEW_COPILOT_BIN` (`FINDER_REVIEW_DRY_RUN=1` prints the resolved
 command and prompt without invoking anything).

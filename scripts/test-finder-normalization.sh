@@ -157,6 +157,38 @@ echo "==> an undecodable finding cannot be waved through"
 ! grep -Fq 'allow-undecoded' "$normalizer" ||
     fail "the undecoded escape hatch is back"
 
+echo "==> a badge mentioned mid-sentence does not split a finding"
+# Splitting on every occurrence turned a finding that discusses "the P0/P1
+# gate" into fabricated findings, one of which could pick up a spurious higher
+# severity. Both finders lead a finding with its badge, so a cut is made only
+# where the badge opens a line.
+jq -n '{review:{id:1,commit_id:"0303030303030303030303030303030303030303",
+      user:{id:199175422},
+      body:"### Codex Review\n\n**P1** The gate accepts an empty list, the same class as the P0/P1 rule in AGENTS.md.\n\n**Reviewed commit:** `0303030303030303030303030303030303030303`"},
+    comments:[]}' >"$tmp/prose.json"
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --reviewed-head 0303030303030303030303030303030303030303 \
+    --input "$tmp/prose.json" >"$tmp/prose.out.json" ||
+    fail "a body mentioning a badge mid-sentence did not decode"
+jq -e '(.findings | length) == 1 and (.severity_hypotheses[0].priority == "P1")' \
+    "$tmp/prose.out.json" >/dev/null ||
+    fail "a mid-sentence badge split the finding or changed its severity: $(cat "$tmp/prose.out.json")"
+
+echo "==> a short comments array against a declared count is indeterminate"
+# "Actionable comments posted: 2" with one comment supplied is an incomplete
+# input — an unpaginated or partial fetch — and normalizing the shortfall away
+# would report a smaller round as complete.
+jq '.comments = [.comments[0]]' "$fixtures/coderabbit-cloud/raw.json" >"$tmp/short.json"
+set +e
+node "$normalizer" --finder coderabbit-cloud --stage integration --round 1 \
+    --reviewed-head "$(jq -r '."reviewed-head"' "$fixtures/coderabbit-cloud/args.json")" \
+    --input "$tmp/short.json" >/dev/null 2>"$tmp/short.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "an incomplete comments array decoded cleanly (exit $status)"
+grep -Fq 'declares 2 actionable comment(s) but 1 were decoded' "$tmp/short.err" ||
+    fail "the shortfall was not reported: $(cat "$tmp/short.err")"
+
 echo "==> another actor's comment on the same head is not this finder's evidence"
 jq '.comments[0].user.id = 999999' "$fixtures/codex-cloud/raw.json" >"$tmp/foreign.json"
 node "$normalizer" --finder codex-cloud --stage integration --round 1 \

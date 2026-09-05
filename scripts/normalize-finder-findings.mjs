@@ -141,6 +141,24 @@ try {
 // asks for the badge "as the first token of the finding" and, in the same
 // breath, for narration that says "there are no P0 or P1 findings" — under a
 // bare substring test that sentence reads as a P0.
+// Where a rule's match occurs at the start of a line (after the markup a badge
+// is wrapped in), or -1. That position is what makes a badge a LABEL rather
+// than a mention: "the P0/P1 rule in AGENTS.md" contains both strings and
+// labels nothing.
+function leadingHit(text, rule) {
+  if (rule.anchor !== 'anywhere') return matchesRule(text, rule) ? 0 : -1
+  const needle = String(rule.match).toLowerCase()
+  const haystack = text.toLowerCase()
+  let at = haystack.indexOf(needle)
+  while (at !== -1) {
+    let start = at
+    while (start > 0 && '*_`[('.includes(text[start - 1])) start -= 1
+    if (start === 0 || text[start - 1] === '\n') return start
+    at = haystack.indexOf(needle, at + needle.length)
+  }
+  return -1
+}
+
 function matchesRule(text, rule) {
   const needle = String(rule.match).toLowerCase()
   if (rule.anchor === 'anywhere') return text.toLowerCase().includes(needle)
@@ -166,6 +184,16 @@ function isLabelled(text) {
 // A finding matching no rule takes `default`, which the schema forbids from
 // being P3: AGENTS.md adjudicates an unlabelled finding as AT LEAST a P2.
 function priorityOf(text) {
+  // A LABEL first — a rule whose match opens a line. Scanning the whole body
+  // for any occurrence let a finding that merely discusses "the P0/P1 gate"
+  // take P0, because the rules are ordered severest-first and a mention reads
+  // exactly like a badge to `includes`.
+  for (const rule of finder.severity_map.rules) {
+    if (leadingHit(text, rule) !== -1) return rule.priority
+  }
+  // Nothing labels this body. Fall back to any occurrence, so a badge written
+  // somewhere other than a line start still counts for something rather than
+  // silently defaulting — the default below is the floor, not the answer.
   for (const rule of finder.severity_map.rules) {
     if (matchesRule(text, rule)) return rule.priority
   }
@@ -237,13 +265,20 @@ function splitLabelledSegments(body) {
     const needle = String(rule.match).toLowerCase()
     let at = haystack.indexOf(needle)
     while (at !== -1) {
+      const found = at
+      at = haystack.indexOf(needle, found + needle.length)
       // Walk back over the markup a badge is wrapped in (`**P2**`, `_P2_`,
       // `` `P2` ``) so the segment opens with the whole badge rather than
       // splitting it in half and leaving `P2**` at the front.
-      let start = at
+      let start = found
       while (start > 0 && '*_`[('.includes(body[start - 1])) start -= 1
-      cuts.push(start)
-      at = haystack.indexOf(needle, at + needle.length)
+      // A cut only where the badge OPENS A LINE. Every occurrence would split
+      // on prose too: a finding that discusses "the P0/P1 gate", or names a
+      // symbol containing one, would be chopped into fabricated findings and
+      // could pick up a spurious severity from the mention. Both Codex and
+      // CodeRabbit lead a finding with its badge, so the line start is the
+      // signal, and a mid-sentence mention is left where it is.
+      if (start === 0 || body[start - 1] === '\n') cuts.push(start)
     }
   }
   const starts = [...new Set(cuts)].sort((a, b) => a - b)
@@ -364,6 +399,29 @@ if (finder.raw_shape === 'labelled-text') {
       if (!isLabelled(body)) continue
       for (const segment of splitLabelledSegments(body)) {
         pushFinding(segment, `comment ${comment.id ?? '?'}`, null, String(comment.id ?? 'comment'))
+      }
+    }
+  }
+
+  // The finder's own declared finding count, where its registry entry states
+  // one. A review saying "Actionable comments posted: 2" whose supplied
+  // comments array holds one — a partial fetch, an unpaginated read — would
+  // otherwise normalize the shortfall away and report a smaller round as
+  // complete. The pattern is the registry's; the reconciliation is here.
+  const actionablePattern = finder.collection?.terminal_signals?.actionable_pattern
+  if (actionablePattern && payload.review) {
+    const declared = new RegExp(actionablePattern.replace(/\[\[:space:\]\]/g, '\\s'), 'i').exec(
+      String(payload.review.body ?? '')
+    )
+    if (declared && declared[1] !== undefined) {
+      const expected = Number(declared[1])
+      const decoded = findings.length
+      if (Number.isFinite(expected) && decoded !== expected) {
+        die(
+          `${finder.slug} declares ${expected} actionable comment(s) but ${decoded} were decoded from the supplied evidence — ` +
+            `the input is incomplete (an unpaginated or partial fetch), and normalizing the shortfall away would report a smaller round as complete`,
+          3
+        )
       }
     }
   }
