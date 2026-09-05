@@ -157,6 +157,23 @@ jq -e '.stages.review.finders == ["codex-verification", "copilot-verification"] 
     (.finder_selection[0].retained_despite_selection == ["copilot-verification"])' \
     <<<"$narrowed" >/dev/null ||
     fail "a narrower per-run selection removed a config-required finder: $narrowed"
+echo "==> a per-run finder selection reaches the exit computation, not just the resolver"
+# devflow-policy.mjs applies --add-finder to its own in-memory result;
+# dev-flow-exit.mjs re-resolves the same policy file independently. Without the
+# identical union there, an added finder is not a slot: its pass and findings
+# are dropped and the round can report converged on the configured slots alone.
+set +e
+added_slot_out="$(node scripts/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
+    --policy "$solo_fixture/policy.toml" --current-head "$solo_head" \
+    --add-finder review:codex-verification --json)"
+status=$?
+set -e
+[ "$status" -eq 2 ] ||
+    fail "an added finder was not treated as a round slot by the exit computation (exit $status): $added_slot_out"
+jq -e '.outcome == "indeterminate" and (.reason | contains("codex-verification"))' \
+    <<<"$added_slot_out" >/dev/null ||
+    fail "the exit computation did not demand the added finder's own slot: $added_slot_out"
+
 echo "==> the effective finder set renders as a disclosure under the rigor line"
 disclosure_record="$tmp/finder-disclosure"
 mkdir -p "$disclosure_record"
@@ -173,7 +190,8 @@ grep -Fq -- '- finders: review: codex-verification, copilot-verification' <<<"$d
 
 for text in 'spends **one** unit of the stage' 'Per-run finder selection' \
     'never remove one the configuration requires' \
-    'never repository content' 'disclosures[]` entry of kind `finders`'; do
+    'never repository content' 'disclosures[]` entry of kind `finders`' \
+    'Pass the same flags to'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing the multi-finder rule: $text"
 done
 

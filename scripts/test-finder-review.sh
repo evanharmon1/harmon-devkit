@@ -87,6 +87,17 @@ set -e
 grep -Fq 'is not a registered finder' <<<"$out" ||
     fail "the refusal did not name the missing registry entry: $out"
 
+echo "==> an untracked path containing a newline still reaches the prompt"
+# git ls-files quotes such a path by default, and the quoted display form is
+# not a path git diff can open — so the file would stay in the claimed scope
+# with its contents silently absent from the review.
+newline_file="$work/src/we$(printf '\n')ird.txt"
+printf 'contents behind a newline in the path\n' >"$newline_file"
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh challenge copilot --uncommitted 2>/dev/null)"
+grep -Fq 'contents behind a newline in the path' <<<"$out" ||
+    fail "an untracked file whose path contains a newline was dropped from the prompt"
+rm -f "$newline_file"
+
 echo "==> the vendor invocation is overridable without editing the runner"
 out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_ARGS='--prompt --no-color' \
     ./scripts/finder-review.sh review copilot --uncommitted 2>/dev/null)"

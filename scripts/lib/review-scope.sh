@@ -363,19 +363,25 @@ ${dirty_manifest}"
 #
 # Untracked files are diffed one by one against /dev/null, because `git diff`
 # alone cannot see them and a new file is exactly the thing a review most
-# needs to read. The per-file cap matches cap_manifest's: past it the manifest
-# is still complete, and the reviewer is told to ask for the rest.
+# needs to read.
+#
+# NUL-delimited, not line-delimited: `git ls-files` QUOTES a path containing a
+# newline by default, and the quoted display form is not a path `git diff` can
+# open — so such a file would stay in the claimed scope while its contents were
+# silently missing from the review.
+#
+# There is deliberately no per-file cap here. An earlier revision truncated at
+# 200 files and returned success, which is the same defect the byte bound in
+# scripts/finder-review.sh exists to prevent: a caller that grants the reviewer
+# no repository tools cannot fetch what was cut, so a partial review could
+# still exit clean and be banked as a complete round. Size is bounded once, by
+# that caller, as a refusal.
 collect_untracked_diff() {
-    local count=0 path
-    while IFS= read -r path; do
+    local path
+    while IFS= read -r -d '' path; do
         [ -n "$path" ] || continue
-        count=$((count + 1))
-        if [ "$count" -gt 200 ]; then
-            echo "... (untracked-file diffs truncated at 200 files; see the manifest above for the complete list)"
-            return 0
-        fi
         git diff --no-index --ignore-submodules=none -- /dev/null "$path" 2>/dev/null || true
-    done < <(git ls-files --others --exclude-standard)
+    done < <(git ls-files -z --others --exclude-standard)
 }
 
 collect_review_diff() {

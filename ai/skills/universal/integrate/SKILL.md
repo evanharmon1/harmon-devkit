@@ -727,25 +727,22 @@ trigger, its own two-attempt window, classified by its own registry profile.
 Nothing about Codex's cycle changes — it stays the default, and a stage
 configuring only `codex-cloud` behaves exactly as before.
 
-**The profile comes from the TRUSTED registry revision, never the worktree.**
-The branch under review may edit `agent-registry.json`, and that file names
-the finder's trusted actor, its trigger and its verdict classifier — so
-reading the branch copy would let a PR choose who is allowed to vouch for it
-and what gets posted on its behalf. Resolve it from the merge base, the same
-boundary `scripts/devflow-policy.mjs --closure` applies to `.devflow.toml`,
-and pass that same file to the broker:
+**You name a finder; you never name its profile.** The branch under review may
+edit `agent-registry.json`, and that file names the finder's trusted actor, its
+trigger and its verdict classifier — so a profile passed as a file would let
+the change under review choose who is allowed to vouch for it and what gets
+posted on its behalf. Both the checker and the broker therefore resolve the
+registry **themselves**, at the merge base with the remote-tracking base
+branch (`assets/trusted-registry.sh`), the same boundary
+`scripts/devflow-policy.mjs --closure` draws for `.devflow.toml`. There is no
+flag naming a registry file, and a finder absent from that revision cannot be
+reserved at all:
 
 ```bash
 helper="$skill_dir/assets/check-codex-cloud-review.sh"
-trusted_registry="$(mktemp)"
-git show "$(git merge-base origin/HEAD HEAD):agent-registry.json" \
-  >"$trusted_registry" || exit
-profile="$(mktemp)"
-jq -c --arg slug "<finder>" '.finders[] | select(.slug == $slug)' \
-  "$trusted_registry" >"$profile"
 state="$(git rev-parse --git-path "integrate-codex/$repo/<n>-<finder>.json")"
 "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
-  --head "$head" --attempt 1 --profile "$profile"
+  --head "$head" --attempt 1 --finder <finder>
 ```
 
 The profile is **pinned into the state** by that `reserve`, so every later
@@ -754,20 +751,20 @@ restated one must match exactly. What the caller does between `reserve` and
 `attach` depends on the finder's own trigger mechanism, which the profile
 names:
 
-- `review-comment` — `gh-write-broker.sh trigger --finder <slug> --registry
-  "$trusted_registry"`, which posts that finder's own `trigger.body`
+- `review-comment` — `gh-write-broker.sh trigger --repo "$repo" --pr <n>
+  --finder <slug>`, which posts that finder's own `trigger.body`
   (`@codex review` for Codex, `@coderabbitai review` for CodeRabbit) and
   prints the comment id; then `attach --trigger-id <id>`.
-- `requested-reviewer` — `gh-write-broker.sh request-review --finder <slug>
-  --registry "$trusted_registry"`, which requests the finder's own
+- `requested-reviewer` — `gh-write-broker.sh request-review --repo "$repo"
+  --pr <n> --finder <slug>`, which requests the finder's own
   `trigger.reviewer_login`; then `attach --requested-at <ISO8601>`. `attach`
   proves the request against GitHub before recording it: the reviewer must be
   pending on the PR or have already posted a review.
 
 Both go through the broker rather than a direct `gh api` call, and the broker
-requires `--registry` explicitly: the trust decision is an auditable argument,
-never an implicit read of whatever `agent-registry.json` the worktree happens
-to hold.
+takes no registry path: it resolves the merge-base registry itself. That is
+what keeps it a broker — the caller chooses *which registered finder* to
+trigger, never what to post or whom to ask.
 
 `check` then takes that finder's own `--actor-id`/`--actor-login` — and
 refuses any that is not the identity the cycle was reserved for. Report

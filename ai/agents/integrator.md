@@ -361,29 +361,27 @@ Three cases, mutually exclusive:
   with that finder's own state file and its own registry profile — and its
   own trigger, which the registry names rather than you:
 
+  You name a finder SLUG and nothing else. Both tools resolve
+  agent-registry.json themselves, at the merge base with the remote-tracking
+  base branch — never from a file you supply. That is not a formality: a
+  profile you could write would let you name an unrelated bot as the finder
+  and pick a lenient verdict classifier, which the readiness gate would then
+  trust; and a registry path you could choose would let this "narrow" broker
+  post any text at all.
+
   ```bash
-  # The MERGE-BASE registry, never the worktree copy: this branch may edit
-  # agent-registry.json, and that file names the finder's trusted actor, its
-  # trigger and its verdict classifier — so reading the branch copy would let
-  # the change under review choose who may vouch for it.
-  trusted_registry="$(mktemp)"
-  git show "$(git merge-base origin/HEAD HEAD):agent-registry.json" \
-      >"$trusted_registry" || exit
   # one state file per finder, so two cycles cannot overwrite each other
   state="$(git rev-parse --git-path "integrate-codex/$repo/<n>-<finder>.json")"
-  profile="$(mktemp)"
-  jq -c --arg slug "<finder>" '.finders[] | select(.slug == $slug)' \
-      "$trusted_registry" >"$profile" || exit
   "$helper" reserve --state "$state" --repo "$repo" --pr <n> \
-      --head "<head>" --attempt 1 --profile "$profile" || exit
+      --head "<head>" --attempt 1 --finder <finder> || exit
   # review-comment finders (CodeRabbit):
   trigger_id="$("$skill_dir"/assets/gh-write-broker.sh trigger \
-      --repo "$repo" --pr <n> --finder <finder> --registry "$trusted_registry")" || exit
+      --repo "$repo" --pr <n> --finder <finder>)" || exit
   "$helper" attach --state "$state" --trigger-id "$trigger_id" || exit
   # requested-reviewer finders (Copilot code review) instead:
   requested_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   "$skill_dir"/assets/gh-write-broker.sh request-review \
-      --repo "$repo" --pr <n> --finder <finder> --registry "$trusted_registry" >/dev/null || exit
+      --repo "$repo" --pr <n> --finder <finder> >/dev/null || exit
   "$helper" attach --state "$state" --requested-at "$requested_at" || exit
   ```
 

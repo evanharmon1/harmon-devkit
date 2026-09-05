@@ -1123,6 +1123,30 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
 // CLI
 // ---------------------------------------------------------------------------
 
+// Pull every occurrence of a repeatable `--flag value` pair out of an argv,
+// returning the values and the argv without them — the same helper
+// devflow-policy.mjs carries, for the same reason: parseArgs is last-wins and
+// is shared with every other flag, so a dropped occurrence would silently
+// reduce the finder set rather than erroring.
+function extractRepeatable(argv, flag) {
+  const values = [];
+  const rest = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== flag) {
+      rest.push(argv[i]);
+      continue;
+    }
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("--")) {
+      values.push("");
+      continue;
+    }
+    values.push(value);
+    i++;
+  }
+  return { values, rest };
+}
+
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i++) {
@@ -1182,11 +1206,21 @@ async function main() {
   // top-level imports, above. Resolves relative to THIS file, same as a
   // static import would; the only difference that matters is WHEN it runs.
   const { parseToml, TomlError } = await import("./lib/toml-lite.mjs");
-  const { resolvePolicy, crossValidate, PolicyError } = await import("./devflow-policy.mjs");
+  const { resolvePolicy, crossValidate, PolicyError, applyFinderSelection } =
+    await import("./devflow-policy.mjs");
 
-  const args = parseArgs(argv);
+  // --add-finder / --select-finder are repeatable and must be lifted out
+  // before parseArgs, which is last-wins. See devflow-policy.mjs's own
+  // extractRepeatable for why a repeatable option is separated rather than
+  // changing how every flag parses.
+  const addFinders = extractRepeatable(argv, "--add-finder");
+  const selectFinders = extractRepeatable(addFinders.rest, "--select-finder");
+  const args = parseArgs(selectFinders.rest);
   if (!args.run || !args.stage || !args.policy) {
-    console.error("usage: dev-flow-exit.mjs --run <dir> --stage <challenge|review> --policy <file> [options]");
+    console.error(
+      "usage: dev-flow-exit.mjs --run <dir> --stage <challenge|review> --policy <file>\n" +
+        "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]... [options]",
+    );
     return 1;
   }
   if (args.stage !== "challenge" && args.stage !== "review") {
@@ -1212,6 +1246,18 @@ async function main() {
       return 1;
     }
     throw err;
+  }
+
+  // A per-run finder selection has to reach THIS resolution too (#796
+  // challenge round 3). devflow-policy.mjs applies --add-finder to its own
+  // in-memory result; this script re-resolves the same file independently, so
+  // without the identical union its primarySlots would omit the added finder,
+  // drop that finder's pass and findings, and could report the round
+  // converged on the configured slots alone.
+  const selection = applyFinderSelection(resolved, addFinders.values, selectFinders.values);
+  if (selection.error) {
+    console.error(`dev-flow-exit: ${selection.error}`);
+    return 1;
   }
 
   // No --registry/--task-targets here on purpose (see this file's header

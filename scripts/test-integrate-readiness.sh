@@ -66,12 +66,11 @@ cat >"${bin_dir}/gh" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
 
-# gh-ro pass-through cases: exit with a scripted code so propagation is
-# observable without any endpoint dispatch.
-if [ -f "$GH_FIXTURES/ro-exit" ]; then
-    exit "$(cat "$GH_FIXTURES/ro-exit")"
-fi
-
+# `pr view` is served BEFORE the ro-exit short-circuit below. That switch
+# exists to make `gh api` exit-code propagation observable, and the broker now
+# reads the PR's base branch through `pr view` on its way to resolving the
+# trusted registry — short-circuiting that read would answer "this PR has no
+# base branch" and refuse before the api call the case is actually about.
 if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     count_file="$GH_FIXTURES/pr-view-count"
     count=0
@@ -84,6 +83,12 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
         cat "$GH_FIXTURES/pr-view.json"
     fi
     exit 0
+fi
+
+# gh-ro / gh-write-broker pass-through cases: exit with a scripted code so
+# propagation is observable without any endpoint dispatch.
+if [ -f "$GH_FIXTURES/ro-exit" ]; then
+    exit "$(cat "$GH_FIXTURES/ro-exit")"
 fi
 
 [ "${1:-}" = api ] || exit 90
@@ -249,7 +254,7 @@ write_defaults() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch"}' \
+          headRefName:"feature-branch",baseRefName:"main"}' \
         >"${fixtures}/pr-view.json"
     jq -cn --arg head "$head_sha" --arg body "$(default_body)" \
         '{number:493,title:"feat: change",body:$body,
@@ -1830,19 +1835,35 @@ printf '0\n' >"${fixtures}/ro-exit"
 grep -Fxq "api repos/example/repo/pulls/493/comments/900/replies -F body=@${reply_body}" "$log" ||
     fail "gh-write-broker reply forwarded unexpected arguments: $(cat "$log")"
 
+# The broker resolves the registry ITSELF, at the merge base with the
+# remote-tracking base branch — it takes no registry path from its caller, and
+# that is the point (#796 challenge round 3): the caller is the party it
+# narrows. So these cases need a real git fixture with a registry committed at
+# the base, and they run with that repo as the working directory.
+wb_repo="${test_tmp}/broker-repo"
+git init -q "$wb_repo"
+git -C "$wb_repo" config user.name "Broker Test"
+git -C "$wb_repo" config user.email "broker-test@example.invalid"
+cp "${repo_root}/agent-registry.json" "$wb_repo/agent-registry.json"
+git -C "$wb_repo" add agent-registry.json
+git -C "$wb_repo" commit -q -m "test: registry at the base"
+git -C "$wb_repo" update-ref refs/remotes/origin/main HEAD
+git -C "$wb_repo" commit -q --allow-empty -m "test: PR head"
+wb_in_repo() {
+    (cd "$wb_repo" && "$ghwb" "$@")
+}
+
 echo "==> gh-write-broker posts a registry-declared trigger for another finder"
 write_defaults
 printf '0\n' >"${fixtures}/ro-exit"
-"$ghwb" trigger --repo example/repo --pr 493 --finder coderabbit-cloud \
-    --registry "$repo_root/agent-registry.json" >/dev/null
+wb_in_repo trigger --repo example/repo --pr 493 --finder coderabbit-cloud >/dev/null
 grep -Fxq "api repos/example/repo/issues/493/comments -f body=@coderabbitai review --jq .id" "$log" ||
     fail "gh-write-broker did not post the registry's own trigger body: $(cat "$log")"
 
 echo "==> gh-write-broker requests a registry-declared reviewer for a request-triggered finder"
 write_defaults
 printf '0\n' >"${fixtures}/ro-exit"
-"$ghwb" request-review --repo example/repo --pr 493 --finder copilot-cloud \
-    --registry "$repo_root/agent-registry.json" >/dev/null
+wb_in_repo request-review --repo example/repo --pr 493 --finder copilot-cloud >/dev/null
 grep -Fxq "api repos/example/repo/pulls/493/requested_reviewers -f reviewers[]=copilot-pull-request-reviewer[bot] --jq .number" "$log" ||
     fail "gh-write-broker did not request the registry's own reviewer: $(cat "$log")"
 
@@ -1850,20 +1871,42 @@ echo "==> gh-write-broker refuses a finder whose trigger is the other mechanism"
 # wb_refuse_case asserts the gh log is empty, so clear the two successful
 # calls above before running them.
 write_defaults
-wb_refuse_case "trigger on a request-triggered finder" trigger --repo example/repo --pr 493 \
-    --finder copilot-cloud --registry "$repo_root/agent-registry.json"
-wb_refuse_case "request-review on a comment-triggered finder" request-review --repo example/repo --pr 493 \
-    --finder coderabbit-cloud --registry "$repo_root/agent-registry.json"
-wb_refuse_case "an unregistered finder" trigger --repo example/repo --pr 493 \
-    --finder not-a-finder --registry "$repo_root/agent-registry.json"
-wb_refuse_case "a registry that does not exist" trigger --repo example/repo --pr 493 \
-    --finder coderabbit-cloud --registry "${fixtures}/no-such-registry.json"
-wb_refuse_case "request-review with no finder" request-review --repo example/repo --pr 493
-# --finder must name its trusted registry explicitly: with no --registry the
-# broker would read the branch copy, letting a PR that edits
-# agent-registry.json choose the trigger posted on its own behalf.
-wb_refuse_case "a finder with no --registry" trigger --repo example/repo --pr 493 \
+wb_refuse_in_repo() {
+    local label=$1
+    shift
+    set +e
+    wb_out="$( (cd "$wb_repo" && "$ghwb" "$@") 2>&1)"
+    wb_rc=$?
+    set -e
+    [ "$wb_rc" -eq 2 ] ||
+        fail "gh-write-broker $label: expected refusal rc 2, got $wb_rc: $wb_out"
+    printf '%s\n' "$wb_out" | grep -qE 'refused|Usage:' ||
+        fail "gh-write-broker $label: refusal did not say refused or print usage: $wb_out"
+    if grep -q '^api ' "$log"; then
+        fail "gh-write-broker $label: a refused invocation still reached gh: $(cat "$log")"
+    fi
+}
+wb_refuse_in_repo "trigger on a request-triggered finder" trigger --repo example/repo --pr 493 \
+    --finder copilot-cloud
+wb_refuse_in_repo "request-review on a comment-triggered finder" request-review --repo example/repo --pr 493 \
     --finder coderabbit-cloud
+wb_refuse_in_repo "an unregistered finder" trigger --repo example/repo --pr 493 \
+    --finder not-a-finder
+wb_refuse_case "request-review with no finder" request-review --repo example/repo --pr 493
+
+echo "==> gh-write-broker takes no registry path from its caller"
+# The one property the broker is for: no argument may change what it posts.
+# A --registry flag would hand exactly that back to the party being narrowed.
+wb_refuse_in_repo "a caller-named registry" trigger --repo example/repo --pr 493 \
+    --finder coderabbit-cloud --registry "$repo_root/agent-registry.json"
+
+echo "==> gh-write-broker refuses when the trusted base is not in the checkout"
+# refs/heads is writable by the change under review, so only the
+# remote-tracking base counts; without it there is no trusted revision to read.
+git -C "$wb_repo" update-ref -d refs/remotes/origin/main
+wb_refuse_in_repo "a missing remote-tracking base" trigger --repo example/repo --pr 493 \
+    --finder coderabbit-cloud
+git -C "$wb_repo" update-ref refs/remotes/origin/main "$(git -C "$wb_repo" rev-parse HEAD~1)"
 
 echo "==> gh-write-broker propagates gh's own exit code"
 write_defaults

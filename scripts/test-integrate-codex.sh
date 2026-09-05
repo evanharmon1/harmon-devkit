@@ -19,6 +19,15 @@ git init -q "$test_repo"
 git -C "$test_repo" config user.name "Shepherd Test"
 git -C "$test_repo" config user.email "shepherd-test@example.invalid"
 git -C "$test_repo" commit -q --allow-empty -m "previous head"
+# The finder profile is resolved from agent-registry.json at the MERGE BASE
+# with the remote-tracking base branch, not from any file a caller names — so
+# this fixture repo needs a real one: this repo's own registry, committed at
+# the base and pointed at by refs/remotes/origin/main. A local refs/heads copy
+# would not do, and that is the point of the case further down that proves it.
+cp "${repo_root}/agent-registry.json" "$test_repo/agent-registry.json"
+git -C "$test_repo" add agent-registry.json
+git -C "$test_repo" commit -q -m "test: registry at the base"
+git -C "$test_repo" update-ref refs/remotes/origin/main HEAD
 git -C "$test_repo" commit -q --allow-empty -m "current head"
 cd "$test_repo"
 
@@ -80,7 +89,7 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
         pr_state="$(cat "$GH_FIXTURES/pr-state-$pr_number")"
     fi
     jq -cn --arg head "$(cat "$GH_FIXTURES/head")" --arg state "$pr_state" \
-        '{headRefOid:$head,state:$state}'
+        '{headRefOid:$head,state:$state,isDraft:true,baseRefName:"main"}'
     exit 0
 fi
 
@@ -3040,7 +3049,7 @@ new_finder_cycle() {
           issue_url:"https://api.github.com/repos/example/repo/issues/493"
         }' >"${fixtures}/trigger.json"
     "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-        --head "$head_sha" --attempt 1 --profile "$finder_profile" >/dev/null
+        --head "$head_sha" --attempt 1 --finder "$finder_slug" >/dev/null
     jq --arg reserved "$request_time" '.reserved_at = $reserved' \
         "$state" >"${state}.next"
     mv "${state}.next" "$state"
@@ -3111,7 +3120,7 @@ rm -f "$state"
 jq -cn --argjson id "$copilot_actor" --arg login "$copilot_login" \
     '{id:$id,login:$login,type:"Bot"}' >"${fixtures}/actor.json"
 "$helper" reserve --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --profile "$copilot_profile" >/dev/null
+    --head "$head_sha" --attempt 1 --finder copilot-cloud >/dev/null
 jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 set +e
@@ -3204,6 +3213,35 @@ jq -cn --argjson id "$coderabbit_actor" --arg login "$coderabbit_login" \
 run_finder_check "$coderabbit_actor" "$coderabbit_login" '2026-07-31T08:01:00Z'
 assert_status 10 findings
 
+echo "==> a caller that supplies only --actor-id gets the pinned profile's login"
+# The readiness gate's recheck passes --actor-id alone. Without this default a
+# non-Codex cycle would be checked under this script's Codex login constant,
+# fail its own pinned-profile guard, and make the whole multi-finder path
+# unpromotable — a hole the gate's own suite cannot see, because it stubs the
+# checker.
+new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
+finder_review "$coderabbit_actor" "$coderabbit_login" \
+    "**Actionable comments posted: 0**" '2026-07-31T08:00:30Z'
+set +e
+check_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$helper" check \
+    --state "$state" --actor-id "$coderabbit_actor" \
+    --timeout-min 15 --now '2026-07-31T08:01:00Z' 2>&1)"
+check_rc=$?
+set -e
+check_watchdog "$check_rc" run_finder_check_no_login "$check_out"
+assert_status 0 clean
+
+echo "==> an --actor-login that is not the pinned one is still refused"
+set +e
+wrong_login_out="$("$helper" check --state "$state" --actor-id "$coderabbit_actor" \
+    --actor-login 'chatgpt-codex-connector[bot]' --now '2026-07-31T08:01:00Z' 2>&1)"
+wrong_login_rc=$?
+set -e
+[ "$wrong_login_rc" -eq 2 ] ||
+    fail "a foreign --actor-login was accepted (rc $wrong_login_rc): $wrong_login_out"
+grep -Fq 'is not the login this cycle was reserved for' <<<"$wrong_login_out" ||
+    fail "the foreign-login refusal was not reported: $wrong_login_out"
+
 echo "==> settle refuses a surface this finder never writes to"
 new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
 set +e
@@ -3223,17 +3261,86 @@ set -e
 grep -Fq 'states no severity marker' <<<"$settle_badge_out" ||
     fail "the unbadgeable-finder refusal was not reported: $settle_badge_out"
 
-echo "==> a restated profile that differs from the pinned one is refused"
+echo "==> a restated --finder that is not the pinned one is refused"
 new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
 set +e
 swap_out="$("$helper" check --state "$state" --actor-id "$coderabbit_actor" \
-    --actor-login "$coderabbit_login" --profile "$copilot_profile" \
+    --actor-login "$coderabbit_login" --finder copilot-cloud \
     --now '2026-07-31T08:01:00Z' 2>&1)"
 swap_rc=$?
 set -e
-[ "$swap_rc" -eq 2 ] || fail "a mid-cycle profile swap was accepted (rc $swap_rc): $swap_out"
-grep -Fq 'differs from the one this cycle was reserved under' <<<"$swap_out" ||
-    fail "the profile-swap refusal was not reported: $swap_out"
+[ "$swap_rc" -eq 2 ] || fail "a mid-cycle finder swap was accepted (rc $swap_rc): $swap_out"
+grep -Fq 'does not name the finder this cycle was reserved for' <<<"$swap_out" ||
+    fail "the finder-swap refusal was not reported: $swap_out"
+
+echo "==> reap sweeps a finder-suffixed state file like any other"
+# Multi-finder cycles store <pr>-<finder>.json. Deriving the PR from the whole
+# basename made every one of them disagree with its own path forever, so a
+# closed PR leaked one state file per configured finder.
+reap_finder_root="${test_tmp}/reap-finder"
+mkdir -p "${reap_finder_root}/example/repo"
+jq -cn --arg head "$head_sha" '{version:2,repo:"example/repo",pr:493,head:$head,
+    attempt:1,phase:"attached",finder:"coderabbit-cloud"}' \
+    >"${reap_finder_root}/example/repo/493-coderabbit-cloud.json"
+printf 'MERGED\n' >"${fixtures}/pr-state-493"
+set +e
+reap_out="$("$helper" reap --root "$reap_finder_root" 2>&1)"
+reap_rc=$?
+set -e
+rm -f "${fixtures}/pr-state-493"
+[ "$reap_rc" -eq 0 ] || fail "reap of a finder-suffixed state exited $reap_rc: $reap_out"
+printf '%s' "$reap_out" | jq -e '
+      [.entries[] | select(.path | endswith("493-coderabbit-cloud.json"))] |
+      length == 1 and (.[0].action != "skipped")
+    ' >/dev/null ||
+    fail "a finder-suffixed state was not swept: $reap_out"
+
+echo "==> reap leaves a state whose finder disagrees with its path"
+mkdir -p "${reap_finder_root}-mismatch/example/repo"
+jq -cn --arg head "$head_sha" '{version:2,repo:"example/repo",pr:493,head:$head,
+    attempt:1,phase:"attached",finder:"copilot-cloud"}' \
+    >"${reap_finder_root}-mismatch/example/repo/493-coderabbit-cloud.json"
+set +e
+reap_mismatch_out="$("$helper" reap --root "${reap_finder_root}-mismatch" 2>&1)"
+reap_mismatch_rc=$?
+set -e
+[ "$reap_mismatch_rc" -eq 0 ] || fail "reap exited $reap_mismatch_rc: $reap_mismatch_out"
+printf '%s' "$reap_mismatch_out" | jq -e '
+      [.entries[] | select(.path | endswith("493-coderabbit-cloud.json"))] |
+      length == 1 and (.[0].action == "skipped")
+    ' >/dev/null ||
+    fail "a state naming another finder than its path was swept: $reap_mismatch_out"
+
+echo "==> a finder absent from the MERGE-BASE registry cannot be reserved"
+# The whole point of resolving the registry here rather than taking a file:
+# a caller cannot introduce a finder, however convincing a JSON file it writes.
+write_defaults
+rm -f "$state"
+set +e
+unknown_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --finder not-a-registered-finder 2>&1)"
+unknown_rc=$?
+set -e
+[ "$unknown_rc" -eq 2 ] || fail "an unregistered finder was reserved (rc $unknown_rc): $unknown_out"
+grep -Fq 'is not registered at the merge base' <<<"$unknown_out" ||
+    fail "the unregistered-finder refusal was not reported: $unknown_out"
+
+echo "==> a registry on a LOCAL branch ref does not become the trusted one"
+# refs/heads is writable by the change under review; only the remote-tracking
+# base counts. Moving refs/remotes/origin/main away proves the resolver is
+# reading that ref and not a local convenience copy.
+write_defaults
+rm -f "$state"
+git update-ref -d refs/remotes/origin/main
+set +e
+noref_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --finder coderabbit-cloud 2>&1)"
+noref_rc=$?
+set -e
+git update-ref refs/remotes/origin/main "$(git rev-parse HEAD~1)"
+[ "$noref_rc" -eq 2 ] || fail "a missing remote-tracking base was accepted (rc $noref_rc): $noref_out"
+grep -Fq 'a local refs/heads copy is not accepted' <<<"$noref_out" ||
+    fail "the missing-base refusal did not explain itself: $noref_out"
 
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator cloud-review classifier: PASS"

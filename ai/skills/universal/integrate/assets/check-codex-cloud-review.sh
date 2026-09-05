@@ -39,10 +39,14 @@
 
 set -euo pipefail
 
+# This script's own directory, resolved before anything changes cwd: the
+# trusted-registry resolver is its sibling asset.
+asset_dir="$(cd "$(dirname "$0")" && pwd)"
+
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--profile FILE] [--finder SLUG]
+  check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601   (requested-reviewer finders)
   check-codex-cloud-review.sh check --state FILE --actor-id N [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
@@ -50,12 +54,16 @@ Usage:
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
 
---profile FILE is one finder entry from agent-registry.json (or just its
-`collection` object): the trigger mechanism, the terminal-result surfaces, the
-head binding and the verdict mode for THAT finder. Omit it for Codex, whose
-values are this script default. The profile is pinned into the state at
-`reserve`, so every later subcommand classifies the cycle with the profile it
-was reserved under; a restated one must match exactly.
+--finder SLUG names which registered finder this cycle is for. Its profile —
+trigger mechanism, terminal-result surfaces, head binding, verdict mode and
+trusted actor — is read from agent-registry.json AT THE MERGE BASE, resolved
+by this script (assets/trusted-registry.sh), never from a caller-named file:
+a forged profile could otherwise label an unrelated bot as the finder, pick a
+lenient verdict classifier, and so satisfy a required cycle without that
+finder ever reviewing the PR. Omit it for Codex, whose values are this
+script default. The resolved profile is pinned into the state at `reserve`, so
+every later subcommand classifies the cycle with the profile it was reserved
+under.
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
 14 PR no longer open, 2 indeterminate. Exit 14 means GitHub answered and
@@ -102,6 +110,7 @@ attempt=
 trigger_id=
 actor_id=
 actor_login='chatgpt-codex-connector[bot]'
+actor_login_set=0
 timeout_min=15
 timeout_min_set=0
 timeout_min_adopted=0
@@ -112,7 +121,6 @@ disposition=
 note=
 covers=
 finder_slug=
-profile_file=
 requested_at_flag=
 lock_dir=
 reap_entries=
@@ -122,7 +130,7 @@ reap_deadline_epoch=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --profile | --requested-at)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -133,7 +141,10 @@ while [ "$#" -gt 0 ]; do
         --attempt) attempt=$2 ;;
         --trigger-id) trigger_id=$2 ;;
         --actor-id) actor_id=$2 ;;
-        --actor-login) actor_login=$2 ;;
+        --actor-login)
+            actor_login=$2
+            actor_login_set=1
+            ;;
         --timeout-min)
             timeout_min=$2
             timeout_min_set=1
@@ -146,7 +157,6 @@ while [ "$#" -gt 0 ]; do
         --covers) covers=$2 ;;
         --note) note=$2 ;;
         --finder) finder_slug=$2 ;;
-        --profile) profile_file=$2 ;;
         --requested-at) requested_at_flag=$2 ;;
         esac
         shift 2
@@ -264,26 +274,27 @@ load_profile_from_file() {
             success_reaction: ($c.terminal_signals.success_reaction // ""),
             pending_reaction: ($c.terminal_signals.pending_reaction // "")
           }' "$1") || die "profile file is not readable JSON: $1"
-    printf '%s' "$normalized" >"$1.normalized.$$"
-    profile_finder=$(profile_field finder "$1.normalized.$$")
-    profile_actor_id=$(profile_field actor_id "$1.normalized.$$")
-    profile_actor_login=$(profile_field actor_login "$1.normalized.$$")
-    profile_trigger_mechanism=$(profile_field trigger_mechanism "$1.normalized.$$")
-    profile_trigger_body=$(profile_field trigger_body "$1.normalized.$$")
-    profile_trigger_reviewer=$(profile_field trigger_reviewer "$1.normalized.$$")
-    profile_surfaces=$(profile_field surfaces "$1.normalized.$$")
-    profile_head_binding=$(profile_field head_binding "$1.normalized.$$")
-    profile_verdict_mode=$(profile_field verdict_mode "$1.normalized.$$")
-    profile_clean_verdict=$(profile_field clean_verdict "$1.normalized.$$")
-    profile_actionable_pattern=$(profile_field actionable_pattern "$1.normalized.$$")
-    profile_severity_marker=$(profile_field severity_marker "$1.normalized.$$")
-    profile_metadata_line=$(profile_field metadata_line "$1.normalized.$$")
-    profile_about_summary=$(profile_field about_summary "$1.normalized.$$")
-    profile_heading=$(profile_field heading "$1.normalized.$$")
-    profile_carrier_sentence=$(profile_field carrier_sentence "$1.normalized.$$")
-    profile_success_reaction=$(profile_field success_reaction "$1.normalized.$$")
-    profile_pending_reaction=$(profile_field pending_reaction "$1.normalized.$$")
-    rm -f "$1.normalized.$$"
+    normalized_file="$(mktemp)" || die "cannot create a temporary file"
+    printf '%s' "$normalized" >"$normalized_file"
+    profile_finder=$(profile_field finder "$normalized_file")
+    profile_actor_id=$(profile_field actor_id "$normalized_file")
+    profile_actor_login=$(profile_field actor_login "$normalized_file")
+    profile_trigger_mechanism=$(profile_field trigger_mechanism "$normalized_file")
+    profile_trigger_body=$(profile_field trigger_body "$normalized_file")
+    profile_trigger_reviewer=$(profile_field trigger_reviewer "$normalized_file")
+    profile_surfaces=$(profile_field surfaces "$normalized_file")
+    profile_head_binding=$(profile_field head_binding "$normalized_file")
+    profile_verdict_mode=$(profile_field verdict_mode "$normalized_file")
+    profile_clean_verdict=$(profile_field clean_verdict "$normalized_file")
+    profile_actionable_pattern=$(profile_field actionable_pattern "$normalized_file")
+    profile_severity_marker=$(profile_field severity_marker "$normalized_file")
+    profile_metadata_line=$(profile_field metadata_line "$normalized_file")
+    profile_about_summary=$(profile_field about_summary "$normalized_file")
+    profile_heading=$(profile_field heading "$normalized_file")
+    profile_carrier_sentence=$(profile_field carrier_sentence "$normalized_file")
+    profile_success_reaction=$(profile_field success_reaction "$normalized_file")
+    profile_pending_reaction=$(profile_field pending_reaction "$normalized_file")
+    rm -f "$normalized_file"
     # A profile that names no verdict mode is not a profile; falling back to
     # Codex's would classify another product's output with Codex's parser and
     # report a verdict nothing supports.
@@ -298,11 +309,31 @@ load_profile_from_file() {
     [ -n "$profile_surfaces" ] || die "profile names no terminal-result surface"
 }
 
+# Resolve --finder into a profile, from the registry revision the change under
+# review cannot alter. The caller names a slug; it never names a file.
 apply_profile_argument() {
-    [ -n "$profile_file" ] || return 0
-    load_profile_from_file "$profile_file"
-    [ -z "$finder_slug" ] || [ "$finder_slug" = "$profile_finder" ] ||
-        die "--finder ${finder_slug} does not name the profile's own finder ${profile_finder}"
+    [ -n "$finder_slug" ] || return 0
+    [ "$finder_slug" != "codex-cloud" ] || return 0
+    printf '%s' "$finder_slug" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$' ||
+        die "invalid finder slug: $finder_slug"
+    [ -n "$repo" ] && [ -n "$pr" ] ||
+        die "--finder needs --repo and --pr to resolve its trusted registry"
+    # shellcheck source=ai/skills/universal/integrate/assets/trusted-registry.sh
+    . "$asset_dir/trusted-registry.sh"
+    trusted_registry="$(mktemp)" || die "cannot create a temporary file"
+    resolve_trusted_registry "$repo" "$pr" "$trusted_registry" ||
+        die "cannot resolve the trusted registry for finder $finder_slug"
+    entry="$(mktemp)" || die "cannot create a temporary file"
+    jq -c --arg slug "$finder_slug" '
+          [.finders[] | select(.slug == $slug)] as $entries |
+          if ($entries | length) != 1 then empty else $entries[0] end
+        ' "$trusted_registry" >"$entry" || die "cannot read the trusted registry"
+    [ -s "$entry" ] ||
+        die "finder $finder_slug is not registered at the merge base — it cannot be reserved for a cycle"
+    load_profile_from_file "$entry"
+    rm -f "$entry" "$trusted_registry"
+    [ "$finder_slug" = "$profile_finder" ] ||
+        die "the merge-base registry entry for $finder_slug names finder $profile_finder"
 }
 
 # The profile the CYCLE was reserved under always wins. A restated one must
@@ -315,32 +346,31 @@ adopt_pinned_profile() {
         apply_profile_argument
         return 0
     fi
-    if [ -n "$profile_file" ]; then
-        apply_profile_argument
-        [ "$(profile_json)" = "$pinned" ] ||
-            die "supplied --profile differs from the one this cycle was reserved under"
-        return 0
-    fi
-    printf '%s' "$pinned" >"$state_file.pinned.$$"
-    profile_finder=$(profile_field finder "$state_file.pinned.$$")
-    profile_actor_id=$(profile_field actor_id "$state_file.pinned.$$")
-    profile_actor_login=$(profile_field actor_login "$state_file.pinned.$$")
-    profile_trigger_mechanism=$(profile_field trigger_mechanism "$state_file.pinned.$$")
-    profile_trigger_body=$(profile_field trigger_body "$state_file.pinned.$$")
-    profile_trigger_reviewer=$(profile_field trigger_reviewer "$state_file.pinned.$$")
-    profile_surfaces=$(profile_field surfaces "$state_file.pinned.$$")
-    profile_head_binding=$(profile_field head_binding "$state_file.pinned.$$")
-    profile_verdict_mode=$(profile_field verdict_mode "$state_file.pinned.$$")
-    profile_clean_verdict=$(profile_field clean_verdict "$state_file.pinned.$$")
-    profile_actionable_pattern=$(profile_field actionable_pattern "$state_file.pinned.$$")
-    profile_severity_marker=$(profile_field severity_marker "$state_file.pinned.$$")
-    profile_metadata_line=$(profile_field metadata_line "$state_file.pinned.$$")
-    profile_about_summary=$(profile_field about_summary "$state_file.pinned.$$")
-    profile_heading=$(profile_field heading "$state_file.pinned.$$")
-    profile_carrier_sentence=$(profile_field carrier_sentence "$state_file.pinned.$$")
-    profile_success_reaction=$(profile_field success_reaction "$state_file.pinned.$$")
-    profile_pending_reaction=$(profile_field pending_reaction "$state_file.pinned.$$")
-    rm -f "$state_file.pinned.$$"
+    # A restated --finder is checked against the pin (at the end of this
+    # function), never re-resolved: the cycle is classified by the profile it
+    # was RESERVED under, so a merge base that moved mid-cycle cannot change
+    # how already-collected evidence is read.
+    pinned_file="$(mktemp)" || die "cannot create a temporary file"
+    printf '%s' "$pinned" >"$pinned_file"
+    profile_finder=$(profile_field finder "$pinned_file")
+    profile_actor_id=$(profile_field actor_id "$pinned_file")
+    profile_actor_login=$(profile_field actor_login "$pinned_file")
+    profile_trigger_mechanism=$(profile_field trigger_mechanism "$pinned_file")
+    profile_trigger_body=$(profile_field trigger_body "$pinned_file")
+    profile_trigger_reviewer=$(profile_field trigger_reviewer "$pinned_file")
+    profile_surfaces=$(profile_field surfaces "$pinned_file")
+    profile_head_binding=$(profile_field head_binding "$pinned_file")
+    profile_verdict_mode=$(profile_field verdict_mode "$pinned_file")
+    profile_clean_verdict=$(profile_field clean_verdict "$pinned_file")
+    profile_actionable_pattern=$(profile_field actionable_pattern "$pinned_file")
+    profile_severity_marker=$(profile_field severity_marker "$pinned_file")
+    profile_metadata_line=$(profile_field metadata_line "$pinned_file")
+    profile_about_summary=$(profile_field about_summary "$pinned_file")
+    profile_heading=$(profile_field heading "$pinned_file")
+    profile_carrier_sentence=$(profile_field carrier_sentence "$pinned_file")
+    profile_success_reaction=$(profile_field success_reaction "$pinned_file")
+    profile_pending_reaction=$(profile_field pending_reaction "$pinned_file")
+    rm -f "$pinned_file"
     [ -z "$finder_slug" ] || [ "$finder_slug" = "$profile_finder" ] ||
         die "--finder ${finder_slug} does not name the finder this cycle was reserved for (${profile_finder})"
 }
@@ -1263,6 +1293,19 @@ reap)
         path_repo="${candidate_grandparent##*/}/${candidate_parent##*/}"
         path_pr=${candidate##*/}
         path_pr=${path_pr%.json}
+        # A multi-finder cycle stores its state as <pr>-<finder>.json (#796),
+        # one file per finder, so the PR is the segment before the first
+        # hyphen. Without this every such file disagrees with its own path
+        # forever and is skipped, and a closed PR leaks one state file per
+        # configured finder. A bare <pr>.json is unaffected: it contains no
+        # hyphen, so the strip is a no-op.
+        path_finder=
+        case "$path_pr" in
+        *-*)
+            path_finder=${path_pr#*-}
+            path_pr=${path_pr%%-*}
+            ;;
+        esac
 
         state_repo=$(jq -er '
               select(
@@ -1293,7 +1336,23 @@ reap)
         # them to agree means a state file that was moved, hand-edited, or
         # dropped in from elsewhere is left alone rather than driving a delete
         # against whatever PR its contents happen to name.
-        if [ "$state_repo" != "$path_repo" ] || [ "$state_pr" != "$path_pr" ]; then
+        # The finder suffix has to agree too, for the same reason the PR does:
+        # a state whose contents name a different finder than its filename has
+        # been moved or hand-edited, and reaping it would delete a record for
+        # a cycle other than the one the path claims.
+        state_finder=$(jq -r '.finder // empty' "$candidate" 2>/dev/null) || state_finder=
+        # A suffixed path must name the state's own finder. An UNsuffixed one
+        # may only hold the default cycle: a bare <pr>.json whose contents name
+        # another finder is the same moved-or-hand-edited case, and reaping it
+        # would delete a record belonging to a cycle the path does not claim.
+        # A state written before finders were recorded has none, and is fine.
+        path_finder_expected=$path_finder
+        [ -n "$path_finder_expected" ] || path_finder_expected=codex-cloud
+        finder_agrees=1
+        [ -z "$state_finder" ] || [ "$state_finder" = "$path_finder_expected" ] || finder_agrees=0
+        [ -z "$path_finder" ] || [ -n "$state_finder" ] || finder_agrees=0
+        if [ "$state_repo" != "$path_repo" ] || [ "$state_pr" != "$path_pr" ] ||
+            [ "$finder_agrees" -eq 0 ]; then
             reap_record "$candidate" "$state_repo" "$state_pr" "" skipped \
                 "state contents disagree with the path they are stored under"
             continue
@@ -1422,6 +1481,13 @@ check)
     # different one.
     [ -z "$profile_actor_id" ] || [ "$actor_id" = "$profile_actor_id" ] ||
         die "--actor-id ${actor_id} is not the actor this cycle was reserved for (${profile_actor_id}, ${profile_finder})"
+    # An unpassed --actor-login takes the PINNED profile's login rather than
+    # this script's Codex default. Without that, every caller of a non-Codex
+    # cycle that supplies only --actor-id (the readiness gate's recheck, for
+    # one) fails the guard below on a login it never chose, and the whole
+    # multi-finder path becomes unpromotable.
+    [ "$actor_login_set" -eq 1 ] || [ -z "$profile_actor_login" ] ||
+        actor_login="$profile_actor_login"
     [ -z "$profile_actor_login" ] || [ "$actor_login" = "$profile_actor_login" ] ||
         die "--actor-login ${actor_login} is not the login this cycle was reserved for (${profile_actor_login})"
 
