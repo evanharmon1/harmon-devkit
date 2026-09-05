@@ -2517,6 +2517,12 @@ function writeScenario(name, db) {
       evidence.push(ev);
       evidenceIndex.push(evidenceIndexEntry(ev, author, "orchestrator", runId, w.stage, "issue", w.round, 1, payloadDigest(JSON.stringify(payload))));
     }
+    // Unindexed writes (challenge round 3 of #741): evidence-shaped comments
+    // by the run's own author that the record never lists — reported, never
+    // assembled; the fixture says whether each is an orphan (trusted at its
+    // write time) or forged-class (not trusted at its write time).
+    const unindexed = (fixture.run.unindexed_writes || []).map((w) =>
+      evidenceComment(author, "orchestrator", runId, w.stage, "issue", w.round, 1, { passes: [] }, w.posted_at));
     const runBody = {
       schema: 2, run_id: runId, initiated_by: "human", started_at: fixture.run.kickoff_at,
       stage_transitions: chain([{ stage: "kickoff", entered_at: fixture.run.kickoff_at }]),
@@ -2547,7 +2553,7 @@ function writeScenario(name, db) {
     });
     writeScenario(\`registry-trust-\${name}\`, {
       issues: [{ number: issueNumber, pull_request: null }],
-      comments: { [String(issueNumber)]: [idx, rr, ...evidence] },
+      comments: { [String(issueNumber)]: [idx, rr, ...evidence, ...unindexed] },
       commits: {},
       registry_commits: revisions.map((r) => ({ sha: r.sha })),
       registry_contents: registryContents,
@@ -3459,6 +3465,16 @@ for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
             echo "$out" | jq -e --argjson n "$expect_rounds" '.rounds | length == $n' >/dev/null ||
                 fail "registry-trust/$name: expected $expect_rounds assembled round(s), got: $out"
         fi
+        expect_orphans="$(meta "$scenario" '.meta.expect.orphan_count // ""')"
+        expect_forged="$(meta "$scenario" '.meta.expect.forged_count // ""')"
+        if [ -n "$expect_orphans" ]; then
+            echo "$out" | jq -e --argjson n "$expect_orphans" '.orphan_comments | length == $n' >/dev/null ||
+                fail "registry-trust/$name: expected $expect_orphans orphan comment(s), got: $out"
+        fi
+        if [ -n "$expect_forged" ]; then
+            echo "$out" | jq -e --argjson n "$expect_forged" '.forged_comments | length == $n' >/dev/null ||
+                fail "registry-trust/$name: expected $expect_forged forged comment(s), got: $out"
+        fi
         ;;
     indeterminate)
         set +e
@@ -3475,6 +3491,6 @@ for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
     echo "PASS: registry-trust/$name"
     corpus_count=$((corpus_count + 1))
 done
-[ "$corpus_count" -ge 13 ] || fail "registry-trust corpus: expected at least 13 cases, found $corpus_count"
+[ "$corpus_count" -ge 14 ] || fail "registry-trust corpus: expected at least 14 cases, found $corpus_count"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

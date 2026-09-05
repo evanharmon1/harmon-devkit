@@ -1156,10 +1156,14 @@ one run (`run`: `author_actor_id`,
 `kickoff_at`, `evidence_writes[]` with each write's `posted_at`, and an
 optional `record_edited_at` that becomes the record comment's `updated_at`,
 and optional `index_posted_at` / `index_edited_at` that move the run-index
-anchor's own `created_at` / `updated_at` after the record's),
+anchor's own `created_at` / `updated_at` after the record's, and optional
+`unindexed_writes[]` — evidence-shaped comments the record never lists,
+reported but never assembled),
 the operator's `cli_trusted_actor_ids`, and the verdict it expects
 (`expect.status` of `ok` or `indeterminate`, `expect.reason_contains` — the
-`.reason` sidecar's role, inline — and `expect.rounds` for an accepted run).
+`.reason` sidecar's role, inline — and, for an accepted run, `expect.rounds`
+plus optional `expect.orphan_count` / `expect.forged_count` for the report's
+unlisted-comment classification).
 Adding a case is one directory; the runner discovers the corpus and asserts
 every fixture's own expectation, and fails if fewer cases than the shipped
 corpus (thirteen at this writing; the floor in
@@ -1174,7 +1178,8 @@ names an actor the registry does not (never widened); plus, from
 challenge round 1, a staging-branch merge that must not backdate a landing
 and a same-second landing whose order is unknowable (indeterminate); and,
 from challenge round 2, a run-index anchor posted after its author's
-removal.
+removal; and, from challenge round 3, an unlisted post-removal comment
+reported as forged-class rather than as a trusted orphan.
 
 `ai/schemas/fixtures/result.reviewer.schema/valid/omator-397-*.json` and
 `ai/schemas/fixtures/adjudication.schema/valid/omator-397-*-adjudication.json`

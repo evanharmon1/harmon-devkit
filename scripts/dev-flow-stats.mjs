@@ -1359,12 +1359,32 @@ function reconstructAsOf(body, cutoffIso, recordCreatedAt) {
 //     evidence.
 // ---------------------------------------------------------------------------
 
-function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds }) {
+// Reporting-only classification, but under the same per-write trust
+// boundary as assembly — challenge round 3 of #741, confirmed (P2): author
+// equality alone called a marker posted by the run's own author AFTER their
+// removal from the allowlist an "orphan" (trusted-but-unlisted), when the
+// per-write rule says that write was never trusted at all. Such a comment
+// is a forged-class comment for the report's purposes. A write whose trust
+// cannot be evaluated (no registry revision in effect, unresolvable
+// history) is likewise NOT provably trusted and is reported as forged
+// rather than aborting a reporting path with an EvidenceError — assembly,
+// not this report, is where indeterminacy makes the run indeterminate.
+function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds, effectiveTrustAt }) {
   const marked = markedComments(comments).filter((e) => e.marker.kind === "evidence" && e.marker.runId === runId);
   const trusted = [];
   const forged = [];
+  const trustedAtWrite = (comment) => {
+    if (!isTrustedFor(comment, { runRecordAuthorId })) return false;
+    if (typeof effectiveTrustAt !== "function") return true;
+    try {
+      return effectiveTrustAt(comment.created_at).has(runRecordAuthorId);
+    } catch (err) {
+      if (err instanceof EvidenceError) return false;
+      throw err;
+    }
+  };
   for (const e of marked) {
-    if (isTrustedFor(e.comment, { runRecordAuthorId })) {
+    if (trustedAtWrite(e.comment)) {
       if (!listedIds.has(e.comment.id)) trusted.push(e);
     } else {
       forged.push(e);
@@ -1501,7 +1521,7 @@ function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, w
     // trajectory, and re-running the SAME --as-of C later (after more
     // comments land) could change its orphan/forged report even though
     // nothing about "as of C" should change.
-    const { trusted: orphans, forged: forgedMarkers } = findOrphanEvidence(allComments.filter(withinCutoff), { runId: record.runId, runRecordAuthorId: record.authorActorId, listedIds });
+    const { trusted: orphans, forged: forgedMarkers } = findOrphanEvidence(allComments.filter(withinCutoff), { runId: record.runId, runRecordAuthorId: record.authorActorId, listedIds, effectiveTrustAt });
     return {
       status: "ok",
       runId: record.runId,
