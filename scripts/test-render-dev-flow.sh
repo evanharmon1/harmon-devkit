@@ -106,6 +106,57 @@ assert_rc 0
 assert_contains "$out" 'review-r2-codex-cli-1'
 assert_contains "$out" '(P1, fix)'
 
+# ── the split option on a blocker report (#747) ─────────────────────────
+#
+# Deliverable: a blocker rendered from a trajectory where a mechanism added in
+# round n carries ALL of round n+1's P1s must offer "split the mechanism out"
+# WITH its evidence — not merely name the spent cap. split-record/ is that
+# trajectory (review round 1 adds src/lane/claim-primitive.ts; round 2's three
+# P1s all live in it and all carry round:1 provenance).
+split_record_dir="${fixtures_dir}/split-record"
+
+echo "==> golden: blocker-comment (split candidate) matches golden/blocker-comment-split.txt"
+run blocker-comment --record "$split_record_dir" --head "$render_head"
+assert_rc 0
+[ "$out" = "$(cat "${golden_dir}/blocker-comment-split.txt")" ] ||
+    fail "blocker-comment drifted from blocker-comment-split.txt (diff shown)
+$(diff <(printf '%s' "$out") "${golden_dir}/blocker-comment-split.txt" || true)"
+
+echo "==> the split option carries the mechanism, its introducing round, and the findings living in it"
+assert_contains "$out" '- Options:'
+assert_contains "$out" 'Order more rounds'
+assert_contains "$out" 'Accept as spent'
+assert_contains "$out" 'Split the mechanism out'
+assert_contains "$out" 'src/lane/claim-primitive.ts'
+assert_contains "$out" 'introduced by round 1'
+assert_contains "$out" 'across rounds 1–2'
+for finding_id in review-r2-codex-cli-1 review-r2-codex-cli-2 review-r2-codex-cli-3; do
+    assert_contains "$out" "$finding_id"
+done
+assert_contains "$out" 'file it on the current milestone'
+assert_contains "$out" 'run one deletion round'
+
+echo "==> a verdict with no detected candidate still lists the option, saying why it is not indicated"
+no_split_record="${test_tmp}/no-split-record"
+cp -R "$split_record_dir" "$no_split_record"
+jq '.split_candidate.detected = false | .split_candidate.reason = "no_round_provenance" |
+    .split_candidate.introduced_by_rounds = []' \
+    "$no_split_record/verdict.json" >"${test_tmp}/no-split-verdict.json"
+mv "${test_tmp}/no-split-verdict.json" "$no_split_record/verdict.json"
+run blocker-comment --record "$no_split_record" --head "$render_head"
+assert_rc 0
+assert_contains "$out" 'Split the mechanism out — not indicated at round 2'
+assert_contains "$out" "none is attributed to an earlier round's fix"
+
+echo "==> a malformed split_candidate is refused rather than rendered as advice"
+bad_split_record="${test_tmp}/bad-split-record"
+cp -R "$split_record_dir" "$bad_split_record"
+jq '.split_candidate.mechanism = null' "$bad_split_record/verdict.json" >"${test_tmp}/bad-split-verdict.json"
+mv "${test_tmp}/bad-split-verdict.json" "$bad_split_record/verdict.json"
+run blocker-comment --record "$bad_split_record" --head "$render_head"
+assert_rc 1
+assert_contains "$err" 'split_candidate.mechanism must name the mechanism when detected is true'
+
 echo "==> golden: thread-reply-plan matches golden/thread-reply-plan.json"
 golden_matches thread-reply-plan thread-reply-plan.json
 

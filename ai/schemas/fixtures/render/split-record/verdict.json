@@ -1,0 +1,31 @@
+{
+  "stage": "review",
+  "outcome": "capped",
+  "reason": "findings_remain",
+  "action": "escalate",
+  "rounds_counted": 2,
+  "next_round": null,
+  "substitutions": [],
+  "split_candidate": {
+    "round": 2,
+    "mechanism": "src/lane/claim-primitive.ts",
+    "concentration": 1,
+    "provenance_share": 1,
+    "introduced_by_rounds": [
+      1
+    ],
+    "finding_ids": [
+      "review-r2-codex-cli-1",
+      "review-r2-codex-cli-2",
+      "review-r2-codex-cli-3"
+    ],
+    "consecutive_rounds": [
+      1,
+      2
+    ],
+    "detected": true,
+    "reason": "concentrated_round_provenance"
+  },
+  "corrections": [],
+  "diagnostics": []
+}

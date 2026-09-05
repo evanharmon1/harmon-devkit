@@ -72,6 +72,17 @@ const VERDICT_EXPECTATION_KEYS = new Set([
   "verified_provenance_for",
   "verified_findings_count",
   "no_repeat_relationship",
+  // The split-candidate diagnostic (#747). `split_candidate_absent` asserts
+  // the field is missing entirely — computable only from a complete latest
+  // round, so "no signal" and "a negative signal" are deliberately distinct
+  // and a fixture must be able to pin either one.
+  "split_candidate_absent",
+  "split_candidate_detected",
+  "split_candidate_reason",
+  "split_candidate_mechanism",
+  "split_candidate_introduced_by_rounds",
+  "split_candidate_finding_ids",
+  "split_candidate_consecutive_rounds",
   "unresolved_slot",
   "substitutions_json",
   "next_round",
@@ -140,6 +151,8 @@ function checkVerdict(expected, actual) {
       return `verified_findings count: expected ${expected.verified_findings_count}, got ${count}`;
     }
   }
+  const splitProblem = checkSplitCandidate(expected, actual)
+  if (splitProblem) return splitProblem
   if (expected.no_repeat_relationship !== undefined) {
     // [originId, claimantId]: claimantId must NOT be a verified repeat-of
     // (or supersedes) originId — a fabricated same-file claim must stay
@@ -149,6 +162,36 @@ function checkVerdict(expected, actual) {
     if (entry && entry.fingerprint_status === "verified" && entry.verified_fingerprint === `repeat-of:${originId}`) {
       return `expected "${claimantId}" to have no verified repeat relationship with "${originId}", but its fingerprint verified as repeat-of:${originId}`;
     }
+  }
+  return null;
+}
+
+// The split-candidate projection (#747). Every assertion below other than
+// `split_candidate_absent` requires the field to be present, so a fixture
+// cannot silently pass because the whole projection went missing — the exact
+// failure mode review round 1 caught in the corrections/provenance keys.
+function checkSplitCandidate(expected, actual) {
+  const candidate = actual.split_candidate
+  if (expected.split_candidate_absent !== undefined) {
+    const absent = candidate === undefined
+    if (expected.split_candidate_absent !== absent) {
+      return `split_candidate: expected ${expected.split_candidate_absent ? 'absent' : 'present'}, got ${JSON.stringify(candidate)}`
+    }
+  }
+  const assertions = [
+    ["split_candidate_detected", "detected"],
+    ["split_candidate_reason", "reason"],
+    ["split_candidate_mechanism", "mechanism"],
+    ["split_candidate_introduced_by_rounds", "introduced_by_rounds"],
+    ["split_candidate_finding_ids", "finding_ids"],
+    ["split_candidate_consecutive_rounds", "consecutive_rounds"],
+  ];
+  for (const [key, field] of assertions) {
+    if (expected[key] === undefined) continue;
+    if (candidate === undefined) return `${key}: verdict carries no split_candidate at all`;
+    const got = JSON.stringify(candidate[field]);
+    const want = JSON.stringify(expected[key]);
+    if (got !== want) return `split_candidate.${field}: expected ${want}, got ${got}`;
   }
   return null;
 }

@@ -1,0 +1,14 @@
+{
+  "rigor": {
+    "level": "standard",
+    "source": "default_rigor"
+  },
+  "rounds": {
+    "challenge": 3,
+    "review": 2,
+    "integration": 4,
+    "remediation": 4,
+    "min_rounds": 1
+  },
+  "disclosures": []
+}

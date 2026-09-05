@@ -112,6 +112,113 @@ assert.equal(withUnavailableLedger.status, "unverified", "an UNAVAILABLE ledger 
 console.log("ledger-availability smoke check OK");
 '
 
+echo "== dev-flow-exit.mjs: split-candidate boundary cases (#747) =="
+node --input-type=module -e '
+import { computeSplitCandidate } from "./scripts/dev-flow-exit.mjs";
+import assert from "node:assert/strict";
+
+// Findings arrive at computeSplitCandidate already carrying the adjudicated
+// priority and the VERIFIED provenance applyVerification computed — the same
+// state computeVerdict sees. These fixtures build that state directly so the
+// boundary cases stay readable; the end-to-end path is the
+// omator-648-split-candidate-at-r9 conformance fixture.
+const finding = (id, path, round, provenance, priority = "P1", provenanceStatus = "verified") => ({
+  id,
+  path,
+  round,
+  adjudicated_priority: priority,
+  verifiedProvenance: provenance,
+  provenanceStatus,
+});
+const complete = (round, findings) => ({ round, status: "complete", findings });
+
+// A single round can never be a split candidate: "concentrating across
+// consecutive rounds" needs a previous round to have concentrated in.
+const loneRound = [complete(1, [finding("review-r1-f-1", "a.ts", 1, "round:0")])];
+const lone = computeSplitCandidate(loneRound, 0, []);
+assert.equal(lone.detected, false);
+assert.equal(lone.reason, "not_consecutive");
+
+// A round with no gating findings has nothing to concentrate, and says so
+// distinctly rather than reporting a negative concentration verdict.
+const cleanRound = [complete(1, [finding("review-r1-f-1", "a.ts", 1, "original", "P2")])];
+const clean = computeSplitCandidate(cleanRound, 0, []);
+assert.equal(clean.reason, "no_gating_findings");
+assert.equal(clean.mechanism, null);
+assert.equal(clean.concentration, 0);
+
+// Two adjacent rounds concentrated in one mechanism, with the current round
+// attributed to the previous round s own fix: the detected case.
+const detectedRounds = [
+  complete(1, [finding("review-r1-f-1", "m.ts", 1, "round:0")]),
+  complete(2, [finding("review-r2-f-1", "m.ts", 2, "round:1"), finding("review-r2-f-2", "m.ts", 2, "round:1")]),
+];
+const detected = computeSplitCandidate(detectedRounds, 1, []);
+assert.equal(detected.detected, true);
+assert.equal(detected.mechanism, "m.ts");
+assert.equal(detected.concentration, 1);
+assert.deepEqual(detected.introduced_by_rounds, [1]);
+assert.deepEqual(detected.consecutive_rounds, [1, 2]);
+assert.deepEqual(detected.finding_ids, ["review-r2-f-1", "review-r2-f-2"]);
+
+// One stray finding elsewhere breaks unanimity — the knob-free concentration
+// test is ALL of the round s gating findings, never a tunable majority.
+const strayRounds = [
+  complete(1, [finding("review-r1-f-1", "m.ts", 1, "round:0")]),
+  complete(2, [
+    finding("review-r2-f-1", "m.ts", 2, "round:1"),
+    finding("review-r2-f-2", "m.ts", 2, "round:1"),
+    finding("review-r2-f-3", "other.ts", 2, "original"),
+  ]),
+];
+const stray = computeSplitCandidate(strayRounds, 1, []);
+assert.equal(stray.detected, false);
+assert.equal(stray.reason, "not_concentrated");
+assert.equal(stray.mechanism, "m.ts");
+assert.ok(stray.concentration < 1);
+
+// A rename between rounds is ONE mechanism, not two paths that never
+// concentrate: the ledger s rename chain resolves both to the origin path.
+const renameLedger = [
+  { round: 1, path: "m.ts", added_lines: [10], deleted_lines: [], renamed_from: null },
+  { round: 2, path: "renamed.ts", added_lines: [10], deleted_lines: [], renamed_from: "m.ts" },
+];
+const renamedRounds = [
+  complete(2, [finding("review-r2-f-1", "m.ts", 2, "round:1")]),
+  complete(3, [finding("review-r3-f-1", "renamed.ts", 3, "round:2")]),
+];
+const renamed = computeSplitCandidate(renamedRounds, 1, renameLedger);
+assert.equal(renamed.mechanism, "m.ts", "a renamed mechanism resolves to its origin path");
+assert.equal(renamed.detected, true);
+
+// An unverified provenance claim leaves BOTH sides of the share, exactly as
+// predicate_provenance_share treats it — evidence nobody could check must
+// neither manufacture nor mask the signal.
+const unverifiedRounds = [
+  complete(1, [finding("review-r1-f-1", "m.ts", 1, "round:0")]),
+  complete(2, [
+    finding("review-r2-f-1", "m.ts", 2, "round:1"),
+    finding("review-r2-f-2", "m.ts", 2, "original", "P1", "unverified"),
+  ]),
+];
+const unverified = computeSplitCandidate(unverifiedRounds, 1, []);
+assert.equal(unverified.provenance_share, 1, "the unverified finding leaves the denominator, not just the numerator");
+assert.equal(unverified.concentration, 1, "concentration still counts every gating finding, verified or not");
+assert.equal(unverified.detected, true);
+
+// Concentration with no round attribution at all is an under-reviewed change,
+// not a loop feeding on its own fixes.
+const originalRounds = [
+  complete(1, [finding("review-r1-f-1", "spec.md", 1, "original")]),
+  complete(2, [finding("review-r2-f-1", "spec.md", 2, "original")]),
+];
+const originals = computeSplitCandidate(originalRounds, 1, []);
+assert.equal(originals.detected, false);
+assert.equal(originals.reason, "no_round_provenance");
+
+console.log("split-candidate boundary checks OK");
+'
+
 echo "== devflow-policy.mjs never operates under this repo'\''s live legacy .devflow.toml =="
 if node scripts/devflow-policy.mjs resolve --policy .devflow.toml >/tmp/dfp-live-$$.out 2>/tmp/dfp-live-$$.err; then
     rm -f "/tmp/dfp-live-$$.out" "/tmp/dfp-live-$$.err"

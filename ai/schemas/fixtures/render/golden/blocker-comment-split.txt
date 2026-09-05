@@ -1,0 +1,16 @@
+## Blocker: review capped (findings_remain)
+
+- Head: `2222222222222222222222222222222222222222`
+- Stage: review
+- Outcome: `capped` (`findings_remain`)
+- Spent: review 2/2
+- Unresolved:
+  - review-r1-codex-cli-2 — src/lane/import.ts:96 — no upper bound on the retry backoff (P2, defer)
+  - review-r2-codex-cli-1 — src/lane/claim-primitive.ts:10 — round-1's in-flight claim primitive publishes the claim before its own reservation exists (P1, fix)
+  - review-r2-codex-cli-2 — src/lane/claim-primitive.ts:20 — a crash between reserve and publish leaves an unreleasable claim (P1, fix)
+  - review-r2-codex-cli-3 — src/lane/claim-primitive.ts:30 — two lanes can reserve the same claim id concurrently (P1, fix)
+- Options:
+  - Order more rounds — the review cap is spent — raising it is an explicit human decision.
+  - Accept as spent — advance with the unresolved findings recorded and carried forward.
+  - Split the mechanism out — `src/lane/claim-primitive.ts` (introduced by round 1) carries all 3 gating finding(s) of round 2 across rounds 1–2: review-r2-codex-cli-1, review-r2-codex-cli-2, review-r2-codex-cli-3. Remove it from this change, file it on the current milestone with the design constraints these rounds established, restore the finding it addressed as a filed follow-up, and run one deletion round.
+- Next action: escalate to a human

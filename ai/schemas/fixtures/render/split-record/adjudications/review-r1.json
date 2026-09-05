@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "run_id": "run-747-split-fixture-0001",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "1111111111111111111111111111111111111111",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed against the import path; fixed by adding an in-flight claim primitive",
+      "evidence": "a lane can be imported twice while its first import is still in flight",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-2",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "defer",
+      "reason": "carried to integration; not merge-blocking",
+      "evidence": "no upper bound on the retry backoff",
+      "override": null
+    }
+  ]
+}

@@ -245,3 +245,42 @@ not a defaultable success.
 
 - **WHEN** `[stage.review].finders` contains a slug absent from the registry
 - **THEN** validation fails and no review round is dispatched
+
+### Requirement: The split strategy is a named exit path and adds no policy knob
+
+The convergence model SHALL name **splitting a mechanism out** as a third way
+to resolve a stage whose findings feed on earlier rounds' fixes, beside
+deleting the added code and restructuring it to invariants. The exit
+computation SHALL expose the signal that calls for it — per round, the share
+of adjudicated gating findings whose subject an earlier round of the same
+stage added, and their concentration by mechanism — so a round record can
+carry a split candidate with its evidence rather than only `capped`.
+
+That signal SHALL be computable from the policy this specification already
+defines. The policy SHALL NOT gain a per-stage concentration threshold, or any
+other split-specific knob: concentration is evaluated as unanimity (one
+mechanism holds every adjudicated gating finding of the round) and the
+trajectory test is the immediately preceding round, neither of which is a
+tunable quantity. A rigor level therefore cannot tune the signal, which is
+correct for a diagnostic that a `rigor:*` label — advisory, appliable by
+anyone with triage — must not be able to weaken.
+
+The signal SHALL NOT change any exit outcome, reason, precedence order, exit
+code, or round limit. Splitting is a decision an attributable human or
+orchestrator takes on the evidence; the computation's job is to put the
+evidence in front of them.
+
+#### Scenario: A rigor level attempts to tune the split signal
+
+- **WHEN** a policy declares a per-stage concentration threshold for the split signal
+- **THEN** validation rejects the unknown key, exactly as it rejects any other undefined policy key, and the shipped signal is unchanged
+
+#### Scenario: A stage caps with its findings concentrated in one mechanism
+
+- **WHEN** the final permitted round's adjudicated gating findings all resolve to one mechanism an earlier round of that same stage introduced
+- **THEN** the verdict is `capped` unchanged, and it additionally carries the split candidate — the mechanism, the rounds that introduced it, and the findings living in it — for the blocker report to offer beside ordering more rounds and accepting the stage as spent
+
+#### Scenario: A concentrated round whose findings are all original
+
+- **WHEN** every adjudicated gating finding of a round sits in one file but none is attributable to an earlier round's fix
+- **THEN** no split candidate is reported: the change was under-reviewed, which more rounds address, not a loop feeding on its own fixes

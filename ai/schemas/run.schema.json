@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/run.schema.json",
   "title": "Dev flow v2 run record",
-  "$comment": "Orchestrator-authored, NOT wrapped in result.envelope.schema.json (see adjudication.schema.json's $comment for why). The ONLY home of mutable run state (specs/dev-flow-v2.md § Results): stage transitions, interventions, outcome, pr, evidence-comment bookkeeping, settlements, and the promotion entry. Reserved on the issue at kickoff and edited in place at every transition up to ready-for-review (docs/decisions/0002).",
+  "$comment": "Orchestrator-authored, NOT wrapped in result.envelope.schema.json (see adjudication.schema.json's $comment for why). The ONLY home of mutable run state (specs/dev-flow-v2.md § Results): stage transitions, interventions, outcome, pr, evidence-comment bookkeeping, settlements, splits, and the promotion entry. Reserved on the issue at kickoff and edited in place at every transition up to ready-for-review (docs/decisions/0002).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -276,6 +276,47 @@
               "type": { "enum": ["sha", "comment_id", "issue_number"] },
               "value": { "type": "string", "minLength": 1 }
             }
+          }
+        }
+      }
+    },
+    "splits": {
+      "description": "Append-only. Each entry records one mechanism SPLIT OUT of the change under review (specs/dev-flow-v2.md \u00a7 The split strategy, issue #747): successive rounds' gating findings concentrated in it, so instead of hardening it once more the orchestrator removed it from this change, filed it as its own issue on the current milestone carrying the design constraints the rounds established, and ran one deletion round. Separate from `settlements[]`, which terminalizes a `defer`: a split is not a deferred finding coming due, it is a scope decision about the change. The per-finding half lives in the round's adjudication document (`disposition: \"split\"`, with a `reference` naming the same issue); this array is the run-level projection a readiness gate or retro can read without loading every round. `milestone` is required for exactly the reason the strategy exists \u2014 a mechanism filed with no milestone is the \"left to memory\" outcome the split is supposed to prevent.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mechanism", "stage", "round", "issue", "milestone", "finding_ids", "split_at"],
+        "properties": {
+          "mechanism": {
+            "description": "What was removed, named the way the exit computation's `split_candidate.mechanism` names it: the repository path the concentrated findings resolved to (rename-tracked), or a longer human name where one file does not capture it.",
+            "type": "string",
+            "minLength": 1
+          },
+          "stage": { "enum": ["challenge", "review", "integration"] },
+          "round": { "type": "integer", "minimum": 1 },
+          "issue": {
+            "description": "The issue the mechanism was filed as \u2014 a bare number for this repository, or owner/repo#<n> when it was filed elsewhere. Same grammar as a settlement/adjudication reference of type issue_number.",
+            "type": "string",
+            "minLength": 1
+          },
+          "milestone": {
+            "description": "The milestone that issue was filed on \u2014 'the current milestone' (issue #747), recorded rather than assumed.",
+            "type": "string",
+            "minLength": 1
+          },
+          "finding_ids": {
+            "description": "The findings that lived in the mechanism and are answered by the split. Each must be adjudicated `split` in its round's document; the validator cross-checks that whenever --adjudication is supplied.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+            }
+          },
+          "split_at": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
           }
         }
       }

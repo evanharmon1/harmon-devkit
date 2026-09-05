@@ -69,6 +69,8 @@ is_context_only_fixture() {
     */run.schema/invalid/settlement-of-fixed-finding.json) return 0 ;;
     */run.schema/invalid/settlement-of-unknown-finding.json) return 0 ;;
     */run.schema/invalid/ready-with-unsettled-deferral.json) return 0 ;;
+    */run.schema/invalid/split-of-fixed-finding.json) return 0 ;;
+    */run.schema/invalid/split-issue-disagrees-with-adjudication.json) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -756,6 +758,27 @@ run_context_case \
     "$fixtures_dir/run.schema/invalid/settlement-of-unknown-finding.json" \
     "is not adjudicated in any supplied --adjudication document" \
     --adjudication "$settlement_cross_check_adjudication"
+
+split_cross_check_adjudication="$fixtures_dir/run.schema/invalid/split-cross-check.adjudication.json"
+
+# The run-level splits[] projection and the per-finding `split` adjudications
+# are two documents describing one decision (#747). Neither proves the other
+# alone, so the binding is context-only: a split naming a finding that was
+# actually fixed, or naming a different issue than the adjudication filed it
+# as, is the "left to memory" failure with a paper trail.
+run_context_case \
+    "a split naming a finding adjudicated fix (not split) is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-of-fixed-finding.json" \
+    "was adjudicated fix, not split" \
+    --adjudication "$split_cross_check_adjudication"
+
+run_context_case \
+    "a split naming a different issue than its adjudication filed it as is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-issue-disagrees-with-adjudication.json" \
+    "but this split names 999" \
+    --adjudication "$split_cross_check_adjudication"
 
 run_context_case \
     "an --adjudication document belonging to a foreign run is rejected" \

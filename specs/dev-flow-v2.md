@@ -439,13 +439,83 @@ is clean, which is where omator#397 would have been stopped.
   stage feeding on itself. `unverified` findings count toward the totals.
 - `repeat_after_fix()` — true when any current-round finding is
   `repeat-of:<id>` (verified, or a script-detected repeat) where `<id>`'s
-  adjudicated disposition **changed the code** — `fix`, `restructure`, or
-  `delete` — in an earlier round. (A repeat after `decline` is the finding
-  producer disagreeing, not the loop feeding on itself.)
+  adjudicated disposition **changed the code** — `fix`, `restructure`,
+  `delete`, or `split` — in an earlier round. (A repeat after `decline` is
+  the finding producer disagreeing, not the loop feeding on itself.)
 
 Boundary fixtures for each — empty current round, a single round, a
 denominator of zero, a repeat whose original was `decline`d — ship with the
 exit script and are part of the conformance set.
+
+### The split strategy
+
+Two named ways to converge a loop feeding on its own fixes are already
+above — **delete the scaffolding** and **restructure it to invariants**. A
+third exists and, until issue
+[#747](https://github.com/evanharmon1/harmon-devkit/issues/747), lived only
+as a maintainer's judgement call: **split the mechanism out**.
+
+It applies when successive rounds' gating findings concentrate in **one
+mechanism**, most sharply one that an **earlier round of the same stage
+added**. It is distinct from the other two on one fact: the mechanism is
+still wanted. Deleting it drops work that is genuinely needed; restructuring
+it to an invariant is unavailable because it is code, not accreted
+procedure-prose. So instead of hardening it again on this change's review
+budget, the mechanism leaves the change and gets a budget of its own.
+
+What a split produces, all four parts or it is not a split:
+
+1. the mechanism is **removed from the change under review**;
+2. it is **filed as its own issue on the current milestone**, carrying the
+   design constraints the rounds established — by the agent that splits it,
+   at the moment it splits it, never left to memory;
+3. whatever finding the mechanism was **addressing** is restored as a filed
+   follow-up, so removing the mechanism does not silently drop the defect it
+   existed for;
+4. **one deletion round** confirms the removal, and the stage then exits
+   through its ordinary conditions — the split buys no exception to them.
+
+The record is two documents, deliberately: the per-finding half is an
+`adjudication.schema.json` entry with `disposition: split` and a `reference`
+naming the filed issue, and the run-level half is `run.schema.json`'s
+`splits[]` naming the mechanism, the issue, its milestone, and the findings
+the split answers. Neither proves the other, so a validator holding both
+checks that they agree.
+
+**The signal.** So that a session can propose a split at round 2 rather than
+after nine rounds, the exit script emits a `split_candidate` projection
+alongside every verdict computed from a complete latest round:
+
+| Field | Meaning |
+|---|---|
+| `mechanism` | the rename-tracked origin path holding the most of this round's adjudicated P0/P1 findings |
+| `concentration` | that mechanism's share of them |
+| `provenance_share` | the round-wide share of decidable P0/P1 findings whose verified provenance is `round:N` |
+| `introduced_by_rounds` | the earlier rounds this mechanism's findings are attributed to |
+| `finding_ids`, `consecutive_rounds`, `round` | the evidence a blocker report has to carry |
+| `detected`, `reason` | the verdict on the signal, and which test settled it |
+
+`detected` is true when one mechanism holds **every** adjudicated P0/P1
+finding of the current round, at least one of them has evidence-backed
+`round:N` provenance, and the **immediately preceding** round's own gating
+findings were concentrated in that same mechanism.
+
+Two properties of that rule are load-bearing. It is **knob-free**:
+concentration is unanimity rather than a fraction, and the trajectory test is
+the adjacent round rather than a window, so no per-stage threshold is
+configurable and a rigor level cannot tune the signal (the config spec records
+this decision). And it is a **diagnostic, not an outcome**: no exit outcome,
+exit code, precedence rule, or cap depends on it. A capped stage that would
+have said only "cap reached" can now say which mechanism it capped on and
+offer the split beside "order more rounds" and "accept as spent"; what it may
+not do is decide for the human.
+
+An `unverified` provenance claim leaves `provenance_share`'s numerator and
+denominator alike, exactly as the `provenance_share` predicate treats it — a
+claim no ledger could decide must neither manufacture nor mask the signal —
+while still counting toward `concentration`, which is about where the findings
+are rather than where they came from. `exclude_classes` is not applied to this
+projection at all: that parameter tunes a gate, and this is evidence.
 
 **Only rounds that reviewed the current head can satisfy `converged` or
 `capped`-clean.** Rounds on an ancestor head still count toward trajectory
@@ -872,6 +942,24 @@ absorbed by the issue that carries their criteria;
 - **Given** the exit is `diverging`
 - **When** the orchestrator dispatches a fix round whose adjudication carries only `fix` dispositions on `round:N` findings
 - **Then** the stage skill refuses the dispatch and the run stops with a blocker naming the findings
+
+### Scenario: a capped stage names its split candidate
+
+- **Given** rounds n and n+1 whose every adjudicated P0/P1 finding lives in one mechanism, and round n+1's carry `round:n` provenance the ledger confirms
+- **When** the exit script runs at the cap
+- **Then** the outcome is still `capped`, and the verdict carries `split_candidate.detected: true` naming that mechanism, the rounds that introduced it, and the findings living in it — which the blocker report renders as "split the mechanism out" beside "order more rounds" and "accept as spent"
+
+### Scenario: a concentrated round with no round provenance is not a split candidate
+
+- **Given** a capped round whose adjudicated P0/P1 findings all sit in one file, every one of them verified `original`
+- **When** the exit script runs
+- **Then** `split_candidate.detected` is false with reason `no_round_provenance` — an under-reviewed change is not a loop feeding on its own fixes
+
+### Scenario: a split names the issue it was filed as
+
+- **Given** an adjudication entry with `disposition: split`
+- **When** it carries no `reference`, or one that is not an `issue_number`
+- **Then** the validator rejects the document — a split-off mechanism is filed by the agent that splits it, never left to memory
 
 ### Scenario: capped with P0/P1 never opens a PR
 

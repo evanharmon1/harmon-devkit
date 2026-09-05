@@ -136,7 +136,7 @@ const STAGE_ORDER = { challenge: 0, review: 1, integration: 2 }
 // review-stage finding (its own schema fixes `stage` to a `const`).
 const STAGE_ROLES = { challenge: ['challenger', 'reviewer'], review: ['reviewer'], integration: ['integrator'] }
 const SETTLEMENT_GRAMMAR = { fix: 'fixed in', decline: 'declined:', file: 'filed as' }
-const REPLY_VERB = { fix: 'Fixed', restructure: 'Restructured', delete: 'Removed', decline: 'Declined', file: 'Filed' }
+const REPLY_VERB = { fix: 'Fixed', restructure: 'Restructured', delete: 'Removed', decline: 'Declined', file: 'Filed', split: 'Split out' }
 
 function usage() {
   console.error(
@@ -398,6 +398,54 @@ function validateVerdictShape(verdict, file) {
   }
   if (verdict.incomplete_round !== undefined && !(Number.isInteger(verdict.incomplete_round) && verdict.incomplete_round >= 1)) {
     fail(`${file}: incomplete_round, if present, must be a positive integer`)
+  }
+  // split_candidate is additive and optional, but a MALFORMED one must not
+  // reach the blocker report: `detected: true` with no mechanism, or a
+  // concentration outside 0..1, would render an authoritative-looking
+  // recommendation from a corrupted evaluator result — the same reason
+  // rounds_counted/next_round are bounds-checked above rather than merely
+  // type-checked.
+  if (verdict.split_candidate !== undefined) {
+    const candidate = verdict.split_candidate
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
+      fail(`${file}: split_candidate, if present, must be an object`)
+    }
+    if (typeof candidate.detected !== 'boolean') {
+      fail(`${file}: split_candidate.detected must be a boolean`)
+    }
+    if (!(Number.isInteger(candidate.round) && candidate.round >= 1)) {
+      fail(`${file}: split_candidate.round must be a positive integer`)
+    }
+    for (const field of ['concentration', 'provenance_share']) {
+      const value = candidate[field]
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+        fail(`${file}: split_candidate.${field} must be a number between 0 and 1`)
+      }
+    }
+    if (!Array.isArray(candidate.finding_ids) || !candidate.finding_ids.every((id) => typeof id === 'string' && id !== '')) {
+      fail(`${file}: split_candidate.finding_ids must be an array of non-empty strings`)
+    }
+    if (
+      !Array.isArray(candidate.introduced_by_rounds) ||
+      !candidate.introduced_by_rounds.every((round) => Number.isInteger(round) && round >= 1)
+    ) {
+      fail(`${file}: split_candidate.introduced_by_rounds must be an array of positive integers`)
+    }
+    if (
+      !Array.isArray(candidate.consecutive_rounds) ||
+      candidate.consecutive_rounds.length === 0 ||
+      !candidate.consecutive_rounds.every((round) => Number.isInteger(round) && round >= 1)
+    ) {
+      fail(`${file}: split_candidate.consecutive_rounds must be a non-empty array of positive integers`)
+    }
+    if (candidate.detected) {
+      if (typeof candidate.mechanism !== 'string' || candidate.mechanism === '') {
+        fail(`${file}: split_candidate.mechanism must name the mechanism when detected is true`)
+      }
+      if (candidate.finding_ids.length === 0) {
+        fail(`${file}: split_candidate.finding_ids must be non-empty when detected is true`)
+      }
+    }
   }
   if (verdict.retained_rounds !== undefined) {
     if (verdict.stage !== 'challenge' && verdict.stage !== 'review') {
@@ -1414,9 +1462,74 @@ function renderBlockerComment(record, options = {}) {
       )
     }
   }
+  lines.push('- Options:')
+  for (const option of blockerOptions(verdict, lastTransition.stage, record.policy)) lines.push(`  - ${option}`)
   const nextAction = Number.isInteger(verdict.next_round) ? `dispatch round ${verdict.next_round}` : 'escalate to a human'
   lines.push(`- Next action: ${nextAction}`)
   return lines.join('\n')
+}
+
+// The three answers a human has to a blocked stage, always all three, because
+// a report that lists only the two an agent can see leaves the third
+// invisible — which is how omator#648 spent nine rounds hardening a mechanism
+// nobody had proposed removing (issue #747). "Order more rounds" and "accept
+// as spent" need no evidence beyond the spent limit already on the report.
+// "Split the mechanism out" does, so it carries the exit computation's
+// `split_candidate` projection: which mechanism, which earlier rounds
+// introduced it, and which of this round's findings live in it. Where the
+// verdict carries no signal — an older verdict, or a round the computation
+// could not read — the option still appears, saying plainly that the evidence
+// is absent rather than implying the answer is no.
+function blockerOptions(verdict, stage, policy) {
+  const cap = policy?.rounds?.[stage]
+  const spent = Number.isInteger(verdict.rounds_counted) ? verdict.rounds_counted : null
+  const headroom =
+    Number.isInteger(cap) && spent !== null && cap > spent
+      ? `${cap - spent} round(s) remain under the current ${stage} cap`
+      : `the ${stage} cap is spent — raising it is an explicit human decision`
+  return [
+    `Order more rounds — ${headroom}.`,
+    'Accept as spent — advance with the unresolved findings recorded and carried forward.',
+    `Split the mechanism out — ${splitOptionEvidence(verdict)}`
+  ]
+}
+
+// verdict.json is branch-controlled content and this projection is published
+// as a PR comment, so every value taken from it is neutralized before it can
+// reach the body — a mechanism path or finding id carrying a section marker
+// would otherwise corrupt the publish algorithm's marker parsing exactly as an
+// un-neutralized finding summary would. Same treatment every other rendered
+// verdict/adjudication value already gets above.
+function splitOptionEvidence(verdict) {
+  const candidate = verdict.split_candidate
+  if (!candidate) {
+    return 'no split-candidate signal in this verdict — recompute the exit before ruling it out.'
+  }
+  const mechanism = `\`${neutralizeMarkers(String(candidate.mechanism))}\``
+  if (!candidate.detected) {
+    const because = {
+      no_gating_findings: 'the round has no gating findings to concentrate',
+      not_concentrated: `no single mechanism holds every gating finding (highest: ${mechanism}, ${formatShare(candidate.concentration)})`,
+      no_round_provenance: `${mechanism} holds every gating finding, but none is attributed to an earlier round's fix`,
+      not_consecutive: `${mechanism} holds every gating finding of round ${candidate.round}, but not of round ${candidate.round - 1}`
+    }[candidate.reason]
+    return `not indicated at round ${candidate.round} — ${because ?? `signal reason \`${neutralizeMarkers(String(candidate.reason))}\``}.`
+  }
+  const rounds = candidate.introduced_by_rounds
+  const introduced =
+    rounds.length > 0 ? `introduced by round${rounds.length > 1 ? 's' : ''} ${rounds.join(', ')}` : 'introduction round unattributed'
+  const findingIds = candidate.finding_ids.map((id) => neutralizeMarkers(id)).join(', ')
+  return (
+    `${mechanism} (${introduced}) carries all ${candidate.finding_ids.length} gating finding(s) ` +
+    `of round ${candidate.round} across rounds ${candidate.consecutive_rounds.join('–')}: ` +
+    `${findingIds}. Remove it from this change, file it on the current milestone with the ` +
+    'design constraints these rounds established, restore the finding it addressed as a filed follow-up, and run one deletion round.'
+  )
+}
+
+function formatShare(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'unknown'
+  return `${Math.round(value * 100)}%`
 }
 
 // A configured finder can return a valid pass before another slot exhausts

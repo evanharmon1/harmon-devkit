@@ -31,6 +31,28 @@ for text in '[stage.challenge].finders' '[stage.review].finders' challenger revi
     'validated finding records' 'override it upward' 'run.json.interventions'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing $text"
 done
+# The split strategy (#747) — the third convergence move, beside deleting the
+# scaffolding and restructuring it to invariants. Asserted as text because
+# that is what it is: policy the stage skills carry, since AGENTS.md here is
+# copier-owned by harmon-init and cannot hold it.
+for text in 'split the mechanism out' 'verdict.split_candidate' \
+    'on the current milestone' 'never left to memory' \
+    'disposition: split' 'run.json.splits' \
+    'order more rounds, accept the stage as spent, or' \
+    'deletion, restructuring, or splitting out of'; do
+    grep -Fq "$text" "$skill" || fail "review skill is missing the split strategy: $text"
+done
+integrate_skill="ai/skills/universal/integrate/SKILL.md"
+for text in 'Order more rounds' 'Accept as spent' 'Split the mechanism out' \
+    'which rounds introduced the mechanism' 'which findings live in it' \
+    'filed on the current milestone by the agent that' 'never left to memory' \
+    'disposition: split' 'run.json.splits'; do
+    grep -Fq "$text" "$integrate_skill" ||
+        fail "integrate skill is missing the split strategy: $text"
+done
+grep -Fq 'The report names three options, never two' "$integrate_skill" ||
+    fail "integrate skill's blocker report does not require all three options"
+
 grep -Fq 'display login is non-authoritative metadata' "$skill" ||
     fail "review skill treats mutable display login as evidence identity"
 grep -Fq 'Immediately before that remediation dispatch' "$skill" ||

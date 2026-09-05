@@ -1424,6 +1424,35 @@ unresolved and why (including
 findings you dispute, with evidence), and what you recommend. Then end — do
 not keep iterating past a stop condition.
 
+**The report names three options, never two.** A maintainer reading a
+cap-reached or no-progress stop has three answers, and a report that offers
+only the first two makes the third invisible:
+
+1. **Order more rounds** — say what remains under the cap, or that raising it
+   is now an explicit human decision.
+2. **Accept as spent** — advance with the unresolved findings recorded and
+   carried forward.
+3. **Split the mechanism out** — when the rounds' findings have concentrated
+   in one mechanism, most sharply one an earlier round of this same PR added.
+   Carry its evidence — **which rounds introduced the mechanism**, and
+   **which findings live in it**. `scripts/render-dev-flow.sh blocker-comment` renders
+   all three from `verdict.split_candidate`, so prefer it to a hand-written
+   report; where no verdict is available (a stop with no round record), state
+   the same evidence from the round summaries yourself, or say plainly that
+   the signal could not be computed. "Not indicated" is a finding; silence is
+   not.
+
+**A split-off mechanism is filed on the current milestone by the agent that
+splits it, at the moment it splits it — never left to memory and never left
+to the maintainer to remember from a comment.** File the issue with the design
+constraints the rounds established, restore whatever finding the mechanism was
+addressing as its own filed follow-up, and record the split in both places the
+schemas provide: the round's adjudication entry
+(`disposition: split` with a `reference` naming that issue — the validator
+rejects a split that names none) and `run.json.splits`, which additionally
+records the milestone. A recommendation to split that files nothing is not a
+split; it is the finding restated.
+
 ## 7. Leave Project status manual
 
 Project fields are a manual, non-authoritative delivery view. Integration

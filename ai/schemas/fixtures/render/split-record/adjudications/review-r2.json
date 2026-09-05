@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "run_id": "run-747-split-fixture-0001",
+  "stage": "review",
+  "round": 2,
+  "reviewed_head": "2222222222222222222222222222222222222222",
+  "adjudications": [
+    {
+      "finding_id": "review-r2-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed \u2014 every one of them is about the primitive round 1 added, not about the import path this change set out to fix",
+      "evidence": "round-1's in-flight claim primitive publishes the claim before its own reservation exists",
+      "override": null
+    },
+    {
+      "finding_id": "review-r2-codex-cli-2",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed \u2014 every one of them is about the primitive round 1 added, not about the import path this change set out to fix",
+      "evidence": "a crash between reserve and publish leaves an unreleasable claim",
+      "override": null
+    },
+    {
+      "finding_id": "review-r2-codex-cli-3",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed \u2014 every one of them is about the primitive round 1 added, not about the import path this change set out to fix",
+      "evidence": "two lanes can reserve the same claim id concurrently",
+      "override": null
+    }
+  ]
+}

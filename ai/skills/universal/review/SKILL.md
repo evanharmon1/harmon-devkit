@@ -32,10 +32,30 @@ as an invariant, independent of its current control-flow wording. Before any
 round-two adjudication can cause another pass or remediation dispatch, classify
 each finding whose subject exists only because an earlier round of that same
 stage added it, and record exactly one disposition: delete the scaffolding,
-restructure it to an invariant, or keep it as genuinely in scope with the
-reason. A rewrite of `continue`, remediation, or exit handling must preserve
+restructure it to an invariant, split the mechanism out, or keep it as
+genuinely in scope with the reason.
+A rewrite of `continue`, remediation, or exit handling must preserve
 this checkpoint; no path may harden round-one scaffolding first and classify it
 later.
+
+**Splitting the mechanism out** is the disposition for scaffolding that is
+still wanted — deletion drops work that is genuinely needed, and restructuring
+to an invariant is unavailable because the subject is code rather than accreted
+procedure-prose. It applies when successive rounds' gating findings concentrate
+in one mechanism, most sharply one an earlier round of this same stage added;
+`verdict.split_candidate` is the computed evidence for that judgement and names
+the mechanism, the rounds that introduced it, and the findings living in it.
+Recording it is four things, all of them or it is not a split: the mechanism
+leaves the change; it is filed as its own issue **on the current milestone**,
+carrying the design constraints the rounds established, by this session at the
+moment it splits — never left to memory; the finding the mechanism was
+addressing is restored as a filed follow-up so the defect it existed for is not
+silently dropped; and one deletion round confirms the removal, after which the
+stage exits through its ordinary conditions. Write it as
+`disposition: split` with a `reference` naming the filed issue — the
+adjudication schema rejects a split that names none — and append the run-level
+half to `run.json.splits`. A split buys no exception to the exit condition and
+changes no cap.
 
 ## Entry gate
 
@@ -180,9 +200,17 @@ reservation, while exhaustion records `breadth_exhausted`, renders the blocker,
 and stops before invoking the implementer. The stage-invariant round-two
 checkpoint above applies before this dispatch and before a no-remediation next
 pass alike.
-`diverging` permits only deletion or restructuring of round-created
-scaffolding; `capped` with P0/P1 records an intervention and blocker, then
-stops before a PR. A `converged` result advances by default, but an attributable
+`diverging` permits only deletion, restructuring, or splitting out of
+round-created scaffolding; `capped` with P0/P1 records an intervention and
+blocker, then stops before a PR. Render that blocker with
+`scripts/render-dev-flow.sh blocker-comment`: it lists all three answers a
+human has to a blocked stage — order more rounds, accept the stage as spent, or
+split the mechanism out — and carries the split option's evidence from
+`verdict.split_candidate`, naming which rounds introduced the mechanism and
+which of this round's findings live in it. Never hand-write a blocker that
+offers only the first two; an option a report omits is an option nobody takes,
+which is how a stage spends nine rounds hardening a mechanism that should have
+left the change. A `converged` result advances by default, but an attributable
 operator may override it upward to exactly one additional pass while the
 resolved stage cap still has headroom. Before dispatch, append that operator's
 reason and attribution to `run.json.interventions` as `kind: other`; refuse the

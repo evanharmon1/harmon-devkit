@@ -1,0 +1,66 @@
+{
+  "schema": 2,
+  "run_id": "run-747-split-recorded",
+  "initiated_by": "human",
+  "started_at": "2026-09-01T09:00:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-09-01T09:00:00Z",
+      "exit": "claimed"
+    },
+    {
+      "stage": "claim",
+      "entered_at": "2026-09-01T09:05:00Z",
+      "exit": "implementer dispatched"
+    },
+    {
+      "stage": "plan",
+      "entered_at": "2026-09-01T09:07:00Z",
+      "exit": "scope settled"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-09-01T09:10:00Z",
+      "exit": "round 1 pushed"
+    },
+    {
+      "stage": "verify",
+      "entered_at": "2026-09-01T10:00:00Z",
+      "exit": "green"
+    },
+    {
+      "stage": "review",
+      "entered_at": "2026-09-01T10:10:00Z",
+      "exit": "round 2's gating findings all lived in the primitive round 1 added \u2014 split out, deletion round pending"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-09-01T12:30:00Z"
+    }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "splits": [
+    {
+      "mechanism": "src/lane/claim-primitive.ts",
+      "stage": "review",
+      "round": 2,
+      "issue": "649",
+      "milestone": "Dev flow v2",
+      "finding_ids": [
+        "review-r2-codex-cli-1",
+        "review-r2-codex-cli-2",
+        "review-r2-codex-cli-3"
+      ],
+      "split_at": "2026-09-01T12:20:00Z"
+    }
+  ],
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
+}

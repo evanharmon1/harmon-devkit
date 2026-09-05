@@ -6,4 +6,8 @@
 - Spent: integration 1/4
 - Unresolved:
   - review-r2-codex-cli-3 — scripts/render-dev-flow.mjs:320 — only reachable via direct API misuse, not the shipped CLI (P2, defer)
+- Options:
+  - Order more rounds — 3 round(s) remain under the current integration cap.
+  - Accept as spent — advance with the unresolved findings recorded and carried forward.
+  - Split the mechanism out — no split-candidate signal in this verdict — recompute the exit before ruling it out.
 - Next action: dispatch round 2

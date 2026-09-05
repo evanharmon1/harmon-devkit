@@ -1,0 +1,63 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "2222222222222222222222222222222222222222",
+  "produced_at": "2026-09-01T11:40:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "run-747-split-fixture-0001",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "review",
+    "round": 2,
+    "reviewed_head": "2222222222222222222222222222222222222222",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r2-codex-cli-1",
+        "path": "src/lane/claim-primitive.ts",
+        "line": 10,
+        "class": "correctness",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "round-1's in-flight claim primitive publishes the claim before its own reservation exists"
+      },
+      {
+        "id": "review-r2-codex-cli-2",
+        "path": "src/lane/claim-primitive.ts",
+        "line": 20,
+        "class": "correctness",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "a crash between reserve and publish leaves an unreleasable claim"
+      },
+      {
+        "id": "review-r2-codex-cli-3",
+        "path": "src/lane/claim-primitive.ts",
+        "line": 30,
+        "class": "correctness",
+        "provenance": "round:1",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "two lanes can reserve the same claim id concurrently"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 3,
+      "P2": 0,
+      "P3": 0
+    }
+  }
+}

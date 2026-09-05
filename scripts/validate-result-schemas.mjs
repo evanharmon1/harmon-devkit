@@ -1030,19 +1030,33 @@ function checkAdjudicationEntries(document, errors) {
     // "declined or filed directly") map exactly as checkSettlementReferenceType
     // already maps them for a resolved defer's eventual settlement — fix to
     // the commit that fixed it, decline to the comment explaining why, file
-    // to the issue it was filed as (challenge r2). A reference on any OTHER
+    // to the issue it was filed as (challenge r2), and split to the issue the
+    // mechanism was filed as (#747). A reference on any OTHER
     // disposition is rejected outright rather than left unconstrained
     // (challenge r3): restructure and delete have no settlement analogue to
     // evidence with, and defer's own evidence belongs on its eventual
     // settlement instead — the schema description's own "never deferred"
     // promise, which was previously only documented, not enforced.
+    // A `split` disposition is the one that REQUIRES its reference rather
+    // than merely permitting one. The split strategy's whole contract is
+    // that the mechanism is filed as its own issue by the agent that splits
+    // it, "never left to memory" (#747) — an adjudication saying a mechanism
+    // was split out but naming no issue records the removal and loses the
+    // work, which is strictly worse than not splitting. Checked before the
+    // shape checks below so a missing reference is reported as the missing
+    // filing it is, not as a type mismatch.
+    if (entry.disposition === 'split' && !(entry.reference && typeof entry.reference === 'object')) {
+      errors.push(
+        `$adjudication.adjudications[finding_id=${entry.finding_id}].reference: required for disposition split — the split-off mechanism must name the issue it was filed as`
+      )
+    }
     if (entry.reference && typeof entry.reference === 'object') {
       const { reference } = entry
-      const expectedReferenceType = { fix: 'sha', file: 'issue_number', decline: 'comment_id' }
+      const expectedReferenceType = { fix: 'sha', file: 'issue_number', decline: 'comment_id', split: 'issue_number' }
       const expected = expectedReferenceType[entry.disposition]
       if (!expected) {
         errors.push(
-          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference: disposition ${entry.disposition} cannot carry a reference — only fix, decline, and file can be evidenced at adjudication time`
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference: disposition ${entry.disposition} cannot carry a reference — only fix, decline, file, and split can be evidenced at adjudication time`
         )
       } else if (reference.type !== expected) {
         errors.push(
@@ -1083,7 +1097,7 @@ function checkAdjudicationEntries(document, errors) {
       }
       if (entry.disposition === 'defer') {
         errors.push(
-          `$adjudication.adjudications[finding_id=${entry.finding_id}].disposition: defer is not allowed for stage integration (an integration finding needs a terminal answer: fix, restructure, delete, decline, or file)`
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].disposition: defer is not allowed for stage integration (an integration finding needs a terminal answer: fix, restructure, delete, decline, file, or split)`
         )
       }
       continue
@@ -1548,8 +1562,9 @@ function isChronologicallyBefore(a, b) {
 // field): started_at must be no later than the first stage_transitions
 // entry's entered_at; entered_at must be non-decreasing across entries;
 // promotion.promoted_at must be no earlier than the last entry's
-// entered_at; every intervention's `at` and every settlement's
-// `settled_at` must be no earlier than started_at, and no later than
+// entered_at; every intervention's `at`, every settlement's
+// `settled_at`, and every split's `split_at` must be no earlier than
+// started_at, and no later than
 // promotion.promoted_at when the run has been promoted; and a
 // settlement's `settled_at` must additionally be no earlier than the
 // run's first `integration` transition's entered_at (a deferred finding
@@ -1607,6 +1622,11 @@ function checkRunChronology(document, errors) {
         )
       }
     }
+    for (const [index, split] of (document.splits ?? []).entries()) {
+      if (typeof split.split_at === 'string' && isChronologicallyBefore(split.split_at, startedAt)) {
+        errors.push(`$run.splits[${index}].split_at: ${split.split_at} must not be before started_at ${startedAt}`)
+      }
+    }
   }
   // Upper bound: a settlement resolves a finding BEFORE the run can be
   // promoted (the readiness gate requires every deferred finding settled
@@ -1629,6 +1649,17 @@ function checkRunChronology(document, errors) {
       if (typeof settlement.settled_at === 'string' && isChronologicallyBefore(promotedAt, settlement.settled_at)) {
         errors.push(
           `$run.settlements[${index}].settled_at: ${settlement.settled_at} must not be after promotion.promoted_at ${promotedAt}`
+        )
+      }
+    }
+    // A split is a scope decision taken while the change is still under
+    // review, so it is bounded exactly like an intervention: promotion is
+    // the last thing this run's own span contains, and a mechanism split
+    // out after the PR went ready was not split out of this run's change.
+    for (const [index, split] of (document.splits ?? []).entries()) {
+      if (typeof split.split_at === 'string' && isChronologicallyBefore(promotedAt, split.split_at)) {
+        errors.push(
+          `$run.splits[${index}].split_at: ${split.split_at} must not be after promotion.promoted_at ${promotedAt}`
         )
       }
     }
@@ -2132,6 +2163,98 @@ function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
   }
 }
 
+// checkSplits — internal self-consistency of run.splits[], always run
+// (no external context needed). Two rules, both about the record being
+// usable as evidence rather than merely well-shaped:
+//   - a finding is answered by at most ONE split. The same finding named by
+//     two entries means two mechanisms both claim to have answered it, and
+//     nothing in the record says which issue actually carries it.
+//   - a mechanism is split out of a given stage at most once. Splitting the
+//     same mechanism twice in one stage is either a duplicate append or a
+//     second, differently-filed issue for the same code; both need a human,
+//     not a silently-accepted record. The same mechanism CAN legitimately
+//     appear under two different stages (challenge split it, integration
+//     found more of it), so the key is the stage/mechanism pair, not the
+//     mechanism alone.
+function checkSplits(document, errors) {
+  if (!Array.isArray(document.splits)) return
+  const seenFindings = new Map()
+  const seenMechanisms = new Set()
+  for (const [index, entry] of document.splits.entries()) {
+    const mechanismKey = `${entry.stage}\u0000${entry.mechanism}`
+    if (typeof entry.mechanism === 'string' && typeof entry.stage === 'string') {
+      if (seenMechanisms.has(mechanismKey)) {
+        errors.push(
+          `$run.splits[${index}]: mechanism ${JSON.stringify(entry.mechanism)} is split out of stage ${entry.stage} more than once`
+        )
+      }
+      seenMechanisms.add(mechanismKey)
+    }
+    for (const findingId of entry.finding_ids ?? []) {
+      if (typeof findingId !== 'string') continue
+      if (seenFindings.has(findingId)) {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} is already answered by splits[${seenFindings.get(findingId)}] — one split per finding`
+        )
+        continue
+      }
+      seenFindings.set(findingId, index)
+    }
+  }
+}
+
+// checkSplitsAgainstAdjudications — the run-level splits[] projection and
+// the per-finding adjudication entries are two documents describing one
+// decision, so neither proves the other on its own. Given --adjudication
+// (or --no-adjudications, which asserts a confirmed-empty set and so
+// rejects every split, exactly as checkSettlementsAgainstAdjudications
+// rejects every settlement), every finding a split claims to answer must be
+// adjudicated exactly once, with disposition `split`, and its adjudication's
+// reference must name the SAME issue the split entry does — otherwise the
+// run record and the round record disagree about where the work went, which
+// is the "left to memory" failure with extra steps.
+function checkSplitsAgainstAdjudications(document, adjudications, errors) {
+  const byFindingId = new Map()
+  for (const { file, data } of adjudications) {
+    for (const entry of data.adjudications ?? []) {
+      if (typeof entry.finding_id !== 'string') continue
+      if (!byFindingId.has(entry.finding_id)) byFindingId.set(entry.finding_id, [])
+      byFindingId.get(entry.finding_id).push({ disposition: entry.disposition, reference: entry.reference, file })
+    }
+  }
+  for (const [index, split] of (document.splits ?? []).entries()) {
+    for (const findingId of split.finding_ids ?? []) {
+      const matches = byFindingId.get(findingId) ?? []
+      if (matches.length === 0) {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} is not adjudicated in any supplied --adjudication document`
+        )
+        continue
+      }
+      if (matches.length > 1) {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} is adjudicated more than once across the supplied --adjudication documents (${matches
+            .map((match) => match.file)
+            .join(', ')})`
+        )
+        continue
+      }
+      if (matches[0].disposition !== 'split') {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} was adjudicated ${matches[0].disposition}, not split, in ${matches[0].file}`
+        )
+        continue
+      }
+      const referencedIssue = matches[0].reference?.value
+      if (typeof referencedIssue === 'string' && referencedIssue !== split.issue) {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} was filed as issue ${referencedIssue} in ${matches[0].file}, but this split names ${split.issue}`
+        )
+      }
+    }
+  }
+}
+
 // checkDeferredFindingsSettledBeforePromotion — the converse of
 // checkSettlementsAgainstAdjudications above (which forbids a settlement
 // of anything but a deferred finding): a run cannot claim
@@ -2227,6 +2350,7 @@ function main() {
     const errors = validateAgainst(schema, instance, '$run')
     if (errors.length === 0) {
       checkSettlements(instance, errors)
+      checkSplits(instance, errors)
       checkEvidenceMarkerRunId(instance, errors)
       checkEvidenceMarkerStageVisited(instance, errors)
       checkEvidenceMarkerPrDestinationRequiresPr(instance, errors)
@@ -2249,6 +2373,7 @@ function main() {
         checkAdjudicationsUnionUnique(options.adjudications, errors)
         checkAdjudicationStagesVisited(instance, options.adjudications, errors)
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
+        checkSplitsAgainstAdjudications(instance, options.adjudications, errors)
         checkDeferredFindingsSettledBeforePromotion(instance, options.adjudications, errors)
       }
     }

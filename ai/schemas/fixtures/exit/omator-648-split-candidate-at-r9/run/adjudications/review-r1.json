@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "run_id": "omator-648-replay-review",
+  "stage": "review",
+  "round": 1,
+  "reviewed_head": "4312d0afa74043e846c6ef6f8c211082080683a2",
+  "adjudications": [
+    {
+      "finding_id": "review-r1-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#648 ledger: lane import drops the trailing record when the batch is exactly one page",
+      "evidence": "lane import drops the trailing record when the batch is exactly one page",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-2",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#648 ledger: a failed page is retried without resetting the cursor",
+      "evidence": "a failed page is retried without resetting the cursor",
+      "override": null
+    },
+    {
+      "finding_id": "review-r1-codex-cli-3",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "omator#648 ledger: the unit B overview still calls the stage 'shepherd'",
+      "evidence": "the unit B overview still calls the stage 'shepherd'",
+      "override": null
+    }
+  ]
+}
