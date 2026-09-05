@@ -1105,6 +1105,7 @@ ai/schemas/fixtures/
   result.integrator.schema/{valid,invalid}/*.json
   adjudication.schema/{valid,invalid}/*.json
   run.schema/{valid,invalid}/*.json
+  registry-trust/<case>/scenario.json
 ```
 
 Each directory name is the schema's own basename (`result.envelope.schema`,
@@ -1140,6 +1141,53 @@ invalid-ness depends entirely on a flag the generic loop never passes, are
 excluded from both the valid and invalid per-directory loops
 (`is_context_only_fixture` in `scripts/test-result-schemas.sh`) and
 exercised only by name.
+
+`ai/schemas/fixtures/registry-trust/<case>/scenario.json` is a different
+kind of corpus: not a document validated against a schema but a
+**declarative timeline** for the harvester's registry-trust binding
+("Trust root: the registry allowlist, pinned per write" below, issue #741),
+run by `scripts/test-dev-flow-stats.sh` through the real resolver against
+its fake `gh` shim. Each fixture names the registry revisions
+(`registry_revisions[]`, in default-branch listing order, newest first:
+a 40-hex `sha`, the default-branch `landed_at` — `null` for a revision
+whose landing time cannot be resolved, which voids the history when it is
+the newest entry and only the interval before a later resolvable landing
+otherwise — an optional
+`staging_merged_at` for an earlier merge into a non-default branch that
+must not count as landing, and the `document` served at that revision),
+one run (`run`: `author_actor_id`,
+`kickoff_at`, `evidence_writes[]` with each write's `posted_at`, and an
+optional `record_edited_at` that becomes the record comment's `updated_at`,
+and optional `index_posted_at` / `index_edited_at` that move the run-index
+anchor's own `created_at` / `updated_at` after the record's, and optional
+`unindexed_writes[]` — evidence-shaped comments the record never lists,
+reported but never assembled),
+the operator's `cli_trusted_actor_ids`, and the verdict it expects
+(`expect.status` of `ok` or `indeterminate`, `expect.reason_contains` — the
+`.reason` sidecar's role, inline — and, for an accepted run, `expect.rounds`
+plus optional `expect.orphan_count` / `expect.forged_count` for the report's
+unlisted-comment classification).
+Adding a case is one directory; the runner discovers the corpus and asserts
+every fixture's own expectation, and fails if fewer cases than the shipped
+corpus are found (the floor is the `corpus_count` check in
+`scripts/test-dev-flow-stats.sh`, raised with every case added — the
+directory listing, not this paragraph, is the count). The shipped cases
+cover the evidence delta spec's three named
+scenarios (missing/empty allowlist fails closed; an actor added after
+posting does not retroactively authenticate; an actor removed after
+posting does not invalidate), plus a malformed allowlist, no revision in
+effect at kickoff, an unresolvable revision history, a write after
+mid-run removal, a record edit after removal, and a CLI selection that
+names an actor the registry does not (never widened); plus, from
+challenge round 1, a staging-branch merge that must not backdate a landing
+and a same-second landing whose order is unknowable (indeterminate); and,
+from challenge round 2, a run-index anchor posted after its author's
+removal; and, from challenge round 3, an unlisted post-removal comment
+reported as forged-class rather than as a trusted orphan; and, from review
+round 2, a duplicate id in a historical allowlist (malformed, indeterminate);
+and, from the PR's first cloud-review round, a finder identity listed as an
+orchestrator at a historical revision, a write newer than the history
+snapshot, and an orphan edited after its author's removal.
 
 `ai/schemas/fixtures/result.reviewer.schema/valid/omator-397-*.json` and
 `ai/schemas/fixtures/adjudication.schema/valid/omator-397-*-adjudication.json`
@@ -1363,31 +1411,130 @@ the same object — worth naming precisely rather than conflating:
 
 ### Trust: actor ID, never a payload claim
 
-There is exactly **one** trust root: a configured set of trusted
-orchestrator actor ids (a human's or Foreman's service account — passed to
-the harvester explicitly, `--trusted-actor-id <id>` repeatable and/or
-`--trusted-actors-file <path>` naming a JSON `{"trusted_actor_ids": [...]}`
-document). Nothing else grants trust — never a payload field (an
-`initiated_by: "foreman"` claim is ordinary data about *who dispatched the
-run*, not a claim this protocol trusts for *who is authorized to post
-evidence about it*), and never "whoever posted first" as its own
-justification.
+There is exactly **one** trust root: the repository's configured set of
+trusted-orchestrator actor ids — `trusted_orchestrator_actor_ids` in
+`agent-registry.json` (issue #741; see the next section for how it is
+populated and pinned). Nothing else grants trust — never a payload field
+(an `initiated_by: "foreman"` claim is ordinary data about *who dispatched
+the run*, not a claim this protocol trusts for *who is authorized to post
+evidence about it*), never "whoever posted first" as its own justification,
+and never the harvester's own command line: the `--trusted-actor-id <id>`
+(repeatable) / `--trusted-actors-file <path>` (a JSON
+`{"trusted_actor_ids": [...]}` document) set the harvester requires is the
+**operator's selection** among the registry's trusted orchestrators — whose
+evidence this report is about — and can only ever *narrow* the registry's
+set. An id configured there but absent from the governing registry revision
+authenticates nothing.
 
-The run record's own comment must be authored by a member of that
-configured set directly — there is no separate "kickoff event" trust root
-and no comment is ever trusted merely for looking like a run record. Once
-*that* check has passed, the run record's `evidence_comments[]`
-(`author_actor_id`, read off the now-validated record, never off the
-candidate comment being checked) narrows the same root to the *specific*
-already-trusted actor expected to have posted the rest of this run's
-evidence — a convenience for a run whose evidence naturally comes from one
-session throughout, not a second independent root: an evidence comment
-authored by anyone outside the original configured set is never trusted,
-run record or no.
+The run record's own comment must be authored by a member of that root
+directly — there is no separate "kickoff event" trust root and no comment
+is ever trusted merely for looking like a run record. Once *that* check has
+passed, the run record's `evidence_comments[]` (`author_actor_id`, read off
+the now-validated record, never off the candidate comment being checked)
+narrows the same root to the *specific* already-trusted actor expected to
+have posted the rest of this run's evidence — a convenience for a run whose
+evidence naturally comes from one session throughout, not a second
+independent root: an evidence comment authored by anyone outside the
+original configured set is never trusted, run record or no.
 
 A comment whose marker matches but whose author fails this check is a
 **forged-author** comment: reported, ignored, and never allowed to
 suppress or shadow a legitimate trusted comment carrying the same marker.
+
+### Trust root: the registry allowlist, pinned per write
+
+**Populating it.** `agent-registry.json` carries a top-level
+`trusted_orchestrator_actor_ids` array of the immutable GitHub actor ids —
+JSON integers, never logins, never strings — of every account that
+orchestrates runs in the repository: a human maintainer's own user id, and
+Foreman's service account where one exists. Look each one up rather than
+guessing (`gh api users/<login> --jq .id`); a login is display-only
+everywhere in this protocol because a rename would otherwise turn valid
+evidence into "tampered". This repository lists its maintainer and the
+`expected_login` account `.foreman.toml` asserts before every Foreman
+write — a writer identity missing from the list fails closed on its very
+first run record. The field is **distinct from each finder's own
+`trusted_actor_id`** (a review bot's identity, which vouches for that bot's
+findings and never for a run record): `scripts/validate-agent-registry.mjs`
+rejects an id that appears in both at commit time, and the harvester
+treats a historical revision that lists a finder identity as malformed
+(indeterminate), since a hand-edited or pre-validator revision never
+passed that gate. The schema makes it optional — a
+consumer registry predating the field still validates — but every consumer
+**fails closed** when it is absent, empty, or malformed at the revision in
+effect for a write: there is then no authority to validate against, so the
+run is reported *indeterminate*, never accepted on the strength of a
+command-line flag. Adding the field is therefore the moment a repository's
+evidence becomes harvestable at all, and the harvester's `--trusted-actor-id`
+must name an id the registry also lists.
+
+**Pinned per write, never the current file.** Which revision of the registry
+governs a comment is decided by *when the comment was written*, and the
+answer never changes afterwards:
+
+- The governing revision for a write is the newest `agent-registry.json`
+  revision that had **landed on the default branch** at or before the
+  write's server-side `created_at` — "landed" meaning the merging PR's
+  `merged_at` (direct pushes to the default branch are ruleset-blocked here,
+  so every default-branch revision has exactly one), never a commit's own
+  author/committer date (spoofable by cherry-pick) and never a check-suite
+  time (which can predate the merge on a feature branch) — and only a PR
+  whose **base is the default branch** counts, so a revision first merged
+  into a staging branch lands when the second PR carries it across, not
+  before. Among eligible revisions the latest landing time wins. A revision
+  that landed in the **same second** as the write has no knowable order
+  relative to it (REST timestamps carry second precision), so that write is
+  indeterminate rather than guessed either way.
+- Evaluation is **per write**, not a run-wide kickoff snapshot (maintainer
+  ruling on #741, 2026-09-02): the run-record author is checked at the
+  record's `created_at` (the true kickoff moment); the run-index author at
+  the index comment's own `created_at` (a separate, later write); each
+  `evidence_comments[]` entry at *that comment's* own `created_at`; and
+  because the run record is edited in place at every transition, its
+  server-side `updated_at` — the only trace its last edit leaves — is
+  checked too (as is the index's, should it ever be edited, and an
+  unlisted orphan's before it is reported as trusted). Where a run has
+  more than one run-index candidate, lowest-id canonical selection runs
+  among the candidates authenticated at their own write time, so a
+  registry-unauthorized actor's earlier index never shadows the legitimate
+  one. An actor removed mid-run therefore stays
+  authenticated for everything they wrote while listed and is rejected for
+  every write after removal; an actor added later never retroactively
+  authenticates older writes. The three fixture cases the evidence delta
+  spec names — missing/empty allowlist fails closed, added-after does not
+  retroactively authenticate, removed-after does not invalidate — live in
+  `ai/schemas/fixtures/registry-trust/` ("Fixture layout" below).
+- **Fail closed on every indeterminate input**: no revision landed by the
+  write's time, a registry-touching commit whose landing time cannot be
+  resolved (which voids the revision history from that commit forward
+  rather than being skipped, so a stale revision is never mistaken for
+  current — a direct push *older* than a PR-landed revision only leaves
+  writes before that landing unprovable, the common initial-scaffold
+  shape), an unreadable
+  file, or an allowlist that is absent/empty/malformed (a digits-only
+  string or a float poisons the whole list rather than being coerced —
+  the same rule `--trusted-actors-file` applies), or a write newer than
+  the process's own snapshot of the revision history (the harvester
+  refreshes the snapshot once for such a write; one still newer, or in the
+  snapshot's own second, is unprovable). Each yields `indeterminate` with
+  a reason naming the revision and the write time. The landing model
+  assumes a **stable default branch**: a repository that switches its
+  default branch changes what "landed" meant for older revisions, which
+  this harvester does not model (tracked as a follow-up; see the PR that
+  shipped this section).
+- The revision is **derived, never declared**: the run record carries no
+  registry-revision field, because a value inside the record would be a
+  payload claim a forged record could set to whatever revision trusts its
+  author. `run.schema.json` is unchanged by #741 for exactly that reason.
+
+The same contract binds a *writer* that authenticates its own comment
+reservations against the registry before posting (the `/review` monitor,
+harmon-devkit#768): read the allowlist from a specific revision (`git show
+<sha>:agent-registry.json`), compare the actor id as a **number**, fail
+closed when the field is absent or empty, and re-resolve the governing
+revision **per reservation** rather than once at activation — a revision
+pinned at kickoff and held for the whole run would let an actor removed
+mid-run keep writing, which the harvester above will then reject.
 
 ### Duplicate markers: lowest id is canonical, unconditionally
 
@@ -1668,8 +1815,8 @@ either the merge-base copy's own semantics or a fixed built-in default,
 **never** from the branch's v2 copy, even for the fields above that DO have a
 legacy/v1 equivalent (`rounds`, the rigor level name). Where the older shape
 has no equivalent concept at all — breadth, convergence predicates, roles,
-stages, strategy, and (once the registry gains them) finders and trusted
-actors — the built-in default is the *only* admissible source:
+stages, strategy, and the registry-declared finders and trusted
+orchestrators — the built-in default is the *only* admissible source:
 `decodeHistoricalPolicy()` never reads `[breadth.*]`, `[convergence]`,
 `[role.*]`, `[stage.*]`, or `[strategy.*]` from `doc` to fill the gap, because
 `doc` there is always the merge-base copy, never the branch's. The built-ins

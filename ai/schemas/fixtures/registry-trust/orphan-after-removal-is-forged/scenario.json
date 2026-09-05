@@ -1,0 +1,50 @@
+{
+  "description": "The run's author was listed at kickoff and for one indexed evidence write, then removed; afterwards they posted an evidence-shaped comment the record never lists. The listed write stays authenticated and the run harvests cleanly, but the unlisted post-removal comment is reported as forged-class, not as a trusted orphan \u2014 reporting applies the same per-write trust boundary as assembly.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "1111111111111111111111111111111111111111",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    },
+    {
+      "sha": "2222222222222222222222222222222222222222",
+      "landed_at": "2026-09-01T00:10:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      }
+    ],
+    "unindexed_writes": [
+      {
+        "stage": "review",
+        "round": 2,
+        "posted_at": "2026-09-01T00:20:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "ok",
+    "rounds": 1,
+    "orphan_count": 0,
+    "forged_count": 1
+  }
+}

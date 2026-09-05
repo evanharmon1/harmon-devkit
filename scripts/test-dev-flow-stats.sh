@@ -74,7 +74,11 @@ repos/*/pulls/*/commits\?per_page=100)
     ;;
 repos/*/commits/*/pulls)
     sha="$(echo "$endpoint" | sed -E 's#.*/commits/([0-9a-f]+)/pulls.*#\1#')"
-    jq --arg sha "$sha" '[(.commit_pulls[$sha] // [])]' "$db"
+    # A PR entry without an explicit base is a PR into the default branch
+    # (the common fixture case); a scenario that needs a PR into some other
+    # branch — challenge round 1 of #741: a staging merge must NOT count as
+    # landing on the default branch — states `base: {ref: ...}` itself.
+    jq --arg sha "$sha" '(.default_branch // "main") as $default | [((.commit_pulls[$sha] // []) | map(. + {base: (.base // {ref: $default})}))]' "$db"
     ;;
 repos/*/commits/*/check-suites)
     sha="$(echo "$endpoint" | sed -E 's#.*/commits/([0-9a-f]+)/check-suites.*#\1#')"
@@ -108,7 +112,7 @@ export PATH="$stub:$PATH"
 # ---------------------------------------------------------------------------
 mkdir -p "$tmp/scenarios"
 cat >"$tmp/build-fixtures.mjs" <<NODE
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import {
   entryDigest, sha256, canonicalDigest, GENESIS, payloadDigest,
@@ -228,7 +232,32 @@ function checkSuiteSeen(sha, createdAts) {
   return { commit_check_suites: { [sha]: createdAts.map((created_at) => ({ created_at })) } };
 }
 
+// #741: the registry allowlist is the ROOT of trust and the harvester fails
+// closed when no revision is in effect for a write, so every scenario needs
+// SOME registry history. A scenario that declares none (the common case —
+// it is testing something other than registry binding) gets a baseline
+// revision that landed long before any fixture timestamp and trusts exactly
+// the ids its meta.trustedActorIds names (TRUSTED_ORCHESTRATOR when it
+// names none), so the CLI selection and the registry agree and the
+// scenario's own subject stays isolated. A scenario that declares
+// registry_commits controls the whole history itself.
+const BASELINE_REGISTRY_SHA = "0123456789abcdef0123456789abcdef01234567";
+const BASELINE_REGISTRY_LANDED_AT = "2000-01-01T00:00:00Z";
+function registryDoc(ids) {
+  return Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: ids })).toString("base64");
+}
 function writeScenario(name, db) {
+  if (!("registry_commits" in db)) {
+    const ids = db.meta && Array.isArray(db.meta.trustedActorIds) && db.meta.trustedActorIds.length > 0
+      ? db.meta.trustedActorIds
+      : [TRUSTED_ORCHESTRATOR];
+    db = {
+      ...db,
+      registry_commits: [{ sha: BASELINE_REGISTRY_SHA }],
+      registry_contents: { [BASELINE_REGISTRY_SHA]: registryDoc(ids) },
+      commit_pulls: { ...(db.commit_pulls || {}), [BASELINE_REGISTRY_SHA]: [{ number: 1, merged_at: BASELINE_REGISTRY_LANDED_AT }] },
+    };
+  }
   writeFileSync(path.join("${tmp}/scenarios", \`\${name}.json\`), JSON.stringify(db, null, 2));
 }
 
@@ -1220,17 +1249,20 @@ function writeScenario(name, db) {
 }
 
 // --- Scenario 23: registry-revision pinning (review round 4 of #663,
-// piece 2 — issue #741's not-yet-existent trusted-orchestrator allowlist,
-// resolved via resolveRegistryTrustedActorIds). One registry commit
-// narrows the CLI-configured trust set; two issues straddle its
-// first_seen, proving the revision applies to a run kicked off AFTER it
-// took effect and does NOT retroactively apply to one kicked off BEFORE —
-// #741's own acceptance criterion ("an actor removed after posting does
-// not invalidate already-authenticated historical evidence").
+// piece 2, now #741's shipped allowlist, resolved via
+// resolveRegistryTrustedActorIds). A baseline revision trusts
+// TRUSTED_ORCHESTRATOR; a later registry commit REMOVES it (trusts only
+// OTHER_TRUSTED). Two issues straddle that commit's landing time, proving
+// the revision applies to a run kicked off AFTER it took effect and does
+// NOT retroactively apply to one kicked off BEFORE — #741's own acceptance
+// criterion ("an actor removed after posting does not invalidate
+// already-authenticated historical evidence").
 {
+  const baselineSha = "d".repeat(40);
   const narrowSha = "a".repeat(40);
-  const registryCommits = [{ sha: narrowSha }];
+  const registryCommits = [{ sha: narrowSha }, { sha: baselineSha }]; // newest-first, as GitHub returns
   const registryContents = {
+    [baselineSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
     [narrowSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
   };
   // Issue A: kicks off AFTER the narrowing commit's first_seen -> the
@@ -1246,9 +1278,9 @@ function writeScenario(name, db) {
     outcome: null, pr: null, evidence_comments: [], promotion: null,
   };
   const narrowedPair = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runIdNarrowed, bodyNarrowed, "2026-09-01T00:10:00Z");
-  // Issue B: kicks off BEFORE the narrowing commit's first_seen -> no
-  // registry revision is eligible yet -> falls back to full CLI trust,
-  // unchanged -> accepted normally.
+  // Issue B: kicks off BEFORE the narrowing commit landed -> the baseline
+  // revision governs (it still trusts TRUSTED_ORCHESTRATOR) -> accepted
+  // normally, and the later removal never reaches back to it.
   const runIdNotYet = "run-registry-not-yet-narrowed-1";
   const bodyNotYet = {
     schema: 2, run_id: runIdNotYet, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
@@ -1266,8 +1298,12 @@ function writeScenario(name, db) {
     commits: {},
     registry_commits: registryCommits,
     registry_contents: registryContents,
-    // first_seen for the narrowing commit sits BETWEEN the two kickoffs.
-    ...mergedPrSeen(narrowSha, 601, "2026-09-01T00:05:00Z"),
+    // The narrowing commit lands BETWEEN the two kickoffs; the baseline
+    // long before either.
+    commit_pulls: {
+      [baselineSha]: [{ number: 600, merged_at: "2026-08-01T00:00:00Z" }],
+      [narrowSha]: [{ number: 601, merged_at: "2026-09-01T00:05:00Z" }],
+    },
     meta: {
       runIdNarrowed, runIdNotYet,
       trustedActorIds: [TRUSTED_ORCHESTRATOR],
@@ -1657,13 +1693,16 @@ function writeScenario(name, db) {
 // Codex-confirmed (P1): resolveRegistryTrustedActorIds previously reused
 // firstSeen's MIN-of-(merged_at, any check-suite), so the pre-merge
 // check-suite time backdated the revision's effective date. A run kicked
-// off AFTER the check-suite time but BEFORE the merge must see NO
-// registry opinion yet (falls back to full CLI trust), not the narrowed
-// set the commit eventually establishes.
+// off AFTER the check-suite time but BEFORE the merge must still be
+// governed by the earlier baseline revision (which trusts
+// TRUSTED_ORCHESTRATOR), not by the narrowed set the commit eventually
+// establishes.
 {
+  const baselineSha = "e".repeat(40);
   const narrowSha = "f".repeat(40);
-  const registryCommits = [{ sha: narrowSha }];
+  const registryCommits = [{ sha: narrowSha }, { sha: baselineSha }]; // newest-first, as GitHub returns
   const registryContents = {
+    [baselineSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
     [narrowSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
   };
   const runId = "run-registry-premerge-checksuite-1";
@@ -1684,7 +1723,10 @@ function writeScenario(name, db) {
     // wrongly backdate under the old design); the actual merge lands
     // AFTER kickoff, so this revision is correctly not yet in effect.
     ...checkSuiteSeen(narrowSha, ["2026-09-01T00:00:00Z"]),
-    ...mergedPrSeen(narrowSha, 610, "2026-09-01T00:20:00Z"),
+    commit_pulls: {
+      [baselineSha]: [{ number: 609, merged_at: "2026-08-01T00:00:00Z" }],
+      [narrowSha]: [{ number: 610, merged_at: "2026-09-01T00:20:00Z" }],
+    },
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 148 },
   });
 }
@@ -1986,18 +2028,20 @@ function writeScenario(name, db) {
 // possible when the target repo permits direct pushes to its default
 // branch — this repo's own ruleset blocks that, but --repo is generic)
 // must void the WHOLE repo's registry history, not be silently skipped —
-// shepherd round 4, Codex-confirmed (P1). A narrowing revision that WOULD
-// exclude TRUSTED_ORCHESTRATOR exists and is independently resolvable, but
-// because a second, unresolvable (direct-push) commit also touches the
-// registry, the mechanism must admit "no registry opinion" entirely and
-// fall back to full CLI trust — TRUSTED_ORCHESTRATOR stays trusted, not
-// narrowed out by the (still real, still resolvable) other revision.
+// shepherd round 4, Codex-confirmed (P1). A revision that trusts
+// TRUSTED_ORCHESTRATOR exists and is independently resolvable, but because
+// a second, unresolvable (direct-push) commit also touches the registry,
+// the mechanism must admit that it cannot prove which revision governs —
+// and under #741 (maintainer ruling 2026-09-03: an unresolvable governing
+// revision "is indeterminate (fail closed)") that means the run is
+// INDETERMINATE, never trusted on the strength of the still-resolvable
+// older revision and never on CLI configuration alone.
 {
   const narrowSha = "5".repeat(40);
   const directPushSha = "7".repeat(40);
   const registryCommits = [{ sha: directPushSha }, { sha: narrowSha }]; // newest-first, as GitHub returns
   const registryContents = {
-    [narrowSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
+    [narrowSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
     // directPushSha's own content is never read — resolution fails before
     // ever reaching it, since it has no resolvable landing time at all.
   };
@@ -2448,6 +2492,235 @@ function writeScenario(name, db) {
   });
 }
 
+// --- #741 fixture corpus: ai/schemas/fixtures/registry-trust/<case>/scenario.json
+// Each fixture is a declarative timeline (registry revisions with their
+// default-branch landing times and allowlists; one run's kickoff, evidence
+// writes, and optional record edit; the operator's CLI selection; the
+// expected harvest verdict) rendered here into the same fake-gh database
+// shape every hand-built scenario above uses, so the corpus exercises the
+// real resolver end to end rather than a re-implementation. Documented in
+// ai/schemas/README.md "Fixture layout". Issue numbers 900+ are reserved
+// for it.
+{
+  const corpusDir = "${repo}/ai/schemas/fixtures/registry-trust";
+  const cases = readdirSync(corpusDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+  cases.forEach((name, i) => {
+    const fixture = JSON.parse(readFileSync(path.join(corpusDir, name, "scenario.json"), "utf8"));
+    const issueNumber = 900 + i;
+    const runId = \`run-registry-trust-\${name}\`;
+    const author = fixture.run.author_actor_id;
+    const evidence = [];
+    const evidenceIndex = [];
+    for (const w of fixture.run.evidence_writes) {
+      const payload = { passes: [] };
+      const ev = evidenceComment(author, "orchestrator", runId, w.stage, "issue", w.round, 1, payload, w.posted_at);
+      evidence.push(ev);
+      evidenceIndex.push(evidenceIndexEntry(ev, author, "orchestrator", runId, w.stage, "issue", w.round, 1, payloadDigest(JSON.stringify(payload))));
+    }
+    // Unindexed writes (challenge round 3 of #741): evidence-shaped comments
+    // by the run's own author that the record never lists — reported, never
+    // assembled; the fixture says whether each is an orphan (trusted at its
+    // write time) or forged-class (not trusted at its write time).
+    const unindexed = (fixture.run.unindexed_writes || []).map((w) => {
+      const c = evidenceComment(author, "orchestrator", runId, w.stage, "issue", w.round, 1, { passes: [] }, w.posted_at);
+      if (w.edited_at) c.updated_at = w.edited_at;
+      return c;
+    });
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: fixture.run.kickoff_at,
+      stage_transitions: chain([{ stage: "kickoff", entered_at: fixture.run.kickoff_at }]),
+      interventions: chain([]), settlements: chain([]),
+      outcome: null, pr: null, evidence_comments: evidenceIndex, promotion: null,
+    };
+    const { index: idx, record: rr } = runRecordComment(author, "orchestrator", runId, runBody, fixture.run.kickoff_at);
+    if (fixture.run.record_edited_at) rr.updated_at = fixture.run.record_edited_at;
+    // The index is a separate, later write (challenge round 2 of #741):
+    // a fixture may post it after the record, and may edit it afterwards.
+    if (fixture.run.index_posted_at) idx.created_at = fixture.run.index_posted_at;
+    if (fixture.run.index_edited_at) idx.updated_at = fixture.run.index_edited_at;
+    // The fixture's array IS the commits?path= listing order (newest
+    // first, as GitHub returns the default branch's history) — it is not
+    // re-sorted, because listing position is what decides whether an
+    // unresolvable (landed_at: null) revision voids the history (newest)
+    // or only the interval before a later resolvable landing (older).
+    // Such a revision has no commit_pulls entry at all, matching a real
+    // no-merging-PR response.
+    const revisions = [...fixture.registry_revisions];
+    const registryContents = {};
+    const commitPulls = {};
+    revisions.forEach((r, n) => {
+      registryContents[r.sha] = Buffer.from(JSON.stringify(r.document)).toString("base64");
+      const pulls = [];
+      // An optional earlier merge into a NON-default branch, listed FIRST
+      // (as a naive "first merged PR" reader would pick it): it must never
+      // count as the revision landing on the default branch.
+      if (r.staging_merged_at) pulls.push({ number: 800 + n, merged_at: r.staging_merged_at, base: { ref: "staging" } });
+      if (r.landed_at) pulls.push({ number: 700 + n, merged_at: r.landed_at, base: { ref: "main" } });
+      if (pulls.length > 0) commitPulls[r.sha] = pulls;
+    });
+    writeScenario(\`registry-trust-\${name}\`, {
+      issues: [{ number: issueNumber, pull_request: null }],
+      comments: { [String(issueNumber)]: [idx, rr, ...evidence, ...unindexed] },
+      commits: {},
+      registry_commits: revisions.map((r) => ({ sha: r.sha })),
+      registry_contents: registryContents,
+      commit_pulls: commitPulls,
+      meta: { runId, trustedActorIds: fixture.cli_trusted_actor_ids, issueNumber, expect: fixture.expect, description: fixture.description },
+    });
+  });
+}
+
+// --- #741 shepherd round 1 (Codex-confirmed P2): a CLI-selected but
+// registry-unauthorized actor posts a LOWER-id index for the run; the
+// legitimate author posts the same marker later. Canonical selection must
+// run among candidates authenticated at their own write time, so the
+// forged index never shadows the legitimate one and the run harvests.
+{
+  const trustSha = "4".repeat(40);
+  const registryCommits = [{ sha: trustSha }];
+  const registryContents = {
+    [trustSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
+  };
+  const runId = "run-forged-index-shadow-1";
+  const at = "2026-09-01T00:00:00Z";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const body = { ...runBody, ...deriveDefaultChains(runBody) };
+  const rm = marker("run-record", runId, "kickoff", "issue", null, 1);
+  const rr = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${rm}\n\${fence(JSON.stringify(body))}\`, at);
+  const im = marker("run-index", runId, "kickoff", "issue", null, 1);
+  const forgedPayload = { run_id: runId, initiated_by: "human", branch: null, run_record: { id: String(rr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator" } };
+  // Forged index FIRST (lower comment id) by OTHER_TRUSTED, who is in the
+  // operator's CLI selection but NOT in the registry allowlist.
+  const forgedIdx = comment(OTHER_TRUSTED, "impostor", \`\${im}\n\${fence(JSON.stringify(forgedPayload))}\`, "2026-09-01T00:00:30Z");
+  const legitIdx = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${im}\n\${fence(JSON.stringify(forgedPayload))}\`, "2026-09-01T00:01:00Z");
+  writeScenario("forged-index-shadow", {
+    issues: [{ number: 180, pull_request: null }],
+    comments: { "180": [rr, forgedIdx, legitIdx] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: { [trustSha]: [{ number: 620, merged_at: "2026-08-01T00:00:00Z" }] },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED], issueNumber: 180, legitIdxId: legitIdx.id },
+  });
+}
+
+// --- #741 shepherd round 2 (Codex-confirmed P2): a lower-id index posted
+// while its author was listed but EDITED after that author's removal is a
+// post-removal write; pre-selection must authenticate the edit too, so
+// the later legitimate index by a still-trusted orchestrator wins.
+{
+  const trustBothSha = "6".repeat(40);
+  const removeSha = "7".repeat(40);
+  const registryCommits = [{ sha: removeSha }, { sha: trustBothSha }];
+  const registryContents = {
+    [trustBothSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED] })).toString("base64"),
+    [removeSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
+  };
+  const runId = "run-edited-index-shadow-1";
+  const at = "2026-09-01T00:00:00Z";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const body = { ...runBody, ...deriveDefaultChains(runBody) };
+  const rm = marker("run-record", runId, "kickoff", "issue", null, 1);
+  const rr = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${rm}\n\${fence(JSON.stringify(body))}\`, at);
+  const im = marker("run-index", runId, "kickoff", "issue", null, 1);
+  const payload = { run_id: runId, initiated_by: "human", branch: null, run_record: { id: String(rr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator" } };
+  // TRUSTED_ORCHESTRATOR's own index, posted while listed (00:00:30) and
+  // edited after the 00:10 removal.
+  const editedIdx = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${im}\n\${fence(JSON.stringify(payload))}\`, "2026-09-01T00:00:30Z");
+  editedIdx.updated_at = "2026-09-01T00:20:00Z";
+  // A legitimate later duplicate by OTHER_TRUSTED, still listed.
+  const legitIdx = comment(OTHER_TRUSTED, "other-orchestrator", \`\${im}\n\${fence(JSON.stringify(payload))}\`, "2026-09-01T00:25:00Z");
+  writeScenario("edited-index-shadow", {
+    issues: [{ number: 181, pull_request: null }],
+    comments: { "181": [rr, editedIdx, legitIdx] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: {
+      [trustBothSha]: [{ number: 621, merged_at: "2026-08-01T00:00:00Z" }],
+      [removeSha]: [{ number: 622, merged_at: "2026-09-01T00:10:00Z" }],
+    },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED], issueNumber: 181 },
+  });
+}
+
+// --- #741 shepherd round 3 (Codex-confirmed P2): a direct-push registry
+// commit OLDER than a resolvable PR-landed revision no longer voids the
+// whole history — the later revision governs writes after its landing;
+// writes before it still find no revision and are indeterminate.
+{
+  const scaffoldSha = "9".repeat(40); // direct push, no merging PR
+  const laterSha = "a".repeat(40);    // PR-landed 2026-08-15
+  const registryCommits = [{ sha: laterSha }, { sha: scaffoldSha }]; // newest-first
+  const registryContents = {
+    [laterSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
+    [scaffoldSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
+  };
+  const mk = (runId, at) => {
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: chain([{ stage: "kickoff", entered_at: at }]),
+      interventions: chain([]), settlements: chain([]),
+      outcome: null, pr: null, evidence_comments: [], promotion: null,
+    };
+    return runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, at);
+  };
+  const after = mk("run-older-direct-push-after-1", "2026-09-01T00:00:00Z");
+  const before = mk("run-older-direct-push-before-1", "2026-08-01T00:00:00Z");
+  writeScenario("older-direct-push", {
+    issues: [{ number: 182, pull_request: null }, { number: 183, pull_request: null }],
+    comments: { "182": [after.index, after.record], "183": [before.index, before.record] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: { [laterSha]: [{ number: 623, merged_at: "2026-08-15T00:00:00Z" }] },
+    meta: { runIdAfter: "run-older-direct-push-after-1", runIdBefore: "run-older-direct-push-before-1", trustedActorIds: [TRUSTED_ORCHESTRATOR] },
+  });
+}
+
+// --- #741 shepherd round 4 (Codex-confirmed P2): a higher-id duplicate
+// index whose write time cannot be evaluated (posted in the far future
+// relative to the history snapshot) must not sink a run whose lower-id
+// index is already authenticated.
+{
+  const trustSha = "b".repeat(40);
+  const registryCommits = [{ sha: trustSha }];
+  const registryContents = {
+    [trustSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
+  };
+  const runId = "run-later-duplicate-unresolvable-1";
+  const at = "2026-09-01T00:00:00Z";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, at);
+  const im = marker("run-index", runId, "kickoff", "issue", null, 1);
+  const payload = { run_id: runId, initiated_by: "human", branch: null, run_record: { id: String(rr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator" } };
+  const laterDup = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${im}\n\${fence(JSON.stringify(payload))}\`, "2099-01-01T00:00:00Z");
+  writeScenario("later-duplicate-unresolvable", {
+    issues: [{ number: 184, pull_request: null }],
+    comments: { "184": [idx, rr, laterDup] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: { [trustSha]: [{ number: 624, merged_at: "2026-08-01T00:00:00Z" }] },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 184 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -2490,6 +2763,24 @@ import json, sys
 fork = json.load(open(sys.argv[1]))
 happy = json.load(open(sys.argv[2]))
 combined = {"issues": fork["issues"] + happy["issues"], "comments": {**fork["comments"], **happy["comments"]}, "commits": {**fork.get("commits", {}), **happy.get("commits", {})}}
+# #741: the registry history (baseline revision + its landing PR) must ride
+# along, or the merged repo has no allowlist in effect and every run is
+# indeterminate for the wrong reason.
+for key in ("registry_commits", "registry_contents", "commit_pulls", "commit_check_suites"):
+    merged = {}
+    for db in (fork, happy):
+        value = db.get(key)
+        if isinstance(value, dict):
+            merged.update(value)
+    if key == "registry_commits":
+        seen, rows = set(), []
+        for db in (fork, happy):
+            for row in db.get(key, []):
+                if row["sha"] not in seen:
+                    seen.add(row["sha"]); rows.append(row)
+        combined[key] = rows
+    else:
+        combined[key] = merged
 json.dump(combined, open(sys.argv[3], "w"))
 PY
 export DFSTATS_DB="$tmp/scenarios/fork-plus-happy.json"
@@ -2937,7 +3228,7 @@ set -e
 [ "$rc" -eq 3 ] || fail "registry-revision-pin: narrowed run should report indeterminate once the eligible registry revision excludes its only author, got rc=$rc: $out"
 echo "$out" | grep -qi "not a registry-trusted actor as of this run's kickoff" || fail "registry-revision-pin: expected a registry-narrowing reason, got: $out"
 
-echo "== review round 4 (piece 2 of #663): a registry revision landing AFTER kickoff is not applied retroactively — the run authenticates normally =="
+echo "== review round 4 (piece 2 of #663) / #741: a registry revision REMOVING the author that lands AFTER kickoff is not applied retroactively — the run stays authenticated under the baseline revision in effect at kickoff =="
 run_id_not_yet="$(meta registry-revision-pin .meta.runIdNotYet)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_not_yet" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "registry-revision-pin: pre-revision run should still authenticate cleanly"
@@ -3162,11 +3453,15 @@ echo "$since_excluded" | jq -e '.indeterminate_count == 0 and (.per_issue | leng
 since_included="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-01T00:05:00Z --json)"
 echo "$since_included" | jq -e '.indeterminate_count == 1 and (.per_issue | length) == 1' >/dev/null || fail "registry-trust-record-before-index: expected --since 00:05 to include the issue as indeterminate (record posted 00:10, on/after the cutoff), got: $since_included"
 
-echo "== shepherd round 4: a registry-touching commit with no merging PR (direct push) voids the WHOLE repo's registry history, not just that commit =="
+echo "== shepherd round 4 / #741: a registry-touching commit with no merging PR (direct push) voids the WHOLE repo's registry history, and a void history is indeterminate (fail closed), never CLI-only trust =="
 export DFSTATS_DB="$tmp/scenarios/registry-direct-push.json"
 run_id="$(meta registry-direct-push .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001)"
-echo "$out" | grep -qi "run $run_id (issue #159) — outcome: in-flight" || fail "registry-direct-push: expected the run to validate normally (full CLI trust fallback, not narrowed out by the still-real other revision), got: $out"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "registry-direct-push: expected indeterminate (unresolvable registry history fails closed), got rc=$rc: $out"
+echo "$out" | grep -qi "revision history could not be resolved" || fail "registry-direct-push: expected an unresolvable-history reason, got: $out"
 
 echo "== shepherd round 4: a run's last activity exactly staleAfterDays before --as-of terminalizes as abandoned; one ms earlier it does not =="
 export DFSTATS_DB="$tmp/scenarios/stale-boundary.json"
@@ -3295,5 +3590,96 @@ echo "== shepherd round 6: a stage exit with trailing free-form prose ('continue
 export DFSTATS_DB="$tmp/scenarios/outcome-trailing-prose.json"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '(.[0].diffs | length) == 0' >/dev/null || fail "outcome-trailing-prose: expected no diff (recorded 'continue,...' correctly parses as continue, matching the fake script's recomputed continue with 1 round under cap 4), got: $out"
+
+# ---------------------------------------------------------------------------
+# #741 fixture corpus (ai/schemas/fixtures/registry-trust): every case is a
+# declarative timeline rendered by the builder above; the expected verdict
+# lives in the fixture itself (expect.status / expect.reason_contains /
+# expect.rounds), so adding a case is one directory, never a bash edit.
+# ---------------------------------------------------------------------------
+echo "== #741 shepherd round 1: a registry-unauthorized lower-id index never shadows the legitimate later one =="
+export DFSTATS_DB="$tmp/scenarios/forged-index-shadow.json"
+run_id="$(meta forged-index-shadow .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)" || fail "forged-index-shadow: expected the run to harvest via the legitimate index, got: $out"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "forged-index-shadow: expected a clean in-flight run, got: $out"
+
+echo "== #741 shepherd round 2: an index edited after its author's removal never shadows a legitimate later index =="
+export DFSTATS_DB="$tmp/scenarios/edited-index-shadow.json"
+run_id="$(meta edited-index-shadow .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)" || fail "edited-index-shadow: expected the run to harvest via the legitimate index, got: $out"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "edited-index-shadow: expected a clean in-flight run, got: $out"
+
+echo "== #741 shepherd round 3: a direct-push registry commit older than a PR-landed revision voids only the interval before that landing =="
+export DFSTATS_DB="$tmp/scenarios/older-direct-push.json"
+run_after="$(meta older-direct-push .meta.runIdAfter)"
+run_before="$(meta older-direct-push .meta.runIdBefore)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_after" --trusted-actor-id 9001 --json 2>&1)" || fail "older-direct-push: run after the resolvable landing should authenticate, got: $out"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "older-direct-push: expected a clean in-flight run after the landing, got: $out"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_before" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "older-direct-push: run before the resolvable landing should be indeterminate, got rc=$rc: $out"
+echo "$out" | grep -qi "no agent-registry.json revision had landed" || fail "older-direct-push: expected the no-revision reason, got: $out"
+
+echo "== #741 shepherd round 4: a higher-id duplicate index with an unanswerable write time does not sink a run whose lower-id index is authenticated =="
+export DFSTATS_DB="$tmp/scenarios/later-duplicate-unresolvable.json"
+run_id="$(meta later-duplicate-unresolvable .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --as-of 2099-06-01T00:00:00Z --json 2>&1)" || fail "later-duplicate-unresolvable: expected the run to harvest via its lower-id index, got: $out"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "later-duplicate-unresolvable: expected a clean in-flight run, got: $out"
+
+echo "== #741: registry allowlist fixture corpus (fail closed on missing/empty/malformed; per-write revision binding) =="
+corpus_count=0
+for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
+    name="$(basename "$dir")"
+    [ -f "$dir/scenario.json" ] || fail "registry-trust/$name: no scenario.json"
+    scenario="registry-trust-$name"
+    export DFSTATS_DB="$tmp/scenarios/$scenario.json"
+    run_id="$(meta "$scenario" .meta.runId)"
+    expect_status="$(meta "$scenario" .meta.expect.status)"
+    expect_reason="$(meta "$scenario" '.meta.expect.reason_contains // ""')"
+    expect_rounds="$(meta "$scenario" '.meta.expect.rounds // ""')"
+    trust_args=()
+    while IFS= read -r id; do
+        trust_args+=(--trusted-actor-id "$id")
+    done < <(meta "$scenario" '.meta.trustedActorIds[]')
+    case "$expect_status" in
+    ok)
+        set +e
+        out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" "${trust_args[@]}" --json 2>&1)"
+        rc=$?
+        set -e
+        [ "$rc" -eq 0 ] || fail "registry-trust/$name: expected the run to authenticate (rc 0), got rc=$rc: $out"
+        if [ -n "$expect_rounds" ]; then
+            echo "$out" | jq -e --argjson n "$expect_rounds" '.rounds | length == $n' >/dev/null ||
+                fail "registry-trust/$name: expected $expect_rounds assembled round(s), got: $out"
+        fi
+        expect_orphans="$(meta "$scenario" '.meta.expect.orphan_count // ""')"
+        expect_forged="$(meta "$scenario" '.meta.expect.forged_count // ""')"
+        if [ -n "$expect_orphans" ]; then
+            echo "$out" | jq -e --argjson n "$expect_orphans" '.orphan_comments | length == $n' >/dev/null ||
+                fail "registry-trust/$name: expected $expect_orphans orphan comment(s), got: $out"
+        fi
+        if [ -n "$expect_forged" ]; then
+            echo "$out" | jq -e --argjson n "$expect_forged" '.forged_comments | length == $n' >/dev/null ||
+                fail "registry-trust/$name: expected $expect_forged forged comment(s), got: $out"
+        fi
+        ;;
+    indeterminate)
+        set +e
+        out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" "${trust_args[@]}" 2>&1)"
+        rc=$?
+        set -e
+        [ "$rc" -eq 3 ] || fail "registry-trust/$name: expected indeterminate (rc 3), got rc=$rc: $out"
+        ;;
+    *) fail "registry-trust/$name: unknown expect.status $expect_status" ;;
+    esac
+    if [ -n "$expect_reason" ]; then
+        echo "$out" | grep -qiF -- "$expect_reason" || fail "registry-trust/$name: expected the reason to contain '$expect_reason', got: $out"
+    fi
+    echo "PASS: registry-trust/$name"
+    corpus_count=$((corpus_count + 1))
+done
+[ "$corpus_count" -ge 18 ] || fail "registry-trust corpus: expected at least 18 cases, found $corpus_count"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

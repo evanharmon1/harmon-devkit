@@ -1,0 +1,38 @@
+{
+  "description": "The revision in effect lists the author as a trusted orchestrator AND names the same id as a finder's trusted_actor_id. The two trust roles must stay distinct at every revision, not only at the validator's commit-time gate, so the allowlist is malformed and the run is indeterminate \u2014 a review-bot identity never authenticates a run record.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "5555555555555555555555555555555555555555",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ],
+        "finders": [
+          {
+            "slug": "some-bot",
+            "trusted_actor_id": "9001"
+          }
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "is finder some-bot's own trusted_actor_id"
+  }
+}

@@ -9,11 +9,16 @@
 // reads is documented in ai/schemas/README.md "Evidence marker and digest
 // grammar" — read that first if this file is confusing on its own.
 //
-// Trust model: a comment counts as evidence only when its immutable GitHub
-// actor id is the run record's own author (the run's root of trust for its
-// own evidence) or a caller-configured --trusted-actor-id. Nothing inside a
-// payload is ever trusted to name its own author — see "Trust" below and
-// ai/schemas/README.md's "Trust: actor ID, never a payload claim".
+// Trust model: a run record or evidence comment counts only when its
+// immutable GitHub actor id was on agent-registry.json's
+// `trusted_orchestrator_actor_ids` allowlist at the registry revision in
+// effect when that comment was written (issue #741; evaluated per write,
+// fail closed — see createRegistryTrustResolver below), AND is among the
+// caller's configured --trusted-actor-id selection, which only ever narrows
+// that registry set. Evidence comments additionally narrow to the run
+// record's own author. Nothing inside a payload is ever trusted to name its
+// own author — see "Trust" below and ai/schemas/README.md's "Trust root: the
+// registry allowlist, pinned per write".
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -122,47 +127,76 @@ function resolveDefaultBranch(repo) {
 // (direct pushes to the default branch are ruleset-blocked), so merged_at
 // alone is always available here and is the only correct signal — no
 // check-suite fallback, unlike firstSeen.
+// Only a PR whose BASE is the default branch lands a commit there —
+// challenge round 1 of #741, confirmed (P1): `commits/{sha}/pulls` lists
+// every PR containing the commit, and a commit first merged into a
+// staging/release branch and later carried to the default branch by a
+// second PR has two merged PRs, the staging one earlier. Taking "any merged
+// PR" would backdate the revision to the staging merge and authenticate
+// writes made before it reached the default branch (or apply a removal
+// prematurely). The base is compared against the resolved default branch
+// (never a hardcoded name — see resolveDefaultBranch) and against this
+// repo, since a fork's PR into its own default branch is not a landing
+// here either. Among qualifying PRs the EARLIEST merge is the landing
+// time; a commit with none is unresolvable (null), which voids the whole
+// history — see resolveRegistryRevisionHistory.
 function defaultBranchLandedAt(repo, sha) {
+  const defaultBranch = resolveDefaultBranch(repo);
   const prs = ghApiPaginated(`repos/${repo}/commits/${sha}/pulls`);
-  const merged = prs.find((pr) => pr.merged_at);
-  return merged ? merged.merged_at : null;
+  const landings = prs
+    .filter((pr) => pr && pr.merged_at && pr.base && pr.base.ref === defaultBranch)
+    .filter((pr) => !pr.base.repo || !pr.base.repo.full_name || pr.base.repo.full_name.toLowerCase() === repo.toLowerCase())
+    .map((pr) => Date.parse(pr.merged_at))
+    .filter((t) => Number.isFinite(t));
+  if (landings.length === 0) return null;
+  return new Date(Math.min(...landings)).toISOString();
 }
 
-// Repo-committed trust narrowing: issue #741 proposes a trusted-orchestrator
-// actor allowlist in agent-registry.json, pinned to the revision in effect
-// at evidence-write time — never the latest, which a later edit could
-// otherwise retroactively (re)grant trust to an actor a run's own evidence
-// never actually had. #741's acceptance criteria (the allowlist field
-// itself, historical pinning, fixtures) are all still unchecked as of this
-// writing: the field this resolves toward does not exist at any commit
-// yet. This function is the revision-SELECTION mechanism, ready the moment
-// #741 lands the field — every caller treats a still-absent field (or an
-// unreadable/unlisted revision) as "no registry opinion," falling back
-// unchanged to the --trusted-actor-id/--trusted-actors-file trust
-// requireTrustedActorIds already establishes. It only ever NARROWS that
-// trust, never widens it — the same direction assembleListedEvidence
-// already narrows evidence-comment trust to one run's own author rather
-// than the whole configured set.
+// The registry's trusted-orchestrator allowlist (issue #741, the field
+// `trusted_orchestrator_actor_ids` in agent-registry.json) is the ROOT of
+// trust for run records and evidence comments, evaluated per write against
+// the revision of that file in effect at the write's own server-side time
+// — never the file's current content, which a later edit could otherwise
+// retroactively (re)grant or revoke. specs/dev-flow-v2.md § Evidence and
+// the evidence delta spec: authority "derives solely from configured
+// trusted-orchestrator actor IDs ... declared in agent-registry.json", and
+// "until a repository configures that list, a run record has no authority
+// to validate against and its evidence is reported unauthenticated rather
+// than silently accepted on an unproven identity."
+//
+// So this is FAIL-CLOSED, in every direction (maintainer ruling on #741,
+// 2026-09-03: an unresolvable governing revision "is indeterminate (fail
+// closed)"): no registry revision landed by the write's time, an
+// unresolvable revision history, an unreadable file, a revision whose
+// allowlist is absent, empty, or malformed — each yields `indeterminate`
+// with a reason, and the caller reports the run indeterminate rather than
+// falling back to any other source. The --trusted-actor-id /
+// --trusted-actors-file set requireTrustedActorIds establishes is the
+// OPERATOR'S SELECTION among the registry's trusted orchestrators (which
+// of them this harvest is about); it can only ever NARROW the registry's
+// set, never widen it, so the registry stays the sole root the specs
+// require. (#751 first shipped this mechanism as an additive narrowing
+// layer that fell back to CLI-only trust while the field did not exist at
+// any commit; that fallback is gone now that the field ships.)
 //
 // "Revision in effect" is selected by defaultBranchLandedAt(sha) — its own
 // merged_at, never a committer/author date (the same spoofable-by-cherry-
-// pick field review round 4 already closed once for post-ready-fix
+// pick field review round 4 of #663 already closed once for post-ready-fix
 // detection above) and never firstSeen's broader "visible anywhere"
-// signal (shepherd round 2, Codex-confirmed — see defaultBranchLandedAt's
-// own comment) — so a hostile or merely pre-merge-visible revision cannot
-// be backdated into looking like it predates the write it is meant to
-// govern. Among commits whose landing time is on or before atIso, the one
-// with the LATEST landing time wins (the newest registry state actually
-// in effect on the default branch by that moment).
+// signal (shepherd round 2 of #751, Codex-confirmed — see
+// defaultBranchLandedAt's own comment) — so a hostile or merely pre-merge-
+// visible revision cannot be backdated into looking like it predates the
+// write it is meant to govern. Among commits whose landing time is on or
+// before atIso, the one with the LATEST landing time wins (the newest
+// registry state actually in effect on the default branch by that moment).
 //
 // The full per-repo revision history (every agent-registry.json-touching
 // commit reachable from the default branch, each with its own landed-at
 // time) is resolved and cached ONCE per repo, not once per (issue,
-// timestamp) pair — shepherd round 4, Codex-confirmed (P2): a --repo scan
-// of R runs against C registry revisions previously re-walked the full
-// commit list AND re-issued a commits/{sha}/pulls request per revision on
-// EVERY call (each run's kickoff typically needing at least two — its
-// record and its index), roughly 2×R×C synchronous API calls; a moderate
+// timestamp) pair — shepherd round 4 of #751, Codex-confirmed (P2): a
+// --repo scan of R runs against C registry revisions previously re-walked
+// the full commit list AND re-issued a commits/{sha}/pulls request per
+// revision on EVERY call, roughly 2×R×C synchronous API calls; a moderate
 // history could exhaust GitHub's rate limit before ordinary issue
 // harvesting even finished. History resolution is now O(C) once; every
 // subsequent atIso lookup is an O(C) in-memory scan.
@@ -171,42 +205,65 @@ function defaultBranchLandedAt(repo, sha) {
 // possible when the target --repo permits direct pushes to its default
 // branch — this repo's own ruleset blocks that (see defaultBranchLandedAt's
 // comment), but the CLI is explicitly repository-generic, so a permissive
-// target repo cannot be assumed away — shepherd round 4, Codex-confirmed
-// (P1). The unresolvable commit's OWN committer/author date is deliberately
-// never used as a fallback: this file's firstSeen already established that
-// a pusher-controlled date cannot prove when a commit became visible (see
-// firstSeen's own comment) and a cherry-picked commit can carry any date
-// its author chooses. Silently SKIPPING the unresolvable commit instead
-// (continuing the scan past it, as an earlier version of this function
-// did) is worse than either: a newer revision that happens to be a direct
-// push could be silently invisible forever, so the scan would keep
-// selecting a stale, resolvable, older revision as if it were current —
-// confidently wrong rather than admittedly unknown. Since this mechanism
-// only ever NARROWS trust (never widens it — see the block comment above),
-// admitting "unknown" costs nothing beyond the narrowing itself: the
-// caller's existing null-means-full-CLI-trust fallback is exactly the
-// pre-registry baseline, never a security downgrade. So: any unresolvable
-// commit voids the WHOLE repo's history (cached as null, same as an
-// unreadable registry file) rather than being skipped in isolation.
+// target repo cannot be assumed away — shepherd round 4 of #751,
+// Codex-confirmed (P1). The unresolvable commit's OWN committer/author
+// date is deliberately never used as a fallback: this file's firstSeen
+// already established that a pusher-controlled date cannot prove when a
+// commit became visible (see firstSeen's own comment) and a cherry-picked
+// commit can carry any date its author chooses. Silently SKIPPING the
+// unresolvable commit instead (continuing the scan past it) is worse than
+// either: a newer revision that happens to be a direct push could be
+// silently invisible forever, so the scan would keep selecting a stale,
+// resolvable, older revision as if it were current — confidently wrong
+// rather than admittedly unknown. So: any unresolvable commit voids the
+// WHOLE repo's history (cached as null, same as an API failure), and a
+// void history is indeterminate for every write in that repo.
 const registryRevisionHistoryCache = new Map();
 
 function resolveRegistryRevisionHistory(repo) {
   if (registryRevisionHistoryCache.has(repo)) return registryRevisionHistoryCache.get(repo);
   let history;
+  // The snapshot boundary is the moment the commit list is REQUESTED, not
+  // when the per-commit landing lookups finish — shepherd round 2 of #741,
+  // Codex-confirmed (P2): a revision landing during those lookups is
+  // absent from this snapshot, so a write between the two instants must
+  // trigger the refresh below rather than being judged older than a
+  // boundary the snapshot's contents do not actually reflect.
+  const resolvedAtEpoch = Date.now();
   try {
     const defaultBranch = resolveDefaultBranch(repo);
     const commits = ghApiPaginated(`repos/${repo}/commits?path=agent-registry.json&sha=${defaultBranch}`);
     const resolved = [];
-    let unresolvable = false;
+    // The listing is the default branch's own history, newest first. An
+    // unresolvable commit (no merging PR into the default branch) voids
+    // everything it could govern: when it is the NEWEST revision, or newer
+    // than any resolvable one, nothing after it can be proven and the
+    // whole history is void (null). When every unresolvable commit is
+    // OLDER than a resolvable revision — the common "initial scaffold was
+    // pushed directly before branch protection" shape — the later,
+    // resolvable revision fully establishes the registry contents from its
+    // own landing onward, so only writes before the oldest resolvable
+    // landing are unprovable: they find no revision landed and are
+    // indeterminate by the ordinary rule — shepherd round 3 of #741,
+    // Codex-confirmed (P2).
+    let sawResolvable = false;
+    let voided = false;
     for (const c of commits) {
       const seen = defaultBranchLandedAt(repo, c.sha);
       if (seen === null) {
-        unresolvable = true;
+        if (!sawResolvable) {
+          voided = true;
+          break;
+        }
+        // Older than a resolvable revision: everything from here back is
+        // unprovable, and nothing resolvable older than this may be used
+        // either (it could have been superseded by this unknown landing).
         break;
       }
+      sawResolvable = true;
       resolved.push({ sha: c.sha, landedAtEpoch: Date.parse(seen) });
     }
-    history = unresolvable ? null : resolved;
+    history = voided ? null : { revisions: resolved, resolvedAtEpoch };
   } catch {
     history = null;
   }
@@ -214,29 +271,185 @@ function resolveRegistryRevisionHistory(repo) {
   return history;
 }
 
+// The allowlist a registry document declares, read STRICTLY: the field
+// must be a non-empty array of positive JSON integers, exactly the shape
+// agent-registry.schema.json binds and scripts/validate-agent-registry.mjs
+// enforces at commit time. A historical revision that predates the field,
+// or was hand-edited past the validator, is read here without that gate,
+// so a malformed entry (a digits-only string, a float, a null) poisons the
+// WHOLE list rather than being coerced or skipped — the same "never
+// silently converted to an actor id" rule requireTrustedActorIds applies
+// to --trusted-actors-file. Returns { ids: Set } or { problem: string }.
+function readRegistryAllowlist(doc) {
+  if (!Object.hasOwn(doc, "trusted_orchestrator_actor_ids")) {
+    return { problem: "declares no trusted_orchestrator_actor_ids allowlist" };
+  }
+  const raw = doc.trusted_orchestrator_actor_ids;
+  if (!Array.isArray(raw)) {
+    return { problem: `declares a malformed trusted_orchestrator_actor_ids allowlist (expected an array, found ${raw === null ? "null" : typeof raw})` };
+  }
+  if (raw.length === 0) {
+    return { problem: "declares an empty trusted_orchestrator_actor_ids allowlist" };
+  }
+  const bad = raw.find((v) => typeof v !== "number" || !Number.isInteger(v) || v < 1);
+  if (bad !== undefined) {
+    return { problem: `declares a malformed trusted_orchestrator_actor_ids entry ${JSON.stringify(bad)} (every entry must be a positive JSON integer; a string is never coerced)` };
+  }
+  // uniqueItems is part of the declared shape too — review round 2 of
+  // #741, confirmed (P2): collapsing duplicates into the Set silently
+  // accepted a revision the schema rejects, unlike every other malformed
+  // shape above. A duplicate is not a security widening on its own, but
+  // "schema-invalid history fails closed" has to mean the whole shape.
+  const seen = new Set();
+  const dup = raw.find((v) => seen.has(v) || (seen.add(v), false));
+  if (dup !== undefined) {
+    return { problem: `declares a malformed trusted_orchestrator_actor_ids allowlist (duplicate entry ${dup}; the schema requires unique items)` };
+  }
+  // The two trust roles stay distinct at every revision, not only at the
+  // validator's commit-time gate — shepherd round 1 of #741, Codex-
+  // confirmed (P2): a historical or hand-edited revision listing a
+  // finder's own trusted_actor_id (a review bot) as a trusted orchestrator
+  // would let that bot authenticate run records. A revision predating
+  // finders[] (pre-#635) has no finder identities to collide with.
+  if (Array.isArray(doc.finders)) {
+    for (const finder of doc.finders) {
+      const id = finder && typeof finder.trusted_actor_id === "string" && /^[1-9][0-9]*$/.test(finder.trusted_actor_id) ? Number(finder.trusted_actor_id) : null;
+      if (id !== null && seen.has(id)) {
+        return { problem: `declares a malformed trusted_orchestrator_actor_ids allowlist (entry ${id} is finder ${finder.slug}'s own trusted_actor_id; a finder identity never vouches for a run record)` };
+      }
+    }
+  }
+  return { ids: seen };
+}
+
+// The registry allowlist in effect at atIso: { ids: Set, sha } when a
+// revision landed by then and declares a well-formed allowlist, otherwise
+// { indeterminate: reason } — never null-means-anything. Every caller
+// treats `indeterminate` as fail-closed.
 function resolveRegistryTrustedActorIds(repo, atIso) {
   const cutoff = Date.parse(atIso);
-  const history = resolveRegistryRevisionHistory(repo);
-  if (history === null) return null;
+  if (!Number.isFinite(cutoff)) {
+    return { indeterminate: `write time ${JSON.stringify(atIso)} is not a parseable timestamp, so no registry revision can be selected for it` };
+  }
+  let history = resolveRegistryRevisionHistory(repo);
+  // The cached history is a snapshot taken at resolvedAtEpoch; a write
+  // newer than that snapshot may be governed by a revision the snapshot
+  // never saw — shepherd round 1 of #741, Codex-confirmed (P2): a live
+  // (no --as-of) scan spans wall-clock time, so a removal landing after the
+  // first lookup but before a later issue's comments were fetched would be
+  // evaluated against stale, pre-removal history. Refresh once for such a
+  // write; a write still newer than the refreshed snapshot is in this
+  // process's future and has no provable revision — indeterminate.
+  // Boundary at SECOND granularity — shepherd round 3 of #741, Codex-
+  // confirmed (P2): created_at carries seconds while the boundary carries
+  // milliseconds, so a write in the boundary's own second parses as older
+  // than a landing that happened later within that second. The whole
+  // boundary second is therefore unprovable: a write in it (or later)
+  // refreshes once, and one still in the refreshed boundary's second is
+  // indeterminate.
+  const boundarySecond = (h) => Math.floor(h.resolvedAtEpoch / 1000) * 1000;
+  if (history !== null && cutoff >= boundarySecond(history)) {
+    registryRevisionHistoryCache.delete(repo);
+    history = resolveRegistryRevisionHistory(repo);
+  }
+  if (history === null) {
+    return { indeterminate: "the agent-registry.json revision history could not be resolved (a registry-touching commit with no merging PR, or an API failure), so no revision can be proven in effect" };
+  }
+  if (cutoff >= boundarySecond(history)) {
+    return { indeterminate: `write time ${atIso} postdates the registry revision history snapshot (${new Date(history.resolvedAtEpoch).toISOString()}, boundary second inclusive), so no revision can be proven in effect for it` };
+  }
   let bestSha = null;
   let bestSeen = -Infinity;
-  for (const { sha, landedAtEpoch } of history) {
-    if (landedAtEpoch <= cutoff && landedAtEpoch > bestSeen) {
+  for (const { sha, landedAtEpoch } of history.revisions) {
+    // Strictly BEFORE the write, never at the same instant — challenge
+    // round 1 of #741, confirmed (P2, fixed in place): GitHub's REST
+    // merged_at and created_at carry second precision, so a revision that
+    // landed in the same second as the write has no knowable order
+    // relative to it. Treating it as earlier could retroactively
+    // authenticate a write posted just before an addition landed; treating
+    // it as later could keep a just-removed actor authorized for one more
+    // write. Neither is provable, so the write is indeterminate (below).
+    if (landedAtEpoch === cutoff) {
+      return { indeterminate: `agent-registry.json revision ${sha} landed on the default branch in the same second as the write (${atIso}); their order is not knowable from second-precision timestamps, so no revision can be proven in effect` };
+    }
+    if (landedAtEpoch < cutoff && landedAtEpoch > bestSeen) {
       bestSeen = landedAtEpoch;
       bestSha = sha;
     }
   }
-  if (bestSha === null) return null;
+  if (bestSha === null) {
+    return { indeterminate: `no agent-registry.json revision had landed on the default branch by ${atIso}, so there is no trusted-orchestrator allowlist to validate against` };
+  }
+  const allowlist = resolveRegistryAllowlistAt(repo, bestSha);
+  if (allowlist.problem) {
+    return { indeterminate: `agent-registry.json at revision ${bestSha} (in effect at ${atIso}) ${allowlist.problem} — no trusted-orchestrator authority to validate against` };
+  }
+  return { ids: allowlist.ids, sha: bestSha };
+}
+
+// The parsed allowlist of one registry revision, fetched and read ONCE per
+// (repo, sha) — challenge round 1 of #741, confirmed (P1): per-write
+// evaluation means nearly every evidence comment in a --repo harvest has
+// its own timestamp, so the per-timestamp cache in createRegistryTrustResolver
+// misses almost every time, and without this cache each miss re-fetched the
+// same registry file — thousands of synchronous API calls over a few
+// hundred ordinary runs, enough to exhaust the rate limit and turn a whole
+// harvest indeterminate. Revision SELECTION is an in-memory scan of the
+// per-repo history; only the CONTENT read is remote, and a revision's
+// content is immutable, so caching by sha is exact. Problems are cached
+// too: an unreadable or malformed revision is unreadable for every write
+// it governs, and re-fetching it would only re-spend the call.
+const registryAllowlistCache = new Map();
+
+function resolveRegistryAllowlistAt(repo, sha) {
+  const key = `${repo}@${sha}`;
+  if (registryAllowlistCache.has(key)) return registryAllowlistCache.get(key);
+  let result;
   let doc;
   try {
-    const file = ghApiOne(`repos/${repo}/contents/agent-registry.json?ref=${bestSha}`);
+    const file = ghApiOne(`repos/${repo}/contents/agent-registry.json?ref=${sha}`);
     doc = JSON.parse(Buffer.from(file.content, "base64").toString("utf8"));
-  } catch {
-    return null;
+  } catch (err) {
+    result = { problem: `could not be read: ${err.message}` };
   }
-  if (!Array.isArray(doc.trusted_orchestrator_actor_ids)) return null;
-  const ids = doc.trusted_orchestrator_actor_ids.map(Number).filter((n) => Number.isInteger(n) && n >= 1);
-  return new Set(ids);
+  if (!result) {
+    if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
+      result = { problem: "is not a JSON object" };
+    } else {
+      result = readRegistryAllowlist(doc);
+    }
+  }
+  registryAllowlistCache.set(key, result);
+  return result;
+}
+
+// The per-harvest trust resolver: effectiveTrustAt(atIso) is the set of
+// actor ids trusted for a write made at atIso — the registry allowlist in
+// effect at that moment, narrowed by the operator's configured selection
+// (trustedActorIds; see requireTrustedActorIds). Throws EvidenceError when
+// the registry cannot answer (fail closed). Cached by timestamp: the same
+// kickoff time is looked up for a run's record author and its index author,
+// and many evidence writes can share a timestamp.
+//
+// Per WRITE, not per run — #741's own invariant (maintainer, 2026-09-02):
+// "each evidence write is authenticated against the registry revision
+// current at that write's time — kickoff-time presence does not authorize
+// later writes. Earlier writes stay valid under whatever revision was
+// current when they were made, even if the authoring actor is later
+// removed from the allowlist." A single run-wide kickoff snapshot would let
+// an actor removed mid-run keep authoring that run's remaining evidence.
+function createRegistryTrustResolver(repo, trustedActorIds) {
+  const cache = new Map();
+  return function effectiveTrustAt(atIso) {
+    if (!cache.has(atIso)) {
+      const resolved = resolveRegistryTrustedActorIds(repo, atIso);
+      if (resolved.indeterminate) {
+        throw new EvidenceError(`trust cannot be evaluated for a write at ${atIso}: ${resolved.indeterminate}`);
+      }
+      cache.set(atIso, new Set([...trustedActorIds].filter((id) => resolved.ids.has(id))));
+    }
+    return cache.get(atIso);
+  };
 }
 
 function fetchIssueList(repo) {
@@ -427,7 +640,7 @@ function resolveCanonical(markedTrusted) {
 // silently read as "this issue was never kicked off" — challenge round 1,
 // confirmed (the prior version scanned only for run-record markers, with
 // no independent anchor to notice the deletion at all).
-function findRunRecord(issueComments, { trustedActorIds, repo }) {
+function findRunRecord(issueComments, { trustedActorIds, repo, effectiveTrustAt: effectiveTrustAtIn }) {
   const byId = new Map(issueComments.map((c) => [c.id, c]));
   // The grammar reserves exactly ONE tuple for a run-index marker
   // (kickoff/issue/-/1) — shepherd round 1, Codex-confirmed (P2): checking
@@ -441,23 +654,15 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
     marker.round === null &&
     marker.seq === 1;
 
-  // Registry-revision pinning (issue #741, review round 4 of #663): narrows
-  // trustedActorIds to whichever ids the repo-committed registry also
-  // trusted AS OF each entry's own kickoff time — see
-  // resolveRegistryTrustedActorIds for why, and why it no-ops entirely
-  // until #741 lands its allowlist field. Evaluated per comment/run rather
-  // than once for the whole issue, because two runs on the same issue can
-  // kick off under two different registry revisions; cached by timestamp
-  // since the same kickoff time is looked up again below for the
-  // run-record author check.
-  const registryTrustCache = new Map();
-  const effectiveTrustAt = (atIso) => {
-    if (!registryTrustCache.has(atIso)) {
-      const registryIds = resolveRegistryTrustedActorIds(repo, atIso);
-      registryTrustCache.set(atIso, registryIds ? new Set([...trustedActorIds].filter((id) => registryIds.has(id))) : trustedActorIds);
-    }
-    return registryTrustCache.get(atIso);
-  };
+  // Registry-revision pinning (issue #741): the trusted set for a write is
+  // the registry allowlist in effect at that write's own time, narrowed by
+  // trustedActorIds — see createRegistryTrustResolver for the contract and
+  // why an unanswerable lookup throws (fail closed). Evaluated per
+  // comment/run rather than once for the whole issue, because two runs on
+  // the same issue can kick off under two different registry revisions.
+  // The caller normally shares one resolver across discovery and evidence
+  // assembly so the per-timestamp cache is shared too.
+  const effectiveTrustAt = effectiveTrustAtIn ?? createRegistryTrustResolver(repo, trustedActorIds);
 
   // ONE unified candidate list for run-index discovery — every trusted,
   // canonical-marker comment for this issue, well-formed or not — shepherd
@@ -506,7 +711,69 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
   // issue's OTHER runs — each run_id is isolated exactly the way
   // harvestOneRunRecord already isolates later per-run failures.
   const results = [];
-  for (const indexEntry of resolveCanonical(indexCandidates).values()) {
+  // Lowest-id canonical selection runs among candidates authenticated at
+  // their OWN write time, per run — shepherd round 1 of #741, Codex-
+  // confirmed (P2): selecting first and authenticating the winner let a
+  // CLI-selected but registry-unauthorized actor's lower-id index shadow a
+  // legitimate later one, turning the run indeterminate — exactly the
+  // "forged-author markers never suppress or shadow" rule ai/schemas/
+  // README.md states. When a run has NO authenticated candidate at all,
+  // the unauthenticated ones still go through the per-entry checks below,
+  // which report that run indeterminate (an untrusted-at-kickoff author is
+  // evidence of a problem, never silently "no run"). An unanswerable trust
+  // lookup throws here and reports the whole issue indeterminate — fail
+  // closed, as everywhere else.
+  const byRun = new Map();
+  for (const c of indexCandidates) {
+    const list = byRun.get(c.marker.runId) ?? [];
+    list.push(c);
+    byRun.set(c.marker.runId, list);
+  }
+  const selectionPool = [];
+  for (const [runId, candidates] of byRun) {
+    // Every write of a candidate — its post and, when edited later, its
+    // last edit — shepherd round 2 of #741, Codex-confirmed (P2): an index
+    // posted while listed but edited after removal is a post-removal
+    // write, and authenticating only created_at here let it win lowest-id
+    // selection and shadow a legitimate later index.
+    const authenticatedAtItsWrites = (c) => {
+      if (!effectiveTrustAt(c.comment.created_at).has(c.actorId)) return false;
+      const editedAt = typeof c.comment.updated_at === "string" ? c.comment.updated_at : null;
+      if (editedAt !== null && Date.parse(editedAt) > Date.parse(c.comment.created_at)) {
+        return effectiveTrustAt(editedAt).has(c.actorId);
+      }
+      return true;
+    };
+    // Ascending id, stopping at the first authenticated candidate —
+    // shepherd round 4 of #741, Codex-confirmed (P2): lowest id wins
+    // canonical selection, so once an authenticated candidate is found no
+    // higher-id duplicate can be canonical, and evaluating one anyway let
+    // a later duplicate with an unanswerable write time (posted in the
+    // snapshot-boundary second, say) throw and sink a run whose legitimate
+    // index was already established. Below that point an unanswerable
+    // lookup still fails the run closed, as before.
+    let authenticated = [];
+    try {
+      for (const c of [...candidates].sort((a, b) => a.comment.id - b.comment.id)) {
+        if (authenticatedAtItsWrites(c)) {
+          authenticated = [c];
+          break;
+        }
+      }
+    } catch (err) {
+      // Isolated per run_id, like every other per-run failure below: the
+      // run stays discoverable (by id) as indeterminate rather than
+      // vanishing into a whole-issue failure with no run_id attached.
+      if (err instanceof EvidenceError) {
+        const kickoffCreatedAt = candidates.map((c) => c.comment.created_at).sort()[0] ?? null;
+        results.push({ status: "indeterminate", runId, reason: err.message, kickoffCreatedAt });
+        continue;
+      }
+      throw err;
+    }
+    selectionPool.push(...(authenticated.length > 0 ? authenticated : candidates));
+  }
+  for (const indexEntry of resolveCanonical(selectionPool).values()) {
     const runId = indexEntry.marker.runId;
     // Declared outside the try so the catch below can still read it —
     // shepherd round 2/3, Codex-confirmed (P2): see the catch block's own
@@ -546,15 +813,27 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
       if (!recordComment) {
         throw new EvidenceError(`run-index ${runId} names run-record comment ${named.id}, which no longer exists — deleted-entry tampering`);
       }
-      // The INDEX's own author, evaluated at the RECORD's created_at — the
-      // true kickoff moment, never the index's own later one — shepherd
-      // round 5, Codex-confirmed (P2): looselyTrustedIndex above only
-      // proved CLI-raw membership; this is the real, registry-narrowed
-      // decision, deferred to here because only now is the named record
-      // (and so its authoritative timestamp) known. See looselyTrustedIndex's
-      // own comment for the full reasoning.
-      if (!effectiveTrustAt(recordComment.created_at).has(indexEntry.actorId)) {
-        throw new EvidenceError(`run-index ${runId} (comment ${indexEntry.comment.id}) author is not a registry-trusted actor as of this run's kickoff`);
+      // The INDEX's own author, evaluated at the INDEX's own write time —
+      // its created_at, and its updated_at when it was edited afterwards.
+      // The index is a write in its own right, and #741's per-write
+      // invariant binds every write to the revision in effect when it was
+      // made: an actor removed between the record post and the index post
+      // must not have their later index accepted on the strength of the
+      // earlier kickoff — challenge round 2 of #741, confirmed (P1). (#751's
+      // shepherd round 5 first evaluated this author at the RECORD's
+      // created_at, the pre-#741 run-wide kickoff-snapshot reading; the
+      // record author's own check just below still uses the record's
+      // created_at, which is that write's own time.) The candidate list
+      // above only proved CLI-raw membership; this is the real,
+      // registry-narrowed decision.
+      if (!effectiveTrustAt(indexEntry.comment.created_at).has(indexEntry.actorId)) {
+        throw new EvidenceError(`run-index ${runId} (comment ${indexEntry.comment.id}) author is not a registry-trusted actor as of this run's kickoff (the index's own post time ${indexEntry.comment.created_at})`);
+      }
+      const indexEditedAt = typeof indexEntry.comment.updated_at === "string" ? indexEntry.comment.updated_at : null;
+      if (indexEditedAt !== null && Date.parse(indexEditedAt) > Date.parse(indexEntry.comment.created_at)) {
+        if (!effectiveTrustAt(indexEditedAt).has(indexEntry.actorId)) {
+          throw new EvidenceError(`run-index ${runId} (comment ${indexEntry.comment.id}) was last edited at ${indexEditedAt}, when its author ${indexEntry.actorId} was no longer on the trusted-orchestrator allowlist in effect — a write after removal`);
+        }
       }
       // The record's OWN created_at, never the index's — shepherd round 3,
       // Codex-confirmed (P2): the record must exist (and so has already
@@ -570,6 +849,23 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
       }
       if (commentActorId(recordComment) !== named.author_actor_id) {
         throw new EvidenceError(`run-index ${runId} names run-record author ${named.author_actor_id}, but comment ${named.id}'s current author is ${commentActorId(recordComment)} — edited-entry tampering`);
+      }
+      // The run record is edited in place at every transition, and each
+      // edit is a write in its own right (#741's per-write invariant: "a
+      // write made after an actor's removal" is rejected). GitHub's
+      // server-side updated_at is the only timestamp the record's LAST
+      // edit carries — intermediate edits leave no trace — so an author
+      // no longer trusted at that moment means the record's current
+      // content was written without authority and the run is
+      // indeterminate, fail closed, rather than trusted on the strength of
+      // a kickoff that happened while they were still listed. An
+      // updated_at equal to created_at (or absent — a fixture, or an API
+      // shape without it) is "never edited" and adds nothing to check.
+      const recordEditedAt = typeof recordComment.updated_at === "string" ? recordComment.updated_at : null;
+      if (recordEditedAt !== null && Date.parse(recordEditedAt) > Date.parse(recordComment.created_at)) {
+        if (!effectiveTrustAt(recordEditedAt).has(named.author_actor_id)) {
+          throw new EvidenceError(`run record ${runId} (comment ${named.id}) was last edited at ${recordEditedAt}, when its author ${named.author_actor_id} was no longer on the trusted-orchestrator allowlist in effect — a write after removal`);
+        }
       }
       // No digest check here: the run-record is explicitly edited in
       // place at every transition, so a digest captured once at kickoff
@@ -704,7 +1000,7 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
 // against the full, unfiltered comment set regardless of cutoff, for the
 // same reason findRunRecord's own cutoff filtering only ever applies to
 // discovery, never to whether a listed entry was deleted or edited.
-function assembleListedEvidence(runRecord, allComments, withinCutoff, runRecordAuthorId) {
+function assembleListedEvidence(runRecord, allComments, withinCutoff, runRecordAuthorId, effectiveTrustAt) {
   const byId = new Map(allComments.map((c) => [c.id, c]));
   const verified = [];
   for (const entry of runRecord.evidence_comments || []) {
@@ -712,6 +1008,19 @@ function assembleListedEvidence(runRecord, allComments, withinCutoff, runRecordA
     const comment = byId.get(id);
     if (!comment) {
       throw new EvidenceError(`evidence_comments[] names comment ${entry.id} (marker ${JSON.stringify(entry.marker)}), which no longer exists — deleted-entry tampering`);
+    }
+    // Per-write registry binding (#741): the run's author must have been on
+    // the trusted-orchestrator allowlist in effect at THIS comment's own
+    // server-side created_at — kickoff-time trust does not authorize a
+    // later write, and a write made after the author's removal is
+    // rejected. The converse holds by the same rule: a comment written
+    // while the author was still listed stays authenticated however the
+    // registry changes afterwards, because the revision consulted is the
+    // one in effect at created_at, never the current file. Checked before
+    // the author-identity checks below so the reason names the actual
+    // defect (authority at write time) rather than a downstream symptom.
+    if (!effectiveTrustAt(comment.created_at).has(runRecordAuthorId)) {
+      throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} was posted at ${comment.created_at}, when this run's author ${runRecordAuthorId} was not on the trusted-orchestrator allowlist in effect — a write after removal (or before listing) is never authenticated`);
     }
     if (commentActorId(comment) !== entry.author_actor_id) {
       throw new EvidenceError(`evidence_comments[] entry for comment ${entry.id} names author ${entry.author_actor_id} but the comment's current author is ${commentActorId(comment)}`);
@@ -1186,12 +1495,41 @@ function reconstructAsOf(body, cutoffIso, recordCreatedAt) {
 //     evidence.
 // ---------------------------------------------------------------------------
 
-function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds }) {
+// Reporting-only classification, but under the same per-write trust
+// boundary as assembly — challenge round 3 of #741, confirmed (P2): author
+// equality alone called a marker posted by the run's own author AFTER their
+// removal from the allowlist an "orphan" (trusted-but-unlisted), when the
+// per-write rule says that write was never trusted at all. Such a comment
+// is a forged-class comment for the report's purposes. A write whose trust
+// cannot be evaluated (no registry revision in effect, unresolvable
+// history) is likewise NOT provably trusted and is reported as forged
+// rather than aborting a reporting path with an EvidenceError — assembly,
+// not this report, is where indeterminacy makes the run indeterminate.
+function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds, effectiveTrustAt }) {
   const marked = markedComments(comments).filter((e) => e.marker.kind === "evidence" && e.marker.runId === runId);
   const trusted = [];
   const forged = [];
+  const trustedAtWrite = (comment) => {
+    if (!isTrustedFor(comment, { runRecordAuthorId })) return false;
+    if (typeof effectiveTrustAt !== "function") return true;
+    try {
+      if (!effectiveTrustAt(comment.created_at).has(runRecordAuthorId)) return false;
+      // An orphan has no run-record digest to expose a later edit, so its
+      // server-side updated_at is the only trace — shepherd round 1 of
+      // #741, Codex-confirmed (P2): the same edit-time check the record
+      // and index get applies before an orphan is reported as trusted.
+      const editedAt = typeof comment.updated_at === "string" ? comment.updated_at : null;
+      if (editedAt !== null && Date.parse(editedAt) > Date.parse(comment.created_at)) {
+        return effectiveTrustAt(editedAt).has(runRecordAuthorId);
+      }
+      return true;
+    } catch (err) {
+      if (err instanceof EvidenceError) return false;
+      throw err;
+    }
+  };
   for (const e of marked) {
-    if (isTrustedFor(e.comment, { runRecordAuthorId })) {
+    if (trustedAtWrite(e.comment)) {
       if (!listedIds.has(e.comment.id)) trusted.push(e);
     } else {
       forged.push(e);
@@ -1279,7 +1617,7 @@ function buildRunDirectory(runRecord, roundEvidence, destDir) {
 // record disqualifies only THAT one run — never the whole harvest. Every
 // return here carries `status: "ok" | "indeterminate"`; a caller iterating
 // many issues keeps going past an indeterminate one rather than aborting.
-function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, withinCutoff }) {
+function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, withinCutoff, effectiveTrustAt }) {
   try {
     const state = reconstructAsOf(record.body, asOf, record.recordCreatedAt);
     // The LIVE pr (record.body.pr), never the as-of-filtered state.pr:
@@ -1316,7 +1654,7 @@ function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, w
     // silently keeping whatever DID reassemble (an earlier version of this
     // function) let metrics and replay operate on a trajectory the
     // producer never actually emitted — challenge round 1, confirmed.
-    const rounds = assembleListedEvidence(record.body, allComments, withinCutoff, record.authorActorId);
+    const rounds = assembleListedEvidence(record.body, allComments, withinCutoff, record.authorActorId, effectiveTrustAt);
     const listedIds = new Set((record.body.evidence_comments || []).map((e) => Number(e.id)));
     // Cutoff-filtered — shepherd round 4, Codex-confirmed (P2): unlike
     // assembleListedEvidence just above (which verifies every LIVE
@@ -1328,7 +1666,7 @@ function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, w
     // trajectory, and re-running the SAME --as-of C later (after more
     // comments land) could change its orphan/forged report even though
     // nothing about "as of C" should change.
-    const { trusted: orphans, forged: forgedMarkers } = findOrphanEvidence(allComments.filter(withinCutoff), { runId: record.runId, runRecordAuthorId: record.authorActorId, listedIds });
+    const { trusted: orphans, forged: forgedMarkers } = findOrphanEvidence(allComments.filter(withinCutoff), { runId: record.runId, runRecordAuthorId: record.authorActorId, listedIds, effectiveTrustAt });
     return {
       status: "ok",
       runId: record.runId,
@@ -1365,9 +1703,14 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf }) {
   // exist yet, not merely to reconstruct in-flight. Discovery itself, not
   // just round evidence, needs the cutoff filter — challenge round 1,
   // confirmed.
+  // One resolver per issue harvest, shared by run-record discovery and
+  // evidence assembly (same per-timestamp cache; see
+  // createRegistryTrustResolver). The registry revision HISTORY is cached
+  // per repo at module level, so this costs nothing across issues.
+  const effectiveTrustAt = createRegistryTrustResolver(repo, trustedActorIds);
   let records;
   try {
-    records = findRunRecord(issueComments.filter(withinCutoff), { trustedActorIds, repo });
+    records = findRunRecord(issueComments.filter(withinCutoff), { trustedActorIds, repo, effectiveTrustAt });
   } catch (err) {
     if (err instanceof EvidenceError) {
       return [{ status: "indeterminate", runId: null, issueNumber, reason: err.message }];
@@ -1383,7 +1726,7 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf }) {
   return records.map((record) =>
     record.status === "indeterminate"
       ? { status: "indeterminate", runId: record.runId, issueNumber, reason: record.reason, kickoffCreatedAt: record.kickoffCreatedAt }
-      : harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, withinCutoff }),
+      : harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, withinCutoff, effectiveTrustAt }),
   );
 }
 
@@ -2017,6 +2360,8 @@ export {
   RUN_STAGES,
   firstSeen,
   resolveRegistryTrustedActorIds,
+  createRegistryTrustResolver,
+  readRegistryAllowlist,
 };
 
 // ---------------------------------------------------------------------------
@@ -2067,13 +2412,20 @@ function parseArgs(argv) {
   return args;
 }
 
-// The configured trust root (ai/schemas/README.md "Trust: actor ID, never
-// a payload claim") — the ONLY source of authority. --trusted-actor-id is
-// direct/repeatable; --trusted-actors-file names a JSON
-// {"trusted_actor_ids": [...]} document (a registry-style config file, for
-// a caller that keeps this list alongside other deployment config rather
-// than passing it flag-by-flag). Both are unioned; at least one id from
-// either source is required.
+// The operator's configured selection of trusted orchestrators
+// (ai/schemas/README.md "Trust root: the registry allowlist, pinned per
+// write"). NOT the root of trust: that is agent-registry.json's
+// `trusted_orchestrator_actor_ids` at the revision in effect for each
+// write (#741; createRegistryTrustResolver above), and this set can only
+// ever NARROW it — an id configured here but absent from the governing
+// registry revision authenticates nothing. It exists so a harvest can be
+// scoped to particular orchestrators (one human, or Foreman's account)
+// without editing the registry, and so an operator states explicitly whose
+// evidence a report is about. --trusted-actor-id is direct/repeatable;
+// --trusted-actors-file names a JSON {"trusted_actor_ids": [...]} document
+// (a config file, for a caller that keeps this list alongside other
+// deployment config rather than passing it flag-by-flag). Both are
+// unioned; at least one id from either source is required.
 function requireTrustedActorIds(args) {
   const fromFlags = (args["trusted-actor-id"] || []).map(Number);
   let fromFile = [];

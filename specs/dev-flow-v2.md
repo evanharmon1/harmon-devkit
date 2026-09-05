@@ -802,11 +802,14 @@ Two rules make the posted evidence trustworthy on a public repository:
   — a dedicated follow-up, after both #634 (result schemas) and #635
   (registry roles/finders) closed without adding it — not a mechanism this
   anchor re-derives. Trust evaluation for a given run is pinned to an
-  authoritative registry revision for that run (its own kickoff-time
-  snapshot), never the registry's current content: an actor added to the
-  list later does not retroactively authenticate that run's older evidence,
-  and an actor later removed does not invalidate evidence authenticated
-  while they were still trusted. Until a repository configures that
+  authoritative registry revision, never the registry's current content:
+  trust for each evidence write is evaluated against the registry revision
+  current on the default branch at that write's server-side `created_at`
+  (the run record's `updated_at` likewise), and a kickoff-time snapshot is a
+  permitted implementation only when it resolves to the same revision for
+  every write — so an actor added to the list later does not retroactively
+  authenticate that run's older evidence, and an actor later removed does
+  not invalidate evidence authenticated while they were still trusted. Until a repository configures that
   list, a run record has no authority to validate against and its evidence
   is reported unauthenticated rather than silently accepted on an unproven
   identity.

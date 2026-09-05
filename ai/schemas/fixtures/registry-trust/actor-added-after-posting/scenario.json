@@ -1,0 +1,42 @@
+{
+  "description": "The author was NOT on the allowlist at the revision in effect when the run record and its evidence were written; a later revision adds them. Trust is evaluated at each write's own time, so the later addition does not retroactively authenticate the run.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "1111111111111111111111111111111111111111",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002
+        ]
+      }
+    },
+    {
+      "sha": "2222222222222222222222222222222222222222",
+      "landed_at": "2026-09-02T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002,
+          9001
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "not a registry-trusted actor as of this run's kickoff"
+  }
+}

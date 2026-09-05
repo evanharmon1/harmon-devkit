@@ -1,0 +1,33 @@
+{
+  "description": "The revision that lists the author was merged into a staging branch before the run's kickoff and only reached the default branch afterwards (a second PR). Landing means the merging PR whose base is the default branch, so nothing was in effect at kickoff and the run is indeterminate \u2014 the earlier staging merge never backdates the revision.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "landed_at": "2026-09-02T00:00:00Z",
+      "staging_merged_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "no agent-registry.json revision had landed on the default branch by"
+  }
+}
