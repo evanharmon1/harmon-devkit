@@ -1388,12 +1388,19 @@ async function main() {
     if (transitionStages[i - 1].stage !== "verify") continue;
     const skipped = SKIP_EDGE_GUARDS.get(transitionStages[i].stage);
     if (!skipped) continue;
-    if (resolved.rounds[skipped] !== 0) {
-      return indeterminate(
-        args,
-        `the trusted receipt sequence records a "verify" -> "${transitionStages[i].stage}" transition, skipping "${skipped}", but the resolved ${skipped} cap is ${resolved.rounds[skipped]} (not disabled) — stage-skipping is legal only under a cap-0 policy for the skipped stage`,
-      );
-    }
+    if (resolved.rounds[skipped] === 0) continue;
+    // A verify -> review edge is NOT automatically a skip: a remediation
+    // loop back into review (review -> implement -> verify -> review, both
+    // edges on run.schema.json's own ALLOWED_EDGES) records exactly that
+    // edge after challenge has already run and exited, and the same shape
+    // takes security -> implement -> verify -> security back into security.
+    // Only an edge with no earlier transition into the skipped stage is a
+    // skip; anything else is a legitimate re-entry.
+    if (transitionStages.slice(0, i).some((t) => t.stage === skipped)) continue;
+    return indeterminate(
+      args,
+      `the trusted receipt sequence records a "verify" -> "${transitionStages[i].stage}" transition with no earlier transition into "${skipped}", but the resolved ${skipped} cap is ${resolved.rounds[skipped]} (not disabled) — stage-skipping is legal only under a cap-0 policy for the skipped stage`,
+    );
   }
 
   const validatorPath = args.validator || DEFAULT_VALIDATOR;

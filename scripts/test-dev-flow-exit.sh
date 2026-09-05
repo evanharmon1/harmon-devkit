@@ -390,7 +390,7 @@ node -e '
     console.error(`reason did not name the skipped review stage and its cap: ${body.reason}`);
     process.exit(1);
   }
-' "/tmp/dfe-skip-sec-$$.out" 'skipping "review", but the resolved review cap is 3' || {
+' "/tmp/dfe-skip-sec-$$.out" 'with no earlier transition into "review", but the resolved review cap is 3' || {
     cat "/tmp/dfe-skip-sec-$$.out" >&2
     rm -rf "${skip_dir}" "/tmp/dfe-skip-sec-$$.out"
     fail "#685: a recorded verify -> security edge under a nonzero review cap was not refused"

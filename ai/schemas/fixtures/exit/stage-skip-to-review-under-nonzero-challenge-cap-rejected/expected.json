@@ -1,4 +1,4 @@
 {
   "indeterminate": true,
-  "reason_contains": "skipping \"challenge\", but the resolved challenge cap is 3 (not disabled)"
+  "reason_contains": "with no earlier transition into \"challenge\", but the resolved challenge cap is 3 (not disabled)"
 }

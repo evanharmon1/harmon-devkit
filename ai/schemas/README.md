@@ -2291,7 +2291,7 @@ moved rather than dropped.
 | - | --------------------------------- | ----- | ------------ |
 | 1 | A round is complete only when every finder in `[stage.<stage>].finders[]` returned a `completed` pass at the same `reviewed_head`; a missing or `blocked` finder is `finder_unavailable` **on the evidence of a `slot_failures` record**, never synthesized, and never a round one finder short | `assembleLogicalRounds` (`dev-flow-exit.mjs`) | `exit/finder-blocked-without-failure-record-indeterminate` / `exit/finder-blocked-then-fallback-completes-round`; the disagreeing-head half is `exit/mismatched-head-round-rejected` |
 | 2 | Every retained pass has exactly one adjudication document **and vice versa** — an adjudication naming a round no pass or `slot_failures` record ever named is an error, not something to ignore | the orphan-adjudication check in `dev-flow-exit.mjs`'s `main()`, beside the `missingAdjudication` check that covers the other direction | `exit/adjudication-without-source-pass-rejected` / `exit/adjudication-for-rejected-pass-round-accepted` |
-| 3 | `round` never exceeds the stage's resolved cap; a cap-0 stage has no rounds; **stage-skipping is legal only under the corresponding cap-0 policy** | the cap-integrity checks and the `SKIP_EDGE_GUARDS` check in `dev-flow-exit.mjs`'s `main()` | `exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected` / `exit/stage-skip-to-review-legal-under-cap-zero-challenge`; the `verify -> security` edge is a named case in `scripts/test-dev-flow-exit.sh` |
+| 3 | `round` never exceeds the stage's resolved cap; a cap-0 stage has no rounds; **stage-skipping is legal only under the corresponding cap-0 policy** | the cap-integrity checks and the `SKIP_EDGE_GUARDS` check in `dev-flow-exit.mjs`'s `main()` | `exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected` / `exit/stage-skip-to-review-legal-under-cap-zero-challenge` and `exit/remediation-reentry-into-review-is-not-a-stage-skip`; the `verify -> security` edge is a named case in `scripts/test-dev-flow-exit.sh` |
 | 4 | `integration -> implement -> integration` loops are counted against `[rounds.<policy>].remediation`; exceeding it escalates, and code-changing dispositions past the cap are rejected | `readiness-gate.sh` step 9d, under `--remediation-cap` | the `#685(4)` cases in `scripts/test-integrate-readiness.sh` |
 | 5 | `codex_cycle.cycle` ≤ `[rounds.<policy>].integration`; cap 0 ⇒ null cycle; a clean verdict with a null cycle under a positive cap is not clean | `readiness-gate.sh` step 9, under `--integration-cap` | the five `--integration-cap` cases plus the `#685(5)` `audit` case in `scripts/test-integrate-readiness.sh` |
 | 6 | `promotion.head` equals the final integrator result's head and its accepted-cycle reviewed commit; a stale integration pass cannot certify a newer promoted head | three bindings: the validator's own `accepted.reviewed_commit` receipt check, `readiness-gate.sh`'s envelope-head compare, and its `promotion-head-mismatch` condition | the `#685(6)` cases in `scripts/test-integrate-readiness.sh` |
@@ -2319,6 +2319,16 @@ for the stage under test, so inferring a skip from "no challenge transition
 exists" would reject nearly every fixture in this corpus. Two consecutive
 transition receipts are a positive claim about what the run did, and the
 resolved policy is what decides whether that claim is legal.
+
+The edge alone is still not enough, though, and this is the part worth
+knowing: `verify -> review` is *also* what a legitimate **remediation
+re-entry** records. `review -> implement -> verify -> review` is a path
+entirely on `ALLOWED_EDGES`, and it recognizably skips nothing — challenge
+already ran and exited earlier in the same run (the identical shape takes
+`security -> implement -> verify -> security` back into security). So the
+refusal additionally requires that no earlier transition into the skipped
+stage exists. `exit/remediation-reentry-into-review-is-not-a-stage-skip` is
+that neighbour, and it carries the same edge as the rejected fixture.
 
 **Row 8's bounds are optional-if-present.** `started_at`,
 `promotion.promoted_at`, and a transition receipt's `entered_at` are all
