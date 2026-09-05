@@ -2298,7 +2298,7 @@ moved rather than dropped.
 | 7 | Every adjudicated round has a matching **issue** evidence marker (same stage/round); a `pr`-destination rollup does not substitute | `checkAdjudicationEvidenceMarkers` (`validate-result-schemas.mjs`, with `--adjudication`) | `run.schema/invalid/adjudicated-round-without-issue-evidence-marker` and `…-only-pr-evidence-marker` / `run.schema/valid/ready-with-settled-deferral` |
 | 8 | Source passes' `produced_at` falls between run start and promotion and not before their own stage entry; run↔pass `initiated_by` agree | `chronologyViolation` inside `validateReceipts` (`dev-flow-exit.mjs`), beside the pre-existing `run_id`/`initiated_by` binding | `exit/pass-produced-before-stage-entry-rejected` / `exit/pass-produced-within-run-span-accepted`, plus the two run-span bounds as named cases in `scripts/test-dev-flow-exit.sh` |
 | 9 | The moment an integrator pass applies `fix\|decline\|file` to a **deferred** finding, the matching append-only settlement exists — regardless of outcome | `readiness-gate.sh` step 9b (`deferred-unsettled` / `disposition-unsettled`) | the `#685(9)` cases in `scripts/test-integrate-readiness.sh` |
-| 10 | An integrator pass's `applied_dispositions` ids lie within the run's known finding universe | `checkAppliedDispositionsKnownFindingIds` (with `--known-ids`) and `checkAppliedDispositionsIntegrationRound` (unconditional) in `validate-result-schemas.mjs` | `result.integrator.schema/invalid/applied-dispositions-future-integration-round` / `…/valid/applied-dispositions-earlier-integration-round`, alongside the existing `applied-dispositions-unknown-finding-id` pair |
+| 10 | An integrator pass's `applied_dispositions` ids lie within the run's known finding universe | `checkAppliedDispositionsKnownFindingIds` (with `--known-ids`) and `checkAppliedDispositionsIntegrationRound` (unconditional) in `validate-result-schemas.mjs`, with `readiness-gate.sh` building the universe from the record and passing the flag | `result.integrator.schema/invalid/applied-dispositions-future-integration-round` / `…/valid/applied-dispositions-earlier-integration-round`, the existing `applied-dispositions-unknown-finding-id` pair, and the `#685(10)` gate case |
 
 Three of those rows deserve their reasoning spelled out, because each drew a
 boundary that a broader reading of the criterion would have got wrong.
@@ -2339,7 +2339,15 @@ omitted, though: a number, an object, or a null where a timestamp belongs
 refuses the whole trajectory. The run directory is not schema-validated on
 this path, so treating malformed producer data as absent would silently
 disable exactly the bound it was written to request — challenge round 1,
-confirmed against the first version of this check, which did. This never becomes an ordering
+confirmed against the first version of this check, which did.
+
+`Date.parse` alone is not enough to decide "present and well-formed",
+either. It silently normalizes an impossible calendar date, so a
+`started_at` of `2026-02-30T00:00:00Z` would bound every pass against March
+2nd — accepting or rejecting passes on a date nobody wrote (challenge round
+2, confirmed against round 1's own fix). The bound applies the same shape
+plus round-trip real-instant test `validate-result-schemas.mjs` already
+applies to every `*_at` field. This never becomes an ordering
 authority — that stays the trusted receipt sequence's job
 (`specs/dev-flow-v2.md`: producer-supplied `produced_at` "SHALL be only a
 bounded sanity check … never an ordering … boundary"). It is exactly that
@@ -2368,6 +2376,35 @@ fix that CAUSED the final loop is still listed on the clean pass that closes
 it — reading that as "a code change still needs applying" refuses precisely
 the run that converged exactly on budget. A pass that genuinely still owes a
 code change is not `clean`, and the gate's own step 9c refuses it there.
+
+**Row 10's universe is the record's own evidence, and the gate builds it.**
+A check gated on a flag its production caller never passes enforces nothing
+(challenge round 2, confirmed): the readiness gate validated each integrator
+envelope without `--known-ids`, so only the impossible half — a future
+integration round — was ever caught, and a clean pass could claim
+dispositions for findings that never existed. The gate now assembles the
+universe from `--record`'s own `passes/` (ids those passes raised) and
+`adjudications/` (ids those documents adjudicated) and passes it. Both halves
+are needed: a finding an *earlier* integrator pass raised and this one is now
+resolving lives in `passes/`, while a challenge/review finding carried here
+as a `defer` lives in an adjudication. An unreadable or absent record yields
+an empty universe rather than a skipped check.
+
+Two smaller decisions ride along with that. The assembly uses a plain glob
+and `jq`, never `find`/`xargs`, because the gate must keep working under the
+minimal PATH its own no-GNU-timeout path restricts itself to — and the temp
+file it writes needs `rm` on that PATH for its cleanup trap, which is why the
+restricted toolset in `scripts/test-integrate-readiness.sh` names it.
+
+**A cap-0 confidence stage must be inert across the whole run, not just the
+one being computed.** Every cap-integrity check in `dev-flow-exit.mjs` is
+scoped to `args.stage`, so a policy disabling challenge while the trajectory
+plainly showed challenge having run was invisible whenever review was the
+stage under computation — and the cap-0 branch of row 3's skip guard would
+then accept the skip on the strength of the very cap the trajectory
+contradicts (challenge round 2, confirmed). Both confidence stages are now
+checked for a transition, pass, adjudication, or `slot_failures` record
+naming a stage its own resolved cap disables.
 
 `expected.json` in the exit corpus gained a `reason_contains` key for this
 work. A fixture declaring only `{"indeterminate": true}` passes for *any*

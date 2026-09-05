@@ -33,7 +33,7 @@ bin_dir="${test_tmp}/bin"
 fixtures="${test_tmp}/fixtures"
 record_dir="${test_tmp}/record"
 log="${test_tmp}/gh.log"
-mkdir -p "$bin_dir" "$fixtures" "$record_dir/adjudications"
+mkdir -p "$bin_dir" "$fixtures" "$record_dir/adjudications" "$record_dir/passes"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -176,7 +176,7 @@ write_default_record() {
          number:493,url:"https://github.com/example/repo/pull/493",
          bound_at:"2026-01-01T00:00:00Z"}]}' \
         >"${record_dir}/run.json"
-    rm -f "${record_dir}"/adjudications/*.json
+    rm -f "${record_dir}"/adjudications/*.json "${record_dir}"/passes/*.json
 }
 
 # A schema-valid result.envelope (role integrator) at
@@ -1404,8 +1404,46 @@ jq -cn --arg head "$head_sha" '
     >"$fresh_result"
 node "$validator" envelope "$fresh_result" >/dev/null ||
     fail "fresh-disposition fixture failed schema validation"
+# The record must hold the evidence for integration-r1-human-1, or the
+# gate's known-ids universe (harmon-devkit#685, challenge round 2) has
+# nothing to account for it — which is the separate thing the next case
+# asserts. This case is about settlement, so give it the earlier integrator
+# pass that surfaced the finding AND the adjudication that dispositioned it:
+# render-dev-flow.mjs's own cross-document check rejects a pass whose
+# finding no adjudication document covers, so a record carrying one without
+# the other is not a record at all.
+write_earlier_integration_finding() {
+    jq -cn --arg head "$head_sha" '
+      {schema:2, role:"integrator", status:"completed", head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"claude-code",model:"test",tier:"economy"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+                codex_cycle:null, integration_round:1,
+                findings:[{id:"integration-r1-human-1",
+                           body:"a human review finding",source_id:"9100"}],
+                unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+                verdict:"findings"}}' \
+        >"${record_dir}/passes/integration-r1.json"
+    jq -cn --arg head "$head_sha" '
+      {schema:2, run_id:"test-run", stage:"integration", round:1,
+       reviewed_head:$head,
+       adjudications:[{finding_id:"integration-r1-human-1",
+         reviewer_priority:null, adjudicated_priority:"P2",
+         disposition:"fix", reason:"confirmed against the code",
+         evidence:"reproduced locally", override:null}]}' \
+        >"${record_dir}/adjudications/integration-r1.json"
+}
+write_earlier_integration_finding
 run_gate --integrator-result "$fresh_result"
 assert_gate 0 pass ready
+
+echo "==> #685(10): an applied_disposition the record has no evidence for anywhere is refused"
+write_defaults
+run_gate --integrator-result "$fresh_result"
+assert_gate 2 indeterminate codex-indeterminate
+printf '%s\n' "$gate_out" | grep -Fq "known finding universe" ||
+    fail "#685(10): the gate did not name the finding universe: $gate_out"
 
 # A disposition claim alone, with no durable settlement behind it, cannot
 # promote a genuinely deferred finding — check 6 (deferred-unsettled) already
@@ -1909,8 +1947,11 @@ mkdir -p "$restricted_bin"
 # to locate scripts/render-dev-flow.sh from the checkout's own toplevel,
 # gitleaks because render-dev-flow.mjs secret-scans every projection it
 # renders, unconditionally, before printing it), on top of the original
-# minimal toolset this fixture restricts PATH to.
-for tool in bash jq grep tr dirname cat node git gitleaks; do
+# minimal toolset this fixture restricts PATH to. `rm` joined them with
+# harmon-devkit#685: the gate now materializes the run's known-finding-id
+# universe in a temp file and cleans it up in an EXIT trap, and a trap whose
+# command is not on PATH turns every run of this fixture into a bare 127.
+for tool in bash jq grep tr dirname cat node git gitleaks rm; do
     tool_path="$(command -v "$tool")" ||
         fail "missing $tool for the no-timeout fixture"
     ln -s "$tool_path" "${restricted_bin}/$tool"

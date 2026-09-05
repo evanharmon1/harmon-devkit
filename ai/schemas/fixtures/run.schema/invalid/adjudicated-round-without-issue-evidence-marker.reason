@@ -1,1 +1,1 @@
-$run.evidence_comments: --adjudication <file> adjudicates challenge round 1, but no evidence marker with destination "issue" records it
+$run.evidence_comments: --adjudication <file> adjudicates challenge round 1, but no evidence marker with destination "issue" records it — required once outcome is "ready-for-review"

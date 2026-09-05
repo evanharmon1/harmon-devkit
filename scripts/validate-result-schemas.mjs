@@ -2174,8 +2174,9 @@ function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
 // explicit that "each round's evidence is posted to the issue" with no
 // exception (run.schema.json's own marker.destination description says so),
 // and the `pr` destination is documented there as the per-stage ROLLUP
-// comment that links back to those per-round issue comments — a rollup is
-// therefore never a substitute for the per-round record it links to.
+// comment that links "back to the per-round issue comments" — so the rollup
+// is posted AFTER the comments it links to, and is never a substitute for
+// them.
 //
 // Nothing enforced this: checkAdjudicationStagesVisited only proves the
 // adjudicated STAGE was visited, and checkEvidenceMarker* only constrain
@@ -2183,6 +2184,21 @@ function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
 // every deferral, promote, and carry an entirely empty evidence_comments[]
 // — leaving the harvester (scripts/dev-flow-stats.mjs) nothing to read back
 // and authenticate for rounds that demonstrably happened.
+//
+// TWO rules, because they hold at different times. A run adjudicates a
+// round and THEN publishes its evidence comment, so between those two
+// writes a legitimate in-flight record has the adjudication and not yet the
+// marker — an unconditional "marker or error" would fault the normal
+// sequence rather than an attack:
+//
+//   - MISSING ENTIRELY is faulted only once the run is PROMOTED, the point
+//     at which the record stops being in flight and becomes the durable
+//     artifact a harvester reads. Same gate, and the same reasoning, as
+//     checkDeferredFindingsSettledBeforePromotion below.
+//   - A `pr` MARKER WITHOUT ITS `issue` SIBLING is faulted at any time. The
+//     ordering above is fixed by the schema's own description, so a rollup
+//     that exists while the per-round comment it links back to does not is
+//     an inconsistency at every point in a run, not a stage of one.
 //
 // Runs only alongside --adjudication/--no-adjudications, like every other
 // cross-document check here: the adjudicated (stage, round) pairs are the
@@ -2192,24 +2208,31 @@ function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
 // whatever its destination — only a marker naming the same round matters.
 function checkAdjudicationEvidenceMarkers(document, adjudications, errors) {
   const issueMarkers = new Set()
-  const prOnlyMarkers = new Set()
+  const prMarkers = new Set()
   for (const comment of document.evidence_comments ?? []) {
     const marker = comment.marker
     if (!marker || typeof marker.stage !== 'string' || typeof marker.round !== 'number') continue
     const key = `${marker.stage}/r${marker.round}`
     if (marker.destination === 'issue') issueMarkers.add(key)
-    else if (marker.destination === 'pr') prOnlyMarkers.add(key)
+    else if (marker.destination === 'pr') prMarkers.add(key)
   }
+  const promoted = document.outcome === 'ready-for-review'
   const seen = new Set()
   for (const { file, data } of adjudications) {
     if (typeof data.stage !== 'string' || typeof data.round !== 'number') continue
     const key = `${data.stage}/r${data.round}`
     if (issueMarkers.has(key) || seen.has(key)) continue
+    if (prMarkers.has(key)) {
+      seen.add(key)
+      errors.push(
+        `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, whose only evidence marker for it has destination "pr" — the per-round record belongs on the issue, and a pr comment never substitutes for it`
+      )
+      continue
+    }
+    if (!promoted) continue
     seen.add(key)
     errors.push(
-      prOnlyMarkers.has(key)
-        ? `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, whose only evidence marker for it has destination "pr" — the per-round record belongs on the issue, and a pr comment never substitutes for it`
-        : `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, but no evidence marker with destination "issue" records it`
+      `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, but no evidence marker with destination "issue" records it — required once outcome is "ready-for-review"`
     )
   }
 }

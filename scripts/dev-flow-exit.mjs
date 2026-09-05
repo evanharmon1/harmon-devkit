@@ -88,6 +88,41 @@ function loadJson(file) {
   return JSON.parse(readFileSync(file, "utf8"));
 }
 
+// Date.parse is not enough for a bound this file trusts. It accepts far more
+// than this schema family's timestamp shape, and — the part that matters —
+// it SILENTLY NORMALIZES an impossible calendar date: "2026-02-30T00:00:00Z"
+// parses happily as March 2nd, so a malformed started_at would bound every
+// pass against an instant a day and a half from the one it names, accepting
+// or rejecting passes on a date nobody wrote. Challenge round 2, confirmed.
+//
+// Same shape and same round-trip test validate-result-schemas.mjs already
+// applies to every *_at field (its TIMESTAMP_PARTS / isRealInstant pair): the
+// value must match the family's own pattern AND survive a round trip through
+// Date back to the identical Y-M-D h:m:s. Duplicated rather than imported
+// because that module is spawned as a subprocess here, never linked — the
+// two are deliberately not coupled at the module level (see
+// PASS_VALIDATION_KIND's own note) — and this is four lines of arithmetic.
+// Returns the epoch milliseconds, or null when the value is not a real
+// instant in that shape.
+const TIMESTAMP_PARTS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
+
+function realInstant(value) {
+  const parts = TIMESTAMP_PARTS.exec(value);
+  if (!parts) return null;
+  const [, year, month, day, hour, minute, second] = parts;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return null;
+  const d = new Date(ms);
+  const same =
+    d.getUTCFullYear() === Number(year) &&
+    d.getUTCMonth() + 1 === Number(month) &&
+    d.getUTCDate() === Number(day) &&
+    d.getUTCHours() === Number(hour) &&
+    d.getUTCMinutes() === Number(minute) &&
+    d.getUTCSeconds() === Number(second);
+  return same ? ms : null;
+}
+
 // The stage named by the LAST transition receipt, or null if none exists
 // yet. dev-flow-exit.mjs only ever computes challenge or review's exit
 // (args.stage is validated to one of those two), so this is used solely to
@@ -289,9 +324,9 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
     if (typeof value !== "string") {
       throw new ExitIndeterminate(`run.json's ${label} is present but not a string (${JSON.stringify(value)}) — cannot bound any pass against it`);
     }
-    const parsed = Date.parse(value);
-    if (Number.isNaN(parsed)) {
-      throw new ExitIndeterminate(`run.json's ${label} "${value}" is not a parseable instant — cannot bound any pass against it`);
+    const parsed = realInstant(value);
+    if (parsed === null) {
+      throw new ExitIndeterminate(`run.json's ${label} "${value}" is not a real instant in this schema family's timestamp shape — cannot bound any pass against it`);
     }
     return parsed;
   }
@@ -1407,6 +1442,37 @@ async function main() {
     ["security", "review"],
   ]);
   const transitionStages = (runDir.runRecord.receipts || []).filter((r) => r.kind === "transition");
+
+  // "A cap-0 stage has no rounds" is the other half of the same criterion,
+  // and it holds for EVERY confidence stage the run records, not only for
+  // the one whose exit is being computed. The cap-integrity checks further
+  // down are all scoped to args.stage, so a policy disabling challenge
+  // while the trajectory plainly shows challenge having run was invisible
+  // whenever review was the stage under computation — and the cap-0 branch
+  // of the skip guard below would then accept the skip on the strength of
+  // the very cap the trajectory contradicts. Challenge round 2, confirmed.
+  for (const stage of ["challenge", "review"]) {
+    if (resolved.rounds[stage] !== 0) continue;
+    const visited = transitionStages.some((t) => t.stage === stage);
+    const hasPass = runDir.passes.some((p) => p.envelope.payload && p.envelope.payload.stage === stage);
+    const hasAdjudication = runDir.adjudications.some((a) => a.doc.stage === stage);
+    const hasSlotFailure = (Array.isArray(runDir.runRecord.slot_failures) ? runDir.runRecord.slot_failures : []).some(
+      (sf) => sf.stage === stage,
+    );
+    const evidence = [
+      visited ? "a transition into it" : null,
+      hasPass ? "a pass naming it" : null,
+      hasAdjudication ? "an adjudication naming it" : null,
+      hasSlotFailure ? "a slot_failures record naming it" : null,
+    ].filter(Boolean);
+    if (evidence.length > 0) {
+      return indeterminate(
+        args,
+        `the resolved ${stage} cap is 0 (disabled) but the trajectory records ${evidence.join(", ")} — trajectory inconsistent with its own policy`,
+      );
+    }
+  }
+
   for (let i = 1; i < transitionStages.length; i++) {
     if (transitionStages[i - 1].stage !== "verify") continue;
     const skipped = SKIP_EDGE_GUARDS.get(transitionStages[i].stage);

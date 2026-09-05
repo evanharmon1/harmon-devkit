@@ -912,10 +912,22 @@ accept_context_case \
 # rejected ones lack, so the check cannot be satisfied by an over-broad
 # reading of either failure.
 run_context_case \
-    "an adjudicated round with no issue evidence marker at all is rejected (#685)" \
+    "a PROMOTED run with an adjudicated round and no issue evidence marker is rejected (#685)" \
     run \
     "$fixtures_dir/run.schema/invalid/adjudicated-round-without-issue-evidence-marker.json" \
     'but no evidence marker with destination "issue" records it' \
+    --adjudication "$settlement_cross_check_adjudication"
+
+# The in-flight neighbour, and the reason the missing-marker half is gated on
+# promotion at all: a run adjudicates a round and THEN publishes its evidence
+# comment, so between those two writes the record legitimately holds the
+# adjudication without the marker. settlement-of-deferred.json is that state
+# (outcome: null) and must stay accepted — an unconditional rule would fault
+# the normal sequence rather than an attack.
+accept_context_case \
+    "an UNPROMOTED run whose adjudicated round has not published its evidence yet is accepted (#685)" \
+    run \
+    "$fixtures_dir/run.schema/valid/settlement-of-deferred.json" \
     --adjudication "$settlement_cross_check_adjudication"
 
 run_context_case \

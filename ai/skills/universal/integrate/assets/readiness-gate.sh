@@ -925,9 +925,52 @@ active_run_id="$(jq -er '.run_id | select(type == "string")' "$run_json" 2>/dev/
     indeterminate malformed-data "run.json carries no run_id"
 active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_json" 2>/dev/null)" ||
     indeterminate malformed-data "run.json carries no initiated_by"
+# The run's known finding universe, so the validator's
+# checkAppliedDispositionsKnownFindingIds actually runs here
+# (harmon-devkit#685: "nested integrator passes' applied_dispositions ids are
+# validated against the run's known finding universe"). That check is gated
+# on --known-ids, and this gate — the production caller — was not passing it,
+# so a clean integrator pass could claim dispositions for findings that never
+# existed and still authorize promotion; only impossible integration ids were
+# caught, by the flagless half of the check. Challenge round 2, confirmed.
+#
+# The universe is every finding the record itself holds evidence for: the
+# ids raised by the passes under `passes/` and the ids adjudicated by the
+# documents under `adjudications/`. Both halves are needed — a finding an
+# EARLIER integrator pass raised and this one is now resolving lives in
+# `passes/`, while a challenge/review finding carried here as a `defer`
+# lives in an adjudication document — and together they are exactly "what
+# this run produced". An id in neither, and not in the gated payload's own
+# findings[] (which the validator checks separately), names nothing the
+# record can account for.
+#
+# `--record` is the dev-flow-v2 record directory the review stage retains
+# and this stage consumes, so both subdirectories are its documented
+# contents, not an assumption about the caller.
+# A plain glob and jq, never find/xargs: this script must keep running on
+# the minimal toolset its own no-GNU-timeout path already restricts PATH to,
+# and jq is the only thing here that is not a shell builtin.
+known_ids_file="${TMPDIR:-/tmp}/readiness-gate-known-ids.$$.json"
+trap 'rm -f "$known_ids_file"' EXIT
+{
+    for known_ids_doc in "$record_dir"/passes/*.json; do
+        [ -f "$known_ids_doc" ] || continue
+        jq -r '.payload.findings[]?.id // empty' "$known_ids_doc" 2>/dev/null || true
+    done
+    for known_ids_doc in "$record_dir"/adjudications/*.json; do
+        [ -f "$known_ids_doc" ] || continue
+        jq -r '.adjudications[]?.finding_id // empty' "$known_ids_doc" 2>/dev/null || true
+    done
+} | jq -Rn '[inputs | select(. != "")] | unique' >"$known_ids_file" 2>/dev/null || true
+# An unreadable or absent record leaves an EMPTY universe rather than no
+# check: an empty FILE would make the validator's own --known-ids parse fail
+# (a usage error), where an empty ARRAY is the honest "this run has produced
+# no findings the record can account for" — and still enforcing.
+[ -s "$known_ids_file" ] || printf '[]\n' >"$known_ids_file"
 node "$validate_result_schemas" envelope "$integrator_result" \
-    --run-id "$active_run_id" --initiated-by "$active_initiated_by" >/dev/null 2>&1 ||
-    indeterminate codex-indeterminate "--integrator-result $integrator_result is not a schema-valid result.envelope for the active run ($active_run_id/$active_initiated_by)"
+    --run-id "$active_run_id" --initiated-by "$active_initiated_by" \
+    --known-ids "$known_ids_file" >/dev/null 2>&1 ||
+    indeterminate codex-indeterminate "--integrator-result $integrator_result is not a schema-valid result.envelope for the active run ($active_run_id/$active_initiated_by), or names an applied disposition outside the run's known finding universe"
 
 # harmon-devkit#685: "promotion.head equals the head of the final integrator
 # result and its accepted-cycle reviewed commit; a stale integration pass

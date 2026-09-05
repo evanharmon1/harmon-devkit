@@ -1,0 +1,4 @@
+{
+  "indeterminate": true,
+  "reason_contains": "the resolved challenge cap is 0 (disabled) but the trajectory records a transition into it"
+}
