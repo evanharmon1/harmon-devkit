@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "run_id": "run-outxn-two-terminals",
+  "initiated_by": "human",
+  "started_at": "2026-09-03T09:00:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-09-03T09:00:00Z"
+    }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": [
+    {
+      "seq": 0,
+      "digest": "a29b15f0c7582bc3234426cf9ea6eeefa60c7df76ca5594e016ed663764abe7b",
+      "prev_digest": "genesis",
+      "outcome": "capped",
+      "at": "2026-09-03T09:20:00Z"
+    },
+    {
+      "seq": 1,
+      "digest": "876b981c596f45951bc37e0bb06d23f860941f5c8f3cb2d0eb3a68854a95aa0c",
+      "prev_digest": "a29b15f0c7582bc3234426cf9ea6eeefa60c7df76ca5594e016ed663764abe7b",
+      "outcome": "ready-for-review",
+      "at": "2026-09-03T09:30:00Z"
+    }
+  ]
+}

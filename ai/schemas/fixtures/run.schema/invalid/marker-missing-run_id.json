@@ -13,9 +13,17 @@
       "author_actor_id": 12345678,
       "login": "evanharmon1",
       "digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-      "marker": { "stage": "challenge", "destination": "issue", "round": 1, "sequence": 1 }
+      "marker": {
+        "stage": "challenge",
+        "destination": "issue",
+        "round": 1,
+        "sequence": 1
+      }
     }
   ],
   "settlements": [],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }

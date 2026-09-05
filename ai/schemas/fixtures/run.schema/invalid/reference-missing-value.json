@@ -13,8 +13,13 @@
       "finding_id": "challenge-r1-codex-cli-9",
       "disposition": "fix",
       "settled_at": "2026-08-29T12:00:00Z",
-      "reference": { "type": "sha" }
+      "reference": {
+        "type": "sha"
+      }
     }
   ],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }

@@ -1,0 +1,37 @@
+{
+  "schema": 2,
+  "run_id": "run-outxn-harmless-retry",
+  "initiated_by": "human",
+  "started_at": "2026-09-03T09:00:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-09-03T09:00:00Z",
+      "exit": "claimed"
+    }
+  ],
+  "interventions": [],
+  "outcome": "capped",
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": [
+    {
+      "seq": 0,
+      "digest": "810b211b9ab1c35dcecbe242785be39c2176030c71f8d84855853ead0964050b",
+      "prev_digest": "genesis",
+      "outcome": "capped",
+      "at": "2026-09-03T09:30:00Z"
+    },
+    {
+      "seq": 0,
+      "digest": "810b211b9ab1c35dcecbe242785be39c2176030c71f8d84855853ead0964050b",
+      "prev_digest": "genesis",
+      "outcome": "capped",
+      "at": "2026-09-03T09:30:00Z"
+    }
+  ]
+}
