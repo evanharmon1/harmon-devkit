@@ -729,6 +729,34 @@ node -e '
     ok "the JSON form carries schema, unverified policy, binding, stages, settlements and gaps" ||
     bad "the JSON form is missing fields"
 
+echo "==> a malformed --as-of is a usage error, never a silent empty cutoff"
+d="$TMPROOT/badasof"
+scaffold "$d" further-along "body"
+for stamp in not-a-date 2026-02-30T00:00:00Z 2026-09-03T12:00:00 0; do
+    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --as-of "$stamp"
+    [ "$RC" -eq 2 ] && contains "$ERR" "not a valid ISO-8601 UTC timestamp" &&
+        ok "--as-of $stamp is rejected" ||
+        bad "--as-of $stamp gave $RC instead of a usage error: $ERR"
+done
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --as-of 2026-08-25T00:00:00.500Z
+[ "$RC" -eq 0 ] && ok "a fractional-seconds cutoff is still accepted" ||
+    bad "a valid fractional-seconds cutoff was rejected: $ERR"
+
+echo "==> the remediation budget is named as unmeasurable, not silently skipped"
+d="$TMPROOT/remediation"
+scaffold "$d" further-along "$POLICY_SECTION"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "remediation 4" &&
+    ok "the disclosed remediation cap appears in the policy line" ||
+    bad "the policy line dropped the remediation cap"
+contains "$OUT" "remediation rounds spent against the remediation cap" &&
+    ok "the report says the remediation budget is not measurable from this evidence" ||
+    bad "a cap is displayed with no section measuring it and no gap entry naming it"
+
 # ---------------------------------------------------------------------------
 # 4. Harvester failure modes and usage
 # ---------------------------------------------------------------------------

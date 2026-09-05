@@ -118,6 +118,26 @@ function parseArgs(argv) {
   return args
 }
 
+// The same grammar scripts/dev-flow-stats.mjs enforces on its own --as-of:
+// UTC "Z" form only (a timezone-less stamp would parse as LOCAL time, making
+// a "reproducible" cutoff environment-dependent), and calendar-valid, since
+// Date.parse silently NORMALIZES an impossible date like 2026-02-30 into a
+// different real one. Duplicated rather than imported because the harvester
+// is a separate, optional script this asset must run without.
+const ISO_TIMESTAMP_RE = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]+)?Z$/
+
+function isCalendarValid(match, epoch) {
+  const d = new Date(epoch)
+  return (
+    d.getUTCFullYear() === Number(match[1]) &&
+    d.getUTCMonth() + 1 === Number(match[2]) &&
+    d.getUTCDate() === Number(match[3]) &&
+    d.getUTCHours() === Number(match[4]) &&
+    d.getUTCMinutes() === Number(match[5]) &&
+    d.getUTCSeconds() === Number(match[6])
+  )
+}
+
 function validateArgs(args) {
   if (!args.repo) throw new UsageError('--repo <owner/repo> is required')
   if (!/^[^/\s]+\/[^/\s]+$/.test(args.repo)) {
@@ -136,6 +156,18 @@ function validateArgs(args) {
   // path is a usage error before the first `gh` call rather than after it.
   if (args.statsScript !== undefined && !existsSync(args.statsScript)) {
     throw new UsageError(`--stats-script path does not exist: ${args.statsScript}`)
+  }
+  // Validated here for the same reason, and it became load-bearing the moment
+  // the cutoff started filtering discovery: an unparseable value makes
+  // Date.parse NaN, every `created <= NaN` false, and the tool report "no run
+  // record" for a run that is plainly there — a typo turned into a false
+  // statement about the evidence (challenge round 3, confirmed P1).
+  if (args.asOf !== undefined) {
+    const match = ISO_TIMESTAMP_RE.exec(args.asOf)
+    const epoch = match ? Date.parse(args.asOf) : NaN
+    if (!match || Number.isNaN(epoch) || !isCalendarValid(match, epoch)) {
+      throw new UsageError(`--as-of is not a valid ISO-8601 UTC timestamp: ${JSON.stringify(args.asOf)}`)
+    }
   }
 }
 
@@ -573,6 +605,12 @@ function unavailableMeasurements(measured) {
       measurement: 'findings by class and provenance, keyed by stage',
       reason:
         "the run trajectory's findings_by_class_and_provenance aggregates over the whole run, so this report's breakdown is run-wide",
+      issue: 'harmon-devkit#663 successors'
+    },
+    {
+      measurement: 'remediation rounds spent against the remediation cap',
+      reason:
+        'remediation is budgeted independently of integration, but it is not a stage in run.schema.json\'s stage enum and the run trajectory exposes no remediation count, so the remediation cap shown in the policy line above is disclosed and unmeasured — an integration run cannot be shown to have exhausted it',
       issue: 'harmon-devkit#663 successors'
     },
     {
