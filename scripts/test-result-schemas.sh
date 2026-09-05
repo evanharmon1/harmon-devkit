@@ -255,6 +255,12 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/finder-cycles-accepted-reviewed_commit-mismatch.json',
   'result.integrator.schema/invalid/finder-cycles-duplicate-finder.json',
   'result.integrator.schema/invalid/finder-cycles-codex-cloud-reported-twice.json',
+  // #796 challenge round 4: every cycle-semantics rule (accepted scope,
+  // exit_code/verdict coherence, the clean-verdict rule) applies to a
+  // finder_cycles entry exactly as it does to codex_cycle. All three are
+  // payload-wide cross-field facts, not single-property ones.
+  'result.integrator.schema/invalid/finder-cycles-nonterminal-with-accepted.json',
+  'result.integrator.schema/invalid/finder-cycles-pending-with-clean-verdict.json',
   'result.integrator.schema/invalid/applied-dispositions-duplicate-finding-id.json',
   'result.integrator.schema/invalid/blocked-with-clean-verdict.json',
   'result.integrator.schema/invalid/clean-with-empty-checks.json',

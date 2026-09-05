@@ -1,0 +1,1 @@
+$result.payload.verdict: must be "pending" when finder_cycles[0].exit_code is 11

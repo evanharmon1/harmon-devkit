@@ -123,6 +123,29 @@ printf 'Codex verification checkpoint.\n\nThere are no P0 or P1 findings.\n' |
 jq -e '.findings == [] and .counts == {P0: 0, P1: 0, P2: 0, P3: 0}' "$tmp/clean.json" >/dev/null ||
     fail "narration saying there are no P0 findings was decoded as one"
 
+echo "==> an extensionless repository file decodes like any other path"
+# Requiring a dotted extension made a finder unusable the moment it reported
+# Dockerfile, Makefile or a docs/ file without one (#796 challenge round 4).
+printf 'P1 Dockerfile:12 — the base image is unpinned.\n\nP0 docs/CHECKLIST:4 — a step is missing.\n' |
+    node "$normalizer" --finder codex-verification --stage review --round 1 \
+        --reviewed-head 0808080808080808080808080808080808080808 >"$tmp/extensionless.json" ||
+    fail "an extensionless path did not decode"
+jq -e '[.findings[] | {path, line}] ==
+    [{path: "Dockerfile", line: 12}, {path: "docs/CHECKLIST", line: 4}]' \
+    "$tmp/extensionless.json" >/dev/null ||
+    fail "an extensionless path decoded to the wrong location: $(cat "$tmp/extensionless.json")"
+
+echo "==> narration naming something path-shaped is still not a finding"
+# The counterpart to widening the pattern: "…against origin/main." names a
+# path-shaped token and is a header, not a finding.
+printf 'Reviewing branch changes against origin/main.\n\nP1 scripts/x.sh:3 — the lock leaks.\n' |
+    node "$normalizer" --finder codex-verification --stage review --round 1 \
+        --reviewed-head 0808080808080808080808080808080808080808 >"$tmp/narration.json" ||
+    fail "a narration header made the decode fail"
+jq -e '(.findings | length) == 1 and .findings[0].path == "scripts/x.sh"' \
+    "$tmp/narration.json" >/dev/null ||
+    fail "narration was decoded as a finding: $(cat "$tmp/narration.json")"
+
 echo "==> a labelled finding with no decodable path fails closed"
 set +e
 printf 'P0 the whole approach is wrong and no file is named.\n' |

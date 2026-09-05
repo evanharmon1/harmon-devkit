@@ -377,11 +377,35 @@ ${dirty_manifest}"
 # still exit clean and be banked as a complete round. Size is bounded once, by
 # that caller, as a refusal.
 collect_untracked_diff() {
-    local path
+    local path status listing
+    # The producer's own status matters, so it is not run in a process
+    # substitution: a failing `git ls-files` there is invisible, and the loop
+    # would simply see no untracked files and report a complete diff.
+    listing="$(mktemp)" || return 1
+    git ls-files -z --others --exclude-standard >"$listing" || {
+        rm -f "$listing"
+        return 1
+    }
     while IFS= read -r -d '' path; do
         [ -n "$path" ] || continue
-        git diff --no-index --ignore-submodules=none -- /dev/null "$path" 2>/dev/null || true
-    done < <(git ls-files -z --others --exclude-standard)
+        # `git diff --no-index` exits 1 when the two inputs DIFFER, which is
+        # the normal outcome here — every untracked file differs from
+        # /dev/null. Only 0 and 1 are success; anything else (the file
+        # vanished, is unreadable, git failed) is a real error and must not be
+        # swallowed, or the prompt would carry a partial diff while still
+        # claiming the manifest above it is authoritative.
+        status=0
+        git diff --no-index --ignore-submodules=none -- /dev/null "$path" || status=$?
+        case "$status" in
+        0 | 1) ;;
+        *)
+            rm -f "$listing"
+            echo "collect_review_diff: cannot diff untracked file: $path" >&2
+            return 1
+            ;;
+        esac
+    done <"$listing"
+    rm -f "$listing"
 }
 
 collect_review_diff() {
@@ -398,16 +422,16 @@ collect_review_diff() {
         fi
         ;;
     worktree)
-        git diff --ignore-submodules=none HEAD
-        collect_untracked_diff
+        git diff --ignore-submodules=none HEAD || return 1
+        collect_untracked_diff || return 1
         ;;
     both:*)
         local base="${review_diff_spec#both:}"
         printf 'Committed changes (git diff %s...HEAD):\n' "$base"
         git diff --ignore-submodules=none "${base}...HEAD"
         printf '\nUncommitted changes (git diff HEAD, plus untracked files):\n'
-        git diff --ignore-submodules=none HEAD
-        collect_untracked_diff
+        git diff --ignore-submodules=none HEAD || return 1
+        collect_untracked_diff || return 1
         ;;
     *)
         echo "collect_review_diff: no resolved scope to diff" >&2

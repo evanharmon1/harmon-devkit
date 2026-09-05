@@ -164,11 +164,33 @@ function dispositionOf(priority) {
 // segment. Matching that here rather than emitting something the schema will
 // reject means an undecodable path is REPORTED, not discovered three steps
 // later as a validation failure with no way back to the raw text.
-const PATH_TOKEN = /(?:^|[\s(`'"[])((?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9_]+)(?::(\d+))?/
+// A repo path needs SOME signal that separates it from an ordinary word, or
+// every noun in a finding becomes a file. Requiring a dotted extension was one
+// such signal and it was too narrow: `Dockerfile:12`, `Makefile`, `LICENSE`
+// are ordinary repository files, and rejecting them made a local finder
+// unusable the moment it reported one (#796 challenge round 4). The signal is
+// now any ONE of three: a directory separator, a dotted extension, or a
+// `:line` suffix — each of which a bare English word lacks.
+//
+// Residual, stated rather than rediscovered: a finding naming an
+// extensionless file at the REPOSITORY ROOT with no line number (`LICENSE`,
+// on its own) still does not decode, because at that point the token is
+// textually indistinguishable from an ordinary noun and guessing would
+// silently mislocate the finding. That case fails CLOSED — it is reported on
+// stderr and the process exits 3 — so it is visible work for a human, never a
+// dropped finding.
+const PATH_TOKEN =
+  /(?:^|[\s(`'"[])((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+|[A-Za-z0-9_-]+\.[A-Za-z0-9_]+|[A-Za-z0-9_.-]+(?=:\d))(?::(\d+))?/
 function locationOf(text) {
   const match = PATH_TOKEN.exec(text)
   if (!match) return null
-  const candidate = match[1]
+  // Trailing sentence punctuation is not part of a path: "against
+  // origin/main." ends a sentence, and capturing the stop would put a path
+  // in the record that does not exist.
+  const candidate = match[1].replace(/[.,;:]+$/, '')
+  // The same shape result.<role>.schema.json's own `path` pattern admits:
+  // repo-relative, no `.`/`..` segment, and never empty.
+  if (candidate.length === 0) return null
   if (candidate.split('/').some((segment) => segment === '.' || segment === '..')) return null
   return { path: candidate, line: match[2] ? Number(match[2]) : null }
 }
@@ -223,13 +245,17 @@ if (finder.raw_shape === 'labelled-text') {
     .map((block) => block.trim())
     .filter((block) => block.length > 0)
   for (const [index, block] of blocks.entries()) {
-    // A block that neither carries a severity label nor names a file is
-    // narration (a header, a summary, "no P0 or P1 findings"), not a finding.
-    // Requiring BOTH signals would drop a genuine unlabelled finding, which
-    // AGENTS.md says is worth at least a P2 of adjudication; requiring
-    // neither would turn every heading into one.
-    if (!isLabelled(block) && !locationOf(block)) continue
-    pushFinding(block, `block ${index + 1}`, null, `block-${index + 1}`)
+    // What makes a block a finding rather than narration. A severity label is
+    // the primary signal. An UNLABELLED block still counts when it names a
+    // path AND a line, because AGENTS.md adjudicates an unlabelled finding as
+    // at least a P2 and dropping one would be worse than over-reporting —
+    // but a bare path with no line is not enough: a narration line like
+    // "Reviewing branch changes against origin/main." names something
+    // path-shaped and is not a finding (#796 challenge round 4, after the
+    // location pattern widened to admit extensionless files).
+    const blockLocation = locationOf(block)
+    if (!isLabelled(block) && !(blockLocation && blockLocation.line !== null)) continue
+    pushFinding(block, `block ${index + 1}`, blockLocation, `block-${index + 1}`)
   }
 } else if (finder.raw_shape === 'github-review-json') {
   // The PR-side shape: one review plus the inline comments attributed to it.

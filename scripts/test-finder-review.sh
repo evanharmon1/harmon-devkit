@@ -98,6 +98,34 @@ grep -Fq 'contents behind a newline in the path' <<<"$out" ||
     fail "an untracked file whose path contains a newline was dropped from the prompt"
 rm -f "$newline_file"
 
+echo "==> a failure while collecting the untracked diff refuses the pass"
+# `git diff --no-index` exits 1 when files differ, which is normal here — but
+# any other status is a real error, and swallowing it would send a partial
+# diff under a manifest claiming to be complete.
+fail_bin="$tmp/failing-git-bin"
+mkdir -p "$fail_bin"
+real_git="$(command -v git)"
+cat >"$fail_bin/git" <<EOF
+#!/usr/bin/env bash
+# Fail only the untracked-file diff; every other git call is the real one.
+if [ "\$1" = diff ] && [ "\$2" = --no-index ]; then
+    echo "simulated git failure" >&2
+    exit 128
+fi
+exec "$real_git" "\$@"
+EOF
+chmod +x "$fail_bin/git"
+printf 'new file\n' >"$work/src/untracked.txt"
+set +e
+out="$( (cd "$work" && PATH="$fail_bin:$stub_bin:$PATH" FINDER_REVIEW_DRY_RUN=1 \
+    ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+status=$?
+set -e
+rm -f "$work/src/untracked.txt"
+[ "$status" -eq 1 ] || fail "a failed untracked diff did not refuse (rc $status): $out"
+grep -Fq 'Refusing rather than reviewing a partial diff' <<<"$out" ||
+    fail "the partial-diff refusal did not explain itself: $out"
+
 echo "==> the vendor invocation is overridable without editing the runner"
 out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_ARGS='--prompt --no-color' \
     ./scripts/finder-review.sh review copilot --uncommitted 2>/dev/null)"

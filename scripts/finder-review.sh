@@ -192,7 +192,17 @@ case "$diff_bytes" in
     exit 2
     ;;
 esac
-diff_text="$(collect_review_diff)"
+# A failing diff is a refusal, never an empty one: `set -e` does not apply
+# inside a command substitution's assignment on every shell, so the status is
+# checked explicitly.
+diff_status=0
+diff_text="$(collect_review_diff)" || diff_status=$?
+if [ "$diff_status" -ne 0 ]; then
+    echo "Could not collect the change for $slug (git exited $diff_status)." >&2
+    echo "Refusing rather than reviewing a partial diff under a manifest that claims" >&2
+    echo "to be complete." >&2
+    exit 1
+fi
 # BYTES, via LC_ALL=C wc -c, not `${#diff_text}`: the shell counts characters
 # and the kernel's per-argument limit counts bytes, so on a diff carrying
 # multi-byte UTF-8 a character count passes this guard and then fails the exec

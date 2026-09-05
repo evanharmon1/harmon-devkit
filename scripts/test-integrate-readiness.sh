@@ -198,13 +198,24 @@ write_integrator_result() {
     # (cap 0) takes the same "clean" path as exit_code 0.
     local exit_code
     exit_code="$(jq -r '.exit_code // "null"' <<<"$codex_cycle")"
+    # Every cycle in the payload constrains the verdict, not just codex_cycle
+    # (#796 challenge round 4) — a finder cycle reporting findings while the
+    # payload claims clean is exactly the contradiction the validator rejects.
+    # The strongest constraint present wins, so a fixture stays self-consistent
+    # whichever cycle carries the interesting exit code.
+    local finder_exit
+    finder_exit="$(jq -r '[.[] | .exit_code] | map(select(. != 0)) | first // "none"' <<<"$finder_cycles")"
+    [ "$finder_exit" = none ] || exit_code="$finder_exit"
     local verdict findings='[]' checks='[]'
     case "$exit_code" in
     null | 0)
         verdict=clean
         checks='[{"name":"build","bucket":"pass","run_id":"1","required":true}]'
         ;;
-    10)
+    10 | 14)
+        # 14 (PR no longer open) excludes clean AND pending, and a codex_cycle
+        # of 0 excludes pending and escalate, so `findings` is the only verdict
+        # coherent with both.
         verdict=findings
         findings='[{"id":"integration-r1-codex-cloud-1","body":"a finding","source_id":"1"}]'
         ;;

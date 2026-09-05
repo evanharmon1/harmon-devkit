@@ -105,7 +105,8 @@ configured finders and cross-validates the result: an added slug the registry
 does not know, or one whose surface or stage affinity forbids it here, fails
 exactly as a configured one would. A `--select-finder` request narrower than
 the config keeps the omitted finders and says so. **Pass the same flags to
-`scripts/dev-flow-exit.sh`**: it re-resolves the policy file independently, so
+`scripts/dev-flow-exit.sh`** (the thin wrapper that execs
+`scripts/dev-flow-exit.mjs` with `"$@"`): it re-resolves the policy file independently, so
 without them an added finder is not a round slot at all — its pass and findings
 are dropped and the round can report converged on the configured slots alone. "Attributable" has the same
 meaning it has for tier and rigor: this session's own operator input or the
