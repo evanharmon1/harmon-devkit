@@ -64,11 +64,13 @@ const VERDICT_EXPECTATION_KEYS = new Set([
   "outcome",
   "reason",
   "rounds_counted",
+  "incomplete_round",
   "diagnostic_contains",
   "corrections_field",
   "corrections_status",
   "no_corrections_for",
   "verified_provenance_for",
+  "verified_findings_count",
   "no_repeat_relationship",
   "unresolved_slot",
   "substitutions_json",
@@ -91,6 +93,9 @@ function checkVerdict(expected, actual) {
   }
   if (expected.rounds_counted !== undefined && actual.rounds_counted !== expected.rounds_counted) {
     return `rounds_counted: expected ${expected.rounds_counted}, got ${actual.rounds_counted}`;
+  }
+  if (expected.incomplete_round !== undefined && actual.incomplete_round !== expected.incomplete_round) {
+    return `incomplete_round: expected ${expected.incomplete_round}, got ${actual.incomplete_round}`;
   }
   if (expected.diagnostic_contains) {
     const found = (actual.diagnostics || []).some((d) => d.reason && d.reason.includes(expected.diagnostic_contains));
@@ -127,6 +132,12 @@ function checkVerdict(expected, actual) {
     const entry = (actual.verified_findings || []).find((f) => f.id === id);
     if (!entry || entry.verified_provenance !== value) {
       return `verified_findings[id=${id}].verified_provenance: expected "${value}", got ${JSON.stringify(entry)}`;
+    }
+  }
+  if (expected.verified_findings_count !== undefined) {
+    const count = (actual.verified_findings || []).length;
+    if (count !== expected.verified_findings_count) {
+      return `verified_findings count: expected ${expected.verified_findings_count}, got ${count}`;
     }
   }
   if (expected.no_repeat_relationship !== undefined) {

@@ -255,12 +255,12 @@ task ci         # full CI mirror
 # → merging stays a human decision
 ```
 
-The `/gauntlet` skill (`ai/skills/universal/gauntlet/`) is the procedure for
-the middle of that block — challenge and review to convergence, the CI mirror,
-and the draft-PR ritual that hands off to `/integrate`. It carries the cap
-resolution, the adjudication table and ledger, the backgrounding recipes, and
-the damper catalog that keeps a self-reinforcing critique loop from feeding on
-its own fixes.
+The `/review` skill (`ai/skills/universal/review/`) is the procedure for the
+confidence part of that block — challenge and review to convergence. It returns
+to `/implement` for the CI mirror and draft publication, which then hands the
+draft to `/integrate`. It carries the cap resolution, adjudication table and
+ledger, backgrounding recipes, and the damper catalog that keeps a
+self-reinforcing critique loop from feeding on its own fixes.
 
 The full staged loop — including the PR-integration rounds and the readiness
 gate that ends them — is defined in AGENTS.md ("Dev Loop"). The PR is a

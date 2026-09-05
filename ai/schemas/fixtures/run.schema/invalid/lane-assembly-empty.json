@@ -1,0 +1,29 @@
+{
+  "schema": 2,
+  "run_id": "run-638-empty-lane-assembly",
+  "initiated_by": "human",
+  "started_at": "2026-09-03T10:00:00Z",
+  "stage_transitions": [
+    { "stage": "kickoff", "entered_at": "2026-09-03T10:00:00Z", "exit": "claimed" },
+    { "stage": "claim", "entered_at": "2026-09-03T10:01:00Z", "exit": "planned" },
+    { "stage": "plan", "entered_at": "2026-09-03T10:02:00Z", "exit": "implemented" },
+    {
+      "stage": "implement",
+      "entered_at": "2026-09-03T10:03:00Z",
+      "assembly": {
+        "canonical_head": "6380a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+        "integrated_lanes": [],
+        "discarded_lanes": []
+      }
+    }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
+}

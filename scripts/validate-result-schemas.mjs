@@ -1500,6 +1500,36 @@ function checkStageTransitionsOrder(document, errors) {
   }
 }
 
+// checkLaneAssemblies — lane selection is authenticated lifecycle evidence,
+// not an unvalidated sidecar. Only an implement transition can produce an
+// assembled feature head, and a lane cannot be both selected and discarded.
+// JSON Schema checks the field shapes; these cross-field and uniqueness rules
+// need the semantic receipt layer.
+function checkLaneAssemblies(document, errors) {
+  for (const [index, transition] of (document.stage_transitions ?? []).entries()) {
+    const assembly = transition.assembly
+    if (assembly === undefined || assembly === null || typeof assembly !== 'object') continue
+    if (transition.stage !== 'implement') {
+      errors.push(`$run.stage_transitions[${index}].assembly: is permitted only on an implement transition`)
+    }
+    const integrated = Array.isArray(assembly.integrated_lanes) ? assembly.integrated_lanes : []
+    const discarded = Array.isArray(assembly.discarded_lanes) ? assembly.discarded_lanes : []
+    if (integrated.length + discarded.length === 0) {
+      errors.push(`$run.stage_transitions[${index}].assembly: must account for at least one integrated or discarded lane`)
+    }
+    if (new Set(integrated).size !== integrated.length) {
+      errors.push(`$run.stage_transitions[${index}].assembly.integrated_lanes: lane names must be unique`)
+    }
+    if (new Set(discarded).size !== discarded.length) {
+      errors.push(`$run.stage_transitions[${index}].assembly.discarded_lanes: lane names must be unique`)
+    }
+    const overlap = integrated.find((lane) => discarded.includes(lane))
+    if (overlap !== undefined) {
+      errors.push(`$run.stage_transitions[${index}].assembly: lane ${JSON.stringify(overlap)} cannot be both integrated and discarded`)
+    }
+  }
+}
+
 // isChronologicallyBefore A B — true iff timestamp A is strictly before B.
 // Compares via Date, not raw string ordering: two otherwise-identical
 // instants can be spelled with or without a fractional-seconds suffix
@@ -2207,6 +2237,7 @@ function main() {
       checkRunFlatProjections(instance, checkRunChainIntegrity(instance, errors), errors)
       checkSettlementReferenceType(instance, errors)
       checkStageTransitionsOrder(instance, errors)
+      checkLaneAssemblies(instance, errors)
       checkRunChronology(instance, errors)
       // --no-adjudications asserts "confirmed zero", which runs the SAME
       // checks as one-or-more --adjudication documents, just against the

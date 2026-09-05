@@ -2034,7 +2034,6 @@ echo "==> standardize-repo audit assets"
 
 STANDARDIZE_REFS="$repo/ai/skills/repo/standardize-repo/references"
 IMPLEMENT_SKILL="$repo/ai/skills/universal/implement/SKILL.md"
-GAUNTLET_SKILL="$repo/ai/skills/universal/gauntlet/SKILL.md"
 INTEGRATE_SKILL="$repo/ai/skills/universal/integrate/SKILL.md"
 INTEGRATOR_AGENT="$repo/ai/agents/integrator.md"
 STANDARDIZE_SKILL="$repo/ai/skills/repo/standardize-repo/SKILL.md"
@@ -2231,16 +2230,8 @@ assert_gauntlet_security_gate() {
     ! grep -qF '## 9. CI mirror' "$file"
 }
 
-expect_ok "gauntlet carries the canonical ledger rows and glyph legend" \
-    assert_ledger_contract "$GAUNTLET_SKILL"
 expect_ok "integrate carries the canonical ledger rows and glyph legend" \
     assert_ledger_contract "$INTEGRATE_SKILL"
-expect_ok "gauntlet and integrate ledger contracts are byte-identical" \
-    assert_shared_ledger "$GAUNTLET_SKILL" "$INTEGRATE_SKILL"
-expect_ok "gauntlet hooks ledger entry and exit/escalation events" \
-    assert_gauntlet_ledger_hooks "$GAUNTLET_SKILL"
-expect_ok "gauntlet uses security as its pre-PR gate and keeps CI on demand" \
-    assert_gauntlet_security_gate "$GAUNTLET_SKILL"
 expect_ok "integrate hooks round, push, Codex result, and ready events" \
     assert_integrate_ledger_hooks "$INTEGRATE_SKILL"
 

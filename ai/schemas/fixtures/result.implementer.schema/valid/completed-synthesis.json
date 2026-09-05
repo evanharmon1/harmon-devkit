@@ -1,0 +1,28 @@
+{
+  "schema": 2,
+  "role": "implementer",
+  "status": "completed",
+  "head": "6380a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "produced_at": "2026-09-03T19:30:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-638-council-synthesis",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "summary": "Synthesized the selected parts of two independent proposals.",
+    "handoff": "The ordered source proposal identities are preserved for assembly evidence.",
+    "ac_test_map": [
+      {
+        "criterion": "Council synthesis preserves proposal provenance",
+        "tests": ["scripts/test-result-schemas.sh"]
+      }
+    ],
+    "human_tasks": [],
+    "synthesis_of": ["proposal-claude-1", "proposal-gpt-1"]
+  }
+}
