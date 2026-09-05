@@ -19,6 +19,23 @@
 # never silently review a different scope or gate on a different scale than
 # Codex does.
 #
+# THE TOOL BOUNDARY. `/review`'s dispatch contract requires a confidence pass
+# to run with shell, git, gh, network write and external credentials DENIED,
+# and says that where that split "cannot be installed and verified, refuse the
+# dispatch and record a blocker". This runner cannot verify it: it invokes a
+# general-agent CLI which reads the operator's own configuration, and its
+# arguments are overridable, so a pre-approved tool set or a tool-enabling
+# override would put a writable agent in the checkout while its output was
+# banked as a read-only confidence pass.
+#
+# So it refuses by default. FINDER_REVIEW_COPILOT_READONLY=1 is the operator
+# attesting that THEIR configuration grants this CLI no tools; nothing here
+# claims to have checked it, and the variable exists so the decision is made
+# explicitly by someone who can check it, rather than assumed by a comment.
+# An earlier revision of this file simply asserted "no tools are granted and
+# none are needed" — the second half is true (the diff is in the prompt), the
+# first was never enforced.
+#
 # What a finder here must be able to do is take OUR scope. A confidence-stage
 # slot is complete only when its pass reviewed the round's exact
 # `reviewed_head` (specs/dev-flow-v2.md § Configuration), so a CLI that
@@ -43,6 +60,8 @@
 #
 # The vendor invocation is overridable, because a vendor flag change must be a
 # config edit rather than a code change here:
+#   FINDER_REVIEW_COPILOT_READONLY=1  REQUIRED: the operator attests this CLI
+#                                is configured to grant no tools (see above)
 #   FINDER_REVIEW_COPILOT_BIN    (default: copilot)
 #   FINDER_REVIEW_COPILOT_ARGS   (default: -p)     prompt appended as one arg
 #   FINDER_REVIEW_MAX_DIFF_BYTES (default: 60000)  refusal bound, in BYTES
@@ -157,8 +176,17 @@ dry_run="${FINDER_REVIEW_DRY_RUN:-0}"
 # A general agent, so it is driven with the same instructions Codex gets:
 # same scope sentence, same mode prose, same severity scale, same
 # authoritative manifest. The DIFF is embedded too, unlike the Codex path
-# which lets the CLI collect it: no tool is granted to this run, so nothing
-# else could read the tree.
+# which lets the CLI collect it — so this pass NEEDS no tools, whether or not
+# the operator's configuration grants any. Whether it is actually denied them
+# is the attestation checked below, not something this file can assert.
+if [ "${FINDER_REVIEW_COPILOT_READONLY:-0}" != 1 ]; then
+    echo "Refusing to run $slug: this runner cannot verify that the $TOOL CLI is denied" >&2
+    echo "shell, git, network-write and credential tools, and /review requires a confidence" >&2
+    echo "pass to run with those denied or the dispatch refused." >&2
+    echo "The change is embedded in the prompt, so the pass needs no tools; if your" >&2
+    echo "configuration grants it none, attest that with FINDER_REVIEW_COPILOT_READONLY=1." >&2
+    exit 1
+fi
 instructions="${scope}
 
 $(read_instruction "$MODE")

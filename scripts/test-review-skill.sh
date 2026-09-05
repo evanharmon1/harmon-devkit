@@ -157,6 +157,33 @@ jq -e '.stages.review.finders == ["codex-verification", "copilot-verification"] 
     (.finder_selection[0].retained_despite_selection == ["copilot-verification"])' \
     <<<"$narrowed" >/dev/null ||
     fail "a narrower per-run selection removed a config-required finder: $narrowed"
+echo "==> a per-run addition is registry-checked but never charged to breadth"
+# crossValidate sizes a stage's worst-case finder attempts against
+# [breadth].max_agent_runs, and the skill says in terms that confidence
+# finders never consume that budget. Applying the selection before that
+# arithmetic made an otherwise valid tight policy fail for adding a finder —
+# the one thing per-run selection is for.
+tight_policy="$tmp/tight-breadth.toml"
+sed 's/^max_agent_runs = 8$/max_agent_runs = 2/; s/^max_parallel_agents = 3$/max_parallel_agents = 2/' \
+    "$solo_fixture/policy.toml" >"$tight_policy"
+node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+    --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
+    --json >/dev/null ||
+    fail "the tight-breadth policy is not valid on its own, so the case proves nothing"
+node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+    --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
+    --add-finder review:codex-verification --json >/dev/null ||
+    fail "adding a finder was charged against [breadth].max_agent_runs"
+set +e
+unknown_add="$(node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+    --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
+    --add-finder review:not-a-registered-finder 2>&1)"
+status=$?
+set -e
+[ "$status" -eq 1 ] || fail "an unregistered per-run addition resolved cleanly (exit $status)"
+grep -Fq 'per-run selection adds unknown finder' <<<"$unknown_add" ||
+    fail "an added finder is no longer registry-checked: $unknown_add"
+
 echo "==> a per-run finder selection reaches the exit computation, not just the resolver"
 # devflow-policy.mjs applies --add-finder to its own in-memory result;
 # dev-flow-exit.mjs re-resolves the same policy file independently. Without the

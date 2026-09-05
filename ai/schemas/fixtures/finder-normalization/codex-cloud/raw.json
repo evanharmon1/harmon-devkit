@@ -45,5 +45,31 @@
       "body": "**P0** Another actor's comment is not this finder's evidence.",
       "original_commit_id": "0303030303030303030303030303030303030303"
     }
+  ],
+  "top_level_comments": [
+    {
+      "id": 9401,
+      "user": {
+        "id": 199175422,
+        "login": "chatgpt-codex-connector[bot]"
+      },
+      "body": "**P1** The reap sweep never reaches a finder-suffixed state file.\n\n**P2** The guide still calls the stage `shepherd`.\n\n**Reviewed commit:** `0303030303030303030303030303030303030303`"
+    },
+    {
+      "id": 9402,
+      "user": {
+        "id": 199175422,
+        "login": "chatgpt-codex-connector[bot]"
+      },
+      "body": "**P0** Stale: this comment names an older commit.\n\n**Reviewed commit:** `0000000000000000000000000000000000000000`"
+    },
+    {
+      "id": 9403,
+      "user": {
+        "id": 12345,
+        "login": "someone-else"
+      },
+      "body": "**P0** Another actor's top-level comment.\n\n**Reviewed commit:** `0303030303030303030303030303030303030303`"
+    }
   ]
 }

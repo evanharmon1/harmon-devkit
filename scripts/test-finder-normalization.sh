@@ -175,6 +175,29 @@ node "$normalizer" --finder codex-cloud --stage integration --round 1 \
 jq -e '[.findings[].source_id] | index("9101") == null' "$tmp/carried-forward.out.json" >/dev/null ||
     fail "an inline comment written against an older commit was accepted as current-head evidence"
 
+echo "==> a badged top-level comment on the current head is decoded"
+# A top-level comment carries no commit_id — its registry head_binding is the
+# reviewed-commit line in its own body — so an inline-only decoder dropped it
+# silently, while AGENTS.md requires exactly that finding to outrank a later
+# clean result.
+jq -e '[.findings[] | select(.source_id == "9401")] | length == 2' \
+    "$fixtures/codex-cloud/expected.json" >/dev/null ||
+    fail "the top-level comment surface was not decoded, or its two badged findings were not split"
+jq -e '[.severity_hypotheses[] | select(.id | endswith("-2") or endswith("-3")) | .priority] == ["P1", "P2"]' \
+    "$fixtures/codex-cloud/expected.json" >/dev/null ||
+    fail "the two findings in one comment body did not get their own priorities"
+
+echo "==> a top-level comment for another head, or another actor, is not evidence"
+jq -e '[.findings[].source_id] | (index("9402") == null) and (index("9403") == null)' \
+    "$fixtures/codex-cloud/expected.json" >/dev/null ||
+    fail "a stale or foreign top-level comment was accepted as current-head evidence"
+
+echo "==> an undecodable finding cannot be waved through"
+# There is no flag to continue past exit 3: a pass that omits a finding is
+# exactly what a stage banks as clean.
+! grep -Fq 'allow-undecoded' "$normalizer" ||
+    fail "the undecoded escape hatch is back"
+
 echo "==> another actor's comment on the same head is not this finder's evidence"
 jq '.comments[0].user.id = 999999' "$fixtures/codex-cloud/raw.json" >"$tmp/foreign.json"
 node "$normalizer" --finder codex-cloud --stage integration --round 1 \

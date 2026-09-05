@@ -10,6 +10,16 @@
     },
     {
       "id": "integration-r1-codex-cloud-2",
+      "body": "**P1** The reap sweep never reaches a finder-suffixed state file.",
+      "source_id": "9401"
+    },
+    {
+      "id": "integration-r1-codex-cloud-3",
+      "body": "**P2** The guide still calls the stage `shepherd`.\n\n**Reviewed commit:** `0303030303030303030303030303030303030303`",
+      "source_id": "9401"
+    },
+    {
+      "id": "integration-r1-codex-cloud-4",
       "body": "### Codex Review\n\n**P1** The readiness gate accepts an empty check list as a pass.\n\n**Reviewed commit:** `0303030303030303030303030303030303030303`",
       "source_id": "9001"
     }
@@ -21,6 +31,14 @@
     },
     {
       "id": "integration-r1-codex-cloud-2",
+      "priority": "P1"
+    },
+    {
+      "id": "integration-r1-codex-cloud-3",
+      "priority": "P2"
+    },
+    {
+      "id": "integration-r1-codex-cloud-4",
       "priority": "P1"
     }
   ]

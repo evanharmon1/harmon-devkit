@@ -208,14 +208,21 @@ authenticated (nothing here installs one; a missing binary refuses non-zero):
 It resolves **the same scope** as Codex (`scripts/lib/review-scope.sh`) and
 accepts the same target flags, so the second finder always reviews exactly what
 Codex would have. Copilot is a general agent, so it is driven with this repo's
-own mode and severity prompt, handed the resolved diff, and granted no tools —
-which is also why a diff past `FINDER_REVIEW_MAX_DIFF_BYTES` (60,000 by
-default) is **refused** rather than truncated: it could not fetch what was cut,
-and a partial review that exits 0 reads as a clean one. The vendor invocation
-is overridable without editing the runner, so a vendor flag change is a config
-edit: `FINDER_REVIEW_COPILOT_ARGS` and `FINDER_REVIEW_COPILOT_BIN`
-(`FINDER_REVIEW_DRY_RUN=1` prints the resolved command and prompt without
-invoking anything).
+own mode and severity prompt and handed the resolved diff, which is why a diff
+past `FINDER_REVIEW_MAX_DIFF_BYTES` (60,000 by default) is **refused** rather
+than truncated: the pass could not fetch what was cut, and a partial review
+that exits 0 reads as a clean one.
+
+**It refuses to run until you attest the tool boundary.** `/review` requires a
+confidence pass to run with shell, git, network write and credentials denied,
+or the dispatch refused — and this runner cannot verify that, because the CLI
+reads your own configuration. Set `FINDER_REVIEW_COPILOT_READONLY=1` once you
+have confirmed your Copilot CLI grants it no tools. The pass NEEDS none (the
+change is in the prompt); the variable is you, not this script, asserting that
+it HAS none. The vendor invocation is overridable without editing the runner,
+so a vendor flag change is a config edit: `FINDER_REVIEW_COPILOT_ARGS` and
+`FINDER_REVIEW_COPILOT_BIN` (`FINDER_REVIEW_DRY_RUN=1` prints the resolved
+command and prompt without invoking anything).
 
 Both accept an explicit target and free-text focus after `--`:
 

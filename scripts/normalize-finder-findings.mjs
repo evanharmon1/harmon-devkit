@@ -14,7 +14,7 @@
 // Usage:
 //   normalize-finder-findings.mjs --finder <slug> --stage <challenge|review>
 //       --round <n> --reviewed-head <sha40> [--slot <slug>]
-//       [--registry <path>] [--input <file>] [--allow-undecoded]
+//       [--registry <path>] [--input <file>]
 //
 // Raw output arrives on stdin unless --input names a file. The result is the
 // pass core on stdout:
@@ -44,8 +44,13 @@
 //                explicitly as `class: <value>`. A design-level finding is
 //                one the role reclassifies with the evidence to do so.
 //
-// Exit: 0 decoded; 3 something could not be decoded (see --allow-undecoded);
-// 2 usage or unreadable input.
+// Exit: 0 decoded; 3 something could not be decoded; 2 usage or unreadable
+// input. There is deliberately no flag to proceed past exit 3. An earlier
+// revision had one, and it turned an undecodable P0 into a SUCCESSFUL empty
+// pass — the finding reached stderr and nothing else, while the pass a stage
+// banks is `findings[]`. A finding with no location cannot be represented at
+// all (the shared schema requires `path`), so there is no honest "proceed
+// anyway": decode it, or fix the input.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -60,7 +65,7 @@ function die(message, code = 2) {
 }
 
 const args = process.argv.slice(2)
-const opts = { registry: path.join(REPO_ROOT, 'agent-registry.json'), allowUndecoded: false }
+const opts = { registry: path.join(REPO_ROOT, 'agent-registry.json') }
 for (let i = 0; i < args.length; i += 1) {
   const flag = args[i]
   const takesValue = [
@@ -73,10 +78,6 @@ for (let i = 0; i < args.length; i += 1) {
     '--registry',
     '--input'
   ]
-  if (flag === '--allow-undecoded') {
-    opts.allowUndecoded = true
-    continue
-  }
   if (!takesValue.includes(flag)) die(`unknown argument ${flag}`)
   const value = args[i + 1]
   if (value === undefined) die(`${flag} requires a value`)
@@ -195,6 +196,40 @@ function locationOf(text) {
   return { path: candidate, line: match[2] ? Number(match[2]) : null }
 }
 
+// One body can state SEVERAL badged findings, and each needs its own id,
+// priority and disposition — one cannot be fixed while another is declined if
+// they share a record. Split at each point a severity rule matches, so each
+// segment carries exactly one label; a body with one match (or none) comes
+// back whole, which is the ordinary case.
+function splitLabelledSegments(body) {
+  const anchored = finder.severity_map.rules.filter((rule) => rule.anchor === 'anywhere')
+  if (anchored.length === 0) return [body]
+  const cuts = []
+  const haystack = body.toLowerCase()
+  for (const rule of anchored) {
+    const needle = String(rule.match).toLowerCase()
+    let at = haystack.indexOf(needle)
+    while (at !== -1) {
+      // Walk back over the markup a badge is wrapped in (`**P2**`, `_P2_`,
+      // `` `P2` ``) so the segment opens with the whole badge rather than
+      // splitting it in half and leaving `P2**` at the front.
+      let start = at
+      while (start > 0 && '*_`[('.includes(body[start - 1])) start -= 1
+      cuts.push(start)
+      at = haystack.indexOf(needle, at + needle.length)
+    }
+  }
+  const starts = [...new Set(cuts)].sort((a, b) => a - b)
+  if (starts.length < 2) return [body]
+  // Everything before the first label rides with it: a heading or a lead-in
+  // sentence belongs to the finding it introduces, not to a segment of its
+  // own that would decode as an unlabelled extra.
+  starts[0] = 0
+  return starts
+    .map((start, index) => body.slice(start, starts[index + 1] ?? body.length).trim())
+    .filter((segment) => segment.length > 0)
+}
+
 const EVIDENCE_MAX = 4000
 function evidenceOf(text) {
   // Trailing spaces and tabs per line only. A blank LINE is content: an
@@ -268,6 +303,7 @@ if (finder.raw_shape === 'labelled-text') {
   } catch (error) {
     die(`raw output is not the JSON this finder's raw_shape declares: ${error.message}`)
   }
+  const surfaces = new Set(finder.collection?.terminal_signals?.surfaces ?? [])
   const actorId = finder.trusted_actor_id
   const byThisFinder = (node) => String(node?.user?.id ?? '') === String(actorId)
   // A REVIEW is bound by its own commit_id. An INLINE comment is bound by
@@ -294,6 +330,31 @@ if (finder.raw_shape === 'labelled-text') {
     pushFinding(body, `inline comment ${comment.id ?? '?'}`, location, String(comment.id ?? `inline-${findings.length + 1}`))
   }
 
+  // The top-level CONVERSATION surface, for a finder whose registry entry
+  // lists it. A top-level comment carries no commit_id — that is exactly why
+  // its registry `head_binding` is `reviewed-commit-line` — so it binds
+  // through the reviewed-commit prefix in its own body, matched the same way
+  // the integrate checker matches it. Without this the surface decoded to
+  // nothing at all, and a badged finding Codex posts there vanished from the
+  // normalized pass while AGENTS.md requires exactly that finding to outrank
+  // a later clean result.
+  if (surfaces.has('comment')) {
+    for (const comment of payload.top_level_comments ?? []) {
+      if (!byThisFinder(comment)) continue
+      const body = String(comment.body ?? '')
+      const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(body)
+      // No stamp is not this head's evidence: the binding is the only thing
+      // tying a top-level comment to a commit, so an unstamped one is
+      // unattributable rather than current.
+      if (!stamp) continue
+      if (!opts.reviewedHead.startsWith(stamp[1].toLowerCase())) continue
+      if (!isLabelled(body)) continue
+      for (const segment of splitLabelledSegments(body)) {
+        pushFinding(segment, `comment ${comment.id ?? '?'}`, null, String(comment.id ?? 'comment'))
+      }
+    }
+  }
+
   // A review BODY becomes a finding only when it states one in this finder's
   // own vocabulary. A finder whose verdict is the inline-comment count (its
   // severity_map has no rules) therefore never produces a body finding, which
@@ -302,7 +363,9 @@ if (finder.raw_shape === 'labelled-text') {
   if (review && byThisFinder(review) && atThisHead(review)) {
     const body = String(review.body ?? '')
     if (isLabelled(body)) {
-      pushFinding(body, `review ${review.id ?? '?'}`, null, String(review.id ?? 'review'))
+      for (const segment of splitLabelledSegments(body)) {
+        pushFinding(segment, `review ${review.id ?? '?'}`, null, String(review.id ?? 'review'))
+      }
     }
   }
 } else {
@@ -360,16 +423,16 @@ process.stdout.write(`${JSON.stringify(output, null, 2)}\n`)
 if (undecoded.length > 0) {
   // Fail CLOSED. Dropping a finding the decoder could not place would remove
   // it from adjudication silently, and a dropped P0 is exactly the failure
-  // this whole contract exists to prevent. --allow-undecoded is for a caller
-  // that has read the report and decided.
+  // this whole contract exists to prevent, and there is no flag to opt out of
+  // it: a caller that "has read the report and decided" still ships a pass
+  // with the finding missing from `findings[]`, which is the only place a
+  // stage looks.
   for (const entry of undecoded) {
     console.error(`normalize-finder-findings: undecoded ${entry.source} (${entry.priority}): ${entry.reason}`)
     console.error(entry.text.split('\n').map((line) => `    ${line}`).join('\n'))
   }
-  if (!opts.allowUndecoded) {
-    console.error(
-      `normalize-finder-findings: ${undecoded.length} finding(s) could not be decoded and are NOT in the pass above; adjudicate them by hand or re-run with --allow-undecoded once you have.`
-    )
-    process.exit(3)
-  }
+  console.error(
+    `normalize-finder-findings: ${undecoded.length} finding(s) could not be decoded and are NOT in the pass above. Fix the input or decode them by hand — there is no flag to continue past this, because a pass that omits a finding is exactly what a stage would bank as clean.`
+  )
+  process.exit(3)
 }

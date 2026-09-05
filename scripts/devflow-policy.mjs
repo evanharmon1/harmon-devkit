@@ -1405,6 +1405,43 @@ export function applyFinderSelection(resolved, addRequests, selectRequests) {
   return { disclosures };
 }
 
+// Registry checks for finders a per-run selection ADDED, without the breadth
+// arithmetic crossValidate applies to the configured set. Mirrors the same
+// three rules crossValidate uses for a configured finder: it must exist, it
+// must not be pr-cloud on a pre-PR stage, and its own registry entry must
+// permit the stage it was added to.
+export function validateSelectedFinders(resolved, registryDoc, disclosures) {
+  const errors = [];
+  if (!registryDoc) {
+    if (disclosures.some((d) => d.requested.length > 0)) {
+      errors.push("indeterminate: no registry was supplied — per-run finder additions could not be checked");
+    }
+    return errors;
+  }
+  const finderBySlug = new Map((registryDoc.finders || []).map((f) => [f.slug, f]));
+  for (const disclosure of disclosures) {
+    const added = disclosure.effective.filter((slug) => !disclosure.configured.includes(slug));
+    for (const slug of added) {
+      const finder = finderBySlug.get(slug);
+      if (!finder) {
+        errors.push(`[stage.${disclosure.stage}] per-run selection adds unknown finder "${slug}"`);
+        continue;
+      }
+      if (PRE_PR_STAGES.has(disclosure.stage) && finder.surface === "pr-cloud") {
+        errors.push(
+          `[stage.${disclosure.stage}] per-run selection adds "${slug}", whose surface is pr-cloud, on a pre-PR stage`,
+        );
+      }
+      if (Array.isArray(finder.stages) && !finder.stages.includes(disclosure.stage)) {
+        errors.push(
+          `[stage.${disclosure.stage}] per-run selection adds "${slug}", whose registry entry permits only stage(s) ${finder.stages.join(", ")}`,
+        );
+      }
+    }
+  }
+  return errors;
+}
+
 function loadTomlFile(filePath) {
   const text = readFileSync(filePath, "utf8");
   return parseToml(text);
@@ -1506,12 +1543,6 @@ function cliResolve(args) {
   // Applied before cross-validation on purpose: an added slug the registry
   // does not know, or one whose surface or stage affinity forbids it here,
   // must fail the same way a configured one would.
-  const selectionResult = applyFinderSelection(resolved, args.addFinders ?? [], args.selectFinders ?? []);
-  if (selectionResult.error) {
-    console.error(`devflow-policy: ${selectionResult.error}`);
-    return 2;
-  }
-
   const registryPath = mergeBaseDoc ? args["merge-base-registry"] : args.registry;
   let registryDoc = null;
   if (registryPath) {
@@ -1523,7 +1554,25 @@ function cliResolve(args) {
     }
   }
   const taskTargets = readTaskTargets(args["task-targets"], args["taskfile-dir"]);
+  // Cross-validate the CONFIGURED policy first, then apply the per-run
+  // selection (#796 deletion round). Doing it the other way round put added
+  // finders inside crossValidate's breadth arithmetic, which sizes a stage's
+  // worst-case finder attempts against [breadth].max_agent_runs — and
+  // ai/skills/universal/review/SKILL.md says in terms that confidence finders
+  // spend the rounds envelope and NEVER consume that budget. An otherwise
+  // valid policy would then be rejected for adding a finder, which is the one
+  // thing per-run selection is for.
   const crossErrors = crossValidate(resolved, registryDoc, taskTargets);
+  const selectionResult = applyFinderSelection(resolved, args.addFinders ?? [], args.selectFinders ?? []);
+  if (selectionResult.error) {
+    console.error(`devflow-policy: ${selectionResult.error}`);
+    return 2;
+  }
+  // The added finders are still checked against the registry — existence,
+  // surface and stage affinity — because an added slug the registry does not
+  // know is exactly as unrunnable as a configured one. Only the breadth
+  // arithmetic is skipped.
+  crossErrors.push(...validateSelectedFinders(resolved, registryDoc, selectionResult.disclosures ?? []));
 
   const indeterminate = crossErrors.filter((e) => e.startsWith("indeterminate:"));
   const hardErrors = crossErrors.filter((e) => !e.startsWith("indeterminate:"));

@@ -55,7 +55,7 @@ run_in_work() {
 }
 
 echo "==> copilot is driven with the shared scope, mode and severity instructions"
-out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh challenge copilot --uncommitted 2>/dev/null)"
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_READONLY=1 ./scripts/finder-review.sh challenge copilot --uncommitted 2>/dev/null)"
 grep -Fq 'finder: copilot-adversarial' <<<"$out" ||
     fail "the dry run did not resolve the registry finder slug: $out"
 grep -Fq 'Run an ADVERSARIAL review' <<<"$out" ||
@@ -70,17 +70,31 @@ grep -Fq 'The change itself:' <<<"$out" ||
     fail "the change was not embedded for a finder that is given the diff"
 
 echo "==> the review mode renders the verification instruction, not the adversarial one"
-out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh review copilot --uncommitted 2>/dev/null)"
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_READONLY=1 ./scripts/finder-review.sh review copilot --uncommitted 2>/dev/null)"
 grep -Fq 'finder: copilot-verification' <<<"$out" || fail "review mode resolved the wrong finder: $out"
 grep -Fq 'Run a VERIFICATION-CHECKPOINT review' <<<"$out" || fail "review mode instruction missing"
 grep -Fq 'Run an ADVERSARIAL review' <<<"$out" && fail "review mode rendered the adversarial instruction"
+
+echo "==> a Copilot pass refuses without an explicit read-only attestation"
+# /review requires a confidence pass to run with shell/git/network-write denied
+# or the dispatch refused. This runner invokes a general-agent CLI that reads
+# the operator's own configuration, so it cannot verify the denial — it must
+# refuse rather than assert it.
+set +e
+out="$( (cd "$work" && PATH="$stub_bin:$PATH" FINDER_REVIEW_DRY_RUN=1 \
+    ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+status=$?
+set -e
+[ "$status" -eq 1 ] || fail "an unattested Copilot pass was allowed to run (rc $status): $out"
+grep -Fq 'cannot verify that the copilot CLI is denied' <<<"$out" ||
+    fail "the tool-boundary refusal did not explain itself: $out"
 
 echo "==> a registered finder this runner cannot drive is refused, never guessed at"
 # CodeRabbit is registered as a PR-side finder only, precisely because its CLI
 # takes no target from us and a local pass could not be bound to the round's
 # reviewed_head. Asking for one must refuse rather than invent an invocation.
 set +e
-out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh review coderabbit 2>&1)"
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_READONLY=1 ./scripts/finder-review.sh review coderabbit 2>&1)"
 status=$?
 set -e
 [ "$status" -eq 2 ] || fail "an undrivable finder was accepted (rc $status): $out"
@@ -93,7 +107,7 @@ echo "==> an untracked path containing a newline still reaches the prompt"
 # with its contents silently absent from the review.
 newline_file="$work/src/we$(printf '\n')ird.txt"
 printf 'contents behind a newline in the path\n' >"$newline_file"
-out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh challenge copilot --uncommitted 2>/dev/null)"
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_READONLY=1 ./scripts/finder-review.sh challenge copilot --uncommitted 2>/dev/null)"
 grep -Fq 'contents behind a newline in the path' <<<"$out" ||
     fail "an untracked file whose path contains a newline was dropped from the prompt"
 rm -f "$newline_file"
@@ -118,6 +132,7 @@ chmod +x "$fail_bin/git"
 printf 'new file\n' >"$work/src/untracked.txt"
 set +e
 out="$( (cd "$work" && PATH="$fail_bin:$stub_bin:$PATH" FINDER_REVIEW_DRY_RUN=1 \
+    FINDER_REVIEW_COPILOT_READONLY=1 \
     ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
 status=$?
 set -e
@@ -127,16 +142,18 @@ grep -Fq 'Refusing rather than reviewing a partial diff' <<<"$out" ||
     fail "the partial-diff refusal did not explain itself: $out"
 
 echo "==> the vendor invocation is overridable without editing the runner"
-out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_ARGS='--prompt --no-color' \
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_READONLY=1 \
+    FINDER_REVIEW_COPILOT_ARGS='--prompt --no-color' \
     ./scripts/finder-review.sh review copilot --uncommitted 2>/dev/null)"
 grep -Fq 'command: copilot --prompt --no-color' <<<"$out" ||
     fail "the vendor argument override was ignored: $out"
 
 echo "==> a diff past the prompt bound refuses rather than reviewing part of the change"
-# This finder is handed the diff and granted no tools, so a truncated prompt
-# is a review of part of the change reported as a review of all of it.
+# This finder is handed the diff and needs no tools, so a truncated prompt is
+# a review of part of the change reported as a review of all of it.
 set +e
-out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_MAX_DIFF_BYTES=10 \
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_READONLY=1 \
+    FINDER_REVIEW_MAX_DIFF_BYTES=10 \
     ./scripts/finder-review.sh challenge copilot --uncommitted 2>&1)"
 status=$?
 set -e
@@ -162,7 +179,7 @@ jq '(.finders[] | select(.slug == "copilot-adversarial") | .invocation.target) =
     "$repo/agent-registry.json" >"$mutated"
 cp "$mutated" "$work/agent-registry.json"
 set +e
-out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh challenge copilot --uncommitted 2>&1)"
+out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 FINDER_REVIEW_COPILOT_READONLY=1 ./scripts/finder-review.sh challenge copilot --uncommitted 2>&1)"
 status=$?
 set -e
 cp "$repo/agent-registry.json" "$work/agent-registry.json"
