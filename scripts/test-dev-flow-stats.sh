@@ -2605,6 +2605,51 @@ function writeScenario(name, db) {
   });
 }
 
+// --- #741 shepherd round 2 (Codex-confirmed P2): a lower-id index posted
+// while its author was listed but EDITED after that author's removal is a
+// post-removal write; pre-selection must authenticate the edit too, so
+// the later legitimate index by a still-trusted orchestrator wins.
+{
+  const trustBothSha = "6".repeat(40);
+  const removeSha = "7".repeat(40);
+  const registryCommits = [{ sha: removeSha }, { sha: trustBothSha }];
+  const registryContents = {
+    [trustBothSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED] })).toString("base64"),
+    [removeSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [OTHER_TRUSTED] })).toString("base64"),
+  };
+  const runId = "run-edited-index-shadow-1";
+  const at = "2026-09-01T00:00:00Z";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const body = { ...runBody, ...deriveDefaultChains(runBody) };
+  const rm = marker("run-record", runId, "kickoff", "issue", null, 1);
+  const rr = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${rm}\n\${fence(JSON.stringify(body))}\`, at);
+  const im = marker("run-index", runId, "kickoff", "issue", null, 1);
+  const payload = { run_id: runId, initiated_by: "human", branch: null, run_record: { id: String(rr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator" } };
+  // TRUSTED_ORCHESTRATOR's own index, posted while listed (00:00:30) and
+  // edited after the 00:10 removal.
+  const editedIdx = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${im}\n\${fence(JSON.stringify(payload))}\`, "2026-09-01T00:00:30Z");
+  editedIdx.updated_at = "2026-09-01T00:20:00Z";
+  // A legitimate later duplicate by OTHER_TRUSTED, still listed.
+  const legitIdx = comment(OTHER_TRUSTED, "other-orchestrator", \`\${im}\n\${fence(JSON.stringify(payload))}\`, "2026-09-01T00:25:00Z");
+  writeScenario("edited-index-shadow", {
+    issues: [{ number: 181, pull_request: null }],
+    comments: { "181": [rr, editedIdx, legitIdx] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: {
+      [trustBothSha]: [{ number: 621, merged_at: "2026-08-01T00:00:00Z" }],
+      [removeSha]: [{ number: 622, merged_at: "2026-09-01T00:10:00Z" }],
+    },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED], issueNumber: 181 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -3486,6 +3531,12 @@ export DFSTATS_DB="$tmp/scenarios/forged-index-shadow.json"
 run_id="$(meta forged-index-shadow .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)" || fail "forged-index-shadow: expected the run to harvest via the legitimate index, got: $out"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "forged-index-shadow: expected a clean in-flight run, got: $out"
+
+echo "== #741 shepherd round 2: an index edited after its author's removal never shadows a legitimate later index =="
+export DFSTATS_DB="$tmp/scenarios/edited-index-shadow.json"
+run_id="$(meta edited-index-shadow .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)" || fail "edited-index-shadow: expected the run to harvest via the legitimate index, got: $out"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "edited-index-shadow: expected a clean in-flight run, got: $out"
 
 echo "== #741: registry allowlist fixture corpus (fail closed on missing/empty/malformed; per-write revision binding) =="
 corpus_count=0

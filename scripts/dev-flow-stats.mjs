@@ -223,6 +223,13 @@ const registryRevisionHistoryCache = new Map();
 function resolveRegistryRevisionHistory(repo) {
   if (registryRevisionHistoryCache.has(repo)) return registryRevisionHistoryCache.get(repo);
   let history;
+  // The snapshot boundary is the moment the commit list is REQUESTED, not
+  // when the per-commit landing lookups finish — shepherd round 2 of #741,
+  // Codex-confirmed (P2): a revision landing during those lookups is
+  // absent from this snapshot, so a write between the two instants must
+  // trigger the refresh below rather than being judged older than a
+  // boundary the snapshot's contents do not actually reflect.
+  const resolvedAtEpoch = Date.now();
   try {
     const defaultBranch = resolveDefaultBranch(repo);
     const commits = ghApiPaginated(`repos/${repo}/commits?path=agent-registry.json&sha=${defaultBranch}`);
@@ -236,7 +243,7 @@ function resolveRegistryRevisionHistory(repo) {
       }
       resolved.push({ sha: c.sha, landedAtEpoch: Date.parse(seen) });
     }
-    history = unresolvable ? null : { revisions: resolved, resolvedAtEpoch: Date.now() };
+    history = unresolvable ? null : { revisions: resolved, resolvedAtEpoch };
   } catch {
     history = null;
   }
@@ -698,7 +705,19 @@ function findRunRecord(issueComments, { trustedActorIds, repo, effectiveTrustAt:
   for (const [runId, candidates] of byRun) {
     let authenticated;
     try {
-      authenticated = candidates.filter((c) => effectiveTrustAt(c.comment.created_at).has(c.actorId));
+      // Every write of the candidate — its post and, when edited later,
+      // its last edit — shepherd round 2 of #741, Codex-confirmed (P2): an
+      // index posted while listed but edited after removal is a
+      // post-removal write, and authenticating only created_at here let
+      // it win lowest-id selection and shadow a legitimate later index.
+      authenticated = candidates.filter((c) => {
+        if (!effectiveTrustAt(c.comment.created_at).has(c.actorId)) return false;
+        const editedAt = typeof c.comment.updated_at === "string" ? c.comment.updated_at : null;
+        if (editedAt !== null && Date.parse(editedAt) > Date.parse(c.comment.created_at)) {
+          return effectiveTrustAt(editedAt).has(c.actorId);
+        }
+        return true;
+      });
     } catch (err) {
       // Isolated per run_id, like every other per-run failure below: the
       // run stays discoverable (by id) as indeterminate rather than
