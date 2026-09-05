@@ -58,7 +58,8 @@ the run id, calls the harvester (`scripts/dev-flow-stats.mjs --run <id> --json`,
 issue #663) and renders §2's fixed sections:
 
 ```sh
-<retro-skill-dir>/assets/retro-run-report.mjs --repo <owner/repo> --pr <n>
+<retro-skill-dir>/assets/retro-run-report.mjs --repo <owner/repo> --pr <n> \
+  --trusted-actor-id <configured-orchestrator-actor-id>
 ```
 
 Resolve `<retro-skill-dir>` from `.agents/skills/retro`, then
@@ -91,9 +92,9 @@ earlier instant, which filters discovery's comments by the same cutoff;
 | Exit | Meaning | What the retro does |
 | --- | --- | --- |
 | 0 | a report is on stdout | Paste it as §2, then carry on |
-| 10 | it **looked** and found nothing — `no-run-record` (no trusted marker on the PR or its linked issues) or `run-not-found` | Fall back: skip §2, and **say plainly** that this session has no run record so the improvements in §5 rest on the conversation rather than on measurements |
+| 10 | it **looked** and found nothing — `no-run-record` (no evidence marker at all) or `run-not-found` for an unverified `--run` id | Fall back: skip §2, and **say plainly** that this session has no run record so the improvements in §5 rest on the conversation rather than on measurements |
 | 12 | `no-stats-script` — this checkout has no harvester, so whether a run record exists is **unknown** | Fall back for the measurements, but report the gap: say the evidence *could not be read here*, never that there is none, and use §5's exit-12 provenance wording. stderr says whether discovery found a trusted marker (evidence the run is recorded) or only an unverified `--run` argument |
-| 11 | evidence exists but is **indeterminate** — a broken or forged digest chain, two trusted runs claimed on one PR, or a run bound to a different PR | Not a fallback. Make it the retro's first finding, quote the reason from stderr, and file it |
+| 11 | evidence exists but is **indeterminate** — a broken or forged digest chain; two trusted runs on one PR; a run bound to a different PR; markers that exist but none from a trusted actor; or a trusted marker naming a run the harvester cannot find (the evidence contract's deleted-entry case) | Not a fallback. Make it the retro's first finding, quote the reason from stderr, and file it. Never downgrade any of these to "no run record" |
 | 1 or 2 | operational or usage error | Fix the invocation, or report that the tool failed. Never silently downgrade to memory |
 
 Exit 10 is the ordinary pre-v2 session and costs the retro only its evidence
@@ -126,17 +127,25 @@ two retros of two different runs are comparable line for line:
    interventions that landed while that stage was open.
 4. `### Findings by class and provenance` — `class` from the reviewer's own
    finding, `provenance` its `original` / `round:N` field.
-5. `### Overrides (unverified)` — the cap, waiver, tier, and strategy
-   disclosures the PR published, under the same caveat as the policy line.
+5. `### Policy overrides the PR discloses (unverified)` — the cap, waiver,
+   tier, and strategy disclosures the PR published, under the same caveat as
+   the policy line. **Adjudication overrides — a finding whose adjudicated
+   priority differs from the reviewer's — are not in it**: the trajectory
+   reduces each round's adjudication to a boolean (harmon-devkit#753), so an
+   empty section means "nothing was disclosed", never "nothing was
+   overridden". Say which you mean in the retro.
 6. `### Interventions` — every human touchpoint, with the stage it interrupted.
 7. `### Deferred findings settled` — each settled deferral with the finder slug
    recovered from its finding id (`<stage>-r<round>-<finder>-<n>`, the slugs
    `agent-registry.json` `finders[]` declares).
 8. `### Evidence integrity` — trusted-but-unlisted and forged-author comments,
-   plus every evidence marker discovery ignored because its author is not a
-   trusted actor. A nonzero count is either a misconfigured trust root (pass
-   `--trusted-actor-id`) or somebody trying to redirect the report; both are
-   worth a line in the retro.
+   the trust root discovery actually used, and every evidence marker it
+   ignored because the author is not in that set. A nonzero ignored count is
+   either a misconfigured trust root, a trust root that moved since the run,
+   or somebody trying to redirect the report; all three are worth a line in
+   the retro. Note the stated limitation: authentication here is against the
+   ids **you** supplied, not the run's kickoff-time registry revision
+   (harmon-devkit#741), so a removed-since orchestrator reads as untrusted.
 9. `### Not measurable from this run's evidence` — the measurements this retro
    is expected to make that today's evidence surface cannot supply, each naming
    the issue that would close it. Carry these into §5 as-is rather than

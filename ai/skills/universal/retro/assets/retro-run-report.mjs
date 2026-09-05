@@ -270,7 +270,11 @@ const RUN_ID_ATTR_RE = /(?:^|\s)run_id=([^\s>]+)/
 
 function runIdFromCommentBody(body) {
   if (typeof body !== 'string') return null
-  const marker = EVIDENCE_MARKER_RE.exec(body.replace(/\r/g, '').replace(/^\s+/, ''))
+  // Horizontal indentation only: `\s` would eat NEWLINES too, so a comment
+  // that opens with blank lines and then quotes a marker would read as one
+  // (review round 1, confirmed P2). The grammar says first LINE, so only
+  // leading spaces/tabs on that line may be skipped.
+  const marker = EVIDENCE_MARKER_RE.exec(body.replace(/\r/g, '').replace(/^[ \t]+/, ''))
   if (!marker) return null
   const runId = RUN_ID_ATTR_RE.exec(marker[2])
   return runId ? { kind: marker[1], runId: runId[1] } : null
@@ -733,7 +737,12 @@ function renderMarkdown(report) {
   }
   l.push('')
 
-  l.push('### Overrides (unverified)')
+  // Titled for what it actually covers. "Overrides" alone implied it also
+  // covered reviewer-to-orchestrator PRIORITY overrides, so an empty section
+  // read as "the orchestrator overrode nothing" when nothing had looked
+  // (review round 1, confirmed P1). The gap is stated here, where a reader
+  // looking for overrides will be, not only in the gap list at the end.
+  l.push('### Policy overrides the PR discloses (unverified)')
   l.push('')
   const disclosures = report.policy.present ? report.policy.disclosures : []
   if (disclosures.length === 0) {
@@ -747,6 +756,10 @@ function renderMarkdown(report) {
     l.push('')
     l.push('Same caveat as the policy line above: these come from the mutable PR body, not from authenticated run evidence.')
   }
+  l.push('')
+  l.push(
+    '**Adjudication overrides are not covered here.** A finding whose adjudicated priority differs from the reviewer\'s is recorded in that round\'s adjudication document, and the run trajectory reduces each round\'s adjudication to a single boolean (harmon-devkit#753). An empty section above therefore means "no policy disclosure was published", never "the orchestrator overrode nothing".'
+  )
   l.push('')
 
   l.push('### Interventions')
@@ -782,6 +795,9 @@ function renderMarkdown(report) {
   l.push('')
   l.push(`- Trusted-but-unlisted comments: ${report.measurements.integrity.orphan_comments}`)
   l.push(`- Forged-author comments: ${report.measurements.integrity.forged_comments}`)
+  l.push(
+    `- Trust evaluation: ${safe(report.source.trusted_actors)} — the caller's current set, **not** the run's kickoff-time registry revision, so an orchestrator trusted at kickoff and removed since would read as untrusted here (harmon-devkit#741)`
+  )
   if (report.source.ignored_markers.length === 0) {
     l.push('- Untrusted evidence markers ignored during discovery: 0')
   } else {
@@ -805,12 +821,6 @@ function renderMarkdown(report) {
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
-
-function untrustedNote(ignored) {
-  if (ignored.length === 0) return ''
-  const runs = [...new Set(ignored.map((m) => m.run_id))].sort().join(', ')
-  return ` (${ignored.length} marker(s) naming ${runs} were ignored: their authors are not trusted actors — pass --trusted-actor-id if the run was orchestrated by another account)`
-}
 
 // Never silently: an ignored marker is either a misconfigured trust root or
 // somebody trying to redirect the report, and both are worth saying out loud.
@@ -859,8 +869,25 @@ function run(argv) {
     // "something was found and refused" must never look the same on stderr.
     reportIgnoredMarkers(ignoredMarkers)
     if (!runId) {
+      // "No trusted marker" and "no marker at all" are different answers, and
+      // only the second one licenses the fallback. Markers that exist but do
+      // not authenticate are either a redirect attempt or a trust root that
+      // has MOVED since the run — an orchestrator trusted at kickoff and
+      // removed since is exactly the case the evidence contract protects, and
+      // this tool cannot tell the two apart because it authenticates against
+      // the caller's set rather than the run's kickoff-time registry revision
+      // (harmon-devkit#741). Reporting either as "no run record" would
+      // reinterpret a run that plainly happened as one that did not
+      // (review round 1, confirmed P1).
+      if (ignoredMarkers.length > 0) {
+        const runs = [...new Set(ignoredMarkers.map((m) => m.run_id))].sort().join(', ')
+        console.error(
+          `${TOOL}: indeterminate — PR #${args.pr} and its linked issues carry ${ignoredMarkers.length} evidence marker(s) naming ${runs}, none authored by a trusted actor (${trusted.source}). That is either a redirect attempt or a trust root that changed after the run: this tool authenticates against the ids you supplied, not the run's kickoff-time registry revision (harmon-devkit#741). Rerun naming the run's own orchestrator with --trusted-actor-id, or with --run <run_id> — do NOT conclude the session has no run record.`
+        )
+        return 11
+      }
       console.error(
-        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker from a trusted actor (${trusted.source})${untrustedNote(ignoredMarkers)}; use the retro's fallback procedure`
+        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker at all; use the retro's fallback procedure`
       )
       return 10
     }
@@ -892,6 +919,17 @@ function run(argv) {
     return 11
   }
   if (harvested.missing) {
+    // A trusted marker naming a run the harvester cannot find is the evidence
+    // spec's deleted-entry case — "reject it as deleted-entry tampering, never
+    // reinterpret it as a run that did not happen" — so it is indeterminate,
+    // not a fallback (review round 1, confirmed P1). An id that came from
+    // --run carries no such claim: nothing said that run ever existed.
+    if (!args.run) {
+      console.error(
+        `${TOOL}: indeterminate — ${harvested.missing}, but a trusted evidence marker (${runIdFrom}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.`
+      )
+      return 11
+    }
     console.error(`${TOOL}: ${harvested.missing}; use the retro's fallback procedure`)
     return 10
   }

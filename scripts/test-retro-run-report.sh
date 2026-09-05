@@ -153,7 +153,16 @@ STATS_SH
 # return for FIXTURE: run-record fields read from the fixture, harvest fields
 # supplied by $ROUNDS_JSON / $CLASSES_JSON / $ORPHANS_JSON / $ISSUE_NUMBER.
 make_trajectory() {
-    node -e '
+    # One-shot overrides. A `VAR=x helper` prefix on a shell FUNCTION persists
+    # in bash (unlike on an external command), so without this each override
+    # would silently configure every later call too — and a case could then
+    # pass for a reason its own setup never established. Captured, then
+    # cleared, so the prefix means what it looks like it means.
+    local issue="${ISSUE_NUMBER:-0}" rounds="${ROUNDS_JSON:-[]}" classes="${CLASSES_JSON:-{\}}"
+    local orphans="${ORPHANS_JSON:-[]}" forged="${FORGED_JSON:-[]}"
+    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON
+    ISSUE_NUMBER="$issue" ROUNDS_JSON="$rounds" CLASSES_JSON="$classes" \
+        ORPHANS_JSON="$orphans" FORGED_JSON="$forged" node -e '
       const fs = require("node:fs")
       const [fixture, out] = process.argv.slice(1)
       const run = JSON.parse(fs.readFileSync(fixture, "utf8"))
@@ -188,7 +197,10 @@ rigor: `standard` (`default_rigor`) → challenge ≤3, review ≤3, integration
 # Comments do NOT come from here: the asset reads them through the paginated
 # REST endpoint (see set_comments).
 make_pr_json() {
-    PR_NUMBER="${PR_NUMBER:-$PR}" CLOSING="${CLOSING:-[]}" node -e '
+    # One-shot overrides — see make_trajectory.
+    local number="${PR_NUMBER:-$PR}" closing="${CLOSING:-[]}"
+    unset PR_NUMBER CLOSING
+    PR_NUMBER="$number" CLOSING="$closing" node -e '
       const fs = require("node:fs")
       const [out, bodyFile] = process.argv.slice(1)
       fs.writeFileSync(out, JSON.stringify({
@@ -210,9 +222,13 @@ make_pr_json() {
 # $COMMENT_ACTOR overrides the author id so a test can post an untrusted one.
 set_comments() {
     local dir="$1" number="$2"
+    # One-shot overrides — see make_trajectory.
+    local actor="${COMMENT_ACTOR:-$ACTOR}" created="${COMMENT_CREATED_AT:-2026-08-20T09:00:00Z}"
+    local perpage="${PAGE_PER_COMMENT:-0}"
+    unset COMMENT_ACTOR COMMENT_CREATED_AT PAGE_PER_COMMENT
     shift 2
     mkdir -p "$dir"
-    COMMENT_ACTOR="${COMMENT_ACTOR:-$ACTOR}" node -e '
+    COMMENT_ACTOR="$actor" COMMENT_CREATED_AT="$created" PAGE_PER_COMMENT="$perpage" node -e '
       const fs = require("node:fs")
       const [out, ...files] = process.argv.slice(1)
       const created = (process.env.COMMENT_CREATED_AT || "2026-08-20T09:00:00Z").split(",")
@@ -351,25 +367,41 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 [ "$RC" -eq 10 ] && contains "$ERR" "no-run-record" &&
     ok "a mid-comment marker never invents a run" || bad "expected exit 10, got $RC: $ERR"
 
-echo "==> a marker from an untrusted author is ignored and reported, never followed"
+echo "==> a marker from an untrusted author is indeterminate, never 'no run record'"
 d="$TMPROOT/untrusted"
 scaffold "$d" further-along "body"
 COMMENT_ACTOR=999999 set_comments "$d/comments" "$PR" "$d/c1"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
-[ "$RC" -eq 10 ] && ok "an untrusted marker does not select a run" ||
-    bad "expected exit 10, got $RC: $ERR"
+[ "$RC" -eq 11 ] && ok "an untrusted marker does not select a run, and does not read as absence" ||
+    bad "expected exit 11, got $RC: $ERR"
 contains "$ERR" "999999" &&
     ok "the ignored marker's actor is reported" || bad "the ignored marker was dropped silently"
-contains "$ERR" "pass --trusted-actor-id" &&
-    ok "the message names the fix for a legitimately-other orchestrator" ||
-    bad "the message does not say how to widen the trust root"
+contains "$ERR" "trust root that changed after the run" &&
+    ok "the message names the historical-trust-root case as well as the redirect case" ||
+    bad "the message treats an untrusted marker as necessarily hostile"
+contains "$ERR" "741" &&
+    ok "the message names the kickoff-time pinning gap" || bad "the pinning gap is not named"
+contains "$ERR" "do NOT conclude the session has no run record" &&
+    ok "the message forbids the absence claim" || bad "the message permits a false absence claim"
 
+# NOTE: this case deliberately reuses the untrusted case's $d — do not insert
+# anything that reassigns d between the two.
 echo "==> naming that author as trusted makes the same marker usable"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --trusted-actor-id 999999
 [ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
     ok "the marker is followed once its author is trusted" || bad "expected exit 0, got $RC: $ERR"
+
+echo "==> only a PR with NO marker at all is no-run-record"
+d="$TMPROOT/trulyempty"
+scaffold "$d" further-along "body"
+write_file "$d/plain" "no marker here at all"
+set_comments "$d/comments" "$PR" "$d/plain"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "evidence marker at all" &&
+    ok "exit 10 is reserved for a genuinely empty search" || bad "expected exit 10, got $RC: $ERR"
 
 echo "==> an untrusted second marker cannot force the ambiguity exit"
 d="$TMPROOT/untrusted-second"
@@ -560,7 +592,7 @@ for needle in \
     '### Stage `challenge`' \
     '### Stage `review`' \
     '### Findings by class and provenance' \
-    '### Overrides (unverified)' \
+    '### Policy overrides the PR discloses (unverified)' \
     '### Interventions' \
     '### Deferred findings settled' \
     '### Evidence integrity' \
@@ -757,6 +789,54 @@ contains "$OUT" "remediation rounds spent against the remediation cap" &&
     ok "the report says the remediation budget is not measurable from this evidence" ||
     bad "a cap is displayed with no section measuring it and no gap entry naming it"
 
+echo "==> a marker after blank lines is not the comment's first line"
+d="$TMPROOT/blankline"
+scaffold "$d" further-along "body"
+{
+    printf '\n\n'
+    cat "$d/c1"
+} >"$d/c-blank"
+set_comments "$d/comments" "$PR" "$d/c-blank"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "evidence marker at all" &&
+    ok "leading blank lines do not promote a quoted marker to the first line" ||
+    bad "a marker after blank lines was accepted, got $RC: $ERR"
+
+echo "==> an indented marker on the first line is still a marker"
+d="$TMPROOT/indented"
+scaffold "$d" further-along "body"
+{
+    printf '  '
+    cat "$d/c1"
+} >"$d/c-indent"
+set_comments "$d/comments" "$PR" "$d/c-indent"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "leading spaces on the marker line are tolerated" ||
+    bad "an indented first-line marker was rejected, got $RC: $ERR"
+
+echo "==> the report distinguishes disclosed policy overrides from adjudication overrides"
+d="$TMPROOT/overrides"
+scaffold "$d" further-along "$POLICY_SECTION"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "**Adjudication overrides are not covered here.**" &&
+    ok "the overrides section says what it does not cover" ||
+    bad "an empty overrides section could be read as 'nothing was overridden'"
+contains "$OUT" 'never "the orchestrator overrode nothing"' &&
+    ok "the wrong reading is named explicitly" || bad "the wrong reading is not ruled out"
+contains "$OUT" "kickoff-time registry revision" &&
+    ok "evidence integrity states the trust-pinning limitation" ||
+    bad "the trust-pinning limitation is not stated where integrity is read"
+
+echo "==> the skill's documented command is runnable as written"
+grep -A 3 'assets/retro-run-report.mjs --repo' ai/skills/universal/retro/SKILL.md |
+    grep -qE -- '--trusted-actor-id|--trusted-actors-file' &&
+    ok "the documented command carries the required trust root" ||
+    bad "copying the documented command would exit 2 before doing any work"
+
 # ---------------------------------------------------------------------------
 # 4. Harvester failure modes and usage
 # ---------------------------------------------------------------------------
@@ -771,12 +851,22 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 [ -z "$OUT" ] && ok "nothing is rendered" || bad "an indeterminate harvest rendered a report"
 contains "$ERR" "indeterminate" && ok "the reason names indeterminacy" || bad "stderr does not say indeterminate"
 
-echo "==> a harvester that cannot find the run falls back (exit 10)"
+echo "==> run-not-found after a TRUSTED marker is deleted-entry tampering, not absence"
 d="$TMPROOT/notfound"
 scaffold "$d" further-along "body"
 make_stats "$d/stats.mjs" 1
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && ok "exit 11" || bad "expected exit 11, got $RC: $ERR"
+contains "$ERR" "deleted-entry tampering, never a run that did not happen" &&
+    ok "the evidence contract's wording is quoted back" || bad "the deleted-entry case is not named"
+
+echo "==> run-not-found for an unverified --run id is still a plain fallback"
+d="$TMPROOT/notfound-explicit"
+scaffold "$d" further-along "body"
+make_stats "$d/stats.mjs" 1
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --run made-up --stats-script "$d/stats.mjs"
 [ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
     ok "exit 10 naming run-not-found" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
 
