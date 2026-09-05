@@ -950,7 +950,12 @@ active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_j
 # A plain glob and jq, never find/xargs: this script must keep running on
 # the minimal toolset its own no-GNU-timeout path already restricts PATH to,
 # and jq is the only thing here that is not a shell builtin.
-known_ids_file="${TMPDIR:-/tmp}/readiness-gate-known-ids.$$.json"
+# mktemp, never a $$-derived name: on a shared host $TMPDIR is world-writable
+# and a PID-derived path is predictable, so `>` would follow a symlink an
+# attacker planted there and truncate whatever the invoking user can write.
+# Challenge round 3 (P2), confirmed.
+known_ids_file="$(mktemp "${TMPDIR:-/tmp}/readiness-gate-known-ids.XXXXXX")" ||
+    indeterminate malformed-data "could not create a temporary file for the run's known finding ids"
 # `|| :` so the trap's own last command always succeeds: this script's
 # verdict IS its exit code, and a cleanup that fails — `rm` missing from a
 # restricted PATH, a read-only TMPDIR — must never be what the caller reads
@@ -1184,6 +1189,46 @@ remediation_loops="$(jq -r '[.stage_transitions[]? | select(.stage == "integrati
     indeterminate malformed-data "run.json's stage_transitions could not be read for the remediation-loop count"
 [ "$remediation_loops" -le "$remediation_cap" ] ||
     fail_condition remediation-capped "the record shows $remediation_loops integration -> implement -> integration remediation loop(s), exceeding --remediation-cap $remediation_cap — escalate rather than promote (harmon-devkit#685)"
+
+# 9e. Every adjudicated round has its own issue evidence comment
+# (harmon-devkit#685: "every adjudicated round has a matching issue evidence
+# marker (destination: issue, same stage/round); a `pr`-destination marker
+# does not substitute"). validate-result-schemas.mjs enforces the same rule
+# over a run record, but its missing-marker half deliberately waits for
+# `outcome: ready-for-review` — a run adjudicates a round and THEN publishes
+# its evidence, so an unconditional document check would fault the normal
+# in-flight sequence. That relaxation leaves the invariant unenforced at
+# exactly the moment it matters most, since promotion is what makes the
+# record the durable artifact a harvester reads back. Challenge round 3,
+# confirmed: gating promotion is the missing half, not a duplicate of it.
+#
+# Read from the record the gate already holds: each adjudication document's
+# (stage, round) against run.json's own evidence_comments[]. A marker with
+# round: null is a per-stage rollup and satisfies nothing here; a `pr`
+# marker naming the round is called out separately, because the schema has
+# the rollup link BACK to the per-round issue comments and so posted after
+# them.
+for evidence_adj in "$record_dir"/adjudications/*.json; do
+    [ -f "$evidence_adj" ] || continue
+    evidence_pair="$(jq -r '[.stage, .round] | @tsv' "$evidence_adj" 2>/dev/null)" || continue
+    evidence_stage="${evidence_pair%%	*}"
+    evidence_round="${evidence_pair##*	}"
+    [ -n "$evidence_stage" ] && [ -n "$evidence_round" ] &&
+        [ "$evidence_stage" != null ] && [ "$evidence_round" != null ] || continue
+    evidence_destinations="$(jq -r --arg stage "$evidence_stage" --argjson round "$evidence_round" \
+        '[.evidence_comments[]?.marker | select(.stage == $stage and .round == $round) | .destination] | unique | join(",")' \
+        "$run_json" 2>/dev/null)" ||
+        indeterminate malformed-data "run.json's evidence_comments could not be read"
+    case ",${evidence_destinations}," in
+    *,issue,*) ;;
+    *,pr,*)
+        fail_condition evidence-marker-missing "$evidence_stage round $evidence_round is adjudicated but its only evidence marker has destination \"pr\" — the per-round record belongs on the issue, and a pr comment never substitutes for it (harmon-devkit#685)"
+        ;;
+    *)
+        fail_condition evidence-marker-missing "$evidence_stage round $evidence_round is adjudicated but no evidence marker with destination \"issue\" records it — post its round evidence before promoting (harmon-devkit#685)"
+        ;;
+    esac
+done
 
 # 10. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
 # and require equality before any pass. The evaluated fingerprint hashes the

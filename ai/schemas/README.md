@@ -2295,7 +2295,7 @@ moved rather than dropped.
 | 4 | `integration -> implement -> integration` loops are counted against `[rounds.<policy>].remediation`; exceeding it escalates, and code-changing dispositions past the cap are rejected | `readiness-gate.sh` step 9d, under the required `--remediation-cap` | the `#685(4)` cases in `scripts/test-integrate-readiness.sh` |
 | 5 | `codex_cycle.cycle` ≤ `[rounds.<policy>].integration`; cap 0 ⇒ null cycle; a clean verdict with a null cycle under a positive cap is not clean | `readiness-gate.sh` step 9, under `--integration-cap` | the five `--integration-cap` cases plus the `#685(5)` `audit` case in `scripts/test-integrate-readiness.sh` |
 | 6 | `promotion.head` equals the final integrator result's head and its accepted-cycle reviewed commit; a stale integration pass cannot certify a newer promoted head | three bindings: the validator's own `accepted.reviewed_commit` receipt check, `readiness-gate.sh`'s envelope-head compare, and its `promotion-head-mismatch` condition | the `#685(6)` cases in `scripts/test-integrate-readiness.sh` |
-| 7 | Every adjudicated round has a matching **issue** evidence marker (same stage/round); a `pr`-destination rollup does not substitute | `checkAdjudicationEvidenceMarkers` (`validate-result-schemas.mjs`, with `--adjudication`) | `run.schema/invalid/adjudicated-round-without-issue-evidence-marker` and `…-only-pr-evidence-marker` / `run.schema/valid/ready-with-settled-deferral` |
+| 7 | Every adjudicated round has a matching **issue** evidence marker (same stage/round); a `pr`-destination rollup does not substitute | `checkAdjudicationEvidenceMarkers` (`validate-result-schemas.mjs`, with `--adjudication`) over a run record, and `readiness-gate.sh` step 9e as a promotion condition | `run.schema/invalid/adjudicated-round-without-issue-evidence-marker` and `…-only-pr-evidence-marker` / `run.schema/valid/ready-with-settled-deferral` and `…/settlement-of-deferred`, plus the `#685(7)` gate cases |
 | 8 | Source passes' `produced_at` falls between run start and promotion and not before their own stage entry; run↔pass `initiated_by` agree | `chronologyViolation` inside `validateReceipts` (`dev-flow-exit.mjs`), beside the pre-existing `run_id`/`initiated_by` binding | `exit/pass-produced-before-stage-entry-rejected` / `exit/pass-produced-within-run-span-accepted`, plus the two run-span bounds as named cases in `scripts/test-dev-flow-exit.sh` |
 | 9 | The moment an integrator pass applies `fix\|decline\|file` to a **deferred** finding, the matching append-only settlement exists — regardless of outcome | `readiness-gate.sh` step 9b (`deferred-unsettled` / `disposition-unsettled`) | the `#685(9)` cases in `scripts/test-integrate-readiness.sh` |
 | 10 | An integrator pass's `applied_dispositions` ids lie within the run's known finding universe | `checkAppliedDispositionsKnownFindingIds` (with `--known-ids`) and `checkAppliedDispositionsIntegrationRound` (unconditional) in `validate-result-schemas.mjs`, with `readiness-gate.sh` building the universe from the record and passing the flag | `result.integrator.schema/invalid/applied-dispositions-future-integration-round` / `…/valid/applied-dispositions-earlier-integration-round`, the existing `applied-dispositions-unknown-finding-id` pair, and the `#685(10)` gate case |
@@ -2376,6 +2376,20 @@ fix that CAUSED the final loop is still listed on the clean pass that closes
 it — reading that as "a code change still needs applying" refuses precisely
 the run that converged exactly on budget. A pass that genuinely still owes a
 code change is not `clean`, and the gate's own step 9c refuses it there.
+
+**Row 7 is checked in two places because it holds at two different times.**
+The document check's missing-marker half deliberately waits for
+`outcome: ready-for-review`, since a run adjudicates a round and *then*
+publishes its evidence — an unconditional rule would fault the normal
+in-flight sequence rather than an attack. That relaxation leaves the
+invariant unenforced at the moment it matters most, though: promotion is
+what turns the record into the durable artifact a harvester reads back, and
+validating *after* `outcome` flips is too late to stop the promotion
+(challenge round 3, confirmed). So the readiness gate applies the same rule
+as a promotion condition, from the record it already holds. The
+`pr`-without-`issue` half needs no such gate in either place: the schema has
+the rollup link *back* to the per-round comments, so it is posted after them
+and their absence is an inconsistency at any point in a run.
 
 **Row 10's universe is the record's own evidence, and the gate builds it.**
 A check gated on a flag its production caller never passes enforces nothing

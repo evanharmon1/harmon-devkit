@@ -1197,6 +1197,9 @@ that loops indefinitely:
    asynchronously, `skipping` is neutral, and a required context that never
    registered appears in no list at all, which is exactly what the
    automation-coverage paragraph below exists to hold;
+   every adjudication document in `--record` matched by a
+   `destination: issue` evidence comment for its own stage and round in
+   `run.json` (a `pr` rollup never substitutes — harmon-devkit#685);
    `reviewDecision` not `CHANGES_REQUESTED`; `mergeStateStatus`
    none of `DIRTY`/`BEHIND`/`UNKNOWN`; every deferred-findings entry in the
    PR body ticked **and** carrying its outcome (a bare `- [x]` settles
