@@ -1,0 +1,41 @@
+{
+  "description": "A registry-touching commit with no merging PR (a direct push, or an API failure) has no non-spoofable landing time, which voids the whole revision history: no revision can be proven in effect for any write, so the run is indeterminate even though a resolvable revision listing the author also exists.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "landed_at": null,
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    },
+    {
+      "sha": "ffffffffffffffffffffffffffffffffffffffff",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9001
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "revision history could not be resolved"
+  }
+}

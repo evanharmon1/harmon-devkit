@@ -16,6 +16,13 @@
   ],
   "properties": {
     "$schema": { "const": "./agent-registry.schema.json" },
+    "trusted_orchestrator_actor_ids": {
+      "description": "The repository's trusted-orchestrator allowlist (#741; specs/dev-flow-v2.md 'Evidence', openspec evidence delta spec 'Harvested evidence is authenticated'): the immutable GitHub actor ids — JSON integers, never logins and never strings — whose run-record and evidence comments a harvester authenticates. Distinct from each finder's own trusted_actor_id (a review bot's identity, which vouches for findings, never for a run record): cross-file validation rejects any id here that is also a finder identity. Optional at the schema level so a consumer registry predating this field still validates, but every consumer FAILS CLOSED when it is absent or empty at the registry revision in effect for a write — there is then no authority to validate against, so evidence is reported unauthenticated, never accepted. Non-empty when present (minItems), every entry a positive integer (the >= 1 bound is a semantic check in scripts/validate-agent-registry.mjs, since the breakdown skill's restrictive schema-subset engine has no `minimum`). Populate it with `gh api users/<login> --jq .id` for each orchestrating account — a human maintainer's own user id, Foreman's service account — never a value copied from an issue or comment. Trust is evaluated per write against the revision of this file that had landed on the default branch at the write's server-side time (ai/schemas/README.md 'Trust root: the registry allowlist, pinned per write'), so editing this list never retroactively authenticates older evidence and never invalidates evidence that was authenticated while an actor was still listed.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "integer" }
+    },
     "schema_version": {
       "$comment": "Bumped 2 -> 3 by #635: roles[] and finders[] are new required top-level arrays, and families[].models[]/harnesses[] gained new required fields (tier, roles, can_restrict_writes) — a v2 document is not a valid v3 document, so consumers need a version bump to detect the shape change, exactly as this family's result-schema envelope bumps `schema` when Foreman v1's flat shape changed.",
       "const": 3

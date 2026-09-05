@@ -668,6 +668,17 @@ axes are deliberately distinct: a **family** is the model intelligence doing
 the reasoning, a **harness** is the executable that runs it. `suggest:` and
 `claim:` name families; `foreman:<adapter>` names harness machinery.
 
+The same file carries the repository's **trusted-orchestrator allowlist**,
+`trusted_orchestrator_actor_ids`: the immutable GitHub actor ids (integers,
+looked up with `gh api users/<login> --jq .id`, never guessed and never
+logins) of every account that orchestrates dev-flow runs here — the
+maintainer's own user, and Foreman's service account where one exists. It is
+the sole root of trust for run-record and evidence comments, evaluated
+against the registry revision in effect when each comment was written, and
+every consumer fails closed while it is absent or empty; see
+[ai/schemas/README.md](../ai/schemas/README.md) "Trust root: the registry
+allowlist, pinned per write" for the contract and how to populate it.
+
 The tables below are **generated** from that file — `task test:registry-docs`
 regenerates them and fails on any difference, so they cannot drift from what
 provisioning actually creates. Model-level labels are created on demand rather
