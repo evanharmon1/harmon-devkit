@@ -38,7 +38,8 @@ grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
 for text in 'Retry an unavailable primary' 'marker to that exact body before' \
     'Before acting on round 2' 'already active dev-flow-v2 run' \
     'session-lifetime persistent monitor primitive' 'distinct_families' \
-    'assembly.canonical_head'; do
+    'assembly.canonical_head' 'adopt the existing entry without appending' \
+    'sole external action still authorized'; do
     grep -Fq "$text" "$skill" ai/skills/universal/implement/SKILL.md \
         ai/skills/universal/orchestrator/SKILL.md ||
         fail "review workflow documentation is missing $text"
@@ -136,6 +137,36 @@ set -e
 jq -e '.outcome == "continue" and .reason == "invalidated" and
     .action == "dispatch" and .next_round == 2' <<<"$invalidated_out" >/dev/null ||
     fail "stale round incorrectly authorized adjudication: $invalidated_out"
+
+echo "==> pre-adjudication verification targets the newest unadjudicated round, not an older exact-head round"
+newest_stale_record="$tmp/newest-stale-round"
+cp -R ai/schemas/fixtures/exit/two-round-converge/run "$newest_stale_record"
+rm "$newest_stale_record/adjudications/review-r2.json"
+jq '.head = "0202020202020202020202020202020202020202" |
+    .payload.reviewed_head = "0202020202020202020202020202020202020202"' \
+    "$newest_stale_record/passes/review-r1-codex-cli.json" \
+    >"$tmp/review-r1-pass.json"
+mv "$tmp/review-r1-pass.json" "$newest_stale_record/passes/review-r1-codex-cli.json"
+jq '.reviewed_head = "0202020202020202020202020202020202020202"' \
+    "$newest_stale_record/adjudications/review-r1.json" >"$tmp/review-r1-adjudication.json"
+mv "$tmp/review-r1-adjudication.json" "$newest_stale_record/adjudications/review-r1.json"
+jq '.head = "0101010101010101010101010101010101010101" |
+    .payload.reviewed_head = "0101010101010101010101010101010101010101"' \
+    "$newest_stale_record/passes/review-r2-codex-cli.json" \
+    >"$tmp/review-r2-pass.json"
+mv "$tmp/review-r2-pass.json" "$newest_stale_record/passes/review-r2-codex-cli.json"
+set +e
+newest_stale_out="$(node scripts/dev-flow-exit.mjs --run "$newest_stale_record" \
+    --stage review --policy ai/schemas/fixtures/exit/two-round-converge/policy.toml \
+    --current-head 0202020202020202020202020202020202020202 \
+    --heads ai/schemas/fixtures/exit/two-round-converge/heads.json \
+    --verification-only --json)"
+status=$?
+set -e
+[ "$status" -eq 0 ] || fail "newest stale round projection returned $status: $newest_stale_out"
+jq -e '.outcome == "continue" and .reason == "invalidated" and
+    .action == "dispatch" and .next_round == 3' <<<"$newest_stale_out" >/dev/null ||
+    fail "older exact-head round authorized adjudication of newer stale evidence: $newest_stale_out"
 
 echo "==> renderer projects the review record"
 rendered="$(scripts/render-dev-flow.sh adjudication-record --record "$render_record")"

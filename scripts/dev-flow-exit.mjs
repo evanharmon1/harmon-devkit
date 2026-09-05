@@ -1471,7 +1471,19 @@ async function main() {
   // lacks an adjudication document.
   if (args["verification-only"]) {
     const incompleteRound = ancestryRetainedForVerification.find((r) => r.status !== "complete");
-    const currentHeadRound = retainedCompleteRounds.findLast((r) => r.reviewedHead === currentHead);
+    // Adjudication authority belongs to the newest logical round itself,
+    // never to any older retained round that happens to match current HEAD.
+    // An older round can still equal HEAD while a newer, unadjudicated pass
+    // reviewed only an ancestor; selecting the older match would then grant
+    // authority to adjudicate the newer stale evidence. The newest round must
+    // be complete, still unadjudicated, ancestry-retained, and an exact-head
+    // review before this projection may return `action: adjudicate`.
+    const latestRound = rounds.length > 0 ? rounds[rounds.length - 1] : null;
+    const adjudicationTarget =
+      latestRound && latestRound.status === "complete" && !latestRound.hasAdjudication ? latestRound : null;
+    const currentHeadRound = adjudicationTarget
+      ? retainedCompleteRounds.find((r) => r.round === adjudicationTarget.round && r.reviewedHead === currentHead)
+      : null;
     const verification = incompleteRound
       ? {
           stage: args.stage,

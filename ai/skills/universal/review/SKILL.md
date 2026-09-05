@@ -127,14 +127,18 @@ terminal.
 
 After adoption, append the canonical comment ID, immutable actor ID, display
 login, `sha256:` body digest, and marker fields to
-`run.json.evidence_comments`, validate the run record, then reserve and apply an
-update to its issue comment through the same monitor. A crash between evidence
-creation and run-record publication therefore resumes from the adopted monitor
-postcondition and cannot orphan an unindexed comment. Before a draft exists,
-the issue comment is the durable projection; terminal blockers are rendered
-with `blocker-comment` and use the same reserve-first path. At draft creation,
-use `scripts/render-dev-flow.sh publish` for the PR-body projection without
-deleting the local record.
+`run.json.evidence_comments` only when it is absent. On re-arm, first search by
+both comment ID and canonical marker: when ID, actor ID, login, digest, and every
+marker field match exactly, adopt the existing entry without appending; when an
+ID or marker matches with conflicting content, block. Validate the run record,
+then reserve and apply an update to its issue comment through the same monitor.
+A crash between evidence creation and run-record publication therefore resumes
+from the adopted monitor postcondition and cannot orphan an unindexed comment or
+duplicate its index entry. Before a draft exists, the issue comment is the
+durable projection; terminal blockers are rendered with `blocker-comment` and
+use the same reserve-first path. At draft creation, use
+`scripts/render-dev-flow.sh publish` for the PR-body projection without deleting
+the local record.
 
 Act only on the second returned outcome. `continue` dispatches the next pass
 when no confirmed remediation exists (including an empty or entirely

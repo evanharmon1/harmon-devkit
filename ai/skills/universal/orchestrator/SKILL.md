@@ -98,8 +98,11 @@ from `run.started_at`, not as a fresh allowance for each stage or resumed
 session. Read a fresh trusted clock immediately before every dispatch,
 reservation, replay, external action, and merge-queue mutation. Once the
 deadline is reached, record the capped transition and render its blocker before
-stopping; authorize no further external action. A cached time check or a check
-performed only after the write cannot enforce this ceiling.
+stopping. The sole external action still authorized after expiry is to reserve,
+publish, and reconcile that exact terminal blocker through the monitor; forbid
+all dispatches, code pushes, ordinary comment writes, and merge-queue mutations.
+A cached time check or a check performed only after the write cannot enforce
+this ceiling.
 
 Bound parallel implementers by `[breadth]` and strategy and heavy local stages
 by host capacity. Maintain a merge queue from complete file lists, pairwise

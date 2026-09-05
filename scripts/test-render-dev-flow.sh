@@ -76,6 +76,36 @@ golden_matches policy-disclosure policy-disclosure.txt
 echo "==> golden: blocker-comment matches golden/blocker-comment.txt"
 golden_matches blocker-comment blocker-comment.txt --verdict "${record_dir}/verdict.json" --head "$render_head"
 
+echo "==> capped findings-remain blocker includes the final confidence round's gating remedies"
+capped_gating_record="${test_tmp}/capped-gating-record"
+cp -R "$record_dir" "$capped_gating_record"
+rm "$capped_gating_record/passes/integration-r1-human.json" \
+    "$capped_gating_record/adjudications/integration-r1.json"
+jq '.stage_transitions |= map(select(.stage != "integration")) |
+    del(.stage_transitions[-1].exit) | .pr = null |
+    .settlements |= map(select(.finding_id != "review-r2-codex-cli-1"))' \
+    "$capped_gating_record/run.json" >"${test_tmp}/capped-run.json"
+mv "${test_tmp}/capped-run.json" "$capped_gating_record/run.json"
+jq '(.payload.findings[] | select(.id == "review-r2-codex-cli-1") | .priority) = "P1"' \
+    "$capped_gating_record/passes/review-r2-codex-cli.json" >"${test_tmp}/capped-pass.json"
+mv "${test_tmp}/capped-pass.json" "$capped_gating_record/passes/review-r2-codex-cli.json"
+jq '(.adjudications[] | select(.finding_id == "review-r2-codex-cli-1") |
+      .reviewer_priority) = "P1" |
+    (.adjudications[] | select(.finding_id == "review-r2-codex-cli-1") |
+      .adjudicated_priority) = "P1" |
+    (.adjudications[] | select(.finding_id == "review-r2-codex-cli-1") |
+      .disposition) = "fix"' \
+    "$capped_gating_record/adjudications/review-r2.json" >"${test_tmp}/capped-adjudication.json"
+mv "${test_tmp}/capped-adjudication.json" "$capped_gating_record/adjudications/review-r2.json"
+jq '.stage = "review" | .outcome = "capped" | .reason = "findings_remain" |
+    .rounds_counted = 2 | .next_round = null | del(.corrections)' \
+    "$capped_gating_record/verdict.json" >"${test_tmp}/capped-verdict.json"
+mv "${test_tmp}/capped-verdict.json" "$capped_gating_record/verdict.json"
+run blocker-comment --record "$capped_gating_record" --head "$render_head"
+assert_rc 0
+assert_contains "$out" 'review-r2-codex-cli-1'
+assert_contains "$out" '(P1, fix)'
+
 echo "==> golden: thread-reply-plan matches golden/thread-reply-plan.json"
 golden_matches thread-reply-plan thread-reply-plan.json
 

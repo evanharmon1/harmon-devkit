@@ -1366,9 +1366,27 @@ function renderBlockerComment(record, options = {}) {
     unadjudicatedFindings
   })
   const settlements = buildSettlementIndex(record.run)
+  // A capped confidence verdict with findings_remain means the final
+  // reviewed round's P0/P1 entries are still gating even when their chosen
+  // remedy is fix/delete/restructure. Those dispositions describe what the
+  // implementer tried; without another permitted review round they are not
+  // verification that the finding is gone. Keep older superseded P0/P1s out
+  // by selecting only the latest adjudicated round for the blocked stage.
+  const confidenceFindingsRemain =
+    (lastTransition.stage === 'challenge' || lastTransition.stage === 'review') &&
+    verdict.outcome === 'capped' &&
+    verdict.reason === 'findings_remain'
+  const blockedStageRows = rows.filter((row) => row.stage === lastTransition.stage)
+  const finalBlockedRound =
+    blockedStageRows.length > 0 ? Math.max(...blockedStageRows.map((row) => row.round)) : null
   const unresolved = rows.filter((row) => {
-    if (row.entry.disposition !== 'defer') return false
-    return !settlements.has(row.entry.finding_id)
+    const deferredAndUnsettled = row.entry.disposition === 'defer' && !settlements.has(row.entry.finding_id)
+    const finalRoundGating =
+      confidenceFindingsRemain &&
+      row.stage === lastTransition.stage &&
+      row.round === finalBlockedRound &&
+      (row.entry.adjudicated_priority === 'P0' || row.entry.adjudicated_priority === 'P1')
+    return deferredAndUnsettled || finalRoundGating
   })
   const lines = [`## Blocker: ${lastTransition.stage} ${outcome} (${reason})`, '']
   lines.push(`- Head: \`${options.head}\``)
