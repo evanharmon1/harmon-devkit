@@ -19,7 +19,7 @@ ai/skills/
 │   ├── review/SKILL.md      # /review — challenge/review confidence stages
 │   ├── integrate/SKILL.md   # /integrate — draft integration to ready-for-review
 │   ├── orchestrator/SKILL.md # standing multi-lane operating mode
-│   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables
+│   ├── retro/SKILL.md       # /retro — end-of-session retro: run evidence + status tables
 │   ├── wrap/SKILL.md        # /wrap — wrap up + rename done-<name>
 │   ├── triage/SKILL.md      # /triage — manifest-governed backlog classifier
 │   ├── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)

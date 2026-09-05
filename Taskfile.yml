@@ -75,6 +75,7 @@ tasks:
       - task: test:dev-flow-stats
       - task: test:dev-flow-exit
       - task: test:render-dev-flow
+      - task: test:retro-run-report
       - task: test:review-skill
       - task: test:registry-drift
       - task: test:registry-docs
@@ -338,6 +339,7 @@ tasks:
       - test:dev-flow-stats
       - test:dev-flow-exit
       - test:render-dev-flow
+      - test:retro-run-report
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -363,6 +365,11 @@ tasks:
     desc: Golden-fixture + fake-gh regression tests for the dev-flow-v2 renderer/publisher
     cmds:
       - ./scripts/test-render-dev-flow.sh
+
+  test:retro-run-report:
+    desc: Behavioral test for the /retro skill's run-evidence projection (fixture trajectories, stubbed gh and harvester)
+    cmds:
+      - ./scripts/test-retro-run-report.sh
 
   test:review-skill:
     desc: Fixture-driven regression checks for the /review stage contract
