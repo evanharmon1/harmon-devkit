@@ -5,8 +5,12 @@
 #   challenge — adversarial review      (stage `challenge`, role challenger)
 #
 # Usage:
-#   finder-review.sh <review|challenge> <coderabbit|copilot>
+#   finder-review.sh <review|challenge> <tool>
 #                    [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
+#
+# `<tool>` names a registered local-CLI finder pair — `<tool>-adversarial` for
+# challenge, `<tool>-verification` for review — and is refused if the registry
+# has no such entry. Today that is `copilot`.
 #
 # Local and advisory only, exactly like scripts/codex-review.sh: nothing here
 # runs in CI and no verify/ci step depends on it. WHAT gets reviewed is
@@ -15,32 +19,35 @@
 # never silently review a different scope or gate on a different scale than
 # Codex does.
 #
-# The two backends differ in kind, and the difference is the point:
+# What a finder here must be able to do is take OUR scope. A confidence-stage
+# slot is complete only when its pass reviewed the round's exact
+# `reviewed_head` (specs/dev-flow-v2.md § Configuration), so a CLI that
+# resolves its own scope and accepts no target from us cannot fill one: its
+# pass would be evidence about some other change reported as evidence about
+# this one. GitHub Copilot CLI qualifies because it is a general agent — it is
+# driven with THIS repo's mode and severity prompt and handed the diff, so it
+# answers on the P0-P3 scale about exactly the resolved scope, with no tools
+# granted and none needed, so the pass cannot write.
 #
-#   copilot     — a general agent (GitHub Copilot CLI) driven with THIS repo's
-#                 review prompt, so it answers on the P0-P3 scale directly.
-#                 The change is embedded in the prompt; no tools are granted
-#                 and none are needed, so the pass cannot write.
-#   coderabbit  — a review product that analyses the repository on its own
-#                 terms and takes no instructions of ours. It answers in its
-#                 own vocabulary; agent-registry.json's `severity_map` for
-#                 `coderabbit-adversarial`/`coderabbit-verification` is what
-#                 maps that vocabulary onto P0-P3.
+# CodeRabbit deliberately has no entry here, and that is a decision rather than
+# an omission: its CLI reviews on its own terms and takes no target, so every
+# invocation would run the same command whatever scope was asked for. It is
+# registered as a PR-side finder (`coderabbit-cloud`) instead, where the head
+# IS the scope and the binding problem does not arise.
 #
-# NEITHER tool is installed or configured by this repository, and neither is
-# in the shipped default finder set: `.devflow.toml` has to name one before a
-# stage runs it. A missing binary is a hard refusal (exit 1), never a silent
-# skip — a skipped finder that exits 0 reads as the clean pass a capped stage
-# exits on.
+# The tool is neither installed nor configured by this repository, and no
+# finder here is in the shipped default set: `.devflow.toml` has to name one
+# before a stage runs it. A missing binary is a hard refusal (exit 1), never a
+# silent skip — a skipped finder that exits 0 reads as the clean pass a capped
+# stage exits on.
 #
-# The invocation of each vendor CLI is overridable, because a vendor flag
-# change must be a config edit rather than a code change here:
-#   FINDER_REVIEW_COPILOT_BIN     (default: copilot)
-#   FINDER_REVIEW_COPILOT_ARGS    (default: -p)      prompt appended as one arg
-#   FINDER_REVIEW_CODERABBIT_BIN  (default: coderabbit)
-#   FINDER_REVIEW_CODERABBIT_ARGS (default: review --plain)
-#   FINDER_REVIEW_DRY_RUN=1       print the resolved command and instructions,
-#                                 invoke nothing, exit 0
+# The vendor invocation is overridable, because a vendor flag change must be a
+# config edit rather than a code change here:
+#   FINDER_REVIEW_COPILOT_BIN    (default: copilot)
+#   FINDER_REVIEW_COPILOT_ARGS   (default: -p)     prompt appended as one arg
+#   FINDER_REVIEW_MAX_DIFF_BYTES (default: 60000)  refusal bound, in BYTES
+#   FINDER_REVIEW_DRY_RUN=1      print the resolved command and instructions,
+#                                invoke nothing, exit 0
 #
 # See docs/guides/codex-review.md for enabling each finder.
 set -euo pipefail
@@ -48,7 +55,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> <coderabbit|copilot> [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> <tool> [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
 
 MODE="${1:-}"
@@ -61,12 +68,15 @@ review | challenge) shift ;;
 esac
 
 TOOL="${1:-}"
+# A slug shape, not an allowlist: which tools exist is the registry's answer,
+# checked below, so adding one is a registry plus Taskfile change rather than
+# an edit here.
 case "$TOOL" in
-coderabbit | copilot) shift ;;
-*)
+'' | *[!a-z0-9-]* | -* | *-)
     usage
     exit 2
     ;;
+*) shift ;;
 esac
 
 # The registry is the authority on which finders exist and what each one is
@@ -112,10 +122,14 @@ copilot)
     default_args="-p"
     install_hint="Install the GitHub Copilot CLI (npm install -g @github/copilot), authenticate it, then re-run."
     ;;
-coderabbit)
-    bin="${FINDER_REVIEW_CODERABBIT_BIN:-coderabbit}"
-    default_args="review --plain"
-    install_hint="Install the CodeRabbit CLI (see https://docs.coderabbit.ai), authenticate it, then re-run."
+*)
+    # Registered, but this runner does not know how to drive it. Refusing is
+    # the only honest answer: guessing an invocation would produce a pass
+    # nobody can vouch for.
+    echo "finder '$slug' is registered but $0 has no runner for the '$TOOL' CLI." >&2
+    echo "Add one here, or drop the finder from the registry — a finder with no" >&2
+    echo "runner cannot fill a round slot." >&2
+    exit 2
     ;;
 esac
 if ! command -v "$bin" >/dev/null 2>&1; then
@@ -140,40 +154,6 @@ read_instruction() {
 
 dry_run="${FINDER_REVIEW_DRY_RUN:-0}"
 
-if [ "$TOOL" = coderabbit ]; then
-    # CodeRabbit's CLI takes no review instructions of ours AND no target from
-    # us: it resolves its own scope. So an explicit target flag here would be
-    # a claim this runner cannot honour — `--base main` and `--uncommitted`
-    # select deliberately disjoint content, and running the same unscoped
-    # command for both would let a pass that reviewed the wrong change count
-    # as a complete finder pass for the one that was asked for. Refuse the
-    # flag instead, and leave the escape to an operator who knows their own
-    # CLI's scope flags.
-    if [ -n "$target_kind" ]; then
-        echo "$TOOL resolves its own review scope; this runner cannot pass --${target_kind} through to it." >&2
-        echo "Run it with no target flag, or set FINDER_REVIEW_CODERABBIT_ARGS to the vendor" >&2
-        echo "flags that express the scope you want. Refusing rather than reviewing a" >&2
-        echo "different change than the one you named and reporting it as that one." >&2
-        exit 2
-    fi
-    # The repo-resolved scope is printed as an advisory CROSS-CHECK, never as
-    # a claim about what the CLI reviewed: a reader comparing the two is how a
-    # scope mismatch gets noticed at all.
-    echo "==> $slug — this repo resolves: $scope" >&2
-    echo "    (the CodeRabbit CLI resolves its own scope; compare its report against the above)" >&2
-    # shellcheck disable=SC2206 # deliberate word-splitting: the override is a
-    # flag list, not one argument.
-    args=(${FINDER_REVIEW_CODERABBIT_ARGS:-$default_args})
-    if [ "$dry_run" = 1 ]; then
-        printf 'finder: %s\ncommand: %s %s\nrepo-resolved scope (advisory): %s\n' \
-            "$slug" "$bin" "${args[*]}" "$scope"
-        printf 'manifest:\n%s\n' "$manifest"
-        exit 0
-    fi
-    exec "$bin" "${args[@]}"
-fi
-
-# ── copilot ──────────────────────────────────────────────────────────────
 # A general agent, so it is driven with the same instructions Codex gets:
 # same scope sentence, same mode prose, same severity scale, same
 # authoritative manifest. The DIFF is embedded too, unlike the Codex path
@@ -213,8 +193,13 @@ case "$diff_bytes" in
     ;;
 esac
 diff_text="$(collect_review_diff)"
-if [ "$diff_bytes" -gt 0 ] && [ "${#diff_text}" -gt "$diff_bytes" ]; then
-    echo "The change is ${#diff_text} bytes, past the ${diff_bytes}-byte prompt bound for $slug." >&2
+# BYTES, via LC_ALL=C wc -c, not `${#diff_text}`: the shell counts characters
+# and the kernel's per-argument limit counts bytes, so on a diff carrying
+# multi-byte UTF-8 a character count passes this guard and then fails the exec
+# with E2BIG — an uncontrolled failure in place of the bounded refusal.
+diff_size="$(printf '%s' "$diff_text" | LC_ALL=C wc -c | tr -d ' ')"
+if [ "$diff_bytes" -gt 0 ] && [ "$diff_size" -gt "$diff_bytes" ]; then
+    echo "The change is ${diff_size} bytes, past the ${diff_bytes}-byte prompt bound for $slug." >&2
     echo "This finder is handed the diff and granted no tools, so a truncated prompt is a" >&2
     echo "review of part of the change reported as a review of all of it. Narrow the scope" >&2
     echo "(--base <ref>, --commit <sha>, --uncommitted) or raise FINDER_REVIEW_MAX_DIFF_BYTES" >&2

@@ -665,20 +665,16 @@ tasks:
     cmds:
       - ./scripts/codex-review.sh challenge {{.CLI_ARGS}}
 
-  # Non-default local-CLI finders (agent-registry.json finders[], #796). Both
-  # are OPT-IN: neither CLI is installed or configured by this repo, neither is
-  # in the shipped default finder set, and a missing binary refuses rather than
-  # exiting 0 — a skipped finder reads as a clean pass. Codex stays the default.
-  review:coderabbit:
-    desc: "CodeRabbit verification review (usage: task review:coderabbit -- [--base <ref>|--uncommitted] [focus text])"
-    cmds:
-      - ./scripts/finder-review.sh review coderabbit {{.CLI_ARGS}}
-
-  challenge:coderabbit:
-    desc: "CodeRabbit adversarial review (usage: task challenge:coderabbit -- [--base <ref>|--uncommitted] [focus text])"
-    cmds:
-      - ./scripts/finder-review.sh challenge coderabbit {{.CLI_ARGS}}
-
+  # Non-default local-CLI finders (agent-registry.json finders[], #796). OPT-IN:
+  # the CLI is neither installed nor configured by this repo, the finder is not
+  # in the shipped default set, and a missing binary refuses rather than exiting
+  # 0 — a skipped finder reads as a clean pass. Codex stays the default.
+  #
+  # CodeRabbit has no entry here on purpose. Its CLI resolves its own review
+  # scope and takes no target from us, so a local pass could not be bound to
+  # the round's reviewed_head the way a confidence-stage slot requires — see
+  # docs/guides/codex-review.md. CodeRabbit is registered as a PR-side finder
+  # (`coderabbit-cloud`), where the head IS the scope.
   review:copilot:
     desc: "Copilot verification review (usage: task review:copilot -- [--base <ref>|--uncommitted] [focus text])"
     cmds:

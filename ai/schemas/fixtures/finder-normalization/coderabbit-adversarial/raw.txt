@@ -1,8 +1,0 @@
-CodeRabbit review.
-
-agent-registry.schema.json:640
-_⚠️ Potential issue_
-`severity_map.default` excludes P3 but nothing stops a rule from mapping every
-observed label to P3, which reaches the same place by another route.
-
-Review completed.

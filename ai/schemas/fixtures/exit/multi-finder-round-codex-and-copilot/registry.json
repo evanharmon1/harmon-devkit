@@ -4,7 +4,7 @@
   "finders": [
     { "slug": "codex-adversarial", "surface": "local-cli", "stages": ["challenge"] },
     { "slug": "codex-verification", "surface": "local-cli", "stages": ["review"] },
-    { "slug": "coderabbit-verification", "surface": "local-cli", "stages": ["review"] },
+    { "slug": "copilot-verification", "surface": "local-cli", "stages": ["review"] },
     { "slug": "codex-cloud", "surface": "pr-cloud", "stages": ["integration"] }
   ]
 }

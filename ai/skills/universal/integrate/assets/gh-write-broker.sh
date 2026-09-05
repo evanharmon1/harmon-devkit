@@ -38,21 +38,24 @@
 # arbitrary body beyond what each subcommand below accepts.
 #
 # Usage:
-#   gh-write-broker.sh trigger --repo OWNER/REPO --pr N [--finder SLUG]
+#   gh-write-broker.sh trigger --repo OWNER/REPO --pr N [--finder SLUG --registry FILE]
 #       Posts a cloud finder's review-trigger comment to the PR's top-level
 #       conversation and prints the created comment's {"id": N} — the one
 #       trigger the cycle helper's reserve/attach state machine expects. The
 #       body is STILL not a parameter. With no --finder it is the literal
 #       "@codex review", exactly as before; with one, it is that finder's own
-#       `collection.trigger.body` READ FROM agent-registry.json (#796), so the
+#       `collection.trigger.body` read from the --registry file (#796), so the
 #       set of postable bodies stays closed and repository-controlled rather
-#       than becoming caller-supplied text. A finder whose trigger mechanism
+#       than becoming caller-supplied text. --registry is REQUIRED with
+#       --finder and must be the TRUSTED merge-base copy: a branch that edits
+#       agent-registry.json would otherwise choose the trigger posted on its
+#       own behalf. A finder whose trigger mechanism
 #       is not review-comment is refused here — it has no comment to post.
-#   gh-write-broker.sh request-review --repo OWNER/REPO --pr N --finder SLUG
+#   gh-write-broker.sh request-review --repo OWNER/REPO --pr N --finder SLUG --registry FILE
 #       Requests a review from that finder's registry-declared
 #       `collection.trigger.reviewer_login`, for a finder whose trigger
 #       mechanism is requested-reviewer (Copilot code review). The reviewer is
-#       likewise read from the registry, never from a flag.
+#       likewise read from that same trusted registry, never from a flag.
 #   gh-write-broker.sh reply --repo OWNER/REPO --pr N --comment-id ID --body-file FILE
 #       Posts FILE's exact byte content as a reply within that inline review
 #       comment's thread.
@@ -71,13 +74,14 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  gh-write-broker.sh trigger --repo OWNER/REPO --pr N [--finder SLUG] [--registry FILE]
-  gh-write-broker.sh request-review --repo OWNER/REPO --pr N --finder SLUG [--registry FILE]
+  gh-write-broker.sh trigger --repo OWNER/REPO --pr N [--finder SLUG --registry FILE]
+  gh-write-broker.sh request-review --repo OWNER/REPO --pr N --finder SLUG --registry FILE
   gh-write-broker.sh reply --repo OWNER/REPO --pr N --comment-id ID --body-file FILE
 
 trigger posts a registry-declared review-trigger body (the hardcoded
 "@codex review" with no --finder); request-review requests a
-registry-declared reviewer login; reply posts a FILE's exact byte content to
+registry-declared reviewer login. --finder REQUIRES --registry, and that file
+must be the trusted merge-base agent-registry.json, never the branch copy. reply posts a FILE's exact byte content to
 one specific, non-negotiable endpoint. No subcommand accepts a caller-supplied
 body or reviewer on the command line, or an arbitrary endpoint.
 EOF
@@ -139,13 +143,25 @@ valid_uint "$pr" || refuse "invalid PR number: $pr"
 # broker. A missing or unreadable registry is a refusal, never a fallback to
 # the Codex default — silently posting the wrong trigger would start a cycle
 # for a finder nobody asked for.
+#
+# `--registry` is REQUIRED with `--finder`, and there is deliberately no
+# default. The branch under review may edit agent-registry.json, so a broker
+# that read the worktree copy would let a PR choose the trigger posted on its
+# own behalf — the same branch-controls-its-own-gate hole the merge-base rule
+# closes for .devflow.toml (AGENTS.md, "Self-modified policy is read from the
+# merge base"; scripts/devflow-policy.mjs --closure). Making the caller name
+# the file forces the trust decision to be an explicit, auditable argument
+# rather than an implicit cwd read. The caller materializes the merge-base
+# copy, e.g.
+#   git show "$(git merge-base origin/HEAD HEAD):agent-registry.json" >"$reg"
 finder_field() {
     local field=$1 value
     [ -n "$finder" ] || refuse "internal: finder_field called with no --finder"
     printf '%s' "$finder" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$' ||
         refuse "invalid finder slug: $finder"
     command -v jq >/dev/null 2>&1 || refuse "jq is required to resolve --finder"
-    [ -n "$registry" ] || registry="$(git rev-parse --show-toplevel 2>/dev/null)/agent-registry.json"
+    [ -n "$registry" ] ||
+        refuse "--finder requires an explicit --registry naming the TRUSTED (merge-base) agent-registry.json — the branch copy must never choose its own trigger"
     [ -f "$registry" ] || refuse "no registry at $registry — cannot resolve finder $finder"
     value="$(jq -r --arg slug "$finder" --arg field "$field" '
           [.finders[]? | select(.slug == $slug)] as $entries |

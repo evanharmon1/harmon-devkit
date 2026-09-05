@@ -1859,6 +1859,11 @@ wb_refuse_case "an unregistered finder" trigger --repo example/repo --pr 493 \
 wb_refuse_case "a registry that does not exist" trigger --repo example/repo --pr 493 \
     --finder coderabbit-cloud --registry "${fixtures}/no-such-registry.json"
 wb_refuse_case "request-review with no finder" request-review --repo example/repo --pr 493
+# --finder must name its trusted registry explicitly: with no --registry the
+# broker would read the branch copy, letting a PR that edits
+# agent-registry.json choose the trigger posted on its own behalf.
+wb_refuse_case "a finder with no --registry" trigger --repo example/repo --pr 493 \
+    --finder coderabbit-cloud
 
 echo "==> gh-write-broker propagates gh's own exit code"
 write_defaults
@@ -1984,6 +1989,35 @@ gate="$saved_gate"
 assert_gate 2 indeterminate codex-stale
 printf '%s\n' "$gate_out" | grep -Fq 'was reserved for finder copilot-cloud' ||
     fail "the wrong-finder recheck was not refused by name: $gate_out"
+
+echo "==> a policy that configures no Codex finder promotes on its own finders"
+# A stage whose [stage.integration].finders omits codex-cloud correctly
+# reports a null codex_cycle. Demanding one would make every non-Codex-only
+# policy unpromotable, and the only alternative would be running a reviewer
+# the resolved finder set does not name.
+write_defaults
+no_codex="$(write_integrator_result no-codex null "$head_sha" \
+    "[$(finder_cycle_json coderabbit-cloud 0)]")"
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXIT=0
+run_gate --integrator-result "$no_codex" --integration-cap 1 \
+    --finder coderabbit-cloud \
+    --finder-recheck "coderabbit-cloud:$coderabbit_recheck_state"
+unset RECHECK_FAKE_EXIT
+gate="$saved_gate"
+assert_gate 0 pass ready
+
+echo "==> a null Codex cycle still blocks when codex-cloud IS configured"
+write_defaults
+run_gate_multi_finder_clean --integrator-result "$no_codex" --integration-cap 1 \
+    --finder codex-cloud --finder coderabbit-cloud
+assert_gate 2 indeterminate codex-cap-mismatch
+
+echo "==> naming no finder keeps the pre-#796 positive-cap requirement"
+write_defaults
+run_gate --integrator-result "$no_codex" --integration-cap 1
+assert_gate 2 indeterminate codex-cap-mismatch
 
 echo "==> a cap of 0 waives every configured finder's cycle, not only codex-cloud"
 # A zero cap dispatches no cloud cycle at all — that is what the null

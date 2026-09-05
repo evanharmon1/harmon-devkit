@@ -98,9 +98,14 @@ jq -e '.outcome == "converged" and .reason == "empty_round" and .rounds_counted 
 echo "==> a multi-finder logical round spends one unit of the cap, with one receipt per pass"
 # #796 acceptance: /review runs every finder in the stage's `finders` array for
 # a round, writes one receipt per finder pass, and advances the cap by ONE.
-# The two fixtures below are the dry runs for that — a Codex+CodeRabbit round
-# and a Copilot-only round.
-multi_fixture="ai/schemas/fixtures/exit/multi-finder-round-codex-and-coderabbit"
+# The two fixtures below are the dry runs for that — a two-finder round and a
+# single-finder round of a different family. The pair is Codex+Copilot rather
+# than Codex+CodeRabbit because CodeRabbit is registered PR-side only: its CLI
+# takes no target from us, so a local pass could not be bound to the round's
+# reviewed_head (see docs/guides/codex-review.md). The Codex+CodeRabbit
+# multi-finder round is covered where it is actually supported — the
+# integration stage, in scripts/test-integrate-readiness.sh.
+multi_fixture="ai/schemas/fixtures/exit/multi-finder-round-codex-and-copilot"
 solo_fixture="ai/schemas/fixtures/exit/copilot-only-round"
 multi_head="$(jq -r '."current-head"' "$multi_fixture/invoke.json")"
 
@@ -143,13 +148,13 @@ jq -e '.rounds_counted == 1' <<<"$solo_out" >/dev/null ||
     fail "a one-finder round did not spend exactly one unit of the review cap: $solo_out"
 
 echo "==> a per-run finder request adds to the config and can never remove from it"
-selection="$(policy_resolve "$solo_fixture" --add-finder review:coderabbit-verification)"
-jq -e '.stages.review.finders == ["copilot-verification", "coderabbit-verification"]' \
+selection="$(policy_resolve "$solo_fixture" --add-finder review:codex-verification)"
+jq -e '.stages.review.finders == ["copilot-verification", "codex-verification"]' \
     <<<"$selection" >/dev/null ||
     fail "an added finder did not join the configured set: $selection"
 narrowed="$(policy_resolve "$multi_fixture" --select-finder review:codex-verification)"
-jq -e '.stages.review.finders == ["codex-verification", "coderabbit-verification"] and
-    (.finder_selection[0].retained_despite_selection == ["coderabbit-verification"])' \
+jq -e '.stages.review.finders == ["codex-verification", "copilot-verification"] and
+    (.finder_selection[0].retained_despite_selection == ["copilot-verification"])' \
     <<<"$narrowed" >/dev/null ||
     fail "a narrower per-run selection removed a config-required finder: $narrowed"
 echo "==> the effective finder set renders as a disclosure under the rigor line"
@@ -158,12 +163,12 @@ mkdir -p "$disclosure_record"
 jq -n '{rigor:{level:"standard",source:"default_rigor"},
         rounds:{challenge:3,review:3,integration:2,remediation:2,min_rounds:1},
         disclosures:[{kind:"finders",
-          detail:"review: codex-verification, coderabbit-verification (config: codex-verification; added this run: coderabbit-verification)"}]}' \
+          detail:"review: codex-verification, copilot-verification (config: codex-verification; added this run: copilot-verification)"}]}' \
     >"$disclosure_record/policy.json"
 disclosure_out="$(scripts/render-dev-flow.sh policy-disclosure --record "$disclosure_record")"
 grep -Fq 'rigor: `standard`' <<<"$disclosure_out" ||
     fail "the rigor line did not render: $disclosure_out"
-grep -Fq -- '- finders: review: codex-verification, coderabbit-verification' <<<"$disclosure_out" ||
+grep -Fq -- '- finders: review: codex-verification, copilot-verification' <<<"$disclosure_out" ||
     fail "the effective finder set was not disclosed beside the caps: $disclosure_out"
 
 for text in 'spends **one** unit of the stage' 'Per-run finder selection' \

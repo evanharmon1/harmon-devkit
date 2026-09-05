@@ -67,7 +67,7 @@ families = ["claude"]
 finders = ["codex-adversarial"]
 
 [stage.review]
-finders = ["codex-verification", "coderabbit-verification"]
+finders = ["codex-verification", "copilot-verification"]
 
 [stage.integration]
 finders = ["codex-cloud"]

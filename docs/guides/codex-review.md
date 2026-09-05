@@ -25,8 +25,6 @@ many finders it names).
 | `codex-adversarial` | local CLI (`task challenge`) | challenge | Codex CLI, authenticated |
 | `codex-verification` | local CLI (`task review`) | review | Codex CLI, authenticated |
 | `codex-cloud` | PR review | integration | Codex connected to the repo through ChatGPT |
-| `coderabbit-adversarial` | local CLI (`task challenge:coderabbit`) | challenge | CodeRabbit CLI, authenticated |
-| `coderabbit-verification` | local CLI (`task review:coderabbit`) | review | CodeRabbit CLI, authenticated |
 | `coderabbit-cloud` | PR review | integration | the CodeRabbit GitHub app installed on the repo |
 | `copilot-adversarial` | local CLI (`task challenge:copilot`) | challenge | GitHub Copilot CLI, authenticated |
 | `copilot-verification` | local CLI (`task review:copilot`) | review | GitHub Copilot CLI, authenticated |
@@ -38,6 +36,15 @@ no default configuration names them — so the shipped defaults add no account,
 no trial and no paid dependency. Enabling one is a maintainer decision with a
 cost attached: CodeRabbit is a paid product beyond its free tier, and Copilot
 code review needs a Copilot subscription that covers the repository.
+
+**Why CodeRabbit is PR-side only here.** A confidence-stage slot is complete
+only when its pass reviewed the round's exact `reviewed_head`, and CodeRabbit's
+CLI resolves its own review scope and takes no target from us — so a local
+CodeRabbit pass could not be bound to the round it was counted for, and
+`--base`/`--uncommitted` would all run the identical command. On the PR the
+head *is* the scope, so `coderabbit-cloud` has no such problem. The local-CLI
+finders here are the ones that can be handed our scope: Codex, which takes the
+target through its own CLI, and Copilot, a general agent we hand the diff to.
 
 **Enabling one is two steps, and both are yours.**
 
@@ -52,7 +59,7 @@ code review needs a Copilot subscription that covers the repository.
 
    ```toml
    [stage.review]
-   finders = ["codex-verification", "coderabbit-verification"]
+   finders = ["codex-verification", "copilot-verification"]
 
    [stage.integration]
    finders = ["codex-cloud", "coderabbit-cloud"]
@@ -68,7 +75,7 @@ editing the config, and the resolver will not let a request take one away:
 ```bash
 node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
   --registry agent-registry.json \
-  --add-finder review:coderabbit-verification --json
+  --add-finder review:copilot-verification --json
 ```
 
 The effective set is the union of the configured finders and the requested
@@ -83,9 +90,10 @@ round is cheaper than the defect it might catch:
 
 - *Ordinary change* — Codex alone, on all three stages. Two reviewers on a
   small change mostly produces two versions of the same finding to adjudicate.
-- *Security, migrations, data paths* — Codex plus CodeRabbit on `review`.
-  They disagree usefully: Codex attacks the design, CodeRabbit is stronger on
-  line-level correctness and test gaps, and the round still costs one cap unit.
+- *Security, migrations, data paths* — Codex plus CodeRabbit on
+  `integration`, where CodeRabbit reviews the PR head. They disagree usefully:
+  Codex attacks the design, CodeRabbit is stronger on line-level correctness
+  and test gaps, and the round still costs one cap unit.
 - *A PR that a human will read closely anyway* — Codex plus Copilot on
   `integration`. Copilot's review is inline-comment shaped, so it lands where
   a human reviewer is already looking.
@@ -95,10 +103,9 @@ round is cheaper than the defect it might catch:
 
 **How each finder's severity reaches the P0-P3 scale.** The scale is this
 repo's (`scripts/lib/review-instructions/severity.txt`), never the vendor's.
-A local-CLI finder driven with our own prompt answers in it directly. One that
-does not take instructions of ours — CodeRabbit's CLI analyses the repository
-on its own terms — answers in its own vocabulary, and its registry
-`severity_map` maps that onto ours: `⚠️ Potential issue` → P1,
+A local-CLI finder driven with our own prompt answers in it directly. A
+PR-side finder answers in its own vendor vocabulary, and its registry
+`severity_map` maps that onto ours — for CodeRabbit: `⚠️ Potential issue` → P1,
 `🛠️ Refactor suggestion` → P2, `🧹 Nitpick` → P3, anything unrecognized → P2,
 because AGENTS.md adjudicates an unlabelled finding as at least a P2. Copilot
 code review states no severity at all, so every finding of its enters
@@ -180,24 +187,24 @@ blocks promotion rather than passing it.
 | `task challenge` (= `challenge:codex`) | Adversarial review — tries to break the change: architecture, authz bypasses, data-loss paths, unsafe rollback, races, hidden coupling, operational failure modes, needless complexity |
 | `task review` (= `review:codex`) | Verification checkpoint — double-checks implementation, consistency with repo conventions, error handling, and test coverage |
 
-The same two stages for the opt-in finders, once their CLI is installed and
+The same two stages for the opt-in local finder, once its CLI is installed and
 authenticated (nothing here installs one; a missing binary refuses non-zero):
 
 | Command | Finder |
 |---|---|
-| `task challenge:coderabbit` / `task review:coderabbit` | `coderabbit-adversarial` / `coderabbit-verification` |
 | `task challenge:copilot` / `task review:copilot` | `copilot-adversarial` / `copilot-verification` |
 
-All of them resolve **the same scope** (`scripts/lib/review-scope.sh`) and
-accept the same target flags, so a second finder always reviews exactly what
+It resolves **the same scope** as Codex (`scripts/lib/review-scope.sh`) and
+accepts the same target flags, so the second finder always reviews exactly what
 Codex would have. Copilot is a general agent, so it is driven with this repo's
-own mode and severity prompt and answers on the P0-P3 scale; CodeRabbit's CLI
-takes no instructions of ours and answers in its own vocabulary, which its
-registry `severity_map` translates. Each vendor invocation is overridable
-without editing the runner, so a vendor flag change is a config edit:
-`FINDER_REVIEW_CODERABBIT_ARGS`, `FINDER_REVIEW_COPILOT_ARGS`, and the
-matching `*_BIN` variables (`FINDER_REVIEW_DRY_RUN=1` prints the resolved
-command and prompt without invoking anything).
+own mode and severity prompt, handed the resolved diff, and granted no tools —
+which is also why a diff past `FINDER_REVIEW_MAX_DIFF_BYTES` (60,000 by
+default) is **refused** rather than truncated: it could not fetch what was cut,
+and a partial review that exits 0 reads as a clean one. The vendor invocation
+is overridable without editing the runner, so a vendor flag change is a config
+edit: `FINDER_REVIEW_COPILOT_ARGS` and `FINDER_REVIEW_COPILOT_BIN`
+(`FINDER_REVIEW_DRY_RUN=1` prints the resolved command and prompt without
+invoking anything).
 
 Both accept an explicit target and free-text focus after `--`:
 

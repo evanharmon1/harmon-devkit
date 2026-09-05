@@ -4,6 +4,6 @@
   "receipts": [
     { "kind": "transition", "stage": "review" },
     { "kind": "pass", "file": "review-r1-codex-verification" },
-    { "kind": "pass", "file": "review-r1-coderabbit-verification" }
+    { "kind": "pass", "file": "review-r1-copilot-verification" }
   ]
 }

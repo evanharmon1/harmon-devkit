@@ -1010,10 +1010,19 @@ if [ "$codex_cycle" != null ]; then
         indeterminate codex-indeterminate "codex_cycle exit_code $codex_exit is not a recognized terminal or pending value"
         ;;
     esac
-elif [ -n "$integration_cap" ] && [ "$integration_cap" -gt 0 ]; then
+elif [ -n "$integration_cap" ] && [ "$integration_cap" -gt 0 ] &&
+    jq -e 'length == 0 or (index("codex-cloud") != null)' <<<"$configured_finders" >/dev/null; then
     # harmon-devkit#685: a positive cap requires a cycle to have been
     # attempted — a null codex_cycle under a resolved cap above 0 means the
     # dispatched pass never ran one, whatever its verdict claims.
+    #
+    # "A cycle" means CODEX's cycle, so this holds only where codex-cloud is
+    # actually in the configured set — which, for a caller that names no
+    # --finder at all, is the pre-#796 assumption and stays the default. A
+    # stage that configured only another PR-side finder correctly reports a
+    # null codex_cycle, and requiring one there would make every
+    # non-Codex-only policy unpromotable: the alternative would be running a
+    # reviewer the resolved finder set does not name.
     indeterminate codex-cap-mismatch "codex_cycle is null but --integration-cap is $integration_cap (a positive cap requires a cycle)"
 fi
 # codex_cycle == null with --integration-cap 0 (the only way past the elif

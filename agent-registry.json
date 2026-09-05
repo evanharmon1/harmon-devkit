@@ -502,48 +502,6 @@
       }
     },
     {
-      "slug": "coderabbit-adversarial",
-      "display_name": "CodeRabbit Adversarial Review",
-      "surface": "local-cli",
-      "role": "challenger",
-      "stages": ["challenge"],
-      "result_schema": "ai/schemas/result.challenger.schema.json",
-      "invocation": { "type": "taskfile-target", "target": "challenge:coderabbit" },
-      "collection": null,
-      "trusted_actor_id": null,
-      "trusted_actor_login": null,
-      "raw_shape": "labelled-text",
-      "severity_map": {
-        "default": "P2",
-        "rules": [
-          { "match": "potential issue", "priority": "P1", "anchor": "anywhere" },
-          { "match": "refactor suggestion", "priority": "P2", "anchor": "anywhere" },
-          { "match": "nitpick", "priority": "P3", "anchor": "anywhere" }
-        ]
-      }
-    },
-    {
-      "slug": "coderabbit-verification",
-      "display_name": "CodeRabbit Verification Review",
-      "surface": "local-cli",
-      "role": "reviewer",
-      "stages": ["review"],
-      "result_schema": "ai/schemas/result.reviewer.schema.json",
-      "invocation": { "type": "taskfile-target", "target": "review:coderabbit" },
-      "collection": null,
-      "trusted_actor_id": null,
-      "trusted_actor_login": null,
-      "raw_shape": "labelled-text",
-      "severity_map": {
-        "default": "P2",
-        "rules": [
-          { "match": "potential issue", "priority": "P1", "anchor": "anywhere" },
-          { "match": "refactor suggestion", "priority": "P2", "anchor": "anywhere" },
-          { "match": "nitpick", "priority": "P3", "anchor": "anywhere" }
-        ]
-      }
-    },
-    {
       "slug": "coderabbit-cloud",
       "display_name": "CodeRabbit Cloud Review",
       "surface": "pr-cloud",
