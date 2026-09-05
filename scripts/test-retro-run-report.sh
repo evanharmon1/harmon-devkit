@@ -215,9 +215,11 @@ set_comments() {
     COMMENT_ACTOR="${COMMENT_ACTOR:-$ACTOR}" node -e '
       const fs = require("node:fs")
       const [out, ...files] = process.argv.slice(1)
+      const created = (process.env.COMMENT_CREATED_AT || "2026-08-20T09:00:00Z").split(",")
       const comments = files.map((file, i) => ({
         id: 1000 + i,
         user: { login: "evanharmon1", id: Number(process.env.COMMENT_ACTOR) },
+        created_at: created[i] || created[created.length - 1],
         body: fs.readFileSync(file, "utf8")
       }))
       const pages = process.env.PAGE_PER_COMMENT === "1" ? comments.map((c) => [c]) : [comments]
@@ -228,8 +230,16 @@ set_comments() {
 # run_report ENVDIR [args...] — run the asset with the stub PATH in place,
 # capturing stdout/stderr/exit code into OUT/ERR/RC.
 run_report() {
-    local dir="$1"
+    local dir="$1" arg has_trust=0
     shift
+    # The asset has no default trust root by design, so every ordinary case
+    # supplies one; a case testing the trust boundary passes its own.
+    for arg in "$@"; do
+        case "$arg" in
+        --trusted-actor-id | --trusted-actors-file) has_trust=1 ;;
+        esac
+    done
+    [ "$has_trust" -eq 1 ] || set -- "$@" --trusted-actor-id "$ACTOR"
     RC=0
     OUT="$(PATH="$dir/bin:$PATH" node "$REPORT" "$@" 2>"$dir/stderr")" || RC=$?
     ERR="$(cat "$dir/stderr")"
@@ -266,7 +276,7 @@ rm "$d/stats.mjs"
 git init -q -b main "$d/repo"
 RC=0
 OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
-    GH_USER_ID="$ACTOR" node "$REPORT" --repo o/r --pr "$PR" 2>"$d/stderr")" || RC=$?
+    GH_USER_ID="$ACTOR" node "$REPORT" --repo o/r --pr "$PR" --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
 ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 12 ] && contains "$ERR" "no-stats-script" &&
     ok "exit 12 naming no-stats-script" || bad "expected exit 12 / no-stats-script, got $RC: $ERR"
@@ -287,7 +297,7 @@ make_pr_json "$d/pr.json" "$d/body"
 git init -q -b main "$d/repo"
 RC=0
 OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
-    GH_USER_ID="$ACTOR" node "$REPORT" --repo o/r --pr "$PR" 2>"$d/stderr")" || RC=$?
+    GH_USER_ID="$ACTOR" node "$REPORT" --repo o/r --pr "$PR" --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
 ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 10 ] && contains "$ERR" "no-run-record" &&
     ok "exit 10 naming no-run-record" || bad "expected exit 10 / no-run-record, got $RC: $ERR"
@@ -300,7 +310,7 @@ make_stats "$d/repo/scripts/dev-flow-stats.sh" 1
 git init -q -b main "$d/repo"
 RC=0
 OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_USER_ID="$ACTOR" \
-    node "$REPORT" --repo o/r --run r1 2>"$d/stderr")" || RC=$?
+    node "$REPORT" --repo o/r --run r1 --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
 ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
     ok "a discovered .sh harvester's exit 1 maps to fallback" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
@@ -450,6 +460,71 @@ contains "$ERR" "records PR #$PR, not the requested #$PR_OTHER" &&
     ok "the mismatch names both PRs" || bad "the PR-binding mismatch is not explained"
 [ -z "$OUT" ] && ok "nothing is rendered" || bad "a mis-bound run rendered a report"
 
+echo "==> --as-of filters discovery, so a later marker cannot change history"
+d="$TMPROOT/asof"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" \
+    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "body"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+marker_file "$d/c2" evidence run-a-later-rerun challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+COMMENT_CREATED_AT="2026-08-20T09:00:00Z,2026-09-01T09:00:00Z" \
+    set_comments "$d/comments" "$PR" "$d/c1" "$d/c2"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --as-of 2026-08-25T00:00:00Z
+[ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
+    ok "a marker posted after the cutoff is excluded from discovery" ||
+    bad "expected the pre-cutoff run, got $RC: $ERR"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] &&
+    ok "without the cutoff the same two markers are ambiguous, proving the filter did the work" ||
+    bad "expected exit 11 with no cutoff, got $RC: $ERR"
+
+echo "==> an explicit --run whose record names no PR does not borrow that PR's caps"
+d="$TMPROOT/unbound"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" \
+    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":1,"has_adjudication":true}]' \
+    make_trajectory "$FIXTURES/remediation-loop.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "$POLICY_SECTION"
+make_pr_json "$d/pr.json" "$d/body"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --run run-6058-remediation-loop --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "is not bound to PR #$PR" &&
+    ok "the caps are refused with the binding reason" ||
+    bad "an unbound run consumed the PR's disclosed caps"
+contains "$OUT" "PR binding: none" &&
+    ok "the binding line says none rather than claiming a marker" ||
+    bad "the binding line claims a marker that explicit-run mode never read"
+contains "$OUT" "- Rounds spent: 1 / no cap recorded" &&
+    ok "rounds are reported without the unrelated denominator" ||
+    bad "the unrelated cap still appears as a denominator"
+
+echo "==> exit 12 does not present a --run argument as proof the run exists"
+d="$TMPROOT/nostats-explicit-run"
+mkdir -p "$d/repo"
+make_gh "$d"
+git init -q -b main "$d/repo"
+RC=0
+OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" node "$REPORT" --repo o/r --run made-up \
+    --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
+ERR="$(cat "$d/stderr")"
+[ "$RC" -eq 12 ] && ok "exit 12" || bad "expected exit 12, got $RC: $ERR"
+contains "$ERR" "has NOT been verified against any marker" &&
+    ok "an unverified --run id is reported as unverified" ||
+    bad "an unchecked argv string was reported as a recorded run"
+contains "$ERR" "IS recorded" &&
+    bad "exit 12 claimed the --run id is recorded" ||
+    ok "exit 12 makes no recording claim for a --run id"
+
 # ---------------------------------------------------------------------------
 # 3. The run-record path, measured against the fixture corpus
 # ---------------------------------------------------------------------------
@@ -534,20 +609,34 @@ contains "$OUT" "harmon-devkit#753" &&
 contains "$OUT" "keyed by stage" &&
     ok "the run-wide class/provenance limitation is stated" || bad "class/provenance limitation not stated"
 contains "$(cat "$d/stats.log")" "--trusted-actor-id $ACTOR" &&
-    ok "the authenticated actor id is the default trust root" || bad "default trusted actor id not passed"
+    ok "the caller's trust root reaches the harvester" || bad "trusted actor id not passed through"
+contains "$(cat "$d/gh.log")" "api user" &&
+    bad "the tool consulted the authenticated account — there must be no implicit trust root" ||
+    ok "no implicit trust root: the authenticated account is never consulted"
 
-echo "==> an explicit --trusted-actor-id replaces the authenticated default"
+echo "==> a run with no trust root at all is a usage error, never a default"
+d="$TMPROOT/notrust"
+scaffold "$d" further-along "body"
+RC=0
+OUT="$(PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    node "$REPORT" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" 2>"$d/stderr")" || RC=$?
+ERR="$(cat "$d/stderr")"
+[ "$RC" -eq 2 ] && ok "exit 2" || bad "expected exit 2, got $RC: $ERR"
+contains "$ERR" "at least one --trusted-actor-id" &&
+    ok "the message says a trust root is required" || bad "the usage error does not name the missing trust root"
+contains "$ERR" "741" &&
+    ok "the message names where a configured allowlist will come from" ||
+    bad "the usage error does not point at the registry allowlist issue"
+
+echo "==> an arbitrary trusted actor id is honoured on its own"
 d="$TMPROOT/trusted"
 scaffold "$d" further-along "body"
 COMMENT_ACTOR=424242 set_comments "$d/comments" "$PR" "$d/c1"
 GH_LOG="$d/gh.log" STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --trusted-actor-id 424242
-[ "$RC" -eq 0 ] && ok "exit 0 without an authenticated-user lookup" || bad "expected exit 0, got $RC: $ERR"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
 contains "$(cat "$d/stats.log")" "--trusted-actor-id 424242" &&
     ok "the supplied id reaches the harvester" || bad "supplied trusted actor id not passed through"
-contains "$(cat "$d/gh.log")" "api user" &&
-    bad "gh api user was called despite an explicit --trusted-actor-id" ||
-    ok "gh api user is not called when the caller supplies the trust root"
 
 echo "==> a PR body with no policy-disclosure section reports the caps unknown"
 d="$TMPROOT/nopolicy"

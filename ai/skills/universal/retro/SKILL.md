@@ -68,11 +68,22 @@ harvester (`scripts/dev-flow-stats.mjs`, which never writes) — but it is
 deliberately **not** in `allowed-tools`, so expect a permission prompt, the
 same as the GraphQL query in §4.
 
-Useful arguments: `--run <run_id>` when you already know it (a run that capped
-before its PR existed has no PR to discover from — its record is on the issue);
-`--trusted-actor-id <id>` when the run was orchestrated by an account other
-than the one you are authenticated as, typically Foreman's service account;
-`--as-of <iso8601>` to reconstruct the run as it stood at an earlier instant;
+**A trust root is required, and there is no default.** Pass
+`--trusted-actor-id <id>` (repeatable) or `--trusted-actors-file <path>`
+naming the repository's configured trusted-orchestrator actor ids — the same
+set the harvester authenticates evidence against. Defaulting to the
+authenticated account would make a run's evidence valid or invalid depending
+on who happens to run the retro, and would let a reader's own comments
+authenticate their own retrospective; the evidence contract requires the
+authority to be *configured*. `agent-registry.json` will carry the allowlist
+under harmon-devkit#741; until it does, the ids come from the maintainer or a
+committed actors file.
+
+Other useful arguments: `--run <run_id>` when you already know it (a run that
+capped before its PR existed has no PR to discover from — its record is on the
+issue, and note that an id supplied this way is *unverified*: nothing checks it
+against a marker); `--as-of <iso8601>` to reconstruct the run as it stood at an
+earlier instant, which filters discovery's comments by the same cutoff;
 `--json` for the machine form.
 
 **Branch on the exit code. Do not read the text and guess.**
@@ -81,7 +92,7 @@ than the one you are authenticated as, typically Foreman's service account;
 | --- | --- | --- |
 | 0 | a report is on stdout | Paste it as §2, then carry on |
 | 10 | it **looked** and found nothing — `no-run-record` (no trusted marker on the PR or its linked issues) or `run-not-found` | Fall back: skip §2, and **say plainly** that this session has no run record so the improvements in §5 rest on the conversation rather than on measurements |
-| 12 | `no-stats-script` — this checkout has no harvester, so whether a run record exists is **unknown** | Fall back for the measurements, but report the gap: say the evidence *could not be read here*, never that there is none. stderr names the run when discovery found one anyway |
+| 12 | `no-stats-script` — this checkout has no harvester, so whether a run record exists is **unknown** | Fall back for the measurements, but report the gap: say the evidence *could not be read here*, never that there is none, and use §5's exit-12 provenance wording. stderr says whether discovery found a trusted marker (evidence the run is recorded) or only an unverified `--run` argument |
 | 11 | evidence exists but is **indeterminate** — a broken or forged digest chain, two trusted runs claimed on one PR, or a run bound to a different PR | Not a fallback. Make it the retro's first finding, quote the reason from stderr, and file it |
 | 1 or 2 | operational or usage error | Fix the invocation, or report that the tool failed. Never silently downgrade to memory |
 
@@ -298,9 +309,17 @@ came from rather than take the retro's word for it:
 Retro of Dev flow v2 run `<run_id>` (issue #<n>, PR #<n>), `<stage>` stage.
 ```
 
-Where §1 fell back, provenance names the session and the date instead, and
-says there was no run record — an honest "no measurement behind this" is worth
-more than a run id that does not exist.
+Where §1 fell back, provenance says which fallback it was — the two are not
+interchangeable, and only one of them may claim there was no run record:
+
+- **Exit 10** — "Retro of the session on `<date>`; the PR carried no Dev flow
+  v2 run record." That is the honest "no measurement behind this", and it is
+  worth more than a run id that does not exist.
+- **Exit 12** — "Retro of the session on `<date>`; a run record may exist but
+  this checkout has no `scripts/dev-flow-stats.*` to read it, so the run was
+  not measured." Never write "there was no run record" here: §1 exits 12
+  precisely because that is unknown, and a tracked follow-up carrying the
+  claim would make the unknown look settled.
 
 ## 6. Status tables
 

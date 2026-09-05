@@ -51,8 +51,8 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
   --run <run_id>               Skip discovery and report on this run.
   --trusted-actor-id <id>      Repeatable. Trusted-orchestrator GitHub actor
                                ids. Gates which comments may name a run AND is
-                               passed through to the harvester. Defaults to the
-                               authenticated user's own actor id.
+                               passed through to the harvester. REQUIRED (with
+                               --trusted-actors-file): there is no default.
   --trusted-actors-file <path> A JSON {"trusted_actor_ids": [...]} document,
                                passed through to the harvester.
   --as-of <iso8601>            Reconstruct the run as of this instant.
@@ -172,9 +172,21 @@ function ghJson(argv) {
 // rollup on a busy PR sits well past comment 100, and a discovery that reads
 // only the first page would report "no run record" for a run that plainly has
 // one. Same call shape scripts/dev-flow-stats.mjs uses for the same reason.
-function fetchComments(repo, number) {
+function fetchComments(repo, number, asOf) {
   const pages = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/issues/${number}/comments`])
-  return Array.isArray(pages) ? pages.flat() : []
+  const comments = Array.isArray(pages) ? pages.flat() : []
+  if (!asOf) return comments
+  // --as-of promises an immutable reconstruction, and discovery is part of
+  // the reconstruction: without this filter a marker posted after the cutoff
+  // could select a different run, or make an earlier read newly ambiguous, so
+  // the same cutoff would stop giving the same answer (challenge round 2,
+  // confirmed P1). A comment with no usable created_at is excluded rather
+  // than assumed early — nothing places it before the cutoff.
+  const cutoff = Date.parse(asOf)
+  return comments.filter((comment) => {
+    const created = Date.parse(comment && comment.created_at)
+    return Number.isFinite(created) && created <= cutoff
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +273,7 @@ function collectRunIds(comments, trustedActorIds, where, ignored) {
 // answerable from PR-bound evidence. Fall back to the linked issues, which is
 // where a run that capped before its PR existed keeps everything.
 function discoverRun(args, trustedActorIds) {
+  const asOf = args.asOf || null
   const ignored = []
   const pr = ghJson([
     'pr',
@@ -271,7 +284,7 @@ function discoverRun(args, trustedActorIds) {
     '--json',
     'number,url,title,state,isDraft,body,closingIssuesReferences'
   ])
-  const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number), trustedActorIds, `PR #${pr.number}`, ignored)].sort()
+  const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number, asOf), trustedActorIds, `PR #${pr.number}`, ignored)].sort()
   if (fromPr.length === 1) {
     return { pr, runId: fromPr[0], source: `evidence marker on PR #${pr.number}`, ignored }
   }
@@ -286,7 +299,7 @@ function discoverRun(args, trustedActorIds) {
   // in the report's provenance line rather than reducing to "an issue".
   const fromIssues = new Map()
   for (const issue of issues) {
-    const comments = fetchComments(args.repo, issue.number)
+    const comments = fetchComments(args.repo, issue.number, asOf)
     for (const runId of collectRunIds(comments, trustedActorIds, `issue #${issue.number}`, ignored)) {
       const seen = fromIssues.get(runId) || new Set()
       seen.add(issue.number)
@@ -310,13 +323,16 @@ function discoverRun(args, trustedActorIds) {
 // Trusted actor ids
 // ---------------------------------------------------------------------------
 
-// The harvester trusts evidence only from a configured orchestrator actor id.
-// agent-registry.json does not yet carry that allowlist (harmon-devkit#741 —
-// its finders' trusted_actor_id names review bots, a different trust root
-// entirely), so the honest default is the authenticated account: a retro is
-// normally run by the same identity that orchestrated the run. A run driven by
-// Foreman's service account needs --trusted-actor-id. The failure mode is
-// fail-closed either way — the harvester rejects evidence it cannot attribute.
+// There is no default trust root, deliberately. An earlier revision fell back
+// to the authenticated account, which made a run's evidence valid or invalid
+// depending on who happened to run `/retro` and let a reader's own comments
+// authenticate their own retrospective — the evidence spec requires authority
+// to "derive solely from configured trusted orchestrator actor IDs", and
+// "whoever is logged in" is not configured (challenge round 2, confirmed P1).
+// scripts/dev-flow-stats.mjs already requires the ids explicitly; matching it
+// removes the divergence rather than papering over it. agent-registry.json
+// will carry the allowlist under harmon-devkit#741; until then the caller
+// supplies it, from a committed --trusted-actors-file or the flag.
 function resolveTrustedActorArgs(args) {
   const passthrough = []
   const ids = new Set()
@@ -350,16 +366,12 @@ function resolveTrustedActorArgs(args) {
     }
     passthrough.push('--trusted-actors-file', args.trustedActorsFile)
   }
-  if (passthrough.length > 0) return { passthrough, ids, source: 'supplied on the command line' }
-  const id = gh(['api', 'user', '--jq', '.id']).trim()
-  if (!/^[1-9][0-9]*$/.test(id)) {
-    throw new OperationalError(`could not resolve the authenticated actor id (got ${JSON.stringify(id)})`)
+  if (ids.size === 0) {
+    throw new UsageError(
+      'at least one --trusted-actor-id or --trusted-actors-file entry is required — a marker only names a run if a configured trusted orchestrator posted it, and there is deliberately no "whoever is logged in" default (harmon-devkit#741 will supply the allowlist from agent-registry.json)'
+    )
   }
-  return {
-    passthrough: ['--trusted-actor-id', id],
-    ids: new Set([Number(id)]),
-    source: `the authenticated account (actor id ${id})`
-  }
+  return { passthrough, ids, source: 'supplied on the command line' }
 }
 
 // ---------------------------------------------------------------------------
@@ -820,8 +832,15 @@ function run(argv) {
 
   const stats = resolveStatsCommand(args.statsScript)
   if (stats.missingReason) {
+    // What is known about the run differs by how its id was obtained, and the
+    // message must not blur the two: a trusted marker IS evidence the run was
+    // recorded, while a --run argument is an unverified string this tool
+    // never checked against anything (challenge round 2, confirmed P1).
+    const standing = args.run
+      ? `Run \`${runId}\` was supplied with --run and has NOT been verified against any marker — this tool cannot say whether it exists`
+      : `Run \`${runId}\` IS recorded (${runIdFrom}) but cannot be read here`
     console.error(
-      `${TOOL}: no-stats-script — ${stats.missingReason}. Run \`${runId}\` IS recorded (${runIdFrom}) but cannot be read here, so whether this session has retained evidence is not in doubt — only whether this checkout can read it. Vendor the harvester (harmon-devkit#663) or rerun with --stats-script; do NOT report the session as having no run record.`
+      `${TOOL}: no-stats-script — ${stats.missingReason}. ${standing}. Vendor the harvester (harmon-devkit#663) or rerun with --stats-script; do NOT report the session as having no run record — this exit says nothing either way.`
     )
     return 12
   }
@@ -849,14 +868,29 @@ function run(argv) {
     )
     return 11
   }
+  // An explicit --run read no marker, so when its record also names no PR
+  // there is NOTHING linking the trajectory to the --pr the caller happened
+  // to pass. Measuring it against that PR's disclosed caps would attribute
+  // one run's rounds to another's budget (challenge round 2, confirmed P2 —
+  // fixed in place rather than deferred: it is the same false-claim class as
+  // the exit-12 message above and costs one branch).
+  const unbound = Boolean(args.run) && !boundPr
   const prBinding =
     args.pr === undefined
       ? null
       : boundPr
         ? `bound to PR #${boundPr.number}`
-        : 'the run record names no PR yet, so nothing binds this trajectory to the PR beyond the marker that named it'
+        : unbound
+          ? `none — the run id came from --run, its record names no PR, and no marker was read, so nothing binds this trajectory to #${args.pr}`
+          : 'the run record names no PR yet, so the binding rests on the trusted marker that named this run'
 
-  const policy = readPolicyDisclosure(pr ? pr.body : null)
+  const policy = unbound
+    ? {
+        present: false,
+        verified: false,
+        reason: `run \`${runId}\` is not bound to PR #${args.pr} (supplied with --run, and its record names no PR), so that PR's disclosed caps are not this run's`
+      }
+    : readPolicyDisclosure(pr ? pr.body : null)
   const measurements = measure(harvested.trajectory, policy)
   const report = {
     schema: 'retro-run-report.v1',
