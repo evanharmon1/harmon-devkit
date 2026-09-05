@@ -1469,9 +1469,14 @@ async function main() {
   // a plain object's inherited keys ("constructor", "toString", ...) resolve
   // to truthy values that are not stages at all — the same hazard
   // lib/toml-lite.mjs's own __proto__ handling exists for.
+  // Each recorded verify -> <stage> edge names EVERY confidence stage it
+  // bypasses, not just the nearest one: verify -> security skips challenge
+  // and review alike, and the budgets are independent, so checking only
+  // review let a `review = 0, challenge = 3` policy advance on an edge that
+  // silently skipped challenge too (integrate cycle 4 on PR #800, confirmed).
   const SKIP_EDGE_GUARDS = new Map([
-    ["review", "challenge"],
-    ["security", "review"],
+    ["review", ["challenge"]],
+    ["security", ["challenge", "review"]],
   ]);
   const transitionStages = (runDir.runRecord.receipts || []).filter((r) => r.kind === "transition");
 
@@ -1507,21 +1512,22 @@ async function main() {
 
   for (let i = 1; i < transitionStages.length; i++) {
     if (transitionStages[i - 1].stage !== "verify") continue;
-    const skipped = SKIP_EDGE_GUARDS.get(transitionStages[i].stage);
-    if (!skipped) continue;
-    if (resolved.rounds[skipped] === 0) continue;
-    // A verify -> review edge is NOT automatically a skip: a remediation
-    // loop back into review (review -> implement -> verify -> review, both
-    // edges on run.schema.json's own ALLOWED_EDGES) records exactly that
-    // edge after challenge has already run and exited, and the same shape
-    // takes security -> implement -> verify -> security back into security.
-    // Only an edge with no earlier transition into the skipped stage is a
-    // skip; anything else is a legitimate re-entry.
-    if (transitionStages.slice(0, i).some((t) => t.stage === skipped)) continue;
-    return indeterminate(
-      args,
-      `the trusted receipt sequence records a "verify" -> "${transitionStages[i].stage}" transition with no earlier transition into "${skipped}", but the resolved ${skipped} cap is ${resolved.rounds[skipped]} (not disabled) — stage-skipping is legal only under a cap-0 policy for the skipped stage`,
-    );
+    const skippedStages = SKIP_EDGE_GUARDS.get(transitionStages[i].stage);
+    if (!skippedStages) continue;
+    for (const skipped of skippedStages) {
+      // Disabled is always fine, and a stage the run demonstrably entered
+      // earlier was not skipped at all: a remediation loop back into review
+      // (review -> implement -> verify -> review, both edges on
+      // run.schema.json's own ALLOWED_EDGES) records exactly this edge after
+      // challenge has already run and exited, and the same shape takes
+      // security -> implement -> verify -> security back into security.
+      if (resolved.rounds[skipped] === 0) continue;
+      if (transitionStages.slice(0, i).some((t) => t.stage === skipped)) continue;
+      return indeterminate(
+        args,
+        `the trusted receipt sequence records a "verify" -> "${transitionStages[i].stage}" transition with no earlier transition into "${skipped}", but the resolved ${skipped} cap is ${resolved.rounds[skipped]} (not disabled) — stage-skipping is legal only under a cap-0 policy for every stage the edge bypasses`,
+      );
+    }
   }
 
   const validatorPath = args.validator || DEFAULT_VALIDATOR;
@@ -1639,6 +1645,18 @@ async function main() {
     const overCapAdj = runDir.adjudications.find((a) => a.doc.stage === otherStage && a.doc.round > otherCap);
     if (overCapAdj) {
       return indeterminate(args, `a ${otherStage} adjudication names round ${overCapAdj.doc.round}, exceeding the resolved ${otherStage} cap (${otherCap}), even though it did not survive validation — trajectory inconsistent with its own policy`);
+    }
+    // slot_failures is round evidence too — assembleLogicalRounds derives a
+    // round number from it exactly as it does from a pass — so a round that
+    // exists ONLY as a slot failure is as over-cap as one with a pass. The
+    // cap-0 emptiness scan above already counts it; leaving it out here made
+    // the two halves of the same rule disagree (integrate cycle 4 on PR #800,
+    // confirmed).
+    const overCapSlotFailure = (Array.isArray(runDir.runRecord.slot_failures) ? runDir.runRecord.slot_failures : []).find(
+      (sf) => sf.stage === otherStage && typeof sf.round === "number" && sf.round > otherCap,
+    );
+    if (overCapSlotFailure) {
+      return indeterminate(args, `a ${otherStage} slot_failures record names round ${overCapSlotFailure.round}, exceeding the resolved ${otherStage} cap (${otherCap}) — trajectory inconsistent with its own policy`);
     }
   }
   const presentRoundNumbers = [...new Set(rounds.map((r) => r.round))].sort((a, b) => a - b);

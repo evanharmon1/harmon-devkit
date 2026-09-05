@@ -2467,6 +2467,13 @@ exists" would reject nearly every fixture in this corpus. Two consecutive
 transition receipts are a positive claim about what the run did, and the
 resolved policy is what decides whether that claim is legal.
 
+An edge also names **every** confidence stage it bypasses, not just the
+nearest one: `verify -> security` skips challenge and review alike, and the
+budgets are independent, so a `review = 0, challenge = 3` policy must not
+advance on it merely because review is disabled (integrate cycle 4 on
+PR #800). Each bypassed stage must independently be disabled or already
+visited.
+
 The edge alone is still not enough, though, and this is the part worth
 knowing: `verify -> review` is *also* what a legitimate **remediation
 re-entry** records. `review -> implement -> verify -> review` is a path
@@ -2532,15 +2539,17 @@ sharpest case — its issue comments are the only harvestable record it will
 ever have (Codex cloud-review cycle 1 on PR #800, confirmed).
 
 **Row 7 is checked in two places because it holds at two different times.**
-The document check's missing-marker half deliberately waits for
-`outcome: ready-for-review`, since a run adjudicates a round and *then*
-publishes its evidence — an unconditional rule would fault the normal
-in-flight sequence rather than an attack. That relaxation leaves the
-invariant unenforced at the moment it matters most, though: promotion is
-what turns the record into the durable artifact a harvester reads back, and
-validating *after* `outcome` flips is too late to stop the promotion
-(challenge round 3, confirmed). So the readiness gate applies the same rule
-as a promotion condition, from the record it already holds. The
+The document check's missing-marker half is relaxed only while `outcome` is
+**null**, since a run adjudicates a round and *then* publishes its evidence —
+an unconditional rule would fault the normal in-flight sequence rather than
+an attack. Every terminal outcome is covered, `capped`/`escalated`/
+`abandoned` as much as `ready-for-review`, exactly as the paragraph above
+says and as `checkAdjudicationEvidenceMarkers` implements. That relaxation
+still leaves the invariant unenforced at the moment it matters most, though:
+promotion is what turns the record into the durable artifact a harvester
+reads back, and validating *after* `outcome` flips is too late to stop the
+promotion (challenge round 3, confirmed). So the readiness gate applies the
+same rule as a promotion condition, from the record it already holds. The
 `pr`-without-`issue` half needs no such gate in either place: the schema has
 the rollup link *back* to the per-round comments, so it is posted after them
 and their absence is an inconsistency at any point in a run.
@@ -2631,9 +2640,14 @@ computed.** Every over-cap check was originally scoped to `args.stage`, so a
 challenge round 4 under a challenge cap of 3 stayed invisible while review's
 exit was computed, and review could converge on a trajectory its own policy
 forbids (integrate cycle 3 on PR #800). Both confidence stages are now checked
-for over-cap passes and adjudications, whatever stage is requested — the same
-shape the cap-0 rule below already had.
-`exit/cross-stage-over-cap-challenge-round-rejected` is the fixture.
+for over-cap passes, adjudications **and `slot_failures`**, whatever stage is
+requested — the same shape the cap-0 rule below already had, including that
+last source, whose omission made the two halves of one rule disagree
+(integrate cycle 4). `assembleLogicalRounds` derives a round number from a
+slot failure exactly as it does from a pass, so a round existing only as a
+failure is as over-cap as one with evidence.
+`exit/cross-stage-over-cap-challenge-round-rejected` and
+`exit/cross-stage-over-cap-slot-failure-rejected` are the fixtures.
 
 **A cap-0 confidence stage must be inert across the whole run, not just the
 one being computed.** Every cap-integrity check in `dev-flow-exit.mjs` is

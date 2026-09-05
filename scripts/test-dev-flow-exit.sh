@@ -474,6 +474,18 @@ echo "== #685: a recorded verify -> security edge needs a cap-0 review policy, e
 skip_fixture="ai/schemas/fixtures/exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected"
 skip_dir="$(mktemp -d)"
 cp -r "${skip_fixture}/." "${skip_dir}/"
+# Disable challenge in this copy so the assertion isolates the REVIEW half:
+# a verify -> security edge bypasses both confidence stages (integrate cycle 4
+# on PR #800), and with challenge still capped the refusal would name
+# challenge first — correct, but not what this case is about.
+node -e '
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  fs.writeFileSync(file, fs.readFileSync(file, "utf8")
+    .replace(/^challenge = 3$/m, "challenge = 0")
+    .replace(/\[stage\.challenge\]\nfinders = \["codex-cli"\]\nfinder_fallbacks = \["gemini-cli"\]/,
+             "[stage.challenge]\nfinders = []\nfinder_fallbacks = []"));
+' "${skip_dir}/policy.toml"
 node -e '
   const fs = require("node:fs");
   const file = process.argv[1];

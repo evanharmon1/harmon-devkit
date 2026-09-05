@@ -1,0 +1,26 @@
+{
+  "run_id": "run-cross-stage-slot-failure",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "challenge"
+    },
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    }
+  ],
+  "slot_failures": [
+    {
+      "stage": "challenge",
+      "round": 4,
+      "slot": "codex-cli",
+      "reason": "finder_unavailable"
+    }
+  ]
+}
