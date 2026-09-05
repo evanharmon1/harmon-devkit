@@ -1403,13 +1403,24 @@ function cliDetect(args) {
   // wording is a second place for the release name and the pin guidance to
   // drift from this file's own (harmon-devkit#604).
   const migration = isV2 ? null : shapeRefusalMessage(detection, { forOperating: true });
-  // `policy_schema_version` describes THIS POLICY, not the reader: null for
-  // every shape that declares no version. Emitting the reader's own supported
-  // version unconditionally would be a field whose name says one thing and
-  // whose value says another, and a numeric consumer (the consumer-pin audit
-  // compares it against the version its vendored skills require) would read
-  // every older shape as version 2 — challenge round 1, confirmed.
-  const policySchemaVersion = isV2 ? POLICY_SCHEMA_VERSION : null;
+  // `policy_schema_version` describes THIS POLICY, not the reader: null only
+  // where the policy declares no version at all. Emitting the reader's own
+  // supported version unconditionally would be a field whose name says one
+  // thing and whose value says another, and a numeric consumer (the
+  // consumer-pin audit compares it against the version its vendored skills
+  // require) would read every older shape as version 2 — challenge round 1,
+  // confirmed.
+  //
+  // A version this reader cannot OPERATE under is still a version it can
+  // REPORT. Challenge round 3, confirmed: `schema_version = 3` detects as
+  // `unknown` and reported null, so the pin audit read a policy that had
+  // migrated past v2 as having no version at all and called pre-v2 skills
+  // over it compatible — defeating the equality comparison outright. Refusal
+  // is unaffected: `detect` still exits non-zero and `requireOperatingV2`
+  // still admits only 2.
+  const declaredSchemaVersion =
+    Number.isInteger(doc.schema_version) && doc.schema_version > 0 ? doc.schema_version : null;
+  const policySchemaVersion = isV2 ? POLICY_SCHEMA_VERSION : declaredSchemaVersion;
   if (args.json) {
     console.log(JSON.stringify({ ...detection, policy_schema_version: policySchemaVersion, migration }));
   } else {

@@ -119,8 +119,15 @@ command -v node >/dev/null 2>&1 || die "node is required"
 
 # ── what the repository vendored ─────────────────────────────────────────────
 
-manifest_ref="$(yq -r '.source.ref // ""' "$manifest")"
-dest_rel="$(yq -r '.dest // ".claude/skills"' "$manifest")"
+# `var="$(cmd)"` under `set -e` exits with CMD's status, and yq exits 1 on
+# malformed YAML — which is this script's "incompatible" code, so a damaged
+# manifest read as a migration problem and sent the caller to `copier update`.
+# Challenge round 3, confirmed: unreadable input is exit 2 by this file's own
+# documented contract, so both reads route through `die`.
+manifest_ref="$(yq -r '.source.ref // ""' "$manifest" 2>/dev/null)" ||
+    die "manifest '$manifest' could not be parsed as YAML — the vendored pin is unknown; fix the file before auditing"
+dest_rel="$(yq -r '.dest // ".claude/skills"' "$manifest" 2>/dev/null)" ||
+    die "manifest '$manifest' could not be parsed as YAML — the vendored skill destination is unknown; fix the file before auditing"
 [ -n "$manifest_ref" ] || die "manifest '$manifest' declares no source.ref"
 case "$dest_rel" in
 /*) dest="$dest_rel" ;;

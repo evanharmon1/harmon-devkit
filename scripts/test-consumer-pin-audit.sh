@@ -372,6 +372,48 @@ expect_status "vendored skills declaring two different versions is indeterminate
 expect_says "the mixed-set error names both versions" "more than one policy schema version"
 
 echo
+echo "== consumer-pin-audit: a malformed manifest is indeterminate, not incompatible =="
+# Challenge round 3, confirmed: `var="$(yq ...)"` under `set -e` exits with
+# yq's status, and yq exits 1 on bad YAML — this script's "incompatible" code,
+# sending the caller to `copier update` for a damaged file.
+c="$(make_consumer bad-manifest "$V2_POLICY" v0.41.0 review:v2)"
+printf 'source: [this is: not valid\n  yaml\n' >"$c/.skills-sync.yaml"
+run_audit "$c"
+expect_status "an unparseable manifest is a usage error, not an incompatibility" 2
+expect_says "the malformed-manifest error says it could not be parsed" "could not be parsed as YAML"
+
+echo
+echo "== consumer-pin-audit: a policy past this reader's version is still versioned =="
+# Challenge round 3, confirmed: `schema_version = 3` detects as `unknown`, so
+# the reported version was null, the audit read it as 0, and pre-v2 skills over
+# an already-migrated policy came back `compatible` — defeating the equality
+# comparison the previous round introduced.
+future_policy="$TMPROOT/future-policy.toml"
+printf 'schema_version = 3\ndefault_rigor = "standard"\n' >"$future_policy"
+c="$(make_consumer future-policy "$future_policy" v0.34.1 integrate:pre review:pre)"
+run_audit "$c"
+expect_status "pre-v2 skills under a version-3 policy is pin lag, not compatible" 3
+expect_says "pin lag reports the version the policy actually declares" "schema_version 3"
+
+c="$(make_consumer v2-skills-future-policy "$future_policy" v0.41.0 review:v2)"
+run_audit "$c"
+expect_status "version-2 skills under a version-3 policy are incompatible" 1
+
+# stdout only: the refusal also goes to stderr, and folding the two together
+# would hand jq a JSON document with a prose line appended.
+set +e
+out="$(node "$READER" detect --policy "$future_policy" --json 2>/dev/null)"
+status=$?
+set -e
+expect_status "detect still refuses a version this reader cannot operate under" 1
+if printf '%s' "$out" | jq -e '.policy_schema_version == 3 and .migration != null' >/dev/null 2>&1; then
+    ok "detect reports the declared version while still refusing it"
+else
+    bad "detect did not report the declared version of an unoperatable policy"
+    printf '%s\n' "$out" | sed 's/^/      /' >&2
+fi
+
+echo
 echo "== devflow-policy: an older shape is refused with one actionable message =="
 for shape in legacy v1 mixed; do
     case "$shape" in
