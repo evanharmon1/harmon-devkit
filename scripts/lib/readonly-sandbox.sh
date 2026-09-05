@@ -139,13 +139,31 @@ sandbox_snapshot() {
 
 # sandbox_exec CMD... — run a command with the scratch tree as its working
 # directory and no write credentials in its environment.
+# The filesystem the pass may see, as an ALLOWLIST. `--ro-bind / /` plus a
+# list of secrets to unset was subtract-known-secrets, not deny-by-default:
+# anything outside $HOME (/run/secrets, a mounted token, an agent socket) or
+# any variable not on the list stayed readable, and with egress open a
+# general agent processing an attacker-controlled diff could use it. Only
+# these paths are bound, each read-only, and only if they exist.
+readonly_sandbox_base_paths=(
+    /usr /bin /sbin /lib /lib32 /lib64 /libx32 /opt
+    /etc/ssl /etc/pki /etc/ca-certificates /etc/ca-certificates.conf
+    /etc/resolv.conf /etc/hosts /etc/nsswitch.conf /etc/localtime
+    /etc/passwd /etc/group /etc/alternatives
+)
+
+# The environment the pass may see, as an allowlist over `env -i`. Everything
+# else — every token, every helper, every socket path — is simply not passed.
+# A tool that needs one of its own variables gets it through
+# FINDER_REVIEW_SANDBOX_ENV, which is the operator naming it deliberately.
+readonly_sandbox_env_allow=(PATH HOME USER LOGNAME TERM LANG TMPDIR)
+
 sandbox_exec() {
-    local -a wrapper
-    local real_git_dir home_dir
+    local -a wrapper env_args
+    local real_git_dir home_dir path extra name
     # The MAIN repository's git dir, which the scratch worktree's `.git` file
-    # points at. Bound read-only by name as well as by the blanket bind: this
-    # is the specific path that turned "the tree is unwritable" into "shared
-    # refs are still reachable", so it is named rather than left implicit.
+    # points at. Bound read-only by name: this is the specific path that turned
+    # "the tree is unwritable" into "shared refs are still reachable".
     real_git_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || real_git_dir=
     home_dir="${HOME:-/nonexistent}"
     # Namespaces the model call does not need are unshared: the finder has no
@@ -156,36 +174,52 @@ sandbox_exec() {
     # point of dispatching it — so this bounds writes, credentials, processes
     # and IPC, not the model call. That residual is stated here, in the header
     # above, and in docs/guides/codex-review.md rather than left implicit.
-    wrapper=("$readonly_sandbox_bwrap" --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp
+    wrapper=("$readonly_sandbox_bwrap" --dev /dev --proc /proc --tmpfs /tmp
         --unshare-pid --unshare-ipc --unshare-uts --new-session)
+    for path in "${readonly_sandbox_base_paths[@]}"; do
+        [ -e "$path" ] || continue
+        wrapper+=(--ro-bind "$path" "$path")
+    done
     [ -z "$real_git_dir" ] || wrapper+=(--ro-bind "$real_git_dir" "$real_git_dir")
-    # HOME is replaced wholesale, then exactly one credential path is bound
-    # back. Everything else a home directory holds — ~/.config/gh, ~/.aws, npm
-    # and the rest — is simply not there.
+    # HOME exists but is empty, and exactly one credential path is bound back.
     wrapper+=(--tmpfs "$home_dir")
     if [ -n "$readonly_sandbox_credential_dir" ] && [ -e "$readonly_sandbox_credential_dir" ]; then
         wrapper+=(--ro-bind "$readonly_sandbox_credential_dir" "$readonly_sandbox_credential_dir")
     fi
-    local extra
     for extra in "${readonly_sandbox_extra_ro[@]+"${readonly_sandbox_extra_ro[@]}"}"; do
         [ -e "$extra" ] || continue
         wrapper+=(--ro-bind "$extra" "$extra")
     done
+    # An operator's own additions, colon-separated. Named deliberately, never
+    # inherited: a path here is one somebody decided the finder needs.
+    if [ -n "${FINDER_REVIEW_SANDBOX_EXTRA_RO:-}" ]; then
+        while IFS= read -r path; do
+            [ -n "$path" ] && [ -e "$path" ] || continue
+            wrapper+=(--ro-bind "$path" "$path")
+        done <<<"${FINDER_REVIEW_SANDBOX_EXTRA_RO//:/$'\n'}"
+    fi
     wrapper+=(--ro-bind "$readonly_sandbox_dir" "$readonly_sandbox_dir"
         --chdir "$readonly_sandbox_dir" --die-with-parent)
+
+    # `env -i` first: the process starts with NOTHING and is handed back only
+    # what is named. GIT_CONFIG_* are set rather than unset so that even a
+    # config reachable through the binds cannot supply a credential helper.
+    env_args=(env -i
+        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+        GIT_TERMINAL_PROMPT=0)
+    for name in "${readonly_sandbox_env_allow[@]}"; do
+        [ -n "${!name+set}" ] || continue
+        env_args+=("$name=${!name}")
+    done
+    if [ -n "${FINDER_REVIEW_SANDBOX_ENV:-}" ]; then
+        while IFS= read -r name; do
+            [ -n "$name" ] && [ -n "${!name+set}" ] || continue
+            env_args+=("$name=${!name}")
+        done <<<"${FINDER_REVIEW_SANDBOX_ENV//:/$'\n'}"
+    fi
     (
         cd "$readonly_sandbox_dir" || exit 1
-        # Credentials a write would need, and the helpers that supply them.
-        # GIT_CONFIG_* are pointed at /dev/null rather than unset: unsetting
-        # leaves the user's real ~/.gitconfig, credential helper included.
-        env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN \
-            -u GITHUB_ENTERPRISE_TOKEN -u GH_CONFIG_DIR \
-            -u GIT_ASKPASS -u SSH_ASKPASS -u SSH_AUTH_SOCK \
-            -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
-            -u NPM_TOKEN -u NODE_AUTH_TOKEN \
-            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-            GIT_TERMINAL_PROMPT=0 \
-            "${wrapper[@]}" "$@"
+        "${env_args[@]}" "${wrapper[@]}" "$@"
     )
 }
 

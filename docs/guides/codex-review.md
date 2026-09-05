@@ -243,15 +243,21 @@ install that for us. So `scripts/lib/readonly-sandbox.sh` builds it:
   checkout, and a linked worktree's `.git` points at the real repository, so
   `git update-ref` could alter shared refs while the scratch tree stayed
   byte-identical.
-- a per-run scratch `git worktree` checkout, made unwritable, with the whole
-  filesystem — and the real `.git` by name — bound read-only inside;
+- a per-run scratch `git worktree` checkout, made unwritable, inside a
+  filesystem **allowlist** — only `/usr`, the standard library and certificate
+  paths, the finder's own binary directory, the real `.git` (read-only, by
+  name) and the checkout itself. Nothing else is bound, so a credential
+  outside your home directory (`/run/secrets`, a mounted token) is simply not
+  there. `FINDER_REVIEW_SANDBOX_EXTRA_RO` adds a path deliberately;
 - **HOME replaced by a tmpfs**, with only that finder's own credential path
   bound back in (`FINDER_REVIEW_COPILOT_CONFIG_DIR`, default `~/.copilot`).
   `~/.config/gh`, `~/.aws`, npm credentials and your `~/.gitconfig` are simply
   not there, so a finder with shell capability has nothing to authenticate a
   remote write with;
-- write credentials and git's credential helpers stripped from the
-  environment;
+- a clean environment: the pass starts from `env -i` and is handed back only
+  `PATH`, `HOME`, `USER`, `LOGNAME`, `TERM`, `LANG` and `TMPDIR`, so a token in
+  a variable nobody thought to name is not passed either.
+  `FINDER_REVIEW_SANDBOX_ENV` names one deliberately;
 - and afterwards the scratch tree **proven** unchanged — a pass that modified
   it is refused whatever it returned.
 

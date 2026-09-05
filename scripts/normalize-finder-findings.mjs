@@ -409,20 +409,42 @@ if (finder.raw_shape === 'labelled-text') {
   // otherwise normalize the shortfall away and report a smaller round as
   // complete. The pattern is the registry's; the reconciliation is here.
   const actionablePattern = finder.collection?.terminal_signals?.actionable_pattern
-  if (actionablePattern && payload.review) {
+  if (actionablePattern) {
+    // The count only means anything if it comes from a review that is THIS
+    // finder's and about THIS head. An earlier revision read whatever
+    // `payload.review` held and skipped the check entirely when it was
+    // absent, so a payload of one current comment and no review — a partial
+    // fetch — normalized to one finding and exited 0. Missing, foreign, stale
+    // or unparseable are all indeterminate: this finder states its own
+    // completeness, so evidence that does not carry that statement is
+    // evidence this decoder cannot vouch for.
+    const review = payload.review
+    if (!review || !byThisFinder(review) || !atThisHead(review)) {
+      die(
+        `${finder.slug} states its own finding count, so its current-head review is required evidence — the supplied payload carries none for this finder at ${opts.reviewedHead}, and a partial fetch would otherwise normalize a short comments array into a complete-looking round`,
+        3
+      )
+    }
     const declared = new RegExp(actionablePattern.replace(/\[\[:space:\]\]/g, '\\s'), 'i').exec(
-      String(payload.review.body ?? '')
+      String(review.body ?? '')
     )
-    if (declared && declared[1] !== undefined) {
-      const expected = Number(declared[1])
-      const decoded = findings.length
-      if (Number.isFinite(expected) && decoded !== expected) {
-        die(
-          `${finder.slug} declares ${expected} actionable comment(s) but ${decoded} were decoded from the supplied evidence — ` +
-            `the input is incomplete (an unpaginated or partial fetch), and normalizing the shortfall away would report a smaller round as complete`,
-          3
-        )
-      }
+    if (!declared || declared[1] === undefined) {
+      die(
+        `${finder.slug}'s current-head review does not state a parseable finding count (${actionablePattern}), so the supplied evidence cannot be checked for completeness`,
+        3
+      )
+    }
+    const expected = Number(declared[1])
+    const decoded = findings.length
+    if (!Number.isFinite(expected)) {
+      die(`${finder.slug}'s declared finding count is not a number: ${declared[1]}`, 3)
+    }
+    if (decoded !== expected) {
+      die(
+        `${finder.slug} declares ${expected} actionable comment(s) but ${decoded} were decoded from the supplied evidence — ` +
+          `the input is incomplete (an unpaginated or partial fetch), and normalizing the shortfall away would report a smaller round as complete`,
+        3
+      )
     }
   }
 

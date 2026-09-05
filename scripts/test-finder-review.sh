@@ -147,6 +147,42 @@ pids="$(sed -n 's/^PIDS=//p' <<<"$out")"
 [ "$pids" -le 5 ] ||
     fail "the pass could see $pids host processes; the PID namespace was not unshared"
 
+echo "==> the sandbox is an allowlist: unnamed paths and variables are absent"
+# `--ro-bind / /` plus a list of secrets to unset was subtract-known-secrets:
+# a credential outside HOME, or in a variable nobody thought to name, stayed
+# readable — and with egress open that is exfiltratable. Only named paths are
+# bound and only named variables are passed.
+secret_dir="$tmp/host-secrets"
+mkdir -p "$secret_dir"
+printf 'super-secret\n' >"$secret_dir/token"
+probe_bin="$tmp/probe-bin"
+mkdir -p "$probe_bin"
+cat >"$probe_bin/copilot" <<'EOF'
+#!/usr/bin/env bash
+[ -e "$SECRET_PROBE_PATH" ] && echo "VISIBLE_PATH"
+[ -n "${SECRET_PROBE_VALUE:-}" ] && echo "VISIBLE_ENV"
+echo "P1 src/app.txt:1 — a finding"
+EOF
+chmod +x "$probe_bin/copilot"
+out="$( (cd "$work" && PATH="$probe_bin:$PATH" \
+    SECRET_PROBE_PATH="$secret_dir/token" SECRET_PROBE_VALUE=leaked \
+    ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+grep -q 'VISIBLE_PATH' <<<"$out" &&
+    fail "a host path outside the allowlist was readable inside the sandbox"
+grep -q 'VISIBLE_ENV' <<<"$out" &&
+    fail "an environment variable outside the allowlist reached the sandbox"
+
+echo "==> an operator can name an extra path and variable deliberately"
+out="$( (cd "$work" && PATH="$probe_bin:$PATH" \
+    SECRET_PROBE_PATH="$secret_dir/token" SECRET_PROBE_VALUE=allowed \
+    FINDER_REVIEW_SANDBOX_EXTRA_RO="$secret_dir" \
+    FINDER_REVIEW_SANDBOX_ENV="SECRET_PROBE_PATH:SECRET_PROBE_VALUE" \
+    ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+grep -q 'VISIBLE_PATH' <<<"$out" ||
+    fail "a deliberately named path was still not readable: $out"
+grep -q 'VISIBLE_ENV' <<<"$out" ||
+    fail "a deliberately named variable did not reach the sandbox: $out"
+
 echo "==> the verification catches a tree that changed, independently of the kernel"
 # The two defences are separate on purpose: this one exercises the proof, by
 # mutating the checkout from OUTSIDE the sandbox (where the kernel denial does

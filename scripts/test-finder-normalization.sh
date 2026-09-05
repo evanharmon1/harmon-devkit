@@ -189,6 +189,25 @@ set -e
 grep -Fq 'declares 2 actionable comment(s) but 1 were decoded' "$tmp/short.err" ||
     fail "the shortfall was not reported: $(cat "$tmp/short.err")"
 
+echo "==> a count-declaring finder needs its own current-head review as evidence"
+# An absent, foreign or stale review meant the completeness check was skipped
+# entirely, so a payload of one current comment and no review normalized to one
+# finding and exited 0 — the partial fetch this check exists to catch.
+for mutation in 'del(.review)' \
+    '.review.user.id = 999999' \
+    '.review.commit_id = "0000000000000000000000000000000000000000"' \
+    '.review.body = "no count stated here"'; do
+    jq "$mutation" "$fixtures/coderabbit-cloud/raw.json" >"$tmp/count-evidence.json"
+    set +e
+    node "$normalizer" --finder coderabbit-cloud --stage integration --round 1 \
+        --reviewed-head "$(jq -r '."reviewed-head"' "$fixtures/coderabbit-cloud/args.json")" \
+        --input "$tmp/count-evidence.json" >/dev/null 2>"$tmp/count-evidence.err"
+    status=$?
+    set -e
+    [ "$status" -eq 3 ] ||
+        fail "a count-declaring finder decoded without usable review evidence ($mutation, exit $status)"
+done
+
 echo "==> another actor's comment on the same head is not this finder's evidence"
 jq '.comments[0].user.id = 999999' "$fixtures/codex-cloud/raw.json" >"$tmp/foreign.json"
 node "$normalizer" --finder codex-cloud --stage integration --round 1 \
