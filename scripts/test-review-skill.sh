@@ -35,14 +35,24 @@ grep -Fq 'display login is non-authoritative metadata' "$skill" ||
     fail "review skill treats mutable display login as evidence identity"
 grep -Fq 'Immediately before that remediation dispatch' "$skill" ||
     fail "review skill does not enforce breadth before remediation"
-grep -Fq 'Immediately before every agent invocation' ai/skills/universal/orchestrator/SKILL.md ||
+grep -Fq 'Immediately before every implementer invocation' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not account for total agent-run breadth"
+grep -Fq 'never consume `[breadth].max_agent_runs`' "$skill" ||
+    fail "review skill charges confidence finders to the implementer budget"
+for text in 'mandatory round-two scaffolding checkpoint' \
+    'A rewrite of `continue`, remediation, or exit handling must preserve' \
+    'publish only the verified or corrected provenance and fingerprint values' \
+    'publish a terminal blocker instead' \
+    'must finish before reserving any comment' \
+    'Never reserve an oversized unsplit body' \
+    "candidates' run, head, role, finder"; do
+    grep -Fq "$text" "$skill" || fail "review invariant is missing: $text"
+done
 grep -Fq 'resolved cap is `0`' "$skill" ||
     fail "review skill does not skip finder dispatch for a disabled stage"
 grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"
-for text in 'Retry an unavailable primary' 'marker to that exact body before' \
-    'Before acting on round 2' 'already active dev-flow-v2 run' \
+for text in 'Retry an unavailable primary' 'already active dev-flow-v2 run' \
     'session-lifetime persistent monitor primitive' 'distinct_families' \
     'assembly.canonical_head' 'adopt the existing entry without appending' \
     'sole external action still authorized'; do
@@ -58,6 +68,8 @@ for role in challenger reviewer; do
     agent="ai/agents/$role.md"
     grep -Fq "ai/schemas/result.$role.schema.json" "$agent" ||
         fail "$role does not name its result schema"
+    grep -Fq 'scripts/validate-result-schemas.mjs envelope ... --receipt' "$agent" ||
+        fail "$role does not validate its full result envelope before handoff"
     grep -Fq 'validated finding records' "$agent" ||
         fail "$role cannot compare finding provenance across rounds"
 done
@@ -259,12 +271,14 @@ monitor_reconcile() {
 comment_marker="dev-flow:fixture-run:challenge:1"
 comment_body="<!-- $comment_marker --> fixture evidence"
 comment_digest="$(printf '%s' "$comment_body" | sha256_stream)"
+comment_binding_args=(--evidence-role challenger --evidence-finder codex-cli)
 jq -n '{integrated_lanes: ["lane-a"], discarded_lanes: []}' >"$tmp/assembly-plan.json"
 set +e
 monitor_reserve --state "$state" --event forged-revision --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
     --registry-revision "$untrusted_registry_revision" \
-    --marker "$comment_marker" --payload-digest "$comment_digest" >"$tmp/forged-revision.out" 2>&1
+    "${comment_binding_args[@]}" --marker "$comment_marker" \
+    --payload-digest "$comment_digest" >"$tmp/forged-revision.out" 2>&1
 status=$?
 set -e
 [ "$status" -eq 2 ] || fail "caller-selected registry revision bypassed the active run"
@@ -273,7 +287,7 @@ grep -Fq 'registry revision does not match the active run' "$tmp/forged-revision
 set +e
 monitor_reserve --state "$state" --event forged-trust --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id 1 \
-    --registry-revision "$registry_revision" \
+    --registry-revision "$registry_revision" "${comment_binding_args[@]}" \
     --marker "$comment_marker" --payload-digest "$comment_digest" >"$tmp/forged-trust.out" 2>&1
 status=$?
 set -e
@@ -290,12 +304,14 @@ grep -Fq 'monitor state path is not canonical for this run' "$tmp/noncanonical.o
     fail "non-canonical monitor state rejection was not reported"
 monitor_reserve --state "$state" --event crash-write --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
-    --registry-revision "$registry_revision" \
+    --registry-revision "$registry_revision" "${comment_binding_args[@]}" \
     --marker "$comment_marker" --payload-digest "$comment_digest" >/dev/null
-jq -n --arg head "$head" --arg marker "$comment_marker" --arg body "$comment_body" \
-    --arg digest "$comment_digest" \
+jq -n --arg run fixture-run --arg head "$head" --arg role challenger --arg finder codex-cli \
+    --arg marker "$comment_marker" --arg body "$comment_body" --arg digest "$comment_digest" \
     '{status: "landed", event: "crash-write", action: "comment", head: $head,
-      comments: [{comment_id: 42, actor_id: 1, marker: $marker, body: $body, payload_digest: $digest}]}' \
+      comments: [{comment_id: 42, actor_id: 1, run_id: $run, head: $head,
+        role: $role, finder: $finder, marker: $marker, body: $body,
+        payload_digest: $digest}]}' \
     >"$tmp/untrusted.json"
 set +e
 monitor_reconcile --state "$state" --event crash-write --observed "$tmp/untrusted.json" \
@@ -303,12 +319,15 @@ monitor_reconcile --state "$state" --event crash-write --observed "$tmp/untruste
 status=$?
 set -e
 [ "$status" -eq 2 ] || fail "untrusted comment postcondition was adopted"
-jq -n --arg head "$head" --arg actor "$trusted_actor_id" --arg marker "$comment_marker" \
+jq -n --arg run fixture-run --arg head "$head" --arg role challenger --arg finder codex-cli \
+    --arg actor "$trusted_actor_id" --arg marker "$comment_marker" \
     --arg body "$comment_body" --arg digest "$comment_digest" \
     '{status: "landed", event: "crash-write", action: "comment", head: $head,
       comments: [
-        {comment_id: 43, actor_id: $actor, marker: $marker, body: $body, payload_digest: $digest},
-        {comment_id: 42, actor_id: $actor, marker: $marker, body: $body, payload_digest: $digest}
+        {comment_id: 43, actor_id: $actor, run_id: $run, head: $head,
+          role: $role, finder: $finder, marker: $marker, body: $body, payload_digest: $digest},
+        {comment_id: 42, actor_id: $actor, run_id: $run, head: $head,
+          role: $role, finder: $finder, marker: $marker, body: $body, payload_digest: $digest}
       ]}' \
     >"$tmp/landed.json"
 monitor_reconcile --state "$state" --event crash-write --observed "$tmp/landed.json" |
@@ -321,7 +340,7 @@ jq -e '.actions[0].postcondition.comment_id == "42"' "$state" >/dev/null ||
 set +e
 monitor_reserve --state "$state" --event duplicate-comment-auth --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
-    --registry-revision "$registry_revision" --marker "$comment_marker" \
+    --registry-revision "$registry_revision" "${comment_binding_args[@]}" --marker "$comment_marker" \
     --payload-digest "$comment_digest" >"$tmp/duplicate-comment-auth.out" 2>&1
 status=$?
 set -e
@@ -333,13 +352,65 @@ conflicting_digest="$(printf '%s' 'changed evidence body' | sha256_stream)"
 set +e
 monitor_reserve --state "$state" --event conflicting-comment-auth --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
-    --registry-revision "$registry_revision" --marker "$comment_marker" \
+    --registry-revision "$registry_revision" "${comment_binding_args[@]}" --marker "$comment_marker" \
     --payload-digest "$conflicting_digest" >"$tmp/conflicting-comment-auth.out" 2>&1
 status=$?
 set -e
 [ "$status" -eq 2 ] || fail "comment marker reuse with a changed digest was accepted"
 grep -Fq 'duplicate comment reservation identity' "$tmp/conflicting-comment-auth.out" ||
     fail "conflicting comment marker refusal was not reported"
+
+echo "==> comment retry requires a fully bound complete candidate set"
+retry_marker="dev-flow:fixture-run:challenge:2"
+retry_body="<!-- $retry_marker --> retry evidence"
+retry_digest="$(printf '%s' "$retry_body" | sha256_stream)"
+monitor_reserve --state "$state" --event comment-retry --action comment \
+    --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
+    --registry-revision "$registry_revision" "${comment_binding_args[@]}" \
+    --marker "$retry_marker" --payload-digest "$retry_digest" >/dev/null
+jq -n --arg run fixture-run --arg head "$head" --arg role challenger --arg finder codex-cli \
+    --arg actor "$trusted_actor_id" --arg marker "$retry_marker" --arg body "$retry_body" \
+    --arg digest "$retry_digest" \
+    '{status: "absent", comments: [{comment_id: 84, actor_id: $actor,
+      run_id: $run, head: $head, role: $role, finder: $finder, marker: $marker,
+      body: $body, payload_digest: $digest}]}' >"$tmp/comment-candidate.json"
+for binding in run_id head role finder payload_digest; do
+    replacement=wrong
+    case "$binding" in
+    head) replacement=0000000000000000000000000000000000000000 ;;
+    payload_digest) replacement=0000000000000000000000000000000000000000000000000000000000000000 ;;
+    esac
+    jq --arg binding "$binding" --arg replacement "$replacement" \
+        '.comments[0][$binding] = $replacement' "$tmp/comment-candidate.json" \
+        >"$tmp/comment-candidate-$binding.json"
+    set +e
+    monitor_reconcile --state "$state" --event comment-retry \
+        --observed "$tmp/comment-candidate-$binding.json" >"$tmp/comment-candidate-$binding.out" 2>&1
+    status=$?
+    set -e
+    [ "$status" -eq 2 ] || fail "comment retry accepted a mismatched $binding binding"
+    grep -Fq 'comment candidate conflicts with reservation bindings' \
+        "$tmp/comment-candidate-$binding.out" ||
+        fail "comment retry did not report its mismatched $binding binding"
+done
+set +e
+monitor_reconcile --state "$state" --event comment-retry \
+    --observed "$tmp/comment-candidate.json" >"$tmp/comment-candidate-match.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "comment retry was authorized despite an authenticated match"
+grep -Fq 'absent comment observation contains an authenticated match' \
+    "$tmp/comment-candidate-match.out" ||
+    fail "authenticated comment match did not block retry"
+jq -n '{status: "absent", comments: []}' >"$tmp/comment-candidate-empty.json"
+monitor_reconcile --state "$state" --event comment-retry \
+    --observed "$tmp/comment-candidate-empty.json" |
+    grep -Fq 'retry comment-retry' || fail "empty authenticated candidate set did not authorize retry"
+jq '.status = "landed" | .event = "comment-retry" | .action = "comment" |
+    .head = .comments[0].head' "$tmp/comment-candidate.json" >"$tmp/comment-candidate-landed.json"
+monitor_reconcile --state "$state" --event comment-retry \
+    --observed "$tmp/comment-candidate-landed.json" |
+    grep -Fq 'adopt comment-retry' || fail "retried comment was not adopted"
 
 echo "==> monitor durably enforces the total agent-run budget"
 monitor_agent_run() {
@@ -387,7 +458,9 @@ monitor_reserve --state "$state" --event absent-write --action push \
 jq -n '{status: "absent"}' >"$tmp/absent.json"
 monitor_reconcile --state "$state" --event absent-write --observed "$tmp/absent.json" |
     grep -Fq 'retry absent-write' || fail "absent action was not marked retryable"
-jq -e '.cursor == "crash-write" and .actions[1].state == "reserved"' "$state" >/dev/null ||
+jq -e '.cursor == "comment-retry" and
+    ([.actions[] | select(.event == "absent-write" and .state == "reserved")] | length) == 1' \
+    "$state" >/dev/null ||
     fail "absent action advanced the cursor"
 
 jq -n '{status: "indeterminate"}' >"$tmp/indeterminate.json"

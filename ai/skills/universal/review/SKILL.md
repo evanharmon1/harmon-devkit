@@ -25,6 +25,18 @@ assembly must review the latest implement transition's exact
 different head blocks until the feature owner records the actual assembly
 rather than certifying an unauthenticated tree.
 
+## Stage invariants
+
+Every confidence stage carries the mandatory round-two scaffolding checkpoint
+as an invariant, independent of its current control-flow wording. Before any
+round-two adjudication can cause another pass or remediation dispatch, classify
+each finding whose subject exists only because an earlier round of that same
+stage added it, and record exactly one disposition: delete the scaffolding,
+restructure it to an invariant, or keep it as genuinely in scope with the
+reason. A rewrite of `continue`, remediation, or exit handling must preserve
+this checkpoint; no path may harden round-one scaffolding first and classify it
+later.
+
 ## Entry gate
 
 The input must also name the canonical `owner/repo` that will receive the PR.
@@ -68,11 +80,9 @@ to the `challenger` role. For `review`, do the same for
 `[stage.review].finders` using the `reviewer` role. Retry an unavailable primary
 once as that same primary; only after that retry fails may the ordered
 `finder_fallbacks` chain be consumed. Do not silently reduce coverage.
-Immediately before every finder or fallback invocation, have the feature owner
-call `scripts/dev-flow-monitor.sh reserve-agent-run` with a deterministic
-dispatch event and the resolved `[breadth].max_agent_runs`. An exact event
-re-arm adopts its already-spent slot; an exhausted or changed budget renders a
-`breadth_exhausted` blocker and dispatches nothing.
+Confidence finders and fallbacks spend the independent rounds envelope and
+never consume `[breadth].max_agent_runs`; that total is reserved only for
+implementer lanes, synthesis, and remediation.
 The registry invocation is the role's evidence source, not itself a result
 envelope: the dispatched role binds that output to the supplied run, scope,
 round, slot, and producer identity and returns `result.challenger` or
@@ -90,10 +100,15 @@ round disguised as complete.
 Before adjudication, run `scripts/dev-flow-exit.sh --run <record> --stage
 <stage> --policy <policy> --current-head <head> --repo-root <trusted-repo>
 --history <record>/history.json --heads <record>/heads.json --verification-only
---json`. Materialize the trusted history and head map from the feature-owner's
+--json`, capturing both its status and JSON projection. Materialize the trusted history and head map from the feature-owner's
 verified branch state before dispatch; never let a finder supply them. Its
 provenance and fingerprint corrections are preconditions, not an advisory
-reviewer assertion. If this projection reports `action: dispatch` because no
+reviewer assertion. A recognized terminal nonzero status with a valid blocker
+projection is handled as that blocker. Any other command failure, missing or
+malformed projection, or indeterminate verification result authorizes no
+adjudication and no round-evidence publication: persist the diagnostic, render
+and reserve-first publish a terminal blocker instead, then stop. If a valid
+projection reports `action: dispatch` because no
 complete round for the refreshed canonical head survived, invalidate the stale
 pass and dispatch the returned `next_round`; never adjudicate it. Any
 `action: escalate` projection is terminal: persist it as `verdict.json`, render
@@ -111,24 +126,31 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
-After each adjudication, build the issue comment from the validated source
-result envelopes, that round's adjudication JSON, and its exit projection in
-fenced JSON, then append the human table from `scripts/render-dev-flow.sh
-round-table --record <record> --stage <stage> --round <N>`. Append the canonical
-deterministic run/stage/round/sequence marker to that exact body before
-scanning, redacting, or hashing it; the marker reservation and posted body must
-be the same bytes. Scan and redact that replayable body before posting; the
-rendered table alone is never the durable evidence. Before any GitHub write,
-compute the exact body digest and
-reserve the comment through `scripts/dev-flow-monitor.sh reserve`, binding the
-active run generation, expected head, deterministic run/stage/round/sequence
-marker, actor ID, and the registry revision pinned into the active run at
-kickoff. Only then
-post. On re-arm, fetch the complete bounded comment candidate set and pass it to
-`reconcile`; the monitor validates the actor against that pinned registry,
-hashes each candidate body, and adopts the lowest authenticated matching
-comment ID. Post once only after `reconcile` returns `retry`; `block` is
-terminal.
+After each adjudication, keep the immutable source envelopes locally, but build
+the fenced JSON public comment only from a verification-bound projection. Join
+the validated source facts to `verdict.json.verified_findings` by finding ID and
+publish only the verified or corrected provenance and fingerprint values,
+never the producer's superseded assertions. A missing, unverified, duplicate,
+or mismatched projection is a blocker, not permission to fall back to raw
+envelopes. Include that verified projection, the round's adjudication JSON, and
+its exit projection, then append the human table from
+`scripts/render-dev-flow.sh round-table --record <record> --stage <stage>
+--round <N>`.
+
+Scan and redact the complete verification-bound projection first. If the final
+destination limit would be exceeded, split the sanitized projection
+deterministically into an ordered sequence, reserving room in every segment for
+its canonical run/stage/round/sequence marker. Splitting is a projection-layer
+operation and must finish before reserving any comment. Append each unique
+sequence marker, scan the exact segment again, compute its digest, then reserve,
+post, and reconcile segments strictly in sequence; each reservation binds the
+active run generation, head, role, finder, actor ID, registry revision, marker,
+and exact segment digest. Never reserve an oversized unsplit body. On re-arm,
+fetch the complete bounded candidate set for that segment and pass it to
+`reconcile`; the monitor validates the candidates' run, head, role, finder,
+actor, marker, and digest bindings, hashes their bodies, and adopts the lowest
+authenticated match. Post once only after `reconcile` proves the candidate set
+has no authenticated match and returns `retry`; `block` is terminal.
 
 After adoption, append the canonical comment ID, immutable actor ID, display
 login, `sha256:` body digest, and marker fields to
@@ -155,11 +177,9 @@ path. Immediately before that remediation dispatch, the feature owner must
 reserve its deterministic dispatch event through `reserve-agent-run` against
 the same run-pinned `[breadth].max_agent_runs`; an exact re-arm adopts the
 reservation, while exhaustion records `breadth_exhausted`, renders the blocker,
-and stops before invoking the implementer. Before acting on round 2, classify
-every finding whose subject exists
-only because an earlier round of this same stage added it, and record exactly
-one of: delete the scaffolding, restructure it to an invariant, or keep it as
-genuinely in scope with the reason. Never harden round-1 scaffolding by reflex.
+and stops before invoking the implementer. The stage-invariant round-two
+checkpoint above applies before this dispatch and before a no-remediation next
+pass alike.
 `diverging` permits only deletion or restructuring of round-created
 scaffolding; `capped` with P0/P1 records an intervention and blocker, then
 stops before a PR. A `converged` result advances by default, but an attributable

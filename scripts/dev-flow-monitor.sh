@@ -21,6 +21,7 @@ Usage:
     --branch BRANCH --generation N [--repo-root DIR] \
     [--assembly-plan FILE] \
     [--trusted-actor-id ID --registry-revision SHA --repo-root DIR \
+     --evidence-role ROLE --evidence-finder FINDER \
      --marker TEXT --payload-digest SHA256]
   dev-flow-monitor.sh reconcile --state FILE --event ID --observed FILE \
     --active-state FILE --run-id ID --branch BRANCH --generation N \
@@ -188,6 +189,8 @@ repo_root="."
 trusted_actor_id=""
 marker=""
 payload_digest=""
+evidence_role=""
+evidence_finder=""
 registry_revision=""
 active_state=""
 branch=""
@@ -240,6 +243,14 @@ while [ "$#" -gt 0 ]; do
         ;;
     --payload-digest)
         payload_digest="${2:-}"
+        shift 2
+        ;;
+    --evidence-role)
+        evidence_role="${2:-}"
+        shift 2
+        ;;
+    --evidence-finder)
+        evidence_finder="${2:-}"
         shift 2
         ;;
     --registry-revision)
@@ -456,6 +467,10 @@ reserve)
             die "registry revision does not match the active run"
         [ -n "$marker" ] || die "comment reservation requires a deterministic marker"
         [[ "$payload_digest" =~ ^[0-9a-f]{64}$ ]] || die "comment reservation requires a SHA-256 payload digest"
+        [[ "$evidence_role" =~ ^[a-z][a-z0-9-]*$ ]] ||
+            die "comment reservation requires an evidence role"
+        [[ "$evidence_finder" =~ ^[a-z0-9][a-z0-9-]*$ ]] ||
+            die "comment reservation requires an evidence finder"
         # The actor ID is evidence, not authority. Resolve authority from the
         # immutable registry snapshot captured for this run; accepting the ID
         # merely because the caller repeated it would let a forged record
@@ -491,6 +506,7 @@ reserve)
     jq --arg event "$event" --arg action "$action" --arg head "$expected_head" \
         --arg actor "$trusted_actor_id" --arg registry_revision "$registry_revision" \
         --arg marker "$marker" --arg digest "$payload_digest" \
+        --arg run "$run_id" --arg role "$evidence_role" --arg finder "$evidence_finder" \
         --argjson assembly_plan "$assembly_plan_json" '
             .actions += [{
                 event: $event,
@@ -501,6 +517,9 @@ reserve)
                 comment_auth: (if $action == "comment" then {
                     trusted_actor_id: $actor,
                     registry_revision: $registry_revision,
+                    run_id: $run,
+                    role: $role,
+                    finder: $finder,
                     marker: $marker,
                     payload_digest: $digest
                 } else null end)
@@ -526,6 +545,56 @@ reconcile)
     *) die "reservation $event is not actionable" ;;
     esac
     status="$(jq -r '.status // empty' "$observed")"
+    expected_action="$(jq -r '.action' <<<"$reservation")"
+    expected_head_value="$(jq -r '.expected_head' <<<"$reservation")"
+    comment_id=""
+    if [ "$expected_action" = "comment" ] && { [ "$status" = "landed" ] || [ "$status" = "absent" ]; }; then
+        expected_actor="$(jq -r '.comment_auth.trusted_actor_id' <<<"$reservation")"
+        expected_run="$(jq -r '.comment_auth.run_id' <<<"$reservation")"
+        expected_role="$(jq -r '.comment_auth.role' <<<"$reservation")"
+        expected_finder="$(jq -r '.comment_auth.finder' <<<"$reservation")"
+        expected_marker="$(jq -r '.comment_auth.marker' <<<"$reservation")"
+        expected_digest="$(jq -r '.comment_auth.payload_digest' <<<"$reservation")"
+        jq -e '
+            (.comments | type == "array") and all(.comments[];
+                type == "object" and
+                (.comment_id | type == "number" and . > 0 and floor == .) and
+                ((.actor_id | type == "number") or (.actor_id | type == "string")) and
+                (.run_id | type == "string" and length > 0) and
+                (.head | type == "string" and test("^[0-9a-f]{40}$")) and
+                (.role | type == "string" and test("^[a-z][a-z0-9-]*$")) and
+                (.finder | type == "string" and test("^[a-z0-9][a-z0-9-]*$")) and
+                (.marker | type == "string" and length > 0) and
+                (.payload_digest | type == "string" and test("^[0-9a-f]{64}$")) and
+                (.body | type == "string"))
+        ' "$observed" >/dev/null ||
+            die "comment observation must contain a valid complete comments candidate set"
+        candidates="$(jq -c --arg actor "$expected_actor" --arg marker "$expected_marker" '
+            [.comments[] | select(
+                (.actor_id | tostring) == $actor and .marker == $marker
+            )] | sort_by(.comment_id)[]
+        ' "$observed")"
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            jq -e --arg run "$expected_run" --arg head "$expected_head_value" \
+                --arg role "$expected_role" --arg finder "$expected_finder" \
+                --arg marker "$expected_marker" --arg digest "$expected_digest" '
+                    .run_id == $run and .head == $head and .role == $role and
+                    .finder == $finder and .marker == $marker and
+                    .payload_digest == $digest and (.body | contains($marker))
+                ' <<<"$candidate" >/dev/null ||
+                die "comment candidate conflicts with reservation bindings"
+            actual_digest="$(jq -j '.body' <<<"$candidate" | sha256_stream)"
+            [ "$actual_digest" = "$expected_digest" ] ||
+                die "comment candidate body digest conflicts with reservation"
+            if [ -z "$comment_id" ]; then
+                comment_id="$(jq -r '.comment_id' <<<"$candidate")"
+            fi
+        done <<<"$candidates"
+        if [ "$status" = "absent" ] && [ -n "$comment_id" ]; then
+            die "absent comment observation contains an authenticated match"
+        fi
+    fi
     case "$status" in
     landed | absent)
         # A retry is authorization to perform the reserved external action,
@@ -542,35 +611,10 @@ reconcile)
     esac
     case "$status" in
     landed)
-        expected_action="$(jq -r '.action' <<<"$reservation")"
-        expected_head_value="$(jq -r '.expected_head' <<<"$reservation")"
         jq -e --arg event "$event" --arg action "$expected_action" --arg head "$expected_head_value" '
                     .event == $event and .action == $action and .head == $head
                 ' "$observed" >/dev/null || die "landed postcondition does not match reservation"
-        comment_id=""
         if [ "$expected_action" = "comment" ]; then
-            expected_actor="$(jq -r '.comment_auth.trusted_actor_id' <<<"$reservation")"
-            expected_marker="$(jq -r '.comment_auth.marker' <<<"$reservation")"
-            expected_digest="$(jq -r '.comment_auth.payload_digest' <<<"$reservation")"
-            jq -e '.comments | type == "array"' "$observed" >/dev/null ||
-                die "comment observation must contain the complete comments candidate set"
-            candidates="$(jq -c --arg actor "$expected_actor" --arg marker "$expected_marker" \
-                --arg digest "$expected_digest" '
-                    [.comments[] | select(
-                        (.comment_id | type == "number" and . > 0 and floor == .) and
-                        (.actor_id | tostring) == $actor and
-                        .marker == $marker and
-                        .payload_digest == $digest and
-                        (.body | type == "string" and contains($marker))
-                    )] | sort_by(.comment_id)[]
-                ' "$observed")"
-            while IFS= read -r candidate; do
-                [ -n "$candidate" ] || continue
-                actual_digest="$(jq -j '.body' <<<"$candidate" | sha256_stream)"
-                [ "$actual_digest" = "$expected_digest" ] || continue
-                comment_id="$(jq -r '.comment_id' <<<"$candidate")"
-                break
-            done <<<"$candidates"
             [ -n "$comment_id" ] || die "comment postcondition is not authenticated"
         elif [ "$expected_action" = "assembly" ]; then
             expected_plan="$(jq -c '.assembly_plan' <<<"$reservation")"
