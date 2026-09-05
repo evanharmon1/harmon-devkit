@@ -1463,7 +1463,7 @@ function renderBlockerComment(record, options = {}) {
     }
   }
   lines.push('- Options:')
-  for (const option of blockerOptions(verdict, lastTransition.stage, record.policy)) lines.push(`  - ${option}`)
+  for (const option of blockerOptions(verdict, lastTransition.stage, record.policy, rows)) lines.push(`  - ${option}`)
   const nextAction = Number.isInteger(verdict.next_round) ? `dispatch round ${verdict.next_round}` : 'escalate to a human'
   lines.push(`- Next action: ${nextAction}`)
   return lines.join('\n')
@@ -1480,7 +1480,7 @@ function renderBlockerComment(record, options = {}) {
 // verdict carries no signal — an older verdict, or a round the computation
 // could not read — the option still appears, saying plainly that the evidence
 // is absent rather than implying the answer is no.
-function blockerOptions(verdict, stage, policy) {
+function blockerOptions(verdict, stage, policy, rows) {
   const cap = policy?.rounds?.[stage]
   const spent = Number.isInteger(verdict.rounds_counted) ? verdict.rounds_counted : null
   const headroom =
@@ -1490,8 +1490,32 @@ function blockerOptions(verdict, stage, policy) {
   return [
     `Order more rounds — ${headroom}.`,
     'Accept as spent — advance with the unresolved findings recorded and carried forward.',
-    `Split the mechanism out — ${splitOptionEvidence(verdict)}`
+    `Split the mechanism out — ${splitOptionEvidence(verdict, rows, stage)}`
   ]
+}
+
+// The split option is the one that recommends REMOVING CODE and filing an
+// issue, so it is the one that must be corroborated against this record
+// before it is published — challenge round 1 (P2, confirmed): the shape check
+// in validateVerdictShape accepts any non-empty strings and positive round
+// numbers, so a stale or edited verdict.json could name findings that do not
+// exist, belong to another round, or are not gating, and the blocker would
+// print them as the evidence for acting. Every id the candidate claims must
+// be an adjudicated P0/P1 of that stage and round in the adjudications this
+// same record supplies. Fail closed: an uncorroborated candidate reports the
+// disagreement instead of the recommendation.
+function splitCandidateUncorroborated(candidate, rows, stage) {
+  const gating = new Set(
+    rows
+      .filter(
+        (row) =>
+          row.stage === stage &&
+          row.round === candidate.round &&
+          (row.entry.adjudicated_priority === 'P0' || row.entry.adjudicated_priority === 'P1')
+      )
+      .map((row) => row.entry.finding_id)
+  )
+  return candidate.finding_ids.filter((id) => !gating.has(id))
 }
 
 // verdict.json is branch-controlled content and this projection is published
@@ -1500,7 +1524,7 @@ function blockerOptions(verdict, stage, policy) {
 // would otherwise corrupt the publish algorithm's marker parsing exactly as an
 // un-neutralized finding summary would. Same treatment every other rendered
 // verdict/adjudication value already gets above.
-function splitOptionEvidence(verdict) {
+function splitOptionEvidence(verdict, rows, stage) {
   const candidate = verdict.split_candidate
   if (!candidate) {
     return 'no split-candidate signal in this verdict — recompute the exit before ruling it out.'
@@ -1514,6 +1538,15 @@ function splitOptionEvidence(verdict) {
       not_consecutive: `${mechanism} holds every gating finding of round ${candidate.round}, but not of round ${candidate.round - 1}`
     }[candidate.reason]
     return `not indicated at round ${candidate.round} — ${because ?? `signal reason \`${neutralizeMarkers(String(candidate.reason))}\``}.`
+  }
+  const candidateStage = typeof verdict.stage === 'string' && verdict.stage !== '' ? verdict.stage : stage
+  const uncorroborated = splitCandidateUncorroborated(candidate, rows, candidateStage)
+  if (uncorroborated.length > 0) {
+    return (
+      `signal not corroborated by this record — it names ` +
+      `${uncorroborated.map((id) => neutralizeMarkers(id)).join(', ')} as gating finding(s) of ${candidateStage} round ` +
+      `${candidate.round}, which this record's adjudications do not. Recompute the exit before acting on it.`
+    )
   }
   const rounds = candidate.introduced_by_rounds
   const introduced =

@@ -148,6 +148,37 @@ assert_rc 0
 assert_contains "$out" 'Split the mechanism out — not indicated at round 2'
 assert_contains "$out" "none is attributed to an earlier round's fix"
 
+echo "==> an uncorroborated split candidate reports the disagreement, never the recommendation"
+# Challenge round 1 (P2, confirmed): the shape check accepts any non-empty
+# string, so a stale or edited verdict.json could name findings that are not
+# adjudicated gating findings of that round and the blocker would publish them
+# as the evidence for removing code and filing an issue.
+stale_split_record="${test_tmp}/stale-split-record"
+cp -R "$split_record_dir" "$stale_split_record"
+jq '.split_candidate.finding_ids = ["review-r2-codex-cli-1", "review-r9-codex-cli-7"]' \
+    "$stale_split_record/verdict.json" >"${test_tmp}/stale-split-verdict.json"
+mv "${test_tmp}/stale-split-verdict.json" "$stale_split_record/verdict.json"
+run blocker-comment --record "$stale_split_record" --head "$render_head"
+assert_rc 0
+assert_contains "$out" 'signal not corroborated by this record'
+assert_contains "$out" 'review-r9-codex-cli-7'
+[[ "$out" != *"Remove it from this change"* ]] ||
+    fail "an uncorroborated split candidate must not publish the removal recommendation"
+
+echo "==> a candidate naming a non-gating finding of the right round is uncorroborated too"
+nongating_split_record="${test_tmp}/nongating-split-record"
+cp -R "$split_record_dir" "$nongating_split_record"
+jq '(.adjudications[] | select(.finding_id == "review-r2-codex-cli-3") |
+      .adjudicated_priority) = "P2" |
+    (.adjudications[] | select(.finding_id == "review-r2-codex-cli-3") |
+      .override) = {"reason": "downgraded on review"}' \
+    "$nongating_split_record/adjudications/review-r2.json" >"${test_tmp}/nongating-adj.json"
+mv "${test_tmp}/nongating-adj.json" "$nongating_split_record/adjudications/review-r2.json"
+run blocker-comment --record "$nongating_split_record" --head "$render_head"
+assert_rc 0
+assert_contains "$out" 'signal not corroborated by this record'
+assert_contains "$out" 'review-r2-codex-cli-3'
+
 echo "==> a malformed split_candidate is refused rather than rendered as advice"
 bad_split_record="${test_tmp}/bad-split-record"
 cp -R "$split_record_dir" "$bad_split_record"

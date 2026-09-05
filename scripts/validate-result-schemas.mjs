@@ -2192,6 +2192,19 @@ function checkSplits(document, errors) {
     }
     for (const findingId of entry.finding_ids ?? []) {
       if (typeof findingId !== 'string') continue
+      // A finding id's own <stage>-r<round> segments are part of its grammar
+      // (checkAdjudicationIdAttribution already binds them to the adjudication
+      // document's stage/round), so the split entry's own stage/round can be
+      // checked against them with NO external context at all. Challenge round
+      // 1, confirmed: without this, a `challenge` round-99 split whose
+      // finding_ids are all `review-r2-*` validated, and the run-level entry
+      // is meant to identify exactly which stage and round took the decision.
+      const parsed = parseFindingId(findingId)
+      if (parsed && (parsed.stage !== entry.stage || parsed.round !== entry.round)) {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} belongs to ${parsed.stage} round ${parsed.round}, but this split records ${entry.stage} round ${entry.round}`
+        )
+      }
       if (seenFindings.has(findingId)) {
         errors.push(
           `$run.splits[${index}]: finding ${findingId} is already answered by splits[${seenFindings.get(findingId)}] — one split per finding`
@@ -2251,6 +2264,61 @@ function checkSplitsAgainstAdjudications(document, adjudications, errors) {
           `$run.splits[${index}]: finding ${findingId} was filed as issue ${referencedIssue} in ${matches[0].file}, but this split names ${split.issue}`
         )
       }
+    }
+  }
+}
+
+// checkSplitAdjudicationsRecordedBeforePromotion — the converse of
+// checkSplitsAgainstAdjudications, which only ever walks splits[] toward the
+// adjudications. Challenge round 1, confirmed: an adjudication carrying
+// `disposition: split` whose finding NO splits[] entry names validated
+// silently, losing the run-level mechanism/milestone projection that the
+// readiness gate and /retro read — precisely the half of the two-document
+// contract (specs/dev-flow-v2.md "Neither proves the other") that had no
+// enforcement. Gated on ready-for-review for the same reason
+// checkDeferredFindingsSettledBeforePromotion is: a split adjudicated in the
+// round currently being worked may legitimately not have reached run.splits
+// yet, and only a promoted run must have every one of them recorded.
+function checkSplitAdjudicationsRecordedBeforePromotion(document, adjudications, errors) {
+  if (adjudications.length === 0 || document.outcome !== 'ready-for-review') return
+  const recorded = new Set()
+  for (const split of document.splits ?? []) {
+    for (const findingId of split.finding_ids ?? []) {
+      if (typeof findingId === 'string') recorded.add(findingId)
+    }
+  }
+  for (const { data } of adjudications) {
+    for (const entry of data.adjudications ?? []) {
+      if (entry.disposition !== 'split' || typeof entry.finding_id !== 'string') continue
+      if (!recorded.has(entry.finding_id)) {
+        errors.push(
+          `$run.splits: finding ${entry.finding_id} was adjudicated split but no splits[] entry records it, required when outcome is ready-for-review`
+        )
+      }
+    }
+  }
+}
+
+// checkSplitDeletionRoundBeforePromotion — the split contract's fourth part
+// (specs/dev-flow-v2.md: "one deletion round confirms the removal, and the
+// stage then exits through its ordinary conditions"). Challenge round 1,
+// confirmed: a run could reach ready-for-review with a split recorded in its
+// LAST round and nothing at all confirming the mechanism actually left the
+// tree. Removing the mechanism moves the head, so the ordinary exit already
+// forces a later round in that stage — this makes the run record prove it
+// rather than assume it, in the same place every other promotion invariant
+// lives. A later round of the same stage is exactly that confirmation,
+// because a complete logical round always has an adjudication document.
+function checkSplitDeletionRoundBeforePromotion(document, adjudications, errors) {
+  if (adjudications.length === 0 || document.outcome !== 'ready-for-review') return
+  for (const [index, split] of (document.splits ?? []).entries()) {
+    const confirmed = adjudications.some(
+      ({ data }) => data.stage === split.stage && Number.isInteger(data.round) && data.round > split.round
+    )
+    if (!confirmed) {
+      errors.push(
+        `$run.splits[${index}]: no ${split.stage} round after round ${split.round} confirms the mechanism's removal — the split contract requires one deletion round before a run is ready-for-review`
+      )
     }
   }
 }
@@ -2374,6 +2442,8 @@ function main() {
         checkAdjudicationStagesVisited(instance, options.adjudications, errors)
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
         checkSplitsAgainstAdjudications(instance, options.adjudications, errors)
+        checkSplitAdjudicationsRecordedBeforePromotion(instance, options.adjudications, errors)
+        checkSplitDeletionRoundBeforePromotion(instance, options.adjudications, errors)
         checkDeferredFindingsSettledBeforePromotion(instance, options.adjudications, errors)
       }
     }

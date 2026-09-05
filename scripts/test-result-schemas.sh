@@ -71,6 +71,8 @@ is_context_only_fixture() {
     */run.schema/invalid/ready-with-unsettled-deferral.json) return 0 ;;
     */run.schema/invalid/split-of-fixed-finding.json) return 0 ;;
     */run.schema/invalid/split-issue-disagrees-with-adjudication.json) return 0 ;;
+    */run.schema/invalid/split-adjudication-not-recorded.json) return 0 ;;
+    */run.schema/invalid/split-without-deletion-round.json) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -779,6 +781,44 @@ run_context_case \
     "$fixtures_dir/run.schema/invalid/split-issue-disagrees-with-adjudication.json" \
     "but this split names 999" \
     --adjudication "$split_cross_check_adjudication"
+
+split_promotion_adjudication="$fixtures_dir/run.schema/invalid/split-promotion.adjudication.json"
+split_deletion_adjudication="$fixtures_dir/run.schema/invalid/split-deletion-round.adjudication.json"
+
+# The two halves of the split's promotion contract, both context-only because
+# each needs the adjudication documents the run record cannot see (challenge
+# round 1, both confirmed): splits[] -> adjudications was checked, but neither
+# the converse nor the deletion round was.
+run_context_case \
+    "a promoted run whose splits[] omits a finding adjudicated split is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-adjudication-not-recorded.json" \
+    "was adjudicated split but no splits[] entry records it" \
+    --adjudication "$settlement_cross_check_adjudication" \
+    --adjudication "$split_promotion_adjudication" \
+    --adjudication "$split_deletion_adjudication"
+
+run_context_case \
+    "a promoted run whose split has no later round confirming the removal is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-without-deletion-round.json" \
+    "confirms the mechanism's removal" \
+    --adjudication "$settlement_cross_check_adjudication" \
+    --adjudication "$split_promotion_adjudication"
+
+# The positive control for both: with every split recorded AND a later review
+# round present, the same promoted run validates. Without this, the two cases
+# above would pass just as well against a check that rejected every split.
+split_complete_run="$test_tmp/split-complete-run.json"
+jq '.splits[0].finding_ids = ["review-r2-codex-cli-1", "review-r2-codex-cli-2"]' \
+    "$fixtures_dir/run.schema/invalid/split-adjudication-not-recorded.json" >"$split_complete_run"
+if ! out="$(node "$validator" run "$split_complete_run" \
+    --adjudication "$settlement_cross_check_adjudication" \
+    --adjudication "$split_promotion_adjudication" \
+    --adjudication "$split_deletion_adjudication" 2>&1)"; then
+    fail "a fully recorded split with a deletion round must validate: $out"
+fi
+echo "PASS: a promoted run recording every split, with a deletion round, validates"
 
 run_context_case \
     "an --adjudication document belonging to a foreign run is rejected" \

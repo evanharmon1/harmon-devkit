@@ -480,7 +480,10 @@ The record is two documents, deliberately: the per-finding half is an
 naming the filed issue, and the run-level half is `run.schema.json`'s
 `splits[]` naming the mechanism, the issue, its milestone, and the findings
 the split answers. Neither proves the other, so a validator holding both
-checks that they agree.
+checks that they agree — in **both** directions, and a run that claims
+`ready-for-review` must additionally have recorded every split it adjudicated
+and have a later round of that stage standing as the deletion round. Part 4
+above is therefore an invariant of the record, not a hope about the process.
 
 **The signal.** So that a session can propose a split at round 2 rather than
 after nine rounds, the exit script emits a `split_candidate` projection
