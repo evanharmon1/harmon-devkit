@@ -4,26 +4,72 @@
   "initiated_by": "human",
   "started_at": "2026-08-29T09:00:00Z",
   "stage_transitions": [
-    { "stage": "kickoff", "entered_at": "2026-08-29T09:00:00Z", "exit": "claimed" },
-    { "stage": "claim", "entered_at": "2026-08-29T09:05:00Z", "exit": "planned" },
-    { "stage": "plan", "entered_at": "2026-08-29T09:10:00Z", "exit": "briefed" },
-    { "stage": "implement", "entered_at": "2026-08-29T09:15:00Z", "exit": "verified" },
-    { "stage": "verify", "entered_at": "2026-08-29T09:20:00Z", "exit": "green" },
-    { "stage": "challenge", "entered_at": "2026-08-29T09:22:00Z", "exit": "converged" },
-    { "stage": "review", "entered_at": "2026-08-29T09:24:00Z", "exit": "converged" },
-    { "stage": "security", "entered_at": "2026-08-29T09:26:00Z", "exit": "clean" },
-    { "stage": "integration", "entered_at": "2026-08-29T09:30:00Z", "exit": "converged" }
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-08-29T09:00:00Z",
+      "exit": "claimed"
+    },
+    {
+      "stage": "claim",
+      "entered_at": "2026-08-29T09:05:00Z",
+      "exit": "planned"
+    },
+    {
+      "stage": "plan",
+      "entered_at": "2026-08-29T09:10:00Z",
+      "exit": "briefed"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-08-29T09:15:00Z",
+      "exit": "verified"
+    },
+    {
+      "stage": "verify",
+      "entered_at": "2026-08-29T09:20:00Z",
+      "exit": "green"
+    },
+    {
+      "stage": "challenge",
+      "entered_at": "2026-08-29T09:22:00Z",
+      "exit": "converged"
+    },
+    {
+      "stage": "review",
+      "entered_at": "2026-08-29T09:24:00Z",
+      "exit": "converged"
+    },
+    {
+      "stage": "security",
+      "entered_at": "2026-08-29T09:26:00Z",
+      "exit": "clean"
+    },
+    {
+      "stage": "integration",
+      "entered_at": "2026-08-29T09:30:00Z",
+      "exit": "converged"
+    }
   ],
   "interventions": [
-    { "kind": "other", "at": "2026-08-29T09:45:00Z", "note": "manually retried a flaky CI job after promotion" }
+    {
+      "kind": "other",
+      "at": "2026-08-29T09:45:00Z",
+      "note": "manually retried a flaky CI job after promotion"
+    }
   ],
   "outcome": "ready-for-review",
-  "pr": { "number": 634, "url": "https://github.com/evanharmon1/harmon-devkit/pull/634" },
+  "pr": {
+    "number": 634,
+    "url": "https://github.com/evanharmon1/harmon-devkit/pull/634"
+  },
   "evidence_comments": [],
   "settlements": [],
   "promotion": {
     "head": "6079a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
     "promoted_at": "2026-08-29T09:35:00Z",
     "gate_fingerprint": "sha256:fingerprint"
-  }
+  },
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }

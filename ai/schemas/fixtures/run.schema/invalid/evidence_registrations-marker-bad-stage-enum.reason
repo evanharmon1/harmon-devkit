@@ -1,0 +1,1 @@
+$run.evidence_registrations[0].marker.stage: must be one of "kickoff", "claim", "explore", "plan", "implement", "verify", "challenge", "review", "security", "integration"

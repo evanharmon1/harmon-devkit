@@ -126,6 +126,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createSchemaValidator } from './lib/json-schema-subset.mjs'
 
@@ -1653,6 +1654,211 @@ function checkRunPromotionOutcome(document, errors) {
   }
 }
 
+// checkRunChainIntegrity — verifies the append-only chain over the three
+// chains run.schema.json requires (evidence_registrations[]/pr_bindings[]/
+// outcome_transitions[] — round 4 of #663): each entry's own `digest` must
+// equal sha256(canonical JSON of {this array's own content fields...,
+// prev_digest}), and each entry's `prev_digest` must equal the PRECEDING
+// entry's own `digest` (the literal string "genesis" for the first).
+// run.schema.json's own per-item shape checks (pattern-match `digest`/
+// `prev_digest` as 64-hex/genesis-or-64-hex strings) only prove the FIELDS
+// look right, never that their VALUES are actually consistent with the
+// content they claim to protect — shepherd round 5, Codex-confirmed (P1),
+// reproduced directly: corrupting `pr_bindings[0].digest` to 64 zeroes in
+// the valid further-along.json fixture still printed "run record OK" here,
+// while scripts/dev-flow-stats.mjs's own reconstructAsOf() correctly
+// rejected the identical document as a broken chain. Ports the same
+// digest verification into the shared validator so any writer relying on
+// it, not just the harvester, catches a corrupted chain before ever
+// publishing the record — not a shared import from dev-flow-stats.mjs
+// (a specific consumer of this schema, not a foundation this
+// general-purpose validator should depend on) and not a reuse of this
+// file's own canonicalJson (./lib/json-schema-subset.mjs — built for
+// schema-validation equality checks, which does not special-case an
+// undefined-valued object key or array element the way a content-hash
+// canonicalizer must to hash identically whether an optional field is
+// absent or present-but-undefined after a lookup); a small, purpose-built
+// duplicate of dev-flow-stats.mjs's own canonicalJson/entryDigest instead.
+const CHAIN_CONTENT_FIELDS = {
+  evidence_registrations: ['id', 'author_actor_id', 'login', 'payload_digest', 'marker', 'registered_at'],
+  pr_bindings: ['number', 'url', 'bound_at'],
+  outcome_transitions: ['outcome', 'at'],
+}
+
+function canonicalJsonForDigest(value) {
+  if (value === undefined) return undefined
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => (v === undefined ? 'null' : canonicalJsonForDigest(v))).join(',')}]`
+  }
+  const keys = Object.keys(value)
+    .filter((k) => value[k] !== undefined)
+    .sort()
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJsonForDigest(value[k])}`).join(',')}}`
+}
+
+function entryDigestForCheck(contentFields, prevDigest) {
+  const text = canonicalJsonForDigest({ ...contentFields, prev_digest: prevDigest })
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+// Returns { evidence_registrations, pr_bindings, outcome_transitions },
+// each either the chain's own verified, deduped, seq-ordered entries or
+// `null` when that chain had ANY error (missing/wrong-shaped fields, a
+// fork, a contiguity gap, or a broken digest) — mirroring
+// dev-flow-stats.mjs's own verifyRunRecordChains, whose caller
+// (reconstructAsOf) only ever projects flat fields from chains it has
+// already confirmed clean. checkRunFlatProjections below reads this
+// return value rather than re-deriving trust from a chain this function
+// already found broken.
+function checkRunChainIntegrity(document, errors) {
+  const verified = {}
+  for (const [arrayName, contentKeys] of Object.entries(CHAIN_CONTENT_FIELDS)) {
+    const rawEntries = document[arrayName]
+    verified[arrayName] = null
+    if (!Array.isArray(rawEntries)) continue
+    // Schema-level checks already require seq/digest/prev_digest and their
+    // shape on every entry; skip silently (this function is not
+    // responsible for reporting that).
+    if (!rawEntries.every((e) => typeof e === 'object' && e !== null && typeof e.seq === 'number' && typeof e.digest === 'string' && typeof e.prev_digest === 'string')) {
+      continue
+    }
+    // A resumed writer's own retry re-appends an entry that already
+    // landed — same seq, same content, same prev_digest, same digest —
+    // which must collapse to one logical entry before the sequential
+    // walk below, exactly as dev-flow-stats.mjs's own
+    // normalizeExactDuplicates does; two entries sharing a seq but
+    // disagreeing on canonical {content, prev_digest, digest} are a
+    // genuine FORK and must fail closed rather than have either one
+    // silently picked.
+    const bySeq = new Map()
+    for (const entry of rawEntries) {
+      const list = bySeq.get(entry.seq) || []
+      list.push(entry)
+      bySeq.set(entry.seq, list)
+    }
+    let forked = false
+    const deduped = []
+    for (const [seq, group] of bySeq) {
+      const canonicalOf = (e) => {
+        const content = Object.fromEntries(contentKeys.map((key) => [key, e[key]]))
+        return canonicalJsonForDigest({ content, prev_digest: e.prev_digest, digest: e.digest })
+      }
+      const firstKey = canonicalOf(group[0])
+      if (!group.every((e) => canonicalOf(e) === firstKey)) {
+        errors.push(`$run.${arrayName}: two entries at seq ${seq} share a predecessor but carry different content — forked chain`)
+        forked = true
+        break
+      }
+      deduped.push(group[0])
+    }
+    if (forked) continue
+    deduped.sort((a, b) => a.seq - b.seq)
+    let contiguous = true
+    for (let i = 0; i < deduped.length; i++) {
+      if (deduped[i].seq !== i) {
+        errors.push(`$run.${arrayName}: expected seq ${i}, got ${deduped[i].seq} — chain not contiguous from 0`)
+        contiguous = false
+        break
+      }
+    }
+    if (!contiguous) continue
+    let prevDigest = 'genesis'
+    let brokenDigest = false
+    for (const entry of deduped) {
+      if (entry.prev_digest !== prevDigest) {
+        errors.push(
+          `$run.${arrayName}[${entry.seq}].prev_digest: ${JSON.stringify(entry.prev_digest)} does not match the preceding entry's own digest (${JSON.stringify(prevDigest)}) — chain broken`,
+        )
+        brokenDigest = true
+        break // one break invalidates every entry after it; no point compounding
+      }
+      const content = Object.fromEntries(contentKeys.map((key) => [key, entry[key]]))
+      const expected = entryDigestForCheck(content, prevDigest)
+      if (entry.digest !== expected) {
+        errors.push(`$run.${arrayName}[${entry.seq}].digest: does not match its own content — tampered`)
+        brokenDigest = true
+        break
+      }
+      prevDigest = entry.digest
+    }
+    if (!brokenDigest) verified[arrayName] = deduped
+  }
+  return verified
+}
+
+// checkRunFlatProjections — evidence_comments/pr/outcome are each
+// documented as "a derived projection" of their own chain (run.schema.
+// json's own field descriptions), so a chain that verifies clean is not
+// by itself proof the record is trustworthy: nothing before this point
+// checked that the FLAT field actually equals what its chain derives.
+// Fresh evidence beyond the earlier digest-chain finding (shepherd round
+// 6, Codex-confirmed P1): outcome_transitions-harmless-retry.json (round
+// 4's own fixture) still printed "run record OK" here even though its
+// chain derives outcome "ready-for-review" while its flat `outcome` field
+// is null — dev-flow-stats.mjs's own reconstructAsOf() rejects the
+// identical document as an out-of-band edit. Mirrors
+// dev-flow-stats.mjs's deriveProjections/verifyProjections exactly:
+// evidence_comments[] is evidence_registrations[] with its chain-only
+// fields (seq/digest/prev_digest/registered_at) stripped, in seq order;
+// pr/outcome are each the LAST entry of their own chain (or null if
+// empty). Only runs against a chain checkRunChainIntegrity already
+// verified clean — a chain it found broken already has its own error,
+// and deriving a projection from broken data would be checking
+// consistency against a value nothing establishes as trustworthy.
+function checkRunFlatProjections(document, verifiedChains, errors) {
+  if (verifiedChains.evidence_registrations !== null) {
+    const derived = verifiedChains.evidence_registrations.map((r) => ({
+      id: r.id,
+      author_actor_id: r.author_actor_id,
+      login: r.login,
+      digest: r.payload_digest,
+      marker: r.marker,
+    }))
+    if (canonicalJsonForDigest(document.evidence_comments || []) !== canonicalJsonForDigest(derived)) {
+      errors.push('$run.evidence_comments: does not match its evidence_registrations[] chain — out-of-band edit')
+    }
+  }
+  if (verifiedChains.pr_bindings !== null) {
+    const lastPr = verifiedChains.pr_bindings[verifiedChains.pr_bindings.length - 1]
+    const derivedPr = lastPr ? { number: lastPr.number, url: lastPr.url } : null
+    if (canonicalJsonForDigest(document.pr ?? null) !== canonicalJsonForDigest(derivedPr)) {
+      errors.push('$run.pr: does not match its pr_bindings[] chain — out-of-band edit')
+    }
+  }
+  if (verifiedChains.outcome_transitions !== null) {
+    const lastOutcome = verifiedChains.outcome_transitions[verifiedChains.outcome_transitions.length - 1]
+    const derivedOutcome = lastOutcome ? lastOutcome.outcome : null
+    if (canonicalJsonForDigest(document.outcome ?? null) !== canonicalJsonForDigest(derivedOutcome)) {
+      errors.push('$run.outcome: does not match its outcome_transitions[] chain — out-of-band edit')
+    }
+  }
+}
+
+// checkRunOutcomeTransitionsBound — a run reaches exactly one terminal
+// outcome. run.schema.json bounds each ENTRY's own shape but nothing
+// structural stops two chain- and digest-valid entries at different `seq`
+// values (e.g. "capped" then "ready-for-review") from both validating —
+// a downstream reader taking the LAST entry as authoritative (run.schema.
+// json's own field description: "a derived projection: the last entry's
+// outcome") would then launder a real failure into a success.
+// scripts/dev-flow-stats.mjs's own harvester already rejects this (shepherd
+// round 2 of #663, Codex-confirmed P1); this ports the same bound to the
+// shared validator so any other writer or consumer catches the mistake
+// before ever posting a broken record, not after. Counting distinct `seq`
+// values (rather than raw array length) is deliberate: a resumed writer's
+// own retry re-appending an already-landed entry shares that entry's seq
+// and must not trip this — the same harmless-duplicate case
+// normalizeExactDuplicates collapses on the harvester side.
+function checkRunOutcomeTransitionsBound(document, errors) {
+  const entries = document.outcome_transitions
+  if (!Array.isArray(entries)) return
+  const seqs = new Set(entries.map((entry) => entry.seq).filter((seq) => typeof seq === 'number'))
+  if (seqs.size > 1) {
+    errors.push(`$run.outcome_transitions has ${seqs.size} distinct terminal entries — a run reaches exactly one terminal outcome`)
+  }
+}
+
 // checkEvidenceCommentsUniqueness — evidence_comments[].id is unique (it is
 // the harvester's own lookup key), and each (marker.destination, marker.stage,
 // marker.round, marker.sequence) tuple is unique (that tuple IS the
@@ -1997,6 +2203,8 @@ function main() {
       checkEvidenceMarkerSequenceContiguity(instance, errors)
       checkEvidenceCommentsUniqueness(instance, errors)
       checkRunPromotionOutcome(instance, errors)
+      checkRunOutcomeTransitionsBound(instance, errors)
+      checkRunFlatProjections(instance, checkRunChainIntegrity(instance, errors), errors)
       checkSettlementReferenceType(instance, errors)
       checkStageTransitionsOrder(instance, errors)
       checkRunChronology(instance, errors)

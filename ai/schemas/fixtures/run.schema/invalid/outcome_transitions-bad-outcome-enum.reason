@@ -1,0 +1,1 @@
+$run.outcome_transitions[0].outcome: must be one of "ready-for-review", "capped", "escalated", "abandoned"

@@ -6,8 +6,13 @@
   "stage_transitions": [],
   "interventions": [],
   "outcome": null,
-  "pr": { "url": "https://github.com/evanharmon1/harmon-devkit/pull/634" },
+  "pr": {
+    "url": "https://github.com/evanharmon1/harmon-devkit/pull/634"
+  },
   "evidence_comments": [],
   "settlements": [],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }

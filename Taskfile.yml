@@ -72,6 +72,7 @@ tasks:
       - task: validate
       - task: test:agent-registry
       - task: test:result-schemas
+      - task: test:dev-flow-stats
       - task: test:dev-flow-exit
       - task: test:render-dev-flow
       - task: test:retro-run-report
@@ -335,6 +336,7 @@ tasks:
       - test:confirm-answers
       - test:migrate-label-family
       - test:result-schemas
+      - test:dev-flow-stats
       - test:dev-flow-exit
       - test:render-dev-flow
       - test:retro-run-report
@@ -348,6 +350,11 @@ tasks:
     desc: Schema-check the dev-flow-v2 result/record schemas and their conformance fixtures
     cmds:
       - ./scripts/test-result-schemas.sh
+
+  test:dev-flow-stats:
+    desc: Behavioral test for the Dev flow v2 evidence harvester, success metric, trajectory rendering, and policy replay
+    cmds:
+      - ./scripts/test-dev-flow-stats.sh
 
   test:dev-flow-exit:
     desc: Behavioral test for the Dev flow v2 policy reader and exit-computation engine against fixture policies

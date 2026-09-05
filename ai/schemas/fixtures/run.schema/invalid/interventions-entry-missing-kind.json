@@ -5,11 +5,17 @@
   "started_at": "2026-08-29T09:00:00Z",
   "stage_transitions": [],
   "interventions": [
-    { "at": "2026-08-29T10:00:00Z", "note": "some human action" }
+    {
+      "at": "2026-08-29T10:00:00Z",
+      "note": "some human action"
+    }
   ],
   "outcome": null,
   "pr": null,
   "evidence_comments": [],
   "settlements": [],
-  "promotion": null
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
 }
