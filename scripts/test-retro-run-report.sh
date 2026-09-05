@@ -44,17 +44,28 @@ ACTOR=37220977
 pass=0
 fail=0
 skip=0
+# All three return 0 UNCONDITIONALLY. Every assertion here is spelled
+# `cond && ok "..." || bad "..."`, so the reporter's own exit status is part
+# of that branch: if `echo` ever fails — a transient write error on the
+# grouped-output pipe `task` runs these under — a passing assertion silently
+# becomes a reported failure. Seen exactly once in a `task verify` run whose
+# other two assertions over the same output passed, which is what makes the
+# diagnosis certain rather than speculative. The counters must not lie about
+# the code under test because of a pipe.
 ok() {
     pass=$((pass + 1))
-    echo "  ✓ $*"
+    echo "  ✓ $*" || true
+    return 0
 }
 bad() {
     fail=$((fail + 1))
-    echo "  ✗ $*" >&2
+    echo "  ✗ $*" >&2 || true
+    return 0
 }
 skipped() {
     skip=$((skip + 1))
-    echo "  ↷ $*"
+    echo "  ↷ $*" || true
+    return 0
 }
 
 TMPROOT="$(mktemp -d)"
