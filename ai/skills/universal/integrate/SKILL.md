@@ -1157,16 +1157,16 @@ that loops indefinitely:
      used to be trusted as "the cap must be 0" on the integrator's own
      unverified word.
    - `--remediation-cap <n>` — the resolved `[rounds.<policy>].remediation`
-     cap. Optional, and unlike `--integration-cap` its absence waives
-     nothing the pass claimed: the loop count is derived entirely from the
-     record's own `stage_transitions[]` (every `integration` entry after
-     the first is one `integration -> implement -> integration` loop), so
-     omitting it skips exactly one guard. Supply it — the same resolution
-     that gives you `--integration-cap` gives you this. Over the cap is a
-     `remediation-capped` fail; **at** the cap, so is a gated pass still
-     applying a code-changing disposition (`fix`/`restructure`/`delete`),
-     each of which needs a further loop the cap has already spent
-     (harmon-devkit#685).
+     cap, required for the same reason `--integration-cap` is. The loop
+     count comes from the record's own `stage_transitions[]` (every
+     `integration` entry after the first is one `integration -> implement ->
+     integration` loop) and exceeding it is a `remediation-capped` fail.
+     Never omit it: an optional policy check is one a caller skips by
+     saying nothing, and a skipped remediation check promotes an over-cap
+     run (harmon-devkit#685). **At** the cap is not a failure — the pass
+     that closes the stage still echoes the fix that caused the final loop,
+     per the `applied_dispositions` bullet in §5's dispatch input, and a
+     pass that genuinely still owes a code change is not `clean` anyway.
    - `--codex-recheck <state file>` — the integrator's own
      `check-codex-cloud-review.sh` state file for this repo/PR:
      `git rev-parse --git-path "integrate-codex/$repo/<n>.json"`, the same

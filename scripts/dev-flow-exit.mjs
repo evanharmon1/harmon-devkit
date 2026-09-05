@@ -277,8 +277,18 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
   // field is there but nonsense" must not reach the same outcome, or a
   // typo'd started_at would waive exactly the check it was written to
   // request. (Absent stays absent — see the OPTIONAL note above.)
+  // Only `undefined` (and, for `promotion`, `null` — the schema's own "not
+  // promoted yet") means ABSENT. Every other present value is checked:
+  // a number, an object, or a null where a timestamp belongs is malformed
+  // producer data, and the run directory is not schema-validated here, so
+  // treating it as absent would silently disable exactly the bound it was
+  // written to request. Challenge round 1, confirmed — the earlier
+  // `typeof value !== "string" -> return null` did precisely that.
   function boundOrThrow(value, label) {
-    if (typeof value !== "string") return null;
+    if (value === undefined) return null;
+    if (typeof value !== "string") {
+      throw new ExitIndeterminate(`run.json's ${label} is present but not a string (${JSON.stringify(value)}) — cannot bound any pass against it`);
+    }
     const parsed = Date.parse(value);
     if (Number.isNaN(parsed)) {
       throw new ExitIndeterminate(`run.json's ${label} "${value}" is not a parseable instant — cannot bound any pass against it`);
@@ -286,10 +296,19 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
     return parsed;
   }
   const runStartedAt = boundOrThrow(runRecord.started_at, "started_at");
-  const runPromotedAt = boundOrThrow(
-    runRecord.promotion && typeof runRecord.promotion === "object" ? runRecord.promotion.promoted_at : undefined,
-    "promotion.promoted_at",
-  );
+  let runPromotedAt = null;
+  if (runRecord.promotion !== undefined && runRecord.promotion !== null) {
+    if (typeof runRecord.promotion !== "object" || Array.isArray(runRecord.promotion)) {
+      throw new ExitIndeterminate(`run.json's promotion is present but not an object (${JSON.stringify(runRecord.promotion)}) — cannot bound any pass against it`);
+    }
+    // A promotion entry that exists at all owes a promoted_at
+    // (run.schema.json requires it), so `undefined` here is malformed too,
+    // not the absent case boundOrThrow's own `undefined` branch covers.
+    if (runRecord.promotion.promoted_at === undefined) {
+      throw new ExitIndeterminate("run.json's promotion has no promoted_at — cannot bound any pass against it");
+    }
+    runPromotedAt = boundOrThrow(runRecord.promotion.promoted_at, "promotion.promoted_at");
+  }
 
   function chronologyViolation(producedAt, seq) {
     // The envelope's own produced_at shape is result.envelope.schema.json's
@@ -305,9 +324,13 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
       return `produced_at "${producedAt}" is after the run's promotion.promoted_at "${runRecord.promotion.promoted_at}"`;
     }
     const entry = activeTransitionBefore(seq);
-    if (entry && typeof entry.entered_at === "string") {
+    if (entry) {
+      // Straight to boundOrThrow, with no typeof guard of its own: a guard
+      // here would reintroduce, for this third bound, exactly the
+      // present-but-malformed-reads-as-absent hole challenge round 1 found
+      // in the other two.
       const enteredAt = boundOrThrow(entry.entered_at, `receipts[${entry.seq}].entered_at`);
-      if (t < enteredAt) {
+      if (enteredAt !== null && t < enteredAt) {
         return `produced_at "${producedAt}" is before its own stage "${entry.stage}" was entered at "${entry.entered_at}"`;
       }
     }

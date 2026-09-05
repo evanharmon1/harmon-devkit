@@ -2292,7 +2292,7 @@ moved rather than dropped.
 | 1 | A round is complete only when every finder in `[stage.<stage>].finders[]` returned a `completed` pass at the same `reviewed_head`; a missing or `blocked` finder is `finder_unavailable` **on the evidence of a `slot_failures` record**, never synthesized, and never a round one finder short | `assembleLogicalRounds` (`dev-flow-exit.mjs`) | `exit/finder-blocked-without-failure-record-indeterminate` / `exit/finder-blocked-then-fallback-completes-round`; the disagreeing-head half is `exit/mismatched-head-round-rejected` |
 | 2 | Every retained pass has exactly one adjudication document **and vice versa** — an adjudication naming a round no pass or `slot_failures` record ever named is an error, not something to ignore | the orphan-adjudication check in `dev-flow-exit.mjs`'s `main()`, beside the `missingAdjudication` check that covers the other direction | `exit/adjudication-without-source-pass-rejected` / `exit/adjudication-for-rejected-pass-round-accepted` |
 | 3 | `round` never exceeds the stage's resolved cap; a cap-0 stage has no rounds; **stage-skipping is legal only under the corresponding cap-0 policy** | the cap-integrity checks and the `SKIP_EDGE_GUARDS` check in `dev-flow-exit.mjs`'s `main()` | `exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected` / `exit/stage-skip-to-review-legal-under-cap-zero-challenge` and `exit/remediation-reentry-into-review-is-not-a-stage-skip`; the `verify -> security` edge is a named case in `scripts/test-dev-flow-exit.sh` |
-| 4 | `integration -> implement -> integration` loops are counted against `[rounds.<policy>].remediation`; exceeding it escalates, and code-changing dispositions past the cap are rejected | `readiness-gate.sh` step 9d, under `--remediation-cap` | the `#685(4)` cases in `scripts/test-integrate-readiness.sh` |
+| 4 | `integration -> implement -> integration` loops are counted against `[rounds.<policy>].remediation`; exceeding it escalates, and code-changing dispositions past the cap are rejected | `readiness-gate.sh` step 9d, under the required `--remediation-cap` | the `#685(4)` cases in `scripts/test-integrate-readiness.sh` |
 | 5 | `codex_cycle.cycle` ≤ `[rounds.<policy>].integration`; cap 0 ⇒ null cycle; a clean verdict with a null cycle under a positive cap is not clean | `readiness-gate.sh` step 9, under `--integration-cap` | the five `--integration-cap` cases plus the `#685(5)` `audit` case in `scripts/test-integrate-readiness.sh` |
 | 6 | `promotion.head` equals the final integrator result's head and its accepted-cycle reviewed commit; a stale integration pass cannot certify a newer promoted head | three bindings: the validator's own `accepted.reviewed_commit` receipt check, `readiness-gate.sh`'s envelope-head compare, and its `promotion-head-mismatch` condition | the `#685(6)` cases in `scripts/test-integrate-readiness.sh` |
 | 7 | Every adjudicated round has a matching **issue** evidence marker (same stage/round); a `pr`-destination rollup does not substitute | `checkAdjudicationEvidenceMarkers` (`validate-result-schemas.mjs`, with `--adjudication`) | `run.schema/invalid/adjudicated-round-without-issue-evidence-marker` and `…-only-pr-evidence-marker` / `run.schema/valid/ready-with-settled-deferral` |
@@ -2330,10 +2330,16 @@ refusal additionally requires that no earlier transition into the skipped
 stage exists. `exit/remediation-reentry-into-review-is-not-a-stage-skip` is
 that neighbour, and it carries the same edge as the rejected fixture.
 
-**Row 8's bounds are optional-if-present.** `started_at`,
-`promotion.promoted_at`, and a transition receipt's `entered_at` are all
-fields the run directory *may* carry; a caller that supplies them gets them
-enforced, and one that does not is unchanged. This never becomes an ordering
+**Row 8's bounds are optional-if-ABSENT, never optional-if-malformed.**
+`started_at`, `promotion.promoted_at`, and a transition receipt's
+`entered_at` are all fields the run directory *may* carry; a caller that
+supplies them gets them enforced, and one that omits them is unchanged. Only
+`undefined` (and, for `promotion`, the schema's own `null`) counts as
+omitted, though: a number, an object, or a null where a timestamp belongs
+refuses the whole trajectory. The run directory is not schema-validated on
+this path, so treating malformed producer data as absent would silently
+disable exactly the bound it was written to request — challenge round 1,
+confirmed against the first version of this check, which did. This never becomes an ordering
 authority — that stays the trusted receipt sequence's job
 (`specs/dev-flow-v2.md`: producer-supplied `produced_at` "SHALL be only a
 bounded sanity check … never an ordering … boundary"). It is exactly that
@@ -2342,13 +2348,26 @@ promotion, or precede the stage it names is evidence from outside the run's
 own span.
 
 Two flags exist only to carry a resolved policy value into a surface that
-deliberately does not read `.devflow.toml` itself. `--integration-cap` is
-**required** (row 5): it pairs with a field every integrator pass carries, so
-its absence could be — and once was — mistaken for a cap of 0, silently
-waiving the Codex condition. `--remediation-cap` (row 4) stays **optional**:
-it is derived entirely from the record's own `stage_transitions[]`, so
-omitting it skips exactly one guard rather than waiving a claim the pass
-made.
+deliberately does not read `.devflow.toml` itself, and **both are required**.
+`--integration-cap` (row 5) pairs with a field every integrator pass carries,
+so its absence could be — and once was — mistaken for a cap of 0, silently
+waiving the Codex condition. `--remediation-cap` (row 4) shipped optional on
+the reasoning that it is derived from the record rather than from a claim the
+pass makes, and challenge round 1 was right to reject that: an optional
+policy check is one a caller skips by saying nothing, and a skipped
+remediation check promotes an over-cap run. Derivation says where the number
+comes from, not whether the check may be waived.
+
+Row 4's second half — "code-changing integration dispositions past the cap
+are rejected" — deliberately has **no branch of its own**, and the branch
+written for it was wrong. Past the cap, the loop-count condition already
+rejects the pass whatever its dispositions say. *At* the cap it must not
+fire: the integrate skill has each integrator pass echo the
+`applied_dispositions` "accumulated so far this integration stage", so the
+fix that CAUSED the final loop is still listed on the clean pass that closes
+it — reading that as "a code change still needs applying" refuses precisely
+the run that converged exactly on budget. A pass that genuinely still owes a
+code change is not `clean`, and the gate's own step 9c refuses it there.
 
 `expected.json` in the exit corpus gained a `reason_contains` key for this
 work. A fixture declaring only `{"indeterminate": true}` passes for *any*

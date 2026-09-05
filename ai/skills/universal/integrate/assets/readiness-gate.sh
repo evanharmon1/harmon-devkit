@@ -118,11 +118,11 @@ usage() {
 Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
-      [--remediation-cap N] [--codex-recheck STATE_FILE]
+      --remediation-cap N [--codex-recheck STATE_FILE]
       [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
-      [--remediation-cap N] [--codex-recheck STATE_FILE]
+      --remediation-cap N [--codex-recheck STATE_FILE]
       [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 
@@ -157,16 +157,15 @@ pairs only with a non-null one, and that codex_cycle.cycle never exceeds it
 process, so there is no legitimate case for omitting it: a null codex_cycle
 with the flag missing used to be silently trusted as proof the resolved cap
 was 0, when it was really just the integrator's own unverified claim.
---remediation-cap N is optional and, when given, enforces
-harmon-devkit#685's remediation-loop invariant: each integration ->
-implement -> integration loop the record's own stage_transitions[] records
-is one remediation round, the count may not exceed the cap, and at the cap
-the gated pass may not still be applying a code-changing disposition (fix/
-restructure/delete), which would require a further loop the cap forbids.
-Unlike --integration-cap it stays optional: that flag pairs with a field
-every integrator pass carries, so its absence could be mistaken for a cap
-of 0, whereas this one is derived entirely from the record and omitting it
-skips exactly one guard rather than waiving a claim.
+--remediation-cap N is required, for the same reason --integration-cap is
+(harmon-devkit#685, challenge round 1): each integration -> implement ->
+integration loop the record's own stage_transitions[] records is one
+remediation round, and the count may not exceed the cap. Left optional, a
+caller that simply omitted the flag would skip the policy check entirely and
+an over-cap run would still promote — enforcement is not something a caller
+opts into. The resolved value is the caller's (this script does not read
+.devflow.toml), and the same resolution that yields --integration-cap yields
+this one.
 --codex-recheck STATE_FILE is optional and, when codex_cycle reports a clean
 exit_code 0, re-confirms it read-only by re-running check-codex-cloud-
 review.sh's own `check` against STATE_FILE (the same on-disk state the
@@ -327,6 +326,10 @@ check | audit)
     # (the /integrate skill) always resolves this value early in its own
     # process, so there is no legitimate case for omitting it here.
     [ -n "$integration_cap" ] || usage
+    # Required for the same reason (harmon-devkit#685, challenge round 1):
+    # an optional policy check is one a caller can skip by omission, and a
+    # skipped remediation check promotes an over-cap run.
+    [ -n "$remediation_cap" ] || usage
     ;;
 fingerprint) ;;
 *) usage ;;
@@ -1118,27 +1121,22 @@ integrator_verdict="$(jq -er '.payload.verdict | select(type == "string")' \
 # return). The path back in may then run implement -> verify -> ... ->
 # integration or implement -> integration; either way it is one loop.
 #
-# Two conditions, matching the criterion's two halves. Exceeding the cap is
-# terminal — the run owes a human escalation, not a promotion. AT the cap,
-# a code-changing disposition (fix/restructure/delete — each one moves the
-# head) is refused for the same reason the integration stage refuses one on
-# its last round: applying it needs another push and another cycle, which
-# is precisely the loop the cap has already spent. decline/file/defer leave
-# the head alone and are unaffected.
-if [ -n "$remediation_cap" ]; then
-    remediation_loops="$(jq -r '[.stage_transitions[]? | select(.stage == "integration")] | length | if . > 0 then . - 1 else 0 end' \
-        "$run_json" 2>/dev/null)" ||
-        indeterminate malformed-data "run.json's stage_transitions could not be read for the remediation-loop count"
-    if [ "$remediation_loops" -gt "$remediation_cap" ]; then
-        fail_condition remediation-capped "the record shows $remediation_loops integration -> implement -> integration remediation loop(s), exceeding --remediation-cap $remediation_cap — escalate rather than promote (harmon-devkit#685)"
-    elif [ "$remediation_loops" -eq "$remediation_cap" ]; then
-        code_changing="$(jq -r '[.[] | select(.disposition == "fix" or .disposition == "restructure" or .disposition == "delete") | .finding_id] | join(", ")' \
-            <<<"$applied_dispositions" 2>/dev/null)" ||
-            indeterminate malformed-data "applied_dispositions could not be read for the remediation-cap check"
-        [ -z "$code_changing" ] ||
-            fail_condition remediation-capped "the record is already at --remediation-cap $remediation_cap remediation loop(s), but the gated pass still applies code-changing disposition(s): $code_changing — each needs a further loop the cap forbids (harmon-devkit#685)"
-    fi
-fi
+# One condition, not two. The criterion's second half — "code-changing
+# integration dispositions past the cap are rejected" — needs no separate
+# branch, and a branch written for it was wrong (challenge round 1,
+# confirmed). Past the cap, THIS condition already rejects the pass whatever
+# its dispositions. AT the cap it must not fire at all: SKILL.md's dispatch
+# contract has `applied_dispositions` carry everything "accumulated so far
+# this integration stage, so a pass that comes back clean can echo them", so
+# the fix that CAUSED the final loop is still listed on the clean pass that
+# closes it. Reading that as "a code change still needs applying" refuses
+# precisely the run that converged exactly on budget. A pass that genuinely
+# still owes a code change is not clean, and step 9c already refuses it.
+remediation_loops="$(jq -r '[.stage_transitions[]? | select(.stage == "integration")] | length | if . > 0 then . - 1 else 0 end' \
+    "$run_json" 2>/dev/null)" ||
+    indeterminate malformed-data "run.json's stage_transitions could not be read for the remediation-loop count"
+[ "$remediation_loops" -le "$remediation_cap" ] ||
+    fail_condition remediation-capped "the record shows $remediation_loops integration -> implement -> integration remediation loop(s), exceeding --remediation-cap $remediation_cap — escalate rather than promote (harmon-devkit#685)"
 
 # 10. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
 # and require equality before any pass. The evaluated fingerprint hashes the

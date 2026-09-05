@@ -296,7 +296,7 @@ run_gate() {
         --repo example/repo --pr 493 --head "$head_sha" \
         --record "$record_dir" \
         --integrator-result "${fixtures}/integrator-result-disabled.json" \
-        --integration-cap 0 \
+        --integration-cap 0 --remediation-cap 4 \
         "$@" 2>&1)"
     gate_rc=$?
     set -e
@@ -309,7 +309,7 @@ run_audit() {
         --repo example/repo --pr 493 --head "$head_sha" \
         --record "$record_dir" \
         --integrator-result "${fixtures}/integrator-result-disabled.json" \
-        --integration-cap 0 \
+        --integration-cap 0 --remediation-cap 4 \
         "$@" 2>&1)"
     gate_rc=$?
     set -e
@@ -1742,15 +1742,22 @@ write_record_with_integration_entries 2
 run_gate --remediation-cap 1
 assert_gate 1 fail remediation-capped
 
-echo "==> #685(4): omitting --remediation-cap leaves the same record promotable (the flag is the only source)"
+echo "==> #685(4): omitting --remediation-cap is a usage error, never a skipped check"
 write_defaults
 write_record_with_integration_entries 2
-run_gate
-assert_gate 0 pass ready
+set +e
+missing_cap_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" check \
+    --repo example/repo --pr 493 --head "$head_sha" --record "$record_dir" \
+    --integrator-result "${fixtures}/integrator-result-disabled.json" \
+    --integration-cap 0 2>&1)"
+missing_cap_rc=$?
+set -e
+[ "$missing_cap_rc" -eq 2 ] ||
+    fail "#685(4): omitting --remediation-cap should exit 2, got $missing_cap_rc: $missing_cap_out"
 
 # A record that is exactly AT one remediation loop (two integration entries)
-# and carries a settlement for the deferred finding, so the at-cap cases
-# below turn only on the disposition the gated pass applies.
+# and carries a settlement for the deferred finding, so the cases below turn
+# only on the disposition the gated pass applies.
 # $1 settlement disposition, $2 reference type, $3 reference value.
 write_at_cap_record() {
     jq -cn --arg disp "$1" --arg reftype "$2" --arg refvalue "$3" '
@@ -1783,23 +1790,28 @@ write_at_cap_record() {
         fail "#685(4) at-cap record fixture is not a valid run record"
 }
 
-echo "==> #685(4): AT the cap, a code-changing disposition is rejected"
+# The regression that the criterion's "code-changing dispositions past the
+# cap" clause invites and that must NOT happen (challenge round 1,
+# confirmed): a run that spends its whole remediation budget converges with
+# the fix that caused the final loop still listed in applied_dispositions —
+# SKILL.md has the dispatched agent echo everything "accumulated so far this
+# integration stage" onto the clean pass that closes the stage. Reading that
+# as "a code change still needs applying" would refuse exactly the run that
+# converged on budget.
+echo "==> #685(4): AT the cap, a clean pass still echoing its historical fix converges"
 write_defaults
 write_at_cap_record fix sha "$head_sha"
 write_deferred_adjudication
 fix_result="$(write_disposition_result at-cap-fix fix)"
 run_gate --integrator-result "$fix_result" --remediation-cap 1
-assert_gate 1 fail remediation-capped
-printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
-    fail "#685(4) at-cap: gate did not name the code-changing disposition: $gate_out"
-
-echo "==> #685(4): AT the cap, a decline (which never moves the head) still passes"
-write_defaults
-write_at_cap_record decline comment_id 9003
-write_deferred_adjudication
-decline_result="$(write_disposition_result at-cap-decline decline)"
-run_gate --integrator-result "$decline_result" --remediation-cap 1
 assert_gate 0 pass ready
+
+echo "==> #685(4): one loop OVER the cap fails whatever the dispositions say"
+write_defaults
+write_at_cap_record fix sha "$head_sha"
+write_deferred_adjudication
+run_gate --integrator-result "$fix_result" --remediation-cap 0
+assert_gate 1 fail remediation-capped
 
 echo "==> #685(4): a non-integer --remediation-cap is a usage error, never silently ignored"
 write_defaults
@@ -1917,7 +1929,7 @@ set +e
 gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" env PATH="$restricted_bin" RECHECK_FAKE_EXIT=0 \
     "$recheck_gate" check --repo example/repo --pr 493 --head "$head_sha" \
     --record "$record_dir" --integrator-result "$clean_result" \
-    --integration-cap 1 --codex-recheck "$recheck_state" 2>&1)"
+    --integration-cap 1 --remediation-cap 4 --codex-recheck "$recheck_state" 2>&1)"
 gate_rc=$?
 set -e
 check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
@@ -1957,7 +1969,7 @@ write_defaults
 run_audit
 assert_gate 1 fail pr-draft
 
-echo "==> --record, --integrator-result, and --integration-cap are never skippable by silence"
+echo "==> --record, --integrator-result, and the two caps are never skippable by silence"
 write_defaults
 clean_result="$(write_integrator_result skip-check "$(codex_cycle_json 0)")"
 set +e
@@ -1968,32 +1980,40 @@ set -e
     fail "omitting --record and --integrator-result should exit 2, got $usage_rc: $usage_out"
 set +e
 no_record_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --integrator-result "$clean_result" --integration-cap 1 2>&1)"
+    --integrator-result "$clean_result" --integration-cap 1 --remediation-cap 4 2>&1)"
 no_record_rc=$?
 set -e
 [ "$no_record_rc" -eq 2 ] ||
     fail "omitting --record alone should exit 2, got $no_record_rc: $no_record_out"
 set +e
 no_result_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --record "$record_dir" --integration-cap 1 2>&1)"
+    --record "$record_dir" --integration-cap 1 --remediation-cap 4 2>&1)"
 no_result_rc=$?
 set -e
 [ "$no_result_rc" -eq 2 ] ||
     fail "omitting --integrator-result alone should exit 2, got $no_result_rc: $no_result_out"
 set +e
 no_cap_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
-    --record "$record_dir" --integrator-result "$clean_result" 2>&1)"
+    --record "$record_dir" --integrator-result "$clean_result" --remediation-cap 4 2>&1)"
 no_cap_rc=$?
 set -e
 [ "$no_cap_rc" -eq 2 ] ||
     fail "omitting --integration-cap alone should exit 2, got $no_cap_rc: $no_cap_out"
+set +e
+no_remediation_out="$("$gate" check --repo example/repo --pr 493 --head "$head_sha" \
+    --record "$record_dir" --integrator-result "$clean_result" --integration-cap 1 2>&1)"
+no_remediation_rc=$?
+set -e
+[ "$no_remediation_rc" -eq 2 ] ||
+    fail "omitting --remediation-cap alone should exit 2, got $no_remediation_rc: $no_remediation_out"
 
 echo "==> a short --head is a usage error, exit 2"
 write_defaults
 clean_result="$(write_integrator_result short-head "$(codex_cycle_json 0)")"
 set +e
 short_out="$("$gate" check --repo example/repo --pr 493 --head abc123 \
-    --record "$record_dir" --integrator-result "$clean_result" 2>&1)"
+    --record "$record_dir" --integrator-result "$clean_result" \
+    --integration-cap 1 --remediation-cap 4 2>&1)"
 short_rc=$?
 set -e
 [ "$short_rc" -eq 2 ] ||

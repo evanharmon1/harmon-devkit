@@ -362,6 +362,53 @@ assert_span_rejection "2026-08-29T19:00:00Z" "is after the run's promotion.promo
 rm -rf "${span_dir}"
 echo "OK: a pass produced before the run started, or after it was promoted, contributes nothing"
 
+echo "== #685: a bound that is PRESENT but malformed refuses the trajectory, never silently disabling itself =="
+# Challenge round 1, confirmed: the first version of this check treated any
+# non-string as absent, so `started_at: 12345` in a run directory that is not
+# schema-validated on this path quietly turned the bound off. Absent stays
+# absent (the fixture above proves that); present-and-wrong is terminal.
+bound_dir="$(mktemp -d)"
+# $1 = a jq program mutating run.json, $2 = the phrase the refusal must carry.
+assert_bound_refusal() {
+    rm -rf "${bound_dir:?}/"*
+    cp -r "${span_fixture}/." "${bound_dir}/"
+    jq "$1" "${bound_dir}/run/run.json" >"${bound_dir}/run/run.json.tmp"
+    mv "${bound_dir}/run/run.json.tmp" "${bound_dir}/run/run.json"
+    node scripts/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
+        --policy "${bound_dir}/policy.toml" --current-head "${span_head}" --json \
+        >"/tmp/dfe-bound-$$.out" 2>/dev/null || true
+    node -e '
+      const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+      if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
+      if (!body.reason.includes(process.argv[2])) { console.error(`reason did not name the malformed bound: ${body.reason}`); process.exit(1); }
+    ' "/tmp/dfe-bound-$$.out" "$2" || {
+        cat "/tmp/dfe-bound-$$.out" >&2
+        rm -rf "${bound_dir}" "/tmp/dfe-bound-$$.out"
+        fail "#685: a malformed bound ($1) did not refuse the trajectory"
+    }
+    rm -f "/tmp/dfe-bound-$$.out"
+}
+
+assert_bound_refusal '.started_at = 12345' "started_at is present but not a string"
+assert_bound_refusal '.promotion = "nope"' "promotion is present but not an object"
+assert_bound_refusal '.promotion = {}' "promotion has no promoted_at"
+assert_bound_refusal '.receipts[0].entered_at = 7' "entered_at is present but not a string"
+# A null promotion is the schema's own "not promoted yet", not malformed.
+rm -rf "${bound_dir:?}/"*
+cp -r "${span_fixture}/." "${bound_dir}/"
+jq '.promotion = null' "${bound_dir}/run/run.json" >"${bound_dir}/run/run.json.tmp"
+mv "${bound_dir}/run/run.json.tmp" "${bound_dir}/run/run.json"
+node scripts/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
+    --policy "${bound_dir}/policy.toml" --current-head "${span_head}" --json \
+    >"/tmp/dfe-bound-null-$$.out" 2>/dev/null || true
+[ "$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).outcome)' "/tmp/dfe-bound-null-$$.out")" = converged ] || {
+    cat "/tmp/dfe-bound-null-$$.out" >&2
+    rm -rf "${bound_dir}" "/tmp/dfe-bound-null-$$.out"
+    fail "#685: a null promotion is the not-promoted-yet case and must not refuse the trajectory"
+}
+rm -rf "${bound_dir}" "/tmp/dfe-bound-null-$$.out"
+echo "OK: a present-but-malformed bound is terminal; a null promotion is not"
+
 echo "== #685: a recorded verify -> security edge needs a cap-0 review policy, exactly like verify -> review =="
 skip_fixture="ai/schemas/fixtures/exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected"
 skip_dir="$(mktemp -d)"
