@@ -1,0 +1,692 @@
+#!/usr/bin/env bash
+# test-retro-run-report.sh — behavioural tests for the /retro skill's
+# run-evidence projection (ai/skills/universal/retro/assets/retro-run-report.mjs,
+# issue #664).
+#
+# Fully hermetic and offline. Two stubs stand in for the world:
+#   * `gh` — a PATH shim that answers `pr view`, the paginated issue/PR
+#     comments endpoint, and `api user`
+#     from canned JSON and logs every argv it was called with, so a test can
+#     assert what the asset asked for as well as what it did with the answer.
+#   * the harvester — a stub standing in for scripts/dev-flow-stats.mjs (#663),
+#     which is not on `main` yet. The stub's trajectory takes its RUN-RECORD
+#     half verbatim from ai/schemas/fixtures/run.schema/valid/*.json, so the
+#     fixture corpus stays the single description of a run's shape; the
+#     HARVEST half (rounds[], findings_by_class_and_provenance, orphan/forged
+#     comments) is literal here because those fields are computed from posted
+#     evidence payloads, not from the run record.
+#
+# The last case is the seam guard for that dependency: when the real harvester
+# IS present it asserts the CLI contract this asset calls, and skips cleanly
+# when it is not. Run via `task test:retro-run-report`.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+REPORT="$PWD/ai/skills/universal/retro/assets/retro-run-report.mjs"
+FIXTURES="$PWD/ai/schemas/fixtures/run.schema/valid"
+REAL_STATS="$PWD/scripts/dev-flow-stats.mjs"
+
+pass=0
+fail=0
+skip=0
+ok() {
+    pass=$((pass + 1))
+    echo "  ✓ $*"
+}
+bad() {
+    fail=$((fail + 1))
+    echo "  ✗ $*" >&2
+}
+skipped() {
+    skip=$((skip + 1))
+    echo "  ↷ $*"
+}
+
+TMPROOT="$(mktemp -d)"
+trap 'rm -rf "$TMPROOT"' EXIT
+
+# ---------------------------------------------------------------------------
+# Stubs and fixture plumbing
+# ---------------------------------------------------------------------------
+
+# write_file PATH CONTENT — every multi-word body below travels through a file
+# rather than an argv word list, so a marker's own spaces cannot be resplit.
+write_file() {
+    printf '%s' "$2" >"$1"
+}
+
+# marker_file PATH KIND RUN_ID STAGE DEST ROUND — one evidence comment in the
+# grammar ai/schemas/README.md "Evidence marker and digest grammar" fixes:
+# the marker line first, then the fenced payload.
+marker_file() {
+    printf '<!-- devflow:%s v2 run_id=%s stage=%s dest=%s round=%s seq=1 -->\n```json\n{}\n```\n' \
+        "$2" "$3" "$4" "$5" "$6" >"$1"
+}
+
+# make_gh DIR — a `gh` shim in DIR/bin. It reads its canned answers from
+# $GH_PR_JSON / $GH_COMMENTS_DIR and its actor id from $GH_USER_ID, and
+# appends each invocation to $GH_LOG.
+make_gh() {
+    mkdir -p "$1/bin"
+    cat >"$1/bin/gh" <<'GH_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "${1:-}" in
+pr)
+    cat "$GH_PR_JSON"
+    ;;
+api)
+    case "$*" in
+    */issues/*/comments*)
+        n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\)/comments.*|\1|p')"
+        file="${GH_COMMENTS_DIR:-/nonexistent}/$n.json"
+        if [ -f "$file" ]; then cat "$file"; else echo '[[]]'; fi
+        ;;
+    *user*)
+        if [ -z "${GH_USER_ID:-}" ]; then
+            echo "gh stub: no GH_USER_ID configured" >&2
+            exit 1
+        fi
+        printf '%s\n' "$GH_USER_ID"
+        ;;
+    *)
+        echo "gh stub: unexpected api call $*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+*)
+    echo "gh stub: unexpected command $*" >&2
+    exit 1
+    ;;
+esac
+GH_STUB
+    chmod +x "$1/bin/gh"
+}
+
+# make_stats PATH EXIT_CODE [PAYLOAD_FILE] — a harvester stub. It logs its
+# argv to $STATS_LOG, prints PAYLOAD_FILE (when given) on stdout, and exits
+# EXIT_CODE, so a test can drive the 0/1/3 branches the asset maps. Both
+# spellings exist because the asset dispatches on the extension: a `.mjs` runs
+# under node, anything else executes directly.
+make_stats() {
+    local target="$1" code="$2" payload="${3:-}"
+    if [ "${target##*.}" = "mjs" ]; then
+        cat >"$target" <<'STATS_MJS'
+#!/usr/bin/env node
+import { appendFileSync, readFileSync } from 'node:fs'
+if (process.env.STATS_LOG) appendFileSync(process.env.STATS_LOG, process.argv.slice(2).join(' ') + '\n')
+const payload = process.env.STUB_PAYLOAD
+if (payload) process.stdout.write(readFileSync(payload, 'utf8'))
+else process.stderr.write(`stub harvester: exit ${process.env.STUB_EXIT}\n`)
+process.exitCode = Number(process.env.STUB_EXIT)
+STATS_MJS
+    else
+        cat >"$target" <<'STATS_SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${STATS_LOG:-/dev/null}"
+if [ -n "${STUB_PAYLOAD:-}" ]; then cat "$STUB_PAYLOAD"; else echo "stub harvester: exit $STUB_EXIT" >&2; fi
+exit "$STUB_EXIT"
+STATS_SH
+    fi
+    chmod +x "$target"
+    STUB_EXIT="$code"
+    STUB_PAYLOAD="$payload"
+    export STUB_EXIT STUB_PAYLOAD
+}
+
+# make_trajectory FIXTURE OUT — compose the trajectory the harvester would
+# return for FIXTURE: run-record fields read from the fixture, harvest fields
+# supplied by $ROUNDS_JSON / $CLASSES_JSON / $ORPHANS_JSON / $ISSUE_NUMBER.
+make_trajectory() {
+    node -e '
+      const fs = require("node:fs")
+      const [fixture, out] = process.argv.slice(1)
+      const run = JSON.parse(fs.readFileSync(fixture, "utf8"))
+      const trajectory = {
+        run_id: run.run_id,
+        issue: Number(process.env.ISSUE_NUMBER || 0),
+        initiated_by: run.initiated_by,
+        started_at: run.started_at,
+        outcome: run.outcome,
+        pr: run.pr,
+        promotion: run.promotion,
+        stage_transitions: run.stage_transitions,
+        interventions: run.interventions,
+        settlements: run.settlements,
+        rounds: JSON.parse(process.env.ROUNDS_JSON || "[]"),
+        findings_by_class_and_provenance: JSON.parse(process.env.CLASSES_JSON || "{}"),
+        orphan_comments: JSON.parse(process.env.ORPHANS_JSON || "[]"),
+        forged_comments: JSON.parse(process.env.FORGED_JSON || "[]")
+      }
+      fs.writeFileSync(out, JSON.stringify(trajectory, null, 2))
+    ' "$1" "$2"
+}
+
+POLICY_SECTION='<!-- dev-flow:begin:policy-disclosure -->
+rigor: `standard` (`default_rigor`) → challenge ≤3, review ≤3, integration 4, remediation 4, min_rounds 1
+
+- cap-below-default: challenge lowered to 2 by the rigor:light label
+<!-- dev-flow:end:policy-disclosure -->'
+
+# make_pr_json OUT BODY_FILE — a `gh pr view --json` answer. $CLOSING supplies
+# closingIssuesReferences. Comments do NOT come from here: the asset reads them
+# through the paginated REST endpoint instead (see set_comments).
+make_pr_json() {
+    CLOSING="${CLOSING:-[]}" node -e '
+      const fs = require("node:fs")
+      const [out, bodyFile] = process.argv.slice(1)
+      fs.writeFileSync(out, JSON.stringify({
+        number: 900,
+        url: "https://github.com/o/r/pull/900",
+        title: "feat(x): y",
+        state: "OPEN",
+        isDraft: true,
+        body: fs.readFileSync(bodyFile, "utf8"),
+        closingIssuesReferences: JSON.parse(process.env.CLOSING)
+      }, null, 2))
+    ' "$1" "$2"
+}
+
+# set_comments DIR NUMBER COMMENT_FILE... — the answer the gh stub serves for
+# `repos/o/r/issues/NUMBER/comments`. Written as an array of PAGES, which is
+# what `gh api --paginate --slurp` returns; $PAGE_PER_COMMENT=1 puts each
+# comment on its own page, so a test can prove the pages are flattened.
+set_comments() {
+    local dir="$1" number="$2"
+    shift 2
+    mkdir -p "$dir"
+    node -e '
+      const fs = require("node:fs")
+      const [out, ...files] = process.argv.slice(1)
+      const comments = files.map((file, i) => ({
+        id: 1000 + i,
+        user: { login: "evanharmon1" },
+        body: fs.readFileSync(file, "utf8")
+      }))
+      const pages = process.env.PAGE_PER_COMMENT === "1" ? comments.map((c) => [c]) : [comments]
+      fs.writeFileSync(out, JSON.stringify(pages))
+    ' "$dir/$number.json" "$@"
+}
+
+# run_report ENVDIR [args...] — run the asset with the stub PATH in place,
+# capturing stdout/stderr/exit code into OUT/ERR/RC.
+run_report() {
+    local dir="$1"
+    shift
+    RC=0
+    OUT="$(PATH="$dir/bin:$PATH" node "$REPORT" "$@" 2>"$dir/stderr")" || RC=$?
+    ERR="$(cat "$dir/stderr")"
+}
+
+contains() {
+    printf '%s' "$1" | grep -qF -- "$2"
+}
+
+# ---------------------------------------------------------------------------
+# 1. No harvester in the checkout — the ordinary consumer-repo case
+# ---------------------------------------------------------------------------
+
+echo "==> a checkout with no harvester falls back (exit 10)"
+bare="$TMPROOT/bare"
+mkdir -p "$bare"
+make_gh "$bare"
+git init -q -b main "$bare/repo"
+RC=0
+OUT="$(cd "$bare/repo" && PATH="$bare/bin:$PATH" node "$REPORT" --repo o/r --pr 900 2>"$bare/stderr")" || RC=$?
+ERR="$(cat "$bare/stderr")"
+[ "$RC" -eq 10 ] && contains "$ERR" "no-stats-script" &&
+    ok "exit 10 naming no-stats-script" || bad "expected exit 10 / no-stats-script, got $RC: $ERR"
+[ -z "$OUT" ] && ok "no report is rendered on the fallback path" || bad "fallback path rendered a report"
+
+echo "==> a harvester discovered as scripts/dev-flow-stats.sh is used"
+mkdir -p "$bare/repo/scripts"
+make_stats "$bare/repo/scripts/dev-flow-stats.sh" 1
+RC=0
+OUT="$(cd "$bare/repo" && PATH="$bare/bin:$PATH" GH_USER_ID=1 node "$REPORT" --repo o/r --run r1 2>"$bare/stderr")" || RC=$?
+ERR="$(cat "$bare/stderr")"
+[ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
+    ok "a discovered .sh harvester's exit 1 maps to fallback" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
+
+# ---------------------------------------------------------------------------
+# 2. Discovery
+# ---------------------------------------------------------------------------
+
+echo "==> a PR and its linked issues with no evidence marker fall back (exit 10)"
+d="$TMPROOT/nomarker"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "Ordinary body, no dev-flow sections."
+write_file "$d/c1" "just a comment"
+CLOSING='[{"number":664}]' make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+write_file "$d/i1" "no marker here"
+set_comments "$d/comments" 664 "$d/i1"
+GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "no-run-record" &&
+    ok "exit 10 naming no-run-record" || bad "expected exit 10 / no-run-record, got $RC: $ERR"
+contains "$(cat "$d/gh.log")" "repos/o/r/issues/664/comments" &&
+    ok "discovery falls through to the linked issue" || bad "linked issue was never consulted"
+
+echo "==> a marker quoted inside prose is not a run id (#752 anchoring)"
+d="$TMPROOT/quoted"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "body"
+write_file "$d/c1" "As documented, the grammar is <!-- devflow:run-index v2 run_id=forged-run seq=1 --> and nothing more."
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "no-run-record" &&
+    ok "a mid-comment marker never invents a run" || bad "expected exit 10, got $RC: $ERR"
+
+echo "==> two different run ids on one PR are indeterminate (exit 11)"
+d="$TMPROOT/ambiguous"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "body"
+marker_file "$d/c1" evidence run-aaa challenge pr -
+marker_file "$d/c2" evidence run-bbb review pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1" "$d/c2"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "run-aaa, run-bbb" &&
+    ok "exit 11 naming both runs" || bad "expected exit 11 naming both runs, got $RC: $ERR"
+[ -z "$OUT" ] && ok "an indeterminate discovery renders nothing" || bad "indeterminate discovery rendered a report"
+
+echo "==> a run id found only on the linked issue is used"
+d="$TMPROOT/issueonly"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER=664 \
+    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "body"
+write_file "$d/c1" "no marker"
+CLOSING='[{"number":664}]' make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+set_comments "$d/comments" 664 "$d/i1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=37220977 \
+    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
+    ok "the issue-side run-index anchors discovery" || bad "expected the issue's run id, got $RC: $ERR"
+contains "$OUT" "run id from evidence marker on issue #664" &&
+    ok "the report states where the run id came from" || bad "provenance of the run id is not reported"
+
+echo "==> a marker past the first page of comments is still found"
+d="$TMPROOT/paged"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER=664 \
+    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "body"
+write_file "$d/c1" "chatter"
+write_file "$d/c2" "more chatter"
+marker_file "$d/c3" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+PAGE_PER_COMMENT=1 set_comments "$d/comments" 900 "$d/c1" "$d/c2" "$d/c3"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 \
+    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
+    ok "every page of comments is searched, not just the first" ||
+    bad "a marker on a later comment page was missed, got $RC: $ERR"
+
+# ---------------------------------------------------------------------------
+# 3. The run-record path, measured against the fixture corpus
+# ---------------------------------------------------------------------------
+
+echo "==> the run-record path renders every fixed section"
+d="$TMPROOT/full"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER=664 \
+    ROUNDS_JSON='[
+      {"stage":"challenge","round":1,"pass_count":1,"finding_count":3,"has_adjudication":true},
+      {"stage":"challenge","round":2,"pass_count":1,"finding_count":1,"has_adjudication":true},
+      {"stage":"review","round":1,"pass_count":1,"finding_count":0,"has_adjudication":false}
+    ]' \
+    CLASSES_JSON='{"correctness/original":2,"hardening/original":1,"design/round:1":1}' \
+    ORPHANS_JSON='[{"id":1,"actor_id":9}]' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "What/why.
+
+$POLICY_SECTION
+"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+GH_LOG="$d/gh.log" STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=37220977 \
+    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+
+for needle in \
+    '## Run evidence — run `run-6001-further-along`' \
+    '### Policy the run was reviewed under' \
+    '### Stage `challenge`' \
+    '### Stage `review`' \
+    '### Findings by class and provenance' \
+    '### Overrides' \
+    '### Interventions' \
+    '### Deferred findings settled' \
+    '### Evidence integrity' \
+    "### Not measurable from this run's evidence"; do
+    contains "$OUT" "$needle" && ok "section: $needle" || bad "missing section: $needle"
+done
+
+contains "$OUT" 'rigor: `standard` (`default_rigor`) → challenge ≤3, review ≤3, integration 4, remediation 4, min_rounds 1' &&
+    ok "the run's own disclosed policy line is echoed" || bad "the policy line was not read back"
+contains "$OUT" "- Rounds spent: 2 / cap 3" &&
+    ok "challenge rounds are reported against the disclosed cap" || bad "challenge rounds-vs-cap missing"
+contains "$OUT" "- Rounds spent: 1 / cap 3" &&
+    ok "review rounds are reported against the disclosed cap" || bad "review rounds-vs-cap missing"
+contains "$OUT" '### Stage `plan`' &&
+    ok "a non-confidence stage still gets its own section" || bad "the plan stage has no section"
+contains "$OUT" "- Rounds spent: 0 / no cap recorded" &&
+    bad "a stage with neither a cap nor a round still printed round lines" ||
+    ok "a stage with neither a cap nor a round prints no round lines"
+contains "$OUT" "- Rounds spent: 0 / cap 4" &&
+    ok "a capped stage that ran no round still reports 0 against its cap" ||
+    bad "a capped stage with no rounds dropped its round line"
+contains "$OUT" "- Rounds with no adjudication record: 1" &&
+    ok "a round with no adjudication is named" || bad "unadjudicated round not reported"
+contains "$OUT" "| correctness | original | 2 |" &&
+    ok "class/provenance counts render" || bad "class/provenance table missing a row"
+contains "$OUT" "| design | round:1 | 1 |" &&
+    ok "a round:N provenance survives the class/provenance split" || bad "round:N provenance mangled"
+contains "$OUT" "- cap-below-default: challenge lowered to 2 by the rigor:light label" &&
+    ok "the published disclosure is reported as an override" || bad "disclosure not reported under Overrides"
+contains "$OUT" "answered the implementer's blocked_question" &&
+    ok "interventions are listed" || bad "interventions missing"
+contains "$OUT" "| 2026-08-20T10:00:00Z | asked | implement |" &&
+    ok "an intervention is attributed to the stage that was open" || bad "intervention stage attribution wrong"
+contains "$OUT" "codex-cli" &&
+    ok "a settlement's finder slug is recovered from its finding id" || bad "finder slug not recovered"
+contains "$OUT" "Trusted-but-unlisted comments: 1" &&
+    ok "orphan comments are counted" || bad "orphan comment count missing"
+contains "$OUT" "harmon-devkit#753" &&
+    ok "the override-detail gap names its follow-up issue" || bad "override gap not named"
+contains "$OUT" "keyed by stage" &&
+    ok "the run-wide class/provenance limitation is stated" || bad "class/provenance limitation not stated"
+contains "$(cat "$d/stats.log")" "--trusted-actor-id 37220977" &&
+    ok "the authenticated actor id is the default trust root" || bad "default trusted actor id not passed"
+
+echo "==> an explicit --trusted-actor-id replaces the authenticated default"
+d="$TMPROOT/trusted"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER=664 make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "body"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+GH_LOG="$d/gh.log" STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs" --trusted-actor-id 424242
+[ "$RC" -eq 0 ] && ok "exit 0 without an authenticated-user lookup" || bad "expected exit 0, got $RC: $ERR"
+contains "$(cat "$d/stats.log")" "--trusted-actor-id 424242" &&
+    ok "the supplied id reaches the harvester" || bad "supplied trusted actor id not passed through"
+contains "$(cat "$d/gh.log")" "api user" &&
+    bad "gh api user was called despite an explicit --trusted-actor-id" ||
+    ok "gh api user is not called when the caller supplies the trust root"
+
+echo "==> a PR body with no policy-disclosure section reports the caps unknown"
+d="$TMPROOT/nopolicy"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER=664 \
+    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "No dev-flow sections at all."
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "Caps unknown" &&
+    ok "the caps are reported unknown rather than guessed from .devflow.toml" || bad "caps were not reported unknown"
+contains "$OUT" "- Rounds spent: 1 / no cap recorded" &&
+    ok "rounds are reported without a denominator" || bad "unknown-cap denominator wrong"
+contains "$OUT" "Unknown — the PR body published no policy-disclosure section" &&
+    ok "overrides are unknown, not 'none'" || bad "overrides wrongly reported as none"
+
+echo "==> two policy-disclosure sections in one body are ambiguous, not first-wins"
+d="$TMPROOT/dualpolicy"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER=664 \
+    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "$POLICY_SECTION
+
+$POLICY_SECTION"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 \
+    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "more than one policy-disclosure section" &&
+    ok "a duplicated section reports the caps unknown rather than picking one" ||
+    bad "a duplicated policy-disclosure section was silently resolved first-wins"
+
+echo "==> a stage entered twice collapses into one section (remediation loop)"
+d="$TMPROOT/loop"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER=664 \
+    ROUNDS_JSON='[
+      {"stage":"challenge","round":1,"pass_count":1,"finding_count":2,"has_adjudication":true},
+      {"stage":"challenge","round":2,"pass_count":1,"finding_count":0,"has_adjudication":true}
+    ]' \
+    make_trajectory "$FIXTURES/remediation-loop.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "body"
+marker_file "$d/c1" evidence run-6058-remediation-loop challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+[ "$(printf '%s\n' "$OUT" | grep -c '^### Stage `challenge`$')" -eq 1 ] &&
+    ok "the re-entered stage has exactly one section" || bad "a re-entered stage rendered more than one section"
+[ "$(printf '%s\n' "$OUT" | grep -c '^### Stage `implement`$')" -eq 1 ] &&
+    ok "the re-entered implement stage has exactly one section" || bad "implement rendered more than one section"
+contains "$OUT" "exit: P1 found, back to implement" &&
+    ok "both of the stage's exits are listed" || bad "a re-entered stage's exits were dropped"
+contains "$OUT" '- Outcome: `in-flight`' &&
+    ok "a run with no outcome renders in-flight" || bad "null outcome mis-rendered"
+contains "$OUT" "None — the run reached its outcome unattended." &&
+    ok "a run with no interventions says so" || bad "empty interventions mis-rendered"
+
+echo "==> the machine form carries the same measurements"
+d="$TMPROOT/json"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER=664 \
+    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":3,"has_adjudication":true}]' \
+    CLASSES_JSON='{"correctness/original":3}' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "$POLICY_SECTION"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+printf '%s' "$OUT" >"$d/report.json"
+node -e '
+  const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))
+  const problems = []
+  if (report.schema !== "retro-run-report.v1") problems.push("schema")
+  if (report.run_id !== "run-6001-further-along") problems.push("run_id")
+  if (report.policy.rounds.challenge !== 3) problems.push("policy.rounds.challenge")
+  const challenge = report.measurements.stages.find((s) => s.stage === "challenge")
+  if (!challenge || challenge.rounds_spent !== 1 || challenge.cap !== 3) problems.push("stages.challenge")
+  if (report.measurements.settlements[0].finder !== "codex-cli") problems.push("settlements.finder")
+  if (!report.unavailable.some((g) => g.issue.includes("753"))) problems.push("unavailable")
+  if (problems.length > 0) { console.error(problems.join(", ")); process.exit(1) }
+' "$d/report.json" &&
+    ok "the JSON form carries schema, policy, stages, settlements and gaps" ||
+    bad "the JSON form is missing fields"
+
+# ---------------------------------------------------------------------------
+# 4. Harvester failure modes
+# ---------------------------------------------------------------------------
+
+echo "==> a harvester that reports the run indeterminate exits 11 and renders nothing"
+d="$TMPROOT/indet"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 3
+write_file "$d/body" "body"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && ok "exit 11" || bad "expected exit 11, got $RC: $ERR"
+[ -z "$OUT" ] && ok "nothing is rendered" || bad "an indeterminate harvest rendered a report"
+contains "$ERR" "indeterminate" && ok "the reason names indeterminacy" || bad "stderr does not say indeterminate"
+
+echo "==> a harvester that cannot find the run falls back (exit 10)"
+d="$TMPROOT/notfound"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 1
+write_file "$d/body" "body"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
+    ok "exit 10 naming run-not-found" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
+
+echo "==> a harvester crash is an operational error, never a silent fallback"
+d="$TMPROOT/crash"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 2
+write_file "$d/body" "body"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" 900 "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+[ "$RC" -eq 1 ] && ok "exit 1" || bad "expected exit 1, got $RC: $ERR"
+
+echo "==> usage errors exit 2"
+d="$TMPROOT/usage"
+mkdir -p "$d"
+make_gh "$d"
+run_report "$d" --repo o/r
+[ "$RC" -eq 2 ] && ok "--pr or --run is required" || bad "expected exit 2, got $RC"
+run_report "$d" --repo not-a-slug --pr 1
+[ "$RC" -eq 2 ] && ok "--repo must be owner/repo" || bad "expected exit 2, got $RC"
+run_report "$d" --repo o/r --pr 900 --stats-script "$TMPROOT/absent.mjs"
+[ "$RC" -eq 2 ] && ok "--stats-script must exist" || bad "expected exit 2, got $RC"
+
+# ---------------------------------------------------------------------------
+# 5. Seam guard: the real harvester's CLI contract, when it is present
+# ---------------------------------------------------------------------------
+#
+# #664 depends on #663's CLI, which is not on `main` yet. When the harvester
+# lands, this asserts the exact flag set this asset sends is still accepted:
+# a usage exit (2) here means the contract drifted, while "run not found" (1)
+# means the flags parsed and only the fixture run is missing.
+
+echo "==> the real harvester still accepts the flags this asset sends"
+if [ ! -f "$REAL_STATS" ]; then
+    skipped "scripts/dev-flow-stats.mjs is not in this checkout (#663 not merged)"
+else
+    d="$TMPROOT/contract"
+    mkdir -p "$d/bin"
+    cat >"$d/bin/gh" <<'CONTRACT_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo '[]'
+CONTRACT_GH
+    chmod +x "$d/bin/gh"
+    RC=0
+    PATH="$d/bin:$PATH" node "$REAL_STATS" --repo o/r --run no-such-run --json \
+        --trusted-actor-id 1 --as-of 2026-01-01T00:00:00Z >/dev/null 2>"$d/stderr" || RC=$?
+    if [ "$RC" -eq 2 ]; then
+        bad "the harvester rejected this asset's flag set as a usage error: $(cat "$d/stderr")"
+    else
+        ok "the flag set parses (exit $RC, not a usage error)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Seam guard: the renderer's own published policy line
+# ---------------------------------------------------------------------------
+#
+# The caps in the report are parsed out of the section
+# scripts/render-dev-flow.mjs publishes into the PR body. Binding that parse to
+# the renderer's OWN golden fixture is what turns a future grammar change from
+# a silent "caps unknown" into a failing test.
+
+echo "==> the renderer's golden policy-disclosure output still parses"
+GOLDEN="$PWD/ai/schemas/fixtures/render/golden/policy-disclosure.txt"
+if [ ! -f "$GOLDEN" ]; then
+    skipped "ai/schemas/fixtures/render/golden/policy-disclosure.txt is absent"
+else
+    d="$TMPROOT/golden"
+    mkdir -p "$d"
+    make_gh "$d"
+    ISSUE_NUMBER=664 \
+        ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
+        make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+    make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+    {
+        echo "<!-- dev-flow:begin:policy-disclosure -->"
+        cat "$GOLDEN"
+        echo "<!-- dev-flow:end:policy-disclosure -->"
+    } >"$d/body"
+    marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+    make_pr_json "$d/pr.json" "$d/body"
+    set_comments "$d/comments" 900 "$d/c1"
+    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 \
+        run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs" --json
+    if [ "$RC" -ne 0 ]; then
+        bad "expected exit 0, got $RC: $ERR"
+    else
+        printf '%s' "$OUT" >"$d/report.json"
+        node -e '
+          const fs = require("node:fs")
+          const report = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+          const golden = fs.readFileSync(process.argv[2], "utf8")
+          const problems = []
+          if (!report.policy.present) {
+            problems.push(`policy not parsed: ${report.policy.reason}`)
+          } else {
+            if (report.policy.rigor.level !== "standard") problems.push("rigor.level")
+            if (report.policy.rigor.source !== "default_rigor") problems.push("rigor.source")
+            const want = { challenge: 3, review: 3, integration: 4, remediation: 4, min_rounds: 1 }
+            for (const key of Object.keys(want)) {
+              if (report.policy.rounds[key] !== want[key]) problems.push("rounds." + key)
+            }
+            const bullets = golden.split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2))
+            if (JSON.stringify(report.policy.disclosures) !== JSON.stringify(bullets)) problems.push("disclosures")
+          }
+          if (problems.length > 0) { console.error(problems.join(", ")); process.exit(1) }
+        ' "$d/report.json" "$GOLDEN" &&
+            ok "the golden rigor line and its disclosure bullets round-trip" ||
+            bad "the renderer's golden policy-disclosure no longer parses"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "retro-run-report: $pass passed, $fail failed, $skip skipped"
+[ "$fail" -eq 0 ]

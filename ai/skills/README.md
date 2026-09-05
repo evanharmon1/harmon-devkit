@@ -18,7 +18,7 @@ ai/skills/
 │   ├── implement/SKILL.md   # /implement — claimed issue → draft PR via the dev loop, then hands off
 │   ├── gauntlet/SKILL.md    # /gauntlet — second-model review to convergence → draft PR
 │   ├── integrate/SKILL.md   # /integrate — integrate a draft PR to ready for review
-│   ├── retro/SKILL.md       # /retro — end-of-session retro + status tables
+│   ├── retro/SKILL.md       # /retro — end-of-session retro: run evidence + status tables
 │   ├── wrap/SKILL.md        # /wrap — wrap up + rename done-<name>
 │   ├── triage/SKILL.md      # /triage — manifest-governed backlog classifier
 │   ├── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
