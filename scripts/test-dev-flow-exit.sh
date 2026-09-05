@@ -409,6 +409,41 @@ node scripts/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
 rm -rf "${bound_dir}" "/tmp/dfe-bound-null-$$.out"
 echo "OK: a present-but-malformed bound is terminal; a null promotion is not"
 
+echo "== #685: a present-but-non-array receipts/slot_failures is a structured indeterminate, never a stack trace =="
+# Review round 1 (P2), confirmed and reproduced: `receipts` is read before
+# validateReceipts applies its own Array.isArray guard, so a non-array value
+# threw a raw TypeError — exit 1, EMPTY stdout under --json — exactly where
+# the machine contract promises a structured body on every exit.
+array_dir="$(mktemp -d)"
+# $1 = jq program poisoning run.json, $2 = the phrase the refusal must carry.
+assert_array_refusal() {
+    rm -rf "${array_dir:?}/"*
+    cp -r "${span_fixture}/." "${array_dir}/"
+    jq "$1" "${array_dir}/run/run.json" >"${array_dir}/run/run.json.tmp"
+    mv "${array_dir}/run/run.json.tmp" "${array_dir}/run/run.json"
+    node scripts/dev-flow-exit.mjs --run "${array_dir}/run" --stage review \
+        --policy "${array_dir}/policy.toml" --current-head "${span_head}" --json \
+        >"/tmp/dfe-array-$$.out" 2>/dev/null || true
+    node -e '
+      const fs = require("node:fs");
+      const raw = fs.readFileSync(process.argv[1], "utf8");
+      if (raw.trim() === "") { console.error("--json produced NO stdout body at all"); process.exit(1); }
+      const body = JSON.parse(raw);
+      if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
+      if (!body.reason.includes(process.argv[2])) { console.error(`reason did not name the malformed field: ${body.reason}`); process.exit(1); }
+    ' "/tmp/dfe-array-$$.out" "$2" || {
+        cat "/tmp/dfe-array-$$.out" >&2
+        rm -rf "${array_dir}" "/tmp/dfe-array-$$.out"
+        fail "#685: a non-array collection ($1) did not produce a structured indeterminate"
+    }
+    rm -f "/tmp/dfe-array-$$.out"
+}
+
+assert_array_refusal '.receipts = {"kind":"transition"}' "receipts is present but not an array"
+assert_array_refusal '.slot_failures = "none"' "slot_failures is present but not an array"
+rm -rf "${array_dir}"
+echo "OK: a malformed receipts/slot_failures collection exits with a verdict body, not a stack trace"
+
 echo "== #685: a recorded verify -> security edge needs a cap-0 review policy, exactly like verify -> review =="
 skip_fixture="ai/schemas/fixtures/exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected"
 skip_dir="$(mktemp -d)"

@@ -140,6 +140,26 @@ function loadRunDir(dir) {
   const runRecordPath = path.join(dir, "run.json");
   if (!existsSync(runRecordPath)) throw new ExitIndeterminate(`run directory ${dir} has no run.json`);
   const runRecord = loadJson(runRecordPath);
+  // `receipts` is read by several callers before validateReceipts ever gets
+  // to apply its own Array.isArray guard — latestActiveStage's for...of is
+  // the first — so a present-but-non-array value threw a raw TypeError, and
+  // under --json that means exit 1 with EMPTY stdout and a stack trace,
+  // exactly where the machine contract promises a structured indeterminate
+  // body on every exit. Review round 1 (P2), confirmed and reproduced;
+  // pre-existing rather than introduced here, but this is the one place that
+  // can settle it for every reader at once. Absent stays absent (the array
+  // is optional); present-and-wrong is terminal, the same rule the
+  // chronology bounds already follow.
+  if (runRecord.receipts !== undefined && !Array.isArray(runRecord.receipts)) {
+    throw new ExitIndeterminate(
+      `run.json's receipts is present but not an array (${JSON.stringify(runRecord.receipts)}) — the trusted receipt sequence cannot be read`,
+    );
+  }
+  if (runRecord.slot_failures !== undefined && !Array.isArray(runRecord.slot_failures)) {
+    throw new ExitIndeterminate(
+      `run.json's slot_failures is present but not an array (${JSON.stringify(runRecord.slot_failures)}) — cannot tell an exhausted slot from an unrecorded one`,
+    );
+  }
 
   const passesDir = path.join(dir, "passes");
   const passes = existsSync(passesDir)
