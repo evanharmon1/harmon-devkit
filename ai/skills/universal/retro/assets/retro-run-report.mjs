@@ -411,7 +411,14 @@ function resolveTrustedActorArgs(args) {
       'at least one --trusted-actor-id or --trusted-actors-file entry is required — a marker only names a run if a configured trusted orchestrator posted it, and there is deliberately no "whoever is logged in" default (harmon-devkit#741 will supply the allowlist from agent-registry.json)'
     )
   }
-  return { passthrough, ids, source: 'supplied on the command line' }
+  // Name the ids, not just their provenance. "Supplied on the command line"
+  // cannot be reproduced or audited from a pasted retro, and it is exactly
+  // what a reader needs in order to tell a misconfigured allowlist from a
+  // hostile marker when the ignored-marker count is nonzero (review round 3,
+  // confirmed P2).
+  const listed = [...ids].sort((a, b) => a - b).join(', ')
+  const from = args.trustedActorsFile ? ` (including ${args.trustedActorsFile})` : ''
+  return { passthrough, ids, source: `actor id(s) ${listed}${from}` }
 }
 
 // ---------------------------------------------------------------------------

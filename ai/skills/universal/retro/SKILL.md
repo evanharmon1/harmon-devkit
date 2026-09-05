@@ -85,7 +85,9 @@ capped before its PR existed has no PR to discover from — its record is on the
 issue, and note that an id supplied this way is *unverified*: nothing checks it
 against a marker); `--as-of <iso8601>` to reconstruct the run as it stood at an
 earlier instant, which filters discovery's comments by the same cutoff;
-`--json` for the machine form.
+`--json` for the machine form; and `--stats-script <path>` to point at a
+harvester this checkout does not carry at the usual place — the case below,
+where the repository has not vendored `scripts/dev-flow-stats.*` at all.
 
 **Branch on the exit code. Do not read the text and guess.**
 
@@ -330,9 +332,17 @@ Retro of Dev flow v2 run `<run_id>` (issue #<n>, PR #<n>), `<stage>` stage.
 Where §1 fell back, provenance says which fallback it was — the two are not
 interchangeable, and only one of them may claim there was no run record:
 
-- **Exit 10** — "Retro of the session on `<date>`; the PR carried no Dev flow
-  v2 run record." That is the honest "no measurement behind this", and it is
-  worth more than a run id that does not exist.
+- **Exit 10, `no-run-record`** — "Retro of the session on `<date>`; the PR and
+  its linked issues carried no Dev flow v2 evidence marker." That is the honest
+  "no measurement behind this", and it is worth more than a run id that does
+  not exist. It is the **only** wording that asserts a run record was absent,
+  because it is the only case where the tool actually looked for one.
+- **Exit 10, `run-not-found`** — "Retro of the session on `<date>`; the run id
+  `<id>` supplied to the helper was not found, and no marker discovery was
+  run." Do not write "there was no run record": a `--run` invocation skips
+  discovery entirely, so a mistyped id, or the documented pre-PR case where
+  the record lives on the issue, would otherwise be tracked forever as an
+  absence nobody established.
 - **Exit 12** — "Retro of the session on `<date>`; a run record may exist but
   this checkout has no `scripts/dev-flow-stats.*` to read it, so the run was
   not measured." Never write "there was no run record" here: §1 exits 12

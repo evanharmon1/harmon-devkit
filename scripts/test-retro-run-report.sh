@@ -903,6 +903,45 @@ contains "$OUT" "belongs to stage" &&
     bad "a multi-stage run claimed single-stage attribution" ||
     ok "no single-stage claim is made when two stages found things"
 
+echo "==> the report names the actual trust root, not just where it came from"
+d="$TMPROOT/trustnamed"
+scaffold "$d" further-along "body"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --trusted-actor-id "$ACTOR"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "actor id(s) $ACTOR" &&
+    ok "the trust root names the id, so a pasted retro is auditable" ||
+    bad "the trust root is reported without its ids"
+contains "$OUT" "supplied on the command line" &&
+    bad "the trust root still reports only its provenance" ||
+    ok "the unauditable placeholder is gone"
+
+echo "==> an actors file is named alongside its ids"
+d="$TMPROOT/trustfile"
+scaffold "$d" further-along "body"
+COMMENT_ACTOR=555555 set_comments "$d/comments" "$PR" "$d/c1"
+echo '{"trusted_actor_ids":[555555,111]}' >"$d/actors.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --trusted-actors-file "$d/actors.json"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "actor id(s) 111, 555555" &&
+    ok "file-supplied ids are normalized, sorted and reported" ||
+    bad "file-supplied ids are not in the report"
+contains "$OUT" "$d/actors.json" &&
+    ok "the actors file is named too" || bad "the actors file source is not reported"
+
+echo "==> the skill gives run-not-found its own provenance wording"
+grep -q 'Exit 10, `run-not-found`' ai/skills/universal/retro/SKILL.md &&
+    ok "run-not-found has provenance wording of its own" ||
+    bad "run-not-found shares the no-run-record provenance wording"
+grep -A 6 'Exit 10, `run-not-found`' ai/skills/universal/retro/SKILL.md |
+    grep -q 'Do not write "there was no run record"' &&
+    ok "that wording forbids the unestablished absence claim" ||
+    bad "the run-not-found wording still permits claiming no run record"
+grep -q -- '--stats-script <path>' ai/skills/universal/retro/SKILL.md &&
+    ok "--stats-script is documented in the skill, not only in --help" ||
+    bad "--stats-script is an undocumented escape hatch"
+
 # ---------------------------------------------------------------------------
 # 4. Harvester failure modes and usage
 # ---------------------------------------------------------------------------
