@@ -2,6 +2,34 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+
+assert_repo_link() {
+    local path="$1"
+    local expected="$2"
+
+    if [ ! -L "$repo_root/$path" ]; then
+        echo "test-agent-skill-links: missing dogfood link: $path" >&2
+        exit 1
+    fi
+    if [ "$(readlink "$repo_root/$path")" != "$expected" ]; then
+        echo "test-agent-skill-links: wrong dogfood target: $path" >&2
+        exit 1
+    fi
+    if [ ! -e "$repo_root/$path" ]; then
+        echo "test-agent-skill-links: dangling dogfood link: $path" >&2
+        exit 1
+    fi
+}
+
+assert_repo_link .agents/skills/review ../../ai/skills/universal/review
+assert_repo_link .agents/skills/orchestrator ../../ai/skills/universal/orchestrator
+assert_repo_link .claude/agents/challenger.md ../../ai/agents/challenger.md
+assert_repo_link .claude/agents/reviewer.md ../../ai/agents/reviewer.md
+if [ -e "$repo_root/.agents/skills/gauntlet" ] || [ -L "$repo_root/.agents/skills/gauntlet" ]; then
+    echo "test-agent-skill-links: retired gauntlet dogfood link remains" >&2
+    exit 1
+fi
+
 fixture="$(mktemp -d -t agent-skill-links-XXXXXX)"
 trap 'rm -rf "$fixture"' EXIT
 cd "$fixture"

@@ -70,7 +70,7 @@
 //                         silently wrong rather than merely thin.
 //   verdict.json          Optional. The exit-computation verdict (#636):
 //                         {outcome, reason, rounds_counted, next_round,
-//                         corrections[]}, consumed as-is.
+//                         corrections[], verified_findings[]}, consumed as-is.
 //   policy.json           Optional. Resolved-policy disclosure input (this
 //                         script's own contract, since no upstream schema
 //                         defines one yet):
@@ -389,12 +389,93 @@ function validateVerdictShape(verdict, file) {
   if (verdict.rounds_counted !== undefined && !(Number.isInteger(verdict.rounds_counted) && verdict.rounds_counted >= 0)) {
     fail(`${file}: rounds_counted, if present, must be a non-negative integer`)
   }
-  if (verdict.next_round !== undefined && !(Number.isInteger(verdict.next_round) && verdict.next_round >= 1)) {
-    fail(`${file}: next_round, if present, must be a positive integer`)
+  if (
+    verdict.next_round !== undefined &&
+    verdict.next_round !== null &&
+    !(Number.isInteger(verdict.next_round) && verdict.next_round >= 1)
+  ) {
+    fail(`${file}: next_round, if present, must be null or a positive integer`)
+  }
+  if (verdict.incomplete_round !== undefined && !(Number.isInteger(verdict.incomplete_round) && verdict.incomplete_round >= 1)) {
+    fail(`${file}: incomplete_round, if present, must be a positive integer`)
+  }
+  if (verdict.retained_rounds !== undefined) {
+    if (verdict.stage !== 'challenge' && verdict.stage !== 'review') {
+      fail(`${file}: stage must be challenge or review when retained_rounds is present`)
+    }
+    if (verdict.verified_findings === undefined) {
+      fail(`${file}: retained_rounds requires verified_findings`)
+    }
+    if (
+      !Array.isArray(verdict.retained_rounds) ||
+      !verdict.retained_rounds.every((round) => Number.isInteger(round) && round >= 1)
+    ) {
+      fail(`${file}: retained_rounds, if present, must be an array of positive integers`)
+    }
+    for (let index = 1; index < verdict.retained_rounds.length; index += 1) {
+      if (verdict.retained_rounds[index - 1] >= verdict.retained_rounds[index]) {
+        fail(`${file}: retained_rounds must be strictly increasing and unique`)
+      }
+    }
+  }
+  if (verdict.partial_findings !== undefined) {
+    if (
+      (verdict.reason !== 'finder_unavailable' && verdict.reason !== 'breadth_exhausted') ||
+      (verdict.stage !== 'challenge' && verdict.stage !== 'review') ||
+      !(Number.isInteger(verdict.incomplete_round) && verdict.incomplete_round >= 1)
+    ) {
+      fail(`${file}: partial_findings requires a confidence-stage finder-exhaustion blocker and incomplete_round`)
+    }
+    if (!Array.isArray(verdict.partial_findings)) {
+      fail(`${file}: partial_findings, if present, must be an array`)
+    }
+    const seen = new Set()
+    for (const findingId of verdict.partial_findings) {
+      const match = typeof findingId === 'string' ? FINDING_ID.exec(findingId) : null
+      if (!match || match[1] !== verdict.stage || Number.parseInt(match[2], 10) !== verdict.incomplete_round) {
+        fail(`${file}: partial finding ${findingId} does not bind to the incomplete stage and round`)
+      }
+      if (seen.has(findingId)) fail(`${file}: partial_findings contains duplicate id ${findingId}`)
+      seen.add(findingId)
+    }
   }
   if (verdict.corrections !== undefined) {
-    if (!Array.isArray(verdict.corrections) || !verdict.corrections.every((c) => typeof c === 'string')) {
-      fail(`${file}: corrections, if present, must be an array of strings`)
+    const validCorrection = (correction) =>
+      typeof correction === 'string' ||
+      (typeof correction === 'object' &&
+        correction !== null &&
+        typeof correction.finding_id === 'string' &&
+        (correction.field === 'provenance' || correction.field === 'fingerprint') &&
+        typeof correction.asserted === 'string' &&
+        typeof correction.corrected === 'string' &&
+        typeof correction.evidence === 'string')
+    if (!Array.isArray(verdict.corrections) || !verdict.corrections.every(validCorrection)) {
+      fail(`${file}: corrections, if present, must contain strings or exit-computation correction objects`)
+    }
+  }
+  if (verdict.verified_findings !== undefined) {
+    const validStatuses = new Set(['verified', 'corrected', 'unverified'])
+    const seen = new Set()
+    if (verdict.stage !== 'challenge' && verdict.stage !== 'review') {
+      fail(`${file}: stage must be challenge or review when verified_findings is present`)
+    }
+    if (!Array.isArray(verdict.verified_findings)) {
+      fail(`${file}: verified_findings, if present, must be an array`)
+    }
+    for (const finding of verdict.verified_findings) {
+      if (
+        typeof finding !== 'object' ||
+        finding === null ||
+        typeof finding.id !== 'string' ||
+        !validStatuses.has(finding.provenance_status) ||
+        typeof finding.verified_provenance !== 'string' ||
+        !validStatuses.has(finding.fingerprint_status) ||
+        typeof finding.verified_fingerprint !== 'string'
+      ) {
+        fail(`${file}: each verified_findings entry must carry id, verified provenance, and verified fingerprint facts`)
+      }
+      if (seen.has(finding.id)) fail(`${file}: verified_findings contains duplicate id ${finding.id}`)
+      seen.add(finding.id)
     }
   }
 }
@@ -451,8 +532,24 @@ function validatePolicyShape(policy, file) {
 // path/line/class/provenance when a pass is supplied, while still rendering
 // (with reduced fidelity) when it is not — a projection that only needs the
 // adjudication side must not require passes/ to exist.
-function buildFindingIndex(record) {
+function buildFindingIndex(record, options = {}) {
   const passFindingsById = new Map()
+  const verificationById = new Map((record.verdict?.verified_findings ?? []).map((finding) => [finding.id, finding]))
+  const verificationStage = record.verdict?.verified_findings !== undefined ? record.verdict.stage : null
+  const verificationRetainedRounds =
+    record.verdict?.retained_rounds === undefined ? null : new Set(record.verdict.retained_rounds)
+  if (record.verdict?.verified_findings !== undefined) {
+    for (const finding of record.verdict.verified_findings) {
+      const idMatch = FINDING_ID.exec(finding.id)
+      if (!idMatch) fail(`verdict.json: verified finding has malformed id ${finding.id}`)
+      if (idMatch[1] !== verificationStage) {
+        fail(`verdict.json: verified finding ${finding.id} does not belong to declared stage ${verificationStage}`)
+      }
+      if (verificationRetainedRounds !== null && !verificationRetainedRounds.has(Number.parseInt(idMatch[2], 10))) {
+        fail(`verdict.json: verified finding ${finding.id} does not belong to a retained round`)
+      }
+    }
+  }
   for (const { file, envelope } of record.passes) {
     const findings = envelope.payload.findings || []
     for (const finding of findings) {
@@ -520,7 +617,8 @@ function buildFindingIndex(record) {
         run_id: doc.run_id,
         finder: idMatch[3],
         n: Number.parseInt(idMatch[4], 10),
-        pass: passFindingsById.get(entry.finding_id) || null
+        pass: passFindingsById.get(entry.finding_id) || null,
+        verification: verificationById.get(entry.finding_id) || null
       })
     }
   }
@@ -532,7 +630,71 @@ function buildFindingIndex(record) {
   // error at all (AGENTS.md: fail closed rather than under-report).
   for (const [findingId, pass] of passFindingsById) {
     if (!seenFindingIds.has(findingId)) {
+      const idMatch = FINDING_ID.exec(findingId)
+      if (
+        idMatch &&
+        options.allowUnadjudicatedStage === idMatch[1] &&
+        options.allowUnadjudicatedRound === Number.parseInt(idMatch[2], 10)
+      ) {
+        const stage = idMatch[1]
+        const round = Number.parseInt(idMatch[2], 10)
+        const finder = idMatch[3]
+        const expectedHead = options.expectedHead
+        const prefix = `${pass.file}: unadjudicated finding ${findingId}`
+        if (!record.run) fail(`${prefix} requires run.json to validate its run binding`)
+        if (!expectedHead) fail(`${prefix} requires the caller's canonical head`)
+        if (pass.runId !== record.run.run_id) {
+          fail(`${prefix} names run_id ${pass.runId}, but run.json names ${record.run.run_id}`)
+        }
+        if (pass.head !== expectedHead) {
+          fail(`${prefix} names envelope head ${pass.head}, but the caller's canonical head is ${expectedHead}`)
+        }
+        const allowedRoles = STAGE_ROLES[stage] || []
+        if (!allowedRoles.includes(pass.role)) {
+          fail(`${prefix} has role ${pass.role}, but stage ${stage} requires ${allowedRoles.join(' or ')}`)
+        }
+        if (pass.payloadStage !== stage || pass.payloadRound !== round) {
+          fail(
+            `${prefix} has payload stage/round ${pass.payloadStage}/${pass.payloadRound}, but its id encodes ${stage}/${round}`
+          )
+        }
+        if (pass.payloadFinder !== finder) {
+          fail(`${prefix} has payload finder ${pass.payloadFinder}, but its id encodes ${finder}`)
+        }
+        if (pass.payloadReviewedHead !== expectedHead) {
+          fail(
+            `${prefix} has payload reviewed_head ${pass.payloadReviewedHead}, but the caller's canonical head is ${expectedHead}`
+          )
+        }
+        if (!options.unadjudicatedFindingIds?.has(findingId)) {
+          fail(`${prefix} is not authenticated by verdict.partial_findings`)
+        }
+        if (options.unadjudicatedFindings) options.unadjudicatedFindings.push({ id: findingId, ...pass })
+        continue
+      }
       fail(`${pass.file}: finding ${findingId} was never adjudicated by any supplied adjudication document`)
+    }
+  }
+  // dev-flow-exit emits verified_findings for every retained finding in the
+  // stage it evaluates. Once that projection is present, producer provenance
+  // is no longer an acceptable fallback for a same-stage omission: a stale or
+  // interrupted verdict must fail closed instead of republishing unverified
+  // reviewer assertions as authoritative evidence. When exit computation
+  // explicitly reports a retained-round projection, ancestry-invalidated
+  // adjudications are outside that projection and must not make a current
+  // verdict look incomplete.
+  for (const row of entries) {
+    if (
+      verificationStage === row.stage &&
+      (verificationRetainedRounds === null || verificationRetainedRounds.has(row.round)) &&
+      row.verification === null
+    ) {
+      fail(`verdict.json: verified_findings omits adjudicated finding ${row.entry.finding_id}`)
+    }
+  }
+  for (const findingId of verificationById.keys()) {
+    if (!seenFindingIds.has(findingId)) {
+      fail(`verdict.json: verified finding ${findingId} has no supplied adjudication`)
     }
   }
   return entries
@@ -564,8 +726,8 @@ const REFERENCE_VALUE_PATTERN = {
 // would otherwise let a same-run_id-looking-but-actually-different finding
 // id (ids are unique only WITHIN a run, per specs/dev-flow-v2.md) satisfy a
 // settlement that was never really adjudicated by this run.
-function validateCrossDocumentConsistency(record) {
-  const rows = buildFindingIndex(record)
+function validateCrossDocumentConsistency(record, options = {}) {
+  const rows = buildFindingIndex(record, options)
   const byId = new Map(rows.map((row) => [row.entry.finding_id, row]))
 
   // buildSettlementIndex() itself rejects a duplicate settlement for one
@@ -825,6 +987,9 @@ function summary(row) {
 }
 
 function provenance(row) {
+  if (row.verification) {
+    return `${row.verification.verified_provenance} (${row.verification.provenance_status})`
+  }
   return hasFindingCore(row.pass) ? row.pass.finding.provenance : 'n/a'
 }
 
@@ -1101,7 +1266,11 @@ function verdictLine(verdict) {
   if (Number.isInteger(verdict.rounds_counted)) details.push(`rounds counted: ${verdict.rounds_counted}`)
   if (Number.isInteger(verdict.next_round)) details.push(`next round: ${verdict.next_round}`)
   if (Array.isArray(verdict.corrections) && verdict.corrections.length > 0) {
-    details.push(`corrections: ${verdict.corrections.map(neutralizeMarkers).join('; ')}`)
+    const correctionText = (correction) =>
+      typeof correction === 'string'
+        ? correction
+        : `${correction.finding_id} ${correction.field}: ${correction.asserted} → ${correction.corrected} (${correction.evidence})`
+    details.push(`corrections: ${verdict.corrections.map((c) => neutralizeMarkers(correctionText(c))).join('; ')}`)
   }
   return details.length > 0 ? `**Exit:** ${head} (${details.join('; ')})` : `**Exit:** ${head}`
 }
@@ -1187,11 +1356,37 @@ function renderBlockerComment(record, options = {}) {
   }
   const outcome = neutralizeMarkers(verdict.outcome)
   const reason = neutralizeMarkers(verdict.reason || lastTransition.exit || 'unresolved')
-  const rows = buildFindingIndex(record)
+  const incompleteScope = incompleteBlockerScope(record, 'blocker-comment')
+  const unadjudicatedFindings = []
+  const rows = buildFindingIndex(record, {
+    allowUnadjudicatedStage: incompleteScope?.stage,
+    allowUnadjudicatedRound: incompleteScope?.round,
+    expectedHead: options.head,
+    unadjudicatedFindingIds: incompleteScope?.findingIds,
+    unadjudicatedFindings
+  })
   const settlements = buildSettlementIndex(record.run)
+  // A capped confidence verdict with findings_remain means the final
+  // reviewed round's P0/P1 entries are still gating even when their chosen
+  // remedy is fix/delete/restructure. Those dispositions describe what the
+  // implementer tried; without another permitted review round they are not
+  // verification that the finding is gone. Keep older superseded P0/P1s out
+  // by selecting only the latest adjudicated round for the blocked stage.
+  const confidenceFindingsRemain =
+    (lastTransition.stage === 'challenge' || lastTransition.stage === 'review') &&
+    verdict.outcome === 'capped' &&
+    verdict.reason === 'findings_remain'
+  const blockedStageRows = rows.filter((row) => row.stage === lastTransition.stage)
+  const finalBlockedRound =
+    blockedStageRows.length > 0 ? Math.max(...blockedStageRows.map((row) => row.round)) : null
   const unresolved = rows.filter((row) => {
-    if (row.entry.disposition !== 'defer') return false
-    return !settlements.has(row.entry.finding_id)
+    const deferredAndUnsettled = row.entry.disposition === 'defer' && !settlements.has(row.entry.finding_id)
+    const finalRoundGating =
+      confidenceFindingsRemain &&
+      row.stage === lastTransition.stage &&
+      row.round === finalBlockedRound &&
+      (row.entry.adjudicated_priority === 'P0' || row.entry.adjudicated_priority === 'P1')
+    return deferredAndUnsettled || finalRoundGating
   })
   const lines = [`## Blocker: ${lastTransition.stage} ${outcome} (${reason})`, '']
   lines.push(`- Head: \`${options.head}\``)
@@ -1203,7 +1398,7 @@ function renderBlockerComment(record, options = {}) {
   // Both are validated required above, so this always renders now.
   lines.push(`- Spent: ${lastTransition.stage} ${verdict.rounds_counted}/${record.policy.rounds[lastTransition.stage]}`)
   lines.push('- Unresolved:')
-  if (unresolved.length === 0) {
+  if (unresolved.length === 0 && unadjudicatedFindings.length === 0) {
     lines.push('  - None.')
   } else {
     for (const row of unresolved.sort(compareRows)) {
@@ -1211,10 +1406,33 @@ function renderBlockerComment(record, options = {}) {
         `  - ${row.entry.finding_id} — ${location(row)} — ${neutralizeMarkers(summary(row))} (${row.entry.adjudicated_priority}, ${row.entry.disposition})`
       )
     }
+    for (const partial of unadjudicatedFindings.sort((a, b) => a.id.localeCompare(b.id))) {
+      const finding = partial.finding
+      const loc = neutralizeMarkers(finding.path ? `${finding.path}${finding.line ? `:${finding.line}` : ''}` : partial.id)
+      lines.push(
+        `  - ${partial.id} — ${loc} — ${neutralizeMarkers(finding.evidence)} (${finding.priority}, unadjudicated partial-round evidence)`
+      )
+    }
   }
   const nextAction = Number.isInteger(verdict.next_round) ? `dispatch round ${verdict.next_round}` : 'escalate to a human'
   lines.push(`- Next action: ${nextAction}`)
   return lines.join('\n')
+}
+
+// A configured finder can return a valid pass before another slot exhausts
+// its fallback chain. That logical round is incomplete, so its raw findings
+// deliberately have no adjudication and never enter verified_findings. Only
+// the terminal blocker projection may carry those partial findings forward;
+// every other projection retains the ordinary fail-closed orphan check.
+function incompleteBlockerScope(record, command) {
+  if (command !== 'blocker-comment') return null
+  const verdict = record.verdict
+  if (!verdict || verdict.outcome !== 'capped') return null
+  if (verdict.reason !== 'finder_unavailable' && verdict.reason !== 'breadth_exhausted') return null
+  if (verdict.stage !== 'challenge' && verdict.stage !== 'review') return null
+  if (!(Number.isInteger(verdict.incomplete_round) && verdict.incomplete_round >= 1)) return null
+  if (!Array.isArray(verdict.partial_findings)) return null
+  return { stage: verdict.stage, round: verdict.incomplete_round, findingIds: new Set(verdict.partial_findings) }
 }
 
 // Only a finding whose source_id is named in ITS OWN pass's
@@ -1668,7 +1886,6 @@ function main(argv) {
   const options = parseArgs(argv)
   const schemasDir = options.schemasDir || process.env.RESULT_SCHEMAS_DIR || DEFAULT_SCHEMAS_DIR
   const record = loadRecord(options.record, schemasDir)
-  validateCrossDocumentConsistency(record)
   if (options.verdictFile) {
     record.verdict = loadJson(options.verdictFile)
     validateVerdictShape(record.verdict, options.verdictFile)
@@ -1677,17 +1894,17 @@ function main(argv) {
     record.policy = loadJson(options.policyFile)
     validatePolicyShape(record.policy, options.policyFile)
   }
-  // An override replaces record.policy/record.verdict AFTER the check above
-  // already ran against the record directory's own copies — a --policy
-  // override's caps would otherwise never get the cross-document
-  // round-consistency check (rounds.challenge: 0 alongside an actual
-  // challenge round 1 adjudication), since validateCrossDocumentConsistency
-  // only reads whatever record.policy/record.verdict held at the time it
-  // was called. Re-run it whenever an override was actually supplied,
-  // rather than unconditionally re-doing the (otherwise redundant) work.
-  if (options.verdictFile || options.policyFile) {
-    validateCrossDocumentConsistency(record)
-  }
+  // Cross-document checks apply once to the EFFECTIVE record, after any
+  // explicit override replaces the directory copy. Incomplete-round raw
+  // findings are accepted only for their terminal blocker projection; all
+  // other projections continue to reject an unadjudicated pass finding.
+  const incompleteScope = incompleteBlockerScope(record, options.command)
+  validateCrossDocumentConsistency(record, {
+    allowUnadjudicatedStage: incompleteScope?.stage,
+    allowUnadjudicatedRound: incompleteScope?.round,
+    expectedHead: options.head,
+    unadjudicatedFindingIds: incompleteScope?.findingIds
+  })
 
   if (options.command === 'publish') {
     const result = publish(record, options)

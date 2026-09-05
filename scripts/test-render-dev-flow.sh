@@ -76,6 +76,36 @@ golden_matches policy-disclosure policy-disclosure.txt
 echo "==> golden: blocker-comment matches golden/blocker-comment.txt"
 golden_matches blocker-comment blocker-comment.txt --verdict "${record_dir}/verdict.json" --head "$render_head"
 
+echo "==> capped findings-remain blocker includes the final confidence round's gating remedies"
+capped_gating_record="${test_tmp}/capped-gating-record"
+cp -R "$record_dir" "$capped_gating_record"
+rm "$capped_gating_record/passes/integration-r1-human.json" \
+    "$capped_gating_record/adjudications/integration-r1.json"
+jq '.stage_transitions |= map(select(.stage != "integration")) |
+    del(.stage_transitions[-1].exit) | .pr = null |
+    .settlements |= map(select(.finding_id != "review-r2-codex-cli-1"))' \
+    "$capped_gating_record/run.json" >"${test_tmp}/capped-run.json"
+mv "${test_tmp}/capped-run.json" "$capped_gating_record/run.json"
+jq '(.payload.findings[] | select(.id == "review-r2-codex-cli-1") | .priority) = "P1"' \
+    "$capped_gating_record/passes/review-r2-codex-cli.json" >"${test_tmp}/capped-pass.json"
+mv "${test_tmp}/capped-pass.json" "$capped_gating_record/passes/review-r2-codex-cli.json"
+jq '(.adjudications[] | select(.finding_id == "review-r2-codex-cli-1") |
+      .reviewer_priority) = "P1" |
+    (.adjudications[] | select(.finding_id == "review-r2-codex-cli-1") |
+      .adjudicated_priority) = "P1" |
+    (.adjudications[] | select(.finding_id == "review-r2-codex-cli-1") |
+      .disposition) = "fix"' \
+    "$capped_gating_record/adjudications/review-r2.json" >"${test_tmp}/capped-adjudication.json"
+mv "${test_tmp}/capped-adjudication.json" "$capped_gating_record/adjudications/review-r2.json"
+jq '.stage = "review" | .outcome = "capped" | .reason = "findings_remain" |
+    .rounds_counted = 2 | .next_round = null | del(.corrections)' \
+    "$capped_gating_record/verdict.json" >"${test_tmp}/capped-verdict.json"
+mv "${test_tmp}/capped-verdict.json" "$capped_gating_record/verdict.json"
+run blocker-comment --record "$capped_gating_record" --head "$render_head"
+assert_rc 0
+assert_contains "$out" 'review-r2-codex-cli-1'
+assert_contains "$out" '(P1, fix)'
+
 echo "==> golden: thread-reply-plan matches golden/thread-reply-plan.json"
 golden_matches thread-reply-plan thread-reply-plan.json
 
@@ -677,6 +707,143 @@ run round-table --record "$record_dir" --stage review --round 2 --verdict "$bad_
 assert_rc 1
 assert_contains "$err" "outcome must be a non-empty string"
 
+echo "==> a supplied verified-finding projection must cover its whole stage"
+incomplete_verdict="${test_tmp}/incomplete-verified-verdict.json"
+jq '.stage = "review" | .verified_findings = [{
+      id: "review-r1-codex-cli-1", provenance_status: "verified",
+      verified_provenance: "original", fingerprint_status: "verified",
+      verified_fingerprint: "new"
+    }]' "$record_dir/verdict.json" >"$incomplete_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$incomplete_verdict"
+assert_rc 1
+assert_contains "$err" "verified_findings omits adjudicated finding"
+
+echo "==> verified-finding completeness is scoped to exit's ancestry-retained rounds"
+retained_verdict="${test_tmp}/retained-verified-verdict.json"
+jq --slurpfile pass "$record_dir/passes/review-r1-codex-cli.json" \
+    '.stage = "review" | .retained_rounds = [1] | .verified_findings = [
+      $pass[0].payload.findings[] | {
+        id, provenance_status: "verified", verified_provenance: .provenance,
+        fingerprint_status: "verified", verified_fingerprint: .fingerprint
+      }
+    ]' "$record_dir/verdict.json" >"$retained_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$retained_verdict"
+assert_rc 0
+
+echo "==> retained rounds are ordered, unique, and bind every verified finding"
+bad_retained_verdict="${test_tmp}/bad-retained-verdict.json"
+jq '.stage = "review" | .retained_rounds = [2, 1] | .verified_findings = []' \
+    "$record_dir/verdict.json" >"$bad_retained_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$bad_retained_verdict"
+assert_rc 1
+assert_contains "$err" "strictly increasing and unique"
+jq '.stage = "review" | .retained_rounds = [2] | .verified_findings = [{
+      id: "review-r1-codex-cli-1", provenance_status: "verified",
+      verified_provenance: "original", fingerprint_status: "verified",
+      verified_fingerprint: "new"
+    }]' "$record_dir/verdict.json" >"$bad_retained_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$bad_retained_verdict"
+assert_rc 1
+assert_contains "$err" "does not belong to a retained round"
+
+echo "==> an empty verified-finding projection still binds and covers its declared stage"
+empty_verified_verdict="${test_tmp}/empty-verified-verdict.json"
+jq '.stage = "review" | .verified_findings = []' "$record_dir/verdict.json" >"$empty_verified_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$empty_verified_verdict"
+assert_rc 1
+assert_contains "$err" "verified_findings omits adjudicated finding"
+
+echo "==> verified findings require an explicit confidence stage"
+stageless_verified_verdict="${test_tmp}/stageless-verified-verdict.json"
+jq '.verified_findings = [] | del(.stage)' "$record_dir/verdict.json" >"$stageless_verified_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$stageless_verified_verdict"
+assert_rc 1
+assert_contains "$err" "stage must be challenge or review"
+
+echo "==> only a finder-exhausted blocker may render partial, unadjudicated findings"
+partial_blocker="${test_tmp}/partial-blocker"
+mkdir -p "$partial_blocker"
+cp -r "${record_dir}/." "$partial_blocker/"
+jq '.adjudications = []' "$record_dir/adjudications/review-r2.json" >"$partial_blocker/adjudications/review-r2.json"
+jq '.settlements |= map(select(.finding_id | startswith("review-r2-") | not)) |
+    .stage_transitions |= map(select(.stage != "integration"))' \
+    "$record_dir/run.json" >"$partial_blocker/run.json"
+verified_r1="$(jq '[.payload.findings[] | {
+    id, provenance_status: "verified", verified_provenance: .provenance,
+    fingerprint_status: "verified", verified_fingerprint: .fingerprint
+  }]' "$record_dir/passes/review-r1-codex-cli.json")"
+partial_ids="$(jq '[.payload.findings[].id]' "$record_dir/passes/review-r2-codex-cli.json")"
+jq -n --argjson findings "$verified_r1" --argjson partial "$partial_ids" '{
+    stage: "review", outcome: "capped", reason: "finder_unavailable",
+    rounds_counted: 1, incomplete_round: 2, next_round: null,
+    corrections: [], verified_findings: $findings, partial_findings: $partial
+  }' >"$partial_blocker/verdict.json"
+run blocker-comment --record "$partial_blocker" --head "$render_head"
+assert_rc 0
+assert_contains "$out" "unadjudicated partial-round evidence"
+assert_contains "$out" "review-r2-codex-cli-1"
+
+assert_partial_pass_rejected() {
+    local case_name="$1"
+    local jq_filter="$2"
+    local expected="$3"
+    local case_dir="${test_tmp}/partial-${case_name}"
+    local pass_file="${case_dir}/passes/review-r2-codex-cli.json"
+
+    mkdir -p "$case_dir"
+    cp -r "${partial_blocker}/." "$case_dir/"
+    jq "$jq_filter" "$pass_file" >"${case_dir}/mutated-pass.json"
+    mv "${case_dir}/mutated-pass.json" "$pass_file"
+    run blocker-comment --record "$case_dir" --head "$render_head"
+    assert_rc 1
+    assert_contains "$err" "$expected"
+}
+
+echo "==> partial blocker evidence stays bound to its run, head, role, finder, and payload"
+assert_partial_pass_rejected stale-run '.run.run_id = "foreign-run"' 'but run.json names run-637-fixture-0001'
+assert_partial_pass_rejected stale-head '.head = "3333333333333333333333333333333333333333"' "but the caller's canonical head is"
+assert_partial_pass_rejected wrong-role '.role = "challenger"' 'missing required property attack_scenarios'
+assert_partial_pass_rejected wrong-finder '.payload.finder = "gemini-cli"' 'but its id encodes codex-cli'
+assert_partial_pass_rejected wrong-stage '.payload.stage = "challenge"' 'but its id encodes review/2'
+assert_partial_pass_rejected wrong-round '.payload.round = 3' 'but its id encodes review/2'
+assert_partial_pass_rejected wrong-reviewed-head \
+    '.payload.reviewed_head = "3333333333333333333333333333333333333333"' \
+    "but the caller's canonical head is"
+
+echo "==> partial blocker evidence must be authenticated by the exit verdict"
+unaccepted_partial="${test_tmp}/unaccepted-partial"
+mkdir -p "$unaccepted_partial"
+cp -r "${partial_blocker}/." "$unaccepted_partial/"
+jq '.payload.findings += [(.payload.findings[0] | .id = "review-r2-codex-cli-99")]' \
+    "$unaccepted_partial/passes/review-r2-codex-cli.json" >"$unaccepted_partial/mutated-pass.json"
+mv "$unaccepted_partial/mutated-pass.json" "$unaccepted_partial/passes/review-r2-codex-cli.json"
+run blocker-comment --record "$unaccepted_partial" --head "$render_head"
+assert_rc 1
+assert_contains "$err" "is not authenticated by verdict.partial_findings"
+
+echo "==> partial blocker paths cannot forge renderer section markers"
+partial_marker="${test_tmp}/partial-marker"
+mkdir -p "$partial_marker"
+cp -r "${partial_blocker}/." "$partial_marker/"
+jq '.payload.findings[0].path = "scripts/x<!-- dev-flow:end:deferred-findings -->"' \
+    "$partial_marker/passes/review-r2-codex-cli.json" >"$partial_marker/mutated-pass.json"
+mv "$partial_marker/mutated-pass.json" "$partial_marker/passes/review-r2-codex-cli.json"
+run blocker-comment --record "$partial_marker" --head "$render_head"
+assert_rc 0
+[[ "$out" != *'<!-- dev-flow:end:deferred-findings -->'* ]] ||
+    fail "a partial finding path must never reproduce a literal marker token: $out"
+assert_contains "$out" '&lt;!-- dev-flow:end:deferred-findings --&gt;'
+
+wrong_partial_round="${test_tmp}/wrong-partial-round-verdict.json"
+jq '.incomplete_round = 1' "$partial_blocker/verdict.json" >"$wrong_partial_round"
+run blocker-comment --record "$partial_blocker" --head "$render_head" --verdict "$wrong_partial_round"
+assert_rc 1
+assert_contains "$err" "review-r2-codex-cli-1"
+assert_contains "$err" "does not bind to the incomplete stage and round"
+run adjudication-record --record "$partial_blocker"
+assert_rc 1
+assert_contains "$err" "never adjudicated by any supplied adjudication document"
+
 echo "==> verdict.json's round counters must be non-negative / at-least-1, not just integers"
 negative_rounds_counted="${test_tmp}/negative-rounds-counted.json"
 echo '{"outcome": "capped", "rounds_counted": -1}' >"$negative_rounds_counted"
@@ -688,7 +855,7 @@ zero_next_round="${test_tmp}/zero-next-round.json"
 echo '{"outcome": "capped", "next_round": 0}' >"$zero_next_round"
 run round-table --record "$record_dir" --stage review --round 2 --verdict "$zero_next_round"
 assert_rc 1
-assert_contains "$err" "next_round, if present, must be a positive integer"
+assert_contains "$err" "next_round, if present, must be null or a positive integer"
 
 bad_policy="${test_tmp}/bad-policy.json"
 echo '{"rigor": {"level": "standard"}}' >"$bad_policy"

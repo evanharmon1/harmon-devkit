@@ -511,6 +511,15 @@ instance being validated:
   express any of that, since it validates every array entry against the
   same schema independently, blind to the entry's own position, its
   siblings, or anything outside the array.
+- **Lane assembly lives in the authenticated run transition**
+  (`checkLaneAssemblies`) — an `implement` transition may carry
+  `assembly: {canonical_head, integrated_lanes, discarded_lanes}`. The schema
+  requires a full commit SHA and both lane lists; the semantic validator keeps
+  each list unique, requires at least one lane across them, rejects overlap
+  between selected and discarded lanes, and refuses `assembly` on any
+  non-implement transition. This keeps the feature
+  owner's selection and resulting head in the same authenticated run evidence
+  as the lifecycle transition it caused instead of an unauthenticated sidecar.
 - **Finding id round attribution without `--pass`**
   (`checkAdjudicationIdAttribution`) — a finding id's own
   `<stage>-r<round>` segments are part of its grammar, so they must equal
@@ -714,6 +723,12 @@ decisions):
   `blocked_question` with no `human_tasks` key at all
   (`result.implementer.schema/valid/blocked-minimal.json`). When present it
   is still constrained to an array of strings.
+- **`synthesis_of` is optional and ordered.** An ordinary implementer result
+  omits it; the fresh artifact produced by a council strategy with synthesis
+  enabled includes at least one source-proposal identity in the exact order
+  supplied to the synthesizing implementer. It is additive to the Foreman v1
+  payload, and the orchestrator—not this payload-only schema—enforces the
+  strategy-dependent "present exactly when synthesized" condition.
 - **`summary` and `handoff` have no `minLength`**, even though both are
   "required (non-empty) when completed." Foreman v1 serializes them as `""`
   — present, empty — rather than omitting the key on a blocked result
@@ -1896,13 +1911,21 @@ same-file coincidence with no such evidence stays `unverified`, exactly like
 any other undecidable claim, and cannot alone satisfy `repeat_after_fix`.
 `verdict.verified_findings[]` — `{id, provenance_status,
 verified_provenance, fingerprint_status, verified_fingerprint}` per finding
-across every round — exposes what `applyVerification` already computed but
+across every complete ancestry-retained round in the verdict's explicit
+`stage` — exposes what `applyVerification` already computed but
 `corrections[]` alone cannot: `corrections[]` only records a **mismatch**
 (status `"corrected"`), so a claim that was simply confirmed as asserted, or
 left `unverified` because no evidence could decide it, has no other way to
 reach a caller (or the conformance corpus, which checks this field for the
 `corrections_field`/`corrections_status`/`verified_provenance_for`/
-`no_repeat_relationship` fixture expectations).
+`no_repeat_relationship` fixture expectations). When ancestry invalidates a
+previously complete round, the verdict also carries the strictly increasing
+`retained_rounds[]` projection. Renderers then require verification completeness
+only for those retained rounds, while still rejecting a verified finding whose
+id names a round outside that projection. Pre-adjudication verification grants
+`action: adjudicate` only when a complete round reviewed the exact current
+head; an ancestry-retained but older round returns the ordinary
+`continue`/`invalidated` dispatch instead.
 
 **The predicate catalog** (`no_gating_findings`, `provenance_share`,
 `count_rising`, `repeat_after_fix`) is pinned by these exact names — a
@@ -2305,7 +2328,7 @@ authenticated against the target repo.
 | `run.json` | One `run.schema.json` document | For `blocker-comment`, `readiness-input`; optional elsewhere |
 | `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
 | `passes/*.json` | Result envelopes (`role: challenger`, `reviewer`, or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location) when no matching pass is supplied. The "Evidence" column is always the adjudication's own `evidence` field — schema-required, never pass-dependent — never a pass's raw finding text (see "Evidence is always the adjudicated record's own" below). **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
-| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{outcome, reason, rounds_counted, next_round, corrections[]}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines. Shape-validated when present (`outcome` a non-empty string; `reason` a string; `rounds_counted` a non-negative integer; `next_round` a positive integer; `corrections` an array of strings — each only when present) |
+| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{stage, outcome, reason, rounds_counted, next_round, corrections[], verified_findings[], retained_rounds?, partial_findings?}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines and authoritative verified provenance. Shape-validated when present: terminal `next_round` may be `null`, while a dispatch value is a positive integer; `corrections` accepts the exit evaluator's structured `{finding_id, field, asserted, corrected, evidence}` entries (legacy display strings remain accepted); and each `verified_findings` entry carries its id plus verified/corrected/unverified provenance and fingerprint facts. Whenever `verified_findings` is supplied (including an empty array), `stage` must identify its `challenge` or `review` confidence stage. The projection covers every supplied adjudication in that stage unless exit computation supplies strictly increasing `retained_rounds`, in which case ancestry-invalidated rounds are excluded and each verified finding must name a retained round. Rendered provenance comes from this verified projection when supplied, never the superseded producer assertion. A terminal `finder_unavailable`/`breadth_exhausted` blocker is the sole projection allowed to carry a pass finding with no adjudication: the verdict identifies its positive `incomplete_round` and exact accepted `partial_findings` ids, and a raw finding renders as partial-round evidence only when it is named there and its ID, envelope run/head/role, and payload stage/round/finder/reviewed-head all bind it to that exact active run and canonical blocker head. Every authoritative adjudication/readiness projection, and an orphan that fails any of those bindings, continues to fail closed. |
 | `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present: `rigor.level`/`rigor.source` non-empty strings; `rounds` and every one of its five caps are **required** whenever `policy.json` exists at all — a partial or omitted `rounds` would let the rendered rigor line silently disclose an incomplete budget — each a non-negative integer, **except `min_rounds`, which must be positive** (AGENTS.md: every rigor level's floor is always `>= 1`; `0` is semantically invalid for that one key, not just a low value); `disclosures[]` stays optional, each entry `{kind, detail}` |
 
 Every file present is schema-validated (structural shape only — this
