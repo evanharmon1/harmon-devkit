@@ -1,1 +1,1 @@
-$run.evidence_comments: --adjudication <file> adjudicates challenge round 1, whose only evidence marker has destination "pr" — a per-stage rollup does not substitute for the per-round issue comment
+$run.evidence_comments: --adjudication <file> adjudicates challenge round 1, whose only evidence marker for it has destination "pr" — the per-round record belongs on the issue, and a pr comment never substitutes for it

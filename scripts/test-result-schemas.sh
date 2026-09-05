@@ -922,7 +922,7 @@ run_context_case \
     "a per-stage pr rollup marker does not substitute for the per-round issue comment (#685)" \
     run \
     "$fixtures_dir/run.schema/invalid/adjudicated-round-only-pr-evidence-marker.json" \
-    'a per-stage rollup does not substitute for the per-round issue comment' \
+    'the per-round record belongs on the issue, and a pr comment never substitutes for it' \
     --adjudication "$settlement_cross_check_adjudication"
 
 # --- Argument validation: fail closed, never silently skip a check --------

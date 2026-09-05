@@ -2187,8 +2187,9 @@ function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
 // Runs only alongside --adjudication/--no-adjudications, like every other
 // cross-document check here: the adjudicated (stage, round) pairs are the
 // input, and without them there is nothing to require a marker for. A
-// per-stage rollup marker carries round: null and is not a per-round
-// comment at all, so it never satisfies (and is never faulted by) this.
+// marker carrying round: null is a per-stage rollup, not a per-round
+// comment at all, so it never satisfies (and is never faulted by) this
+// whatever its destination — only a marker naming the same round matters.
 function checkAdjudicationEvidenceMarkers(document, adjudications, errors) {
   const issueMarkers = new Set()
   const prOnlyMarkers = new Set()
@@ -2207,7 +2208,7 @@ function checkAdjudicationEvidenceMarkers(document, adjudications, errors) {
     seen.add(key)
     errors.push(
       prOnlyMarkers.has(key)
-        ? `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, whose only evidence marker has destination "pr" — a per-stage rollup does not substitute for the per-round issue comment`
+        ? `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, whose only evidence marker for it has destination "pr" — the per-round record belongs on the issue, and a pr comment never substitutes for it`
         : `$run.evidence_comments: --adjudication ${file} adjudicates ${data.stage} round ${data.round}, but no evidence marker with destination "issue" records it`
     )
   }
