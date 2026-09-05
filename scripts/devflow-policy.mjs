@@ -24,8 +24,12 @@
 //     1  it is not — a legacy, v1, mixed, or unknown shape. With --json the
 //        `migration` field carries the one actionable refusal message
 //        (`copier update`, the release to run it against, and the pin
-//        guidance) and `policy_schema_version` is null; without --json the
-//        same message goes to stderr.
+//        guidance). `policy_schema_version` reports whatever version the
+//        POLICY declares, which is null only when it declares no positive
+//        integer `schema_version` at all — a shape this reader cannot
+//        operate under (say version 3) is still reported as that version,
+//        so a caller can tell "no version" from "a version I refuse".
+//        Without --json the same message goes to stderr.
 //     2  usage error, or the file could not be read or parsed as TOML
 //
 //   resolve --policy <file> [...]

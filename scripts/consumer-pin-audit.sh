@@ -21,9 +21,12 @@
 # What "the vendored skills require" is read from the skills themselves, not
 # from a version table this script would have to keep current: every stage
 # skill that resolves policy ships `assets/policy-contract.json` declaring its
-# `policy_schema_version`, and the requirement is the highest one any vendored
-# skill declares. A pre-v2 skill ships no such file and therefore requires
-# nothing — which is exactly right for an unadvanced pin.
+# `policy_schema_version`. The requirement is the SINGLE version every managed
+# contract agrees on — a schema version names an incompatible shape, not a
+# minimum capability level, so a managed set declaring two different versions
+# is refused as indeterminate rather than resolved to either one. A pre-v2
+# skill ships no such file and therefore requires nothing, which is exactly
+# right for an unadvanced pin.
 #
 # Usage:
 #   consumer-pin-audit.sh [--repo-root DIR] [--manifest FILE] [--policy FILE]
@@ -230,11 +233,18 @@ while IFS= read -r skill_name; do
     contract="$dest/$skill_name/assets/policy-contract.json"
     [ -f "$contract" ] || continue
     declared="$(jq -r '.policy_schema_version // empty' "$contract" 2>/dev/null || true)"
+    # POSITIVE integer: challenge round 4, confirmed by reproduction. A
+    # contract declaring `0` passed a digit-only check and then collapsed into
+    # `required = 0`, which this file reads as "no contract at all" — so a
+    # damaged contract over a legacy policy reported `compatible` exit 0 in
+    # place of the documented indeterminate result.
     case "$declared" in
     '' | *[!0-9]*)
         die "'$contract' declares no integer policy_schema_version"
         ;;
     esac
+    [ "$declared" -gt 0 ] ||
+        die "'$contract' declares policy_schema_version $declared — it must be a positive integer; 0 is indistinguishable from a skill that declares no contract at all"
     declared_versions="$declared_versions $declared"
     requiring_skills="$requiring_skills $skill_name"
 done <<EOF
@@ -277,15 +287,29 @@ fi
 
 # ── verdict ──────────────────────────────────────────────────────────────────
 #
-# `required` is the single schema version the vendored skills declare and
-# `policy_version` is the one the policy declares, compared for EQUALITY (see
-# the requirement block above). Challenge round 1, confirmed: testing
-# `shape = v2` instead reported an incompatible pair as compatible.
+# A MIXED marker set is refused outright, before any pin comparison. The
+# config delta spec requires it ("A mixed or incomplete marker set SHALL be
+# rejected with the markers it actually contains, not guessed into either
+# shape"), and it is not a pin question at all: no pin is right for a policy
+# that is two shapes at once.
+if [ "$shape" = mixed ]; then
+    die "policy '$policy' carries markers from more than one shape at once — $migration"
+fi
+
+# Satisfaction needs BOTH a successful detection and an equal version.
+# Challenge round 4, confirmed by reproduction: a policy declaring
+# `schema_version = 2` alongside a legacy marker detects as `mixed` (the
+# reader exits 1) while still reporting version 2, so an equality-only test
+# set `satisfied=yes` and the audit exited 0 `compatible` on a policy the
+# reader had just refused — a fail-open introduced by round 3's own fix, in
+# the very check that exists to fail closed. `shape = v2` alone is equally
+# wrong (round 1 confirmed that a version-2 policy then satisfied a skill
+# declaring version 3), so both conditions are required, not either.
 # `required = 0` (no vendored skill declares anything) has its own branch
 # below rather than being trivially satisfied by every policy.
 
 satisfied=no
-[ "$required" -gt 0 ] && [ "$policy_version" -eq "$required" ] && satisfied=yes
+[ "$required" -gt 0 ] && [ "$shape" = v2 ] && [ "$policy_version" -eq "$required" ] && satisfied=yes
 
 if [ "$vendored" = no ]; then
     status=not-vendored

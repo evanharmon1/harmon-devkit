@@ -162,11 +162,14 @@ expect_says "it names the pin it read" "v0.34.1"
 
 echo
 echo "== consumer-pin-audit: v2 skills over an unmigrated policy =="
-for shape in legacy v1 mixed; do
+# `mixed` is deliberately NOT in this loop: it is indeterminate (exit 2), not
+# an incompatible pin (exit 1), and has its own case below. A legacy or v1
+# policy is a coherent older shape the operator can migrate; a mixed one is two
+# shapes at once and the delta spec requires rejecting rather than resolving it.
+for shape in legacy v1; do
     case "$shape" in
     legacy) src="$LEGACY_POLICY" ;;
     v1) src="$V1_POLICY" ;;
-    mixed) src="$MIXED_POLICY" ;;
     esac
     c="$(make_consumer "v2-over-$shape" "$src" v0.41.0 review:v2 integrate:v2 kickoff:pre)"
     run_audit "$c"
@@ -412,6 +415,49 @@ else
     bad "detect did not report the declared version of an unoperatable policy"
     printf '%s\n' "$out" | sed 's/^/      /' >&2
 fi
+
+echo
+echo "== consumer-pin-audit: a mixed policy fails closed, never compatible =="
+# Challenge round 4, confirmed by reproduction: a policy declaring
+# `schema_version = 2` alongside a legacy marker detects as `mixed` (reader
+# exits 1) while still reporting version 2, so the equality-only test set
+# satisfied=yes and the audit exited 0 `compatible` on a policy the reader had
+# just refused — a fail-open introduced by round 3's own fix.
+mixed_policy="$TMPROOT/mixed-policy.toml"
+printf 'schema_version = 2\ndefault_method = "plan"\n[method]\nrank = ["oneshot"]\n' >"$mixed_policy"
+set +e
+out="$(node "$READER" detect --policy "$mixed_policy" --json 2>/dev/null)"
+status=$?
+set -e
+expect_status "the reader refuses a mixed policy" 1
+if printf '%s' "$out" | jq -e '.shape == "mixed" and .policy_schema_version == 2' >/dev/null 2>&1; then
+    ok "the reader reports a mixed shape while still naming its declared version"
+else
+    bad "the mixed fixture did not reproduce the reader state this case guards"
+    printf '%s\n' "$out" | sed 's/^/      /' >&2
+fi
+
+c="$(make_consumer mixed-over-v2-skills "$mixed_policy" v0.41.0 review:v2 integrate:v2)"
+run_audit "$c"
+expect_status "a mixed policy is indeterminate, never compatible" 2
+expect_says "the mixed refusal says the policy is two shapes at once" "more than one shape at once"
+
+# A mixed policy is not a pin question either: it must refuse whatever the pin.
+c="$(make_consumer mixed-over-pre-v2-skills "$mixed_policy" v0.34.1 integrate:pre)"
+run_audit "$c"
+expect_status "a mixed policy refuses under a pre-v2 pin too, rather than reporting pin lag" 2
+
+echo
+echo "== consumer-pin-audit: a contract version must be a positive integer =="
+# Challenge round 4, confirmed: `0` passed the digit-only check and then
+# collapsed into `required = 0`, which reads as "no contract at all", so a
+# damaged contract over a legacy policy reported compatible exit 0.
+c="$(make_consumer zero-contract "$LEGACY_POLICY" v0.41.0 review:v2)"
+printf '{"skill":"review","policy_schema_version":0}\n' \
+    >"$c/.claude/skills/review/assets/policy-contract.json"
+run_audit "$c"
+expect_status "a contract declaring version 0 is indeterminate, not 'no contract'" 2
+expect_says "the zero-version error says it must be positive" "must be a positive integer"
 
 echo
 echo "== devflow-policy: an older shape is refused with one actionable message =="

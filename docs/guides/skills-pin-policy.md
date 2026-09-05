@@ -69,7 +69,7 @@ table, so no list of release numbers has to be kept current here.
 | 0 | `not-vendored` | No `.SKILLS_PROVENANCE` under `dest` and no unstamped policy-consuming skill beside it: nothing was vendored. Run `task sync:skills` first. |
 | 0 | `no-policy-consumer` | The policy has migrated, but the vendored set contains none of the skills that resolve it, so there is no pin contract to satisfy. Advancing the pin would not add one; nothing needs to change. |
 | 1 | `incompatible` | The vendored skills declare a policy schema version the repository's policy does not have. Run `copier update`; **do not** advance the pin. |
-| 2 | — | Usage error or indeterminate. Never reported as a pass. Covers a missing manifest, an unreadable policy, a missing reader, a damaged provenance stamp (no `# ref:` or no `# managed:` line), vendored skills declaring two different schema versions, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. |
+| 2 | — | Usage error or indeterminate. Never reported as a pass. Covers a missing manifest (including one that is not parseable YAML), an unreadable policy, a missing reader, a damaged provenance stamp (no `# ref:` or no `# managed:` line), vendored skills declaring two different schema versions, a contract declaring a non-positive version (`0` is indistinguishable from "no contract"), a **mixed policy** carrying markers from more than one shape at once, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. |
 | 3 | `pin-lag` | The policy migrated and the policy-consuming skills *are* vendored but predate the contract. Advance `source.ref` and re-run `task sync:skills`. |
 
 A schema version names an **incompatible shape**, not a minimum capability
@@ -77,6 +77,15 @@ level — the reader itself requires `schema_version = 2` exactly — so the aud
 compares for equality rather than "at least". By the same reasoning, vendored
 skills declaring two different versions is a broken set that no single policy
 can satisfy, and is reported indeterminate rather than resolved to either one.
+
+Compatibility needs **both** a successful shape detection and an equal version,
+not either alone. A policy declaring `schema_version = 2` while still carrying
+a legacy marker detects as `mixed` — the reader refuses it — yet it does
+declare version 2, so a version-equality test on its own would report it
+compatible and undo the whole point of the check. `mixed` is therefore refused
+before the pin is considered at all: no pin is right for a policy that is two
+shapes at once. Conversely, testing the shape alone would let a version-2
+policy satisfy a skill declaring version 3.
 
 `scripts/devflow-policy.mjs` has its own documented exit codes (`detect`: 0
 version 2, 1 an older or mixed shape, 2 unreadable; `resolve`: 0 resolved, 1
