@@ -2102,6 +2102,157 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 48: the run-index's OWN author trust is now decided at the
+// RECORD's kickoff time too, not just the record author's — shepherd
+// round 5, Codex-confirmed (P2). Built with DIFFERENT actors for the
+// index and the record (unlike runRecordComment()'s single-actor pair,
+// which shadows this check behind the pre-existing record-author one) so
+// this isolates the new check cleanly: the record's own author
+// (TRUSTED_ORCHESTRATOR) stays registry-trusted throughout, but the
+// index's own author (OTHER_TRUSTED) is narrowed out by a registry
+// revision already in effect at the record's post time.
+{
+  const narrowSha = "8".repeat(40);
+  const registryCommits = [{ sha: narrowSha }];
+  const registryContents = {
+    [narrowSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
+  };
+  const runId = "run-index-author-narrowed-1";
+  const recordCreatedAt = "2026-09-01T00:10:00Z";
+  const indexCreatedAt = "2026-09-01T00:10:30Z";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: recordCreatedAt,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: recordCreatedAt }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const body = { ...runBody, ...deriveDefaultChains(runBody) };
+  const rm = marker("run-record", runId, "kickoff", "issue", null, 1);
+  const rr = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${rm}\n\${fence(JSON.stringify(body))}\`, recordCreatedAt);
+  const indexPayload = {
+    run_id: runId, initiated_by: body.initiated_by, branch: null,
+    run_record: { id: String(rr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator" },
+  };
+  const im = marker("run-index", runId, "kickoff", "issue", null, 1);
+  // Index posted by OTHER_TRUSTED, a genuinely different GitHub actor from
+  // the record's own author — the index protocol never requires them to
+  // match, only that the index's NAMED author_actor_id (checked above)
+  // agrees with the record comment's own current author.
+  const idx = comment(OTHER_TRUSTED, "other-orchestrator", \`\${im}\n\${fence(JSON.stringify(indexPayload))}\`, indexCreatedAt);
+  writeScenario("index-author-narrowed", {
+    issues: [{ number: 163, pull_request: null }],
+    comments: { "163": [idx, rr] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: {
+      [narrowSha]: [{ number: 614, merged_at: "2026-09-01T00:00:00Z" }],
+    },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED], issueNumber: 163 },
+  });
+}
+
+// --- Scenario 49: a trusted run-index whose canonical marker survives but
+// whose fenced payload is missing — shepherd round 5, Codex-confirmed
+// (P1): markedComments() drops any marked comment with no parseable
+// payload BEFORE this function ever sees it, so this previously looked
+// identical to "no index ever existed" (issue silently absent from the
+// cohort) instead of being reported as tampered evidence.
+{
+  const runId = "run-index-no-fence-1";
+  const noFenceIndex = comment(TRUSTED_ORCHESTRATOR, "orchestrator", marker("run-index", runId, "kickoff", "issue", null, 1), "2026-09-01T00:00:00Z");
+  writeScenario("index-no-fence", {
+    issues: [{ number: 164, pull_request: null }],
+    comments: { "164": [noFenceIndex] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 164 },
+  });
+}
+
+// --- Scenario 50: with no --as-of given, discovery must use a FROZEN
+// "now" cutoff (like an explicit --as-of would), not the unbounded
+// cutoff=Infinity a null asOf previously produced — shepherd round 5,
+// Codex-confirmed (P2). Proven directly rather than by racing a real
+// scan: a run-record comment dated far in the future is exactly the case
+// an Infinity cutoff would have admitted (nothing excluded) but any real,
+// frozen "now" correctly excludes (it has not happened yet).
+{
+  const runId = "run-future-dated-1";
+  const farFuture = "2099-01-01T00:00:00Z";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: farFuture,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: farFuture }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, farFuture);
+  writeScenario("future-dated", {
+    issues: [{ number: 165, pull_request: null }],
+    comments: { "165": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 165 },
+  });
+}
+
+// --- Scenario 51: a chain-consistent record claims ready-for-review with
+// a promotion but NO reconstructed PR binding (pr_bindings: [], pr: null)
+// — shepherd round 5, Codex-confirmed (P2): this previously passed
+// reconstructAsOf's own consistency check (which required only
+// promotion, not pr) and reached computePostReadyFix, which
+// unconditionally reads readyRun.state.pr.number — an uncaught TypeError
+// that aborted the ENTIRE --repo metric over this one malformed record.
+{
+  const runId = "run-ready-no-pr-binding-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:01:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: null,
+    evidence_comments: [],
+    promotion: { head: "9".repeat(40), promoted_at: "2026-09-01T00:10:00Z", gate_fingerprint: "no-pr-binding" },
+    pr_bindings: [],
+    outcome_transitions: chain([{ outcome: "ready-for-review", at: "2026-09-01T00:10:00Z" }]),
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("ready-no-pr-binding", {
+    issues: [{ number: 166, pull_request: null }],
+    comments: { "166": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 166 },
+  });
+}
+
+// --- Scenario 52: challenge resolved to cap 0 (disabled) — a valid
+// "capped: disabled" stage_transitions exit with legitimately ZERO round
+// comments — shepherd round 5, Codex-confirmed (P1): replay's old
+// round-evidence-only stage filter skipped this stage entirely, so a
+// candidate policy that ENABLES challenge (cap > 0) never got compared
+// against it at all, reporting a false policy-equivalence instead of the
+// real disagreement.
+{
+  const runId = "run-challenge-capped-disabled-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "challenge", entered_at: "2026-09-01T00:01:00Z", exit: "capped: disabled" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("challenge-capped-disabled", {
+    issues: [{ number: 167, pull_request: null }],
+    comments: { "167": [idx, rr] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 167 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -2571,7 +2722,15 @@ set +e
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_narrowed" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
-[ "$rc" -eq 1 ] || fail "registry-revision-pin: narrowed run should report not-found once the eligible registry revision excludes its only author, got rc=$rc: $out"
+# shepherd round 5, Codex-confirmed (P2): the index author's own trust is
+# now decided at the RECORD's kickoff time (same mechanism, same
+# EvidenceError disposition, as the pre-existing record-author check) —
+# both this run's record and index share the one narrowed-out author, so
+# this now correctly reports indeterminate rather than the old silent
+# not-found, exactly as the record-author check alone already did for the
+# identical reason before this fix unified the two.
+[ "$rc" -eq 3 ] || fail "registry-revision-pin: narrowed run should report indeterminate once the eligible registry revision excludes its only author, got rc=$rc: $out"
+echo "$out" | grep -qi "not a registry-trusted actor as of this run's kickoff" || fail "registry-revision-pin: expected a registry-narrowing reason, got: $out"
 
 echo "== review round 4 (piece 2 of #663): a registry revision landing AFTER kickoff is not applied retroactively — the run authenticates normally =="
 run_id_not_yet="$(meta registry-revision-pin .meta.runIdNotYet)"
@@ -2701,7 +2860,12 @@ set +e
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
 rc=$?
 set -e
-[ "$rc" -eq 1 ] || fail "registry-nonmain-branch: expected not-found (narrowed by the in-effect registry revision on the trunk branch), got rc=$rc: $out"
+# shepherd round 5: same reclassification as registry-revision-pin above —
+# indeterminate, not silent not-found, now that the index author's own
+# trust check runs through the same record-kickoff-time mechanism as the
+# record author's.
+[ "$rc" -eq 3 ] || fail "registry-nonmain-branch: expected indeterminate (narrowed by the in-effect registry revision on the trunk branch), got rc=$rc: $out"
+echo "$out" | grep -qi "not a registry-trusted actor as of this run's kickoff" || fail "registry-nonmain-branch: expected a registry-narrowing reason, got: $out"
 
 echo "== shepherd round 2: a forged-author evidence marker is reported under forged_comments, not silently dropped =="
 export DFSTATS_DB="$tmp/scenarios/forged-marker-report.json"
@@ -2779,7 +2943,13 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "registry-trust-record-before-index: expected indeterminate (untrusted at record-post time, even though a later registry revision would trust it by index-post time), got rc=$rc: $out"
-echo "$out" | grep -qi "not a configured trusted actor" || fail "registry-trust-record-before-index: expected an untrusted-author reason, got: $out"
+# shepherd round 5 added an index-author check using the SAME
+# recordComment.created_at anchor, which runs first in code order and
+# now shadows this fixture's original record-author-specific message
+# (this fixture's index and record share one actor, so both checks fail
+# for the identical reason) — either message proves the same underlying
+# point: trust evaluated at the record's kickoff time, not the index's.
+echo "$out" | grep -qi "not a configured trusted actor\|not a registry-trusted actor as of this run's kickoff" || fail "registry-trust-record-before-index: expected an untrusted-author reason, got: $out"
 
 echo "== shepherd round 3: an indeterminate run's --since cohort time is the RECORD's own created_at, not the later run-index post time (same fixture, isolates the catch-block fallback from the trust check above) =="
 since_excluded="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-01T00:15:00Z --json)"
@@ -2819,5 +2989,59 @@ rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "record-marker-tamper: expected indeterminate, got rc=$rc: $out"
 echo "$out" | grep -qi "no longer identifies it as this run's run-record" || fail "record-marker-tamper: expected an edited-entry tampering reason, got: $out"
+
+echo "== shepherd round 5: the run-index's OWN author trust is decided at the record's kickoff time, isolated from the record-author check via a genuinely different index author =="
+export DFSTATS_DB="$tmp/scenarios/index-author-narrowed.json"
+run_id="$(meta index-author-narrowed .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "index-author-narrowed: expected indeterminate (index author narrowed out at the record's kickoff time), got rc=$rc: $out"
+echo "$out" | grep -qi "author is not a registry-trusted actor as of this run's kickoff" || fail "index-author-narrowed: expected the index-author-specific reason, got: $out"
+
+echo "== shepherd round 5: a trusted run-index with a canonical marker but no fenced payload is indeterminate, not silently absent from the cohort =="
+export DFSTATS_DB="$tmp/scenarios/index-no-fence.json"
+run_id="$(meta index-no-fence .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "index-no-fence: expected indeterminate (malformed trusted index), got rc=$rc: $out"
+echo "$out" | grep -qi "canonical marker but no fenced payload" || fail "index-no-fence: expected a malformed-payload reason, got: $out"
+repo_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$repo_out" | jq -e '.indeterminate_count == 1' >/dev/null || fail "index-no-fence: expected the --repo scan to count this issue as indeterminate, not silently absent from the cohort, got: $repo_out"
+
+echo "== shepherd round 5: with no --as-of given, discovery freezes a real 'now' cutoff instead of an unbounded one — a future-dated run-record is excluded, not admitted =="
+export DFSTATS_DB="$tmp/scenarios/future-dated.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '(.per_issue | length) == 0' >/dev/null || fail "future-dated: expected the far-future run's issue completely undiscovered under the frozen 'now' cutoff (not merely open/non-terminal, which an unrelated Infinity cutoff would also show), got: $out"
+
+echo "== shepherd round 5: a ready-for-review outcome with no reconstructed PR binding is rejected as inconsistent, not left to crash computePostReadyFix and abort the whole metric =="
+export DFSTATS_DB="$tmp/scenarios/ready-no-pr-binding.json"
+run_id="$(meta ready-no-pr-binding .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "ready-no-pr-binding: expected indeterminate, got rc=$rc: $out"
+echo "$out" | grep -qi "ready-for-review without a corresponding PR binding" || fail "ready-no-pr-binding: expected a PR-binding-inconsistency reason, got: $out"
+repo_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$repo_out" | jq -e '.indeterminate_count == 1' >/dev/null || fail "ready-no-pr-binding: expected the --repo scan to complete and count this issue as indeterminate, not crash entirely, got: $repo_out"
+
+echo "== shepherd round 5: replay selects a cap-0-disabled stage (recorded stage_transitions exit, zero rounds) for comparison instead of skipping it entirely =="
+export DFSTATS_DB="$tmp/scenarios/challenge-capped-disabled.json"
+cat >"$tmp/policy-disabled-matching.toml" <<'TOML'
+challenge_cap = 0
+review_cap = 3
+TOML
+matching_out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-disabled-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+echo "$matching_out" | jq -e '.[0].diffs | length == 0' >/dev/null || fail "challenge-capped-disabled (matching cap 0): expected no diff, got: $matching_out"
+cat >"$tmp/policy-disabled-enabling.toml" <<'TOML'
+challenge_cap = 4
+review_cap = 3
+TOML
+enabling_out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-disabled-enabling.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+echo "$enabling_out" | jq -e '(.[0].diffs | length) == 1 and .[0].diffs[0].stage == "challenge" and .[0].diffs[0].recorded == "capped: disabled" and .[0].diffs[0].recomputed == "continue"' >/dev/null || fail "challenge-capped-disabled (enabling cap 4): expected challenge to diff (recorded capped, recomputed continue for the zero-round trajectory), got: $enabling_out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

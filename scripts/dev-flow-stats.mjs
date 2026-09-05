@@ -433,9 +433,15 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
   // (kickoff/issue/-/1) — shepherd round 1, Codex-confirmed (P2): checking
   // only `kind` accepted a trusted-but-noncanonical index (a stray
   // stage/dest/round/seq) that the protocol does not actually sanction.
-  const indexMarked = markedComments(issueComments).filter(
-    (e) => e.marker.kind === "run-index" && e.marker.stage === "kickoff" && e.marker.dest === "issue" && e.marker.round === null && e.marker.seq === 1,
-  );
+  const canonicalIndexShape = (marker) =>
+    marker !== null &&
+    marker.kind === "run-index" &&
+    marker.stage === "kickoff" &&
+    marker.dest === "issue" &&
+    marker.round === null &&
+    marker.seq === 1;
+
+  const indexMarked = markedComments(issueComments).filter((e) => canonicalIndexShape(e.marker));
 
   // Registry-revision pinning (issue #741, review round 4 of #663): narrows
   // trustedActorIds to whichever ids the repo-committed registry also
@@ -455,18 +461,53 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
     return registryTrustCache.get(atIso);
   };
 
-  const trustedIndex = indexMarked.filter((e) => effectiveTrustAt(e.comment.created_at).has(e.actorId));
+  // Loose, TIME-INDEPENDENT pre-filter: the raw CLI-configured set, never
+  // registry-narrowed — shepherd round 5, Codex-confirmed (P2): the index's
+  // own author trust used to be decided here, against the index comment's
+  // OWN (later) created_at. The record must be posted before the index can
+  // name its comment id, so a registry revision landing in that gap was
+  // evaluated at the wrong moment — an actor REMOVED between the two posts
+  // had their already-legitimate kickoff-time index silently discarded as
+  // untrusted noise (erasing a real run), and the round-3 fix for the
+  // opposite direction (an actor ADDED in that gap) only ever protected the
+  // run-record author's own check below, never this one. The real,
+  // registry-narrowed decision now happens inside the per-run_id loop,
+  // once the named record — and so its authoritative created_at — is
+  // known; this pre-filter only weeds out an actor never CLI-configured at
+  // all, which cannot become trusted at any time under any registry state.
+  const looselyTrustedIndex = indexMarked.filter((e) => trustedActorIds.has(e.actorId));
 
-  // An untrusted-authored index is forged noise, not evidence of tampering
-  // with a real run — never a trusted index to begin with, so there is
-  // nothing here that WAS real Dev Flow activity. Returning null (matching
-  // the "no index at all" case immediately below) rather than throwing
-  // keeps a random commenter's marker-shaped paste out of indeterminate_count
-  // — shepherd round 1, Codex-confirmed (P2): the prior throw's own message
-  // said "ignored" but the code did not actually ignore it, letting
-  // --repo's noise floor scale with how many issues an untrusted party
-  // happens to paste a marker-shaped comment on.
-  if (trustedIndex.length === 0) {
+  // A trusted-by-marker run-index whose canonical shape survives but whose
+  // fenced payload is missing or malformed previously vanished entirely:
+  // markedComments() (used to build indexMarked above) requires a
+  // parseable payload before this function ever sees the comment, so a
+  // corrupted anchor was indistinguishable from "this issue was never
+  // kicked off" instead of being reported as tampered evidence — shepherd
+  // round 5, Codex-confirmed (P1), the same silent-erasure challenge round
+  // 1 already closed for a fully DELETED comment, reopened here for a
+  // payload-only corruption of a comment that is still physically present.
+  // Scanned independently, by marker alone (parseMarker does not require a
+  // valid fence), and by the same loose CLI-only trust bar as above — an
+  // untrusted party's malformed paste is still forged noise, not evidence.
+  const malformedTrustedIndexRunIds = new Set();
+  for (const c of issueComments) {
+    if (fencedPayloadText(c.body || "") !== null) continue; // has a payload; handled via indexMarked above
+    const marker = parseMarker(c.body || "");
+    if (!canonicalIndexShape(marker)) continue;
+    if (!trustedActorIds.has(commentActorId(c))) continue;
+    malformedTrustedIndexRunIds.add(marker.runId);
+  }
+
+  // An untrusted-authored (or entirely absent) index is forged noise, not
+  // evidence of tampering with a real run — never a trusted index to begin
+  // with, so there is nothing here that WAS real Dev Flow activity.
+  // Returning null (matching the "no index at all" case) rather than
+  // throwing keeps a random commenter's marker-shaped paste out of
+  // indeterminate_count — shepherd round 1, Codex-confirmed (P2): the
+  // prior throw's own message said "ignored" but the code did not
+  // actually ignore it, letting --repo's noise floor scale with how many
+  // issues an untrusted party happens to paste a marker-shaped comment on.
+  if (looselyTrustedIndex.length === 0 && malformedTrustedIndexRunIds.size === 0) {
     return null;
   }
 
@@ -475,7 +516,7 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
   // canonical duplicates (identical re-posts) within each; conflicting
   // content under one marker fails closed via resolveCanonical itself.
   const byRunId = new Map();
-  for (const e of trustedIndex) {
+  for (const e of looselyTrustedIndex) {
     const list = byRunId.get(e.marker.runId) || [];
     list.push(e);
     byRunId.set(e.marker.runId, list);
@@ -486,6 +527,19 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
   // issue's OTHER runs — each run_id is isolated exactly the way
   // harvestOneRunRecord already isolates later per-run failures.
   const results = [];
+  for (const runId of malformedTrustedIndexRunIds) {
+    // A payload-VALID candidate for this same run_id also exists (e.g. a
+    // legitimate re-post after a corrupted one) — let the loop below
+    // decide via its own canonical (lowest-id) resolution rather than
+    // forcing indeterminate over a superseded duplicate.
+    if (byRunId.has(runId)) continue;
+    results.push({
+      status: "indeterminate",
+      runId,
+      reason: `run-index ${runId} has a canonical marker but no fenced payload — edited-entry tampering`,
+      kickoffCreatedAt: null,
+    });
+  }
   for (const [runId, entries] of byRunId) {
     // Declared outside the try so the catch below can still read them —
     // shepherd round 2/3, Codex-confirmed (P2): see the catch block's own
@@ -506,6 +560,16 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
       recordComment = byId.get(namedId);
       if (!recordComment) {
         throw new EvidenceError(`run-index ${runId} names run-record comment ${named.id}, which no longer exists — deleted-entry tampering`);
+      }
+      // The INDEX's own author, evaluated at the RECORD's created_at — the
+      // true kickoff moment, never the index's own later one — shepherd
+      // round 5, Codex-confirmed (P2): looselyTrustedIndex above only
+      // proved CLI-raw membership; this is the real, registry-narrowed
+      // decision, deferred to here because only now is the named record
+      // (and so its authoritative timestamp) known. See looselyTrustedIndex's
+      // own comment for the full reasoning.
+      if (!effectiveTrustAt(recordComment.created_at).has(indexEntry.actorId)) {
+        throw new EvidenceError(`run-index ${runId} (comment ${indexEntry.comment.id}) author is not a registry-trusted actor as of this run's kickoff`);
       }
       // The record's OWN created_at, never the index's — shepherd round 3,
       // Codex-confirmed (P2): the record must exist (and so has already
@@ -1066,6 +1130,18 @@ function reconstructAsOf(body, cutoffIso, recordCreatedAt) {
   // claiming otherwise is an inconsistent record, not a quiet downgrade.
   if (outcome === "ready-for-review" && !promotion) {
     throw new EvidenceError("run record outcome_transitions[] claims ready-for-review without a corresponding promotion — inconsistent record");
+  }
+  // "Ready-for-review" is itself a PR state (AGENTS.md: "Ready-for-review
+  // PR — non-draft"), so a promotion with no reconstructed PR binding is
+  // just as inconsistent as one with no promotion at all — shepherd round
+  // 5, Codex-confirmed (P2): this check previously required only
+  // promotion, so a chain-consistent record claiming ready-for-review
+  // with an empty pr_bindings[] (pr: null) passed here and reached
+  // computePostReadyFix, which unconditionally reads
+  // readyRun.state.pr.number — a TypeError that aborted the ENTIRE
+  // --repo metric over one malformed record, not just that one run.
+  if (outcome === "ready-for-review" && !pr) {
+    throw new EvidenceError("run record outcome_transitions[] claims ready-for-review without a corresponding PR binding — inconsistent record");
   }
   return {
     run_id: body.run_id,
@@ -1781,8 +1857,23 @@ function replayOneRun(run, { policyPath, exitScriptPath, tmpRoot, repoRoot }) {
   // fixed together here rather than patching only the newer one.
   let indeterminateReason = null;
   for (const stage of ["challenge", "review"]) {
+    // A stage is in scope for replay if it has round evidence OR a
+    // recorded stage_transitions entry — shepherd round 5, Codex-confirmed
+    // (P1): requiring round evidence ALONE skipped a stage resolved to cap
+    // 0 (disabled), which has a valid "capped: disabled" stage_transitions
+    // entry and legitimately zero round comments — even when the
+    // CANDIDATE policy under replay would enable it (cap > 0), which
+    // should recompute "continue" for that zero-round trajectory.
+    // Skipping instead of comparing reported a false policy-equivalence:
+    // no diff, when the candidate policy genuinely disagrees with what
+    // was recorded. Round evidence alone (no stage_transitions entry) must
+    // still qualify too — a stage_transitions entry is not guaranteed to
+    // exist for every stage a real record's own tests exercise via round
+    // evidence directly. recordedExitFor (below) already reads
+    // stage_transitions directly and needs no round evidence either.
     const hasRounds = run.rounds.some((r) => r.stage === stage && r.dest === "issue" && r.round !== null);
-    if (!hasRounds) continue;
+    const wasVisited = hasRounds || run.state.stage_transitions.some((t) => t.stage === stage);
+    if (!wasVisited) continue;
     const currentHead = currentHeadForStage(run, stage);
     const { verdict, error } = invokeExitScript(exitScriptPath, { runDir, stage, policyPath, currentHead, repoRoot });
     const recordedText = recordedExitFor(run.state, stage);
@@ -2088,14 +2179,29 @@ function cliMetrics(args) {
     }
   }
 
+  // Freeze one observation instant before discovery starts, rather than
+  // letting each issue's own gh api call implicitly use whatever GitHub
+  // returns at ITS OWN moment (no --as-of means cutoffEpoch=Infinity per
+  // issue — nothing filtered, so each issue sees "now" as of when its own
+  // request happened) while computeClosedCohortMetric separately computes
+  // Date.now() only after the full scan finishes — shepherd round 5,
+  // Codex-confirmed (P2): a --repo scan spans real wall-clock time across
+  // many issues, so evidence landing mid-scan could be visible to an
+  // early-scanned issue's own request but excluded from the LATER "now"
+  // computeClosedCohortMetric uses for staleness, or vice versa — the
+  // cohort would then depend on scan order/timing rather than one
+  // observation instant, the same reproducibility guarantee an EXPLICIT
+  // --as-of already provides. An explicit --as-of is untouched; this only
+  // fills in the otherwise-implicit default, once, before either call.
+  const effectiveAsOf = asOf ?? new Date().toISOString();
   let runs;
   try {
-    runs = discoverAllRuns(args.repo, { trustedActorIds, asOf });
+    runs = discoverAllRuns(args.repo, { trustedActorIds, asOf: effectiveAsOf });
   } catch (err) {
     console.error(`dev-flow-stats: ${err.message}`);
     return err instanceof EvidenceError ? 3 : 2;
   }
-  const metric = computeClosedCohortMetric(args.repo, groupRunsByIssue(runs), { staleAfterDays, asOf, since });
+  const metric = computeClosedCohortMetric(args.repo, groupRunsByIssue(runs), { staleAfterDays, asOf: effectiveAsOf, since });
 
   if (args.json) {
     console.log(JSON.stringify(metric, null, 2));
