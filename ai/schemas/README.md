@@ -1139,13 +1139,17 @@ its fake `gh` shim. Each fixture names the registry revisions
 must not count as landing, and the `document` served at that revision),
 one run (`run`: `author_actor_id`,
 `kickoff_at`, `evidence_writes[]` with each write's `posted_at`, and an
-optional `record_edited_at` that becomes the record comment's `updated_at`),
+optional `record_edited_at` that becomes the record comment's `updated_at`,
+and optional `index_posted_at` / `index_edited_at` that move the run-index
+anchor's own `created_at` / `updated_at` after the record's),
 the operator's `cli_trusted_actor_ids`, and the verdict it expects
 (`expect.status` of `ok` or `indeterminate`, `expect.reason_contains` — the
 `.reason` sidecar's role, inline — and `expect.rounds` for an accepted run).
 Adding a case is one directory; the runner discovers the corpus and asserts
-every fixture's own expectation, and fails if fewer than the shipped ten
-are found. The ten shipped cover the evidence delta spec's three named
+every fixture's own expectation, and fails if fewer cases than the shipped
+corpus (thirteen at this writing; the floor in
+`scripts/test-dev-flow-stats.sh` moves with it) are found. The shipped
+cases cover the evidence delta spec's three named
 scenarios (missing/empty allowlist fails closed; an actor added after
 posting does not retroactively authenticate; an actor removed after
 posting does not invalidate), plus a malformed allowlist, no revision in
@@ -1153,7 +1157,9 @@ effect at kickoff, an unresolvable revision history, a write after
 mid-run removal, a record edit after removal, and a CLI selection that
 names an actor the registry does not (never widened); plus, from
 challenge round 1, a staging-branch merge that must not backdate a landing
-and a same-second landing whose order is unknowable (indeterminate).
+and a same-second landing whose order is unknowable (indeterminate); and,
+from challenge round 2, a run-index anchor posted after its author's
+removal.
 
 `ai/schemas/fixtures/result.reviewer.schema/valid/omator-397-*.json` and
 `ai/schemas/fixtures/adjudication.schema/valid/omator-397-*-adjudication.json`
@@ -1446,12 +1452,13 @@ answer never changes afterwards:
   relative to it (REST timestamps carry second precision), so that write is
   indeterminate rather than guessed either way.
 - Evaluation is **per write**, not a run-wide kickoff snapshot (maintainer
-  ruling on #741, 2026-09-02): the run-index author and the run-record
-  author are checked at the record's `created_at` (the true kickoff
-  moment); each `evidence_comments[]` entry is checked at *that comment's*
-  own `created_at`; and because the run record is edited in place at every
-  transition, its server-side `updated_at` — the only trace its last edit
-  leaves — is checked too. An actor removed mid-run therefore stays
+  ruling on #741, 2026-09-02): the run-record author is checked at the
+  record's `created_at` (the true kickoff moment); the run-index author at
+  the index comment's own `created_at` (a separate, later write); each
+  `evidence_comments[]` entry at *that comment's* own `created_at`; and
+  because the run record is edited in place at every transition, its
+  server-side `updated_at` — the only trace its last edit leaves — is
+  checked too (as is the index's, should it ever be edited). An actor removed mid-run therefore stays
   authenticated for everything they wrote while listed and is rejected for
   every write after removal; an actor added later never retroactively
   authenticates older writes. The three fixture cases the evidence delta

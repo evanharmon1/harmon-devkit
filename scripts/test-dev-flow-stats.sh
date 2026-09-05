@@ -2525,6 +2525,10 @@ function writeScenario(name, db) {
     };
     const { index: idx, record: rr } = runRecordComment(author, "orchestrator", runId, runBody, fixture.run.kickoff_at);
     if (fixture.run.record_edited_at) rr.updated_at = fixture.run.record_edited_at;
+    // The index is a separate, later write (challenge round 2 of #741):
+    // a fixture may post it after the record, and may edit it afterwards.
+    if (fixture.run.index_posted_at) idx.created_at = fixture.run.index_posted_at;
+    if (fixture.run.index_edited_at) idx.updated_at = fixture.run.index_edited_at;
     // Newest-first by landing time, as GitHub's commits?path= listing
     // returns; an unresolvable (landed_at: null) revision has no
     // commit_pulls entry at all, matching a real no-merging-PR response.
@@ -3471,6 +3475,6 @@ for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
     echo "PASS: registry-trust/$name"
     corpus_count=$((corpus_count + 1))
 done
-[ "$corpus_count" -ge 12 ] || fail "registry-trust corpus: expected at least 12 cases, found $corpus_count"
+[ "$corpus_count" -ge 13 ] || fail "registry-trust corpus: expected at least 13 cases, found $corpus_count"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

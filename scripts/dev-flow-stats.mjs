@@ -677,15 +677,27 @@ function findRunRecord(issueComments, { trustedActorIds, repo, effectiveTrustAt:
       if (!recordComment) {
         throw new EvidenceError(`run-index ${runId} names run-record comment ${named.id}, which no longer exists — deleted-entry tampering`);
       }
-      // The INDEX's own author, evaluated at the RECORD's created_at — the
-      // true kickoff moment, never the index's own later one — shepherd
-      // round 5, Codex-confirmed (P2): looselyTrustedIndex above only
-      // proved CLI-raw membership; this is the real, registry-narrowed
-      // decision, deferred to here because only now is the named record
-      // (and so its authoritative timestamp) known. See looselyTrustedIndex's
-      // own comment for the full reasoning.
-      if (!effectiveTrustAt(recordComment.created_at).has(indexEntry.actorId)) {
-        throw new EvidenceError(`run-index ${runId} (comment ${indexEntry.comment.id}) author is not a registry-trusted actor as of this run's kickoff`);
+      // The INDEX's own author, evaluated at the INDEX's own write time —
+      // its created_at, and its updated_at when it was edited afterwards.
+      // The index is a write in its own right, and #741's per-write
+      // invariant binds every write to the revision in effect when it was
+      // made: an actor removed between the record post and the index post
+      // must not have their later index accepted on the strength of the
+      // earlier kickoff — challenge round 2 of #741, confirmed (P1). (#751's
+      // shepherd round 5 first evaluated this author at the RECORD's
+      // created_at, the pre-#741 run-wide kickoff-snapshot reading; the
+      // record author's own check just below still uses the record's
+      // created_at, which is that write's own time.) The candidate list
+      // above only proved CLI-raw membership; this is the real,
+      // registry-narrowed decision.
+      if (!effectiveTrustAt(indexEntry.comment.created_at).has(indexEntry.actorId)) {
+        throw new EvidenceError(`run-index ${runId} (comment ${indexEntry.comment.id}) author is not a registry-trusted actor as of this run's kickoff (the index's own post time ${indexEntry.comment.created_at})`);
+      }
+      const indexEditedAt = typeof indexEntry.comment.updated_at === "string" ? indexEntry.comment.updated_at : null;
+      if (indexEditedAt !== null && Date.parse(indexEditedAt) > Date.parse(indexEntry.comment.created_at)) {
+        if (!effectiveTrustAt(indexEditedAt).has(indexEntry.actorId)) {
+          throw new EvidenceError(`run-index ${runId} (comment ${indexEntry.comment.id}) was last edited at ${indexEditedAt}, when its author ${indexEntry.actorId} was no longer on the trusted-orchestrator allowlist in effect — a write after removal`);
+        }
       }
       // The record's OWN created_at, never the index's — shepherd round 3,
       // Codex-confirmed (P2): the record must exist (and so has already
