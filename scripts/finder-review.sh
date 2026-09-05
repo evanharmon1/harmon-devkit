@@ -63,6 +63,9 @@
 # The vendor invocation is overridable, because a vendor flag change must be a
 # config edit rather than a code change here:
 #   FINDER_REVIEW_COPILOT_BIN    (default: copilot)
+#   FINDER_REVIEW_COPILOT_CONFIG_DIR (default: ~/.copilot) the ONLY path from
+#                                your home directory the sandboxed pass can
+#                                read; everything else in HOME is a tmpfs
 #   FINDER_REVIEW_COPILOT_ARGS   (default: -p)     prompt appended as one arg
 #   FINDER_REVIEW_MAX_PROMPT_BYTES (default: 60000) refusal bound on the WHOLE
 #                                assembled prompt, in bytes
@@ -286,6 +289,14 @@ fi
 
 # shellcheck source=scripts/lib/readonly-sandbox.sh
 . "$script_dir/lib/readonly-sandbox.sh"
+# The ONE credential path this finder may read inside an otherwise empty HOME.
+# Per tool and overridable, because where a vendor keeps its token is the
+# vendor's business and changes without notice.
+readonly_sandbox_credential_dir="${FINDER_REVIEW_COPILOT_CONFIG_DIR:-${HOME:-/nonexistent}/.copilot}"
+# The sandbox replaces /tmp with a fresh tmpfs, so a CLI installed under it
+# would vanish before it could run. Name its directory explicitly.
+bin_path="$(command -v "$bin")"
+readonly_sandbox_extra_ro=("$(dirname "$bin_path")")
 sandbox_create >/dev/null || {
     echo "Refusing to run $slug: the read-only scratch checkout could not be built, and" >&2
     echo "/review requires the capability split to be installed and verified or the" >&2

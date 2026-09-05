@@ -15,30 +15,86 @@
 # So the boundary is built OUTSIDE the CLI, where it does not depend on the
 # vendor's cooperation at all:
 #
-#   1. a scratch `git worktree add --detach` checkout, per run, in a temp dir;
-#   2. every path in it made unwritable (`chmod -R a-w`);
-#   3. the environment stripped of write credentials and of git's credential
-#      helpers, so a network write has nothing to authenticate with;
-#   4. `bwrap --ro-bind` over the whole filesystem where bubblewrap exists, so
-#      the denial is the kernel's rather than the file mode's;
-#   5. and afterwards the scratch tree is PROVEN unchanged — `git status`
+#   1. a kernel sandbox, `bwrap`, is REQUIRED — not opportunistic. Without it
+#      the only protection is the file mode on the scratch checkout, and that
+#      stops nothing outside it: a linked worktree's `.git` is a POINTER into
+#      the real repository, so `git update-ref` could alter or delete shared
+#      refs while the scratch tree stayed byte-identical and the verification
+#      below happily passed. The contract's answer to a boundary that cannot
+#      be installed is to refuse, so that is what happens;
+#   2. a scratch `git worktree add --detach` checkout, per run, in a temp dir,
+#      with every path in it made unwritable;
+#   3. the whole filesystem read-only inside the sandbox — the real `.git`
+#      bound read-only EXPLICITLY as well, so the worktree pointer leads
+#      somewhere unwritable rather than relying on the blanket bind alone;
+#   4. HOME replaced by a tmpfs with only the finder's OWN credential path
+#      bound back in read-only. A blanket read-only bind is not isolation: the
+#      network stays open, `gh` falls back to ~/.config/gh/hosts.yml, and
+#      ~/.aws and npm credentials are all readable, so a finder with shell
+#      capability could make authenticated remote writes or exfiltrate;
+#   5. the environment stripped of write credentials and of git's credential
+#      helpers, so what does remain has nothing to authenticate with;
+#   6. and afterwards the scratch tree is PROVEN unchanged — `git status`
 #      clean, no untracked files, same file list — or the pass fails as
 #      tampered.
 #
-# (5) is what makes this "verified" rather than "configured": whatever the CLI
+# (6) is what makes this "verified" rather than "configured": whatever the CLI
 # was allowed to do, a pass is only accepted if the tree it ran against is
 # byte-identical to the one it was given. Network egress is deliberately NOT
-# severed — the CLI has to reach its model — so this bounds writes to the
-# checkout and to git, not exfiltration; a finder is given the diff either way,
-# and that limit is stated rather than papered over.
+# severed — the CLI has to reach its model — so this bounds writes and
+# credential access, not the model call itself; a finder is given the diff
+# either way, and that limit is stated rather than papered over.
 
 # sandbox_run WORKDIR-VAR-NAME — create the scratch checkout, print its path.
 # The caller runs its CLI with `sandbox_exec` and then calls `sandbox_verify`.
 readonly_sandbox_dir=
 readonly_sandbox_manifest=
+readonly_sandbox_bwrap=
+# The one credential path the finder is allowed to read, bound into an
+# otherwise empty HOME. Set by the caller before sandbox_create.
+readonly_sandbox_credential_dir=
+# Extra paths to bind read-only. /tmp is replaced by a fresh tmpfs inside the
+# sandbox, so anything the run genuinely needs from there — the finder's own
+# binary, most obviously — has to be named or it simply disappears.
+readonly_sandbox_extra_ro=()
+
+# bwrap from PATH, else the copy Codex bundles — a host without either cannot
+# host a confidence pass, and saying so is the contract's own instruction.
+sandbox_resolve_bwrap() {
+    # An explicit path wins, so a caller can pin a known-good build — and so a
+    # test can point it at nothing and prove the refusal below is real.
+    if [ -n "${READONLY_SANDBOX_BWRAP:-}" ]; then
+        [ -x "$READONLY_SANDBOX_BWRAP" ] || return 1
+        readonly_sandbox_bwrap="$READONLY_SANDBOX_BWRAP"
+        return 0
+    fi
+    if command -v bwrap >/dev/null 2>&1; then
+        readonly_sandbox_bwrap="$(command -v bwrap)"
+        return 0
+    fi
+    local candidate
+    for candidate in \
+        /usr/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/*/codex-resources/bwrap \
+        "$HOME"/.vscode-server/extensions/openai.chatgpt-*/bin/*/codex-resources/bwrap \
+        /opt/homebrew/bin/bwrap; do
+        if [ -x "$candidate" ]; then
+            readonly_sandbox_bwrap="$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
 
 sandbox_create() {
     local head
+    sandbox_resolve_bwrap || {
+        echo "readonly-sandbox: no bubblewrap (bwrap) on PATH or in Codex's bundled resources." >&2
+        echo "readonly-sandbox: a confidence pass may not run on file-mode protection alone —" >&2
+        echo "readonly-sandbox: a linked worktree's .git points at the real repository, so" >&2
+        echo "readonly-sandbox: git could still alter shared refs while the scratch tree looked" >&2
+        echo "readonly-sandbox: untouched. Install bubblewrap, or run this finder on the PR side." >&2
+        return 1
+    }
     head="$(git rev-parse HEAD 2>/dev/null)" || {
         echo "readonly-sandbox: cannot resolve HEAD to build a scratch checkout" >&2
         return 1
@@ -75,16 +131,30 @@ sandbox_snapshot() {
 # sandbox_exec CMD... — run a command with the scratch tree as its working
 # directory and no write credentials in its environment.
 sandbox_exec() {
-    local -a wrapper=()
-    if command -v bwrap >/dev/null 2>&1; then
-        # The kernel's denial rather than the file mode's. Network is left
-        # alone deliberately (the CLI must reach its model); /tmp is a fresh
-        # tmpfs so a CLI that insists on scratch space has some, and nothing
-        # it writes there survives or reaches the checkout.
-        wrapper=(bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp
-            --ro-bind "$readonly_sandbox_dir" "$readonly_sandbox_dir"
-            --chdir "$readonly_sandbox_dir" --die-with-parent)
+    local -a wrapper
+    local real_git_dir home_dir
+    # The MAIN repository's git dir, which the scratch worktree's `.git` file
+    # points at. Bound read-only by name as well as by the blanket bind: this
+    # is the specific path that turned "the tree is unwritable" into "shared
+    # refs are still reachable", so it is named rather than left implicit.
+    real_git_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || real_git_dir=
+    home_dir="${HOME:-/nonexistent}"
+    wrapper=("$readonly_sandbox_bwrap" --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp)
+    [ -z "$real_git_dir" ] || wrapper+=(--ro-bind "$real_git_dir" "$real_git_dir")
+    # HOME is replaced wholesale, then exactly one credential path is bound
+    # back. Everything else a home directory holds — ~/.config/gh, ~/.aws, npm
+    # and the rest — is simply not there.
+    wrapper+=(--tmpfs "$home_dir")
+    if [ -n "$readonly_sandbox_credential_dir" ] && [ -e "$readonly_sandbox_credential_dir" ]; then
+        wrapper+=(--ro-bind "$readonly_sandbox_credential_dir" "$readonly_sandbox_credential_dir")
     fi
+    local extra
+    for extra in "${readonly_sandbox_extra_ro[@]+"${readonly_sandbox_extra_ro[@]}"}"; do
+        [ -e "$extra" ] || continue
+        wrapper+=(--ro-bind "$extra" "$extra")
+    done
+    wrapper+=(--ro-bind "$readonly_sandbox_dir" "$readonly_sandbox_dir"
+        --chdir "$readonly_sandbox_dir" --die-with-parent)
     (
         cd "$readonly_sandbox_dir" || exit 1
         # Credentials a write would need, and the helpers that supply them.
@@ -94,6 +164,7 @@ sandbox_exec() {
             -u GITHUB_ENTERPRISE_TOKEN -u GH_CONFIG_DIR \
             -u GIT_ASKPASS -u SSH_ASKPASS -u SSH_AUTH_SOCK \
             -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+            -u NPM_TOKEN -u NODE_AUTH_TOKEN \
             GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
             GIT_TERMINAL_PROMPT=0 \
             "${wrapper[@]}" "$@"

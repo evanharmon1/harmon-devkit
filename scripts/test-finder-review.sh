@@ -76,11 +76,11 @@ grep -Fq 'finder: copilot-verification' <<<"$out" || fail "review mode resolved 
 grep -Fq 'Run a VERIFICATION-CHECKPOINT review' <<<"$out" || fail "review mode instruction missing"
 grep -Fq 'Run an ADVERSARIAL review' <<<"$out" && fail "review mode rendered the adversarial instruction"
 
-echo "==> a write from inside the pass is denied by the read-only checkout"
+echo "==> a write from inside the pass is denied by the kernel"
 # /review requires the capability split to be installed and VERIFIED. It is
-# built around the CLI rather than asked of it: a scratch git worktree, made
-# unwritable, entered with write credentials stripped, and proven unchanged
-# afterwards. First half — an ordinary write simply fails.
+# built around the CLI rather than asked of it: a bubblewrap sandbox over a
+# scratch git worktree, an isolated HOME, and the tree proven unchanged
+# afterwards. First defence — a write simply fails.
 writer_bin="$tmp/writer-bin"
 mkdir -p "$writer_bin"
 cat >"$writer_bin/copilot" <<'EOF'
@@ -90,33 +90,72 @@ echo "P1 src/app.txt:1 — a finding"
 EOF
 chmod +x "$writer_bin/copilot"
 out="$( (cd "$work" && PATH="$writer_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
-grep -Fq 'Permission denied' <<<"$out" ||
+grep -Eq 'Read-only file system|Permission denied' <<<"$out" ||
     fail "the scratch checkout was writable from inside the pass: $out"
 [ ! -e "$work/TAMPERED.txt" ] ||
     fail "a write from inside the pass reached the real worktree"
 
-echo "==> a write that does land fails the pass rather than being reported"
-# Second half, and the one that makes the boundary VERIFIED rather than
-# configured: a CLI with real capabilities could lift the file mode, so the
-# tree is proven unchanged afterwards and a pass that changed it is refused
-# whatever it returned.
-tamper_bin="$tmp/tamper-bin"
-mkdir -p "$tamper_bin"
-cat >"$tamper_bin/copilot" <<'EOF'
+echo "==> git inside the pass cannot reach the real repository's refs"
+# The specific hole a file-mode-only boundary left: a linked worktree's .git is
+# a POINTER into the real repository, so update-ref could alter shared refs
+# while the scratch tree stayed byte-identical and the verification passed.
+refattack_bin="$tmp/refattack-bin"
+mkdir -p "$refattack_bin"
+cat >"$refattack_bin/copilot" <<'EOF'
 #!/usr/bin/env bash
-chmod u+w . 2>/dev/null
-printf 'tampered\n' >./TAMPERED.txt 2>/dev/null
+git update-ref refs/heads/attacked HEAD 2>&1 | head -1
 echo "P1 src/app.txt:1 — a finding"
 EOF
-chmod +x "$tamper_bin/copilot"
+chmod +x "$refattack_bin/copilot"
+out="$( (cd "$work" && PATH="$refattack_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+git -C "$work" rev-parse --verify --quiet refs/heads/attacked >/dev/null &&
+    fail "a pass wrote a ref into the real repository: $out"
+
+echo "==> the pass cannot read the host's other credentials"
+# A blanket read-only bind is not isolation: gh falls back to
+# ~/.config/gh/hosts.yml, and ~/.aws and npm credentials are readable, so a
+# finder with shell capability could make authenticated remote writes.
+creds_bin="$tmp/creds-bin"
+mkdir -p "$creds_bin"
+cat >"$creds_bin/copilot" <<'EOF'
+#!/usr/bin/env bash
+for p in "$HOME/.config/gh" "$HOME/.aws" "$HOME/.npmrc" "$HOME/.gitconfig"; do
+    [ -e "$p" ] && echo "VISIBLE $p"
+done
+echo "P1 src/app.txt:1 — a finding"
+EOF
+chmod +x "$creds_bin/copilot"
+out="$( (cd "$work" && PATH="$creds_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+! grep -q '^VISIBLE ' <<<"$out" ||
+    fail "host credentials were visible inside the sandbox: $(grep '^VISIBLE ' <<<"$out")"
+
+echo "==> the verification catches a tree that changed, independently of the kernel"
+# The two defences are separate on purpose: this one exercises the proof, by
+# mutating the checkout from OUTSIDE the sandbox (where the kernel denial does
+# not apply) and asserting the pass would be refused.
+(
+    cd "$work" || exit 1
+    # shellcheck source=/dev/null
+    . ./scripts/lib/readonly-sandbox.sh
+    sandbox_create >/dev/null || exit 1
+    chmod u+w "$readonly_sandbox_dir"
+    printf 'tampered\n' >"$readonly_sandbox_dir/TAMPERED.txt"
+    if sandbox_verify 2>/dev/null; then
+        sandbox_cleanup
+        exit 1
+    fi
+    sandbox_cleanup
+) || fail "the verification accepted a checkout that had been modified"
+
+echo "==> no kernel sandbox means the dispatch is refused, not downgraded"
 set +e
-out="$( (cd "$work" && PATH="$tamper_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+out="$( (cd "$work" && PATH="$writer_bin:$PATH" READONLY_SANDBOX_BWRAP=/nonexistent/bwrap \
+    ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
 status=$?
 set -e
-[ "$status" -eq 1 ] ||
-    fail "a pass that modified its checkout was not refused (rc $status): $out"
-grep -Fq 'crossed the confidence-stage capability boundary' <<<"$out" ||
-    fail "the tamper refusal did not name the boundary: $out"
+[ "$status" -eq 1 ] || fail "a pass ran without a kernel sandbox (rc $status): $out"
+grep -Fq 'no bubblewrap' <<<"$out" ||
+    fail "the missing-sandbox refusal did not name what is missing: $out"
 
 echo "==> a well-behaved pass in the sandbox is accepted and its output returned"
 quiet_bin="$tmp/quiet-bin"

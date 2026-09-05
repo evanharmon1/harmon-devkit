@@ -235,15 +235,30 @@ in one argv element.
 **The tool boundary is enforced around the CLI, not asked of it.** `/review`
 requires a confidence pass to run with shell, git, network write and
 credentials denied, or the dispatch refused — and no third-party CLI will
-install that for us. So `scripts/lib/readonly-sandbox.sh` builds it: a per-run
-scratch `git worktree` checkout, made unwritable, entered with write
-credentials and git credential helpers stripped from the environment, under
-`bwrap --ro-bind` where bubblewrap is available. Afterwards the scratch tree is
-**proven** unchanged, and a pass that modified it is refused whatever it
-returned. Nothing here depends on the vendor's own capability model or on your
+install that for us. So `scripts/lib/readonly-sandbox.sh` builds it:
+
+- **bubblewrap is required**, resolved from `PATH` and then from Codex's
+  bundled `codex-resources/bwrap`. Without it the dispatch is refused rather
+  than downgraded — file-mode protection alone stops nothing outside the
+  checkout, and a linked worktree's `.git` points at the real repository, so
+  `git update-ref` could alter shared refs while the scratch tree stayed
+  byte-identical.
+- a per-run scratch `git worktree` checkout, made unwritable, with the whole
+  filesystem — and the real `.git` by name — bound read-only inside;
+- **HOME replaced by a tmpfs**, with only that finder's own credential path
+  bound back in (`FINDER_REVIEW_COPILOT_CONFIG_DIR`, default `~/.copilot`).
+  `~/.config/gh`, `~/.aws`, npm credentials and your `~/.gitconfig` are simply
+  not there, so a finder with shell capability has nothing to authenticate a
+  remote write with;
+- write credentials and git's credential helpers stripped from the
+  environment;
+- and afterwards the scratch tree **proven** unchanged — a pass that modified
+  it is refused whatever it returned.
+
+Nothing here depends on the vendor's own capability model or on your
 configuration being what you think it is. What it does not bound is network
-egress — the CLI has to reach its model — so this denies writes to the checkout
-and to git, not exfiltration; the finder is handed the diff either way. The vendor invocation is overridable without editing the runner,
+egress — the CLI has to reach its model — so this denies writes and credential
+access, not the model call; the finder is handed the diff either way. The vendor invocation is overridable without editing the runner,
 so a vendor flag change is a config edit: `FINDER_REVIEW_COPILOT_ARGS` and
 `FINDER_REVIEW_COPILOT_BIN` (`FINDER_REVIEW_DRY_RUN=1` prints the resolved
 command and prompt without invoking anything).
