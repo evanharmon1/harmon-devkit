@@ -46,6 +46,12 @@ is a reconstruction after the fact.
   issue — in the `run-index` / `run-record` comments on the linked issue. A
   marker counts only as the **first line** of a comment; one quoted inside
   prose (a real risk on a PR that discusses this protocol) is not a run.
+  **And only a marker from a trusted actor selects a run.** A marker is text
+  anyone who can comment could post, so which run gets reported is a trust
+  boundary, not a lookup: the helper gates discovery on the same
+  trusted-orchestrator actor ids it passes to the harvester, reports every
+  marker it ignored, and refuses a trajectory whose own record names a
+  different PR.
 
 **Run the projection rather than reading the trajectory by hand.** It resolves
 the run id, calls the harvester (`scripts/dev-flow-stats.mjs --run <id> --json`,
@@ -74,12 +80,16 @@ than the one you are authenticated as, typically Foreman's service account;
 | Exit | Meaning | What the retro does |
 | --- | --- | --- |
 | 0 | a report is on stdout | Paste it as §2, then carry on |
-| 10 | no retained evidence — `no-stats-script`, `no-run-record`, or `run-not-found` | Fall back: skip §2, and **say plainly** that this session has no run record so the improvements in §5 rest on the conversation rather than on measurements |
-| 11 | evidence exists but is **indeterminate** — a broken or forged digest chain, or two runs claimed on one PR | Not a fallback. Make it the retro's first finding, quote the reason from stderr, and file it |
+| 10 | it **looked** and found nothing — `no-run-record` (no trusted marker on the PR or its linked issues) or `run-not-found` | Fall back: skip §2, and **say plainly** that this session has no run record so the improvements in §5 rest on the conversation rather than on measurements |
+| 12 | `no-stats-script` — this checkout has no harvester, so whether a run record exists is **unknown** | Fall back for the measurements, but report the gap: say the evidence *could not be read here*, never that there is none. stderr names the run when discovery found one anyway |
+| 11 | evidence exists but is **indeterminate** — a broken or forged digest chain, two trusted runs claimed on one PR, or a run bound to a different PR | Not a fallback. Make it the retro's first finding, quote the reason from stderr, and file it |
 | 1 or 2 | operational or usage error | Fix the invocation, or report that the tool failed. Never silently downgrade to memory |
 
 Exit 10 is the ordinary pre-v2 session and costs the retro only its evidence
-section. Exit 11 is a finding in its own right — treating it as "no evidence"
+section — it is the **only** exit that licenses the sentence "this session has
+no run record". Exit 12 is a fact about the checkout, not about the run:
+reporting it as 10 would let a vendoring gap masquerade as work nobody
+recorded. Exit 11 is a finding in its own right — treating it as "no evidence"
 is how tampered evidence would read as an ordinary memory-based retro.
 
 ## 2. The run-evidence report
@@ -89,12 +99,15 @@ two retros of two different runs are comparable line for line:
 
 1. `## Run evidence` — run id, issue, PR, who initiated it, outcome, promotion,
    and where the run id was discovered.
-2. `### Policy the run was reviewed under` — the resolved rigor line read back
-   off the PR body. This is the budget the run **actually** ran under, not
-   whatever `.devflow.toml` says today; a retro that rescored an old run
-   against a since-edited config would invent disagreements that never
-   happened. Where the PR published no disclosure the caps are reported
-   unknown rather than guessed.
+2. `### Policy the PR discloses (unverified)` — the resolved rigor line read
+   back off the PR body, and the caps every stage section below is measured
+   against. It is **not** read from the current `.devflow.toml`: that would
+   rescore an old run against a budget it may never have had. But the PR body
+   is mutable and sits outside the authenticated evidence chain — a later edit
+   or republication changes it, and `--as-of` does not reconstruct it — so the
+   caps are a **claim to check against the rounds**, never a measurement, and
+   the report says so on every line that shows one. Where the PR published no
+   disclosure (or two) the caps are reported unknown rather than guessed.
 3. `### Stage <name>`, one per stage the run entered, chronologically by first
    entry — rounds spent against the cap, findings and passes, rounds with no
    adjudication record, every entry and exit (a stage re-entered by a
@@ -102,13 +115,17 @@ two retros of two different runs are comparable line for line:
    interventions that landed while that stage was open.
 4. `### Findings by class and provenance` — `class` from the reviewer's own
    finding, `provenance` its `original` / `round:N` field.
-5. `### Overrides` — the cap, waiver, tier, and strategy disclosures the PR
-   published.
+5. `### Overrides (unverified)` — the cap, waiver, tier, and strategy
+   disclosures the PR published, under the same caveat as the policy line.
 6. `### Interventions` — every human touchpoint, with the stage it interrupted.
 7. `### Deferred findings settled` — each settled deferral with the finder slug
    recovered from its finding id (`<stage>-r<round>-<finder>-<n>`, the slugs
    `agent-registry.json` `finders[]` declares).
-8. `### Evidence integrity` — trusted-but-unlisted and forged-author comments.
+8. `### Evidence integrity` — trusted-but-unlisted and forged-author comments,
+   plus every evidence marker discovery ignored because its author is not a
+   trusted actor. A nonzero count is either a misconfigured trust root (pass
+   `--trusted-actor-id`) or somebody trying to redirect the report; both are
+   worth a line in the retro.
 9. `### Not measurable from this run's evidence` — the measurements this retro
    is expected to make that today's evidence surface cannot supply, each naming
    the issue that would close it. Carry these into §5 as-is rather than
@@ -119,6 +136,9 @@ most of the signal:
 
 - **Rounds against the cap.** A stage that spent its cap converged late or not
   at all. A stage that exited on round 1 spent nothing it did not need to.
+  The cap is the PR's own unverified disclosure, so a count that looks
+  impossible against it (four rounds under a cap of three) is a finding about
+  the disclosure, not arithmetic to explain away.
 - **The `round:N` share of provenance.** A stage whose later findings are
   mostly about its own earlier fixes is feeding on itself — the exact failure
   AGENTS.md's round-2 scaffolding checkpoint exists to catch. If the trajectory

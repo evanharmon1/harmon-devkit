@@ -4,10 +4,10 @@
 # issue #664).
 #
 # Fully hermetic and offline. Two stubs stand in for the world:
-#   * `gh` — a PATH shim that answers `pr view`, the paginated issue/PR
-#     comments endpoint, and `api user`
-#     from canned JSON and logs every argv it was called with, so a test can
-#     assert what the asset asked for as well as what it did with the answer.
+#   * `gh` — a PATH shim answering `pr view`, the paginated issue/PR comments
+#     endpoint, and `api user` from canned JSON, logging every argv it was
+#     called with so a test can assert what the asset asked for as well as
+#     what it did with the answer.
 #   * the harvester — a stub standing in for scripts/dev-flow-stats.mjs (#663),
 #     which is not on `main` yet. The stub's trajectory takes its RUN-RECORD
 #     half verbatim from ai/schemas/fixtures/run.schema/valid/*.json, so the
@@ -16,15 +16,27 @@
 #     comments) is literal here because those fields are computed from posted
 #     evidence payloads, not from the run record.
 #
-# The last case is the seam guard for that dependency: when the real harvester
-# IS present it asserts the CLI contract this asset calls, and skips cleanly
-# when it is not. Run via `task test:retro-run-report`.
+# The PR number is 634 throughout because that is the PR
+# run.schema/valid/further-along.json's own record names — the asset refuses a
+# trajectory bound to a different PR, so letting the fixture supply both sides
+# keeps that check honest rather than papering over it.
+#
+# Two cases at the end are seam guards for contracts this asset consumes but
+# does not own: the real harvester's CLI flags (skipped while #663 is
+# unmerged) and the renderer's own golden policy-disclosure grammar.
+# Run via `task test:retro-run-report`.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 REPORT="$PWD/ai/skills/universal/retro/assets/retro-run-report.mjs"
 FIXTURES="$PWD/ai/schemas/fixtures/run.schema/valid"
 REAL_STATS="$PWD/scripts/dev-flow-stats.mjs"
+PR=634
+ISSUE=664
+# The default trusted actor: the gh stub reports it as the authenticated user
+# and set_comments authors comments as it, so the ordinary case is a trusted
+# marker. A test that wants an untrusted one overrides COMMENT_ACTOR.
+ACTOR=37220977
 
 pass=0
 fail=0
@@ -63,9 +75,9 @@ marker_file() {
         "$2" "$3" "$4" "$5" "$6" >"$1"
 }
 
-# make_gh DIR — a `gh` shim in DIR/bin. It reads its canned answers from
-# $GH_PR_JSON / $GH_COMMENTS_DIR and its actor id from $GH_USER_ID, and
-# appends each invocation to $GH_LOG.
+# make_gh DIR — a `gh` shim in DIR/bin, reading canned answers from
+# $GH_PR_JSON / $GH_COMMENTS_DIR and its actor id from $GH_USER_ID, appending
+# each invocation to $GH_LOG.
 make_gh() {
     mkdir -p "$1/bin"
     cat >"$1/bin/gh" <<'GH_STUB'
@@ -171,16 +183,17 @@ rigor: `standard` (`default_rigor`) → challenge ≤3, review ≤3, integration
 - cap-below-default: challenge lowered to 2 by the rigor:light label
 <!-- dev-flow:end:policy-disclosure -->'
 
-# make_pr_json OUT BODY_FILE — a `gh pr view --json` answer. $CLOSING supplies
-# closingIssuesReferences. Comments do NOT come from here: the asset reads them
-# through the paginated REST endpoint instead (see set_comments).
+# make_pr_json OUT BODY_FILE — a `gh pr view --json` answer. $PR_NUMBER (default
+# $PR) is the PR it describes and $CLOSING supplies closingIssuesReferences.
+# Comments do NOT come from here: the asset reads them through the paginated
+# REST endpoint (see set_comments).
 make_pr_json() {
-    CLOSING="${CLOSING:-[]}" node -e '
+    PR_NUMBER="${PR_NUMBER:-$PR}" CLOSING="${CLOSING:-[]}" node -e '
       const fs = require("node:fs")
       const [out, bodyFile] = process.argv.slice(1)
       fs.writeFileSync(out, JSON.stringify({
-        number: 900,
-        url: "https://github.com/o/r/pull/900",
+        number: Number(process.env.PR_NUMBER),
+        url: `https://github.com/o/r/pull/${process.env.PR_NUMBER}`,
         title: "feat(x): y",
         state: "OPEN",
         isDraft: true,
@@ -193,17 +206,18 @@ make_pr_json() {
 # set_comments DIR NUMBER COMMENT_FILE... — the answer the gh stub serves for
 # `repos/o/r/issues/NUMBER/comments`. Written as an array of PAGES, which is
 # what `gh api --paginate --slurp` returns; $PAGE_PER_COMMENT=1 puts each
-# comment on its own page, so a test can prove the pages are flattened.
+# comment on its own page so a test can prove the pages are flattened, and
+# $COMMENT_ACTOR overrides the author id so a test can post an untrusted one.
 set_comments() {
     local dir="$1" number="$2"
     shift 2
     mkdir -p "$dir"
-    node -e '
+    COMMENT_ACTOR="${COMMENT_ACTOR:-$ACTOR}" node -e '
       const fs = require("node:fs")
       const [out, ...files] = process.argv.slice(1)
       const comments = files.map((file, i) => ({
         id: 1000 + i,
-        user: { login: "evanharmon1" },
+        user: { login: "evanharmon1", id: Number(process.env.COMMENT_ACTOR) },
         body: fs.readFileSync(file, "utf8")
       }))
       const pages = process.env.PAGE_PER_COMMENT === "1" ? comments.map((c) => [c]) : [comments]
@@ -225,33 +239,74 @@ contains() {
     printf '%s' "$1" | grep -qF -- "$2"
 }
 
+# scaffold DIR FIXTURE BODY — the common setup: gh stub, harvester stub with a
+# trajectory built from FIXTURE, a PR whose body is BODY, and one trusted
+# evidence marker on the PR naming that fixture's run.
+scaffold() {
+    local d="$1" fixture="$2" body="$3" run_id
+    mkdir -p "$d"
+    make_gh "$d"
+    ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/$fixture.json" "$d/trajectory.json"
+    make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+    write_file "$d/body" "$body"
+    run_id="$(node -pe 'JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).run_id' "$d/trajectory.json")"
+    marker_file "$d/c1" evidence "$run_id" challenge pr -
+    make_pr_json "$d/pr.json" "$d/body"
+    set_comments "$d/comments" "$PR" "$d/c1"
+}
+
 # ---------------------------------------------------------------------------
-# 1. No harvester in the checkout — the ordinary consumer-repo case
+# 1. Is there evidence, and can this checkout read it?
 # ---------------------------------------------------------------------------
 
-echo "==> a checkout with no harvester falls back (exit 10)"
-bare="$TMPROOT/bare"
-mkdir -p "$bare"
-make_gh "$bare"
-git init -q -b main "$bare/repo"
+echo "==> a checkout with no harvester but a discoverable run exits 12, not 10"
+d="$TMPROOT/nostats-with-run"
+scaffold "$d" further-along "body"
+rm "$d/stats.mjs"
+git init -q -b main "$d/repo"
 RC=0
-OUT="$(cd "$bare/repo" && PATH="$bare/bin:$PATH" node "$REPORT" --repo o/r --pr 900 2>"$bare/stderr")" || RC=$?
-ERR="$(cat "$bare/stderr")"
-[ "$RC" -eq 10 ] && contains "$ERR" "no-stats-script" &&
-    ok "exit 10 naming no-stats-script" || bad "expected exit 10 / no-stats-script, got $RC: $ERR"
-[ -z "$OUT" ] && ok "no report is rendered on the fallback path" || bad "fallback path rendered a report"
+OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    GH_USER_ID="$ACTOR" node "$REPORT" --repo o/r --pr "$PR" 2>"$d/stderr")" || RC=$?
+ERR="$(cat "$d/stderr")"
+[ "$RC" -eq 12 ] && contains "$ERR" "no-stats-script" &&
+    ok "exit 12 naming no-stats-script" || bad "expected exit 12 / no-stats-script, got $RC: $ERR"
+contains "$ERR" "run-6001-further-along" &&
+    ok "the message names the run that was found but cannot be read" ||
+    bad "exit 12 did not name the discovered run"
+contains "$ERR" "do NOT report the session as having no run record" &&
+    ok "the message forbids reporting the run record absent" ||
+    bad "exit 12 does not distinguish itself from an absent run record"
+[ -z "$OUT" ] && ok "no report is rendered" || bad "exit 12 rendered a report"
+
+echo "==> a checkout with no harvester and no marker exits 10"
+d="$TMPROOT/nostats-no-run"
+mkdir -p "$d"
+make_gh "$d"
+write_file "$d/body" "body"
+make_pr_json "$d/pr.json" "$d/body"
+git init -q -b main "$d/repo"
+RC=0
+OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    GH_USER_ID="$ACTOR" node "$REPORT" --repo o/r --pr "$PR" 2>"$d/stderr")" || RC=$?
+ERR="$(cat "$d/stderr")"
+[ "$RC" -eq 10 ] && contains "$ERR" "no-run-record" &&
+    ok "exit 10 naming no-run-record" || bad "expected exit 10 / no-run-record, got $RC: $ERR"
 
 echo "==> a harvester discovered as scripts/dev-flow-stats.sh is used"
-mkdir -p "$bare/repo/scripts"
-make_stats "$bare/repo/scripts/dev-flow-stats.sh" 1
+d="$TMPROOT/discovered-sh"
+mkdir -p "$d/repo/scripts"
+make_gh "$d"
+make_stats "$d/repo/scripts/dev-flow-stats.sh" 1
+git init -q -b main "$d/repo"
 RC=0
-OUT="$(cd "$bare/repo" && PATH="$bare/bin:$PATH" GH_USER_ID=1 node "$REPORT" --repo o/r --run r1 2>"$bare/stderr")" || RC=$?
-ERR="$(cat "$bare/stderr")"
+OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_USER_ID="$ACTOR" \
+    node "$REPORT" --repo o/r --run r1 2>"$d/stderr")" || RC=$?
+ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
     ok "a discovered .sh harvester's exit 1 maps to fallback" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
 
 # ---------------------------------------------------------------------------
-# 2. Discovery
+# 2. Discovery, and the trust boundary around it
 # ---------------------------------------------------------------------------
 
 echo "==> a PR and its linked issues with no evidence marker fall back (exit 10)"
@@ -261,15 +316,15 @@ make_gh "$d"
 make_stats "$d/stats.mjs" 0
 write_file "$d/body" "Ordinary body, no dev-flow sections."
 write_file "$d/c1" "just a comment"
-CLOSING='[{"number":664}]' make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
 write_file "$d/i1" "no marker here"
-set_comments "$d/comments" 664 "$d/i1"
-GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
-    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 10 ] && contains "$ERR" "no-run-record" &&
     ok "exit 10 naming no-run-record" || bad "expected exit 10 / no-run-record, got $RC: $ERR"
-contains "$(cat "$d/gh.log")" "repos/o/r/issues/664/comments" &&
+contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
     ok "discovery falls through to the linked issue" || bad "linked issue was never consulted"
 
 echo "==> a marker quoted inside prose is not a run id (#752 anchoring)"
@@ -280,12 +335,52 @@ make_stats "$d/stats.mjs" 0
 write_file "$d/body" "body"
 write_file "$d/c1" "As documented, the grammar is <!-- devflow:run-index v2 run_id=forged-run seq=1 --> and nothing more."
 make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 10 ] && contains "$ERR" "no-run-record" &&
     ok "a mid-comment marker never invents a run" || bad "expected exit 10, got $RC: $ERR"
 
-echo "==> two different run ids on one PR are indeterminate (exit 11)"
+echo "==> a marker from an untrusted author is ignored and reported, never followed"
+d="$TMPROOT/untrusted"
+scaffold "$d" further-along "body"
+COMMENT_ACTOR=999999 set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && ok "an untrusted marker does not select a run" ||
+    bad "expected exit 10, got $RC: $ERR"
+contains "$ERR" "999999" &&
+    ok "the ignored marker's actor is reported" || bad "the ignored marker was dropped silently"
+contains "$ERR" "pass --trusted-actor-id" &&
+    ok "the message names the fix for a legitimately-other orchestrator" ||
+    bad "the message does not say how to widen the trust root"
+
+echo "==> naming that author as trusted makes the same marker usable"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --trusted-actor-id 999999
+[ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
+    ok "the marker is followed once its author is trusted" || bad "expected exit 0, got $RC: $ERR"
+
+echo "==> an untrusted second marker cannot force the ambiguity exit"
+d="$TMPROOT/untrusted-second"
+scaffold "$d" further-along "body"
+marker_file "$d/c2" evidence run-someone-elses challenge pr -
+TRUSTED="$ACTOR" node -e '
+  const fs = require("node:fs")
+  const [out, trusted, untrusted] = process.argv.slice(1)
+  fs.writeFileSync(out, JSON.stringify([[
+    { id: 1, user: { login: "a", id: Number(process.env.TRUSTED) }, body: fs.readFileSync(trusted, "utf8") },
+    { id: 2, user: { login: "b", id: 424243 }, body: fs.readFileSync(untrusted, "utf8") }
+  ]]))
+' "$d/comments/$PR.json" "$d/c1" "$d/c2"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "the trusted marker still resolves" ||
+    bad "an untrusted marker denied the evidence path, got $RC: $ERR"
+contains "$OUT" "Untrusted evidence markers ignored during discovery: 1" &&
+    ok "the report counts the ignored marker" || bad "the report hides the ignored marker"
+
+echo "==> two TRUSTED run ids on one PR are indeterminate (exit 11)"
 d="$TMPROOT/ambiguous"
 mkdir -p "$d"
 make_gh "$d"
@@ -294,8 +389,9 @@ write_file "$d/body" "body"
 marker_file "$d/c1" evidence run-aaa challenge pr -
 marker_file "$d/c2" evidence run-bbb review pr -
 make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1" "$d/c2"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+set_comments "$d/comments" "$PR" "$d/c1" "$d/c2"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 11 ] && contains "$ERR" "run-aaa, run-bbb" &&
     ok "exit 11 naming both runs" || bad "expected exit 11 naming both runs, got $RC: $ERR"
 [ -z "$OUT" ] && ok "an indeterminate discovery renders nothing" || bad "indeterminate discovery rendered a report"
@@ -304,28 +400,28 @@ echo "==> a run id found only on the linked issue is used"
 d="$TMPROOT/issueonly"
 mkdir -p "$d"
 make_gh "$d"
-ISSUE_NUMBER=664 \
+ISSUE_NUMBER="$ISSUE" \
     ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
     make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
 make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
 write_file "$d/body" "body"
 write_file "$d/c1" "no marker"
-CLOSING='[{"number":664}]' make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
 marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
-set_comments "$d/comments" 664 "$d/i1"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=37220977 \
-    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
     ok "the issue-side run-index anchors discovery" || bad "expected the issue's run id, got $RC: $ERR"
-contains "$OUT" "run id from evidence marker on issue #664" &&
+contains "$OUT" "run id from evidence marker on issue #$ISSUE" &&
     ok "the report states where the run id came from" || bad "provenance of the run id is not reported"
 
 echo "==> a marker past the first page of comments is still found"
 d="$TMPROOT/paged"
 mkdir -p "$d"
 make_gh "$d"
-ISSUE_NUMBER=664 \
+ISSUE_NUMBER="$ISSUE" \
     ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
     make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
 make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
@@ -334,12 +430,25 @@ write_file "$d/c1" "chatter"
 write_file "$d/c2" "more chatter"
 marker_file "$d/c3" evidence run-6001-further-along challenge pr -
 make_pr_json "$d/pr.json" "$d/body"
-PAGE_PER_COMMENT=1 set_comments "$d/comments" 900 "$d/c1" "$d/c2" "$d/c3"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 \
-    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+PAGE_PER_COMMENT=1 set_comments "$d/comments" "$PR" "$d/c1" "$d/c2" "$d/c3"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
     ok "every page of comments is searched, not just the first" ||
     bad "a marker on a later comment page was missed, got $RC: $ERR"
+
+echo "==> a harvested run bound to a different PR is indeterminate (exit 11)"
+d="$TMPROOT/wrongpr"
+scaffold "$d" further-along "body"
+PR_OTHER=901
+PR_NUMBER="$PR_OTHER" make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR_OTHER" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR_OTHER" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && ok "exit 11" || bad "expected exit 11, got $RC: $ERR"
+contains "$ERR" "records PR #$PR, not the requested #$PR_OTHER" &&
+    ok "the mismatch names both PRs" || bad "the PR-binding mismatch is not explained"
+[ -z "$OUT" ] && ok "nothing is rendered" || bad "a mis-bound run rendered a report"
 
 # ---------------------------------------------------------------------------
 # 3. The run-record path, measured against the fixture corpus
@@ -349,7 +458,7 @@ echo "==> the run-record path renders every fixed section"
 d="$TMPROOT/full"
 mkdir -p "$d"
 make_gh "$d"
-ISSUE_NUMBER=664 \
+ISSUE_NUMBER="$ISSUE" \
     ROUNDS_JSON='[
       {"stage":"challenge","round":1,"pass_count":1,"finding_count":3,"has_adjudication":true},
       {"stage":"challenge","round":2,"pass_count":1,"finding_count":1,"has_adjudication":true},
@@ -365,18 +474,18 @@ $POLICY_SECTION
 "
 marker_file "$d/c1" evidence run-6001-further-along challenge pr -
 make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
-GH_LOG="$d/gh.log" STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=37220977 \
-    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_LOG="$d/gh.log" STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    GH_USER_ID="$ACTOR" run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
 
 for needle in \
     '## Run evidence — run `run-6001-further-along`' \
-    '### Policy the run was reviewed under' \
+    '### Policy the PR discloses (unverified)' \
     '### Stage `challenge`' \
     '### Stage `review`' \
     '### Findings by class and provenance' \
-    '### Overrides' \
+    '### Overrides (unverified)' \
     '### Interventions' \
     '### Deferred findings settled' \
     '### Evidence integrity' \
@@ -386,16 +495,20 @@ done
 
 contains "$OUT" 'rigor: `standard` (`default_rigor`) → challenge ≤3, review ≤3, integration 4, remediation 4, min_rounds 1' &&
     ok "the run's own disclosed policy line is echoed" || bad "the policy line was not read back"
-contains "$OUT" "- Rounds spent: 2 / cap 3" &&
+contains "$OUT" '**Unverified.**' &&
+    ok "the disclosed policy is labelled unverified" || bad "the policy section claims more than it can prove"
+contains "$OUT" 'does not reconstruct it' &&
+    ok "the caveat says --as-of does not reconstruct the PR body" || bad "the --as-of caveat is missing"
+contains "$OUT" "- Rounds spent: 2 / cap 3 (disclosed, unverified)" &&
     ok "challenge rounds are reported against the disclosed cap" || bad "challenge rounds-vs-cap missing"
-contains "$OUT" "- Rounds spent: 1 / cap 3" &&
+contains "$OUT" "- Rounds spent: 1 / cap 3 (disclosed, unverified)" &&
     ok "review rounds are reported against the disclosed cap" || bad "review rounds-vs-cap missing"
 contains "$OUT" '### Stage `plan`' &&
     ok "a non-confidence stage still gets its own section" || bad "the plan stage has no section"
 contains "$OUT" "- Rounds spent: 0 / no cap recorded" &&
     bad "a stage with neither a cap nor a round still printed round lines" ||
     ok "a stage with neither a cap nor a round prints no round lines"
-contains "$OUT" "- Rounds spent: 0 / cap 4" &&
+contains "$OUT" "- Rounds spent: 0 / cap 4 (disclosed, unverified)" &&
     ok "a capped stage that ran no round still reports 0 against its cap" ||
     bad "a capped stage with no rounds dropped its round line"
 contains "$OUT" "- Rounds with no adjudication record: 1" &&
@@ -414,25 +527,21 @@ contains "$OUT" "codex-cli" &&
     ok "a settlement's finder slug is recovered from its finding id" || bad "finder slug not recovered"
 contains "$OUT" "Trusted-but-unlisted comments: 1" &&
     ok "orphan comments are counted" || bad "orphan comment count missing"
+contains "$OUT" "PR binding: bound to PR #$PR" &&
+    ok "the report states the run's PR binding" || bad "PR binding not reported"
 contains "$OUT" "harmon-devkit#753" &&
     ok "the override-detail gap names its follow-up issue" || bad "override gap not named"
 contains "$OUT" "keyed by stage" &&
     ok "the run-wide class/provenance limitation is stated" || bad "class/provenance limitation not stated"
-contains "$(cat "$d/stats.log")" "--trusted-actor-id 37220977" &&
+contains "$(cat "$d/stats.log")" "--trusted-actor-id $ACTOR" &&
     ok "the authenticated actor id is the default trust root" || bad "default trusted actor id not passed"
 
 echo "==> an explicit --trusted-actor-id replaces the authenticated default"
 d="$TMPROOT/trusted"
-mkdir -p "$d"
-make_gh "$d"
-ISSUE_NUMBER=664 make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
-make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
-write_file "$d/body" "body"
-marker_file "$d/c1" evidence run-6001-further-along challenge pr -
-make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
+scaffold "$d" further-along "body"
+COMMENT_ACTOR=424242 set_comments "$d/comments" "$PR" "$d/c1"
 GH_LOG="$d/gh.log" STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
-    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs" --trusted-actor-id 424242
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --trusted-actor-id 424242
 [ "$RC" -eq 0 ] && ok "exit 0 without an authenticated-user lookup" || bad "expected exit 0, got $RC: $ERR"
 contains "$(cat "$d/stats.log")" "--trusted-actor-id 424242" &&
     ok "the supplied id reaches the harvester" || bad "supplied trusted actor id not passed through"
@@ -442,41 +551,22 @@ contains "$(cat "$d/gh.log")" "api user" &&
 
 echo "==> a PR body with no policy-disclosure section reports the caps unknown"
 d="$TMPROOT/nopolicy"
-mkdir -p "$d"
-make_gh "$d"
-ISSUE_NUMBER=664 \
-    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
-    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
-make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
-write_file "$d/body" "No dev-flow sections at all."
-marker_file "$d/c1" evidence run-6001-further-along challenge pr -
-make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+scaffold "$d" further-along "No dev-flow sections at all."
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
 contains "$OUT" "Caps unknown" &&
     ok "the caps are reported unknown rather than guessed from .devflow.toml" || bad "caps were not reported unknown"
-contains "$OUT" "- Rounds spent: 1 / no cap recorded" &&
-    ok "rounds are reported without a denominator" || bad "unknown-cap denominator wrong"
 contains "$OUT" "Unknown — the PR body published no policy-disclosure section" &&
     ok "overrides are unknown, not 'none'" || bad "overrides wrongly reported as none"
 
 echo "==> two policy-disclosure sections in one body are ambiguous, not first-wins"
 d="$TMPROOT/dualpolicy"
-mkdir -p "$d"
-make_gh "$d"
-ISSUE_NUMBER=664 \
-    ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
-    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
-make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
-write_file "$d/body" "$POLICY_SECTION
+scaffold "$d" further-along "$POLICY_SECTION
 
 $POLICY_SECTION"
-marker_file "$d/c1" evidence run-6001-further-along challenge pr -
-make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 \
-    run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
 contains "$OUT" "more than one policy-disclosure section" &&
     ok "a duplicated section reports the caps unknown rather than picking one" ||
@@ -486,7 +576,7 @@ echo "==> a stage entered twice collapses into one section (remediation loop)"
 d="$TMPROOT/loop"
 mkdir -p "$d"
 make_gh "$d"
-ISSUE_NUMBER=664 \
+ISSUE_NUMBER="$ISSUE" \
     ROUNDS_JSON='[
       {"stage":"challenge","round":1,"pass_count":1,"finding_count":2,"has_adjudication":true},
       {"stage":"challenge","round":2,"pass_count":1,"finding_count":0,"has_adjudication":true}
@@ -496,8 +586,9 @@ make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
 write_file "$d/body" "body"
 marker_file "$d/c1" evidence run-6058-remediation-loop challenge pr -
 make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
 [ "$(printf '%s\n' "$OUT" | grep -c '^### Stage `challenge`$')" -eq 1 ] &&
     ok "the re-entered stage has exactly one section" || bad "a re-entered stage rendered more than one section"
@@ -509,12 +600,15 @@ contains "$OUT" '- Outcome: `in-flight`' &&
     ok "a run with no outcome renders in-flight" || bad "null outcome mis-rendered"
 contains "$OUT" "None — the run reached its outcome unattended." &&
     ok "a run with no interventions says so" || bad "empty interventions mis-rendered"
+contains "$OUT" "the run record names no PR yet" &&
+    ok "a run with no recorded PR says the binding rests on the marker alone" ||
+    bad "an unbound run silently claimed a PR binding"
 
 echo "==> the machine form carries the same measurements"
 d="$TMPROOT/json"
 mkdir -p "$d"
 make_gh "$d"
-ISSUE_NUMBER=664 \
+ISSUE_NUMBER="$ISSUE" \
     ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":3,"has_adjudication":true}]' \
     CLASSES_JSON='{"correctness/original":3}' \
     make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
@@ -522,8 +616,9 @@ make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
 write_file "$d/body" "$POLICY_SECTION"
 marker_file "$d/c1" evidence run-6001-further-along challenge pr -
 make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs" --json
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
 [ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
 printf '%s' "$OUT" >"$d/report.json"
 node -e '
@@ -532,56 +627,48 @@ node -e '
   if (report.schema !== "retro-run-report.v1") problems.push("schema")
   if (report.run_id !== "run-6001-further-along") problems.push("run_id")
   if (report.policy.rounds.challenge !== 3) problems.push("policy.rounds.challenge")
+  if (report.policy.verified !== false) problems.push("policy.verified must be false")
+  if (typeof report.policy.source !== "string") problems.push("policy.source")
+  if (!Array.isArray(report.source.ignored_markers)) problems.push("source.ignored_markers")
+  if (typeof report.source.pr_binding !== "string") problems.push("source.pr_binding")
   const challenge = report.measurements.stages.find((s) => s.stage === "challenge")
   if (!challenge || challenge.rounds_spent !== 1 || challenge.cap !== 3) problems.push("stages.challenge")
   if (report.measurements.settlements[0].finder !== "codex-cli") problems.push("settlements.finder")
   if (!report.unavailable.some((g) => g.issue.includes("753"))) problems.push("unavailable")
   if (problems.length > 0) { console.error(problems.join(", ")); process.exit(1) }
 ' "$d/report.json" &&
-    ok "the JSON form carries schema, policy, stages, settlements and gaps" ||
+    ok "the JSON form carries schema, unverified policy, binding, stages, settlements and gaps" ||
     bad "the JSON form is missing fields"
 
 # ---------------------------------------------------------------------------
-# 4. Harvester failure modes
+# 4. Harvester failure modes and usage
 # ---------------------------------------------------------------------------
 
 echo "==> a harvester that reports the run indeterminate exits 11 and renders nothing"
 d="$TMPROOT/indet"
-mkdir -p "$d"
-make_gh "$d"
+scaffold "$d" further-along "body"
 make_stats "$d/stats.mjs" 3
-write_file "$d/body" "body"
-marker_file "$d/c1" evidence run-6001-further-along challenge pr -
-make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 11 ] && ok "exit 11" || bad "expected exit 11, got $RC: $ERR"
 [ -z "$OUT" ] && ok "nothing is rendered" || bad "an indeterminate harvest rendered a report"
 contains "$ERR" "indeterminate" && ok "the reason names indeterminacy" || bad "stderr does not say indeterminate"
 
 echo "==> a harvester that cannot find the run falls back (exit 10)"
 d="$TMPROOT/notfound"
-mkdir -p "$d"
-make_gh "$d"
+scaffold "$d" further-along "body"
 make_stats "$d/stats.mjs" 1
-write_file "$d/body" "body"
-marker_file "$d/c1" evidence run-6001-further-along challenge pr -
-make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
     ok "exit 10 naming run-not-found" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
 
 echo "==> a harvester crash is an operational error, never a silent fallback"
 d="$TMPROOT/crash"
-mkdir -p "$d"
-make_gh "$d"
+scaffold "$d" further-along "body"
 make_stats "$d/stats.mjs" 2
-write_file "$d/body" "body"
-marker_file "$d/c1" evidence run-6001-further-along challenge pr -
-make_pr_json "$d/pr.json" "$d/body"
-set_comments "$d/comments" 900 "$d/c1"
-GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 1 ] && ok "exit 1" || bad "expected exit 1, got $RC: $ERR"
 
 echo "==> usage errors exit 2"
@@ -592,8 +679,25 @@ run_report "$d" --repo o/r
 [ "$RC" -eq 2 ] && ok "--pr or --run is required" || bad "expected exit 2, got $RC"
 run_report "$d" --repo not-a-slug --pr 1
 [ "$RC" -eq 2 ] && ok "--repo must be owner/repo" || bad "expected exit 2, got $RC"
-run_report "$d" --repo o/r --pr 900 --stats-script "$TMPROOT/absent.mjs"
+run_report "$d" --repo o/r --pr "$PR" --stats-script "$TMPROOT/absent.mjs"
 [ "$RC" -eq 2 ] && ok "--stats-script must exist" || bad "expected exit 2, got $RC"
+run_report "$d" --repo o/r --pr "$PR" --trusted-actor-id nope
+[ "$RC" -eq 2 ] && ok "--trusted-actor-id must be a positive integer" || bad "expected exit 2, got $RC"
+echo '{"nope":[]}' >"$d/actors.json"
+run_report "$d" --repo o/r --pr "$PR" --trusted-actors-file "$d/actors.json"
+[ "$RC" -eq 2 ] && ok "--trusted-actors-file must carry trusted_actor_ids" || bad "expected exit 2, got $RC"
+
+echo "==> --trusted-actors-file widens the discovery trust root too"
+d="$TMPROOT/actorsfile"
+scaffold "$d" further-along "body"
+COMMENT_ACTOR=555555 set_comments "$d/comments" "$PR" "$d/c1"
+echo '{"trusted_actor_ids":[555555]}' >"$d/actors.json"
+STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --trusted-actors-file "$d/actors.json"
+[ "$RC" -eq 0 ] && ok "a file-supplied id gates discovery, not just the harvester" ||
+    bad "expected exit 0, got $RC: $ERR"
+contains "$(cat "$d/stats.log")" "--trusted-actors-file" &&
+    ok "the file is passed through to the harvester as well" || bad "the actors file did not reach the harvester"
 
 # ---------------------------------------------------------------------------
 # 5. Seam guard: the real harvester's CLI contract, when it is present
@@ -641,22 +745,14 @@ if [ ! -f "$GOLDEN" ]; then
     skipped "ai/schemas/fixtures/render/golden/policy-disclosure.txt is absent"
 else
     d="$TMPROOT/golden"
-    mkdir -p "$d"
-    make_gh "$d"
-    ISSUE_NUMBER=664 \
-        ROUNDS_JSON='[{"stage":"challenge","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}]' \
-        make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
-    make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
-    {
+    body="$(
         echo "<!-- dev-flow:begin:policy-disclosure -->"
         cat "$GOLDEN"
         echo "<!-- dev-flow:end:policy-disclosure -->"
-    } >"$d/body"
-    marker_file "$d/c1" evidence run-6001-further-along challenge pr -
-    make_pr_json "$d/pr.json" "$d/body"
-    set_comments "$d/comments" 900 "$d/c1"
-    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID=1 \
-        run_report "$d" --repo o/r --pr 900 --stats-script "$d/stats.mjs" --json
+    )"
+    scaffold "$d" further-along "$body"
+    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
     if [ "$RC" -ne 0 ]; then
         bad "expected exit 0, got $RC: $ERR"
     else

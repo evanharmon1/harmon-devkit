@@ -15,25 +15,30 @@
 //
 // Exit codes — the caller (the /retro skill) branches on these:
 //   0   a report was rendered on stdout.
-//   10  there is no retained evidence to start from; use the fallback
-//       procedure. stderr names which of the three reasons applies:
-//       `no-stats-script` (this checkout has no harvester — the ordinary case
-//       in a consumer repo that has not vendored #663), `no-run-record` (no
-//       evidence marker on the PR or its linked issues), or `run-not-found`
-//       (a marker named a run the harvester cannot find).
-//   11  evidence exists but is INDETERMINATE — a broken or forged chain, or
-//       two different run ids on one PR. Nothing is rendered (there is no
-//       trajectory to render); the reason is on stderr. Never report a clean
+//   10  we LOOKED and there is no retained evidence: `no-run-record` (no
+//       trusted evidence marker on the PR or its linked issues) or
+//       `run-not-found` (a marker named a run the harvester cannot find).
+//       This is the only exit that licenses "this session has no run record".
+//   12  `no-stats-script` — this checkout has no harvester, so whether a run
+//       record exists is UNKNOWN, not absent. Discovery still runs first, so
+//       stderr says whether a marker was found that cannot be read here.
+//   11  evidence exists but is INDETERMINATE — a broken or forged chain, two
+//       runs claimed on one PR, or a harvested run bound to a different PR.
+//       Nothing is rendered; the reason is on stderr. Never report a clean
 //       retro on this path, and never silently fall back to memory.
 //   2   usage error.  1  operational error (a `gh` or harvester failure).
 //
-// Why 10 and 11 are different exits: "there is nothing to read" is the normal
-// pre-v2 session and costs the retro only its evidence section, while "what is
-// there does not authenticate" is a finding in its own right. Collapsing them
-// would let tampered evidence read as an ordinary memory-based retro.
+// Why 10, 11 and 12 are three exits, not one. "Nothing was posted" is the
+// normal pre-v2 session and costs the retro only its evidence section. "What
+// is there does not authenticate" is a finding in its own right — collapsing
+// it into 10 would let tampered evidence read as an ordinary memory-based
+// retro. And "this checkout cannot read what may well be there" is neither:
+// a missing local dependency is evidence about the checkout, never about the
+// run, so reporting it as 10 would let a vendoring gap masquerade as a run
+// that was never recorded (challenge round 1, confirmed P1).
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 
@@ -45,8 +50,9 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
   --pr <n>                     The session's PR. Required unless --run is given.
   --run <run_id>               Skip discovery and report on this run.
   --trusted-actor-id <id>      Repeatable. Trusted-orchestrator GitHub actor
-                               ids, passed through to the harvester. Defaults
-                               to the authenticated user's own actor id.
+                               ids. Gates which comments may name a run AND is
+                               passed through to the harvester. Defaults to the
+                               authenticated user's own actor id.
   --trusted-actors-file <path> A JSON {"trusted_actor_ids": [...]} document,
                                passed through to the harvester.
   --as-of <iso8601>            Reconstruct the run as of this instant.
@@ -126,6 +132,11 @@ function validateArgs(args) {
   if (args.pr === undefined && !args.run) {
     throw new UsageError('--pr <n> is required unless --run <run_id> is given')
   }
+  // Checked here rather than where the harvester is resolved, so a mistyped
+  // path is a usage error before the first `gh` call rather than after it.
+  if (args.statsScript !== undefined && !existsSync(args.statsScript)) {
+    throw new UsageError(`--stats-script path does not exist: ${args.statsScript}`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -185,12 +196,7 @@ function repoRoot() {
 // makes "the retro skill is vendored but the harvester is not" the ordinary,
 // well-handled case instead of a crash.
 function resolveStatsCommand(explicit) {
-  if (explicit) {
-    if (!existsSync(explicit)) {
-      throw new UsageError(`--stats-script path does not exist: ${explicit}`)
-    }
-    return statsCommandFor(explicit)
-  }
+  if (explicit) return statsCommandFor(explicit)
   const root = repoRoot()
   if (!root) return { missingReason: 'this directory is not inside a git repository, so the harvester could not be located' }
   for (const candidate of ['scripts/dev-flow-stats.sh', 'scripts/dev-flow-stats.mjs']) {
@@ -226,11 +232,26 @@ function runIdFromCommentBody(body) {
   return runId ? { kind: marker[1], runId: runId[1] } : null
 }
 
-function collectRunIds(comments) {
+// Which run a report is about is chosen by a marker, and a marker is just
+// text anyone with comment rights can post. Gating discovery on the comment
+// author's immutable actor id is what stops a drive-by comment naming some
+// other (perfectly authentic) run from redirecting this PR's retro onto it,
+// or a second bogus marker from forcing the ambiguity exit — challenge round
+// 1, confirmed P1. ai/schemas/README.md already fixes the rule for the
+// harvester ("a forged-author comment: reported, ignored"); discovery is the
+// same trust boundary one step earlier, so it applies the same rule and
+// REPORTS what it ignored rather than dropping it silently.
+function collectRunIds(comments, trustedActorIds, where, ignored) {
   const found = new Set()
   for (const comment of comments || []) {
     const hit = runIdFromCommentBody(comment && comment.body)
-    if (hit) found.add(hit.runId)
+    if (!hit) continue
+    const actorId = comment.user && Number(comment.user.id)
+    if (!Number.isInteger(actorId) || !trustedActorIds.has(actorId)) {
+      ignored.push({ comment_id: comment.id ?? null, actor_id: Number.isInteger(actorId) ? actorId : null, run_id: hit.runId, where })
+      continue
+    }
+    found.add(hit.runId)
   }
   return found
 }
@@ -239,7 +260,8 @@ function collectRunIds(comments) {
 // second run record on the same issue, so "which run is this PR's" is only
 // answerable from PR-bound evidence. Fall back to the linked issues, which is
 // where a run that capped before its PR existed keeps everything.
-function discoverRun(args) {
+function discoverRun(args, trustedActorIds) {
+  const ignored = []
   const pr = ghJson([
     'pr',
     'view',
@@ -249,13 +271,13 @@ function discoverRun(args) {
     '--json',
     'number,url,title,state,isDraft,body,closingIssuesReferences'
   ])
-  const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number))].sort()
+  const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number), trustedActorIds, `PR #${pr.number}`, ignored)].sort()
   if (fromPr.length === 1) {
-    return { pr, runId: fromPr[0], source: `evidence marker on PR #${pr.number}` }
+    return { pr, runId: fromPr[0], source: `evidence marker on PR #${pr.number}`, ignored }
   }
   if (fromPr.length > 1) {
     throw new IndeterminateError(
-      `PR #${pr.number} carries evidence for more than one run (${fromPr.join(', ')}) — rerun with --run <run_id>`
+      `PR #${pr.number} carries trusted evidence for more than one run (${fromPr.join(', ')}) — rerun with --run <run_id>`
     )
   }
   const issues = Array.isArray(pr.closingIssuesReferences) ? pr.closingIssuesReferences : []
@@ -264,7 +286,8 @@ function discoverRun(args) {
   // in the report's provenance line rather than reducing to "an issue".
   const fromIssues = new Map()
   for (const issue of issues) {
-    for (const runId of collectRunIds(fetchComments(args.repo, issue.number))) {
+    const comments = fetchComments(args.repo, issue.number)
+    for (const runId of collectRunIds(comments, trustedActorIds, `issue #${issue.number}`, ignored)) {
       const seen = fromIssues.get(runId) || new Set()
       seen.add(issue.number)
       fromIssues.set(runId, seen)
@@ -273,14 +296,14 @@ function discoverRun(args) {
   if (fromIssues.size === 1) {
     const [runId, seen] = [...fromIssues.entries()][0]
     const where = [...seen].sort((a, b) => a - b).map((n) => `#${n}`).join(', ')
-    return { pr, runId, source: `evidence marker on issue ${where}` }
+    return { pr, runId, source: `evidence marker on issue ${where}`, ignored }
   }
   if (fromIssues.size > 1) {
     throw new IndeterminateError(
-      `the issues linked to PR #${pr.number} carry evidence for more than one run (${[...fromIssues.keys()].sort().join(', ')}) — rerun with --run <run_id>`
+      `the issues linked to PR #${pr.number} carry trusted evidence for more than one run (${[...fromIssues.keys()].sort().join(', ')}) — rerun with --run <run_id>`
     )
   }
-  return { pr, runId: null, source: null }
+  return { pr, runId: null, source: null, ignored }
 }
 
 // ---------------------------------------------------------------------------
@@ -296,14 +319,47 @@ function discoverRun(args) {
 // fail-closed either way — the harvester rejects evidence it cannot attribute.
 function resolveTrustedActorArgs(args) {
   const passthrough = []
-  for (const id of args.trustedActorIds) passthrough.push('--trusted-actor-id', id)
-  if (args.trustedActorsFile) passthrough.push('--trusted-actors-file', args.trustedActorsFile)
-  if (passthrough.length > 0) return { passthrough, source: 'supplied on the command line' }
+  const ids = new Set()
+  for (const id of args.trustedActorIds) {
+    const n = Number(id)
+    if (!Number.isInteger(n) || n < 1) {
+      throw new UsageError(`--trusted-actor-id must be a positive integer, got ${JSON.stringify(id)}`)
+    }
+    ids.add(n)
+    passthrough.push('--trusted-actor-id', id)
+  }
+  if (args.trustedActorsFile) {
+    let doc
+    try {
+      doc = JSON.parse(readFileSync(args.trustedActorsFile, 'utf8'))
+    } catch (error) {
+      throw new UsageError(`could not read/parse --trusted-actors-file: ${error.message}`)
+    }
+    if (!Array.isArray(doc.trusted_actor_ids)) {
+      throw new UsageError('--trusted-actors-file must contain {"trusted_actor_ids": [...]}')
+    }
+    // Parsed here as well as passed through, because discovery gates on the
+    // same set the harvester will use. Reading it twice is the price of not
+    // having two different notions of "trusted" one step apart.
+    for (const id of doc.trusted_actor_ids) {
+      const n = Number(id)
+      if (!Number.isInteger(n) || n < 1) {
+        throw new UsageError(`--trusted-actors-file entries must be positive integers, got ${JSON.stringify(id)}`)
+      }
+      ids.add(n)
+    }
+    passthrough.push('--trusted-actors-file', args.trustedActorsFile)
+  }
+  if (passthrough.length > 0) return { passthrough, ids, source: 'supplied on the command line' }
   const id = gh(['api', 'user', '--jq', '.id']).trim()
   if (!/^[1-9][0-9]*$/.test(id)) {
     throw new OperationalError(`could not resolve the authenticated actor id (got ${JSON.stringify(id)})`)
   }
-  return { passthrough: ['--trusted-actor-id', id], source: `the authenticated account (actor id ${id})` }
+  return {
+    passthrough: ['--trusted-actor-id', id],
+    ids: new Set([Number(id)]),
+    source: `the authenticated account (actor id ${id})`
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,11 +394,21 @@ function harvestTrajectory(stats, args, runId, trusted) {
 // Resolved-policy disclosure, read back off the PR body
 // ---------------------------------------------------------------------------
 
-// The caps a run was REVIEWED under are the ones its own PR disclosed, not
-// whatever .devflow.toml says today: the config is edited between runs, and a
-// retro that read the live file would silently rescore an old run against a
-// budget it never had. So this parses the section render-dev-flow.mjs
-// published, and reports the caps unknown rather than substituting a guess.
+// Where the caps come from, and what that is worth. Reading the live
+// .devflow.toml would be worse than useless — the config is edited between
+// runs, so an old run would be silently rescored against a budget it never
+// had. So this parses the section render-dev-flow.mjs published into the PR
+// body instead, and reports the caps unknown rather than substituting a guess.
+//
+// But the PR body is MUTABLE and sits outside the authenticated evidence
+// chain: anyone with write access can edit it, the renderer itself
+// republishes it, and --as-of does not reconstruct it — a cutoff read still
+// sees today's text. So these values are a DISCLOSURE, never a measurement,
+// and every surface that shows them says so (challenge round 1, confirmed
+// P1). They are still worth reporting: an unverified cap that is labelled is
+// more use to a retro than no denominator at all, and the fix for the doubt
+// is to check the caps against the run's own round evidence, which the report
+// puts on the same page.
 const POLICY_BEGIN = '<!-- dev-flow:begin:policy-disclosure -->'
 const POLICY_END = '<!-- dev-flow:end:policy-disclosure -->'
 const POLICY_LINE_RE =
@@ -350,18 +416,18 @@ const POLICY_LINE_RE =
 
 function readPolicyDisclosure(body) {
   if (typeof body !== 'string' || !body.includes(POLICY_BEGIN)) {
-    return { present: false, reason: 'the PR body carries no dev-flow policy-disclosure section' }
+    return { present: false, verified: false, reason: 'the PR body carries no dev-flow policy-disclosure section' }
   }
   // render-dev-flow.mjs refuses to publish a duplicated marker pair, so two of
   // them mean the body was hand-edited: which one governs is genuinely
   // unknowable, and picking the first would report a cap nobody chose.
   if (body.indexOf(POLICY_BEGIN) !== body.lastIndexOf(POLICY_BEGIN)) {
-    return { present: false, reason: 'the PR body carries more than one policy-disclosure section' }
+    return { present: false, verified: false, reason: 'the PR body carries more than one policy-disclosure section' }
   }
   const start = body.indexOf(POLICY_BEGIN) + POLICY_BEGIN.length
   const end = body.indexOf(POLICY_END, start)
   if (end === -1) {
-    return { present: false, reason: 'the PR body policy-disclosure section is not closed by its end marker' }
+    return { present: false, verified: false, reason: 'the PR body policy-disclosure section is not closed by its end marker' }
   }
   const lines = body
     .slice(start, end)
@@ -373,11 +439,17 @@ function readPolicyDisclosure(body) {
   if (!match) {
     return {
       present: false,
+      verified: false,
       reason: 'the PR body policy-disclosure section does not open with a parseable rigor line'
     }
   }
   return {
     present: true,
+    // Never true: nothing in this family authenticates a PR body. Carried as
+    // an explicit field so a JSON consumer cannot mistake a disclosure for a
+    // measurement by omission.
+    verified: false,
+    source: 'the PR body\'s policy-disclosure section as it stands now (mutable, unauthenticated, not reconstructed by --as-of)',
     rigor: { level: match[1], source: match[2] },
     rounds: {
       challenge: Number(match[3]),
@@ -541,10 +613,12 @@ function renderMarkdown(report) {
     `- Promotion: ${t.promotion ? `${safe(t.promotion.promoted_at)} at head ${safe(t.promotion.head).slice(0, 7)}` : 'none recorded'}`
   )
   l.push(`- Evidence source: \`${safe(report.source.harvester)}\`, run id from ${safe(report.source.run_id_from)}`)
+  l.push(`- Trust root: ${safe(report.source.trusted_actors)}`)
+  if (report.source.pr_binding) l.push(`- PR binding: ${safe(report.source.pr_binding)}`)
   if (report.as_of) l.push(`- Reconstructed as of: ${safe(report.as_of)}`)
   l.push('')
 
-  l.push('### Policy the run was reviewed under')
+  l.push('### Policy the PR discloses (unverified)')
   l.push('')
   if (report.policy.present) {
     const r = report.policy.rounds
@@ -552,7 +626,11 @@ function renderMarkdown(report) {
       `rigor: \`${safe(report.policy.rigor.level)}\` (\`${safe(report.policy.rigor.source)}\`) → challenge ≤${r.challenge}, review ≤${r.review}, integration ${r.integration}, remediation ${r.remediation}, min_rounds ${r.min_rounds}`
     )
     l.push('')
-    l.push('Read from the PR body\'s published `policy-disclosure` section — the budget this run actually ran under, not the current `.devflow.toml`.')
+    l.push(
+      '**Unverified.** Read from ' +
+        safe(report.policy.source) +
+        '. The PR body is outside the authenticated evidence chain — a later edit or republication changes it, and `--as-of` does not reconstruct it — so treat these caps as a claim to check against the rounds below, never as a measurement. They are not read from the current `.devflow.toml` either: that would rescore this run against a budget it may never have had.'
+    )
   } else {
     l.push(`Caps unknown — ${safe(report.policy.reason)}. Rounds below are reported without a denominator.`)
   }
@@ -566,7 +644,7 @@ function renderMarkdown(report) {
     // "0 rounds, 0 findings" three times over buries the transition and
     // intervention lines that are the only thing it actually measures.
     if (stage.cap !== null || stage.rounds_spent > 0) {
-      const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap}`
+      const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
       l.push(`- Rounds spent: ${stage.rounds_spent} / ${cap}`)
       l.push(`- Findings: ${stage.findings} across ${stage.passes} pass(es)`)
       l.push(
@@ -605,7 +683,7 @@ function renderMarkdown(report) {
   }
   l.push('')
 
-  l.push('### Overrides')
+  l.push('### Overrides (unverified)')
   l.push('')
   const disclosures = report.policy.present ? report.policy.disclosures : []
   if (disclosures.length === 0) {
@@ -616,6 +694,8 @@ function renderMarkdown(report) {
     )
   } else {
     for (const disclosure of disclosures) l.push(`- ${safe(disclosure)}`)
+    l.push('')
+    l.push('Same caveat as the policy line above: these come from the mutable PR body, not from authenticated run evidence.')
   }
   l.push('')
 
@@ -652,6 +732,16 @@ function renderMarkdown(report) {
   l.push('')
   l.push(`- Trusted-but-unlisted comments: ${report.measurements.integrity.orphan_comments}`)
   l.push(`- Forged-author comments: ${report.measurements.integrity.forged_comments}`)
+  if (report.source.ignored_markers.length === 0) {
+    l.push('- Untrusted evidence markers ignored during discovery: 0')
+  } else {
+    l.push(`- Untrusted evidence markers ignored during discovery: ${report.source.ignored_markers.length}`)
+    for (const marker of report.source.ignored_markers) {
+      l.push(
+        `  - ${cell(marker.where)}, comment ${cell(marker.comment_id ?? 'unknown')}, actor ${cell(marker.actor_id ?? 'unknown')}, naming run \`${cell(marker.run_id)}\``
+      )
+    }
+  }
   l.push('')
 
   l.push('### Not measurable from this run\'s evidence')
@@ -666,6 +756,22 @@ function renderMarkdown(report) {
 // main
 // ---------------------------------------------------------------------------
 
+function untrustedNote(ignored) {
+  if (ignored.length === 0) return ''
+  const runs = [...new Set(ignored.map((m) => m.run_id))].sort().join(', ')
+  return ` (${ignored.length} marker(s) naming ${runs} were ignored: their authors are not trusted actors — pass --trusted-actor-id if the run was orchestrated by another account)`
+}
+
+// Never silently: an ignored marker is either a misconfigured trust root or
+// somebody trying to redirect the report, and both are worth saying out loud.
+function reportIgnoredMarkers(ignored) {
+  for (const marker of ignored) {
+    console.error(
+      `${TOOL}: ignoring an untrusted evidence marker naming run ${marker.run_id} on ${marker.where} (comment ${marker.comment_id ?? 'unknown'}, actor ${marker.actor_id ?? 'unknown'})`
+    )
+  }
+}
+
 function run(argv) {
   const args = parseArgs(argv)
   if (args.help) {
@@ -674,31 +780,37 @@ function run(argv) {
   }
   validateArgs(args)
 
-  const stats = resolveStatsCommand(args.statsScript)
-  if (stats.missingReason) {
-    console.error(
-      `${TOOL}: no-stats-script — ${stats.missingReason}, so there is no retained run evidence to read; use the retro's fallback procedure`
-    )
-    return 10
-  }
+  // Trust first: discovery gates on the same actor-id set the harvester will
+  // use, so it has to be resolved before a single marker is read.
+  const trusted = resolveTrustedActorArgs(args)
 
+  // Discovery BEFORE the harvester lookup, deliberately. Answering "is there
+  // a run record?" needs GitHub, not a local script, and doing it first is
+  // what lets a checkout with no harvester still distinguish "nothing was
+  // ever posted" (exit 10) from "there is a record here I cannot read"
+  // (exit 12) — challenge round 1, confirmed P1.
   let pr = null
   let runId = args.run || null
   let runIdFrom = args.run ? '--run on the command line' : null
+  let ignoredMarkers = []
   if (!runId) {
     try {
-      const discovered = discoverRun(args)
+      const discovered = discoverRun(args, trusted.ids)
       pr = discovered.pr
       runId = discovered.runId
       runIdFrom = discovered.source
+      ignoredMarkers = discovered.ignored
     } catch (error) {
       if (!(error instanceof IndeterminateError)) throw error
       console.error(`${TOOL}: indeterminate — ${error.message}`)
       return 11
     }
+    // Before the no-run-record return, not after: "nothing was found" and
+    // "something was found and refused" must never look the same on stderr.
+    reportIgnoredMarkers(ignoredMarkers)
     if (!runId) {
       console.error(
-        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker; use the retro's fallback procedure`
+        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker from a trusted actor (${trusted.source})${untrustedNote(ignoredMarkers)}; use the retro's fallback procedure`
       )
       return 10
     }
@@ -706,7 +818,14 @@ function run(argv) {
     pr = ghJson(['pr', 'view', String(args.pr), '--repo', args.repo, '--json', 'number,url,title,state,isDraft,body'])
   }
 
-  const trusted = resolveTrustedActorArgs(args)
+  const stats = resolveStatsCommand(args.statsScript)
+  if (stats.missingReason) {
+    console.error(
+      `${TOOL}: no-stats-script — ${stats.missingReason}. Run \`${runId}\` IS recorded (${runIdFrom}) but cannot be read here, so whether this session has retained evidence is not in doubt — only whether this checkout can read it. Vendor the harvester (harmon-devkit#663) or rerun with --stats-script; do NOT report the session as having no run record.`
+    )
+    return 12
+  }
+
   let harvested
   try {
     harvested = harvestTrajectory(stats, args, runId, trusted)
@@ -720,13 +839,36 @@ function run(argv) {
     return 10
   }
 
+  // A run record names its own PR. A trajectory that names a DIFFERENT one is
+  // not this PR's run however authentic it is, and rendering it under this
+  // PR's disclosed policy would attribute one run's rounds to another.
+  const boundPr = harvested.trajectory.pr
+  if (args.pr !== undefined && boundPr && boundPr.number !== args.pr) {
+    console.error(
+      `${TOOL}: indeterminate — run \`${runId}\` records PR #${boundPr.number}, not the requested #${args.pr}; the marker that named it does not bind it to this PR`
+    )
+    return 11
+  }
+  const prBinding =
+    args.pr === undefined
+      ? null
+      : boundPr
+        ? `bound to PR #${boundPr.number}`
+        : 'the run record names no PR yet, so nothing binds this trajectory to the PR beyond the marker that named it'
+
   const policy = readPolicyDisclosure(pr ? pr.body : null)
   const measurements = measure(harvested.trajectory, policy)
   const report = {
     schema: 'retro-run-report.v1',
     run_id: runId,
     as_of: args.asOf || null,
-    source: { harvester: stats.display, run_id_from: runIdFrom, trusted_actors: trusted.source },
+    source: {
+      harvester: stats.display,
+      run_id_from: runIdFrom,
+      trusted_actors: trusted.source,
+      pr_binding: prBinding,
+      ignored_markers: ignoredMarkers
+    },
     trajectory: harvested.trajectory,
     policy,
     measurements,
