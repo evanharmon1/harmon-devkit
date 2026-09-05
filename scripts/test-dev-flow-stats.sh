@@ -74,7 +74,11 @@ repos/*/pulls/*/commits\?per_page=100)
     ;;
 repos/*/commits/*/pulls)
     sha="$(echo "$endpoint" | sed -E 's#.*/commits/([0-9a-f]+)/pulls.*#\1#')"
-    jq --arg sha "$sha" '[(.commit_pulls[$sha] // [])]' "$db"
+    # A PR entry without an explicit base is a PR into the default branch
+    # (the common fixture case); a scenario that needs a PR into some other
+    # branch — challenge round 1 of #741: a staging merge must NOT count as
+    # landing on the default branch — states `base: {ref: ...}` itself.
+    jq --arg sha "$sha" '(.default_branch // "main") as $default | [((.commit_pulls[$sha] // []) | map(. + {base: (.base // {ref: $default})}))]' "$db"
     ;;
 repos/*/commits/*/check-suites)
     sha="$(echo "$endpoint" | sed -E 's#.*/commits/([0-9a-f]+)/check-suites.*#\1#')"
@@ -2529,7 +2533,13 @@ function writeScenario(name, db) {
     const commitPulls = {};
     revisions.forEach((r, n) => {
       registryContents[r.sha] = Buffer.from(JSON.stringify(r.document)).toString("base64");
-      if (r.landed_at) commitPulls[r.sha] = [{ number: 700 + n, merged_at: r.landed_at }];
+      const pulls = [];
+      // An optional earlier merge into a NON-default branch, listed FIRST
+      // (as a naive "first merged PR" reader would pick it): it must never
+      // count as the revision landing on the default branch.
+      if (r.staging_merged_at) pulls.push({ number: 800 + n, merged_at: r.staging_merged_at, base: { ref: "staging" } });
+      if (r.landed_at) pulls.push({ number: 700 + n, merged_at: r.landed_at, base: { ref: "main" } });
+      if (pulls.length > 0) commitPulls[r.sha] = pulls;
     });
     writeScenario(\`registry-trust-\${name}\`, {
       issues: [{ number: issueNumber, pull_request: null }],
@@ -3461,6 +3471,6 @@ for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
     echo "PASS: registry-trust/$name"
     corpus_count=$((corpus_count + 1))
 done
-[ "$corpus_count" -ge 10 ] || fail "registry-trust corpus: expected at least 10 cases, found $corpus_count"
+[ "$corpus_count" -ge 12 ] || fail "registry-trust corpus: expected at least 12 cases, found $corpus_count"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

@@ -127,10 +127,29 @@ function resolveDefaultBranch(repo) {
 // (direct pushes to the default branch are ruleset-blocked), so merged_at
 // alone is always available here and is the only correct signal — no
 // check-suite fallback, unlike firstSeen.
+// Only a PR whose BASE is the default branch lands a commit there —
+// challenge round 1 of #741, confirmed (P1): `commits/{sha}/pulls` lists
+// every PR containing the commit, and a commit first merged into a
+// staging/release branch and later carried to the default branch by a
+// second PR has two merged PRs, the staging one earlier. Taking "any merged
+// PR" would backdate the revision to the staging merge and authenticate
+// writes made before it reached the default branch (or apply a removal
+// prematurely). The base is compared against the resolved default branch
+// (never a hardcoded name — see resolveDefaultBranch) and against this
+// repo, since a fork's PR into its own default branch is not a landing
+// here either. Among qualifying PRs the EARLIEST merge is the landing
+// time; a commit with none is unresolvable (null), which voids the whole
+// history — see resolveRegistryRevisionHistory.
 function defaultBranchLandedAt(repo, sha) {
+  const defaultBranch = resolveDefaultBranch(repo);
   const prs = ghApiPaginated(`repos/${repo}/commits/${sha}/pulls`);
-  const merged = prs.find((pr) => pr.merged_at);
-  return merged ? merged.merged_at : null;
+  const landings = prs
+    .filter((pr) => pr && pr.merged_at && pr.base && pr.base.ref === defaultBranch)
+    .filter((pr) => !pr.base.repo || !pr.base.repo.full_name || pr.base.repo.full_name.toLowerCase() === repo.toLowerCase())
+    .map((pr) => Date.parse(pr.merged_at))
+    .filter((t) => Number.isFinite(t));
+  if (landings.length === 0) return null;
+  return new Date(Math.min(...landings)).toISOString();
 }
 
 // The registry's trusted-orchestrator allowlist (issue #741, the field
@@ -268,7 +287,18 @@ function resolveRegistryTrustedActorIds(repo, atIso) {
   let bestSha = null;
   let bestSeen = -Infinity;
   for (const { sha, landedAtEpoch } of history) {
-    if (landedAtEpoch <= cutoff && landedAtEpoch > bestSeen) {
+    // Strictly BEFORE the write, never at the same instant — challenge
+    // round 1 of #741, confirmed (P2, fixed in place): GitHub's REST
+    // merged_at and created_at carry second precision, so a revision that
+    // landed in the same second as the write has no knowable order
+    // relative to it. Treating it as earlier could retroactively
+    // authenticate a write posted just before an addition landed; treating
+    // it as later could keep a just-removed actor authorized for one more
+    // write. Neither is provable, so the write is indeterminate (below).
+    if (landedAtEpoch === cutoff) {
+      return { indeterminate: `agent-registry.json revision ${sha} landed on the default branch in the same second as the write (${atIso}); their order is not knowable from second-precision timestamps, so no revision can be proven in effect` };
+    }
+    if (landedAtEpoch < cutoff && landedAtEpoch > bestSeen) {
       bestSeen = landedAtEpoch;
       bestSha = sha;
     }
@@ -276,21 +306,47 @@ function resolveRegistryTrustedActorIds(repo, atIso) {
   if (bestSha === null) {
     return { indeterminate: `no agent-registry.json revision had landed on the default branch by ${atIso}, so there is no trusted-orchestrator allowlist to validate against` };
   }
-  let doc;
-  try {
-    const file = ghApiOne(`repos/${repo}/contents/agent-registry.json?ref=${bestSha}`);
-    doc = JSON.parse(Buffer.from(file.content, "base64").toString("utf8"));
-  } catch (err) {
-    return { indeterminate: `agent-registry.json at revision ${bestSha} (in effect at ${atIso}) could not be read: ${err.message}` };
-  }
-  if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
-    return { indeterminate: `agent-registry.json at revision ${bestSha} (in effect at ${atIso}) is not a JSON object` };
-  }
-  const allowlist = readRegistryAllowlist(doc);
+  const allowlist = resolveRegistryAllowlistAt(repo, bestSha);
   if (allowlist.problem) {
     return { indeterminate: `agent-registry.json at revision ${bestSha} (in effect at ${atIso}) ${allowlist.problem} — no trusted-orchestrator authority to validate against` };
   }
   return { ids: allowlist.ids, sha: bestSha };
+}
+
+// The parsed allowlist of one registry revision, fetched and read ONCE per
+// (repo, sha) — challenge round 1 of #741, confirmed (P1): per-write
+// evaluation means nearly every evidence comment in a --repo harvest has
+// its own timestamp, so the per-timestamp cache in createRegistryTrustResolver
+// misses almost every time, and without this cache each miss re-fetched the
+// same registry file — thousands of synchronous API calls over a few
+// hundred ordinary runs, enough to exhaust the rate limit and turn a whole
+// harvest indeterminate. Revision SELECTION is an in-memory scan of the
+// per-repo history; only the CONTENT read is remote, and a revision's
+// content is immutable, so caching by sha is exact. Problems are cached
+// too: an unreadable or malformed revision is unreadable for every write
+// it governs, and re-fetching it would only re-spend the call.
+const registryAllowlistCache = new Map();
+
+function resolveRegistryAllowlistAt(repo, sha) {
+  const key = `${repo}@${sha}`;
+  if (registryAllowlistCache.has(key)) return registryAllowlistCache.get(key);
+  let result;
+  let doc;
+  try {
+    const file = ghApiOne(`repos/${repo}/contents/agent-registry.json?ref=${sha}`);
+    doc = JSON.parse(Buffer.from(file.content, "base64").toString("utf8"));
+  } catch (err) {
+    result = { problem: `could not be read: ${err.message}` };
+  }
+  if (!result) {
+    if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
+      result = { problem: "is not a JSON object" };
+    } else {
+      result = readRegistryAllowlist(doc);
+    }
+  }
+  registryAllowlistCache.set(key, result);
+  return result;
 }
 
 // The per-harvest trust resolver: effectiveTrustAt(atIso) is the set of

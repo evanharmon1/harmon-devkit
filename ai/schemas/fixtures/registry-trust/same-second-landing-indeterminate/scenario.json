@@ -1,0 +1,42 @@
+{
+  "description": "A revision adding the author landed on the default branch in the same second as the run's kickoff. GitHub's REST timestamps carry second precision, so their order is not knowable; the write is indeterminate rather than retroactively authenticated by a merge that may have come a moment later.",
+  "cli_trusted_actor_ids": [
+    9001
+  ],
+  "registry_revisions": [
+    {
+      "sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "landed_at": "2026-08-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002
+        ]
+      }
+    },
+    {
+      "sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "landed_at": "2026-09-01T00:00:00Z",
+      "document": {
+        "trusted_orchestrator_actor_ids": [
+          9002,
+          9001
+        ]
+      }
+    }
+  ],
+  "run": {
+    "author_actor_id": 9001,
+    "kickoff_at": "2026-09-01T00:00:00Z",
+    "evidence_writes": [
+      {
+        "stage": "review",
+        "round": 1,
+        "posted_at": "2026-09-01T00:05:00Z"
+      }
+    ]
+  },
+  "expect": {
+    "status": "indeterminate",
+    "reason_contains": "landed on the default branch in the same second as the write"
+  }
+}

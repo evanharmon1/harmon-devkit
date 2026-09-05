@@ -1134,8 +1134,10 @@ kind of corpus: not a document validated against a schema but a
 run by `scripts/test-dev-flow-stats.sh` through the real resolver against
 its fake `gh` shim. Each fixture names the registry revisions
 (`registry_revisions[]`: a 40-hex `sha`, the default-branch `landed_at` —
-`null` for a revision whose landing time cannot be resolved — and the
-`document` served at that revision), one run (`run`: `author_actor_id`,
+`null` for a revision whose landing time cannot be resolved — an optional
+`staging_merged_at` for an earlier merge into a non-default branch that
+must not count as landing, and the `document` served at that revision),
+one run (`run`: `author_actor_id`,
 `kickoff_at`, `evidence_writes[]` with each write's `posted_at`, and an
 optional `record_edited_at` that becomes the record comment's `updated_at`),
 the operator's `cli_trusted_actor_ids`, and the verdict it expects
@@ -1149,7 +1151,9 @@ posting does not retroactively authenticate; an actor removed after
 posting does not invalidate), plus a malformed allowlist, no revision in
 effect at kickoff, an unresolvable revision history, a write after
 mid-run removal, a record edit after removal, and a CLI selection that
-names an actor the registry does not (never widened).
+names an actor the registry does not (never widened); plus, from
+challenge round 1, a staging-branch merge that must not backdate a landing
+and a same-second landing whose order is unknowable (indeterminate).
 
 `ai/schemas/fixtures/result.reviewer.schema/valid/omator-397-*.json` and
 `ai/schemas/fixtures/adjudication.schema/valid/omator-397-*-adjudication.json`
@@ -1434,8 +1438,13 @@ answer never changes afterwards:
   `merged_at` (direct pushes to the default branch are ruleset-blocked here,
   so every default-branch revision has exactly one), never a commit's own
   author/committer date (spoofable by cherry-pick) and never a check-suite
-  time (which can predate the merge on a feature branch). Among eligible
-  revisions the latest landing time wins.
+  time (which can predate the merge on a feature branch) — and only a PR
+  whose **base is the default branch** counts, so a revision first merged
+  into a staging branch lands when the second PR carries it across, not
+  before. Among eligible revisions the latest landing time wins. A revision
+  that landed in the **same second** as the write has no knowable order
+  relative to it (REST timestamps carry second precision), so that write is
+  indeterminate rather than guessed either way.
 - Evaluation is **per write**, not a run-wide kickoff snapshot (maintainer
   ruling on #741, 2026-09-02): the run-index author and the run-record
   author are checked at the record's `created_at` (the true kickoff
