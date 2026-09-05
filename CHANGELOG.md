@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.40.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.39.0...v0.40.0) (2026-09-05)
+
+
+### Features
+
+* **agent-registry:** add the trusted-orchestrator actor allowlist, pinned per write ([#797](https://github.com/evanharmon1/harmon-devkit/issues/797)) ([5f1ebb8](https://github.com/evanharmon1/harmon-devkit/commit/5f1ebb837c040efa7a08264f680dd961b143345f))
+* **dev-flow:** add deterministic renderer and PR-body publisher ([#719](https://github.com/evanharmon1/harmon-devkit/issues/719)) ([6450a9b](https://github.com/evanharmon1/harmon-devkit/commit/6450a9b52c8eb7f06602d37a30250c9fb9bd5e19))
+* **dev-flow:** add dev-flow-stats.mjs evidence/metrics harvester ([#751](https://github.com/evanharmon1/harmon-devkit/issues/751)) ([f411de6](https://github.com/evanharmon1/harmon-devkit/commit/f411de6ff78ee9f3fa713c53942f061c3ca106fd))
+* **dev-flow:** add the integrator agent and /integrate skill for [#639](https://github.com/evanharmon1/harmon-devkit/issues/639) ([#758](https://github.com/evanharmon1/harmon-devkit/issues/758)) ([8051003](https://github.com/evanharmon1/harmon-devkit/commit/805100330dac961bc6a7aa73cb47ad9df4f3eb8f))
+* **devflow:** add .devflow.toml v2 reader and confidence-stage exit computation ([#720](https://github.com/evanharmon1/harmon-devkit/issues/720)) ([b5ef93c](https://github.com/evanharmon1/harmon-devkit/commit/b5ef93c55b9769a088b40288876b7fcd52270ea9))
+* **devflow:** add diff-aware round-push broker for dev-flow-v2 ([#748](https://github.com/evanharmon1/harmon-devkit/issues/748)) ([3664539](https://github.com/evanharmon1/harmon-devkit/commit/3664539a57df5d20f080abe5c5cab02c5e1ae48f))
+* **devflow:** add review orchestration ([#768](https://github.com/evanharmon1/harmon-devkit/issues/768)) ([f058ebd](https://github.com/evanharmon1/harmon-devkit/commit/f058ebd90f83be33a68901836601ae9bdc77dde3))
+* **registry:** add roles, finders, model tiers, and the challenger result schema ([#713](https://github.com/evanharmon1/harmon-devkit/issues/713)) ([2c5bf75](https://github.com/evanharmon1/harmon-devkit/commit/2c5bf755c3613bc704041e1c4320ea29a758bc6b))
+* **retro:** read the run record and round trajectory instead of memory ([#781](https://github.com/evanharmon1/harmon-devkit/issues/781)) ([b96e621](https://github.com/evanharmon1/harmon-devkit/commit/b96e621db9fa5fc041ed783d69143a6cf5520865)), closes [#664](https://github.com/evanharmon1/harmon-devkit/issues/664)
+
+
+### Bug Fixes
+
+* **schemas:** close single-document validator residue from PR [#678](https://github.com/evanharmon1/harmon-devkit/issues/678) cycle 7 ([#740](https://github.com/evanharmon1/harmon-devkit/issues/740)) ([36d4b8c](https://github.com/evanharmon1/harmon-devkit/commit/36d4b8cf06e4c68e07e39c8ce21c38957e8eeac6)), closes [#686](https://github.com/evanharmon1/harmon-devkit/issues/686)
+* **schemas:** pad the render fixture's evidence digest to 64 hex characters ([#744](https://github.com/evanharmon1/harmon-devkit/issues/744)) ([b6bf6dc](https://github.com/evanharmon1/harmon-devkit/commit/b6bf6dcacaf4c2268eda74effeee01f6efdbc2e2))
+* **shepherd:** scope readiness-gate check-run collapse to superseded runs ([#723](https://github.com/evanharmon1/harmon-devkit/issues/723)) ([c4071b8](https://github.com/evanharmon1/harmon-devkit/commit/c4071b8d840107ba6846bcf6fd61d6c9105ffefe))
+* **skills:** make gauntlet, shepherd, implement, kickoff, and triage model-invocable ([#710](https://github.com/evanharmon1/harmon-devkit/issues/710)) ([81431e5](https://github.com/evanharmon1/harmon-devkit/commit/81431e5f0292a64a0572b2f617e5ef354c1f7bf7)), closes [#702](https://github.com/evanharmon1/harmon-devkit/issues/702)
+
 ## [0.39.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.38.0...v0.39.0) (2026-09-01)
 
 
