@@ -934,15 +934,18 @@ active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_j
 # existed and still authorize promotion; only impossible integration ids were
 # caught, by the flagless half of the check. Challenge round 2, confirmed.
 #
-# The universe is every finding the record itself holds evidence for: the
-# ids raised by the passes under `passes/` and the ids adjudicated by the
-# documents under `adjudications/`. Both halves are needed — a finding an
-# EARLIER integrator pass raised and this one is now resolving lives in
-# `passes/`, while a challenge/review finding carried here as a `defer`
-# lives in an adjudication document — and together they are exactly "what
-# this run produced". An id in neither, and not in the gated payload's own
-# findings[] (which the validator checks separately), names nothing the
-# record can account for.
+# The universe is every finding the record's own PASSES produced — the ids
+# raised under `passes/`, and nothing else. An adjudication is a judgement
+# ABOUT a finding, never evidence that one was produced: integrate cycle 2 on
+# PR #800 showed that harvesting adjudication ids too lets a fabricated
+# same-run adjudication whitelist an arbitrary id, since
+# `render-dev-flow readiness-input` explicitly continues past an adjudication
+# row with no pass behind it. Narrowing to passes removes that class rather
+# than patching it — every legitimately adjudicated finding was raised by a
+# pass, so a complete record already contains it, and a record missing that
+# pass is incomplete in a way the gate should fail closed on. An id in
+# neither the passes nor the gated payload's own findings[] (which the
+# validator checks separately) names nothing the record can account for.
 #
 # `--record` is the dev-flow-v2 record directory the review stage retains
 # and this stage consumes, so both subdirectories are its documented
@@ -977,10 +980,6 @@ trap 'rm -f "$known_ids_file" 2>/dev/null || :' EXIT
         # not draw.
         jq -r 'select(.status == "completed" or .role == "integrator")
                | .payload.findings[]?.id // empty' "$known_ids_doc" 2>/dev/null || true
-    done
-    for known_ids_doc in "$record_dir"/adjudications/*.json; do
-        [ -f "$known_ids_doc" ] || continue
-        jq -r '.adjudications[]?.finding_id // empty' "$known_ids_doc" 2>/dev/null || true
     done
 } | jq -Rn '[inputs | select(. != "")] | unique' >"$known_ids_file" 2>/dev/null || true
 # An unreadable or absent record leaves an EMPTY universe rather than no
@@ -1204,23 +1203,36 @@ remediation_loops="$(jq -r '[.stage_transitions[]? | select(.stage == "integrati
 # The LOWER bound, and the complement of the ceiling above. A code-changing
 # disposition (fix/restructure/delete) means code changed during integration,
 # and integration's ONLY outgoing edge is implement (run.schema.json's
-# ALLOWED_EDGES, with no self-loop and no repeated consecutive stage) — so such
-# a disposition cannot exist without the record showing at least one
-# integration -> implement -> integration re-entry. Zero loops alongside one is
-# an internally inconsistent record that would promote having spent no
-# remediation round at all, which at --remediation-cap 0 is the whole budget.
-# Codex cloud-review cycle 1 on PR #800, confirmed.
+# ALLOWED_EDGES, with no self-loop and no repeated consecutive stage) — so
+# every such disposition implies a recorded integration -> implement ->
+# integration re-entry after the round that raised the finding.
 #
-# Distinct from the at-cap branch challenge round 2 deleted: that one refused a
-# pass AT the ceiling for echoing the very fix that caused its final loop. This
-# refuses a record claiming a code change with no loop recorded anywhere, which
-# no legitimate trajectory produces.
-if [ "$remediation_loops" -eq 0 ]; then
+# Stated as the general property rather than the zero special case it started
+# as. Integrate cycle 2 on PR #800 showed why: a bound that fires only at
+# `loops == 0` lets ONE recorded loop cover every later code-changing cycle,
+# so a fix applied to an `integration-r2-…` finding passes on the strength of
+# round 1's loop. The finding-id grammar carries the round the finding was
+# raised in (`(challenge|review|integration)-r<N>-<finder>-<n>`), which is
+# exactly the datum needed: fixing a finding raised in integration round R
+# requires at least R loops, and fixing a challenge/review finding carried
+# into integration requires at least one. The zero case is what this reduces
+# to when R is 1, so nothing is lost and the special case disappears.
+#
+# Distinct from the at-cap branch challenge round 2 deleted: that one refused
+# a pass AT the ceiling for echoing the very fix that caused its own final
+# loop. This one refuses a record whose loop count cannot account for the
+# code changes its own dispositions claim.
+required_loops="$(jq -r '
+    [ .[]
+      | select(.disposition == "fix" or .disposition == "restructure" or .disposition == "delete")
+      | (.finding_id | capture("^integration-r(?<r>[1-9][0-9]*)-") | .r | tonumber) // 1
+    ] | max // 0' <<<"$applied_dispositions" 2>/dev/null)" ||
+    indeterminate malformed-data "applied_dispositions could not be read for the remediation-loop lower bound"
+if [ "$required_loops" -gt "$remediation_loops" ]; then
     code_changing="$(jq -r '[.[] | select(.disposition == "fix" or .disposition == "restructure" or .disposition == "delete") | .finding_id] | join(", ")' \
         <<<"$applied_dispositions" 2>/dev/null)" ||
         indeterminate malformed-data "applied_dispositions could not be read for the remediation-loop lower bound"
-    [ -z "$code_changing" ] ||
-        fail_condition remediation-capped "the gated pass applies code-changing disposition(s) ($code_changing) but the record shows no integration -> implement -> integration remediation loop at all — a code change during integration always records one (harmon-devkit#685)"
+    fail_condition remediation-capped "the gated pass applies code-changing disposition(s) ($code_changing) implying at least $required_loops integration -> implement -> integration remediation loop(s), but the record shows $remediation_loops — a code change during integration always records its own re-entry (harmon-devkit#685)"
 fi
 
 # 9e. Every adjudicated round has its own issue evidence comment

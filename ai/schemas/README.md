@@ -2578,15 +2578,23 @@ A check gated on a flag its production caller never passes enforces nothing
 envelope without `--known-ids`, so only the impossible half — a future
 integration round — was ever caught, and a clean pass could claim
 dispositions for findings that never existed. The gate now assembles the
-universe from `--record`'s own `passes/` (ids those passes raised) and
-`adjudications/` (ids those documents adjudicated) and passes it — skipping a
-**blocked confidence-role** pass, which contributes no pass and no finding,
-while keeping a blocked integrator's, which legitimately carries evidence
-gathered before it was cut short (Codex cloud-review cycle 1 on PR #800).
-Both halves are needed: a finding an *earlier* integrator pass raised and this one is now
-resolving lives in `passes/`, while a challenge/review finding carried here
-as a `defer` lives in an adjudication. An unreadable or absent record yields
-an empty universe rather than a skipped check.
+universe from `--record`'s own `passes/` — the ids those passes raised, and
+nothing else — skipping a **blocked confidence-role** pass, which contributes
+no pass and no finding, while keeping a blocked integrator's, which
+legitimately carries evidence gathered before it was cut short (Codex
+cloud-review cycle 1 on PR #800). An unreadable or absent record yields an
+empty universe rather than a skipped check.
+
+The universe deliberately does **not** include adjudication ids, though an
+earlier revision of this work did harvest them. An adjudication is a judgement
+*about* a finding, never evidence that one was produced, and
+`render-dev-flow readiness-input` explicitly continues past an adjudication
+row with no pass behind it — so harvesting those let a fabricated same-run
+adjudication whitelist an arbitrary id (integrate cycle 2 on PR #800).
+Narrowing to passes removes that class rather than patching it: every
+legitimately adjudicated finding was raised by a pass, so a complete record
+already contains it, and a record missing that pass is incomplete in a way the
+gate should fail closed on.
 
 Two smaller decisions ride along with that. The assembly uses a plain glob
 and `jq`, never `find`/`xargs`, because the gate must keep working under the

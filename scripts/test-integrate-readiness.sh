@@ -315,7 +315,33 @@ write_record_with_integration_entries() {
            bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
     node "$validator" run "${record_dir}/run.json" >/dev/null ||
         fail "#685(4) record fixture with $1 remediation loop(s) is not a valid run record"
-    rm -f "${record_dir}"/adjudications/*.json
+    rm -f "${record_dir}"/adjudications/*.json "${record_dir}"/passes/*.json
+}
+
+# write_review_r1_pass — the reviewer pass that RAISED review-r1-codex-cli-9.
+# The known-ids universe is derived from passes, not adjudications (integrate
+# cycle 2 on PR #800: an adjudication is a judgement ABOUT a finding, never
+# evidence one was produced), so every fixture whose gated pass disposes of
+# that finding needs the pass behind it or its record is incomplete.
+# $1 = the finding id this pass raises (default review-r1-codex-cli-9); it
+# must match whatever the accompanying adjudication document adjudicates, or
+# render-dev-flow rejects the pass as carrying an unadjudicated finding.
+write_review_r1_pass() {
+    jq -cn --arg head "$head_sha" --arg fid "${1:-review-r1-codex-cli-9}" '
+      {schema:2, role:"reviewer", status:"completed", head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"codex-cli",model:"test",tier:"standard"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:{stage:"review", round:1, reviewed_head:$head,
+                slot:"codex-cli", finder:"codex-cli",
+                findings:[{id:$fid,
+                           path:"scripts/example.mjs", line:10,
+                           class:"correctness", provenance:"original",
+                           fingerprint:"new", priority:"P2",
+                           recommended_disposition:"defer",
+                           evidence:"needs a second look"}],
+                counts:{P0:0,P1:0,P2:1,P3:0}}}' \
+        >"${record_dir}/passes/review-r1-codex-cli.json"
 }
 
 # A schema-valid result.envelope (role integrator) at
@@ -1085,6 +1111,7 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
+write_review_r1_pass review-r1-codex-cli-1
 # run.json's settlements[] stays empty from write_default_record — nothing
 # has settled the one deferred finding the adjudication above declares.
 run_gate
@@ -1102,6 +1129,7 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
+write_review_r1_pass review-r1-codex-cli-1
 jq -cn --arg head "$head_sha" --argjson transitions "$(lifecycle_transitions)" \
     '{schema:2, run_id:"test-run", initiated_by:"human",
       started_at:"2026-01-01T00:00:00Z",
@@ -1607,6 +1635,7 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
+write_review_r1_pass
 undisclosed_result="${fixtures}/integrator-result-undisclosed.json"
 jq -cn --arg head "$head_sha" '
   {schema:2, role:"integrator", status:"completed", head:$head,
@@ -1642,6 +1671,7 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
+write_review_r1_pass
 # One remediation loop: this pass settles the deferred finding with `fix`, and
 # a code change during integration always records the integration -> implement
 # -> integration re-entry (Codex cloud-review cycle 1 on PR #800).
@@ -1692,6 +1722,7 @@ jq -cn --arg head "$head_sha" \
         disposition:"defer", reason:"carrying to integration",
         evidence:"needs a second look", override:null}]}' \
     >"${record_dir}/adjudications/review-r1.json"
+write_review_r1_pass
 jq -cn --arg head "$head_sha" --argjson transitions "$(lifecycle_transitions)" \
     '{schema:2, run_id:"test-run", initiated_by:"human",
       started_at:"2026-01-01T00:00:00Z",
@@ -1741,6 +1772,7 @@ printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
 # --- are the two dispositions that leave the head alone, so nothing else in
 # --- this gate would ever notice them going unrecorded.
 write_deferred_adjudication() {
+    write_review_r1_pass
     jq -cn --arg head "$head_sha" \
         '{schema:2, run_id:"test-run", stage:"review", round:1,
           reviewed_head:$head,
@@ -1881,7 +1913,7 @@ write_promoted_record() {
          digest:"ec64b9703afdb8ec84d58495e89b4b11dc8c0a96720b330f649e0fe10a498ec1",
          number:493,url:"https://github.com/example/repo/pull/493",
          bound_at:"2026-01-01T00:00:00Z"}]}' >"${record_dir}/run.json"
-    rm -f "${record_dir}"/adjudications/*.json
+    rm -f "${record_dir}"/adjudications/*.json "${record_dir}"/passes/*.json
 }
 
 write_promoted_pr_view() {
@@ -2004,6 +2036,71 @@ write_at_cap_record fix sha "$head_sha"
 write_deferred_adjudication
 run_gate --integrator-result "$fix_result" --remediation-cap 0
 assert_gate 1 fail remediation-capped
+
+# The generalised lower bound (integrate cycle 2 on PR #800): one recorded
+# loop must not cover a LATER code-changing cycle. A fix applied to an
+# `integration-r2-...` finding needs two loops, not the one that round 1's
+# own fix already spent — the finding-id grammar carries the round, so the
+# bound is "loops >= the round the fixed finding came from" rather than the
+# "loops >= 1" special case it started as.
+# The round-2 integration finding the case below disposes of, with the pass
+# that raised it and its adjudication — the known-ids universe is
+# pass-derived, so a disposition naming a finding the record never produced
+# is refused before the remediation bound is ever reached.
+write_round2_integration_finding() {
+    jq -cn --arg head "$head_sha" '
+      {schema:2, role:"integrator", status:"completed", head:$head,
+       produced_at:"2026-01-01T00:00:00Z",
+       producer:{harness:"claude-code",model:"test",tier:"economy"},
+       run:{run_id:"test-run",initiated_by:"human"},
+       payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+                codex_cycle:null, integration_round:2,
+                findings:[{id:"integration-r2-codex-cli-1",
+                           body:"a round-2 finding",source_id:"9200"}],
+                unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+                verdict:"findings"}}' \
+        >"${record_dir}/passes/integration-r2.json"
+    jq -cn --arg head "$head_sha" '
+      {schema:2, run_id:"test-run", stage:"integration", round:2,
+       reviewed_head:$head,
+       adjudications:[{finding_id:"integration-r2-codex-cli-1",
+         reviewer_priority:null, adjudicated_priority:"P1",
+         disposition:"fix", reason:"confirmed", evidence:"reproduced",
+         override:null}]}' \
+        >"${record_dir}/adjudications/integration-r2.json"
+    add_issue_evidence_marker integration 2
+}
+
+echo "==> #685(4): one loop does not cover a fix applied to a round-2 integration finding"
+write_defaults
+write_record_with_integration_entries 1
+write_earlier_integration_finding
+write_round2_integration_finding
+r2_fix_result="${fixtures}/integrator-result-r2-fix.json"
+jq -cn --arg head "$head_sha" '
+  {schema:2, role:"integrator", status:"completed", head:$head,
+   produced_at:"2026-01-01T00:00:00Z",
+   producer:{harness:"claude-code",model:"test",tier:"economy"},
+   run:{run_id:"test-run",initiated_by:"human"},
+   payload:{checks:[{name:"build",bucket:"pass",run_id:"1",required:true}],
+            codex_cycle:null, integration_round:2, findings:[],
+            unanswered_thread_roots:[], settled_at:"2026-01-01T00:00:00Z",
+            verdict:"clean",
+            applied_dispositions:[{finding_id:"integration-r2-codex-cli-1",
+                                    disposition:"fix"}]}}' \
+    >"$r2_fix_result"
+run_gate --integrator-result "$r2_fix_result" --remediation-cap 4
+assert_gate 1 fail remediation-capped
+printf '%s\n' "$gate_out" | grep -Fq 'at least 2' ||
+    fail "#685(4): the gate did not name the implied loop count: $gate_out"
+
+echo "==> #685(4): two loops DO cover it"
+write_defaults
+write_record_with_integration_entries 2
+write_earlier_integration_finding
+write_round2_integration_finding
+run_gate --integrator-result "$r2_fix_result" --remediation-cap 4
+assert_gate 0 pass ready
 
 echo "==> #685(4): a non-integer --remediation-cap is a usage error, never silently ignored"
 write_defaults
