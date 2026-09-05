@@ -31,6 +31,10 @@ for text in '[stage.challenge].finders' '[stage.review].finders' challenger revi
     'validated finding records' 'override it upward' 'run.json.interventions'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing $text"
 done
+grep -Fq 'resolved cap is `0`' "$skill" ||
+    fail "review skill does not skip finder dispatch for a disabled stage"
+grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
+    fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"
 entry_gate_line="$(grep -n '^## Entry gate$' "$skill" | cut -d: -f1)"
 dispatch_line="$(grep -n '^## Dispatch and receipt$' "$skill" | cut -d: -f1)"
 [ -n "$entry_gate_line" ] && [ -n "$dispatch_line" ] && [ "$entry_gate_line" -lt "$dispatch_line" ] ||
@@ -94,6 +98,21 @@ set -e
 [ "$status" -eq 2 ] || fail "over-cap pre-adjudication evidence returned $status"
 jq -e '.outcome == "indeterminate" and (.reason | contains("exceed"))' \
     <<<"$over_cap_out" >/dev/null || fail "over-cap pre-adjudication evidence was accepted: $over_cap_out"
+
+echo "==> pre-adjudication verification terminalizes an incomplete finder round"
+incomplete_fixture="ai/schemas/fixtures/exit/finder-unavailable-one-of-two-slots"
+set +e
+incomplete_out="$(node scripts/dev-flow-exit.mjs --run "$incomplete_fixture/run" --stage review \
+    --policy "$incomplete_fixture/policy.toml" \
+    --current-head 0101010101010101010101010101010101010101 \
+    --verification-only --json)"
+status=$?
+set -e
+[ "$status" -eq 22 ] || fail "incomplete pre-adjudication round returned $status: $incomplete_out"
+jq -e '.outcome == "capped" and .reason == "finder_unavailable" and
+    .action == "escalate" and .incomplete_round == 1 and
+    (.verified_findings | length) == 0' <<<"$incomplete_out" >/dev/null ||
+    fail "incomplete round incorrectly authorized adjudication: $incomplete_out"
 
 echo "==> renderer projects the review record"
 rendered="$(scripts/render-dev-flow.sh adjudication-record --record "$render_record")"
@@ -279,6 +298,15 @@ ordered_args=(--active-state "$ordered_active_state" --run-id "$ordered_run_id"
     --expected-head "$head" --writer feature-owner >/dev/null
 "$monitor" reserve "${ordered_args[@]}" --state "$ordered_state" --event e2 --action assembly \
     --expected-head "$head" --writer feature-owner >/dev/null
+jq -n '{status: "absent"}' >"$tmp/e2-absent.json"
+set +e
+"$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
+    --observed "$tmp/e2-absent.json" >"$tmp/e2-absent.out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "out-of-order absent action was authorized for retry"
+grep -Fq 'out of reservation order' "$tmp/e2-absent.out" ||
+    fail "out-of-order retry refusal was not reported"
 jq -n --arg head "$head" '{status: "landed", event: "e2", action: "assembly", head: $head}' >"$tmp/e2.json"
 set +e
 "$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \

@@ -1513,6 +1513,9 @@ function checkLaneAssemblies(document, errors) {
     }
     const integrated = Array.isArray(assembly.integrated_lanes) ? assembly.integrated_lanes : []
     const discarded = Array.isArray(assembly.discarded_lanes) ? assembly.discarded_lanes : []
+    if (integrated.length + discarded.length === 0) {
+      errors.push(`$run.stage_transitions[${index}].assembly: must account for at least one integrated or discarded lane`)
+    }
     if (new Set(integrated).size !== integrated.length) {
       errors.push(`$run.stage_transitions[${index}].assembly.integrated_lanes: lane names must be unique`)
     }

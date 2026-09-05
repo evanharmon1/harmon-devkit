@@ -399,6 +399,25 @@ function validateVerdictShape(verdict, file) {
   if (verdict.incomplete_round !== undefined && !(Number.isInteger(verdict.incomplete_round) && verdict.incomplete_round >= 1)) {
     fail(`${file}: incomplete_round, if present, must be a positive integer`)
   }
+  if (verdict.retained_rounds !== undefined) {
+    if (verdict.stage !== 'challenge' && verdict.stage !== 'review') {
+      fail(`${file}: stage must be challenge or review when retained_rounds is present`)
+    }
+    if (verdict.verified_findings === undefined) {
+      fail(`${file}: retained_rounds requires verified_findings`)
+    }
+    if (
+      !Array.isArray(verdict.retained_rounds) ||
+      !verdict.retained_rounds.every((round) => Number.isInteger(round) && round >= 1)
+    ) {
+      fail(`${file}: retained_rounds, if present, must be an array of positive integers`)
+    }
+    for (let index = 1; index < verdict.retained_rounds.length; index += 1) {
+      if (verdict.retained_rounds[index - 1] >= verdict.retained_rounds[index]) {
+        fail(`${file}: retained_rounds must be strictly increasing and unique`)
+      }
+    }
+  }
   if (verdict.corrections !== undefined) {
     const validCorrection = (correction) =>
       typeof correction === 'string' ||
@@ -496,12 +515,17 @@ function buildFindingIndex(record, options = {}) {
   const passFindingsById = new Map()
   const verificationById = new Map((record.verdict?.verified_findings ?? []).map((finding) => [finding.id, finding]))
   const verificationStage = record.verdict?.verified_findings !== undefined ? record.verdict.stage : null
+  const verificationRetainedRounds =
+    record.verdict?.retained_rounds === undefined ? null : new Set(record.verdict.retained_rounds)
   if (record.verdict?.verified_findings !== undefined) {
     for (const finding of record.verdict.verified_findings) {
       const idMatch = FINDING_ID.exec(finding.id)
       if (!idMatch) fail(`verdict.json: verified finding has malformed id ${finding.id}`)
       if (idMatch[1] !== verificationStage) {
         fail(`verdict.json: verified finding ${finding.id} does not belong to declared stage ${verificationStage}`)
+      }
+      if (verificationRetainedRounds !== null && !verificationRetainedRounds.has(Number.parseInt(idMatch[2], 10))) {
+        fail(`verdict.json: verified finding ${finding.id} does not belong to a retained round`)
       }
     }
   }
@@ -631,9 +655,16 @@ function buildFindingIndex(record, options = {}) {
   // stage it evaluates. Once that projection is present, producer provenance
   // is no longer an acceptable fallback for a same-stage omission: a stale or
   // interrupted verdict must fail closed instead of republishing unverified
-  // reviewer assertions as authoritative evidence.
+  // reviewer assertions as authoritative evidence. When exit computation
+  // explicitly reports a retained-round projection, ancestry-invalidated
+  // adjudications are outside that projection and must not make a current
+  // verdict look incomplete.
   for (const row of entries) {
-    if (verificationStage === row.stage && row.verification === null) {
+    if (
+      verificationStage === row.stage &&
+      (verificationRetainedRounds === null || verificationRetainedRounds.has(row.round)) &&
+      row.verification === null
+    ) {
       fail(`verdict.json: verified_findings omits adjudicated finding ${row.entry.finding_id}`)
     }
   }
@@ -1334,7 +1365,7 @@ function renderBlockerComment(record, options = {}) {
     }
     for (const partial of unadjudicatedFindings.sort((a, b) => a.id.localeCompare(b.id))) {
       const finding = partial.finding
-      const loc = finding.path ? `${finding.path}${finding.line ? `:${finding.line}` : ''}` : partial.id
+      const loc = neutralizeMarkers(finding.path ? `${finding.path}${finding.line ? `:${finding.line}` : ''}` : partial.id)
       lines.push(
         `  - ${partial.id} — ${loc} — ${neutralizeMarkers(finding.evidence)} (${finding.priority}, unadjudicated partial-round evidence)`
       )

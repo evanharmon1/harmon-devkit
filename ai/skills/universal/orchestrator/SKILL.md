@@ -55,6 +55,14 @@ product, safety, or consent decision → stop for a human. Persist the event ID,
 reservation, observed postcondition, and action in monitor state so a resumed
 session can adopt a crash-after-write action instead of duplicating it.
 
+Treat resolved `rounds.wall_clock_min` as a ceiling for the whole run, measured
+from `run.started_at`, not as a fresh allowance for each stage or resumed
+session. Read a fresh trusted clock immediately before every dispatch,
+reservation, replay, external action, and merge-queue mutation. Once the
+deadline is reached, record the capped transition and render its blocker before
+stopping; authorize no further external action. A cached time check or a check
+performed only after the write cannot enforce this ceiling.
+
 Bound parallel implementers by `[breadth]` and strategy and heavy local stages
 by host capacity. Maintain a merge queue from complete file lists, pairwise
 overlap, dependencies, stage, and re-verification cost. Recommend

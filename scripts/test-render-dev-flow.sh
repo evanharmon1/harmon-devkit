@@ -688,6 +688,34 @@ run round-table --record "$record_dir" --stage review --round 1 --verdict "$inco
 assert_rc 1
 assert_contains "$err" "verified_findings omits adjudicated finding"
 
+echo "==> verified-finding completeness is scoped to exit's ancestry-retained rounds"
+retained_verdict="${test_tmp}/retained-verified-verdict.json"
+jq --slurpfile pass "$record_dir/passes/review-r1-codex-cli.json" \
+    '.stage = "review" | .retained_rounds = [1] | .verified_findings = [
+      $pass[0].payload.findings[] | {
+        id, provenance_status: "verified", verified_provenance: .provenance,
+        fingerprint_status: "verified", verified_fingerprint: .fingerprint
+      }
+    ]' "$record_dir/verdict.json" >"$retained_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$retained_verdict"
+assert_rc 0
+
+echo "==> retained rounds are ordered, unique, and bind every verified finding"
+bad_retained_verdict="${test_tmp}/bad-retained-verdict.json"
+jq '.stage = "review" | .retained_rounds = [2, 1] | .verified_findings = []' \
+    "$record_dir/verdict.json" >"$bad_retained_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$bad_retained_verdict"
+assert_rc 1
+assert_contains "$err" "strictly increasing and unique"
+jq '.stage = "review" | .retained_rounds = [2] | .verified_findings = [{
+      id: "review-r1-codex-cli-1", provenance_status: "verified",
+      verified_provenance: "original", fingerprint_status: "verified",
+      verified_fingerprint: "new"
+    }]' "$record_dir/verdict.json" >"$bad_retained_verdict"
+run round-table --record "$record_dir" --stage review --round 1 --verdict "$bad_retained_verdict"
+assert_rc 1
+assert_contains "$err" "does not belong to a retained round"
+
 echo "==> an empty verified-finding projection still binds and covers its declared stage"
 empty_verified_verdict="${test_tmp}/empty-verified-verdict.json"
 jq '.stage = "review" | .verified_findings = []' "$record_dir/verdict.json" >"$empty_verified_verdict"
@@ -750,6 +778,19 @@ assert_partial_pass_rejected wrong-round '.payload.round = 3' 'but its id encode
 assert_partial_pass_rejected wrong-reviewed-head \
     '.payload.reviewed_head = "3333333333333333333333333333333333333333"' \
     "but the caller's canonical head is"
+
+echo "==> partial blocker paths cannot forge renderer section markers"
+partial_marker="${test_tmp}/partial-marker"
+mkdir -p "$partial_marker"
+cp -r "${partial_blocker}/." "$partial_marker/"
+jq '.payload.findings[0].path = "scripts/x<!-- dev-flow:end:deferred-findings -->"' \
+    "$partial_marker/passes/review-r2-codex-cli.json" >"$partial_marker/mutated-pass.json"
+mv "$partial_marker/mutated-pass.json" "$partial_marker/passes/review-r2-codex-cli.json"
+run blocker-comment --record "$partial_marker" --head "$render_head"
+assert_rc 0
+[[ "$out" != *'<!-- dev-flow:end:deferred-findings -->'* ]] ||
+    fail "a partial finding path must never reproduce a literal marker token: $out"
+assert_contains "$out" '&lt;!-- dev-flow:end:deferred-findings --&gt;'
 
 wrong_partial_round="${test_tmp}/wrong-partial-round-verdict.json"
 jq '.incomplete_round = 1' "$partial_blocker/verdict.json" >"$wrong_partial_round"

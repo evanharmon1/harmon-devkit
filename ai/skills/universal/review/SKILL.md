@@ -39,6 +39,12 @@ targets upstream.
 
 ## Dispatch and receipt
 
+When the resolved cap is `0` for the requested stage, dispatch no finder,
+create no pass, round, or adjudication, and do not invoke a model. Run the exit
+computation immediately and advance only when its disabled-stage verdict says
+`action: advance`; any other result is a blocker. A zero cap disables the
+stage—it is not permission to manufacture a clean round.
+
 The dispatcher is a capability boundary: dispatch a challenger or reviewer
 only through a harness that provides a read-only reviewed snapshot (the
 captured diff, source content, and applicable design record) while denying
@@ -75,15 +81,20 @@ Before adjudication, run `scripts/dev-flow-exit.sh --run <record> --stage
 --json`. Materialize the trusted history and head map from the feature-owner's
 verified branch state before dispatch; never let a finder supply them. Its
 provenance and fingerprint corrections are preconditions, not an advisory
-reviewer assertion. Use that first projection only to correct the finding facts. The orchestrator
-then writes one schema-valid `adjudications/<stage>-r<N>.json`, containing the
-schema-supported priority, disposition, classification, reason, and evidence
-for every finding, and validates it against every accepted pass. Cite any
-verified provenance/fingerprint correction in `evidence`; keep the machine
-values in the verification/exit projection rather than adding fields the
-adjudication schema rejects. Only after that write, run the exit command again
-with the same trusted repository history and head map, persist its returned JSON as
-`verdict.json`, and act on that second outcome.
+reviewer assertion. If this projection reports `action: escalate` because the
+logical round is incomplete (`finder_unavailable` or `breadth_exhausted`),
+persist it as `verdict.json`, render the terminal blocker, and stop: an
+incomplete round has no adjudication target and must never reach the second
+exit call. Only an `action: adjudicate` projection authorizes the orchestrator
+to correct the finding facts and write one schema-valid
+`adjudications/<stage>-r<N>.json`, containing the schema-supported priority,
+disposition, classification, reason, and evidence for every finding, validated
+against every accepted pass. Cite any verified provenance/fingerprint
+correction in `evidence`; keep the machine values in the verification/exit
+projection rather than adding fields the adjudication schema rejects. Only
+after that write, run the exit command again with the same trusted repository
+history and head map, persist its returned JSON as `verdict.json`, and act on
+that second outcome.
 
 After each adjudication, build the issue comment from the validated source
 result envelopes, that round's adjudication JSON, and its exit projection in

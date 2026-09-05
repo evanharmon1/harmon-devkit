@@ -412,12 +412,21 @@ reconcile)
     esac
     status="$(jq -r '.status // empty' "$observed")"
     case "$status" in
-    landed)
+    landed | absent)
+        # A retry is authorization to perform the reserved external action,
+        # so it owes the same ordering proof as adoption. Authorizing a later
+        # absent action while an earlier reservation is still unresolved
+        # would let the write happen out of order and discover the violation
+        # only after the side effect already exists.
         jq -e --arg event "$event" '
             . as $state |
             [$state.actions[].event] | index($event) as $index |
             [$state.actions[0:$index][] | select(.state != "adopted")] | length == 0
-        ' "$state" >/dev/null || die "cannot adopt $event out of reservation order"
+        ' "$state" >/dev/null || die "cannot reconcile $event out of reservation order"
+        ;;
+    esac
+    case "$status" in
+    landed)
         expected_action="$(jq -r '.action' <<<"$reservation")"
         expected_head_value="$(jq -r '.expected_head' <<<"$reservation")"
         jq -e --arg event "$event" --arg action "$expected_action" --arg head "$expected_head_value" '
