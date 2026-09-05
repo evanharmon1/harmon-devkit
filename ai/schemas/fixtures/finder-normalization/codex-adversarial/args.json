@@ -1,0 +1,7 @@
+{
+  "finder": "codex-adversarial",
+  "stage": "challenge",
+  "round": 2,
+  "reviewed-head": "0101010101010101010101010101010101010101",
+  "raw": "raw.txt"
+}

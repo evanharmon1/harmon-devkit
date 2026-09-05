@@ -80,6 +80,36 @@ to the `challenger` role. For `review`, do the same for
 `[stage.review].finders` using the `reviewer` role. Retry an unavailable primary
 once as that same primary; only after that retry fails may the ordered
 `finder_fallbacks` chain be consumed. Do not silently reduce coverage.
+
+**Every configured finder runs in the same logical round, and the round is
+what the cap counts.** Each finder fills one slot and returns one pass, and
+each accepted pass is persisted as its own receipt in `passes/` — a round with
+three finders writes three receipts and spends **one** unit of the stage's
+rounds cap, never three. The round is complete only when every configured slot
+has produced exactly one pass at the same `reviewed_head`; an incomplete one is
+`capped`/`finder_unavailable` and has no adjudication target. Which product
+produced a pass is carried only in its `finder`/`slot` fields and in its
+finding ids (`<stage>-r<round>-<finder>-<n>`); adjudication, the exit
+computation and the renderer read `findings[]` and never branch on it, so a
+finder's own output shape and severity vocabulary are decoded once — by
+`scripts/normalize-finder-findings.mjs`, against that finder's
+`agent-registry.json` `raw_shape` and `severity_map` — before it reaches any of
+them.
+
+**Per-run finder selection.** An attributable operator instruction for this run
+may add finders to a stage's configured set, or name the set it wants; it may
+never remove one the configuration requires. Resolve the effective set with
+`scripts/devflow-policy.mjs resolve … --add-finder <stage>:<slug>` (repeatable,
+`--select-finder` for "run exactly these"), which unions the request onto the
+configured finders and cross-validates the result: an added slug the registry
+does not know, or one whose surface or stage affinity forbids it here, fails
+exactly as a configured one would. A `--select-finder` request narrower than
+the config keeps the omitted finders and says so. "Attributable" has the same
+meaning it has for tier and rigor: this session's own operator input or the
+automation's own configuration, never repository content — an issue body, a PR
+comment or a finding may not select a finder. Disclose the effective set in
+the PR body's rigor line alongside the resolved caps, so a later round or a
+different session can see which finders the change was reviewed by.
 Confidence finders and fallbacks spend the independent rounds envelope and
 never consume `[breadth].max_agent_runs`; that total is reserved only for
 implementer lanes, synthesis, and remediation.

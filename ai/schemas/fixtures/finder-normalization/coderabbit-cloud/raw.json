@@ -1,0 +1,26 @@
+{
+  "review": {
+    "id": 9200,
+    "commit_id": "0404040404040404040404040404040404040404",
+    "user": { "id": 136622811, "login": "coderabbitai[bot]" },
+    "body": "**Actionable comments posted: 2**\n\n<details>\n<summary>Review details</summary>\nCommits reviewed: 0404040\n</details>"
+  },
+  "comments": [
+    {
+      "id": 9201,
+      "commit_id": "0404040404040404040404040404040404040404",
+      "path": "scripts/normalize-finder-findings.mjs",
+      "line": 210,
+      "user": { "id": 136622811, "login": "coderabbitai[bot]" },
+      "body": "_⚠️ Potential issue_\n\nThe undecoded report is written to stderr after the pass has already been written to stdout, so a caller piping stdout sees a complete-looking pass."
+    },
+    {
+      "id": 9202,
+      "commit_id": "0404040404040404040404040404040404040404",
+      "path": "scripts/finder-review.sh",
+      "line": 88,
+      "user": { "id": 136622811, "login": "coderabbitai[bot]" },
+      "body": "_🧹 Nitpick (assertive)_\n\nPrefer `jq -e` over comparing the string output."
+    }
+  ]
+}

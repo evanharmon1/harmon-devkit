@@ -1,0 +1,11 @@
+Adversarial review of the change.
+
+P1 ai/skills/universal/integrate/assets/check-codex-cloud-review.sh:1810 — a
+finder whose profile names no success reaction still reaches the reaction
+branch, so an absent reaction is read as an absent verdict rather than as a
+surface this finder never uses.
+
+P2 scripts/finder-review.sh:44 — the vendor command overrides are read from
+the environment, so a hostile environment can substitute the reviewer. That is
+the same trust level as the binary on PATH, so it is worth stating rather than
+fixing.

@@ -1,0 +1,27 @@
+{
+  "stage": "integration",
+  "integration_round": 1,
+  "finder": "codex-cloud",
+  "findings": [
+    {
+      "id": "integration-r1-codex-cloud-1",
+      "body": "**P0** A null codex_cycle with a positive integration cap promotes with no cloud verdict at all.",
+      "source_id": "9101"
+    },
+    {
+      "id": "integration-r1-codex-cloud-2",
+      "body": "### Codex Review\n\n**P1** The readiness gate accepts an empty check list as a pass.\n\n**Reviewed commit:** `0303030303030303030303030303030303030303`",
+      "source_id": "9001"
+    }
+  ],
+  "severity_hypotheses": [
+    {
+      "id": "integration-r1-codex-cloud-1",
+      "priority": "P0"
+    },
+    {
+      "id": "integration-r1-codex-cloud-2",
+      "priority": "P1"
+    }
+  ]
+}

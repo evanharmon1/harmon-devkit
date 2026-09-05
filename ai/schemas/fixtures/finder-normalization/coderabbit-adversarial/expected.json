@@ -1,0 +1,26 @@
+{
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "0707070707070707070707070707070707070707",
+  "finder": "coderabbit-adversarial",
+  "slot": "coderabbit-adversarial",
+  "findings": [
+    {
+      "id": "challenge-r1-coderabbit-adversarial-1",
+      "path": "agent-registry.schema.json",
+      "line": 640,
+      "class": "correctness",
+      "provenance": "original",
+      "fingerprint": "new",
+      "priority": "P1",
+      "recommended_disposition": "fix",
+      "evidence": "agent-registry.schema.json:640\n_⚠️ Potential issue_\n`severity_map.default` excludes P3 but nothing stops a rule from mapping every\nobserved label to P3, which reaches the same place by another route."
+    }
+  ],
+  "counts": {
+    "P0": 0,
+    "P1": 1,
+    "P2": 0,
+    "P3": 0
+  }
+}

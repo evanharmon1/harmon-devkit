@@ -1,0 +1,37 @@
+{
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "0909090909090909090909090909090909090909",
+  "finder": "copilot-adversarial",
+  "slot": "copilot-adversarial",
+  "findings": [
+    {
+      "id": "challenge-r1-copilot-adversarial-1",
+      "path": "ai/skills/universal/integrate/assets/check-codex-cloud-review.sh",
+      "line": 1810,
+      "class": "correctness",
+      "provenance": "original",
+      "fingerprint": "new",
+      "priority": "P1",
+      "recommended_disposition": "fix",
+      "evidence": "P1 ai/skills/universal/integrate/assets/check-codex-cloud-review.sh:1810 — a\nfinder whose profile names no success reaction still reaches the reaction\nbranch, so an absent reaction is read as an absent verdict rather than as a\nsurface this finder never uses."
+    },
+    {
+      "id": "challenge-r1-copilot-adversarial-2",
+      "path": "scripts/finder-review.sh",
+      "line": 44,
+      "class": "hardening",
+      "provenance": "original",
+      "fingerprint": "new",
+      "priority": "P2",
+      "recommended_disposition": "defer",
+      "evidence": "P2 scripts/finder-review.sh:44 — the vendor command overrides are read from\nthe environment, so a hostile environment can substitute the reviewer. That is\nthe same trust level as the binary on PATH, so it is worth stating rather than\nfixing."
+    }
+  ],
+  "counts": {
+    "P0": 0,
+    "P1": 1,
+    "P2": 1,
+    "P3": 0
+  }
+}

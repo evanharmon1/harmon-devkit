@@ -77,6 +77,8 @@ tasks:
       - task: test:render-dev-flow
       - task: test:retro-run-report
       - task: test:review-skill
+      - task: test:finder-normalization
+      - task: test:finder-review
       - task: test:registry-drift
       - task: test:registry-docs
       - task: test:label-registry
@@ -340,6 +342,8 @@ tasks:
       - test:dev-flow-exit
       - test:render-dev-flow
       - test:retro-run-report
+      - test:finder-normalization
+      - test:finder-review
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -375,6 +379,16 @@ tasks:
     desc: Fixture-driven regression checks for the /review stage contract
     cmds:
       - ./scripts/test-review-skill.sh
+
+  test:finder-normalization:
+    desc: Conformance checks that every finder's raw output decodes to the shared finding core
+    cmds:
+      - ./scripts/test-finder-normalization.sh
+
+  test:finder-review:
+    desc: Offline guards for the non-Codex local-CLI finder runner
+    cmds:
+      - ./scripts/test-finder-review.sh
 
   devflow:render:
     desc: 'Render a dev-flow-v2 projection or publish generated sections (task devflow:render -- <projection|publish> --record <dir> ...)'
@@ -650,6 +664,30 @@ tasks:
     desc: "Codex adversarial review (usage: task challenge:codex -- [--base <ref>|--uncommitted] [focus text])"
     cmds:
       - ./scripts/codex-review.sh challenge {{.CLI_ARGS}}
+
+  # Non-default local-CLI finders (agent-registry.json finders[], #796). Both
+  # are OPT-IN: neither CLI is installed or configured by this repo, neither is
+  # in the shipped default finder set, and a missing binary refuses rather than
+  # exiting 0 — a skipped finder reads as a clean pass. Codex stays the default.
+  review:coderabbit:
+    desc: "CodeRabbit verification review (usage: task review:coderabbit -- [--base <ref>|--uncommitted] [focus text])"
+    cmds:
+      - ./scripts/finder-review.sh review coderabbit {{.CLI_ARGS}}
+
+  challenge:coderabbit:
+    desc: "CodeRabbit adversarial review (usage: task challenge:coderabbit -- [--base <ref>|--uncommitted] [focus text])"
+    cmds:
+      - ./scripts/finder-review.sh challenge coderabbit {{.CLI_ARGS}}
+
+  review:copilot:
+    desc: "Copilot verification review (usage: task review:copilot -- [--base <ref>|--uncommitted] [focus text])"
+    cmds:
+      - ./scripts/finder-review.sh review copilot {{.CLI_ARGS}}
+
+  challenge:copilot:
+    desc: "Copilot adversarial review (usage: task challenge:copilot -- [--base <ref>|--uncommitted] [focus text])"
+    cmds:
+      - ./scripts/finder-review.sh challenge copilot {{.CLI_ARGS}}
 
   devflow:policy:
     desc: "Resolve a Dev flow v2 .devflow.toml (usage: task devflow:policy -- resolve --policy <file> [--registry <file>] [--rigor <level>] [--json])"

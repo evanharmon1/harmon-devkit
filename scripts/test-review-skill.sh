@@ -95,6 +95,69 @@ set -e
 jq -e '.outcome == "converged" and .reason == "empty_round" and .rounds_counted == 1' \
     <<<"$out" >/dev/null || fail "fixture exit verdict differs: $out"
 
+echo "==> a multi-finder logical round spends one unit of the cap, with one receipt per pass"
+# #796 acceptance: /review runs every finder in the stage's `finders` array for
+# a round, writes one receipt per finder pass, and advances the cap by ONE.
+# The two fixtures below are the dry runs for that — a Codex+CodeRabbit round
+# and a Copilot-only round.
+multi_fixture="ai/schemas/fixtures/exit/multi-finder-round-codex-and-coderabbit"
+solo_fixture="ai/schemas/fixtures/exit/copilot-only-round"
+multi_head="$(jq -r '."current-head"' "$multi_fixture/invoke.json")"
+
+policy_resolve() {
+    # --registry and --task-targets are not optional here: without them the
+    # reader exits 3 (indeterminate — nothing to cross-validate finder slugs
+    # against), and a per-run finder request that is never cross-validated is
+    # exactly the hole these cases exist to close.
+    node scripts/devflow-policy.mjs resolve --policy "$1/policy.toml" \
+        --registry "$1/registry.json" --task-targets "$1/task-targets.json" \
+        --json "${@:2}"
+}
+[ "$(jq -r '.stages.review.finders | length' <<<"$(policy_resolve "$multi_fixture")")" -eq 2 ] ||
+    fail "the multi-finder fixture does not configure two review-stage primaries"
+[ "$(find "$multi_fixture/run/passes" -name 'review-r1-*.json' | wc -l)" -eq 2 ] ||
+    fail "a two-finder round did not write one pass receipt per finder"
+[ "$(jq -r '[.receipts[] | select(.kind == "pass")] | length' "$multi_fixture/run/run.json")" -eq 2 ] ||
+    fail "a two-finder round did not record one pass receipt per finder in run.json"
+
+set +e
+multi_out="$(node scripts/dev-flow-exit.mjs --run "$multi_fixture/run" --stage review \
+    --policy "$multi_fixture/policy.toml" --current-head "$multi_head" --json)"
+status=$?
+set -e
+[ "$status" -eq 20 ] || fail "multi-finder round did not converge (exit $status): $multi_out"
+jq -e '.rounds_counted == 1' <<<"$multi_out" >/dev/null ||
+    fail "a round with two finders spent more than one unit of the review cap: $multi_out"
+
+echo "==> a single-finder round of a different family converges the same way"
+solo_head="$(jq -r '."current-head"' "$solo_fixture/invoke.json")"
+[ "$(jq -r '.stages.review.finders[0]' <<<"$(policy_resolve "$solo_fixture")")" = copilot-verification ] ||
+    fail "the Copilot-only fixture does not configure copilot-verification"
+set +e
+solo_out="$(node scripts/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
+    --policy "$solo_fixture/policy.toml" --current-head "$solo_head" --json)"
+status=$?
+set -e
+[ "$status" -eq 20 ] || fail "Copilot-only round did not converge (exit $status): $solo_out"
+jq -e '.rounds_counted == 1' <<<"$solo_out" >/dev/null ||
+    fail "a one-finder round did not spend exactly one unit of the review cap: $solo_out"
+
+echo "==> a per-run finder request adds to the config and can never remove from it"
+selection="$(policy_resolve "$solo_fixture" --add-finder review:coderabbit-verification)"
+jq -e '.stages.review.finders == ["copilot-verification", "coderabbit-verification"]' \
+    <<<"$selection" >/dev/null ||
+    fail "an added finder did not join the configured set: $selection"
+narrowed="$(policy_resolve "$multi_fixture" --select-finder review:codex-verification)"
+jq -e '.stages.review.finders == ["codex-verification", "coderabbit-verification"] and
+    (.finder_selection[0].retained_despite_selection == ["coderabbit-verification"])' \
+    <<<"$narrowed" >/dev/null ||
+    fail "a narrower per-run selection removed a config-required finder: $narrowed"
+for text in 'spends **one** unit of the stage' 'Per-run finder selection' \
+    'never remove one the configuration requires' \
+    'never repository content'; do
+    grep -Fq "$text" "$skill" || fail "review skill is missing the multi-finder rule: $text"
+done
+
 echo "==> pre-adjudication verification remains distinct from an exit"
 pre_record="$tmp/pre-adjudication"
 mkdir -p "$pre_record/passes"

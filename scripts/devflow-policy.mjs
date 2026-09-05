@@ -1304,6 +1304,29 @@ function readTaskTargets(explicitFile, taskfileDir) {
   return null;
 }
 
+// Pull every occurrence of a repeatable `--flag value` pair out of an argv,
+// returning the values and the argv without them. parseArgs is last-wins by
+// design and is shared with every other flag, so a repeatable option is
+// separated here rather than by changing how all of them parse.
+function extractRepeatable(argv, flag) {
+  const values = [];
+  const rest = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== flag) {
+      rest.push(argv[i]);
+      continue;
+    }
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("--")) {
+      values.push("");
+      continue;
+    }
+    values.push(value);
+    i++;
+  }
+  return { values, rest };
+}
+
 function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -1322,6 +1345,64 @@ function parseArgs(argv) {
     }
   }
   return args;
+}
+
+// Union the configured finders for a stage with the ones this run asked for.
+// Never removes: `configured` always comes first and always survives, which
+// is what makes an operator request incapable of reducing coverage.
+// Returns { error } on a malformed request, or { disclosures } — one entry
+// per stage the request touched, whether or not it changed anything, because
+// "you asked for a subset and got the union" is exactly the outcome that has
+// to reach the PR body.
+export function applyFinderSelection(resolved, addRequests, selectRequests) {
+  const parse = (raw, flag) => {
+    const text = String(raw ?? "");
+    const at = text.indexOf(":");
+    if (at <= 0 || at === text.length - 1) {
+      return { error: `${flag} expects <stage>:<finder-slug>, got "${text}"` };
+    }
+    const stage = text.slice(0, at);
+    const slug = text.slice(at + 1);
+    if (!STAGES.includes(stage)) {
+      return { error: `${flag} names unknown stage "${stage}" (expected one of ${STAGES.join(", ")})` };
+    }
+    return { stage, slug };
+  };
+
+  const requested = new Map();
+  for (const [flag, list] of [["--add-finder", addRequests], ["--select-finder", selectRequests]]) {
+    for (const raw of list) {
+      const parsed = parse(raw, flag);
+      if (parsed.error) return { error: parsed.error };
+      const key = parsed.stage;
+      const entry = requested.get(key) ?? { added: [], selected: [] };
+      const bucket = flag === "--add-finder" ? entry.added : entry.selected;
+      if (!bucket.includes(parsed.slug)) bucket.push(parsed.slug);
+      requested.set(key, entry);
+    }
+  }
+
+  const disclosures = [];
+  for (const [stage, entry] of requested) {
+    const configured = [...(resolved.stages?.[stage]?.finders ?? [])];
+    const wanted = [...entry.added, ...entry.selected];
+    const effective = [...configured];
+    for (const slug of wanted) if (!effective.includes(slug)) effective.push(slug);
+    // Only a --select-finder request can be narrower than the config; an
+    // --add-finder one says nothing about what to drop.
+    const retained =
+      entry.selected.length > 0 ? configured.filter((slug) => !entry.selected.includes(slug)) : [];
+    if (resolved.stages?.[stage]) resolved.stages[stage].finders = effective;
+    disclosures.push({
+      stage,
+      configured,
+      requested: wanted,
+      effective,
+      retained_despite_selection: retained,
+    });
+  }
+  if (disclosures.length > 0) resolved.finder_selection = disclosures;
+  return { disclosures };
 }
 
 function loadTomlFile(filePath) {
@@ -1412,6 +1493,25 @@ function cliResolve(args) {
   // merge-base policy's own finder references, even though the merge-base
   // rule's whole point is that branch-controlled data must never affect
   // what a self-modifying diff resolves to.
+  // ── per-run finder selection (#796) ──────────────────────────────────────
+  // An attributable operator may ask this RUN to use finders the config does
+  // not name — a second reviewer family for one risky change, say. What it
+  // can never do is take one away: the effective set is the UNION of the
+  // configured finders and the requested ones, in that order, so a request
+  // that names a subset does not narrow coverage, it just adds nothing.
+  // `--select-finder` exists to express "run exactly these" and is honoured
+  // to the extent it can be — the configured finders it omits stay in, and
+  // the fact that they stayed is DISCLOSED rather than silently applied.
+  //
+  // Applied before cross-validation on purpose: an added slug the registry
+  // does not know, or one whose surface or stage affinity forbids it here,
+  // must fail the same way a configured one would.
+  const selectionResult = applyFinderSelection(resolved, args.addFinders ?? [], args.selectFinders ?? []);
+  if (selectionResult.error) {
+    console.error(`devflow-policy: ${selectionResult.error}`);
+    return 2;
+  }
+
   const registryPath = mergeBaseDoc ? args["merge-base-registry"] : args.registry;
   let registryDoc = null;
   if (registryPath) {
@@ -1479,6 +1579,15 @@ function cliResolve(args) {
       console.log(`breadth[${resolved.breadth.policy}]: max_agent_runs=${resolved.breadth.max_agent_runs} max_parallel_agents=${resolved.breadth.max_parallel_agents}`);
     }
     console.log(`spend: ${resolved.spend.status}${resolved.spend.policy ? ` (${resolved.spend.policy})` : ""}`);
+    for (const disclosure of resolved.finder_selection ?? []) {
+      console.log(
+        `finders[${disclosure.stage}]: ${disclosure.effective.join(", ")}` +
+          ` (config: ${disclosure.configured.join(", ") || "none"}; requested this run: ${disclosure.requested.join(", ")})` +
+          (disclosure.retained_despite_selection.length > 0
+            ? ` — config-required and NOT removable: ${disclosure.retained_despite_selection.join(", ")}`
+            : ""),
+      );
+    }
     console.log(`gates[${resolved.gates.source}]: round_code=${resolved.gates.round_code} round_docs=${resolved.gates.round_docs} secret_scan=${resolved.gates.secret_scan} pre_pr=${resolved.gates.pre_pr}`);
     if (hardErrors.length > 0) {
       console.log("cross-validation errors:");
@@ -1548,10 +1657,22 @@ function main() {
   if (delegated !== null) return delegated;
 
   const cmd = argv[0];
-  const args = parseArgs(argv.slice(1));
+  // --add-finder / --select-finder are REPEATABLE, and parseArgs keeps only
+  // the last value for a repeated key. Lifting them out before it runs is
+  // what lets a run name several finders without silently dropping all but
+  // the last — a dropped finder is reduced coverage, which is the one thing
+  // per-run selection may never cause.
+  const addFinders = extractRepeatable(argv.slice(1), "--add-finder");
+  const selectFinders = extractRepeatable(addFinders.rest, "--select-finder");
+  const args = parseArgs(selectFinders.rest);
+  args.addFinders = addFinders.values;
+  args.selectFinders = selectFinders.values;
   if (cmd === "detect") return cliDetect(args);
   if (cmd === "resolve") return cliResolve(args);
-  console.error("usage: devflow-policy.mjs <detect|resolve> --policy <file> [options]");
+  console.error(
+    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--rigor <level>]\n" +
+      "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]... [--json]",
+  );
   return 2;
 }
 

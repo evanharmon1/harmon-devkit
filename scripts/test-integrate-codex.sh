@@ -121,6 +121,15 @@ repos/*/pulls/*/reviews/*)
     [ -f "$GH_FIXTURES/$file" ] || exit 95
     ;;
 repos/*/pulls/*/comments?per_page=100) file=inline.pages.json ;;
+# A requested-reviewer finder proves its trigger here. Defaults to "nobody is
+# requested" so the Codex cases are unaffected.
+repos/*/pulls/*/requested_reviewers)
+    file=requested-reviewers.json
+    [ -f "$GH_FIXTURES/$file" ] || {
+        printf '%s\n' '{"users":[],"teams":[]}'
+        exit 0
+    }
+    ;;
 # The PR object, fetched only for its author identity when the head carries
 # inline findings. It must sort AFTER the sub-resource patterns above, which it
 # would otherwise shadow.
@@ -216,6 +225,7 @@ write_defaults() {
     printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
+    rm -f "${fixtures}/requested-reviewers.json"
     jq -cn --argjson author "$pr_author_id" --arg head "$head_sha" \
         '{number:493,user:{id:$author,login:"pr-author"},head:{sha:$head}}' \
         >"${fixtures}/pr.json"
@@ -2982,5 +2992,184 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 printf '%s' "$check_out" | jq -e '.detail | test("settled: filed")' >/dev/null ||
     fail "the detail must name the surviving disposition: $check_out"
+# ── other PR-side finders (#796) ────────────────────────────────────────────
+# The same classifier, driven by another finder's registry profile instead of
+# Codex's built-in constants. The profiles are EXTRACTED FROM THE SHIPPED
+# REGISTRY rather than written here, so a registry entry that stops matching
+# what the classifier can drive fails these cases instead of only failing in
+# production against an account this repo does not have.
+registry_json="${repo_root}/agent-registry.json"
+profile_for() {
+    jq -c --arg slug "$1" '.finders[] | select(.slug == $slug)' "$registry_json" \
+        >"${fixtures}/profile-$1.json"
+    [ -s "${fixtures}/profile-$1.json" ] || fail "no registry entry for finder $1"
+    printf '%s' "${fixtures}/profile-$1.json"
+}
+finder_actor() {
+    jq -r --arg slug "$1" '.finders[] | select(.slug == $slug) | .trusted_actor_id' "$registry_json"
+}
+finder_login() {
+    jq -r --arg slug "$1" '.finders[] | select(.slug == $slug) | .trusted_actor_login' "$registry_json"
+}
+
+coderabbit_profile="$(profile_for coderabbit-cloud)"
+coderabbit_actor="$(finder_actor coderabbit-cloud)"
+coderabbit_login="$(finder_login coderabbit-cloud)"
+copilot_profile="$(profile_for copilot-cloud)"
+copilot_actor="$(finder_actor copilot-cloud)"
+copilot_login="$(finder_login copilot-cloud)"
+
+# A cycle for a comment-triggered finder that is not Codex: same shape as
+# new_cycle, with that finder's own trigger body and actor.
+new_finder_cycle() {
+    finder_slug=$1
+    finder_profile=$2
+    finder_actor_id=$3
+    finder_actor_login=$4
+    write_defaults
+    rm -f "$state"
+    jq -cn --argjson id "$finder_actor_id" --arg login "$finder_actor_login" \
+        '{id:$id,login:$login,type:"Bot"}' >"${fixtures}/actor.json"
+    trigger_body="$(jq -r '.collection.trigger.body' "$finder_profile")"
+    jq -cn \
+        --argjson id "$trigger_id" \
+        --arg created "$request_time" \
+        --arg body "$trigger_body" \
+        '{
+          id:$id,body:$body,created_at:$created,
+          issue_url:"https://api.github.com/repos/example/repo/issues/493"
+        }' >"${fixtures}/trigger.json"
+    "$helper" reserve --state "$state" --repo example/repo --pr 493 \
+        --head "$head_sha" --attempt 1 --profile "$finder_profile" >/dev/null
+    jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+        "$state" >"${state}.next"
+    mv "${state}.next" "$state"
+    "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+}
+
+run_finder_check() {
+    set +e
+    check_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$helper" check \
+        --state "$state" --actor-id "$1" --actor-login "$2" \
+        --timeout-min 15 --now "$3" 2>&1)"
+    check_rc=$?
+    set -e
+    check_watchdog "$check_rc" run_finder_check "$check_out"
+}
+
+finder_review() {
+    # One current-head review by the given actor, with the given body.
+    jq -cn --argjson id "$1" --arg login "$2" --arg head "$head_sha" \
+        --arg body "$3" --arg submitted "$4" \
+        '[[{id:900,user:{id:$id,login:$login},commit_id:$head,body:$body,submitted_at:$submitted}]]' \
+        >"${fixtures}/reviews.pages.json"
+}
+
+echo "==> the profile is pinned into the cycle and recorded on the state"
+new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
+[ "$(jq -r '.finder' "$state")" = coderabbit-cloud ] ||
+    fail "the reserved cycle did not record its finder: $(cat "$state")"
+[ "$(jq -r '.profile.verdict_mode' "$state")" = actionable-count ] ||
+    fail "the reserved cycle did not pin its verdict mode: $(cat "$state")"
+
+echo "==> a zero actionable count on the current head is clean"
+finder_review "$coderabbit_actor" "$coderabbit_login" \
+    "**Actionable comments posted: 0**
+
+<details><summary>Review details</summary>walkthrough</details>" \
+    '2026-07-31T08:00:30Z'
+run_finder_check "$coderabbit_actor" "$coderabbit_login" '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted review 900
+
+echo "==> a nonzero actionable count is findings"
+new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
+finder_review "$coderabbit_actor" "$coderabbit_login" \
+    "**Actionable comments posted: 2**" '2026-07-31T08:00:30Z'
+run_finder_check "$coderabbit_actor" "$coderabbit_login" '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> a current-head body with no count at all is indeterminate, never clean"
+new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
+finder_review "$coderabbit_actor" "$coderabbit_login" \
+    "Reviewing this pull request now." '2026-07-31T08:00:30Z'
+run_finder_check "$coderabbit_actor" "$coderabbit_login" '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
+echo "==> a surface this finder never writes to is not polled"
+new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
+finder_review "$coderabbit_actor" "$coderabbit_login" \
+    "**Actionable comments posted: 0**" '2026-07-31T08:00:30Z'
+run_finder_check "$coderabbit_actor" "$coderabbit_login" '2026-07-31T08:01:00Z'
+assert_status 0 clean
+grep -Fq 'issues/493/comments?per_page=100' "$log" &&
+    fail "the conversation-comment surface was polled for a finder whose profile does not list it"
+
+echo "==> a requested-reviewer trigger refuses a comment id and proves the request"
+write_defaults
+rm -f "$state"
+jq -cn --argjson id "$copilot_actor" --arg login "$copilot_login" \
+    '{id:$id,login:$login,type:"Bot"}' >"${fixtures}/actor.json"
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --profile "$copilot_profile" >/dev/null
+jq --arg reserved "$request_time" '.reserved_at = $reserved' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+set +e
+attach_out="$("$helper" attach --state "$state" --trigger-id "$trigger_id" 2>&1)"
+attach_rc=$?
+set -e
+[ "$attach_rc" -ne 0 ] || fail "a review-request finder accepted a trigger comment id"
+grep -Fq 'triggered by a review request' <<<"$attach_out" ||
+    fail "the refusal did not name the mechanism: $attach_out"
+set +e
+attach_out="$("$helper" attach --state "$state" --requested-at '2026-07-31T08:00:10Z' 2>&1)"
+attach_rc=$?
+set -e
+[ "$attach_rc" -ne 0 ] || fail "attach accepted a review request that was never made"
+grep -Fq 'the trigger was never made' <<<"$attach_out" ||
+    fail "the unmade-request refusal was not reported: $attach_out"
+jq -cn --arg login "$copilot_login" '{users:[{login:$login}],teams:[]}' \
+    >"${fixtures}/requested-reviewers.json"
+"$helper" attach --state "$state" --requested-at '2026-07-31T08:00:10Z' >/dev/null ||
+    fail "attach refused a review request that is pending on the PR"
+[ "$(jq -r '.trigger_comment_id' "$state")" = null ] ||
+    fail "a review-request trigger recorded a comment id"
+
+echo "==> a current-head review with no inline comments is this finder's clean result"
+finder_review "$copilot_actor" "$copilot_login" \
+    "## Pull Request Overview
+
+Reviewed 12 files." '2026-07-31T08:00:30Z'
+run_finder_check "$copilot_actor" "$copilot_login" '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted review 900
+
+echo "==> an unanswered current-head inline comment is findings for the same finder"
+jq -cn --argjson id "$copilot_actor" --arg login "$copilot_login" --arg head "$head_sha" \
+    '[[{id:950,user:{id:$id,login:$login},original_commit_id:$head,commit_id:$head,
+        pull_request_review_id:900,path:"a.txt",line:1,
+        body:"This truncates by characters but documents bytes.",
+        created_at:"2026-07-31T08:00:40Z"}]]' >"${fixtures}/inline.pages.json"
+run_finder_check "$copilot_actor" "$copilot_login" '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> no review at all is pending, never clean"
+printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
+printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
+run_finder_check "$copilot_actor" "$copilot_login" '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> a restated profile that differs from the pinned one is refused"
+new_finder_cycle coderabbit-cloud "$coderabbit_profile" "$coderabbit_actor" "$coderabbit_login"
+set +e
+swap_out="$("$helper" check --state "$state" --actor-id "$coderabbit_actor" \
+    --actor-login "$coderabbit_login" --profile "$copilot_profile" \
+    --now '2026-07-31T08:01:00Z' 2>&1)"
+swap_rc=$?
+set -e
+[ "$swap_rc" -eq 2 ] || fail "a mid-cycle profile swap was accepted (rc $swap_rc): $swap_out"
+grep -Fq 'differs from the one this cycle was reserved under' <<<"$swap_out" ||
+    fail "the profile-swap refusal was not reported: $swap_out"
+
 # Last line on purpose: every case above must have run for this to print.
-echo "integrator Codex cloud-review classifier: PASS"
+echo "integrator cloud-review classifier: PASS"

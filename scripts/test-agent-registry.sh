@@ -173,7 +173,10 @@ switch (mutation) {
     finder('codex-cloud').invocation = { type: 'taskfile-target', target: 'bogus' }
     break
   case 'local-cli-finder-with-collection':
-    finder('codex-adversarial').collection = { type: 'shepherd-checker', protocol: 'x' }
+    // A structurally COMPLETE collection, cloned from a real pr-cloud finder:
+    // a stub would now fail the schema's own required-property check first and
+    // never reach the surface/collection semantic guard this case exists for.
+    finder('codex-adversarial').collection = structuredClone(finder('codex-cloud').collection)
     break
   case 'local-cli-finder-with-trusted-actor':
     finder('codex-adversarial').trusted_actor_id = '1'
@@ -190,6 +193,46 @@ switch (mutation) {
     break
   case 'finder-role-stage-affinity-violation':
     finder('codex-adversarial').stages = ['review']
+    break
+  // ── finder collection profiles / raw shapes / severity maps (#796) ────
+  case 'finder-pr-cloud-wrong-raw-shape':
+    finder('codex-cloud').raw_shape = 'labelled-text'
+    break
+  case 'finder-local-cli-wrong-raw-shape':
+    finder('codex-adversarial').raw_shape = 'github-review-json'
+    break
+  case 'finder-duplicate-trusted-actor-id':
+    finder('coderabbit-cloud').trusted_actor_id = finder('codex-cloud').trusted_actor_id
+    break
+  case 'finder-severity-map-duplicate-match':
+    finder('codex-cloud').severity_map.rules.push({ match: 'p1', priority: 'P3', anchor: 'anywhere' })
+    break
+  case 'finder-severity-map-p3-default':
+    finder('codex-cloud').severity_map.default = 'P3'
+    break
+  case 'finder-review-comment-trigger-names-a-reviewer':
+    finder('codex-cloud').collection.trigger.reviewer_login = 'someone[bot]'
+    break
+  case 'finder-requested-reviewer-trigger-carries-a-body':
+    finder('copilot-cloud').collection.trigger.body = '@copilot review'
+    break
+  case 'finder-verdict-mode-missing-driver':
+    finder('coderabbit-cloud').collection.terminal_signals.actionable_pattern = null
+    break
+  case 'finder-verdict-mode-foreign-field':
+    finder('coderabbit-cloud').collection.terminal_signals.clean_verdict = 'all clear.'
+    break
+  case 'finder-reaction-without-its-surface':
+    finder('copilot-cloud').collection.terminal_signals.pending_reaction = 'eyes'
+    break
+  case 'finder-reaction-surface-with-no-reaction':
+    finder('coderabbit-cloud').collection.terminal_signals.pending_reaction = null
+    break
+  case 'finder-comment-surface-under-review-commit-id':
+    finder('coderabbit-cloud').collection.terminal_signals.surfaces.push('comment')
+    break
+  case 'finder-review-commit-id-without-review-surface':
+    finder('copilot-cloud').collection.terminal_signals.surfaces = ['inline']
     break
   case 'finder-null-role-with-result-schema':
     // review round 1's own finding: role:null skips the role-bound
@@ -491,6 +534,45 @@ rejects "a finder whose result_schema disagrees with its declared role" \
 rejects "a finder configured outside its declared role's stage affinity" \
     'finder-role-stage-affinity-violation' \
     "outside that role's own affinity"
+rejects "a pr-cloud finder claiming the local-cli raw output shape" \
+    'finder-pr-cloud-wrong-raw-shape' \
+    'can only produce github-review-json'
+rejects "a local-cli finder claiming the pr-cloud raw output shape" \
+    'finder-local-cli-wrong-raw-shape' \
+    'can only produce labelled-text'
+rejects "two finders sharing one trusted_actor_id" \
+    'finder-duplicate-trusted-actor-id' \
+    "two finders' evidence would be indistinguishable"
+rejects "a severity_map repeating a match in its first-match-wins list" \
+    'finder-severity-map-duplicate-match' \
+    'the later rule can never apply'
+rejects "a severity_map defaulting an unlabelled finding below P2" \
+    'finder-severity-map-p3-default' \
+    'must be one of'
+rejects "a review-comment trigger that also names a reviewer" \
+    'finder-review-comment-trigger-names-a-reviewer' \
+    'posts `body` and names no reviewer'
+rejects "a requested-reviewer trigger that also carries a comment body" \
+    'finder-requested-reviewer-trigger-carries-a-body' \
+    'names `reviewer_login` and posts no body'
+rejects "a verdict mode whose own driving signal is null" \
+    'finder-verdict-mode-missing-driver' \
+    'requires terminal_signals.actionable_pattern, which is null'
+rejects "a verdict mode carrying another mode's signal" \
+    'finder-verdict-mode-foreign-field' \
+    'does not consume terminal_signals.clean_verdict'
+rejects "a trigger reaction on a finder that never polls the reaction surface" \
+    'finder-reaction-without-its-surface' \
+    'an unpolled surface cannot make a result terminal'
+rejects "a reaction surface with no reaction named on it" \
+    'finder-reaction-surface-with-no-reaction' \
+    'there is nothing on it to read'
+rejects "a comment surface bound by a review's commit_id" \
+    'finder-comment-surface-under-review-commit-id' \
+    'a top-level comment carries no commit_id'
+rejects "review-commit-id head binding without the review surface" \
+    'finder-review-commit-id-without-review-surface' \
+    'nothing it polls carries a commit_id'
 rejects "a role-less finder that still names a real result_schema" \
     'finder-null-role-with-result-schema' \
     'a role-less finder has no role to derive an expected schema from'

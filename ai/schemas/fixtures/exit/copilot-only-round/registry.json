@@ -1,0 +1,48 @@
+{
+  "families": [
+    {
+      "slug": "claude"
+    },
+    {
+      "slug": "gpt"
+    }
+  ],
+  "harnesses": [
+    {
+      "slug": "claude-code"
+    },
+    {
+      "slug": "codex-cli"
+    }
+  ],
+  "finders": [
+    {
+      "slug": "copilot-adversarial",
+      "surface": "local-cli",
+      "stages": [
+        "challenge"
+      ]
+    },
+    {
+      "slug": "copilot-verification",
+      "surface": "local-cli",
+      "stages": [
+        "review"
+      ]
+    },
+    {
+      "slug": "coderabbit-verification",
+      "surface": "local-cli",
+      "stages": [
+        "review"
+      ]
+    },
+    {
+      "slug": "copilot-cloud",
+      "surface": "pr-cloud",
+      "stages": [
+        "integration"
+      ]
+    }
+  ]
+}

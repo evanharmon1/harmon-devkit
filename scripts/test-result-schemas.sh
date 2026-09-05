@@ -130,6 +130,13 @@ for dir in "$fixtures_dir"/*/; do
     # (task test:dev-flow-stats) renders and runs them, so it is not
     # iterated here.
     [ "$base" = "registry-trust" ] && continue
+    # finder-normalization/ holds one directory per REGISTERED FINDER: that
+    # finder's raw output in its own vendor shape, the arguments to decode it
+    # with, and the pass core it must decode to (#796; ai/schemas/README.md
+    # "Fixture layout"). Raw vendor output is not a document of any schema
+    # kind, so scripts/test-finder-normalization.sh (task
+    # test:finder-normalization) owns it and it is not iterated here.
+    [ "$base" = "finder-normalization" ] && continue
     kind="$(kind_for_dir "$base")"
     fixture_dirs_found=$((fixture_dirs_found + 1))
 

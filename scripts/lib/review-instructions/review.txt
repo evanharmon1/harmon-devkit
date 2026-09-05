@@ -1,0 +1,7 @@
+Run a VERIFICATION-CHECKPOINT review of this change: double-check that the
+implementation actually does what it claims, is internally consistent and
+consistent with this repository's existing conventions and docs, handles
+errors and edge cases, and has adequate test coverage (including regression
+tests for anything it fixes). Flag docs the change should have updated.
+Report only material, defensible findings tied to concrete files and lines —
+no style nits. If the change holds up, say so directly.

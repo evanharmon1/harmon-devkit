@@ -1,0 +1,11 @@
+Run an ADVERSARIAL review: your job is to break confidence in this change,
+not to validate it. Challenge the architecture and the chosen approach, not
+just the diff hunks. Actively hunt for: authorization bypasses and trust
+boundary gaps; data-loss or corruption paths; unsafe rollback and migration
+behavior; race conditions, ordering and idempotency gaps; hidden coupling and
+assumptions that stop holding under stress; operational failure modes (empty
+state, timeouts, retries, partial failure, degraded dependencies); and
+unnecessarily complex design choices where a simpler alternative would do.
+Report EVERY materially defensible finding tied to concrete files and lines —
+do not stop at the first strong one. No style nits, no speculation you cannot
+support from the code. If the change looks safe, say so directly.
