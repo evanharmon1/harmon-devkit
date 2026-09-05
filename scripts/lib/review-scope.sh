@@ -446,3 +446,18 @@ collect_review_diff() {
         ;;
     esac
 }
+
+# The SNAPSHOT the resolved scope describes, as "<committish> <0|1>" where the
+# flag says whether the working tree's own changes are part of it. A finder is
+# handed the diff, but it is an agent with read access to the tree it sits in,
+# so that tree has to be the one the diff is about: reviewing `--commit <old>`
+# against current HEAD, or `--uncommitted` against a tree without the
+# uncommitted files, shows it surroundings that contradict its own input.
+review_scope_snapshot() {
+    case "$review_diff_spec" in
+    commit:*) printf '%s 0' "${review_diff_spec#commit:}" ;;
+    worktree | both:*) printf 'HEAD 1' ;;
+    base:*) printf 'HEAD 0' ;;
+    *) return 1 ;;
+    esac
+}

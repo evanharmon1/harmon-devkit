@@ -237,13 +237,17 @@ requires a confidence pass to run with shell, git, network write and
 credentials denied, or the dispatch refused — and no third-party CLI will
 install that for us. So `scripts/lib/readonly-sandbox.sh` builds it:
 
-- **bubblewrap is required**, resolved from `PATH` and then from Codex's
-  bundled `codex-resources/bwrap`. Without it the dispatch is refused rather
-  than downgraded — file-mode protection alone stops nothing outside the
-  checkout, and a linked worktree's `.git` points at the real repository, so
-  `git update-ref` could alter shared refs while the scratch tree stayed
-  byte-identical.
-- a per-run scratch `git worktree` checkout, made unwritable, inside a
+- **bubblewrap where available**, resolved from `PATH` and then from Codex's
+  bundled `codex-resources/bwrap`. Where it is not, the pass **degrades rather
+  than refusing**: every other protection still applies, and the run discloses
+  `sandbox: degraded (no bubblewrap)` so a reviewer can see which boundary it
+  ran under. The residual that mode accepts, stated plainly: file-mode
+  protection alone stops nothing outside the checkout, and a linked worktree's
+  `.git` points at the real repository, so `git update-ref` could alter shared
+  refs while the scratch tree stayed byte-identical.
+- a per-run scratch checkout **at the scope being reviewed** — the target
+  commit for `--commit`, HEAD plus the working-tree patch and untracked files
+  for scopes that include uncommitted work — made unwritable, inside a
   filesystem **allowlist** — only `/usr`, the standard library and certificate
   paths, the finder's own binary directory, the real `.git` (read-only, by
   name) and the checkout itself. Nothing else is bound, so a credential
@@ -258,8 +262,11 @@ install that for us. So `scripts/lib/readonly-sandbox.sh` builds it:
   `PATH`, `HOME`, `USER`, `LOGNAME`, `TERM`, `LANG` and `TMPDIR`, so a token in
   a variable nobody thought to name is not passed either.
   `FINDER_REVIEW_SANDBOX_ENV` names one deliberately;
-- and afterwards the scratch tree **proven** unchanged — a pass that modified
-  it is refused whatever it returned.
+- and afterwards the scratch tree **proven** unchanged — same files, modes,
+  sizes and `git status` — so a pass that modified it is refused whatever it
+  returned. The same state, not an empty one: a scope carrying uncommitted
+  work makes the tree legitimately dirty, and what must not change is the
+  dirtiness rather than its absence.
 
 - the PID, IPC and UTS namespaces unshared and the controlling terminal
   dropped, so the pass cannot see or signal host processes, reach host IPC

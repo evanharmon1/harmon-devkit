@@ -184,6 +184,26 @@ set -e
 grep -Fq 'per-run selection adds unknown finder' <<<"$unknown_add" ||
     fail "an added finder is no longer registry-checked: $unknown_add"
 
+echo "==> the resolver and the exit computation agree about a per-run addition"
+# The same rule lives in two files, and they disagreed: the exit script applied
+# the selection BEFORE cross-validation, so a tight policy the resolver accepts
+# was rejected there on breadth grounds — for a finder that, by the skill's own
+# rule, consumes no breadth at all.
+node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+    --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
+    --add-finder review:codex-verification --json >/dev/null ||
+    fail "the resolver rejected the tight policy, so the comparison proves nothing"
+set +e
+tight_exit_out="$(node scripts/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
+    --policy "$tight_policy" --current-head "$solo_head" \
+    --add-finder review:codex-verification --json)"
+status=$?
+set -e
+grep -Fq 'cannot cover' <<<"$tight_exit_out" &&
+    fail "the exit computation charged a per-run finder against breadth: $tight_exit_out"
+jq -e '.reason | contains("codex-verification")' <<<"$tight_exit_out" >/dev/null ||
+    fail "the exit computation did not treat the added finder as a round slot: $tight_exit_out"
+
 echo "==> a per-run finder selection reaches the exit computation, not just the resolver"
 # devflow-policy.mjs applies --add-finder to its own in-memory result;
 # dev-flow-exit.mjs re-resolves the same policy file independently. Without the

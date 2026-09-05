@@ -1248,18 +1248,6 @@ async function main() {
     throw err;
   }
 
-  // A per-run finder selection has to reach THIS resolution too (#796
-  // challenge round 3). devflow-policy.mjs applies --add-finder to its own
-  // in-memory result; this script re-resolves the same file independently, so
-  // without the identical union its primarySlots would omit the added finder,
-  // drop that finder's pass and findings, and could report the round
-  // converged on the configured slots alone.
-  const selection = applyFinderSelection(resolved, addFinders.values, selectFinders.values);
-  if (selection.error) {
-    console.error(`dev-flow-exit: ${selection.error}`);
-    return 1;
-  }
-
   // No --registry/--task-targets here on purpose (see this file's header
   // comment) — but the registry/task-target-INDEPENDENT half of
   // cross-validation (breadth sufficiency, a confidence stage with a
@@ -1271,6 +1259,24 @@ async function main() {
   const crossErrors = crossValidate(resolved, null, null).filter((e) => !e.startsWith("indeterminate:"));
   if (crossErrors.length > 0) {
     console.error(`dev-flow-exit: policy fails cross-validation: ${crossErrors[0]}`);
+    return 1;
+  }
+
+  // A per-run finder selection has to reach THIS resolution too (#796
+  // challenge round 3): devflow-policy.mjs applies --add-finder to its own
+  // in-memory result, and this script re-resolves the same file
+  // independently, so without the identical union its primarySlots would omit
+  // the added finder, drop that finder's pass and findings, and could report
+  // the round converged on the configured slots alone.
+  //
+  // AFTER cross-validation, exactly as the reader does it (#796 challenge
+  // round G). Applying it before put the added finder inside crossValidate's
+  // breadth arithmetic, so a tight policy the RESOLVER accepts was rejected
+  // here — the same rule disagreeing with itself across two files, and the
+  // skill says confidence finders never consume [breadth].max_agent_runs.
+  const selection = applyFinderSelection(resolved, addFinders.values, selectFinders.values);
+  if (selection.error) {
+    console.error(`dev-flow-exit: ${selection.error}`);
     return 1;
   }
 

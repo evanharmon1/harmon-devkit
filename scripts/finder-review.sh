@@ -297,7 +297,10 @@ readonly_sandbox_credential_dir="${FINDER_REVIEW_COPILOT_CONFIG_DIR:-${HOME:-/no
 # would vanish before it could run. Name its directory explicitly.
 bin_path="$(command -v "$bin")"
 readonly_sandbox_extra_ro=("$(dirname "$bin_path")")
-sandbox_create >/dev/null || {
+# The snapshot the resolved scope describes — the finder reads the tree it
+# sits in, so that tree has to be the one its diff is about.
+read -r snapshot_committish snapshot_worktree <<<"$(review_scope_snapshot)"
+sandbox_create "$snapshot_committish" "$snapshot_worktree" >/dev/null || {
     echo "Refusing to run $slug: the read-only scratch checkout could not be built, and" >&2
     echo "/review requires the capability split to be installed and verified or the" >&2
     echo "dispatch refused." >&2
@@ -306,7 +309,17 @@ sandbox_create >/dev/null || {
 trap 'sandbox_cleanup' EXIT
 
 echo "==> $slug over: $scope" >&2
-echo "    (read-only scratch checkout; the tree is verified unchanged afterwards)" >&2
+if [ "${readonly_sandbox_degraded:-0}" = 1 ]; then
+    # Disclosed, not silent: a reviewer has to be able to see which boundary a
+    # pass ran under, and this one is missing the kernel sandbox. Carried into
+    # the pass receipt and the PR body's rigor line by the caller.
+    echo "    sandbox: degraded (no bubblewrap) — read-only tree, clean environment and" >&2
+    echo "    tamper check still apply; shared-ref exposure through the worktree's .git" >&2
+    echo "    pointer is the accepted residual on this host" >&2
+else
+    echo "    (read-only scratch checkout at the reviewed scope; sandbox: bubblewrap;" >&2
+    echo "    the tree is verified unchanged afterwards)" >&2
+fi
 finder_status=0
 sandbox_exec "$bin" "${args[@]}" "$instructions" || finder_status=$?
 

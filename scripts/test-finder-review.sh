@@ -191,7 +191,7 @@ echo "==> the verification catches a tree that changed, independently of the ker
     cd "$work" || exit 1
     # shellcheck source=/dev/null
     . ./scripts/lib/readonly-sandbox.sh
-    sandbox_create >/dev/null || exit 1
+    sandbox_create HEAD 1 >/dev/null || exit 1
     chmod u+w "$readonly_sandbox_dir"
     printf 'tampered\n' >"$readonly_sandbox_dir/TAMPERED.txt"
     if sandbox_verify 2>/dev/null; then
@@ -201,15 +201,74 @@ echo "==> the verification catches a tree that changed, independently of the ker
     sandbox_cleanup
 ) || fail "the verification accepted a checkout that had been modified"
 
-echo "==> no kernel sandbox means the dispatch is refused, not downgraded"
-set +e
+echo "==> no kernel sandbox degrades the pass and says so, rather than refusing"
+# Maintainer decision: bubblewrap is the default and much the stronger
+# boundary, but its absence FALLS BACK rather than refusing — with every
+# non-bwrap protection still in force and the degradation disclosed, so a
+# reviewer can see which boundary a pass ran under.
 out="$( (cd "$work" && PATH="$writer_bin:$PATH" READONLY_SANDBOX_BWRAP=/nonexistent/bwrap \
     ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
-status=$?
-set -e
-[ "$status" -eq 1 ] || fail "a pass ran without a kernel sandbox (rc $status): $out"
-grep -Fq 'no bubblewrap' <<<"$out" ||
-    fail "the missing-sandbox refusal did not name what is missing: $out"
+grep -Fq 'sandbox: degraded (no bubblewrap)' <<<"$out" ||
+    fail "the degraded fallback did not disclose itself: $out"
+grep -Eq 'Read-only file system|Permission denied' <<<"$out" ||
+    fail "the degraded fallback left the scratch checkout writable: $out"
+[ ! -e "$work/TAMPERED.txt" ] ||
+    fail "the degraded fallback let a write reach the real worktree"
+
+echo "==> the degraded path still fails a tampered tree"
+(
+    cd "$work" || exit 1
+    # shellcheck source=/dev/null
+    . ./scripts/lib/readonly-sandbox.sh
+    READONLY_SANDBOX_BWRAP=/nonexistent/bwrap sandbox_create HEAD 1 >/dev/null || exit 1
+    [ "$readonly_sandbox_degraded" = 1 ] || {
+        sandbox_cleanup
+        exit 1
+    }
+    chmod u+w "$readonly_sandbox_dir"
+    printf 'tampered\n' >"$readonly_sandbox_dir/TAMPERED.txt"
+    if sandbox_verify 2>/dev/null; then
+        sandbox_cleanup
+        exit 1
+    fi
+    sandbox_cleanup
+) || fail "the degraded path accepted a checkout that had been modified"
+
+echo "==> the scratch tree is the scope's own snapshot, not always HEAD"
+# The finder is handed the diff, but it reads the tree it sits in — so that
+# tree has to be the one the diff is about. --uncommitted must show the
+# uncommitted content, and --commit <older> must show that commit.
+scope_bin="$tmp/scope-bin"
+mkdir -p "$scope_bin"
+cat >"$scope_bin/copilot" <<'EOF'
+#!/usr/bin/env bash
+echo "SEEN=$(cat src/app.txt 2>/dev/null)"
+echo "P1 src/app.txt:1 — a finding"
+EOF
+chmod +x "$scope_bin/copilot"
+out="$( (cd "$work" && PATH="$scope_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+grep -Fq 'SEEN=changed' <<<"$out" ||
+    fail "the scratch tree did not carry the uncommitted content the diff describes: $out"
+base_sha="$(git -C "$work" rev-parse HEAD)"
+# The base commit carries the copied runner and its libraries, so the prompt is
+# larger than the default refusal bound; the bound is exercised on its own
+# elsewhere and is not what this case is about.
+out="$( (cd "$work" && PATH="$scope_bin:$PATH" FINDER_REVIEW_MAX_PROMPT_BYTES=2000000 \
+    ./scripts/finder-review.sh challenge copilot --commit "$base_sha") 2>&1)"
+grep -Fq 'SEEN=initial' <<<"$out" ||
+    fail "the scratch tree for --commit did not carry that commit's content: $out"
+
+echo "==> an untracked file in scope is present in the scratch tree"
+printf 'brand new\n' >"$work/src/added.txt"
+cat >"$scope_bin/copilot" <<'EOF'
+#!/usr/bin/env bash
+echo "UNTRACKED=$(cat src/added.txt 2>/dev/null)"
+echo "P1 src/added.txt:1 — a finding"
+EOF
+out="$( (cd "$work" && PATH="$scope_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+rm -f "$work/src/added.txt"
+grep -Fq 'UNTRACKED=brand new' <<<"$out" ||
+    fail "an untracked file in scope was missing from the scratch tree: $out"
 
 echo "==> a well-behaved pass in the sandbox is accepted and its output returned"
 quiet_bin="$tmp/quiet-bin"

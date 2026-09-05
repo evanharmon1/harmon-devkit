@@ -34,9 +34,11 @@
 #      capability could make authenticated remote writes or exfiltrate;
 #   5. the environment stripped of write credentials and of git's credential
 #      helpers, so what does remain has nothing to authenticate with;
-#   6. and afterwards the scratch tree is PROVEN unchanged — `git status`
-#      clean, no untracked files, same file list — or the pass fails as
-#      tampered.
+#   6. and afterwards the scratch tree is PROVEN unchanged — the same file
+#      list, modes and sizes, and the same `git status` — or the pass fails as
+#      tampered. It is the same STATE, not an empty one: a scope that includes
+#      uncommitted work makes the tree legitimately dirty, so what must not
+#      change is the dirtiness rather than its absence.
 #
 # (6) is what makes this "verified" rather than "configured": whatever the CLI
 # was allowed to do, a pass is only accepted if the tree it ran against is
@@ -85,20 +87,29 @@ sandbox_resolve_bwrap() {
     return 1
 }
 
+# sandbox_create COMMITTISH INCLUDE_WORKTREE
+# Builds the scratch checkout at the snapshot the resolved scope describes.
 sandbox_create() {
-    local head
-    sandbox_resolve_bwrap || {
-        echo "readonly-sandbox: no bubblewrap (bwrap) on PATH or in Codex's bundled resources." >&2
-        echo "readonly-sandbox: a confidence pass may not run on file-mode protection alone —" >&2
-        echo "readonly-sandbox: a linked worktree's .git points at the real repository, so" >&2
-        echo "readonly-sandbox: git could still alter shared refs while the scratch tree looked" >&2
-        echo "readonly-sandbox: untouched. Install bubblewrap, or run this finder on the PR side." >&2
+    local head include_worktree patch
+    head="$(git rev-parse --verify --quiet "${1:-HEAD}^{commit}" 2>/dev/null)" || head=
+    include_worktree="${2:-0}"
+    [ -n "$head" ] || {
+        echo "readonly-sandbox: cannot resolve ${1:-HEAD} to build a scratch checkout" >&2
         return 1
     }
-    head="$(git rev-parse HEAD 2>/dev/null)" || {
-        echo "readonly-sandbox: cannot resolve HEAD to build a scratch checkout" >&2
-        return 1
-    }
+    # Bubblewrap is the default and by far the stronger boundary, but its
+    # absence DEGRADES the pass rather than refusing it (maintainer decision,
+    # superseding the earlier refuse-without-it rule). Every non-bwrap
+    # protection still applies — the scope-accurate scratch tree with its write
+    # bits removed, the real .git left unwritable, the `env -i` allowlist, the
+    # stripped credentials and the post-run tamper check — and the caller
+    # DISCLOSES the degradation so a reviewer can see which boundary a pass ran
+    # under. The residual it accepts is stated plainly: without the kernel
+    # sandbox a linked worktree's .git still points at the real repository, so
+    # `git update-ref` could alter shared refs while the scratch tree itself
+    # looked untouched.
+    readonly_sandbox_degraded=0
+    sandbox_resolve_bwrap || readonly_sandbox_degraded=1
     readonly_sandbox_dir="$(mktemp -d -t finder-readonly-XXXXXX)" || return 1
     # The directory has to be EMPTY for `git worktree add`, and mktemp made it.
     rmdir "$readonly_sandbox_dir" || return 1
@@ -115,6 +126,29 @@ sandbox_create() {
         sandbox_cleanup
         return 1
     }
+    # The working tree's own changes, where the resolved scope includes them.
+    # Applied BEFORE the read-only pass below, so what the finder can look at
+    # matches the diff it was given.
+    if [ "$include_worktree" = 1 ]; then
+        patch="$(mktemp)" || sandbox_create_failed || return 1
+        git diff --binary HEAD >"$patch" 2>/dev/null || true
+        if [ -s "$patch" ]; then
+            git -C "$readonly_sandbox_dir" apply --binary --whitespace=nowarn "$patch" 2>/dev/null || {
+                rm -f "$patch"
+                echo "readonly-sandbox: could not reproduce the working-tree changes in the scratch checkout" >&2
+                sandbox_create_failed
+                return 1
+            }
+        fi
+        rm -f "$patch"
+        # Untracked files are part of the scope the manifest claims, so they
+        # are part of the tree the finder may read.
+        while IFS= read -r -d '' untracked; do
+            [ -n "$untracked" ] || continue
+            mkdir -p "$readonly_sandbox_dir/$(dirname "$untracked")" 2>/dev/null || continue
+            cp -p "$untracked" "$readonly_sandbox_dir/$untracked" 2>/dev/null || true
+        done < <(git ls-files -z --others --exclude-standard)
+    fi
     # `a-w` covers the owner too, which is the point: this process runs as the
     # same user the CLI will.
     chmod -R a-w "$readonly_sandbox_dir" 2>/dev/null || true
@@ -135,6 +169,14 @@ sandbox_create() {
 sandbox_snapshot() {
     find "$readonly_sandbox_dir" -mindepth 1 -not -path "$readonly_sandbox_dir/.git" \
         -printf '%y %m %s %P\n' 2>/dev/null | LC_ALL=C sort
+    # git's own view, folded into the same baseline rather than asserted empty:
+    # a scope that includes uncommitted work makes the scratch tree
+    # legitimately dirty, so what must not change is the dirtiness, not its
+    # absence. --no-optional-locks so the check cannot write an index into a
+    # tree it is asserting is unchanged.
+    printf 'git-status\n'
+    git --no-optional-locks -C "$readonly_sandbox_dir" status --porcelain \
+        --untracked-files=all 2>/dev/null | LC_ALL=C sort
 }
 
 # sandbox_exec CMD... — run a command with the scratch tree as its working
@@ -159,7 +201,7 @@ readonly_sandbox_base_paths=(
 readonly_sandbox_env_allow=(PATH HOME USER LOGNAME TERM LANG TMPDIR)
 
 sandbox_exec() {
-    local -a wrapper env_args
+    local -a wrapper
     local real_git_dir home_dir path extra name
     # The MAIN repository's git dir, which the scratch worktree's `.git` file
     # points at. Bound read-only by name: this is the specific path that turned
@@ -174,6 +216,16 @@ sandbox_exec() {
     # point of dispatching it — so this bounds writes, credentials, processes
     # and IPC, not the model call. That residual is stated here, in the header
     # above, and in docs/guides/codex-review.md rather than left implicit.
+    if [ "${readonly_sandbox_degraded:-0}" = 1 ]; then
+        # No kernel sandbox. Everything else still applies: the tree is
+        # read-only, the environment is an allowlist below, and the tamper
+        # check still runs. The caller discloses this.
+        (
+            cd "$readonly_sandbox_dir" || exit 1
+            sandbox_clean_env "$@"
+        )
+        return $?
+    fi
     wrapper=("$readonly_sandbox_bwrap" --dev /dev --proc /proc --tmpfs /tmp
         --unshare-pid --unshare-ipc --unshare-uts --new-session)
     for path in "${readonly_sandbox_base_paths[@]}"; do
@@ -201,9 +253,20 @@ sandbox_exec() {
     wrapper+=(--ro-bind "$readonly_sandbox_dir" "$readonly_sandbox_dir"
         --chdir "$readonly_sandbox_dir" --die-with-parent)
 
-    # `env -i` first: the process starts with NOTHING and is handed back only
-    # what is named. GIT_CONFIG_* are set rather than unset so that even a
-    # config reachable through the binds cannot supply a credential helper.
+    (
+        cd "$readonly_sandbox_dir" || exit 1
+        sandbox_clean_env "${wrapper[@]}" "$@"
+    )
+}
+
+# Runs its arguments with an environment allowlist over `env -i`: the process
+# starts with NOTHING and is handed back only what is named. GIT_CONFIG_* are
+# SET rather than unset so that even a config reachable through the binds
+# cannot supply a credential helper. Shared by the sandboxed and degraded
+# paths, so the two cannot drift apart.
+sandbox_clean_env() {
+    local -a env_args
+    local name
     env_args=(env -i
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
         GIT_TERMINAL_PROMPT=0)
@@ -217,10 +280,7 @@ sandbox_exec() {
             env_args+=("$name=${!name}")
         done <<<"${FINDER_REVIEW_SANDBOX_ENV//:/$'\n'}"
     fi
-    (
-        cd "$readonly_sandbox_dir" || exit 1
-        "${env_args[@]}" "${wrapper[@]}" "$@"
-    )
+    "${env_args[@]}" "$@"
 }
 
 # Proves the scratch tree is exactly as it was handed over. Returns non-zero
@@ -236,12 +296,6 @@ sandbox_verify() {
         status=1
     fi
     rm -f "$after"
-    # --no-optional-locks so the check itself cannot write an index into a
-    # tree it is asserting is unchanged.
-    if [ -n "$(git --no-optional-locks -C "$readonly_sandbox_dir" status --porcelain --untracked-files=all 2>/dev/null)" ]; then
-        echo "readonly-sandbox: the scratch checkout is dirty after the pass" >&2
-        status=1
-    fi
     return "$status"
 }
 
