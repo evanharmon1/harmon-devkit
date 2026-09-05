@@ -129,6 +129,24 @@ out="$( (cd "$work" && PATH="$creds_bin:$PATH" ./scripts/finder-review.sh challe
 ! grep -q '^VISIBLE ' <<<"$out" ||
     fail "host credentials were visible inside the sandbox: $(grep '^VISIBLE ' <<<"$out")"
 
+echo "==> the pass cannot see or signal host processes"
+# The namespaces the model call does not need are unshared. Network is not,
+# and that residual is documented rather than silently relied on.
+psbin="$tmp/ps-bin"
+mkdir -p "$psbin"
+cat >"$psbin/copilot" <<'EOF'
+#!/usr/bin/env bash
+# In its own PID namespace this sees only itself and its children.
+echo "PIDS=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)"
+echo "P1 src/app.txt:1 — a finding"
+EOF
+chmod +x "$psbin/copilot"
+out="$( (cd "$work" && PATH="$psbin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+pids="$(sed -n 's/^PIDS=//p' <<<"$out")"
+[ -n "$pids" ] || fail "the process-visibility probe did not run: $out"
+[ "$pids" -le 5 ] ||
+    fail "the pass could see $pids host processes; the PID namespace was not unshared"
+
 echo "==> the verification catches a tree that changed, independently of the kernel"
 # The two defences are separate on purpose: this one exercises the proof, by
 # mutating the checkout from OUTSIDE the sandbox (where the kernel denial does

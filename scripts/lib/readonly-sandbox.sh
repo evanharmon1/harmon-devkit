@@ -106,6 +106,15 @@ sandbox_create() {
         echo "readonly-sandbox: could not create the scratch checkout" >&2
         return 1
     }
+    # From here on the worktree is REGISTERED, so every failure path has to
+    # unregister it. The caller installs its cleanup trap only after this
+    # function returns, so a failure in between would otherwise leave a linked
+    # worktree behind permanently — consuming disk and tripping later worktree
+    # operations.
+    sandbox_create_failed() {
+        sandbox_cleanup
+        return 1
+    }
     # `a-w` covers the owner too, which is the point: this process runs as the
     # same user the CLI will.
     chmod -R a-w "$readonly_sandbox_dir" 2>/dev/null || true
@@ -113,8 +122,8 @@ sandbox_create() {
     # ones the pass will see. Taken before, every single run would compare
     # unequal on mode alone and the tamper check would fire on clean passes —
     # which is a check that proves nothing.
-    readonly_sandbox_manifest="$(mktemp)" || return 1
-    sandbox_snapshot >"$readonly_sandbox_manifest" || return 1
+    readonly_sandbox_manifest="$(mktemp)" || sandbox_create_failed || return 1
+    sandbox_snapshot >"$readonly_sandbox_manifest" || sandbox_create_failed || return 1
     printf '%s' "$readonly_sandbox_dir"
 }
 
@@ -139,7 +148,16 @@ sandbox_exec() {
     # refs are still reachable", so it is named rather than left implicit.
     real_git_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || real_git_dir=
     home_dir="${HOME:-/nonexistent}"
-    wrapper=("$readonly_sandbox_bwrap" --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp)
+    # Namespaces the model call does not need are unshared: the finder has no
+    # business seeing host processes, signalling same-user processes, reaching
+    # host IPC endpoints, or holding the controlling terminal (--new-session
+    # closes the TIOCSTI input-injection route). The NETWORK namespace is
+    # deliberately kept — the CLI must reach its model, which is the whole
+    # point of dispatching it — so this bounds writes, credentials, processes
+    # and IPC, not the model call. That residual is stated here, in the header
+    # above, and in docs/guides/codex-review.md rather than left implicit.
+    wrapper=("$readonly_sandbox_bwrap" --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp
+        --unshare-pid --unshare-ipc --unshare-uts --new-session)
     [ -z "$real_git_dir" ] || wrapper+=(--ro-bind "$real_git_dir" "$real_git_dir")
     # HOME is replaced wholesale, then exactly one credential path is bound
     # back. Everything else a home directory holds — ~/.config/gh, ~/.aws, npm

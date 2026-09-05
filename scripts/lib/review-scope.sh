@@ -428,7 +428,14 @@ collect_review_diff() {
     both:*)
         local base="${review_diff_spec#both:}"
         printf 'Committed changes (git diff %s...HEAD):\n' "$base"
-        git diff --ignore-submodules=none "${base}...HEAD"
+        # `|| return 1` on the COMMITTED half too. Without it a transient git
+        # failure here was swallowed — this function is called from an `||`
+        # list, so `set -e` does not apply — and the later worktree half's
+        # success became the function's status. The prompt then said both
+        # halves were present while carrying only one, which is the same
+        # partial-review-reads-as-clean failure the empty-scope refusals exist
+        # to prevent.
+        git diff --ignore-submodules=none "${base}...HEAD" || return 1
         printf '\nUncommitted changes (git diff HEAD, plus untracked files):\n'
         git diff --ignore-submodules=none HEAD || return 1
         collect_untracked_diff || return 1

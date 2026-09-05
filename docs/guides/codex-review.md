@@ -255,10 +255,17 @@ install that for us. So `scripts/lib/readonly-sandbox.sh` builds it:
 - and afterwards the scratch tree **proven** unchanged — a pass that modified
   it is refused whatever it returned.
 
+- the PID, IPC and UTS namespaces unshared and the controlling terminal
+  dropped, so the pass cannot see or signal host processes, reach host IPC
+  endpoints, or inject input into your terminal.
+
 Nothing here depends on the vendor's own capability model or on your
-configuration being what you think it is. What it does not bound is network
-egress — the CLI has to reach its model — so this denies writes and credential
-access, not the model call; the finder is handed the diff either way. The vendor invocation is overridable without editing the runner,
+configuration being what you think it is. **The one capability deliberately
+left open is network egress**: the CLI has to reach its model, which is the
+entire reason for dispatching it. So the boundary denies writes, credentials,
+processes and IPC — not the model call, and not what the finder chooses to
+send it. The finder is handed the diff either way, and that is the residual
+this design accepts knowingly rather than one it overlooks. The vendor invocation is overridable without editing the runner,
 so a vendor flag change is a config edit: `FINDER_REVIEW_COPILOT_ARGS` and
 `FINDER_REVIEW_COPILOT_BIN` (`FINDER_REVIEW_DRY_RUN=1` prints the resolved
 command and prompt without invoking anything).
