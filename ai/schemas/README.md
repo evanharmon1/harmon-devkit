@@ -1166,9 +1166,10 @@ plus optional `expect.orphan_count` / `expect.forged_count` for the report's
 unlisted-comment classification).
 Adding a case is one directory; the runner discovers the corpus and asserts
 every fixture's own expectation, and fails if fewer cases than the shipped
-corpus (thirteen at this writing; the floor in
-`scripts/test-dev-flow-stats.sh` moves with it) are found. The shipped
-cases cover the evidence delta spec's three named
+corpus are found (the floor is the `corpus_count` check in
+`scripts/test-dev-flow-stats.sh`, raised with every case added — the
+directory listing, not this paragraph, is the count). The shipped cases
+cover the evidence delta spec's three named
 scenarios (missing/empty allowlist fails closed; an actor added after
 posting does not retroactively authenticate; an actor removed after
 posting does not invalidate), plus a malformed allowlist, no revision in
