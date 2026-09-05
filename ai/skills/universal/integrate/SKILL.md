@@ -16,23 +16,36 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(git branch --show-curr
 
 **Arguments:** $ARGUMENTS
 
-**Transitional.** This skill's readiness gate (`assets/readiness-gate.sh`)
-requires a real dev-flow-v2 record directory — `run.json` plus
-`adjudications/*.json` — as `--record`. Nothing shipped today writes one:
-that record is `/review`'s (harmon-devkit#638, wave 2b) own output, and this
-gate is v2-only by design (`openspec/changes/dev-flow-v2` task 5.1;
-harmon-devkit#604: successor skills ship v2-only, consumers stay on the
-shipped procedure until their pipeline migrates — no compat mode is added
-here for that transition, per the delta spec). **Until #638 and the
-`.devflow.toml` policy migration (harmon-devkit#711) land, shepherd a draft
-PR with the shipped procedure instead** — the vendored `shepherd` skill and
-its own `readiness-gate.sh` from the last release tag that shipped them
-(harmon-devkit v0.39.0, `ai/skills/universal/shepherd/`; that skill reads
-deferred findings from the PR body directly, no record directory). This
-change retires that directory and its `.agents/skills/shepherd` link, so a
-consumer that still needs the fallback pins that tag rather than `main`.
-Do not fabricate a `run.json` to route around this; there is nothing yet
-that would keep it truthful.
+**Version 2 only.** This skill and its readiness gate
+(`assets/readiness-gate.sh`) operate under a `schema_version = 2`
+`.devflow.toml` and under nothing else (`openspec/changes/dev-flow-v2` task
+5.1; harmon-devkit#604). The gate requires a real dev-flow-v2 record
+directory — `run.json` plus `adjudications/*.json` — as `--record`; `/review`
+(harmon-devkit#638) writes it, so that half of the transition is done. What
+can still be missing is the policy shape, and the answer to a policy that has
+not migrated is a **refusal, not a fallback**: the reader stops with one
+actionable message — run `copier update` against the harmon-init release that
+ships the version-2 template, and keep `.skills-sync.yaml` pinned to the last
+pre-v2 skills release until it has. No compatibility mode is added here and
+none is coming, per the delta spec.
+
+**A refusal is not a dead end, and reporting it is not the whole answer.**
+Say which message the reader gave, then hand the stage to whatever the
+repository's own `AGENTS.md` states for integrating a draft PR — that file is
+the policy and this skill is only the procedure, so its single-stage
+integration bullet is the path until the policy migrates. A consumer that has
+not advanced its pin still has the retired single-stage skill at the pin it is
+on, which is exactly why the pin waits for the policy;
+`scripts/consumer-pin-audit.sh` is the check that the two agree. Only where
+`AGENTS.md` names no such path is the refusal itself the stopping point, and
+then it is a blocker naming the migration, not a stall.
+
+This is the delta spec's own "the tooling's own repository has not migrated"
+case, and harmon-devkit is in it: its `.devflow.toml` is still legacy and
+migrates only through the maintainer's `copier update` (harmon-devkit#711), so
+this skill refuses there by design while its own suites run against fixture
+policies. Do not fabricate a `run.json` to route around any of this; there is
+nothing that would keep it truthful.
 
 Opening a draft PR is not the end. Integrate it: dispatch the integrator agent
 to settle CI and drive the Codex cloud-review cycle (see
@@ -139,76 +152,81 @@ bounds how many current-head Codex cloud-review cycles this stage may drive;
 the **remediation cap** bounds how many fix pushes it may make. A Codex cycle
 that a fix push directly answers is not a second charge against remediation —
 one fix push, however many findings (Codex's or a human reviewer's) it
-answers, is one remediation unit. **Check the config shape first** (gauntlet's
-`SKILL.md` §2 "Config shape" step — the same detection, applied to this
-stage's own fields). `.devflow.toml` ships in two shapes, and skills-sync and
-the harmon-init copier update run on independent cadences, so a repo can have
-this skill before its file has migrated.
+answers, is one remediation unit.
 
-- **Migrated shape** (a top-level `rigor_order` exists and `[rigor.<level>]`
-  names its caps through a `rounds` pointer into `[rounds.<policy>]`): read
-  `[rounds.<the resolved policy>].integration` and `.remediation` as two
-  independent fields. A `rigor:*` label conflict resolves to the single
-  strongest level by `rigor_order`.
-- **Legacy shape** (`[rigor.<level>]` carries `challenge`, `review`,
-  `shepherd`, and `min_rounds` directly — no `rounds` pointer, no
-  `[rounds.*]` tables, no `rigor_order`): the resolved level's own `shepherd`
-  field bounded fix pushes and no-change cycles together under the old
-  single-stage design, so decode it as **one shared budget**: set both
-  `integration` and `remediation` to that same `shepherd` value, charging one
-  unit per legacy round (one fix push or one no-change adjudication cycle,
-  never both for the same round), exactly as the migrated reader's own
-  legacy-decode contract states — so a repo cannot gain rounds, or cap
-  earlier, merely because this stage now counts two things instead of one. A
-  label conflict resolves **per stage, to the highest cap present**.
-- **Where a merge-base-resolving config reader (`scripts/devflow-policy.mjs`)
-  exists in this checkout, try it first** — rather than hand-decoding either
-  shape yourself; it is the one place this resolution is implemented once,
-  and once the operating `.devflow.toml` is schema_version 2 its JSON names
-  the two caps directly as `rounds.integration` and `rounds.remediation`.
-  **On an ordinary review** (the change under review does not touch
-  `scripts/devflow-policy.mjs`, `.devflow.toml`, or `agent-registry.json`):
-  `task devflow:policy -- resolve --policy .devflow.toml --json` (add
-  `--rigor <level>` for an explicit override) is the whole invocation. **When
-  the change under review touches any of those three files, that bare
-  invocation resolves the BRANCH's own (possibly self-lowered) copy** — the
-  reader's self-modification protection only activates when `--closure`
-  and `--merge-base-policy` are explicitly supplied (Codex cloud-review
-  cycle on PR harmon-devkit#758). Materialize the merge-base copies first,
-  the same way gauntlet's own entry gate does for `.devflow.toml` alone:
+**Resolve them through the policy reader, and never hand-decode a shape.**
+`scripts/devflow-policy.mjs` is the one implementation of this resolution; a
+`schema_version = 2` `.devflow.toml` names the two caps directly as
+`rounds.integration` and `rounds.remediation`. This skill operates under
+version 2 and under nothing else — it carries no interpreter for the pre-v1
+legacy shape or the v1 shape, and never resolves either by hand
+(harmon-devkit#604). The reader is the one place shape detection lives, and
+its refusal names the markers it actually found, so no procedure here has to
+restate an older shape's vocabulary in order to reject it.
 
-  ```sh
-  base="$(git merge-base HEAD "$base_ref")"           # $base_ref from §1
-  mb_dir="$(mktemp -d)"
-  mkdir -p "$mb_dir/scripts"
-  git show "$base:scripts/devflow-policy.mjs" >"$mb_dir/scripts/devflow-policy.mjs"
-  git show "$base:.devflow.toml" >"$mb_dir/devflow.toml"
-  task devflow:policy -- resolve --closure "$mb_dir" \
-      --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" --json
-  ```
+**On an ordinary review** — the change under review does not touch
+`scripts/devflow-policy.mjs`, `.devflow.toml`, or `agent-registry.json` —
+`task devflow:policy -- resolve --policy .devflow.toml --json` (add
+`--rigor <level>` for an explicit override) is the whole invocation.
 
-  `--closure <dir>` re-execs the trusted `<dir>/scripts/devflow-policy.mjs`
-  before this checkout's own (possibly branch-modified) copy runs any of its
-  own code — the reader's self-modification boundary protects the reader
-  itself, not only the data it reads, since a branch could otherwise lower
-  its own gate by editing the resolution code instead of the config. A
-  merge base predating `scripts/devflow-policy.mjs`'s own existence has
-  nothing to materialize into `$mb_dir/scripts/`; treat that the same as the
-  reader not existing yet, below. **The reader's own shape
-  detection, not merely its presence, decides which path applies**: it
-  refuses non-zero on a legacy-shaped file rather than resolving one (the
-  legacy rules above are exactly its own documented legacy-decode contract,
-  hand-applied), so "the reader exists but refuses" and "the reader does not
-  exist yet" both mean the same thing here — apply the legacy-shape rules
-  above directly, and do not block on either the file migrating or the
-  reader landing. The legacy path is temporary: harmon-devkit#604 tracks
-  dropping it once every consumer has migrated, at which point this bullet's
-  fallback becomes dead code to delete, not a shape to keep detecting.
+**When the change under review touches any of those three files, that bare
+invocation resolves the BRANCH's own (possibly self-lowered) copy** — the
+reader's self-modification protection only activates when `--closure` and
+`--merge-base-policy` are explicitly supplied (Codex cloud-review cycle on
+PR harmon-devkit#758). Materialize the merge-base copies first:
 
-Either way, an edit to `.devflow.toml` itself resolves every parameter from
-the merge-base copy. Announce both resolved values the way gauntlet announces
-its caps ("integration ≤`<n>`, remediation ≤`<n>`"), and disclose either one
-in the PR body when it is off-default.
+```sh
+base="$(git merge-base HEAD "$base_ref")"           # $base_ref from §1
+mb_dir="$(mktemp -d)"
+mkdir -p "$mb_dir/scripts"
+git show "${base}:scripts/devflow-policy.mjs" >"$mb_dir/scripts/devflow-policy.mjs"
+git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml"
+task devflow:policy -- resolve --closure "$mb_dir" \
+    --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" --json
+```
+
+`--closure <dir>` re-execs the trusted `<dir>/scripts/devflow-policy.mjs`
+before this checkout's own (possibly branch-modified) copy runs any of its
+own code — the reader's self-modification boundary protects the reader
+itself, not only the data it reads, since a branch could otherwise lower its
+own gate by editing the resolution code instead of the config. A merge base
+predating the reader's own existence has nothing to materialize into
+`$mb_dir/scripts/`, and the reader refuses rather than falling back to the
+branch copy; that is a blocker, not a shape to work around.
+
+The merge base is the **one** place an older shape is ever read, and only by
+the reader's own historical decoder — an immutable commit cannot be migrated,
+so a change that migrates the policy still resolves its caps from what the
+older copy actually declared. A legacy or v1 merge base's single `shepherd`
+budget decodes as one shared budget: `integration` and `remediation` both take
+that value and charge one unit per legacy round (one fix push **or** one
+no-change adjudication cycle, never both for the same round), so a migration
+run can neither gain rounds nor cap earlier than the older policy allowed.
+That is the decoder's business, reported in the resolved JSON; it is not a
+recipe for this skill to apply, and the operating policy is version 2 either
+way.
+
+**A non-version-2 operating policy is a refusal, not a fallback.** The reader
+exits 1 with one actionable message — `copier update`, the harmon-init release
+that ships the `schema_version = 2` template, and the instruction to keep
+`.skills-sync.yaml` pinned to the last pre-v2 skills release until the file
+has migrated. Report that message and leave this skill, per the preamble: the
+repository's own `AGENTS.md` integration bullet is the path until the policy
+migrates, and only where it names none is the refusal itself a blocker. What
+is never permitted either way is to hand-decode the file, guess caps, or
+advance the pin to get past it. `task devflow:policy -- detect --policy .devflow.toml --json` answers
+the same question on its own (exit 0 version 2, exit 1 an older or mixed
+shape with the message in `migration`, exit 2 unreadable), and
+`scripts/consumer-pin-audit.sh` is the standing check that a repository's
+vendored-skill pin and its policy shape agree.
+
+A `rigor:*` label conflict resolves to the single strongest level by
+`rigor_order`.
+
+An edit to `.devflow.toml` itself resolves every parameter from the
+merge-base copy, per the closure recipe above. Announce both resolved values
+the way `/review` announces its own ("integration ≤`<n>`, remediation
+≤`<n>`"), and disclose either one in the PR body when it is off-default.
 
 **A resolved integration cap of 0 does not skip the readiness gate — it
 waives only that gate's Codex-verdict condition.** Every other condition
@@ -237,9 +255,10 @@ this stop condition 2 — never as a direct consequence of integration being
 **A resolved remediation cap of 0 means no fix push is ever available.** The
 cap bounds fix *pushes* specifically, not adjudication — a finding resolved
 by reply, decline, or filing is still settled here, and whether that
-no-change cycle charges the cap is the shape question the round-accounting
-rule below answers (never under a migrated policy; one shared unit under the
-legacy decode). What a 0 cap forbids is the push itself: the moment any
+no-change cycle charges the cap is answered by the resolved policy's own
+`rounds.shared_budget` flag, per the round-accounting rule below (absent or
+false, it charges nothing; true, one shared unit). What a 0 cap forbids is
+the push itself: the moment any
 finding's disposition would be `fix`, that is stop condition 2 on the spot,
 whatever round count has been reached by then — there was never a push
 available to make it.
@@ -254,18 +273,21 @@ follow-up issue.
 
 **Round accounting (read this first):** one round = one fix push, **or**
 one no-change adjudication cycle (everything rejected/external — replies
-posted, nothing to fix — then back to watching). What a round **charges**
-depends on the config shape resolved above. Under a **migrated** policy,
-only a fix push charges the **remediation cap** — the v2 contract defines
-that cap over integration-stage fix pushes alone (`specs/dev-flow-v2.md`
+posted, nothing to fix — then back to watching). What a round **charges** is
+a field of the resolved policy, never a shape this skill detects for itself.
+Ordinarily — `rounds.shared_budget` absent or `false` — only a fix push
+charges the **remediation cap**, because the v2 contract defines that cap
+over integration-stage fix pushes alone (`specs/dev-flow-v2.md`
 § Configuration: "`remediation` independently bounds integration-stage fix
 pushes"), so a no-change cycle is a numbered round for the ledger's
 purposes but spends nothing, and two successive batches of declined human
-comments can never cap the stage on their own. Under the **legacy** decode,
-the one shared budget charges one unit per round of either kind, exactly as
-the old single-stage `shepherd` cap did. Count rounds explicitly against
-the **remediation cap** (say "round 2 of `<remediation cap>`"; under a
-migrated policy the counter is the number of pushes charged so far, so a
+comments can never cap the stage on their own. When the reader returns
+`rounds.shared_budget: true` — which only the merge-base decode of a change
+that migrates the policy itself ever produces — the one shared budget charges
+one unit per round of either kind, exactly as the older single-stage
+`shepherd` cap did. Count rounds explicitly against
+the **remediation cap** (say "round 2 of `<remediation cap>`"; without a
+shared budget the counter is the number of pushes charged so far, so a
 no-change cycle closes with it unchanged) — dispatching the integrator agent
 again for another look, or another Codex cycle, is never itself a round;
 only a fix push or a no-change cycle is. The counter only ever increases,

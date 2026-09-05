@@ -77,6 +77,7 @@ tasks:
       - task: test:render-dev-flow
       - task: test:retro-run-report
       - task: test:review-skill
+      - task: test:consumer-pin-audit
       - task: test:registry-drift
       - task: test:registry-docs
       - task: test:label-registry
@@ -119,6 +120,11 @@ tasks:
     desc: Warn when AGENTS.md exceeds Codex's default 32 KiB discovery budget
     cmds:
       - ./scripts/check-agent-instructions-size.sh AGENTS.md
+
+  audit:consumer-pin:
+    desc: "Check a repo's vendored-skill pin against its .devflow.toml shape (usage: task audit:consumer-pin -- [--repo-root DIR] [--json])"
+    cmds:
+      - ./scripts/consumer-pin-audit.sh {{.CLI_ARGS}}
 
   lint:
     desc: Run all linters in parallel
@@ -370,6 +376,11 @@ tasks:
     desc: Behavioral test for the /retro skill's run-evidence projection (fixture trajectories, stubbed gh and harvester)
     cmds:
       - ./scripts/test-retro-run-report.sh
+
+  test:consumer-pin-audit:
+    desc: Behavioral test for the Dev flow v2 consumer pin contract and older-shape policy refusals
+    cmds:
+      - ./scripts/test-consumer-pin-audit.sh
 
   test:review-skill:
     desc: Fixture-driven regression checks for the /review stage contract

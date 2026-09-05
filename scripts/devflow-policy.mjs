@@ -13,7 +13,27 @@
 //
 // Usable as a CLI (`node scripts/devflow-policy.mjs resolve|detect ...`)
 // or as a library (`import { resolvePolicy, detectShape } from
-// "./devflow-policy.mjs"`), notably by scripts/dev-flow-exit.mjs.
+// "./devflow-policy.mjs"`), notably by scripts/dev-flow-exit.mjs and
+// scripts/consumer-pin-audit.sh.
+//
+// CLI exit codes (stable; scripts/consumer-pin-audit.sh and the vendored
+// stage skills branch on them, so treat them as the contract):
+//
+//   detect --policy <file>
+//     0  the policy is schema_version 2
+//     1  it is not — a legacy, v1, mixed, or unknown shape. With --json the
+//        `migration` field carries the one actionable refusal message
+//        (`copier update`, the release to run it against, and the pin
+//        guidance) and `policy_schema_version` is null; without --json the
+//        same message goes to stderr.
+//     2  usage error, or the file could not be read or parsed as TOML
+//
+//   resolve --policy <file> [...]
+//     0  resolved, with no cross-validation errors
+//     1  refused: a non-v2 operating shape, an undecodable merge base, an
+//        invalid v2 policy, or a hard cross-validation error
+//     2  usage error, or a file could not be read or parsed
+//     3  resolved, but cross-validation was indeterminate
 
 import { readFileSync, existsSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -234,13 +254,36 @@ export function detectShape(doc) {
   return { shape: "unknown", markers: partial };
 }
 
-const MIGRATION_DIRECTION =
-  "migrate to schema_version = 2 with [rounds.*], [breadth.*], [gates], [convergence], [role.*], and [stage.*] (harmon-init#1081 owns the template)";
+// The policy schema version every Dev flow v2 consumer operates under, and
+// the harmon-init release that first ships a `.devflow.toml` template of that
+// shape (harmon-init#1081, delivered by harmon-init PRs #1159/#1167). Both are
+// stated once, here, so the reader's refusal message, the consumer-pin audit
+// (`scripts/consumer-pin-audit.sh`), the vendored skills' `policy-contract.json`
+// declarations, and docs/guides/skills-pin-policy.md cannot drift apart.
+export const POLICY_SCHEMA_VERSION = 2;
+export const V2_TEMPLATE_RELEASE = "harmon-init v4.43.0";
+
+const V2_SHAPE_TABLES = "[rounds.*], [breadth.*], [gates], [convergence], [role.*], and [stage.*]";
+
+// Two directions, because the two refusals ask different things of different
+// people. The OPERATING refusal is the one an operator can act on right now,
+// so it names the single command that migrates the file, the release to run it
+// against, and what to do in the meantime — a consumer whose file has not
+// migrated stays on its existing pre-v2 skills pin rather than advancing it
+// (harmon-devkit#604). The HISTORICAL refusal is about a merge-base copy,
+// which is immutable git history: telling an operator to `copier update` a
+// commit that already happened would be nonsense, so it only names the shape.
+const OPERATING_MIGRATION_DIRECTION =
+  `run \`copier update\` against ${V2_TEMPLATE_RELEASE} or later, the release carrying the ` +
+  `schema_version = 2 template, to migrate it to ${V2_SHAPE_TABLES}; until it has migrated, keep ` +
+  "`.skills-sync.yaml` pinned to the last pre-v2 skills release rather than advancing it";
+const HISTORICAL_MIGRATION_DIRECTION = `it must be schema_version = 2 with ${V2_SHAPE_TABLES}`;
 
 export function shapeRefusalMessage(detection, { forOperating = true } = {}) {
   const markers = detection.markers.length > 0 ? detection.markers.join(", ") : "none";
-  const scope = forOperating ? "the operating .devflow.toml" : "this .devflow.toml";
-  return `${scope} is not schema_version 2 (detected shape: ${detection.shape}; markers found: ${markers}) — ${MIGRATION_DIRECTION}`;
+  const scope = forOperating ? "the operating .devflow.toml" : "the merge-base .devflow.toml";
+  const direction = forOperating ? OPERATING_MIGRATION_DIRECTION : HISTORICAL_MIGRATION_DIRECTION;
+  return `${scope} is not schema_version 2 (detected shape: ${detection.shape}; markers found: ${markers}) — ${direction}`;
 }
 
 /** Require a v2 shape for the *operating* policy; throws PolicyError otherwise. */
@@ -1271,7 +1314,7 @@ export function resolvePolicy(doc, opts = {}) {
     return decodeHistoricalPolicy(opts.mergeBaseDoc, mbDetection, opts);
   }
   throw new PolicyError(
-    `merge-base .devflow.toml is ${shapeRefusalMessage(mbDetection, { forOperating: false })} and cannot be decoded`,
+    `cannot be decoded: ${shapeRefusalMessage(mbDetection, { forOperating: false })}`,
   );
 }
 
@@ -1352,13 +1395,29 @@ function cliDetect(args) {
     return 2;
   }
   const detection = detectShape(doc);
+  const isV2 = detection.shape === "v2";
+  // The refusal message rides the detection result rather than being
+  // rebuilt by each caller: `detect` is the shape oracle every non-Node
+  // consumer (scripts/consumer-pin-audit.sh, a vendored skill's shell
+  // recipe) reaches for, and a caller that has to compose its own migration
+  // wording is a second place for the release name and the pin guidance to
+  // drift from this file's own (harmon-devkit#604).
+  const migration = isV2 ? null : shapeRefusalMessage(detection, { forOperating: true });
+  // `policy_schema_version` describes THIS POLICY, not the reader: null for
+  // every shape that declares no version. Emitting the reader's own supported
+  // version unconditionally would be a field whose name says one thing and
+  // whose value says another, and a numeric consumer (the consumer-pin audit
+  // compares it against the version its vendored skills require) would read
+  // every older shape as version 2 — challenge round 1, confirmed.
+  const policySchemaVersion = isV2 ? POLICY_SCHEMA_VERSION : null;
   if (args.json) {
-    console.log(JSON.stringify(detection));
+    console.log(JSON.stringify({ ...detection, policy_schema_version: policySchemaVersion, migration }));
   } else {
     console.log(`shape: ${detection.shape}`);
     console.log(`markers: ${detection.markers.join(", ") || "none"}`);
   }
-  return detection.shape === "v2" ? 0 : 1;
+  if (!isV2) console.error(`devflow-policy: ${migration}`);
+  return isV2 ? 0 : 1;
 }
 
 function cliResolve(args) {

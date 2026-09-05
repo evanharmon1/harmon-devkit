@@ -25,5 +25,9 @@ Calm, repeatable how-tos read *in advance* (the crisis counterpart is
 - [codex-review.md](codex-review.md) — second-model review via the OpenAI
   Codex CLI: `task challenge` / `task review`, the automatic Claude → Codex
   stop-gate toggle, and where the finding-adjudication protocol lives.
+- [skills-pin-policy.md](skills-pin-policy.md) — when a consumer advances its
+  vendored-skill pin and when it must hold: the Dev flow v2 stage skills are
+  `schema_version = 2` only, so the pin waits for `copier update`.
+  `task audit:consumer-pin` is the check.
 
 TODO: add more guides, e.g. "local development setup", "add a feature", "how X works".
