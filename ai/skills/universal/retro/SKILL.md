@@ -123,8 +123,17 @@ two retros of two different runs are comparable line for line:
 3. `### Stage <name>`, one per stage the run entered, chronologically by first
    entry — rounds spent against the cap, findings and passes, rounds with no
    adjudication record, every entry and exit (a stage re-entered by a
-   remediation loop keeps **one** section holding all of its rounds), and the
-   interventions that landed while that stage was open.
+   remediation loop keeps **one** section holding all of its rounds), the
+   interventions that landed while that stage was open, and — for a stage that
+   found something — its findings by class and provenance plus its
+   adjudication overrides. Those last two are **only partly derivable today**:
+   the trajectory aggregates class/provenance across the whole run, so it is
+   attributed to a stage only when that stage is the sole one with findings
+   (harmon-devkit#779), and adjudication overrides are not exposed at all
+   (harmon-devkit#753). Each
+   affected stage section says which case it is in rather than leaving the line
+   out; treat a "not derivable" line as a real gap in the retro, not as
+   "nothing to report".
 4. `### Findings by class and provenance` — `class` from the reviewer's own
    finding, `provenance` its `original` / `round:N` field.
 5. `### Policy overrides the PR discloses (unverified)` — the cap, waiver,

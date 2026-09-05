@@ -16,16 +16,20 @@
 // Exit codes — the caller (the /retro skill) branches on these:
 //   0   a report was rendered on stdout.
 //   10  we LOOKED and there is no retained evidence: `no-run-record` (no
-//       trusted evidence marker on the PR or its linked issues) or
-//       `run-not-found` (a marker named a run the harvester cannot find).
-//       This is the only exit that licenses "this session has no run record".
+//       evidence marker at all on the PR or its linked issues) or
+//       `run-not-found` for an id supplied with --run, which nothing ever
+//       claimed existed. This is the only exit that licenses "this session
+//       has no run record". A marker-named run the harvester cannot find is
+//       NOT here — that is the deleted-entry case, exit 11.
 //   12  `no-stats-script` — this checkout has no harvester, so whether a run
 //       record exists is UNKNOWN, not absent. Discovery still runs first, so
 //       stderr says whether a marker was found that cannot be read here.
-//   11  evidence exists but is INDETERMINATE — a broken or forged chain, two
-//       runs claimed on one PR, or a harvested run bound to a different PR.
-//       Nothing is rendered; the reason is on stderr. Never report a clean
-//       retro on this path, and never silently fall back to memory.
+//   11  evidence exists but is INDETERMINATE — a broken or forged chain; two
+//       trusted runs claimed on one PR; a harvested run bound to a different
+//       PR; markers that exist but none from a trusted actor; or a trusted
+//       marker naming a run the harvester cannot find (deleted-entry
+//       tampering). Nothing is rendered; the reason is on stderr. Never
+//       report a clean retro on this path, and never fall back to memory.
 //   2   usage error.  1  operational error (a `gh` or harvester failure).
 //
 // Why 10, 11 and 12 are three exits, not one. "Nothing was posted" is the
@@ -572,8 +576,24 @@ function measure(trajectory, policy) {
     })
     .sort((a, b) => b.count - a.count || a.class.localeCompare(b.class) || a.provenance.localeCompare(b.provenance))
 
+  // The acceptance criterion wants class/provenance INSIDE each stage
+  // section, and the trajectory only aggregates it run-wide. Where exactly
+  // one stage produced findings the aggregate is unambiguously that stage's,
+  // so attribute it and say so; where more than one did, no split is
+  // derivable from this evidence and the run-wide table stands with the gap
+  // named in each affected stage section (review round 2, adjudicated P2 —
+  // the remedy is a harvester change this lane may not make).
+  const stagesWithFindings = [...new Set(stages.filter((st) => st.findings > 0).map((st) => st.stage))]
+  const attribution =
+    classProvenance.length === 0
+      ? { scope: 'none', stage: null }
+      : stagesWithFindings.length === 1
+        ? { scope: 'stage', stage: stagesWithFindings[0] }
+        : { scope: 'run', stage: null }
+
   return {
     stages,
+    class_provenance_attribution: attribution,
     findings_by_class_and_provenance: classProvenance,
     interventions: interventions.map((entry) => ({
       at: entry.at,
@@ -608,8 +628,8 @@ function unavailableMeasurements(measured) {
     {
       measurement: 'findings by class and provenance, keyed by stage',
       reason:
-        "the run trajectory's findings_by_class_and_provenance aggregates over the whole run, so this report's breakdown is run-wide",
-      issue: 'harmon-devkit#663 successors'
+        "the run trajectory's findings_by_class_and_provenance aggregates over the whole run, so this report's breakdown is run-wide unless exactly one stage found anything",
+      issue: 'harmon-devkit#779'
     },
     {
       measurement: 'remediation rounds spent against the remediation cap',
@@ -719,6 +739,23 @@ function renderMarkdown(report) {
           : stage.interventions.map((entry) => `${safe(entry.kind)} at ${safe(entry.at)} (${safe(entry.note)})`).join('; ')
       }`
     )
+    const attribution = report.measurements.class_provenance_attribution
+    if (stage.findings > 0) {
+      if (attribution.scope === 'stage' && attribution.stage === stage.stage) {
+        l.push('- Findings by class and provenance:')
+        for (const row of report.measurements.findings_by_class_and_provenance) {
+          l.push(`  - ${cell(row.class)} / ${cell(row.provenance)}: ${row.count}`)
+        }
+        l.push('  (this run\'s whole class/provenance aggregate, and this is its only stage with findings)')
+      } else {
+        l.push(
+          '- Findings by class and provenance: not derivable per stage — the trajectory aggregates them across every stage that found something (harmon-devkit#779). See the run-wide table below.'
+        )
+      }
+      l.push(
+        '- Adjudication overrides: not derivable — the trajectory reduces each round\'s adjudication to a boolean (harmon-devkit#753).'
+      )
+    }
     l.push('')
   }
 
@@ -726,7 +763,13 @@ function renderMarkdown(report) {
   l.push('')
   if (report.measurements.findings_by_class_and_provenance.length === 0) {
     l.push('No findings recorded for this run.')
-  } else {
+  } else if (report.measurements.class_provenance_attribution.scope === 'stage') {
+    l.push(
+      `Every finding in this run belongs to stage \`${safe(report.measurements.class_provenance_attribution.stage)}\`, so the table below is also that stage's — see its section above.`
+    )
+    l.push('')
+  }
+  if (report.measurements.findings_by_class_and_provenance.length > 0) {
     l.push('| class | provenance | count |')
     l.push('| --- | --- | --- |')
     for (const row of report.measurements.findings_by_class_and_provenance) {
@@ -765,7 +808,15 @@ function renderMarkdown(report) {
   l.push('### Interventions')
   l.push('')
   if (report.measurements.interventions.length === 0) {
-    l.push('None — the run reached its outcome unattended.')
+    // Only a TERMINAL run can be said to have reached anything unattended;
+    // an in-flight or blocked run has simply not needed a human YET, and
+    // saying otherwise contradicts the outcome line above it (review round 2,
+    // confirmed P2).
+    l.push(
+      report.trajectory.outcome
+        ? 'None — the run reached its outcome unattended.'
+        : 'None recorded so far. The run has no terminal outcome yet, so this is not yet an unattended run — only one that has not needed a human up to this point.'
+    )
   } else {
     l.push('| at | kind | stage | note |')
     l.push('| --- | --- | --- | --- |')

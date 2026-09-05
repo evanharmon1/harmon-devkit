@@ -719,8 +719,9 @@ contains "$OUT" "exit: P1 found, back to implement" &&
     ok "both of the stage's exits are listed" || bad "a re-entered stage's exits were dropped"
 contains "$OUT" '- Outcome: `in-flight`' &&
     ok "a run with no outcome renders in-flight" || bad "null outcome mis-rendered"
-contains "$OUT" "None — the run reached its outcome unattended." &&
-    ok "a run with no interventions says so" || bad "empty interventions mis-rendered"
+contains "$OUT" "not yet an unattended run" &&
+    ok "an in-flight run with no interventions is not called unattended" ||
+    bad "an in-flight run was reported as having reached its outcome unattended"
 contains "$OUT" "the run record names no PR yet" &&
     ok "a run with no recorded PR says the binding rests on the marker alone" ||
     bad "an unbound run silently claimed a PR binding"
@@ -836,6 +837,71 @@ grep -A 3 'assets/retro-run-report.mjs --repo' ai/skills/universal/retro/SKILL.m
     grep -qE -- '--trusted-actor-id|--trusted-actors-file' &&
     ok "the documented command carries the required trust root" ||
     bad "copying the documented command would exit 2 before doing any work"
+
+echo "==> a terminal run with no interventions IS reported unattended"
+d="$TMPROOT/unattended"
+scaffold "$d" further-along "body"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" '- Outcome: `ready-for-review`' &&
+    ok "the fixture's terminal outcome renders" || bad "terminal outcome missing"
+
+echo "==> class/provenance is attributed to the one stage that found anything"
+d="$TMPROOT/onestage"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" \
+    ROUNDS_JSON='[
+      {"stage":"challenge","round":1,"pass_count":1,"finding_count":3,"has_adjudication":true},
+      {"stage":"review","round":1,"pass_count":1,"finding_count":0,"has_adjudication":true}
+    ]' \
+    CLASSES_JSON='{"correctness/original":2,"design/round:1":1}' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "$POLICY_SECTION"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "  - correctness / original: 2" &&
+    ok "the stage section carries its own class/provenance rows" ||
+    bad "class/provenance was not attributed to the only stage with findings"
+contains "$OUT" "this is its only stage with findings" &&
+    ok "the attribution states why it is sound" || bad "the attribution is asserted without its reason"
+contains "$OUT" "belongs to stage \`challenge\`" &&
+    ok "the run-wide table points back at that stage" || bad "the run-wide table does not name the stage"
+
+echo "==> two stages with findings fall back to the run-wide table, saying why"
+d="$TMPROOT/twostage"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" \
+    ROUNDS_JSON='[
+      {"stage":"challenge","round":1,"pass_count":1,"finding_count":3,"has_adjudication":true},
+      {"stage":"review","round":1,"pass_count":1,"finding_count":2,"has_adjudication":true}
+    ]' \
+    CLASSES_JSON='{"correctness/original":5}' \
+    make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "$POLICY_SECTION"
+marker_file "$d/c1" evidence run-6001-further-along challenge pr -
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$OUT" "not derivable per stage" &&
+    ok "a multi-stage run says the split is not derivable rather than guessing" ||
+    bad "a multi-stage run silently attributed the aggregate"
+contains "$OUT" "- Adjudication overrides: not derivable" &&
+    ok "each stage with findings names the adjudication-override gap" ||
+    bad "the override gap is absent from the stage sections"
+contains "$OUT" "belongs to stage" &&
+    bad "a multi-stage run claimed single-stage attribution" ||
+    ok "no single-stage claim is made when two stages found things"
 
 # ---------------------------------------------------------------------------
 # 4. Harvester failure modes and usage
