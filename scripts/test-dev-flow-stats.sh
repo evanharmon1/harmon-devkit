@@ -2538,10 +2538,14 @@ function writeScenario(name, db) {
     // a fixture may post it after the record, and may edit it afterwards.
     if (fixture.run.index_posted_at) idx.created_at = fixture.run.index_posted_at;
     if (fixture.run.index_edited_at) idx.updated_at = fixture.run.index_edited_at;
-    // Newest-first by landing time, as GitHub's commits?path= listing
-    // returns; an unresolvable (landed_at: null) revision has no
-    // commit_pulls entry at all, matching a real no-merging-PR response.
-    const revisions = [...fixture.registry_revisions].sort((a, b) => Date.parse(b.landed_at || 0) - Date.parse(a.landed_at || 0));
+    // The fixture's array IS the commits?path= listing order (newest
+    // first, as GitHub returns the default branch's history) — it is not
+    // re-sorted, because listing position is what decides whether an
+    // unresolvable (landed_at: null) revision voids the history (newest)
+    // or only the interval before a later resolvable landing (older).
+    // Such a revision has no commit_pulls entry at all, matching a real
+    // no-merging-PR response.
+    const revisions = [...fixture.registry_revisions];
     const registryContents = {};
     const commitPulls = {};
     revisions.forEach((r, n) => {
@@ -2647,6 +2651,40 @@ function writeScenario(name, db) {
       [removeSha]: [{ number: 622, merged_at: "2026-09-01T00:10:00Z" }],
     },
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED], issueNumber: 181 },
+  });
+}
+
+// --- #741 shepherd round 3 (Codex-confirmed P2): a direct-push registry
+// commit OLDER than a resolvable PR-landed revision no longer voids the
+// whole history — the later revision governs writes after its landing;
+// writes before it still find no revision and are indeterminate.
+{
+  const scaffoldSha = "9".repeat(40); // direct push, no merging PR
+  const laterSha = "a".repeat(40);    // PR-landed 2026-08-15
+  const registryCommits = [{ sha: laterSha }, { sha: scaffoldSha }]; // newest-first
+  const registryContents = {
+    [laterSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
+    [scaffoldSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR] })).toString("base64"),
+  };
+  const mk = (runId, at) => {
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: chain([{ stage: "kickoff", entered_at: at }]),
+      interventions: chain([]), settlements: chain([]),
+      outcome: null, pr: null, evidence_comments: [], promotion: null,
+    };
+    return runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, at);
+  };
+  const after = mk("run-older-direct-push-after-1", "2026-09-01T00:00:00Z");
+  const before = mk("run-older-direct-push-before-1", "2026-08-01T00:00:00Z");
+  writeScenario("older-direct-push", {
+    issues: [{ number: 182, pull_request: null }, { number: 183, pull_request: null }],
+    comments: { "182": [after.index, after.record], "183": [before.index, before.record] },
+    commits: {},
+    registry_commits: registryCommits,
+    registry_contents: registryContents,
+    commit_pulls: { [laterSha]: [{ number: 623, merged_at: "2026-08-15T00:00:00Z" }] },
+    meta: { runIdAfter: "run-older-direct-push-after-1", runIdBefore: "run-older-direct-push-before-1", trustedActorIds: [TRUSTED_ORCHESTRATOR] },
   });
 }
 
@@ -3537,6 +3575,19 @@ export DFSTATS_DB="$tmp/scenarios/edited-index-shadow.json"
 run_id="$(meta edited-index-shadow .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)" || fail "edited-index-shadow: expected the run to harvest via the legitimate index, got: $out"
 echo "$out" | jq -e '.outcome == null' >/dev/null || fail "edited-index-shadow: expected a clean in-flight run, got: $out"
+
+echo "== #741 shepherd round 3: a direct-push registry commit older than a PR-landed revision voids only the interval before that landing =="
+export DFSTATS_DB="$tmp/scenarios/older-direct-push.json"
+run_after="$(meta older-direct-push .meta.runIdAfter)"
+run_before="$(meta older-direct-push .meta.runIdBefore)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_after" --trusted-actor-id 9001 --json 2>&1)" || fail "older-direct-push: run after the resolvable landing should authenticate, got: $out"
+echo "$out" | jq -e '.outcome == null' >/dev/null || fail "older-direct-push: expected a clean in-flight run after the landing, got: $out"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_before" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "older-direct-push: run before the resolvable landing should be indeterminate, got rc=$rc: $out"
+echo "$out" | grep -qi "no agent-registry.json revision had landed" || fail "older-direct-push: expected the no-revision reason, got: $out"
 
 echo "== #741: registry allowlist fixture corpus (fail closed on missing/empty/malformed; per-write revision binding) =="
 corpus_count=0

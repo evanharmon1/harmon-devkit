@@ -234,16 +234,36 @@ function resolveRegistryRevisionHistory(repo) {
     const defaultBranch = resolveDefaultBranch(repo);
     const commits = ghApiPaginated(`repos/${repo}/commits?path=agent-registry.json&sha=${defaultBranch}`);
     const resolved = [];
-    let unresolvable = false;
+    // The listing is the default branch's own history, newest first. An
+    // unresolvable commit (no merging PR into the default branch) voids
+    // everything it could govern: when it is the NEWEST revision, or newer
+    // than any resolvable one, nothing after it can be proven and the
+    // whole history is void (null). When every unresolvable commit is
+    // OLDER than a resolvable revision — the common "initial scaffold was
+    // pushed directly before branch protection" shape — the later,
+    // resolvable revision fully establishes the registry contents from its
+    // own landing onward, so only writes before the oldest resolvable
+    // landing are unprovable: they find no revision landed and are
+    // indeterminate by the ordinary rule — shepherd round 3 of #741,
+    // Codex-confirmed (P2).
+    let sawResolvable = false;
+    let voided = false;
     for (const c of commits) {
       const seen = defaultBranchLandedAt(repo, c.sha);
       if (seen === null) {
-        unresolvable = true;
+        if (!sawResolvable) {
+          voided = true;
+          break;
+        }
+        // Older than a resolvable revision: everything from here back is
+        // unprovable, and nothing resolvable older than this may be used
+        // either (it could have been superseded by this unknown landing).
         break;
       }
+      sawResolvable = true;
       resolved.push({ sha: c.sha, landedAtEpoch: Date.parse(seen) });
     }
-    history = unresolvable ? null : { revisions: resolved, resolvedAtEpoch };
+    history = voided ? null : { revisions: resolved, resolvedAtEpoch };
   } catch {
     history = null;
   }
@@ -320,15 +340,23 @@ function resolveRegistryTrustedActorIds(repo, atIso) {
   // evaluated against stale, pre-removal history. Refresh once for such a
   // write; a write still newer than the refreshed snapshot is in this
   // process's future and has no provable revision — indeterminate.
-  if (history !== null && cutoff > history.resolvedAtEpoch) {
+  // Boundary at SECOND granularity — shepherd round 3 of #741, Codex-
+  // confirmed (P2): created_at carries seconds while the boundary carries
+  // milliseconds, so a write in the boundary's own second parses as older
+  // than a landing that happened later within that second. The whole
+  // boundary second is therefore unprovable: a write in it (or later)
+  // refreshes once, and one still in the refreshed boundary's second is
+  // indeterminate.
+  const boundarySecond = (h) => Math.floor(h.resolvedAtEpoch / 1000) * 1000;
+  if (history !== null && cutoff >= boundarySecond(history)) {
     registryRevisionHistoryCache.delete(repo);
     history = resolveRegistryRevisionHistory(repo);
   }
   if (history === null) {
     return { indeterminate: "the agent-registry.json revision history could not be resolved (a registry-touching commit with no merging PR, or an API failure), so no revision can be proven in effect" };
   }
-  if (cutoff > history.resolvedAtEpoch) {
-    return { indeterminate: `write time ${atIso} postdates the registry revision history snapshot (${new Date(history.resolvedAtEpoch).toISOString()}), so no revision can be proven in effect for it` };
+  if (cutoff >= boundarySecond(history)) {
+    return { indeterminate: `write time ${atIso} postdates the registry revision history snapshot (${new Date(history.resolvedAtEpoch).toISOString()}, boundary second inclusive), so no revision can be proven in effect for it` };
   }
   let bestSha = null;
   let bestSeen = -Infinity;

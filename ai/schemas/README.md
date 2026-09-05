@@ -1148,8 +1148,11 @@ kind of corpus: not a document validated against a schema but a
 ("Trust root: the registry allowlist, pinned per write" below, issue #741),
 run by `scripts/test-dev-flow-stats.sh` through the real resolver against
 its fake `gh` shim. Each fixture names the registry revisions
-(`registry_revisions[]`: a 40-hex `sha`, the default-branch `landed_at` —
-`null` for a revision whose landing time cannot be resolved — an optional
+(`registry_revisions[]`, in default-branch listing order, newest first:
+a 40-hex `sha`, the default-branch `landed_at` — `null` for a revision
+whose landing time cannot be resolved, which voids the history when it is
+the newest entry and only the interval before a later resolvable landing
+otherwise — an optional
 `staging_merged_at` for an earlier merge into a non-default branch that
 must not count as landing, and the `document` served at that revision),
 one run (`run`: `author_actor_id`,
@@ -1503,15 +1506,22 @@ answer never changes afterwards:
   `ai/schemas/fixtures/registry-trust/` ("Fixture layout" below).
 - **Fail closed on every indeterminate input**: no revision landed by the
   write's time, a registry-touching commit whose landing time cannot be
-  resolved (which voids the whole revision history rather than being
-  skipped, so a stale revision is never mistaken for current), an unreadable
+  resolved (which voids the revision history from that commit forward
+  rather than being skipped, so a stale revision is never mistaken for
+  current — a direct push *older* than a PR-landed revision only leaves
+  writes before that landing unprovable, the common initial-scaffold
+  shape), an unreadable
   file, or an allowlist that is absent/empty/malformed (a digits-only
   string or a float poisons the whole list rather than being coerced —
   the same rule `--trusted-actors-file` applies), or a write newer than
   the process's own snapshot of the revision history (the harvester
-  refreshes the snapshot once for such a write; one still newer is in its
-  future). Each yields `indeterminate` with a reason naming the revision
-  and the write time.
+  refreshes the snapshot once for such a write; one still newer, or in the
+  snapshot's own second, is unprovable). Each yields `indeterminate` with
+  a reason naming the revision and the write time. The landing model
+  assumes a **stable default branch**: a repository that switches its
+  default branch changes what "landed" meant for older revisions, which
+  this harvester does not model (tracked as a follow-up; see the PR that
+  shipped this section).
 - The revision is **derived, never declared**: the run record carries no
   registry-revision field, because a value inside the record would be a
   payload claim a forged record could set to whatever revision trusts its
