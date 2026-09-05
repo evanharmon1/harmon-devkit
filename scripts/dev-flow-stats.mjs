@@ -441,8 +441,6 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
     marker.round === null &&
     marker.seq === 1;
 
-  const indexMarked = markedComments(issueComments).filter((e) => canonicalIndexShape(e.marker));
-
   // Registry-revision pinning (issue #741, review round 4 of #663): narrows
   // trustedActorIds to whichever ids the repo-committed registry also
   // trusted AS OF each entry's own kickoff time — see
@@ -461,41 +459,33 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
     return registryTrustCache.get(atIso);
   };
 
-  // Loose, TIME-INDEPENDENT pre-filter: the raw CLI-configured set, never
-  // registry-narrowed — shepherd round 5, Codex-confirmed (P2): the index's
-  // own author trust used to be decided here, against the index comment's
-  // OWN (later) created_at. The record must be posted before the index can
-  // name its comment id, so a registry revision landing in that gap was
-  // evaluated at the wrong moment — an actor REMOVED between the two posts
-  // had their already-legitimate kickoff-time index silently discarded as
-  // untrusted noise (erasing a real run), and the round-3 fix for the
-  // opposite direction (an actor ADDED in that gap) only ever protected the
-  // run-record author's own check below, never this one. The real,
-  // registry-narrowed decision now happens inside the per-run_id loop,
-  // once the named record — and so its authoritative created_at — is
-  // known; this pre-filter only weeds out an actor never CLI-configured at
-  // all, which cannot become trusted at any time under any registry state.
-  const looselyTrustedIndex = indexMarked.filter((e) => trustedActorIds.has(e.actorId));
-
-  // A trusted-by-marker run-index whose canonical shape survives but whose
-  // fenced payload is missing or malformed previously vanished entirely:
-  // markedComments() (used to build indexMarked above) requires a
-  // parseable payload before this function ever sees the comment, so a
-  // corrupted anchor was indistinguishable from "this issue was never
-  // kicked off" instead of being reported as tampered evidence — shepherd
-  // round 5, Codex-confirmed (P1), the same silent-erasure challenge round
-  // 1 already closed for a fully DELETED comment, reopened here for a
-  // payload-only corruption of a comment that is still physically present.
-  // Scanned independently, by marker alone (parseMarker does not require a
-  // valid fence), and by the same loose CLI-only trust bar as above — an
-  // untrusted party's malformed paste is still forged noise, not evidence.
-  const malformedTrustedIndexRunIds = new Set();
+  // ONE unified candidate list for run-index discovery — every trusted,
+  // canonical-marker comment for this issue, well-formed or not — shepherd
+  // round 6, Codex-confirmed (P1): the round-5 malformed-index fix treated
+  // malformed and well-formed candidates as two SEPARATE pools, each
+  // independently narrowed to its own "best" candidate, so a well-formed
+  // duplicate posted AFTER a malformed original silently won canonical
+  // status regardless of comment id. The evidence contract's lowest-id-
+  // wins rule (ai/schemas/README.md "Duplicate markers") applies to every
+  // trusted candidate sharing this run's one reserved index marker, not
+  // only the ones that still happen to carry a payload — the invariant is
+  // canonical selection, not "canonical selection among comments a
+  // parser could fully read." canonicalIndexShape's own single reserved
+  // tuple (kickoff/issue/-/1) means every candidate for one run_id already
+  // shares the identical marker key, so resolveCanonical's ordinary
+  // lowest-id resolution (below, used unchanged — no special-casing
+  // needed) picks the one true canonical entry across a mix of both kinds
+  // at once. Loosely, TIME-INDEPENDENTLY pre-filtered to the raw
+  // CLI-configured set (never registry-narrowed): the real,
+  // registry-narrowed decision for this index's own author can only be
+  // evaluated once the named run-record — and so its authoritative
+  // created_at — is known, inside the per-run_id loop below.
+  const indexCandidates = [];
   for (const c of issueComments) {
-    if (fencedPayloadText(c.body || "") !== null) continue; // has a payload; handled via indexMarked above
     const marker = parseMarker(c.body || "");
     if (!canonicalIndexShape(marker)) continue;
     if (!trustedActorIds.has(commentActorId(c))) continue;
-    malformedTrustedIndexRunIds.add(marker.runId);
+    indexCandidates.push({ comment: c, marker, actorId: commentActorId(c), payloadText: fencedPayloadText(c.body || "") });
   }
 
   // An untrusted-authored (or entirely absent) index is forged noise, not
@@ -507,19 +497,8 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
   // prior throw's own message said "ignored" but the code did not
   // actually ignore it, letting --repo's noise floor scale with how many
   // issues an untrusted party happens to paste a marker-shaped comment on.
-  if (looselyTrustedIndex.length === 0 && malformedTrustedIndexRunIds.size === 0) {
+  if (indexCandidates.length === 0) {
     return null;
-  }
-
-  // Multiple distinct run_ids with a trusted index on one issue is a
-  // different run each time (a retry) — group by run_id and resolve
-  // canonical duplicates (identical re-posts) within each; conflicting
-  // content under one marker fails closed via resolveCanonical itself.
-  const byRunId = new Map();
-  for (const e of looselyTrustedIndex) {
-    const list = byRunId.get(e.marker.runId) || [];
-    list.push(e);
-    byRunId.set(e.marker.runId, list);
   }
 
   // One run_id's tampered/malformed index or record must not lose track of
@@ -527,28 +506,34 @@ function findRunRecord(issueComments, { trustedActorIds, repo }) {
   // issue's OTHER runs — each run_id is isolated exactly the way
   // harvestOneRunRecord already isolates later per-run failures.
   const results = [];
-  for (const runId of malformedTrustedIndexRunIds) {
-    // A payload-VALID candidate for this same run_id also exists (e.g. a
-    // legitimate re-post after a corrupted one) — let the loop below
-    // decide via its own canonical (lowest-id) resolution rather than
-    // forcing indeterminate over a superseded duplicate.
-    if (byRunId.has(runId)) continue;
-    results.push({
-      status: "indeterminate",
-      runId,
-      reason: `run-index ${runId} has a canonical marker but no fenced payload — edited-entry tampering`,
-      kickoffCreatedAt: null,
-    });
-  }
-  for (const [runId, entries] of byRunId) {
-    // Declared outside the try so the catch below can still read them —
+  for (const indexEntry of resolveCanonical(indexCandidates).values()) {
+    const runId = indexEntry.marker.runId;
+    // Declared outside the try so the catch below can still read it —
     // shepherd round 2/3, Codex-confirmed (P2): see the catch block's own
     // comment for why.
-    let indexEntry;
     let recordComment;
     try {
-      const canonicalMap = resolveCanonical(entries);
-      indexEntry = [...canonicalMap.values()][0];
+      // A trusted-by-marker run-index whose canonical shape survives but
+      // whose fenced payload is missing or malformed previously vanished
+      // entirely: an earlier discovery pass required a parseable payload
+      // before the comment was even considered, so a corrupted anchor was
+      // indistinguishable from "this issue was never kicked off" instead
+      // of being reported as tampered evidence — shepherd round 5,
+      // Codex-confirmed (P1), the same silent-erasure challenge round 1
+      // already closed for a fully DELETED comment, reopened here for a
+      // payload-only corruption of a comment that is still physically
+      // present. Routed through the SAME EvidenceError/indeterminate path
+      // as every other tampering case below (rather than a separate,
+      // hand-assembled result) so it automatically inherits the catch
+      // block's own kickoffCreatedAt fallback — shepherd round 6,
+      // Codex-confirmed (P2): a hand-rolled result the round-5 fix pushed
+      // directly hardcoded kickoffCreatedAt to null instead of this
+      // comment's own GitHub-assigned created_at, inflating
+      // indeterminate_count for --since windows that should have excluded
+      // it.
+      if (indexEntry.payloadText === null) {
+        throw new EvidenceError(`run-index ${runId} (comment ${indexEntry.comment.id}) has a canonical marker but no fenced payload — edited-entry tampering`);
+      }
       let indexPayload;
       try {
         indexPayload = JSON.parse(indexEntry.payloadText);
@@ -858,6 +843,22 @@ function assembleListedEvidence(runRecord, allComments, withinCutoff, runRecordA
       payload = JSON.parse(fullText);
     } catch (err) {
       throw new EvidenceError(`${key}: reassembled segments are not valid JSON: ${err.message}`);
+    }
+    // JSON.parse succeeds for any valid JSON VALUE, not only objects —
+    // shepherd round 6, Codex-confirmed (P1): a digest- and marker-
+    // authenticated round whose reassembled text is legitimately valid
+    // JSON but not an object (bare `null`, a string, a number, an array)
+    // parsed cleanly here and was retained as this round's payload; every
+    // downstream reader (`--run`'s own rendering, --replay's
+    // buildRunDirectory) unconditionally dereferences `round.payload.
+    // passes`, so one such round threw an uncaught TypeError instead of
+    // an EvidenceError — aborting the entire replay batch or --run
+    // invocation over one run, rather than making only that run
+    // indeterminate. Validate the shape every real consumer actually
+    // requires immediately after parsing, at the one place this payload
+    // is reassembled.
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+      throw new EvidenceError(`${key}: reassembled payload is valid JSON but not an object (got ${JSON.stringify(payload)}) — malformed round payload`);
     }
     const { stage, destination: dest, round } = entries[0].marker;
     rounds.push({ stage, dest, round, payload, commentIds: entries.map((e) => e.comment.id) });
@@ -1494,54 +1495,79 @@ function computeIssueVerdict(issueRuns, { staleAfterDays, asOfEpoch }) {
 // as its own separate count instead (the same "report separately, never
 // silently drop or silently count" shape this file already uses for
 // asked/interventions), fail-closed only for THIS signal.
+// first_seen design invariant, restated once here rather than patched per
+// symptom (shepherd round 6): post-ready fix detection is explicitly a
+// SECONDARY failure measure (specs/dev-flow-v2.md § Success metric), so
+// (1) any signal this function cannot resolve — an API failure, an
+// unresolvable commit visibility — must be ISOLATED to this one issue's
+// own uncertainty bucket (post_ready_fix_indeterminate_count), never
+// escape and take down the primary closed-cohort result or any other
+// issue; and (2) once a qualifying fix IS confirmed for an issue, that
+// issue-level boolean question is conclusively answered — a separate,
+// still-unresolved commit cannot retroactively make it uncertain again.
 function computePostReadyFix(repo, readyRun, cutoffEpoch) {
   const promotion = readyRun.state.promotion;
   if (!promotion) return { fixed: false, indeterminate: false };
-  const commits = ghApiPaginated(`repos/${repo}/pulls/${readyRun.state.pr.number}/commits?per_page=100`);
-  // Commit POSITION relative to promotion.head, not a self-reported
-  // timestamp — challenge round 1, confirmed: a cherry-picked human fix
-  // can carry an older timestamp than the promotion, and a rebase can
-  // carry a newer one for a commit that predates it; only "does it come
-  // after promotion.head in the PR's own commit sequence" answers the
-  // actual question. A head that no longer appears (a force-push rewrote
-  // it) has no sequence to measure against, so this reports no fix rather
-  // than guessing — a known simplification for this P2 signal, not the
-  // primary cohort determination.
-  const headIndex = commits.findIndex((c) => c.sha === promotion.head);
-  if (headIndex === -1) return { fixed: false, indeterminate: false };
-  // The commits API is always live — fetching "now" and never checking
-  // --as-of meant re-running the SAME historical cutoff could report a
-  // DIFFERENT post_ready_fix_count as new commits landed later, violating
-  // the closed immutable cohort requirement (the same window and cutoff
-  // must always report the same share) — challenge round 3, confirmed.
-  // Position still decides WHETHER a commit is a genuine post-promotion
-  // fix (unaffected by rebases/cherry-picks); first_seen additionally
-  // bounds WHICH of those were already visible as of the requested
-  // cutoff — review round 4, confirmed (P1, twice-revised): committer/
-  // author date is fully pusher-controlled and does not answer that,
-  // and Commit.pushedDate (an earlier attempted fix) turned out to never
-  // populate for this repo's commits at all.
-  // Bot-authored commits (author.type === "Bot" — a GitHub App or Actions
-  // identity, distinct from computeIssueVerdict's own initiated_by-based
-  // human/Foreman distinction, which has no equivalent signal at the git
-  // commit level) never count as a "post-ready HUMAN fix" — shepherd round
-  // 1, Codex-confirmed (P2): every post-promotion commit counted
-  // regardless of author, inflating a metric explicitly defined as human
-  // fixes after readiness. Conservative on purpose: only a POSITIVELY
-  // bot-identified commit is excluded; a human's git identity unlinked
-  // from a GitHub account (author null/absent) is never false-excluded.
-  const postPromotion = commits.slice(headIndex + 1).filter((c) => c.author?.type !== "Bot");
-  let fixed = false;
-  let indeterminate = false;
-  for (const c of postPromotion) {
-    const seen = firstSeen(repo, c.sha);
-    if (seen === null) {
-      indeterminate = true;
-      continue;
+  try {
+    const commits = ghApiPaginated(`repos/${repo}/pulls/${readyRun.state.pr.number}/commits?per_page=100`);
+    // Commit POSITION relative to promotion.head, not a self-reported
+    // timestamp — challenge round 1, confirmed: a cherry-picked human fix
+    // can carry an older timestamp than the promotion, and a rebase can
+    // carry a newer one for a commit that predates it; only "does it come
+    // after promotion.head in the PR's own commit sequence" answers the
+    // actual question. A head that no longer appears (a force-push rewrote
+    // it) has no sequence to measure against, so this reports no fix rather
+    // than guessing — a known simplification for this P2 signal, not the
+    // primary cohort determination.
+    const headIndex = commits.findIndex((c) => c.sha === promotion.head);
+    if (headIndex === -1) return { fixed: false, indeterminate: false };
+    // The commits API is always live — fetching "now" and never checking
+    // --as-of meant re-running the SAME historical cutoff could report a
+    // DIFFERENT post_ready_fix_count as new commits landed later, violating
+    // the closed immutable cohort requirement (the same window and cutoff
+    // must always report the same share) — challenge round 3, confirmed.
+    // Position still decides WHETHER a commit is a genuine post-promotion
+    // fix (unaffected by rebases/cherry-picks); first_seen additionally
+    // bounds WHICH of those were already visible as of the requested
+    // cutoff — review round 4, confirmed (P1, twice-revised): committer/
+    // author date is fully pusher-controlled and does not answer that,
+    // and Commit.pushedDate (an earlier attempted fix) turned out to never
+    // populate for this repo's commits at all.
+    // Bot-authored commits (author.type === "Bot" — a GitHub App or Actions
+    // identity, distinct from computeIssueVerdict's own initiated_by-based
+    // human/Foreman distinction, which has no equivalent signal at the git
+    // commit level) never count as a "post-ready HUMAN fix" — shepherd round
+    // 1, Codex-confirmed (P2): every post-promotion commit counted
+    // regardless of author, inflating a metric explicitly defined as human
+    // fixes after readiness. Conservative on purpose: only a POSITIVELY
+    // bot-identified commit is excluded; a human's git identity unlinked
+    // from a GitHub account (author null/absent) is never false-excluded.
+    const postPromotion = commits.slice(headIndex + 1).filter((c) => c.author?.type !== "Bot");
+    let fixed = false;
+    let anyUnresolved = false;
+    for (const c of postPromotion) {
+      const seen = firstSeen(repo, c.sha);
+      if (seen === null) {
+        anyUnresolved = true;
+        continue;
+      }
+      if (Date.parse(seen) <= cutoffEpoch) fixed = true;
     }
-    if (Date.parse(seen) <= cutoffEpoch) fixed = true;
+    // shepherd round 6, Codex-confirmed (P2): a fixed commit and a
+    // SEPARATE unresolved commit previously set both fixed and
+    // indeterminate together, double-counting one issue in both output
+    // buckets. Once any commit confirms the fix, the boolean is settled;
+    // an unresolved OTHER commit reserves indeterminate for the case
+    // nothing confirmed a fix AND something could not be ruled out.
+    return { fixed, indeterminate: !fixed && anyUnresolved };
+  } catch (err) {
+    // shepherd round 6, Codex-confirmed (P1): a transient API, permission,
+    // or rate-limit GhError from either request above previously escaped
+    // this function entirely, aborting computeClosedCohortMetric — and so
+    // the whole --repo invocation — over one issue's secondary signal.
+    if (err instanceof GhError) return { fixed: false, indeterminate: true };
+    throw err;
   }
-  return { fixed, indeterminate };
 }
 
 // First kickoff = the earliest started_at among an issue's successfully
@@ -1776,10 +1802,28 @@ function recordedExitFor(state, stage) {
 }
 
 const OUTCOME_ENUM = ["continue", "converged", "diverging", "capped"];
+// stage_transitions[].exit is documented, unconstrained free-form prose
+// (run.schema.json has no format/pattern on it) — a human- or
+// tool-written summary that may carry ANY trailing commentary after the
+// machine-relevant leading word, not only the small set of separators
+// (whitespace, colon) an earlier version of this split on. shepherd
+// round 6, Codex-confirmed (P1): the committed valid fixture
+// further-along.json already uses "converged, one deferred" — splitting
+// on `[\s:]` alone keeps the comma, so "converged," never matches
+// OUTCOME_ENUM and this returned null for a genuinely converged stage,
+// reporting recorded=null vs a candidate policy's recomputed=converged
+// as a false --replay policy difference. Matching the enum word at the
+// START, followed by a word boundary, is correct for ANY trailing
+// punctuation or prose — not a special case for one more separator
+// character, the same class of fragile-parsing bug this file has
+// hardened against elsewhere (recordedOutcome exists specifically
+// because there is no machine-readable verdict FIELD to read instead;
+// see this function's own callers).
+const OUTCOME_TOKEN_RE = new RegExp(`^(${OUTCOME_ENUM.join("|")})\\b`);
 function recordedOutcome(exitText) {
   if (!exitText) return null;
-  const word = exitText.split(/[\s:]/, 1)[0];
-  return OUTCOME_ENUM.includes(word) ? word : null;
+  const m = OUTCOME_TOKEN_RE.exec(exitText);
+  return m ? m[1] : null;
 }
 
 // dev-flow-exit.mjs's --current-head must be "an independently captured
@@ -2045,7 +2089,19 @@ function requireTrustedActorIds(args) {
       console.error('dev-flow-stats: --trusted-actors-file must contain {"trusted_actor_ids": [...]}');
       return null;
     }
-    fromFile = doc.trusted_actor_ids.map(Number);
+    // JSON values are already typed — shepherd round 6, Codex-confirmed
+    // (P2): coercing every entry with Number() (originally added for
+    // --trusted-actor-id's own CLI strings, always strings from argv)
+    // also silently coerced a boolean/string/null/object entry from this
+    // FILE, e.g. Number(true) === 1, converting a malformed
+    // security-sensitive config entry into a real, trusted actor id
+    // instead of rejecting it. File entries are validated by their OWN
+    // declared type; only command-line strings are ever coerced.
+    if (!doc.trusted_actor_ids.every((v) => typeof v === "number")) {
+      console.error('dev-flow-stats: --trusted-actors-file "trusted_actor_ids" entries must be JSON numbers — a boolean, string, null, or object is never silently converted to an actor id');
+      return null;
+    }
+    fromFile = doc.trusted_actor_ids;
   }
   const all = [...fromFlags, ...fromFile];
   if (all.length === 0) {

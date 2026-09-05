@@ -62,6 +62,14 @@ repos/*/issues/*/comments\?per_page=100)
     ;;
 repos/*/pulls/*/commits\?per_page=100)
     n="$(echo "$endpoint" | sed -E 's#.*/pulls/([0-9]+)/commits.*#\1#')"
+    # A literal "FAIL" (instead of an array) simulates a transient API,
+    # permission, or rate-limit error from this endpoint — shepherd round
+    # 6, proving computePostReadyFix isolates such a failure to its own
+    # issue instead of it escaping as an uncaught GhError.
+    if [ "$(jq --arg n "$n" -r '.commits[$n] // empty' "$db")" = "FAIL" ]; then
+        echo "fake gh: simulated API failure for pulls/$n/commits" >&2
+        exit 1
+    fi
     jq --arg n "$n" '[(.commits[$n] // [])]' "$db"
     ;;
 repos/*/commits/*/pulls)
@@ -2253,6 +2261,193 @@ function writeScenario(name, db) {
   });
 }
 
+// --- Scenario 53: a malformed (no-fence) run-index posted FIRST, then a
+// later well-formed duplicate for the SAME run_id posted second (a
+// simulated "someone re-posted a corrected index") — shepherd round 6,
+// Codex-confirmed (P1 + P2): the round-5 malformed-index fix treated
+// malformed and well-formed candidates as two SEPARATE pools, so the
+// later well-formed one silently won canonical status regardless of
+// comment id, instead of the evidence contract's lowest-id-wins rule
+// applying across both. The malformed (lower-id) one must stay
+// canonical — indeterminate, using ITS OWN created_at as kickoffCreatedAt
+// (not null, not the later duplicate's).
+{
+  const runId = "run-malformed-index-canonical-1";
+  const recordCreatedAt = "2026-08-20T00:00:00Z";
+  const malformedIndexCreatedAt = "2026-08-20T00:01:00Z";
+  const laterValidIndexCreatedAt = "2026-09-01T00:00:00Z";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: recordCreatedAt,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: recordCreatedAt }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null, evidence_comments: [], promotion: null,
+  };
+  const body = { ...runBody, ...deriveDefaultChains(runBody) };
+  const rm = marker("run-record", runId, "kickoff", "issue", null, 1);
+  const rr = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${rm}\n\${fence(JSON.stringify(body))}\`, recordCreatedAt);
+  // Malformed: canonical marker, no fenced payload — posted right after
+  // the record, so it gets the LOWER comment id of the two indices.
+  const malformedIm = marker("run-index", runId, "kickoff", "issue", null, 1);
+  const malformedIdx = comment(TRUSTED_ORCHESTRATOR, "orchestrator", malformedIm, malformedIndexCreatedAt);
+  // A later, well-formed duplicate for the SAME run_id — higher comment
+  // id, posted well after.
+  const indexPayload = {
+    run_id: runId, initiated_by: body.initiated_by, branch: null,
+    run_record: { id: String(rr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator" },
+  };
+  const validIm = marker("run-index", runId, "kickoff", "issue", null, 1);
+  const laterValidIdx = comment(TRUSTED_ORCHESTRATOR, "orchestrator", \`\${validIm}\n\${fence(JSON.stringify(indexPayload))}\`, laterValidIndexCreatedAt);
+  writeScenario("malformed-index-stays-canonical", {
+    issues: [{ number: 168, pull_request: null }],
+    comments: { "168": [rr, malformedIdx, laterValidIdx] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 168, malformedIndexCreatedAt },
+  });
+}
+
+// --- Scenario 54: a correctly indexed, digested, trusted evidence
+// comment whose reassembled payload is valid JSON but not an object
+// (bare $(null)) — shepherd round 6, Codex-confirmed (P1): JSON.parse
+// accepts $(null) as a value, so this previously reached round.payload
+// unchecked, and every downstream reader (--run's rendering, --replay's
+// buildRunDirectory) unconditionally dereferences round.payload.passes —
+// an uncaught TypeError, not an EvidenceError, aborting the entire batch
+// instead of making only this run indeterminate.
+{
+  const runId = "run-null-round-payload-1";
+  const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, null, "2026-09-01T00:01:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" }]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    evidence_comments: [evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, payloadDigest(JSON.stringify(null)))],
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("null-round-payload", {
+    issues: [{ number: 169, pull_request: null }],
+    comments: { "169": [idx, rr, ev] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 169 },
+  });
+}
+
+// --- Scenario 55: a confirmed post-ready human fix alongside a SEPARATE,
+// unresolvable post-promotion commit on the SAME issue — shepherd round
+// 6, Codex-confirmed (P2): once any commit confirms the fix, the
+// issue-level boolean is conclusively true; a different, still-
+// unresolved commit must not ALSO mark the issue indeterminate,
+// double-counting it in both output buckets.
+{
+  const runId = "run-postfix-mixed-1";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:01:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 622, url: "https://example.invalid/pr/622" },
+    evidence_comments: [],
+    promotion: { head: "a".repeat(40), promoted_at: "2026-09-01T00:10:00Z", gate_fingerprint: "mixed" },
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  const promotedCommit = { sha: "a".repeat(40), commit: { committer: { date: "2026-09-01T00:10:00Z" } }, author: { id: TRUSTED_ORCHESTRATOR } };
+  const resolvedFixCommit = { sha: "b".repeat(40), commit: { committer: { date: "2026-09-01T00:20:00Z" } }, author: { id: 42 } };
+  const unresolvableCommit = { sha: "c".repeat(40), commit: { committer: { date: "2026-09-01T00:21:00Z" } }, author: { id: 43 } };
+  writeScenario("postfix-mixed", {
+    issues: [{ number: 170, pull_request: null }],
+    comments: { "170": [idx, rr] },
+    commits: { "622": [promotedCommit, resolvedFixCommit, unresolvableCommit] },
+    ...mergedPrSeen(resolvedFixCommit.sha, 622, "2026-09-01T00:20:00Z"),
+    // unresolvableCommit has no mergedPrSeen/checkSuiteSeen at all —
+    // first_seen resolves to null.
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 170 },
+  });
+}
+
+// --- Scenario 56: computePostReadyFix's own PR-commits request fails
+// transiently (simulated via the fake gh stub's "FAIL" sentinel) on ONE
+// issue — shepherd round 6, Codex-confirmed (P1): this must isolate to
+// that issue's own post_ready_fix_indeterminate_count, never escape and
+// abort the primary closed-cohort result for the --repo scan's OTHER
+// issue.
+{
+  const failRunId = "run-postfix-api-fail-1";
+  const failRunBody = {
+    schema: 2, run_id: failRunId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:01:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 623, url: "https://example.invalid/pr/623" },
+    evidence_comments: [],
+    promotion: { head: "d".repeat(40), promoted_at: "2026-09-01T00:10:00Z", gate_fingerprint: "api-fail" },
+  };
+  const failPair = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", failRunId, failRunBody, "2026-09-01T00:00:00Z");
+
+  const okRunId = "run-postfix-api-fail-ok-sibling-1";
+  const okRunBody = {
+    schema: 2, run_id: okRunId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "integration", entered_at: "2026-09-01T00:01:00Z" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: "ready-for-review",
+    pr: { number: 624, url: "https://example.invalid/pr/624" },
+    evidence_comments: [],
+    promotion: { head: "e".repeat(40), promoted_at: "2026-09-01T00:10:00Z", gate_fingerprint: "api-fail-sibling" },
+  };
+  const okPair = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", okRunId, okRunBody, "2026-09-01T00:00:00Z");
+
+  writeScenario("postfix-api-fail", {
+    issues: [{ number: 171, pull_request: null }, { number: 172, pull_request: null }],
+    comments: { "171": [failPair.index, failPair.record], "172": [okPair.index, okPair.record] },
+    // "FAIL" (a string, not an array) trips the fake gh stub's simulated
+    // API-failure path for issue 171's PR commits specifically; issue
+    // 172's PR (624) has ordinary, empty commits — a ready run with no
+    // post-promotion activity at all, a genuinely clean "no fix" result.
+    commits: { "623": "FAIL", "624": [] },
+    meta: { failRunId, okRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumberFail: 171, issueNumberOk: 172 },
+  });
+}
+
+// --- Scenario 57: a stage_transitions exit carries trailing free-form
+// prose after its machine-relevant leading word ("continue, more rounds
+// needed") — shepherd round 6, Codex-confirmed (P1): recordedOutcome's
+// old split-on-whitespace-or-colon approach kept the comma, so
+// "continue," never matched OUTCOME_ENUM and this recorded=null instead
+// of recorded=continue, reporting a false --replay policy difference
+// against a candidate policy that genuinely still agrees.
+{
+  const runId = "run-outcome-trailing-prose-1";
+  const challengePayload = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 1, adjudications: [] } };
+  const ev = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, challengePayload, "2026-09-01T00:01:00Z");
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "challenge", entered_at: "2026-09-01T00:00:30Z", exit: "continue, more rounds needed" },
+    ]),
+    interventions: chain([]), settlements: chain([]),
+    outcome: null, pr: null,
+    evidence_comments: [evidenceIndexEntry(ev, TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, payloadDigest(JSON.stringify(challengePayload)))],
+    promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z");
+  writeScenario("outcome-trailing-prose", {
+    issues: [{ number: 173, pull_request: null }],
+    comments: { "173": [idx, rr, ev] },
+    commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 173 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -2373,6 +2568,16 @@ echo '{"trusted_actor_ids":[9001]}' >"$tmp/trusted.json"
 export DFSTATS_DB="$tmp/scenarios/happy.json"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actors-file "$tmp/trusted.json" --json)"
 echo "$out" | jq -e '.cohort_size == 1' >/dev/null || fail "trusted-actors-file: expected the file-configured actor to be trusted"
+
+echo "== shepherd round 6: a JSON boolean in --trusted-actors-file is a usage error, never silently coerced to actor id 1 =="
+for bad_value in 'true' '"9001"' 'null' '{}'; do
+    echo "{\"trusted_actor_ids\":[$bad_value]}" >"$tmp/trusted-bad.json"
+    set +e
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actors-file "$tmp/trusted-bad.json" --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "trusted-actors-file (bad value $bad_value): expected a usage error, got rc=$rc: $out"
+done
 
 echo "== missing --trusted-actor-id/--trusted-actors-file is a usage error, never a silent open-trust default =="
 set +e
@@ -3043,5 +3248,52 @@ review_cap = 3
 TOML
 enabling_out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-disabled-enabling.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$enabling_out" | jq -e '(.[0].diffs | length) == 1 and .[0].diffs[0].stage == "challenge" and .[0].diffs[0].recorded == "capped: disabled" and .[0].diffs[0].recomputed == "continue"' >/dev/null || fail "challenge-capped-disabled (enabling cap 4): expected challenge to diff (recorded capped, recomputed continue for the zero-round trajectory), got: $enabling_out"
+
+echo "== shepherd round 6: a malformed (no-fence) run-index with the LOWER comment id stays canonical over a later well-formed duplicate for the same run_id, using its own created_at as kickoffCreatedAt =="
+export DFSTATS_DB="$tmp/scenarios/malformed-index-stays-canonical.json"
+run_id="$(meta malformed-index-stays-canonical .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "malformed-index-stays-canonical: expected the malformed (lower-id) index to stay canonical (indeterminate), got rc=$rc: $out"
+echo "$out" | grep -qi "canonical marker but no fenced payload" || fail "malformed-index-stays-canonical: expected the malformed-payload reason (not authenticating via the later well-formed duplicate), got: $out"
+# kickoffCreatedAt must be the malformed index's OWN created_at
+# (2026-08-20T00:01:00Z), not null and not the later duplicate's
+# (2026-09-01) — proven via --since: a cutoff of 2026-08-21 (after the
+# malformed index, before the later duplicate) must EXCLUDE this issue.
+# A null kickoffCreatedAt bug would instead admit it unconditionally.
+since_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-08-21T00:00:00Z --json)"
+echo "$since_out" | jq -e '.indeterminate_count == 0 and (.per_issue | length) == 0' >/dev/null || fail "malformed-index-stays-canonical: expected --since 08-21 to exclude the issue (malformed index's own kickoff predates it), got: $since_out"
+
+echo "== shepherd round 6: a correctly authenticated evidence comment whose reassembled payload is valid JSON but not an object (bare null) makes its run indeterminate, never crashes --run or --replay =="
+export DFSTATS_DB="$tmp/scenarios/null-round-payload.json"
+run_id="$(meta null-round-payload .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "null-round-payload: expected indeterminate (not a crash), got rc=$rc: $out"
+echo "$out" | grep -qi "valid JSON but not an object" || fail "null-round-payload: expected a malformed-round-payload reason, got: $out"
+set +e
+replay_out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json 2>&1)"
+replay_rc=$?
+set -e
+[ "$replay_rc" -eq 0 ] || fail "null-round-payload: expected --replay to complete without crashing, got rc=$replay_rc: $replay_out"
+
+echo "== shepherd round 6: a confirmed post-ready fix and a separate unresolved commit on the same issue count only as fixed, never also indeterminate =="
+export DFSTATS_DB="$tmp/scenarios/postfix-mixed.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.post_ready_fix_count == 1 and .post_ready_fix_indeterminate_count == 0' >/dev/null || fail "postfix-mixed: expected fixed=1, indeterminate=0 (a confirmed fix settles the issue), got: $out"
+
+echo "== shepherd round 6: computePostReadyFix's own API failure isolates to one issue's indeterminate count, never aborts the --repo scan =="
+export DFSTATS_DB="$tmp/scenarios/postfix-api-fail.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.cohort_size == 2 and .post_ready_fix_indeterminate_count == 1 and .post_ready_fix_count == 0' >/dev/null || fail "postfix-api-fail: expected both issues reported (cohort_size 2), the failing one counted indeterminate, the sibling unaffected, got: $out"
+
+echo "== shepherd round 6: a stage exit with trailing free-form prose ('continue, more rounds needed') is still parsed as its leading machine token, not null =="
+export DFSTATS_DB="$tmp/scenarios/outcome-trailing-prose.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '(.[0].diffs | length) == 0' >/dev/null || fail "outcome-trailing-prose: expected no diff (recorded 'continue,...' correctly parses as continue, matching the fake script's recomputed continue with 1 round under cap 4), got: $out"
 
 echo "TEST PASS: dev-flow-stats harvesting/trust/metric/replay behavior"

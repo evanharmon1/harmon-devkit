@@ -1,0 +1,30 @@
+{
+  "schema": 2,
+  "run_id": "run-outxn-flat-mismatch",
+  "initiated_by": "human",
+  "started_at": "2026-09-05T09:00:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-09-05T09:00:00Z",
+      "exit": "claimed"
+    }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": [
+    {
+      "seq": 0,
+      "digest": "044463d622e4504a6d4ef450e617da4992980891e5ce586d729eaa4e50ce4063",
+      "prev_digest": "genesis",
+      "outcome": "capped",
+      "at": "2026-09-05T09:30:00Z"
+    }
+  ]
+}

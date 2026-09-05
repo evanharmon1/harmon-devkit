@@ -1688,9 +1688,20 @@ function entryDigestForCheck(contentFields, prevDigest) {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
+// Returns { evidence_registrations, pr_bindings, outcome_transitions },
+// each either the chain's own verified, deduped, seq-ordered entries or
+// `null` when that chain had ANY error (missing/wrong-shaped fields, a
+// fork, a contiguity gap, or a broken digest) — mirroring
+// dev-flow-stats.mjs's own verifyRunRecordChains, whose caller
+// (reconstructAsOf) only ever projects flat fields from chains it has
+// already confirmed clean. checkRunFlatProjections below reads this
+// return value rather than re-deriving trust from a chain this function
+// already found broken.
 function checkRunChainIntegrity(document, errors) {
+  const verified = {}
   for (const [arrayName, contentKeys] of Object.entries(CHAIN_CONTENT_FIELDS)) {
     const rawEntries = document[arrayName]
+    verified[arrayName] = null
     if (!Array.isArray(rawEntries)) continue
     // Schema-level checks already require seq/digest/prev_digest and their
     // shape on every entry; skip silently (this function is not
@@ -1739,20 +1750,73 @@ function checkRunChainIntegrity(document, errors) {
     }
     if (!contiguous) continue
     let prevDigest = 'genesis'
+    let brokenDigest = false
     for (const entry of deduped) {
       if (entry.prev_digest !== prevDigest) {
         errors.push(
           `$run.${arrayName}[${entry.seq}].prev_digest: ${JSON.stringify(entry.prev_digest)} does not match the preceding entry's own digest (${JSON.stringify(prevDigest)}) — chain broken`,
         )
+        brokenDigest = true
         break // one break invalidates every entry after it; no point compounding
       }
       const content = Object.fromEntries(contentKeys.map((key) => [key, entry[key]]))
       const expected = entryDigestForCheck(content, prevDigest)
       if (entry.digest !== expected) {
         errors.push(`$run.${arrayName}[${entry.seq}].digest: does not match its own content — tampered`)
+        brokenDigest = true
         break
       }
       prevDigest = entry.digest
+    }
+    if (!brokenDigest) verified[arrayName] = deduped
+  }
+  return verified
+}
+
+// checkRunFlatProjections — evidence_comments/pr/outcome are each
+// documented as "a derived projection" of their own chain (run.schema.
+// json's own field descriptions), so a chain that verifies clean is not
+// by itself proof the record is trustworthy: nothing before this point
+// checked that the FLAT field actually equals what its chain derives.
+// Fresh evidence beyond the earlier digest-chain finding (shepherd round
+// 6, Codex-confirmed P1): outcome_transitions-harmless-retry.json (round
+// 4's own fixture) still printed "run record OK" here even though its
+// chain derives outcome "ready-for-review" while its flat `outcome` field
+// is null — dev-flow-stats.mjs's own reconstructAsOf() rejects the
+// identical document as an out-of-band edit. Mirrors
+// dev-flow-stats.mjs's deriveProjections/verifyProjections exactly:
+// evidence_comments[] is evidence_registrations[] with its chain-only
+// fields (seq/digest/prev_digest/registered_at) stripped, in seq order;
+// pr/outcome are each the LAST entry of their own chain (or null if
+// empty). Only runs against a chain checkRunChainIntegrity already
+// verified clean — a chain it found broken already has its own error,
+// and deriving a projection from broken data would be checking
+// consistency against a value nothing establishes as trustworthy.
+function checkRunFlatProjections(document, verifiedChains, errors) {
+  if (verifiedChains.evidence_registrations !== null) {
+    const derived = verifiedChains.evidence_registrations.map((r) => ({
+      id: r.id,
+      author_actor_id: r.author_actor_id,
+      login: r.login,
+      digest: r.payload_digest,
+      marker: r.marker,
+    }))
+    if (canonicalJsonForDigest(document.evidence_comments || []) !== canonicalJsonForDigest(derived)) {
+      errors.push('$run.evidence_comments: does not match its evidence_registrations[] chain — out-of-band edit')
+    }
+  }
+  if (verifiedChains.pr_bindings !== null) {
+    const lastPr = verifiedChains.pr_bindings[verifiedChains.pr_bindings.length - 1]
+    const derivedPr = lastPr ? { number: lastPr.number, url: lastPr.url } : null
+    if (canonicalJsonForDigest(document.pr ?? null) !== canonicalJsonForDigest(derivedPr)) {
+      errors.push('$run.pr: does not match its pr_bindings[] chain — out-of-band edit')
+    }
+  }
+  if (verifiedChains.outcome_transitions !== null) {
+    const lastOutcome = verifiedChains.outcome_transitions[verifiedChains.outcome_transitions.length - 1]
+    const derivedOutcome = lastOutcome ? lastOutcome.outcome : null
+    if (canonicalJsonForDigest(document.outcome ?? null) !== canonicalJsonForDigest(derivedOutcome)) {
+      errors.push('$run.outcome: does not match its outcome_transitions[] chain — out-of-band edit')
     }
   }
 }
@@ -2126,7 +2190,7 @@ function main() {
       checkEvidenceCommentsUniqueness(instance, errors)
       checkRunPromotionOutcome(instance, errors)
       checkRunOutcomeTransitionsBound(instance, errors)
-      checkRunChainIntegrity(instance, errors)
+      checkRunFlatProjections(instance, checkRunChainIntegrity(instance, errors), errors)
       checkSettlementReferenceType(instance, errors)
       checkStageTransitionsOrder(instance, errors)
       checkRunChronology(instance, errors)

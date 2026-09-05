@@ -64,6 +64,23 @@
     "gate_fingerprint": "sha256:fingerprint"
   },
   "evidence_registrations": [],
-  "pr_bindings": [],
-  "outcome_transitions": []
+  "pr_bindings": [
+    {
+      "seq": 0,
+      "digest": "a960847661208f6d116a55d452e4c5c8c0a90c4d2717d9a6e18a20c88b3e2dc2",
+      "prev_digest": "genesis",
+      "number": 634,
+      "url": "https://github.com/evanharmon1/harmon-devkit/pull/634",
+      "bound_at": "2026-08-29T09:22:00Z"
+    }
+  ],
+  "outcome_transitions": [
+    {
+      "seq": 0,
+      "digest": "590d8cd6fa1676f915e3886e1dc143353bd515e354e94d3778db07a154f016b1",
+      "prev_digest": "genesis",
+      "outcome": "ready-for-review",
+      "at": "2026-08-29T10:00:00Z"
+    }
+  ]
 }

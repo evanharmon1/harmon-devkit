@@ -6,11 +6,12 @@
   "stage_transitions": [
     {
       "stage": "kickoff",
-      "entered_at": "2026-09-03T09:00:00Z"
+      "entered_at": "2026-09-03T09:00:00Z",
+      "exit": "claimed"
     }
   ],
   "interventions": [],
-  "outcome": null,
+  "outcome": "capped",
   "pr": null,
   "evidence_comments": [],
   "settlements": [],
@@ -20,16 +21,16 @@
   "outcome_transitions": [
     {
       "seq": 0,
-      "digest": "ec7d42a4cb6ce1d11805b47485168dbc3d9ba5a4e5c81ec3806859df3dd6d201",
+      "digest": "810b211b9ab1c35dcecbe242785be39c2176030c71f8d84855853ead0964050b",
       "prev_digest": "genesis",
-      "outcome": "ready-for-review",
+      "outcome": "capped",
       "at": "2026-09-03T09:30:00Z"
     },
     {
       "seq": 0,
-      "digest": "ec7d42a4cb6ce1d11805b47485168dbc3d9ba5a4e5c81ec3806859df3dd6d201",
+      "digest": "810b211b9ab1c35dcecbe242785be39c2176030c71f8d84855853ead0964050b",
       "prev_digest": "genesis",
-      "outcome": "ready-for-review",
+      "outcome": "capped",
       "at": "2026-09-03T09:30:00Z"
     }
   ]
