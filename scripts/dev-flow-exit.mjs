@@ -1137,8 +1137,18 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
   // adjudicated priority and nothing about concentration could be true or
   // false of it. Absent rather than false in that case — a reader must be
   // able to tell "no signal was computable" from "the signal is negative".
+  // Suppressed once ANY retained round is incomplete (review round 1,
+  // confirmed): the branch below terminalizes a finder exhaustion on the
+  // grounds that "no later round is legal" after it, so a candidate computed
+  // from such a later round would advertise evidence drawn from a round the
+  // same verdict is about to declare illegal. Absent, not false — a reader
+  // must still be able to tell "no signal was computable" from "the signal is
+  // negative".
+  const trajectoryIsComplete = retained.every((r) => r.status === "complete");
   const splitCandidate =
-    latest && latest.status === "complete" ? computeSplitCandidate(retained, retained.indexOf(latest), ledger) : null;
+    trajectoryIsComplete && latest && latest.status === "complete"
+      ? computeSplitCandidate(retained, retained.indexOf(latest), ledger)
+      : null;
 
   const base = {
     stage,

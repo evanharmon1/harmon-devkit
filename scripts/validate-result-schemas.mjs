@@ -2176,9 +2176,10 @@ function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
 //     same mechanism twice in one stage is either a duplicate append or a
 //     second, differently-filed issue for the same code; both need a human,
 //     not a silently-accepted record. The same mechanism CAN legitimately
-//     appear under two different stages (challenge split it, integration
-//     found more of it), so the key is the stage/mechanism pair, not the
-//     mechanism alone.
+//     appear under the two CONFIDENCE stages (challenge split it, review
+//     found more of it) — and only those two, since `split` is not a valid
+//     disposition at `integration` — so the key is the stage/mechanism pair,
+//     not the mechanism alone.
 function checkSplits(document, errors) {
   if (!Array.isArray(document.splits)) return
   const seenFindings = new Map()
