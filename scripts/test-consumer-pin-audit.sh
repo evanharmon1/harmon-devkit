@@ -935,6 +935,38 @@ for needle in 'Taskfile.yml' '--taskfile-dir .' 'branch_cross_validation.indeter
     fi
 done
 
+echo "== the ordinary invocation does not block its own path =="
+# Codex cloud review, confirmed: adding `--taskfile-dir .` to the ordinary
+# invocation while simultaneously replacing "one residual indeterminate is
+# expected" with "settle every indeterminate" made the normal path return
+# exit 3 carrying an indeterminate the new rule forbids leaving open. Both
+# flags are needed, and the assertion is behavioural rather than a grep for
+# the recipe text: what matters is that the documented invocation leaves no
+# indeterminate behind.
+set +e
+bare="$(node "$READER" resolve --policy "$V2_POLICY" --taskfile-dir "$repo" --json 2>/dev/null)"
+full="$(node "$READER" resolve --policy "$V2_POLICY" --taskfile-dir "$repo" \
+    --registry "$repo/agent-registry.json" --json 2>/dev/null)"
+set -e
+if printf '%s' "$bare" |
+    jq -e '[.cross_validation.indeterminate[] | select(test("registry"))] | length > 0' >/dev/null 2>&1; then
+    ok "without --registry the ordinary invocation leaves a registry indeterminate"
+else
+    bad "without --registry no registry indeterminate was reported (premise broken)"
+fi
+if printf '%s' "$full" |
+    jq -e '(.cross_validation.indeterminate | length) == 0' >/dev/null 2>&1; then
+    ok "with both flags the ordinary invocation leaves no indeterminate to settle"
+else
+    bad "with both flags an indeterminate survives the ordinary invocation"
+fi
+if grep -Fzq -- '--registry
+agent-registry.json --taskfile-dir . --json' "$INTEGRATE_MD"; then
+    ok "the ordinary invocation documents both flags"
+else
+    bad "the ordinary invocation does not document both flags"
+fi
+
 echo
 echo "consumer-pin-audit tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

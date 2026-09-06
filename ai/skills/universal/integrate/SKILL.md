@@ -167,8 +167,14 @@ restate an older shape's vocabulary in order to reject it.
 **On an ordinary review** — the change under review touches none of
 `scripts/devflow-policy.mjs`, `scripts/lib/toml-lite.mjs`, `.devflow.toml`,
 `agent-registry.json`, `Taskfile.yml`, or `taskfiles/` —
-`task devflow:policy -- resolve --policy .devflow.toml --taskfile-dir . --json`
-(add `--rigor <level>` for an explicit override) is the whole invocation.
+`task devflow:policy -- resolve --policy .devflow.toml --registry
+agent-registry.json --taskfile-dir . --json` (add `--rigor <level>` for an
+explicit override) is the whole invocation. Both of those flags are load-bearing
+and for the same reason the closure path supplies them: without `--registry`
+the resolution reports `no registry was supplied` and finders, roles, pools,
+and harnesses go unchecked, and without `--taskfile-dir` gate slugs do — each
+one an `indeterminate` the settle rule below forbids leaving open, so an
+invocation missing either blocks its own ordinary path.
 
 **When the change under review touches any file on that list, that bare
 invocation resolves the BRANCH's own (possibly self-lowered) copy** — the
