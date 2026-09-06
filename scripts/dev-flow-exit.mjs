@@ -78,6 +78,12 @@ function indeterminate(args, reason) {
 // to know or assume which role produced a given pass.
 const PASS_VALIDATION_KIND = "envelope";
 
+// The two confidence stages, named once. Both cross-stage trajectory rules
+// below — the orphan-adjudication scan and its mirror, the adjudication
+// coverage scan — must range over exactly the same set, and two separate
+// literals would let them drift apart silently.
+const CONFIDENCE_STAGES = ["challenge", "review"];
+
 class ExitIndeterminate extends Error {}
 
 // ---------------------------------------------------------------------------
@@ -1633,7 +1639,7 @@ async function main() {
   // a trajectory its own policy forbids (integrate cycle 3 on PR #800,
   // confirmed). The cap-0 emptiness rule above is already cross-stage; this
   // is the same rule for a positive cap.
-  for (const otherStage of ["challenge", "review"]) {
+  for (const otherStage of CONFIDENCE_STAGES) {
     const otherCap = resolved.rounds[otherStage];
     if (typeof otherCap !== "number" || otherCap === 0) continue; // cap 0 handled above
     const overCapPass = runDir.passes
@@ -1733,11 +1739,49 @@ async function main() {
   // certify convergence with no adjudication document ever having existed
   // for it (exit-computation spec: "every retained pass to have exactly
   // one adjudication document").
-  const missingAdjudication = rounds.some(
-    (r) => r.status === "complete" && (!r.hasAdjudication || r.findings.some((f) => f.adjudicated_priority === null)),
-  );
-  if (missingAdjudication && !args["verification-only"]) {
-    return indeterminate(args, "a completed round has no adjudication document, or a finding in it has no matching adjudication entry");
+  //
+  // Cross-stage, and for the same reason its mirror above is (integrate
+  // cycle 7 on PR #800, confirmed and reproduced): making only the
+  // adjudication -> pass direction scan every stage left the two halves of
+  // one invariant with different scopes, which reads as symmetric while
+  // being nothing of the kind. A completed, schema-valid challenge pass
+  // carrying no adjudication document at all still let review converge and
+  // return action "advance".
+  //
+  // `rounds` itself stays scoped to args.stage — it feeds round counting,
+  // contiguity and the verdict, all of which are per-stage by definition —
+  // so the other confidence stage is assembled separately for coverage
+  // only, and the gap is reported keyed "<stage>:<round>" exactly as the
+  // orphan direction is.
+  const coverageGaps = [];
+  try {
+    for (const coverageStage of CONFIDENCE_STAGES) {
+      // A stage with no resolved [stage.*] configuration cannot be
+      // assembled (assembleLogicalRounds derives its expected slot set from
+      // resolvedStage.finders); skipping it preserves the prior behaviour
+      // for that case rather than crashing on an unconfigured stage.
+      if (coverageStage !== args.stage && !resolved.stages[coverageStage]) continue;
+      const stageRounds =
+        coverageStage === args.stage
+          ? rounds
+          : assembleLogicalRounds(coverageStage, validPasses, validAdjudications, resolved.stages[coverageStage], runDir.runRecord);
+      for (const r of stageRounds) {
+        if (r.status === "complete" && (!r.hasAdjudication || r.findings.some((f) => f.adjudicated_priority === null))) {
+          coverageGaps.push(`${coverageStage}:${r.round}`);
+        }
+      }
+    }
+  } catch (err) {
+    if (err instanceof ExitIndeterminate) {
+      return indeterminate(args, err.message);
+    }
+    throw err;
+  }
+  if (coverageGaps.length > 0 && !args["verification-only"]) {
+    return indeterminate(
+      args,
+      `a completed round has no adjudication document, or a finding in it has no matching adjudication entry (${coverageGaps.join(", ")})`,
+    );
   }
 
   // --current-head must be an INDEPENDENTLY captured value (the caller's own

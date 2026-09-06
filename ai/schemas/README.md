@@ -2437,7 +2437,7 @@ moved rather than dropped.
 | # | Invariant (the attack it rejects) | Check | Fixture pair |
 | - | --------------------------------- | ----- | ------------ |
 | 1 | A round is complete only when every finder in `[stage.<stage>].finders[]` returned a `completed` pass at the same `reviewed_head`; a missing or `blocked` finder is `finder_unavailable` **on the evidence of a `slot_failures` record**, never synthesized, and never a round one finder short | `assembleLogicalRounds` (`dev-flow-exit.mjs`) | `exit/finder-blocked-without-failure-record-indeterminate` / `exit/finder-blocked-then-fallback-completes-round`; the disagreeing-head half is `exit/mismatched-head-round-rejected` |
-| 2 | Every retained pass has exactly one adjudication document **and vice versa** — an adjudication naming a round no pass or `slot_failures` record ever named is an error, not something to ignore | the orphan-adjudication check in `dev-flow-exit.mjs`'s `main()`, beside the `missingAdjudication` check that covers the other direction | `exit/adjudication-without-source-pass-rejected` / `exit/adjudication-for-rejected-pass-round-accepted`; cross-stage: `exit/orphan-adjudication-from-earlier-stage-rejected` / `exit/earlier-stage-adjudication-with-its-pass-accepted` |
+| 2 | Every retained pass has exactly one adjudication document **and vice versa** — an adjudication naming a round no pass or `slot_failures` record ever named is an error, not something to ignore | the orphan-adjudication check in `dev-flow-exit.mjs`'s `main()`, beside the `missingAdjudication` check that covers the other direction | `exit/adjudication-without-source-pass-rejected` / `exit/adjudication-for-rejected-pass-round-accepted`; cross-stage, adjudication -> pass: `exit/orphan-adjudication-from-earlier-stage-rejected` / `exit/earlier-stage-adjudication-with-its-pass-accepted`; cross-stage, pass -> adjudication: `exit/unadjudicated-earlier-stage-round-rejected` / `exit/incomplete-earlier-stage-round-needs-no-adjudication-accepted` |
 | 3 | `round` never exceeds the stage's resolved cap; a cap-0 stage has no rounds; **stage-skipping is legal only under the corresponding cap-0 policy** | the cap-integrity checks and the `SKIP_EDGE_GUARDS` check in `dev-flow-exit.mjs`'s `main()` | `exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected` / `exit/stage-skip-to-review-legal-under-cap-zero-challenge` and `exit/remediation-reentry-into-review-is-not-a-stage-skip`; the `verify -> security` edge is a named case in `scripts/test-dev-flow-exit.sh` |
 | 4 | `integration -> implement -> integration` loops are counted against `[rounds.<policy>].remediation`; exceeding it escalates, and code-changing dispositions past the cap are rejected | `readiness-gate.sh` step 9d, under the required `--remediation-cap` | the `#685(4)` cases in `scripts/test-integrate-readiness.sh` |
 | 5 | `codex_cycle.cycle` ≤ `[rounds.<policy>].integration`; cap 0 ⇒ null cycle; a clean verdict with a null cycle under a positive cap is not clean | `readiness-gate.sh` step 9, under `--integration-cap` | the five `--integration-cap` cases plus the `#685(5)` `audit` case in `scripts/test-integrate-readiness.sh` |
@@ -2473,6 +2473,40 @@ weaken the match — a challenge round 1 can never satisfy a review round 1
 adjudication. The accepted half of the new pair carries a *valid* challenge
 pass precisely so it tests cross-stage acceptance rather than re-testing the
 rejected-pass path the row above already covers.
+
+**Both directions of row 2 are cross-stage; fixing only one was worse than
+fixing neither.** Making the adjudication -> pass direction scan every stage
+left `missingAdjudication` — the pass -> adjudication direction — computing
+over `assembleLogicalRounds`'s output, which is built for the stage under
+computation alone. The pair then *read* as symmetric while a completed,
+schema-valid challenge pass carrying no adjudication document at all still let
+review converge and return `action: "advance"` (integrate cycle 7 on PR #800,
+confirmed and reproduced). The spec states the requirement as a property of
+the trajectory rather than of the computed stage — "Each retained pass SHALL
+have exactly one adjudication document and each adjudication SHALL refer to
+one retained pass" (`openspec/changes/dev-flow-v2/specs/exit-computation/spec.md`)
+— so the stage-scoped reading was the defect, not the widening.
+
+`rounds` itself stays scoped to the computed stage: it feeds round counting,
+contiguity and the verdict, all per-stage by definition. Only the coverage
+scan ranges wider, and both cross-stage scans now range over one shared
+`CONFIDENCE_STAGES` constant so they cannot drift apart. The refusal names
+the uncovered round as `<stage>:<round>`.
+
+Two existing fixtures moved with this, and both kept their original purpose.
+`exit/earlier-stage-pass-excluded` (added with the v2 reader in #720) encodes
+that an earlier stage's pass does not inflate the computed stage's round
+count; it now carries the challenge adjudication the invariant requires and
+still converges with `rounds_counted: 1`, so what it proves is unchanged.
+`exit/missing-adjudication-indeterminate` keeps its exact-reason match, with
+the reason now naming `(review:1)`.
+
+The accepted half of the pass -> adjudication pair is an *assembled but
+incomplete* earlier-stage round — two configured challenge finders, one pass,
+the missing slot declared in `slot_failures` — because that is the boundary
+the rule actually turns on: only a **complete** round owes an adjudication. A
+blocked pass would not have tested it, since receipt validation rejects a
+blocked pass outright and the round never assembles at all.
 
 **Row 3 keys on a RECORDED `verify -> <stage>` edge, never on an absence.**
 The run directory's `receipts` array is a documented subset (see "Run
