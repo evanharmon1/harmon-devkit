@@ -254,6 +254,7 @@ prov="$dest/.SKILLS_PROVENANCE"
 vendored=no
 vendored_ref=""
 managed=""
+managed_declared=no
 legacy_stamp=no
 unstamped_any=""
 pin_source=manifest
@@ -286,11 +287,25 @@ if [ -f "$prov" ]; then
     # generation that predates the v2 skills anyway.
     legacy_stamp=no
     grep -q '^# managed:' "$prov" || legacy_stamp=yes
+    # The round-1 legacy-stamp fix carried an unstated assumption — that the
+    # stamp GENERATION implies an old recorded ref. Codex cloud review round 2,
+    # confirmed: an older synchronizer can write the legacy format while
+    # vendoring a post-boundary ref, and then an empty managed set means no
+    # contract is inspected at all, so post-v2 skills over an unmigrated policy
+    # read as `compatible`. Reconstructing the set needs a clone of the pin
+    # (that is how sync-skills.sh:419-455 does it) and this audit is offline,
+    # so a legacy stamp is only safe to treat as pre-boundary when its own
+    # recorded ref says so. Otherwise it is indeterminate.
     vendored_ref="$(sed -n 's/^# ref:[[:space:]]*//p' "$prov" | head -n 1 | sed 's/[[:space:]]*(.*)$//')"
     [ -n "$vendored_ref" ] ||
         indeterminate "provenance '$prov' has an empty '# ref:' line, so the vendored pin is unknown; re-run 'task sync:skills'"
     if [ "$legacy_stamp" = no ]; then
         managed="$(sed -n 's/^# managed:[[:space:]]*//p' "$prov" | head -n 1 | tr ',' '\n' | tr -d ' ')"
+        managed_declared=yes
+    elif ref_is_release_tag "$vendored_ref" && ref_predates_v2_skills "$vendored_ref"; then
+        managed_declared=no
+    else
+        indeterminate "provenance '$prov' uses the legacy stamp format (no '# managed:' line) but records ref '$vendored_ref', which does not predate $V2_SKILLS_FIRST_RELEASE — the vendored skill set cannot be enumerated offline and cannot be assumed pre-v2; re-run 'task sync:skills' to write a modern stamp"
     fi
 else
     # No stamp is NOT proof that nothing was vendored. Challenge round 2,
@@ -332,10 +347,22 @@ else
     # Symlinks are excluded throughout: `cp -R` produces real directories.
     unstamped=""
     unstamped_any=""
+    source_linked=no
     if [ -d "$dest" ]; then
         for candidate in "$dest"/*; do
             [ -d "$candidate" ] || continue
-            [ -L "$candidate" ] && continue
+            if [ -L "$candidate" ]; then
+                # A symlinked skill entry is the SOURCE-repo shape (harmon-devkit
+                # links .claude/skills/<name> into its own ai/skills/), never
+                # something `cp -R` produces. Its presence proves this tree is
+                # not an interrupted sync, so the residue test below does not
+                # apply — Codex cloud review round 2, confirmed: without this,
+                # once #711 migrates this repository's own policy the documented
+                # `task audit:consumer-pin` invocation would exit 2 on its real,
+                # tracked local `openspec-*` directories.
+                source_linked=yes
+                continue
+            fi
             [ -f "$candidate/SKILL.md" ] || continue
             unstamped_any="$unstamped_any $(basename "$candidate")"
             [ -f "$candidate/assets/policy-contract.json" ] || continue
@@ -378,6 +405,11 @@ while IFS= read -r skill_name; do
     fi
     contract="$dest/$skill_name/assets/policy-contract.json"
     [ -f "$contract" ] || continue
+    # Check the JSON TYPE, not the rendered text: `jq -r` prints the string
+    # "2" and the number 2 identically, so a digit test alone accepted
+    # malformed metadata. Codex cloud review round 2, confirmed.
+    jq -e '(.policy_schema_version | type) == "number"' "$contract" >/dev/null 2>&1 ||
+        indeterminate "'$contract' must declare policy_schema_version as a JSON number, not a string or other type"
     declared="$(jq -r '.policy_schema_version // empty' "$contract" 2>/dev/null || true)"
     # A contract version must be a POSITIVE integer — the coherence invariant
     # again: `0` and a non-integer are both indistinguishable from "declares
@@ -436,7 +468,7 @@ fi
 # migrated policy cannot be audited against skill directories that carry no
 # stamp, because they cannot be shown to be local rather than the residue of a
 # pre-v2 sync interrupted before the stamp was rewritten.
-if [ "$vendored" = no ] && [ -n "$unstamped_any" ] && [ "$policy_version" -gt 0 ]; then
+if [ "$vendored" = no ] && [ "${source_linked:-no}" = no ] && [ -n "$unstamped_any" ] && [ "$policy_version" -gt 0 ]; then
     # shellcheck disable=SC2086 # deliberate word-splitting into a CSV
     indeterminate "the policy declares schema_version $policy_version but '$dest' holds skill directories ($(printf '%s\n' $unstamped_any | sort -u | paste -sd, -)) with no '.SKILLS_PROVENANCE' stamp — they cannot be shown to be local rather than a pre-v2 sync interrupted before the stamp was rewritten, so the pin cannot be audited against a migrated policy; re-run 'task sync:skills'"
 fi
@@ -494,7 +526,15 @@ elif [ "$required" -eq 0 ]; then
     if [ "$policy_version" -gt 0 ] && ! ref_is_release_tag "$vendored_ref"; then
         indeterminate "the policy declares schema_version $policy_version but the vendored pin '$vendored_ref' is not a comparable release tag, so it cannot be ordered against the first release shipping the version-2 stage skills ($V2_SKILLS_FIRST_RELEASE) — pin a release tag in $manifest and re-run 'task sync:skills'"
     fi
-    if [ "$policy_version" -gt 0 ] && ref_predates_v2_skills "$vendored_ref"; then
+    if [ "$policy_version" -gt 0 ] && [ "$managed_declared" = yes ] && [ -z "$(printf '%s' "$managed" | tr -d '[:space:]')" ]; then
+        # An explicitly empty `# managed:` list is the synchronizer stating it
+        # vendored nothing, so no policy-consuming skill can lag and advancing
+        # the pin changes nothing. Codex cloud review round 2, confirmed:
+        # a pre-boundary recorded ref was reporting pin lag here.
+        status=no-policy-consumer
+        code=0
+        detail="the policy declares schema_version $policy_version and provenance '$prov' declares an empty managed set, so this consumer vendors no skills at all — there is no pin contract to satisfy and advancing the pin would not create one"
+    elif [ "$policy_version" -gt 0 ] && ref_predates_v2_skills "$vendored_ref"; then
         status=pin-lag
         code=3
         # Name the version the policy ACTUALLY declares, not "version-2".

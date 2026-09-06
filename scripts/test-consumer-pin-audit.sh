@@ -572,6 +572,72 @@ expect_says "it says the policy is ahead of these skills" "ahead of these skills
 expect_not_says "it never tells a newer policy to run copier update" "copier update"
 
 echo
+echo "== consumer-pin-audit: Codex cloud review round 2 regressions =="
+# [P1] A legacy stamp must not be ASSUMED pre-boundary: an older synchronizer
+# can write that format while vendoring a post-boundary ref, and an empty
+# managed set then inspects no contract at all.
+c="$(make_consumer legacy-stamp-post-boundary "$LEGACY_POLICY" v9.0.0 review:v2)"
+printf '# ref: v9.0.0 (deadbeef)\n# categories: universal\n' \
+    >"$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "a legacy stamp recording a post-boundary ref is indeterminate" 2
+expect_says "it says the set cannot be assumed pre-v2" "cannot be assumed pre-v2"
+
+# [P2] An explicitly EMPTY managed list is "vendored nothing", never pin lag.
+c="$(make_consumer empty-managed-migrated "$V2_POLICY" v0.34.1)"
+run_audit "$c"
+expect_status "an explicitly empty managed set over a migrated policy is not pin lag" 0
+expect_says "it says the consumer vendors no skills at all" "vendors no skills at all"
+
+# [P2] A contract whose version is a JSON *string* must not pass as an integer.
+c="$(make_consumer string-contract-version "$LEGACY_POLICY" v0.41.0 review:v2)"
+printf '{"skill":"review","policy_schema_version":"2"}\n' \
+    >"$c/.claude/skills/review/assets/policy-contract.json"
+run_audit "$c"
+expect_status "a string-typed contract version is indeterminate" 2
+expect_says "it requires a JSON number" "JSON number"
+
+# [P2] The residue check must not fire in a SOURCE-linked tree (symlinked
+# skills beside real local ones) — this repository's own shape once #711
+# migrates its policy.
+c="$(make_consumer source-linked-migrated "$V2_POLICY" v0.41.0)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+mkdir -p "$c/src/review" "$c/.claude/skills/openspec-local"
+printf -- '---\nname: review\ndescription: f\n---\n' >"$c/src/review/SKILL.md"
+printf -- '---\nname: openspec-local\ndescription: f\n---\n' >"$c/.claude/skills/openspec-local/SKILL.md"
+ln -s ../../src/review "$c/.claude/skills/review"
+run_audit "$c"
+expect_status "a source-linked tree with real local skills is not interrupted-sync residue" 0
+expect_says "it is still reported as never vendored" "vendored no skills"
+
+echo
+echo "== devflow-policy: a policy ahead of this reader is not sent backwards =="
+# [P2] detect/resolve must not tell a future policy to migrate down to 2.
+ahead_policy="$TMPROOT/ahead-policy.toml"
+printf 'schema_version = 9\ndefault_rigor = "standard"\n' >"$ahead_policy"
+set +e
+out="$(node "$READER" detect --policy "$ahead_policy" --json 2>/dev/null)"
+status=$?
+set -e
+expect_status "detect still refuses a policy ahead of the reader" 1
+if printf '%s' "$out" | jq -e '.migration | test("upgrade the tooling")' >/dev/null 2>&1 &&
+    printf '%s' "$out" | jq -e '.migration | test("copier update") | not' >/dev/null 2>&1; then
+    ok "an ahead policy is told to upgrade the tooling, never to copier update backwards"
+else
+    bad "the ahead-policy refusal still recommends migrating the policy backwards"
+    printf '%s\n' "$out" | sed 's/^/      /' >&2
+fi
+# The ordinary older-shape message must be unchanged.
+set +e
+out="$(node "$READER" detect --policy "$LEGACY_POLICY" --json 2>/dev/null)"
+set -e
+if printf '%s' "$out" | jq -e '.migration | test("copier update")' >/dev/null 2>&1; then
+    ok "an older-shape policy still gets the copier update remedy"
+else
+    bad "the older-shape refusal lost its copier update remedy"
+fi
+
+echo
 echo "== devflow-policy: an older shape is refused with one actionable message =="
 for shape in legacy v1 mixed; do
     case "$shape" in

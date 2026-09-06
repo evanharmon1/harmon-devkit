@@ -283,18 +283,42 @@ const OPERATING_MIGRATION_DIRECTION =
   "`.skills-sync.yaml` pinned to the last pre-v2 skills release rather than advancing it";
 const HISTORICAL_MIGRATION_DIRECTION = `it must be schema_version = 2 with ${V2_SHAPE_TABLES}`;
 
-export function shapeRefusalMessage(detection, { forOperating = true } = {}) {
+// A policy declaring a version ABOVE the supported one is not behind, it is
+// ahead: telling its operator to `copier update` down to 2 is a downgrade that
+// cannot restore compatibility. Codex cloud review round 2, confirmed — the
+// earlier fix corrected only the pin audit's own branch, while `detect`,
+// `resolve`, and every stage skill that echoes this message kept the wrong
+// remedy.
+const AHEAD_MIGRATION_DIRECTION =
+  "this reader supports schema_version " +
+  `${POLICY_SCHEMA_VERSION} and cannot operate a newer policy — upgrade the tooling ` +
+  "(and the vendored skills, whose contracts must declare the policy's version) " +
+  "rather than migrating the policy backwards";
+
+export function shapeRefusalMessage(detection, { forOperating = true, declaredVersion = null } = {}) {
   const markers = detection.markers.length > 0 ? detection.markers.join(", ") : "none";
   const scope = forOperating ? "the operating .devflow.toml" : "the merge-base .devflow.toml";
-  const direction = forOperating ? OPERATING_MIGRATION_DIRECTION : HISTORICAL_MIGRATION_DIRECTION;
-  return `${scope} is not schema_version 2 (detected shape: ${detection.shape}; markers found: ${markers}) — ${direction}`;
+  const ahead = Number.isInteger(declaredVersion) && declaredVersion > POLICY_SCHEMA_VERSION;
+  const direction = ahead
+    ? AHEAD_MIGRATION_DIRECTION
+    : forOperating
+      ? OPERATING_MIGRATION_DIRECTION
+      : HISTORICAL_MIGRATION_DIRECTION;
+  return `${scope} is not schema_version ${POLICY_SCHEMA_VERSION} (detected shape: ${detection.shape}; markers found: ${markers}) — ${direction}`;
+}
+
+/** The positive integer `schema_version` a document declares, else null. */
+export function declaredSchemaVersion(doc) {
+  return Number.isInteger(doc?.schema_version) && doc.schema_version > 0 ? doc.schema_version : null;
 }
 
 /** Require a v2 shape for the *operating* policy; throws PolicyError otherwise. */
 export function requireOperatingV2(doc) {
   const detection = detectShape(doc);
   if (detection.shape !== "v2") {
-    throw new PolicyError(shapeRefusalMessage(detection, { forOperating: true }));
+    throw new PolicyError(
+      shapeRefusalMessage(detection, { forOperating: true, declaredVersion: declaredSchemaVersion(doc) }),
+    );
   }
   return detection;
 }
@@ -1406,7 +1430,9 @@ function cliDetect(args) {
   // recipe) reaches for, and a caller that has to compose its own migration
   // wording is a second place for the release name and the pin guidance to
   // drift from this file's own (harmon-devkit#604).
-  const migration = isV2 ? null : shapeRefusalMessage(detection, { forOperating: true });
+  const migration = isV2
+    ? null
+    : shapeRefusalMessage(detection, { forOperating: true, declaredVersion: declaredSchemaVersion(doc) });
   // `policy_schema_version` describes THIS POLICY, not the reader: null only
   // where the policy declares no version at all. Emitting the reader's own
   // supported version unconditionally would be a field whose name says one
@@ -1422,9 +1448,7 @@ function cliDetect(args) {
   // over it compatible — defeating the equality comparison outright. Refusal
   // is unaffected: `detect` still exits non-zero and `requireOperatingV2`
   // still admits only 2.
-  const declaredSchemaVersion =
-    Number.isInteger(doc.schema_version) && doc.schema_version > 0 ? doc.schema_version : null;
-  const policySchemaVersion = isV2 ? POLICY_SCHEMA_VERSION : declaredSchemaVersion;
+  const policySchemaVersion = isV2 ? POLICY_SCHEMA_VERSION : declaredSchemaVersion(doc);
   if (args.json) {
     console.log(JSON.stringify({ ...detection, policy_schema_version: policySchemaVersion, migration }));
   } else {

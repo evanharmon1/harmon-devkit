@@ -182,11 +182,16 @@ mkdir -p "$mb_dir/scripts/lib"
 git show "${base}:scripts/devflow-policy.mjs" >"$mb_dir/scripts/devflow-policy.mjs"
 git show "${base}:scripts/lib/toml-lite.mjs"  >"$mb_dir/scripts/lib/toml-lite.mjs"
 git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml"
-# Only when the change under review also edits the registry:
-git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
+
+# The registry argument is PAIRED with its extraction: supply both or neither.
+mb_registry=()
+if ! git diff --quiet "$base" -- agent-registry.json; then
+    git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
+    mb_registry=(--merge-base-registry "$mb_dir/agent-registry.json")
+fi
 task devflow:policy -- resolve --closure "$mb_dir" \
     --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" \
-    --merge-base-registry "$mb_dir/agent-registry.json" --json
+    "${mb_registry[@]}" --json
 ```
 
 **Materialize the reader's whole closure, not just its entrypoint.** The
@@ -196,8 +201,14 @@ anything — and since this path is now the only one (there is no hand-decoding
 fallback), that failure is a hard stop rather than a degraded mode. A
 registry-touching change needs its merge-base registry supplied the same way,
 through `--merge-base-registry`: the reader deliberately refuses to fall back
-to the branch's own `--registry` when a merge-base policy is in play. If the
-reader grows another dependency, it belongs in this recipe too.
+to the branch's own `--registry` when a merge-base policy is in play.
+
+**Supply that flag only when you extracted the file.** `cliResolve` reads every
+`--merge-base-registry` path it is given and exits 2 on a missing one, so a
+policy-only or reader-only change that passes the flag unconditionally
+hard-stops the very resolution it needs — the extraction and the argument have
+to move together, which is what the array above is for. If the reader grows
+another dependency, it belongs in this recipe too.
 
 `--closure <dir>` re-execs the trusted `<dir>/scripts/devflow-policy.mjs`
 before this checkout's own (possibly branch-modified) copy runs any of its
