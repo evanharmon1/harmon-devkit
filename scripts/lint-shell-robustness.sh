@@ -67,6 +67,15 @@
 #     fixture text cannot reach; both markers must carry a reason; and an
 #     unclosed block is itself reported.
 #
+# The two halves are not equally strong, and the header says so rather than
+# leaving a reader to assume otherwise. The PIPELINE check above is a stateless
+# text match and is the deliverable of #689. The REPORTER check below is
+# structural — it finds a definition and scans its block — and is therefore
+# BEST-EFFORT: its remaining corners (the `function NAME {` stop-condition
+# spelling, and its siblings) are enumerated and tracked in #838 rather than
+# closed one per review round. It exists to stop the reporter defect returning
+# in the obvious form, not to prove path-completeness.
+#
 #   * The reporter check asks whether an executable `return 0` is PRESENT in
 #     the block, so one inside an `if` satisfies it even though the ordinary
 #     path may still end on a failing `echo`. Answering "does every path end
