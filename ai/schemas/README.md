@@ -1106,21 +1106,28 @@ ai/schemas/fixtures/
   adjudication.schema/{valid,invalid}/*.json
   run.schema/{valid,invalid}/*.json
   registry-trust/<case>/scenario.json
-  finder-normalization/<finder-slug>/{args.json,raw.txt|raw.json,expected.json}
+  finder-normalization/<finder-slug>/{args.json,raw.json,expected.json}
 ```
 
-`finder-normalization/` is one directory per **registered finder** (#796):
-that finder's raw output in its own vendor shape (`raw.txt` for a
-`labelled-text` finder, `raw.json` for a `github-review-json` one), the
-arguments to decode it with (`args.json`), and the pass core it must decode to
-(`expected.json`). Raw vendor output is a document of no schema kind, so
-`scripts/test-finder-normalization.sh` (`task test:finder-normalization`) owns
-this corpus rather than the generic driver — and it requires a directory for
-every slug in `agent-registry.json`'s `finders[]`, so a finder with no proven
-raw-output contract fails the suite. That same test asserts the point of
-normalizing at all: `scripts/dev-flow-exit.mjs`, `scripts/render-dev-flow.mjs`
-and `adjudication.schema.json` name no finder slug, so adjudication, the exit
-computation and the renderer never learn which product produced a finding.
+`finder-normalization/` is one directory per **`github-review-json` finder**
+(#796) — the PR-side cloud reviews, and only those: that finder's raw review
+payload (`raw.json`), the arguments to decode it with (`args.json`), and the
+pass core it must decode to (`expected.json`). Raw vendor output is a document
+of no schema kind, so `scripts/test-finder-normalization.sh`
+(`task test:finder-normalization`) owns this corpus rather than the generic
+driver. The coverage rule runs **both ways**, because `raw_shape` decides who
+decodes a finder at all: the suite requires a directory for every
+`github-review-json` slug in `agent-registry.json`'s `finders[]`, so a
+mechanically-decoded finder with no proven raw-output contract fails it — and
+it *rejects* a directory for a `labelled-text` slug, because
+`scripts/normalize-finder-findings.mjs` refuses that shape by design and a
+fixture there would assert a decode path that does not exist. A local CLI
+finder's free text is decoded by the dispatched challenger/reviewer role
+instead, and its contract is proven by `scripts/test-finder-review.sh`. That
+same test asserts the point of normalizing at all: `scripts/dev-flow-exit.mjs`,
+`scripts/render-dev-flow.mjs` and `adjudication.schema.json` name no finder
+slug, so adjudication, the exit computation and the renderer never learn which
+product produced a finding.
 
 Each directory name is the schema's own basename (`result.envelope.schema`,
 not `result.envelope`) so it reads as "fixtures for
