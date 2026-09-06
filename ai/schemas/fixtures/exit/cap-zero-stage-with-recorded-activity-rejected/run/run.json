@@ -1,0 +1,22 @@
+{
+  "run_id": "run-cap-zero-stage-with-activity",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "challenge"
+    },
+    {
+      "kind": "transition",
+      "stage": "verify"
+    },
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    }
+  ]
+}

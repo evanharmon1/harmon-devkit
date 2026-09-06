@@ -1156,6 +1156,17 @@ that loops indefinitely:
      invariants. Never omit it — a null `codex_cycle` with the flag missing
      used to be trusted as "the cap must be 0" on the integrator's own
      unverified word.
+   - `--remediation-cap <n>` — the resolved `[rounds.<policy>].remediation`
+     cap, required for the same reason `--integration-cap` is. The loop
+     count comes from the record's own `stage_transitions[]` (every
+     `integration` entry after the first is one `integration -> implement ->
+     integration` loop) and exceeding it is a `remediation-capped` fail.
+     Never omit it: an optional policy check is one a caller skips by
+     saying nothing, and a skipped remediation check promotes an over-cap
+     run (harmon-devkit#685). **At** the cap is not a failure — the pass
+     that closes the stage still echoes the fix that caused the final loop,
+     per the `applied_dispositions` bullet in §5's dispatch input, and a
+     pass that genuinely still owes a code change is not `clean` anyway.
    - `--codex-recheck <state file>` — the integrator's own
      `check-codex-cloud-review.sh` state file for this repo/PR:
      `git rev-parse --git-path "integrate-codex/$repo/<n>.json"`, the same
@@ -1169,6 +1180,7 @@ that loops indefinitely:
      --record <dir> \
      --integrator-result <file> \
      --integration-cap <n> \
+     --remediation-cap <n> \
      --codex-recheck <state file>
    ```
 
@@ -1185,6 +1197,9 @@ that loops indefinitely:
    asynchronously, `skipping` is neutral, and a required context that never
    registered appears in no list at all, which is exactly what the
    automation-coverage paragraph below exists to hold;
+   every adjudication document in `--record` matched by a
+   `destination: issue` evidence comment for its own stage and round in
+   `run.json` (a `pr` rollup never substitutes — harmon-devkit#685);
    `reviewDecision` not `CHANGES_REQUESTED`; `mergeStateStatus`
    none of `DIRTY`/`BEHIND`/`UNKNOWN`; every deferred-findings entry in the
    PR body ticked **and** carrying its outcome (a bare `- [x]` settles
