@@ -1131,7 +1131,19 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
 function extractRepeatable(argv, flag) {
   const values = [];
   const rest = [];
+  // BOTH spellings. `--flag value` and the equally conventional
+  // `--flag=value` must mean the same thing: the equals form used to fall
+  // through to generic parsing, which recorded an unused composite key and
+  // left the run resolving to the configured finders alone — exit 0, no
+  // disclosure, a requested slot silently gone. The closure guard already
+  // treats `--flag=` as a selection request, so ignoring it here was
+  // internally inconsistent as well as lossy.
+  const eq = `${flag}=`;
   for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith(eq)) {
+      values.push(argv[i].slice(eq.length));
+      continue;
+    }
     if (argv[i] !== flag) {
       rest.push(argv[i]);
       continue;
@@ -1189,6 +1201,35 @@ function tryDelegateToClosure(argv) {
     return 1;
   }
   const passthrough = [...argv.slice(0, idx), ...argv.slice(idx + 2)];
+  // Same guard as devflow-policy.mjs's, for the same reason and on the same
+  // trust boundary: a merge-base reader written before per-run finder
+  // selection existed IGNORES --add-finder/--select-finder, so the run would
+  // resolve to the configured slots alone and exit 0 with no disclosure — an
+  // explicitly requested finder silently gone. Fixing only the policy reader
+  // left this sibling path unguarded, which is exactly the hole the closure
+  // mechanism exists to close.
+  const wantsSelection = passthrough.some(
+    (a) =>
+      a === "--add-finder" ||
+      a === "--select-finder" ||
+      a.startsWith("--add-finder=") ||
+      a.startsWith("--select-finder="),
+  );
+  if (wantsSelection) {
+    let trustedSource = "";
+    try {
+      trustedSource = readFileSync(trustedScript, "utf8");
+    } catch (err) {
+      console.error(`dev-flow-exit: could not read the --closure reader to check its flag support: ${err.message}`);
+      return 1;
+    }
+    if (!trustedSource.includes("--add-finder") || !trustedSource.includes("--select-finder")) {
+      console.error(
+        `dev-flow-exit: the --closure reader (${trustedScript}) predates --add-finder/--select-finder and would silently drop the requested finder(s) — refusing rather than computing an exit over a narrower set with no disclosure`,
+      );
+      return 1;
+    }
+  }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
   if (result.error) {
     console.error(`dev-flow-exit: could not exec the --closure reader: ${result.error.message}`);

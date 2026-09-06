@@ -1311,7 +1311,19 @@ function readTaskTargets(explicitFile, taskfileDir) {
 function extractRepeatable(argv, flag) {
   const values = [];
   const rest = [];
+  // BOTH spellings. `--flag value` and the equally conventional
+  // `--flag=value` must mean the same thing: the equals form used to fall
+  // through to generic parsing, which recorded an unused composite key and
+  // left the run resolving to the configured finders alone — exit 0, no
+  // disclosure, a requested slot silently gone. The closure guard already
+  // treats `--flag=` as a selection request, so ignoring it here was
+  // internally inconsistent as well as lossy.
+  const eq = `${flag}=`;
   for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith(eq)) {
+      values.push(argv[i].slice(eq.length));
+      continue;
+    }
     if (argv[i] !== flag) {
       rest.push(argv[i]);
       continue;

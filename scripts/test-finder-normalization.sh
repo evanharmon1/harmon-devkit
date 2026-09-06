@@ -270,4 +270,46 @@ set -e
 grep -Fq 'no current-head terminal evidence' "$tmp/empty.err" ||
     fail "the empty-payload refusal did not name its reason: $(cat "$tmp/empty.err")"
 
+echo "==> a current-head review that states no declared verdict is not terminal"
+# The floor asks for a TERMINAL result, not merely an artefact. A review at the
+# right head from the right actor whose body is pending text — neither the
+# declared clean verdict nor anything decodable — used to satisfy it and emit a
+# successful empty slice.
+jq -n --arg head "$head40" '{
+    review: { user: { id: 199175422 }, commit_id: $head,
+              body: "Still working on it, nothing to report yet." }
+}' >"$tmp/nonterminal.json"
+set +e
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/nonterminal.json" \
+    >/dev/null 2>"$tmp/nonterminal.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "a non-terminal current-head review exited $status, not 3"
+
+echo "==> a clean verdict in the finder's own declared words IS terminal"
+clean_verdict="$(jq -r '.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.clean_verdict' "$registry")"
+jq -n --arg head "$head40" --arg v "$clean_verdict" '{
+    review: { user: { id: 199175422 }, commit_id: $head, body: $v }
+}' >"$tmp/clean.json"
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/clean.json" >/dev/null ||
+    fail "the finder's own declared clean verdict was not accepted as terminal"
+
+echo "==> a terminal artifact on an UNDECLARED surface does not count"
+# copilot-cloud declares only `review` and `inline`. A same-actor top-level
+# comment stamped with this head must not stand in for a review it never made.
+copilot_actor="$(jq -r '.finders[] | select(.slug == "copilot-cloud") | .trusted_actor_id' "$registry")"
+jq -n --arg head "$head40" --argjson actor "$copilot_actor" '{
+    top_level_comments: [ { id: 1, user: { id: $actor },
+                            body: "**Reviewed commit:** `\($head)`\n\nNothing to report." } ]
+}' >"$tmp/undeclared.json"
+set +e
+node "$normalizer" --finder copilot-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/undeclared.json" \
+    >/dev/null 2>"$tmp/undeclared.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "a top-level comment satisfied copilot-cloud, which declares no comment surface (exit $status)"
+
 echo "finder normalization OK ($cases fixture(s))"

@@ -85,6 +85,12 @@ jobs:
       - run: task test:registry-docs
       - run: task test:label-registry
       - run: task test:codex-review
+      # #796's two new suites. Both are wired into `task verify`, but the
+      # workflow never runs `task verify` — it runs this hand-maintained
+      # list — so without these lines cloud CI passes while skipping every
+      # normalization and sandbox regression the change added.
+      - run: task test:finder-normalization
+      - run: task test:finder-review
       - run: task test:meta-install
       - run: task test:integrate-codex
       - run: task test:ci-results

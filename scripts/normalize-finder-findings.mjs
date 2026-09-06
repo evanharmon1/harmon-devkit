@@ -433,14 +433,57 @@ if (finder.raw_shape === 'labelled-text') {
   // registry entry declares — a review, an inline comment, or a stamped
   // top-level comment. A genuinely clean cloud review still carries its
   // review or comment, so this does not refuse a real empty result.
+  // TERMINAL, not merely present — and only on a surface this finder's own
+  // registry entry declares. An earlier revision asked for any actor-
+  // authenticated artifact at the head, which two payloads slipped past: a
+  // current-head review whose body is pending text or unrecognized vendor
+  // wording, and a top-level comment for a finder like `copilot-cloud` whose
+  // profile lists only `review` and `inline`. Both produced a successful
+  // empty slice.
+  //
+  // What counts as terminal is the finder's DECLARED `verdict_mode`, not one
+  // hard-coded notion of doneness — the three shipped modes say it three
+  // different ways, and a blanket "clean sentence or decodable findings" rule
+  // would refuse a legitimately clean CodeRabbit or Copilot review.
+  const verdictMode = finder.collection?.terminal_signals?.verdict_mode
+  const declaredClean = finder.collection?.terminal_signals?.clean_verdict
+  const declaredCount = finder.collection?.terminal_signals?.actionable_pattern
+  const bodyIsTerminal = (body) => {
+    const text = String(body ?? '')
+    // Decodable findings are terminal by construction: they are the result.
+    if (isLabelled(text)) return true
+    switch (verdictMode) {
+      case 'clean-sentence':
+        // The finder says, in its own declared words, that it found nothing.
+        return Boolean(declaredClean) && text.toLowerCase().includes(String(declaredClean).toLowerCase())
+      case 'actionable-count':
+        // The finder states how many findings it posted; zero is a verdict.
+        return Boolean(declaredCount) && new RegExp(String(declaredCount).replace(/\[\[:space:\]\]/g, '\\s'), 'i').test(text)
+      case 'inline-comment-count':
+        // The inline comments ARE the result and a review carrying none is
+        // the clean verdict, so the review's existence at this head is the
+        // signal. There is no sentence or count to match.
+        return true
+      default:
+        return false
+    }
+  }
   const sawCurrentHeadArtifact =
-    (payload.review !== undefined && payload.review !== null && byThisFinder(payload.review) && atThisHead(payload.review)) ||
-    (payload.comments ?? []).some((c) => byThisFinder(c) && inlineAtThisHead(c)) ||
-    (payload.top_level_comments ?? []).some((c) => {
-      if (!byThisFinder(c)) return false
-      const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(String(c.body ?? ''))
-      return Boolean(stamp) && opts.reviewedHead.startsWith(stamp[1].toLowerCase())
-    })
+    (surfaces.has('review') &&
+      payload.review !== undefined &&
+      payload.review !== null &&
+      byThisFinder(payload.review) &&
+      atThisHead(payload.review) &&
+      bodyIsTerminal(payload.review.body)) ||
+    // An inline comment at this head is a finding, and a finding is terminal.
+    (surfaces.has('inline') && (payload.comments ?? []).some((c) => byThisFinder(c) && inlineAtThisHead(c))) ||
+    (surfaces.has('comment') &&
+      (payload.top_level_comments ?? []).some((c) => {
+        if (!byThisFinder(c)) return false
+        const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(String(c.body ?? ''))
+        if (!stamp || !opts.reviewedHead.startsWith(stamp[1].toLowerCase())) return false
+        return bodyIsTerminal(c.body)
+      }))
   if (!sawCurrentHeadArtifact) {
     die(
       `${finder.slug} produced no artifact attributable to it at ${opts.reviewedHead} on any surface its registry entry declares — ` +

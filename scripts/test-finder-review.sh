@@ -76,11 +76,9 @@ grep -Fq 'finder: copilot-verification' <<<"$out" || fail "review mode resolved 
 grep -Fq 'Run a VERIFICATION-CHECKPOINT review' <<<"$out" || fail "review mode instruction missing"
 grep -Fq 'Run an ADVERSARIAL review' <<<"$out" && fail "review mode rendered the adversarial instruction"
 
-echo "==> a write from inside the pass is denied by the kernel"
-# /review requires the capability split to be installed and VERIFIED. It is
-# built around the CLI rather than asked of it: a bubblewrap sandbox over a
-# scratch git worktree, an isolated HOME, and the tree proven unchanged
-# afterwards. First defence — a write simply fails.
+# The write-attempting stub is built OUTSIDE the guard below: the
+# degraded-mode case further down uses it too, and that case runs exactly
+# when the guard skips.
 writer_bin="$tmp/writer-bin"
 mkdir -p "$writer_bin"
 cat >"$writer_bin/copilot" <<'EOF'
@@ -89,99 +87,118 @@ printf 'tampered\n' >./TAMPERED.txt
 echo "P1 src/app.txt:1 — a finding"
 EOF
 chmod +x "$writer_bin/copilot"
-out="$( (cd "$work" && PATH="$writer_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
-grep -Eq 'Read-only file system|Permission denied' <<<"$out" ||
-    fail "the scratch checkout was writable from inside the pass: $out"
-[ ! -e "$work/TAMPERED.txt" ] ||
-    fail "a write from inside the pass reached the real worktree"
 
-echo "==> git inside the pass cannot reach the real repository's refs"
-# The specific hole a file-mode-only boundary left: a linked worktree's .git is
-# a POINTER into the real repository, so update-ref could alter shared refs
-# while the scratch tree stayed byte-identical and the verification passed.
-refattack_bin="$tmp/refattack-bin"
-mkdir -p "$refattack_bin"
-cat >"$refattack_bin/copilot" <<'EOF'
+# The kernel-boundary cases below are meaningless — and actively wrong —
+# where there is no kernel sandbox to assert. Without a discoverable bwrap
+# the runner deliberately enters degraded mode, whose accepted residuals are
+# precisely what the shared-ref and credential assertions would contradict;
+# and as root the write is not denied by mode bits either, so sandbox_verify
+# rejects instead and the first command substitution would abort the whole
+# suite under `set -e`. Since these suites now run under `task verify`, that
+# would fail the definition-of-done gate on supported no-bubblewrap hosts.
+# The degraded-mode cases further down cover that environment and still run.
+if (cd "$work" && . ./scripts/lib/readonly-sandbox.sh && sandbox_resolve_bwrap) >/dev/null 2>&1; then
+    echo "==> a write from inside the pass is denied by the kernel"
+    # /review requires the capability split to be installed and VERIFIED. It is
+    # built around the CLI rather than asked of it: a bubblewrap sandbox over a
+    # scratch git worktree, an isolated HOME, and the tree proven unchanged
+    # afterwards. First defence — a write simply fails.
+    out="$( (cd "$work" && PATH="$writer_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    grep -Eq 'Read-only file system|Permission denied' <<<"$out" ||
+        fail "the scratch checkout was writable from inside the pass: $out"
+    [ ! -e "$work/TAMPERED.txt" ] ||
+        fail "a write from inside the pass reached the real worktree"
+
+    echo "==> git inside the pass cannot reach the real repository's refs"
+    # The specific hole a file-mode-only boundary left: a linked worktree's .git is
+    # a POINTER into the real repository, so update-ref could alter shared refs
+    # while the scratch tree stayed byte-identical and the verification passed.
+    refattack_bin="$tmp/refattack-bin"
+    mkdir -p "$refattack_bin"
+    cat >"$refattack_bin/copilot" <<'EOF'
 #!/usr/bin/env bash
 git update-ref refs/heads/attacked HEAD 2>&1 | head -1
 echo "P1 src/app.txt:1 — a finding"
 EOF
-chmod +x "$refattack_bin/copilot"
-out="$( (cd "$work" && PATH="$refattack_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
-git -C "$work" rev-parse --verify --quiet refs/heads/attacked >/dev/null &&
-    fail "a pass wrote a ref into the real repository: $out"
+    chmod +x "$refattack_bin/copilot"
+    out="$( (cd "$work" && PATH="$refattack_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    git -C "$work" rev-parse --verify --quiet refs/heads/attacked >/dev/null &&
+        fail "a pass wrote a ref into the real repository: $out"
 
-echo "==> the pass cannot read the host's other credentials"
-# A blanket read-only bind is not isolation: gh falls back to
-# ~/.config/gh/hosts.yml, and ~/.aws and npm credentials are readable, so a
-# finder with shell capability could make authenticated remote writes.
-creds_bin="$tmp/creds-bin"
-mkdir -p "$creds_bin"
-cat >"$creds_bin/copilot" <<'EOF'
+    echo "==> the pass cannot read the host's other credentials"
+    # A blanket read-only bind is not isolation: gh falls back to
+    # ~/.config/gh/hosts.yml, and ~/.aws and npm credentials are readable, so a
+    # finder with shell capability could make authenticated remote writes.
+    creds_bin="$tmp/creds-bin"
+    mkdir -p "$creds_bin"
+    cat >"$creds_bin/copilot" <<'EOF'
 #!/usr/bin/env bash
 for p in "$HOME/.config/gh" "$HOME/.aws" "$HOME/.npmrc" "$HOME/.gitconfig"; do
     [ -e "$p" ] && echo "VISIBLE $p"
 done
 echo "P1 src/app.txt:1 — a finding"
 EOF
-chmod +x "$creds_bin/copilot"
-out="$( (cd "$work" && PATH="$creds_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
-! grep -q '^VISIBLE ' <<<"$out" ||
-    fail "host credentials were visible inside the sandbox: $(grep '^VISIBLE ' <<<"$out")"
+    chmod +x "$creds_bin/copilot"
+    out="$( (cd "$work" && PATH="$creds_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    ! grep -q '^VISIBLE ' <<<"$out" ||
+        fail "host credentials were visible inside the sandbox: $(grep '^VISIBLE ' <<<"$out")"
 
-echo "==> the pass cannot see or signal host processes"
-# The namespaces the model call does not need are unshared. Network is not,
-# and that residual is documented rather than silently relied on.
-psbin="$tmp/ps-bin"
-mkdir -p "$psbin"
-cat >"$psbin/copilot" <<'EOF'
+    echo "==> the pass cannot see or signal host processes"
+    # The namespaces the model call does not need are unshared. Network is not,
+    # and that residual is documented rather than silently relied on.
+    psbin="$tmp/ps-bin"
+    mkdir -p "$psbin"
+    cat >"$psbin/copilot" <<'EOF'
 #!/usr/bin/env bash
 # In its own PID namespace this sees only itself and its children.
 echo "PIDS=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)"
 echo "P1 src/app.txt:1 — a finding"
 EOF
-chmod +x "$psbin/copilot"
-out="$( (cd "$work" && PATH="$psbin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
-pids="$(sed -n 's/^PIDS=//p' <<<"$out")"
-[ -n "$pids" ] || fail "the process-visibility probe did not run: $out"
-[ "$pids" -le 5 ] ||
-    fail "the pass could see $pids host processes; the PID namespace was not unshared"
+    chmod +x "$psbin/copilot"
+    out="$( (cd "$work" && PATH="$psbin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    pids="$(sed -n 's/^PIDS=//p' <<<"$out")"
+    [ -n "$pids" ] || fail "the process-visibility probe did not run: $out"
+    [ "$pids" -le 5 ] ||
+        fail "the pass could see $pids host processes; the PID namespace was not unshared"
 
-echo "==> the sandbox is an allowlist: unnamed paths and variables are absent"
-# `--ro-bind / /` plus a list of secrets to unset was subtract-known-secrets:
-# a credential outside HOME, or in a variable nobody thought to name, stayed
-# readable — and with egress open that is exfiltratable. Only named paths are
-# bound and only named variables are passed.
-secret_dir="$tmp/host-secrets"
-mkdir -p "$secret_dir"
-printf 'super-secret\n' >"$secret_dir/token"
-probe_bin="$tmp/probe-bin"
-mkdir -p "$probe_bin"
-cat >"$probe_bin/copilot" <<'EOF'
+    echo "==> the sandbox is an allowlist: unnamed paths and variables are absent"
+    # `--ro-bind / /` plus a list of secrets to unset was subtract-known-secrets:
+    # a credential outside HOME, or in a variable nobody thought to name, stayed
+    # readable — and with egress open that is exfiltratable. Only named paths are
+    # bound and only named variables are passed.
+    secret_dir="$tmp/host-secrets"
+    mkdir -p "$secret_dir"
+    printf 'super-secret\n' >"$secret_dir/token"
+    probe_bin="$tmp/probe-bin"
+    mkdir -p "$probe_bin"
+    cat >"$probe_bin/copilot" <<'EOF'
 #!/usr/bin/env bash
 [ -e "$SECRET_PROBE_PATH" ] && echo "VISIBLE_PATH"
 [ -n "${SECRET_PROBE_VALUE:-}" ] && echo "VISIBLE_ENV"
 echo "P1 src/app.txt:1 — a finding"
 EOF
-chmod +x "$probe_bin/copilot"
-out="$( (cd "$work" && PATH="$probe_bin:$PATH" \
-    SECRET_PROBE_PATH="$secret_dir/token" SECRET_PROBE_VALUE=leaked \
-    ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
-grep -q 'VISIBLE_PATH' <<<"$out" &&
-    fail "a host path outside the allowlist was readable inside the sandbox"
-grep -q 'VISIBLE_ENV' <<<"$out" &&
-    fail "an environment variable outside the allowlist reached the sandbox"
+    chmod +x "$probe_bin/copilot"
+    out="$( (cd "$work" && PATH="$probe_bin:$PATH" \
+        SECRET_PROBE_PATH="$secret_dir/token" SECRET_PROBE_VALUE=leaked \
+        ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    grep -q 'VISIBLE_PATH' <<<"$out" &&
+        fail "a host path outside the allowlist was readable inside the sandbox"
+    grep -q 'VISIBLE_ENV' <<<"$out" &&
+        fail "an environment variable outside the allowlist reached the sandbox"
 
-echo "==> an operator can name an extra path and variable deliberately"
-out="$( (cd "$work" && PATH="$probe_bin:$PATH" \
-    SECRET_PROBE_PATH="$secret_dir/token" SECRET_PROBE_VALUE=allowed \
-    FINDER_REVIEW_SANDBOX_EXTRA_RO="$secret_dir" \
-    FINDER_REVIEW_SANDBOX_ENV="SECRET_PROBE_PATH:SECRET_PROBE_VALUE" \
-    ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
-grep -q 'VISIBLE_PATH' <<<"$out" ||
-    fail "a deliberately named path was still not readable: $out"
-grep -q 'VISIBLE_ENV' <<<"$out" ||
-    fail "a deliberately named variable did not reach the sandbox: $out"
+    echo "==> an operator can name an extra path and variable deliberately"
+    out="$( (cd "$work" && PATH="$probe_bin:$PATH" \
+        SECRET_PROBE_PATH="$secret_dir/token" SECRET_PROBE_VALUE=allowed \
+        FINDER_REVIEW_SANDBOX_EXTRA_RO="$secret_dir" \
+        FINDER_REVIEW_SANDBOX_ENV="SECRET_PROBE_PATH:SECRET_PROBE_VALUE" \
+        ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    grep -q 'VISIBLE_PATH' <<<"$out" ||
+        fail "a deliberately named path was still not readable: $out"
+    grep -q 'VISIBLE_ENV' <<<"$out" ||
+        fail "a deliberately named variable did not reach the sandbox: $out"
+else
+    echo "==> SKIPPED (no bubblewrap on this host): the kernel-boundary cases"
+fi
 
 echo "==> the verification catches a tree that changed, independently of the kernel"
 # The two defences are separate on purpose: this one exercises the proof, by
@@ -570,5 +587,23 @@ set -e
 [ "$status" -eq 2 ] || fail "an implausibly wide prompt bound exited $status, not 2"
 grep -Fq 'implausibly large' <<<"$out" ||
     fail "the oversized bound was not refused by name: $out"
+
+echo "==> an untracked path beginning with a dash is copied, not read as an option"
+# A repository-relative path may legitimately start with `-`, and both
+# `dirname` and `cp` would take it for options — which, once the untracked
+# loop was made to fail closed, refused every non-dry-run review over an
+# otherwise valid tree.
+: >"$work/-new"
+(
+    cd "$work" || exit 1
+    # shellcheck source=/dev/null
+    . ./scripts/lib/readonly-sandbox.sh
+    sandbox_create HEAD 1 >/dev/null || exit 1
+    status=0
+    [ -f "$readonly_sandbox_dir/-new" ] || status=1
+    sandbox_cleanup
+    exit "$status"
+) || fail "an untracked path beginning with a dash was not reproduced in the scratch checkout"
+rm -f "$work/-new"
 
 echo "finder review runner OK"

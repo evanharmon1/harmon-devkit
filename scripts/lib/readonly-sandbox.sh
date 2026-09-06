@@ -309,17 +309,22 @@ sandbox_create() {
             # Special files are refused rather than copied: a FIFO blocks the
             # copy forever waiting for a writer, and a device or socket is not
             # reviewable content in any case.
-            if [ ! -L "$untracked" ] && [ ! -f "$untracked" ]; then
+            if [ ! -L "./$untracked" ] && [ ! -f "./$untracked" ]; then
                 echo "readonly-sandbox: untracked path is not a regular file or symlink, refusing the scope: $untracked" >&2
                 sandbox_create_failed
                 return 1
             fi
-            mkdir -p "$readonly_sandbox_dir/$(dirname "$untracked")" || {
+            # `./` prefix, not decoration: a repository-relative path may
+            # legitimately begin with `-`, and both `dirname` and `cp` would
+            # then read it as options — an untracked file named `-new` made
+            # `dirname` report an invalid option and refused every non-dry-run
+            # review outright, which is a valid tree this pass must handle.
+            mkdir -p "$readonly_sandbox_dir/$(dirname "./$untracked")" || {
                 echo "readonly-sandbox: could not create the scratch directory for $untracked" >&2
                 sandbox_create_failed
                 return 1
             }
-            cp -Pp "$untracked" "$readonly_sandbox_dir/$untracked" || {
+            cp -Pp "./$untracked" "$readonly_sandbox_dir/./$untracked" || {
                 echo "readonly-sandbox: could not reproduce the untracked path $untracked in the scratch checkout" >&2
                 sandbox_create_failed
                 return 1
@@ -344,8 +349,18 @@ sandbox_create() {
 # any variable not on the list stayed readable, and with egress open a
 # general agent processing an attacker-controlled diff could use it. Only
 # these paths are bound, each read-only, and only if they exist.
+# NOTE on /opt: deliberately NOT here. It is a conventional home for
+# third-party application state — /opt/homebrew is an entire package prefix —
+# so binding the tree wholesale contradicts the allowlist principle above,
+# which is to bind what a pass needs rather than what a host happens to have.
+# The finder's own binary directory, its launcher's real target directory and
+# the nearest node_modules ancestor are bound individually below, so a tool
+# installed under /opt still resolves; a Homebrew-installed finder whose
+# runtime libraries live elsewhere under the prefix is served by naming it
+# with FINDER_REVIEW_SANDBOX_EXTRA_RO, which is the operator deciding
+# deliberately.
 readonly_sandbox_base_paths=(
-    /usr /bin /sbin /lib /lib32 /lib64 /libx32 /opt
+    /usr /bin /sbin /lib /lib32 /lib64 /libx32
     /etc/ssl /etc/pki /etc/ca-certificates /etc/ca-certificates.conf
     /etc/resolv.conf /etc/hosts /etc/nsswitch.conf /etc/localtime
     /etc/passwd /etc/group /etc/alternatives

@@ -437,7 +437,12 @@ refuse_dirty_submodules() {
         echo "collect_review_diff: a submodule's checked-out commit differs from the index; refusing a scope that would review only the gitlink" >&2
         return 1
     fi
-    while IFS= read -r sm; do
+    # Paths come from `git submodule foreach`, which reports $sm_path exactly,
+    # NUL-delimited. An earlier revision took the second whitespace-delimited
+    # field of `git submodule status`, which truncates any path containing a
+    # space — `deps/my lib` was inspected as `deps/my`, the guard accepted the
+    # scope, and the finder received only the gitlink marker.
+    while IFS= read -r -d '' sm; do
         [ -n "$sm" ] || continue
         # An uninitialized submodule has no .git to ask, and contributes no
         # uncommitted content to miss.
@@ -446,7 +451,7 @@ refuse_dirty_submodules() {
             echo "collect_review_diff: submodule '$sm' has uncommitted changes that a superproject diff cannot show; refusing the scope" >&2
             return 1
         fi
-    done < <(git submodule status --recursive 2>/dev/null | awk '{ print $2 }')
+    done < <(git submodule foreach --recursive --quiet 'printf "%s\0" "$displaypath"' 2>/dev/null)
     return 0
 }
 

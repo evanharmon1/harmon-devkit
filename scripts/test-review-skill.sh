@@ -768,4 +768,37 @@ set -e
 grep -Fq 'predates --add-finder/--select-finder' "$tmp/closure-ok.out" &&
     fail "a current closure reader was wrongly refused: $(cat "$tmp/closure-ok.out")"
 
+echo "==> the EXIT reader also refuses a closure reader predating finder selection"
+# The sibling of the devflow-policy.mjs guard above. Fixing only the policy
+# reader left this path unguarded, and it sits on the same trust boundary: a
+# merge-base exit reader that ignores the flags computes an exit over a
+# narrower set of slots and says nothing about it.
+stale_exit="$tmp/stale-exit-closure"
+mkdir -p "$stale_exit/scripts"
+cat >"$stale_exit/scripts/dev-flow-exit.mjs" <<'STALE'
+// An exit reader from before #796.
+process.exitCode = 0
+STALE
+set +e
+node scripts/dev-flow-exit.mjs --closure "$stale_exit" --run "$tmp" --stage review \
+    --policy .devflow.toml --add-finder review:copilot-verification >"$tmp/exit-closure.out" 2>&1
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail "the exit reader delegated to a closure that cannot honour --add-finder: $(cat "$tmp/exit-closure.out")"
+grep -Fq 'predates --add-finder/--select-finder' "$tmp/exit-closure.out" ||
+    fail "the exit reader's stale-closure refusal did not name its reason: $(cat "$tmp/exit-closure.out")"
+
+echo "==> the equals form of a finder flag is parsed, not silently dropped"
+# `--add-finder=x` is the conventional spelling and must mean what
+# `--add-finder x` means. It used to fall through to generic parsing, leaving
+# the run with the configured finders alone and no disclosure — while the
+# closure guard already treated the same spelling as a selection request.
+set +e
+node scripts/devflow-policy.mjs resolve --closure "$closure_dir" \
+    --policy .devflow.toml --registry agent-registry.json \
+    --add-finder=review:copilot-verification >"$tmp/eq-form.out" 2>&1
+set -e
+grep -Fq 'predates --add-finder/--select-finder' "$tmp/eq-form.out" ||
+    fail "the equals-form flag was not recognized as a selection request: $(cat "$tmp/eq-form.out")"
+
 echo "review skill fixtures OK"
