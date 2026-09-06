@@ -16,6 +16,7 @@ runner="scripts/finder-review.sh"
 fail() {
     echo "TEST FAIL: $*" >&2
     exit 1
+    return 0
 }
 [ -x "$runner" ] || fail "missing or non-executable $runner"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
@@ -469,7 +470,7 @@ cat >"$fail_bin/git" <<EOF
 # also passes --no-ext-diff, and pinning --no-index to \$2 made this stub stop
 # intercepting the moment a flag was added ahead of it — the case then passed
 # by not simulating the failure at all.
-if [ "\$1" = diff ] && printf '%s\n' "\$@" | grep -Fxq -- --no-index; then
+if [ "\$1" = diff ] && grep -Fxq -- --no-index <<<"\$(printf '%s\n' "\$@")"; then
     echo "simulated git failure" >&2
     exit 128
 fi

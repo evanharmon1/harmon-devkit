@@ -1,0 +1,18 @@
+{
+  "run_id": "run-stage-skip-nonzero-challenge-cap",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "verify"
+    },
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    }
+  ]
+}

@@ -55,6 +55,7 @@ export GH_STUB_RESULT=true
 export GH_STUB_RC=0
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "FAIL: $*" >&2
     exit 1
 }
@@ -607,7 +608,7 @@ mkdir -p "${root}/work/docs"
 git_q "${root}/work" mv src/run.sh docs/run.md
 git_q "${root}/work" commit -m "test: rename code file into docs/"
 rename_sha="$(git rev-parse HEAD)"
-git -C "${root}/work" diff --name-status "${premv_base}..${rename_sha}" | grep -q '^R100' ||
+grep -q '^R100' < <(git -C "${root}/work" diff --name-status "${premv_base}..${rename_sha}") ||
     fail "fixture setup did not produce a 100%-similarity rename to test against"
 run plan --against "$premv_base" --closure-base "$premv_base_sha" --sha "$rename_sha" "${policy_args[@]}" --json
 assert_rc 0

@@ -75,7 +75,7 @@ remote=""
 default_branch=""
 if [ "$has_remote" = true ]; then
     remote="$(git remote | head -n 1)"
-    if git remote | grep -qx origin; then
+    if grep -qx origin < <(git remote); then
         remote=origin
     fi
     if default_ref="$(git symbolic-ref --quiet "refs/remotes/$remote/HEAD")"; then

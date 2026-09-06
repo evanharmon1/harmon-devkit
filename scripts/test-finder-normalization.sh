@@ -20,6 +20,7 @@ registry="agent-registry.json"
 fail() {
     echo "TEST FAIL: $*" >&2
     exit 1
+    return 0
 }
 command -v node >/dev/null 2>&1 || fail "node is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"

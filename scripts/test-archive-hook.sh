@@ -13,6 +13,7 @@ cd "$repo"
 HOOK="$repo/templates/claude-hooks/session-end-archive/session-end-archive.sh"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }

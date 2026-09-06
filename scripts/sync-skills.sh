@@ -525,7 +525,7 @@ vendor_agents() {
     mkdir -p "$3"
     # The wildcard is resolved BEFORE assert_sane_name, which rejects `*` as an
     # unsafe name — it is a manifest sentinel, never a filename.
-    if printf '%s\n' "$2" | grep -qxF '*'; then
+    if grep -qxF '*' <<<"$2"; then
         [ "$(printf '%s\n' "$2" | grep -cv '^$')" -eq 1 ] ||
             die "manifest: agents.names is either [\"*\"] (every agent) or an explicit list, not both"
         for _va_f in "$_va_src"/*.md; do
@@ -559,7 +559,7 @@ vendor_schemas() {
     mkdir -p "$3"
     # The wildcard is resolved BEFORE assert_sane_name, which rejects `*` as an
     # unsafe name — it is a manifest sentinel, never a filename.
-    if printf '%s\n' "$2" | grep -qxF '*'; then
+    if grep -qxF '*' <<<"$2"; then
         [ "$(printf '%s\n' "$2" | grep -cv '^$')" -eq 1 ] ||
             die "manifest: schemas.names is either [\"*\"] (every schema) or an explicit list, not both"
         for _vs_f in "$_vs_src"/*.schema.json; do
@@ -908,7 +908,7 @@ agents_preflight() {
     # work. Checked here, before ANY deletion anywhere in the run.
     while IFS= read -r _agp_name; do
         [ -n "$_agp_name" ] || continue
-        if [ -e "$_AGP_DEST/$_agp_name.md" ] && ! printf '%s\n' "$_AGP_MANAGED" | grep -qxF "$_agp_name"; then
+        if [ -e "$_AGP_DEST/$_agp_name.md" ] && ! grep -qxF "$_agp_name" <<<"$_AGP_MANAGED"; then
             die "local agent '$_agp_name' collides with an incoming vendored agent — rename the local file or drop it from $MANIFEST"
         fi
     done <<EOF
@@ -940,7 +940,7 @@ schemas_preflight() {
     # local work. Checked here, before ANY deletion anywhere in the run.
     while IFS= read -r _scp_name; do
         [ -n "$_scp_name" ] || continue
-        if [ -e "$_SCP_DEST/$_scp_name.schema.json" ] && ! printf '%s\n' "$_SCP_MANAGED" | grep -qxF "$_scp_name"; then
+        if [ -e "$_SCP_DEST/$_scp_name.schema.json" ] && ! grep -qxF "$_scp_name" <<<"$_SCP_MANAGED"; then
             die "local schema '$_scp_name' collides with an incoming vendored schema — rename the local file or drop it from $MANIFEST"
         fi
     done <<EOF
@@ -1042,7 +1042,7 @@ cmd_sync() {
     # and that an incoming skill wants is local work — never overwrite it.
     while IFS= read -r name; do
         [ -n "$name" ] || continue
-        if [ -e "$dest/$name" ] && ! printf '%s\n' "$old_managed" | grep -qxF "$name"; then
+        if [ -e "$dest/$name" ] && ! grep -qxF "$name" <<<"$old_managed"; then
             die "local skill '$name' collides with an incoming vendored skill — rename the local dir or drop its category from $MANIFEST"
         fi
     done <<EOF
@@ -1174,7 +1174,7 @@ EOF
     # A managed agent no longer named by the manifest is a leftover to clean up.
     while IFS= read -r _vap_n; do
         [ -n "$_vap_n" ] || continue
-        if ! printf '%s\n' "$_vap_incoming" | grep -qxF "$_vap_n"; then
+        if ! grep -qxF "$_vap_n" <<<"$_vap_incoming"; then
             echo "✗ '$_vap_n' is vendored (managed) but no longer shipped by the pin" >&2
             _vap_drift=1
         fi
@@ -1236,7 +1236,7 @@ EOF
     # A managed schema no longer named by the manifest is a leftover to clean up.
     while IFS= read -r _vsp_n; do
         [ -n "$_vsp_n" ] || continue
-        if ! printf '%s\n' "$_vsp_incoming" | grep -qxF "$_vsp_n"; then
+        if ! grep -qxF "$_vsp_n" <<<"$_vsp_incoming"; then
             echo "✗ '$_vsp_n' is vendored (managed) but no longer shipped by the pin" >&2
             _vsp_drift=1
         fi
@@ -1297,7 +1297,7 @@ EOF
     # A managed dir no longer shipped by the pin is a leftover to clean up.
     while IFS= read -r name; do
         [ -n "$name" ] || continue
-        if ! printf '%s\n' "$incoming" | grep -qxF "$name"; then
+        if ! grep -qxF "$name" <<<"$incoming"; then
             echo "✗ '$name' is vendored (managed) but no longer shipped by the pin" >&2
             drift=1
         fi

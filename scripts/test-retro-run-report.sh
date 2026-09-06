@@ -276,7 +276,7 @@ run_report() {
 }
 
 contains() {
-    printf '%s' "$1" | grep -qF -- "$2"
+    grep -qF -- "$2" <<<"$1"
 }
 
 # scaffold DIR FIXTURE BODY — the common setup: gh stub, harvester stub with a
@@ -849,8 +849,7 @@ contains "$OUT" "kickoff-time registry revision" &&
     bad "the trust-pinning limitation is not stated where integrity is read"
 
 echo "==> the skill's documented command is runnable as written"
-grep -A 3 'assets/retro-run-report.mjs --repo' ai/skills/universal/retro/SKILL.md |
-    grep -qE -- '--trusted-actor-id|--trusted-actors-file' &&
+grep -qE -- '--trusted-actor-id|--trusted-actors-file' < <(grep -A 3 'assets/retro-run-report.mjs --repo' ai/skills/universal/retro/SKILL.md) &&
     ok "the documented command carries the required trust root" ||
     bad "copying the documented command would exit 2 before doing any work"
 
@@ -953,8 +952,7 @@ echo "==> the skill gives run-not-found its own provenance wording"
 grep -q 'Exit 10, `run-not-found`' ai/skills/universal/retro/SKILL.md &&
     ok "run-not-found has provenance wording of its own" ||
     bad "run-not-found shares the no-run-record provenance wording"
-grep -A 6 'Exit 10, `run-not-found`' ai/skills/universal/retro/SKILL.md |
-    grep -q 'Do not write "there was no run record"' &&
+grep -q 'Do not write "there was no run record"' < <(grep -A 6 'Exit 10, `run-not-found`' ai/skills/universal/retro/SKILL.md) &&
     ok "that wording forbids the unestablished absence claim" ||
     bad "the run-not-found wording still permits claiming no run record"
 grep -q -- '--stats-script <path>' ai/skills/universal/retro/SKILL.md &&
@@ -1148,12 +1146,10 @@ grep -q '| 10 · `no-run-record` |' ai/skills/universal/retro/SKILL.md &&
     ok "no-run-record has its own exit-table row" || bad "the exit-10 row still conflates two cases"
 grep -q '| 10 · `run-not-found` |' ai/skills/universal/retro/SKILL.md &&
     ok "run-not-found has its own exit-table row" || bad "run-not-found has no row of its own"
-grep -A 1 '| 10 · `run-not-found` |' ai/skills/universal/retro/SKILL.md |
-    grep -q 'do \*\*not\*\* say the session has no run record' &&
+grep -q 'do \*\*not\*\* say the session has no run record' < <(grep -A 1 '| 10 · `run-not-found` |' ai/skills/universal/retro/SKILL.md) &&
     ok "the run-not-found row forbids the unestablished absence claim" ||
     bad "the run-not-found row still permits claiming no run record"
-grep -A 1 '| 11 | evidence exists' ai/skills/universal/retro/SKILL.md |
-    grep -q 'do not create it unless asked' &&
+grep -q 'do not create it unless asked' < <(grep -A 1 '| 11 | evidence exists' ai/skills/universal/retro/SKILL.md) &&
     ok "exit 11 drafts the follow-up rather than filing it unbidden" ||
     bad "exit 11 still orders an unrequested GitHub write"
 

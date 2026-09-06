@@ -85,6 +85,7 @@ CREDS_BOARD="${TMP}/creds-board/scripts/status.sh"
 ORG_REPO="${TMP}/org-repo/scripts/status.sh"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }

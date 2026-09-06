@@ -10,6 +10,7 @@ schema="${2:-agent-registry.schema.json}"
 validator="scripts/validate-agent-registry.mjs"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }

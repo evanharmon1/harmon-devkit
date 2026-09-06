@@ -1,0 +1,9 @@
+{
+  "run_id": "run-blocked-no-failure-record",
+  "initiated_by": "human",
+  "receipts": [
+    { "kind": "transition", "stage": "review" },
+    { "kind": "pass", "file": "review-r1-codex-cli" },
+    { "kind": "pass", "file": "review-r1-gemini-cli" }
+  ]
+}

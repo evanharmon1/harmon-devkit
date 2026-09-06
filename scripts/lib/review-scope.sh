@@ -437,7 +437,9 @@ refuse_dirty_submodules() {
     local sm
     [ -f .gitmodules ] || return 0
     # '+' = the checked-out commit differs from the index, 'U' = conflicts.
-    if git submodule status --recursive 2>/dev/null | command grep -qE '^[+U]'; then
+    local _submodule_status
+    _submodule_status="$(git submodule status --recursive 2>/dev/null)"
+    if command grep -qE '^[+U]' <<<"$_submodule_status"; then
         echo "collect_review_diff: a submodule's checked-out commit differs from the index; refusing a scope that would review only the gitlink" >&2
         return 1
     fi
