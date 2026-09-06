@@ -551,6 +551,69 @@ assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not name the check whose latest run fails: $gate_out"
 
+echo "==> a cancelled check suite superseded by a later success passes (harmon-devkit#461)"
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"cancelled",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:45}},
+    {id:2,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:46}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:45,workflow_id:100,event:"pull_request"},
+    {check_suite_id:46,workflow_id:100,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> a cancelled-only check suite blocks (harmon-devkit#461)"
+write_defaults
+jq -cn '[{total_count:1,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"cancelled",
+     check_suite:{id:47}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,workflow_runs:[
+    {check_suite_id:47,workflow_id:100,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not name the cancelled check: $gate_out"
+
+echo "==> a newer cancelled suite supersedes an earlier success and blocks (harmon-devkit#461)"
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:48}},
+    {id:2,name:"guard",status:"completed",conclusion:"cancelled",
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:49}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:48,workflow_id:100,event:"pull_request"},
+    {check_suite_id:49,workflow_id:100,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate
+assert_gate 1 fail checks-failing
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-failing did not name the newer cancelled check: $gate_out"
+
+echo "==> a newer still-running suite remains pending after an older success (harmon-devkit#461)"
+write_defaults
+jq -cn '[{total_count:2,check_runs:[
+    {id:1,name:"guard",status:"completed",conclusion:"success",
+     started_at:"2026-01-01T00:00:00Z",check_suite:{id:50}},
+    {id:2,name:"guard",status:"in_progress",conclusion:null,
+     started_at:"2026-01-01T00:05:00Z",check_suite:{id:51}}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,workflow_runs:[
+    {check_suite_id:50,workflow_id:100,event:"pull_request"},
+    {check_suite_id:51,workflow_id:100,event:"pull_request"}]}]' \
+    >"${fixtures}/workflow-runs.pages.json"
+run_gate
+assert_gate 1 fail checks-pending
+printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+    fail "checks-pending did not name the still-running check: $gate_out"
+
 echo "==> a suite that started later but was delivered earlier is not mistaken for the latest"
 # started_at reflects when a runner picked the job up, not delivery order;
 # under queuing an EARLIER delivery (the lower check_suite id) can start
