@@ -57,6 +57,15 @@ grep -Fq 'The report names three options, never two' "$integrate_skill" ||
 # stop at blocker-comment until it stops borrowing a confidence-stage verdict.
 grep -Fq 'do **not** use `render-dev-flow.sh blocker-comment` for an integration' "$integrate_skill" ||
     fail "integrate skill does not warn off the untrustworthy integration blocker rendering"
+# A split is recorded in two documents that are cross-checked only when the run
+# record is validated WITH its adjudications, and nothing else in the stage
+# does that (the readiness gate calls the renderer, which does not read
+# splits). The procedure must say so, and must say a split is confidence-stage
+# only.
+grep -Fq 'scripts/validate-result-schemas.mjs run <run.json> --adjudication' "$integrate_skill" ||
+    fail "integrate skill does not validate the split's cross-document state"
+grep -Fq 'invalid at stage `integration`' "$integrate_skill" ||
+    fail "integrate skill does not state that a split is a confidence-stage disposition"
 
 grep -Fq 'display login is non-authoritative metadata' "$skill" ||
     fail "review skill treats mutable display login as evidence identity"

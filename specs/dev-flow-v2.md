@@ -522,6 +522,14 @@ finding of the current round, at least one of them has evidence-backed
 `round:N` provenance, and the **immediately preceding** round's own gating
 findings were concentrated in that same mechanism.
 
+**When it is read.** The signal needs adjudicated priorities, so a round's own
+candidate exists only once that round's adjudication has been written — and
+that document is immutable. So it is a **trajectory reading of a completed
+round, consumed when adjudicating the next one**: at the round-2 checkpoint
+you hold round 1's verdict, and the split disposition you record is on the
+round in front of you. It never informs the dispositions of the round it
+describes, and nothing should be written as though it could.
+
 Two properties of that rule are load-bearing. It is **knob-free**:
 concentration is unanimity rather than a fraction, and the trajectory test is
 the adjacent round rather than a window, so no per-stage threshold is

@@ -5,6 +5,21 @@
   "$comment": "Orchestrator-authored, NOT wrapped in result.envelope.schema.json — the envelope is for agent->orchestrator results (see specs/dev-flow-v2.md 'Roles and authority' table); the orchestrator writes this document and run.schema.json directly. One instance covers one round's worth of NEW adjudications, matching how evidence is posted (docs/decisions/0002: 'one comment per round, the moment the round is adjudicated'). The property this family holds a finding to is: exactly one adjudication per finding, per run, ever — enforced in three parts, each by a different mechanism, because no single one of them can see the whole run: (1) within ONE document, the finding_id pattern plus scripts/validate-result-schemas.mjs's checkAdjudicationEntries reject a duplicate finding_id in the same adjudications[] array; (2) a finding_id's own <stage>-r<round> segments must equal THIS document's stage/round (checkAdjudicationIdAttribution, always on, no external context needed — the id grammar makes it local) — this is what stops a finding from one round's document from being silently re-adjudicated under a different round's stage/round claim; (3) across EARLIER round documents of the same run, --known-adjudicated (a JSON array of finding ids already adjudicated by those documents) rejects any entry naming one of them. A run's full adjudicated view is the union of every round's adjudication document for that run. `settlements[]` is deliberately NOT here: specs/dev-flow-v2.md states the run record is 'the only home of mutable run state' and settlements are appended over time as `defer` dispositions resolve during integration, so they live in run.schema.json instead — see its own $comment and ai/schemas/README.md 'Where settlements live'.",
   "type": "object",
   "additionalProperties": false,
+  "if": {
+    "properties": { "stage": { "const": "integration" } },
+    "required": ["stage"]
+  },
+  "then": {
+    "properties": {
+      "adjudications": {
+        "items": {
+          "properties": {
+            "disposition": { "enum": ["fix", "restructure", "delete", "decline", "file", "defer"] }
+          }
+        }
+      }
+    }
+  },
   "required": ["schema", "run_id", "stage", "round", "reviewed_head", "adjudications"],
   "properties": {
     "schema": { "const": 2 },
@@ -66,7 +81,7 @@
           "enum": ["P0", "P1", "P2", "P3"]
         },
         "disposition": {
-          "description": "How the orchestrator resolved this finding. `split` is the split strategy (specs/dev-flow-v2.md \u00a7 The split strategy, issue #747): the MECHANISM the finding lives in is removed from the change under review and filed as its own issue on the current milestone, keeping the design constraints the rounds established. It is distinct from `delete` (there the code is simply unwanted) and from `restructure` (there the code stays, re-expressed as an invariant) precisely because the mechanism is still wanted \u2014 just not on this change's review budget. A `split` entry therefore REQUIRES a `reference` of type `issue_number` naming the filed issue (checkAdjudicationEntries): \"filed by the agent that splits it, never left to memory\" is the whole point, so an unreferenced split is rejected rather than trusted. Deliberately NOT added to result.reviewer/result.challenger's `recommended_disposition` or result.integrator's `applied_dispositions`: a finder sees one round and an integrator never adjudicates, while the split is a trajectory judgement the orchestrator makes from the exit computation's `split_candidate` signal.",
+          "description": "How the orchestrator resolved this finding. `split` is the split strategy (specs/dev-flow-v2.md \u00a7 The split strategy, issue #747), and is a CONFIDENCE-STAGE disposition only \u2014 the top-level if/then above forbids it at stage `integration`, because dev-flow-exit.mjs computes `split_candidate` for `challenge` and `review` alone, so an integration split would be a split with no signal behind it: the MECHANISM the finding lives in is removed from the change under review and filed as its own issue on the current milestone, keeping the design constraints the rounds established. It is distinct from `delete` (there the code is simply unwanted) and from `restructure` (there the code stays, re-expressed as an invariant) precisely because the mechanism is still wanted \u2014 just not on this change's review budget. A `split` entry therefore REQUIRES a `reference` of type `issue_number` naming the filed issue (checkAdjudicationEntries): \"filed by the agent that splits it, never left to memory\" is the whole point, so an unreferenced split is rejected rather than trusted. Deliberately NOT added to result.reviewer/result.challenger's `recommended_disposition` or result.integrator's `applied_dispositions`: a finder sees one round and an integrator never adjudicates, while the split is a trajectory judgement the orchestrator makes from the exit computation's `split_candidate` signal.",
           "enum": ["fix", "restructure", "delete", "decline", "defer", "file", "split"]
         },
         "reason": {

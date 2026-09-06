@@ -1449,6 +1449,24 @@ rejects a split that names none) and `run.json.splits`, which additionally
 records the milestone. A recommendation to split that files nothing is not a
 split; it is the finding restated.
 
+**Then validate the pair.** The two documents are cross-checked only when the
+run record is validated *with* its adjudications, and nothing else in this
+stage does that — the readiness gate calls the renderer, whose cross-document
+validation does not read `splits`. So after recording a split, run
+`scripts/validate-result-schemas.mjs run <run.json> --adjudication <each round
+document>` and treat a failure as a blocker. It invokes checks that already
+exist: an omitted `splits[]` entry on a terminal run, a split naming a finding
+that was not adjudicated `split`, an entry naming a different issue than the
+adjudication filed it as, one finding answered by two splits, and one
+mechanism split twice out of a stage. Promoting without it is promoting on an
+unchecked record.
+
+A split is a **confidence-stage** disposition: `disposition: split` is invalid at stage `integration`, and the schema rejects it. The exit
+computation produces `split_candidate` for `challenge` and `review` only, so a
+split adjudicated here would have no signal behind it. An integration finding that
+looks like one is a finding to raise for the next confidence stage, not a
+disposition to record.
+
 ## 7. Leave Project status manual
 
 Project fields are a manual, non-authoritative delivery view. Integration

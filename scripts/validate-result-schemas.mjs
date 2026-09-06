@@ -1091,9 +1091,16 @@ function checkAdjudicationEntries(document, errors) {
           `$adjudication.adjudications[finding_id=${entry.finding_id}].override: must be null for stage integration (there is no reviewer priority for adjudicated_priority to differ from)`
         )
       }
+      // `split` is excluded structurally instead — adjudication.schema.json
+      // carries a top-level if/then on the document's own `stage`, because
+      // the exit computation produces no `split_candidate` for integration.
+      // `defer` stays a SEMANTIC check: it already had one here and its own
+      // distinct message in the renderer's cross-document validation, and
+      // folding it into the schema enum would change that error surface for
+      // no gain. Narrow only what needed narrowing.
       if (entry.disposition === 'defer') {
         errors.push(
-          `$adjudication.adjudications[finding_id=${entry.finding_id}].disposition: defer is not allowed for stage integration (an integration finding needs a terminal answer: fix, restructure, delete, decline, file, or split)`
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].disposition: defer is not allowed for stage integration (an integration finding needs a terminal answer: fix, restructure, delete, decline, or file)`
         )
       }
       continue
