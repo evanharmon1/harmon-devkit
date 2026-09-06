@@ -60,6 +60,15 @@ readonly_sandbox_credential_dir=
 # binary, most obviously — has to be named or it simply disappears.
 readonly_sandbox_extra_ro=()
 
+# Symlinks to RECREATE inside the sandbox, as "target|linkpath" pairs. A
+# `--ro-bind` of a symlink binds what it points at, at the link's path — so the
+# link becomes a regular file inside, and a launcher that resolves its own real
+# path (`readlink -f "$BASH_SOURCE"`, which is how an npm bin shim finds its
+# package) computes the wrong directory and fails to load its own siblings.
+# `--symlink` reproduces the link itself, which keeps that resolution honest
+# without binding the directory the link happens to sit in.
+readonly_sandbox_symlinks=()
+
 # bwrap from PATH, else the copy Codex bundles — a host without either cannot
 # host a confidence pass, and saying so is the contract's own instruction.
 sandbox_resolve_bwrap() {
@@ -432,6 +441,13 @@ sandbox_exec() {
     for extra in "${readonly_sandbox_extra_ro[@]+"${readonly_sandbox_extra_ro[@]}"}"; do
         [ -e "$extra" ] || continue
         wrapper+=(--ro-bind "$extra" "$extra")
+    done
+    local link_pair link_target link_path
+    for link_pair in "${readonly_sandbox_symlinks[@]+"${readonly_sandbox_symlinks[@]}"}"; do
+        link_target="${link_pair%%|*}"
+        link_path="${link_pair#*|}"
+        [ -n "$link_target" ] && [ -n "$link_path" ] || continue
+        wrapper+=(--symlink "$link_target" "$link_path")
     done
     # An operator's own additions, colon-separated. Named deliberately, never
     # inherited: a path here is one somebody decided the finder needs.

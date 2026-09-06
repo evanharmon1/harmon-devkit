@@ -91,6 +91,13 @@ jobs:
       # normalization and sandbox regression the change added.
       - run: task test:finder-normalization
       - run: task test:finder-review
+      # test:review-skill is the third suite #796 grows — the logical-round cap
+      # accounting, union-only finder selection, resolver/exit agreement and
+      # closure handling behind criteria 2 and 5. Adding the two above and not
+      # this one left that coverage out of cloud CI entirely. All three are
+      # point-fixes: #726 is the general fix for a hand-maintained list that
+      # silently omits task verify's suites.
+      - run: task test:review-skill
       - run: task test:meta-install
       - run: task test:integrate-codex
       - run: task test:ci-results

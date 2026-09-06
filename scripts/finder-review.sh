@@ -322,18 +322,44 @@ readonly_sandbox_credential_dir="${FINDER_REVIEW_COPILOT_CONFIG_DIR:-${HOME:-/no
 # launcher made the finder resolve successfully and then fail to execute.
 bin_path="$(command -v "$bin")"
 bin_target="$(readlink -f "$bin_path" 2>/dev/null || printf '%s' "$bin_path")"
-readonly_sandbox_extra_ro=("$(dirname "$bin_path")" "$(dirname "$bin_target")")
+# The two FILES, not the directories holding them. Binding `dirname
+# "$bin_path"` handed the finder every sibling of the launcher, and a launcher
+# commonly lives in a personal `~/bin` or a shared prefix alongside unrelated
+# private files — which a general agent with open egress can read and send on.
+# `--ro-bind` works on a file, so the launcher and its resolved target are
+# bound individually.
+readonly_sandbox_extra_ro=("$bin_target")
+if [ -L "$bin_path" ]; then
+    # Reproduce the launcher AS A SYMLINK. Binding it would flatten it into a
+    # regular file, and an npm bin shim resolves its own real path to find its
+    # package — it would then look beside the bin directory and find nothing.
+    readonly_sandbox_symlinks=("$bin_target|$bin_path")
+else
+    readonly_sandbox_extra_ro+=("$bin_path")
+fi
 # The whole node_modules tree the launcher resolves into, where there is one:
 # a package's siblings are its dependencies, and binding the package alone
 # would leave them out.
 sandbox_bind_ancestor="$bin_target"
+sandbox_bound_package=0
 while [ "$sandbox_bind_ancestor" != / ] && [ -n "$sandbox_bind_ancestor" ]; do
     sandbox_bind_ancestor="$(dirname "$sandbox_bind_ancestor")"
     if [ "$(basename "$sandbox_bind_ancestor")" = node_modules ]; then
         readonly_sandbox_extra_ro+=("$sandbox_bind_ancestor")
+        sandbox_bound_package=1
         break
     fi
 done
+# No node_modules above the target means a non-npm layout. Where the launcher
+# INDIRECTS into another directory — /opt/tool/bin/x -> /opt/tool/lib/x.js —
+# that directory is the package and has to be bound. Where it does not, the
+# script IS the program and binding its directory would put the launcher's own
+# unrelated siblings back inside the sandbox, which is the exposure this whole
+# block exists to remove.
+if [ "$sandbox_bound_package" -eq 0 ] &&
+    [ "$(dirname "$bin_target")" != "$(dirname "$bin_path")" ]; then
+    readonly_sandbox_extra_ro+=("$(dirname "$bin_target")")
+fi
 # The snapshot the resolved scope describes — the finder reads the tree it
 # sits in, so that tree has to be the one its diff is about.
 read -r snapshot_committish snapshot_worktree <<<"$(review_scope_snapshot)"

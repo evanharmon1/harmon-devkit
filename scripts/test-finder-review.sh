@@ -606,4 +606,26 @@ echo "==> an untracked path beginning with a dash is copied, not read as an opti
 ) || fail "an untracked path beginning with a dash was not reproduced in the scratch checkout"
 rm -f "$work/-new"
 
+echo "==> the launcher's directory is NOT bound, only the launcher itself"
+# A launcher commonly sits in a personal ~/bin or a shared prefix beside
+# unrelated private files. Binding dirname(launcher) handed every one of them
+# to a general agent with open egress.
+if (cd "$work" && . ./scripts/lib/readonly-sandbox.sh && sandbox_resolve_bwrap) >/dev/null 2>&1; then
+    nosib_bin="$tmp/nosib-bin"
+    mkdir -p "$nosib_bin"
+    printf 'PRIVATE-SIBLING-CANARY\n' >"$nosib_bin/private-notes.txt"
+    cat >"$nosib_bin/copilot" <<'EOF'
+#!/usr/bin/env bash
+here="$(dirname "$0")"
+if [ -e "$here/private-notes.txt" ]; then echo "SIBLING_VISIBLE"; fi
+echo "P1 src/app.txt:1 — a finding"
+EOF
+    chmod +x "$nosib_bin/copilot"
+    out="$( (cd "$work" && PATH="$nosib_bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    grep -q 'SIBLING_VISIBLE' <<<"$out" &&
+        fail "an unrelated file beside the launcher was readable inside the sandbox: $out"
+else
+    echo "==> SKIPPED (no bubblewrap on this host): launcher-sibling isolation"
+fi
+
 echo "finder review runner OK"

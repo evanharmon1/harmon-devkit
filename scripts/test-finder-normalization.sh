@@ -312,4 +312,72 @@ status=$?
 set -e
 [ "$status" -eq 3 ] || fail "a top-level comment satisfied copilot-cloud, which declares no comment surface (exit $status)"
 
+echo "==> an inline comment from an earlier review is refused, not banked"
+# A re-trigger without a head change leaves the previous review's comments in
+# place. Same actor, same head, different review: banking it reports a stale
+# finding as this round's.
+jq -n --arg head "$head40" '{
+    review: { id: 2, user: { id: 199175422 }, commit_id: $head,
+              body: "Codex Review: didn'"'"'t find any major issues." },
+    comments: [ { id: 9, pull_request_review_id: 1, user: { id: 199175422 },
+                  original_commit_id: $head, path: "a.js", line: 1,
+                  body: "P1 stale finding" } ]
+}' >"$tmp/stale-review.json"
+set +e
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/stale-review.json" \
+    >/dev/null 2>"$tmp/stale-review.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "an inline comment from review 1 was decoded alongside review 2 (exit $status)"
+grep -Fq 'belongs to review 1' "$tmp/stale-review.err" ||
+    fail "the stale-review refusal did not name the mismatch: $(cat "$tmp/stale-review.err")"
+
+echo "==> an inline comment with no review attribution is refused"
+jq -n --arg head "$head40" '{
+    review: { id: 2, user: { id: 199175422 }, commit_id: $head,
+              body: "Codex Review: didn'"'"'t find any major issues." },
+    comments: [ { id: 9, user: { id: 199175422 }, original_commit_id: $head,
+                  path: "a.js", line: 1, body: "P1 unattributed" } ]
+}' >"$tmp/unattributed.json"
+set +e
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/unattributed.json" \
+    >/dev/null 2>"$tmp/unattributed.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "an unattributed inline comment was decoded (exit $status)"
+
+echo "==> a line-start off-scale badge keeps the P2 floor"
+# priorityOf() consults the line-start path FIRST, so a boundary check that
+# lived only in the fallback path never decided anything.
+jq -n --arg head "$head40" '{
+    review: { id: 3, user: { id: 199175422 }, commit_id: $head,
+              body: "Codex Review: didn'"'"'t find any major issues." },
+    comments: [ { id: 9, pull_request_review_id: 3, user: { id: 199175422 },
+                  original_commit_id: $head, path: "a.js", line: 1,
+                  body: "P30 an off-scale badge at line start" } ]
+}' >"$tmp/leading-offscale.json"
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/leading-offscale.json" \
+    >"$tmp/leading-offscale.out" 2>&1 ||
+    fail "the line-start off-scale payload was refused outright: $(cat "$tmp/leading-offscale.out")"
+grep -q '"priority": *"P3"' "$tmp/leading-offscale.out" &&
+    fail "a line-start P30 badge was normalized as P3: $(cat "$tmp/leading-offscale.out")"
+
+echo "==> a quoted clean verdict inside pending narration is not terminal"
+# The declared sentence must OPEN the body. Quoting it while saying the review
+# is still pending is not a verdict.
+jq -n --arg head "$head40" '{
+    review: { id: 4, user: { id: 199175422 }, commit_id: $head,
+              body: "Review is still pending; someone quoted: Codex Review: didn'"'"'t find any major issues. No verdict has been issued." }
+}' >"$tmp/quoted-clean.json"
+set +e
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/quoted-clean.json" \
+    >/dev/null 2>"$tmp/quoted-clean.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "a quoted clean verdict inside pending narration exited $status, not 3"
+
 echo "finder normalization OK ($cases fixture(s))"

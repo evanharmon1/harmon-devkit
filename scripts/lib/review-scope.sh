@@ -447,7 +447,12 @@ refuse_dirty_submodules() {
         # An uninitialized submodule has no .git to ask, and contributes no
         # uncommitted content to miss.
         [ -e "$sm/.git" ] || continue
-        if [ -n "$(git -C "$sm" status --porcelain 2>/dev/null)" ]; then
+        # `--untracked-files=all` explicitly, exactly as the top-level helper
+        # does: a submodule inheriting `status.showUntrackedFiles=no` from repo
+        # or user config reports nothing for untracked-only work, so the guard
+        # accepted a scope whose submodule content the superproject diff cannot
+        # show and the scratch checkout does not contain.
+        if [ -n "$(git -C "$sm" status --porcelain --untracked-files=all 2>/dev/null)" ]; then
             echo "collect_review_diff: submodule '$sm' has uncommitted changes that a superproject diff cannot show; refusing the scope" >&2
             return 1
         fi

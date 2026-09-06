@@ -153,8 +153,12 @@ function leadingHit(text, rule) {
   while (at !== -1) {
     let start = at
     while (start > 0 && '*_`[('.includes(text[start - 1])) start -= 1
-    if (start === 0 || text[start - 1] === '\n') return start
-    at = haystack.indexOf(needle, at + needle.length)
+    // The SAME token boundary the fallback path applies. An earlier fix put it
+    // only in matchesRule(), but priorityOf() consults this function first —
+    // so a line-start `P30` still took P3, which is the higher-precedence path
+    // and therefore the one that actually decided the priority.
+    if ((start === 0 || text[start - 1] === '\n') && !isWordChar(haystack[at + needle.length])) return start
+    at = haystack.indexOf(needle, at + 1)
   }
   return -1
 }
@@ -388,6 +392,43 @@ if (finder.raw_shape === 'labelled-text') {
       ? atThisHead(node)
       : String(node.original_commit_id) === opts.reviewedHead
 
+  // Inline comments must belong to the REVIEW being decoded, not merely to the
+  // same actor at the same head. A re-trigger without a head change leaves the
+  // previous review's comments in place, so a clean review plus a stale P1
+  // from an earlier review normalized as a current finding — and for a
+  // count-declaring finder the same staleness shows up as a false
+  // actionable-count mismatch instead. Correlation is by
+  // `pull_request_review_id`, which the GitHub reviews API always sets on an
+  // inline review comment.
+  const selectedReviewId = payload.review?.id
+  const inlineForThisFinder = (payload.comments ?? []).filter((c) => byThisFinder(c) && inlineAtThisHead(c))
+  if (inlineForThisFinder.length > 0) {
+    if (selectedReviewId === undefined || selectedReviewId === null) {
+      die(
+        `${finder.slug} supplied ${inlineForThisFinder.length} current-head inline comment(s) but no review to attribute them to — ` +
+          `without \`review.id\` a stale comment from an earlier review cannot be told from this one's`,
+        3
+      )
+    }
+    for (const comment of inlineForThisFinder) {
+      const owner = comment.pull_request_review_id
+      if (owner === undefined || owner === null) {
+        die(
+          `${finder.slug} inline comment ${comment.id ?? '?'} carries no \`pull_request_review_id\`, so it cannot be attributed to review ` +
+            `${selectedReviewId} — refusing rather than banking a comment that may belong to an earlier review`,
+          3
+        )
+      }
+      if (String(owner) !== String(selectedReviewId)) {
+        die(
+          `${finder.slug} inline comment ${comment.id ?? '?'} belongs to review ${owner}, not the supplied review ${selectedReviewId} — ` +
+            `it is an earlier review's finding at the same head and must not be decoded as this round's`,
+          3
+        )
+      }
+    }
+  }
+
   for (const comment of payload.comments ?? []) {
     if (!byThisFinder(comment) || !inlineAtThisHead(comment)) continue
     const body = String(comment.body ?? '')
@@ -453,9 +494,18 @@ if (finder.raw_shape === 'labelled-text') {
     // Decodable findings are terminal by construction: they are the result.
     if (isLabelled(text)) return true
     switch (verdictMode) {
-      case 'clean-sentence':
-        // The finder says, in its own declared words, that it found nothing.
-        return Boolean(declaredClean) && text.toLowerCase().includes(String(declaredClean).toLowerCase())
+      case 'clean-sentence': {
+        // The declared sentence must OPEN the body, not merely appear in it.
+        // `includes` accepted a body that QUOTED the sentence while saying the
+        // review was still pending — the registry contract is that the verdict
+        // leads and only declared metadata follows it, so a quote buried in
+        // narration is not a verdict.
+        if (!declaredClean) return false
+        const want = String(declaredClean).toLowerCase()
+        // Leading markup a verdict is commonly wrapped in, then the sentence.
+        const head = text.replace(/^[\s*_`>#-]+/, '').toLowerCase()
+        return head.startsWith(want)
+      }
       case 'actionable-count':
         // The finder states how many findings it posted; zero is a verdict.
         return Boolean(declaredCount) && new RegExp(String(declaredCount).replace(/\[\[:space:\]\]/g, '\\s'), 'i').test(text)

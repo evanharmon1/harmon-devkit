@@ -19,7 +19,8 @@
         "login": "coderabbitai[bot]"
       },
       "body": "_\u26a0\ufe0f Potential issue_\n\nThe undecoded report is written to stderr after the pass has already been written to stdout, so a caller piping stdout sees a complete-looking pass.",
-      "original_commit_id": "0404040404040404040404040404040404040404"
+      "original_commit_id": "0404040404040404040404040404040404040404",
+      "pull_request_review_id": 9200
     },
     {
       "id": 9202,
@@ -31,7 +32,8 @@
         "login": "coderabbitai[bot]"
       },
       "body": "_\ud83e\uddf9 Nitpick (assertive)_\n\nPrefer `jq -e` over comparing the string output.",
-      "original_commit_id": "0404040404040404040404040404040404040404"
+      "original_commit_id": "0404040404040404040404040404040404040404",
+      "pull_request_review_id": 9200
     }
   ]
 }
