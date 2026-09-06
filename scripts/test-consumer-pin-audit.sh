@@ -45,6 +45,14 @@ V2_RELEASE="$(READER_PATH="$READER" node -e \
     exit 1
 }
 
+# The pin-lag boundary comes from the script under test, so bumping the
+# release constant there needs no edit here.
+V2_BOUNDARY="$(sed -n 's/^V2_SKILLS_FIRST_RELEASE="\(.*\)"$/\1/p' "$AUDIT")"
+[ -n "$V2_BOUNDARY" ] || {
+    echo "test-consumer-pin-audit: could not read V2_SKILLS_FIRST_RELEASE from $AUDIT" >&2
+    exit 1
+}
+
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
 
@@ -193,9 +201,16 @@ expect_not_says "a compatible run does not tell anyone to run copier update" "co
 
 echo
 echo "== consumer-pin-audit: migrated policy still on a pre-v2 pin =="
-c="$(make_consumer pin-lag "$V2_POLICY" v0.34.1 integrate:pre orchestrator:pre)"
+# The fixture is the REAL pre-v2 world: v0.39.0 shipped `gauntlet` and
+# `shepherd` and no v2 stage skill at all (`git ls-tree --name-only v0.39.0
+# ai/skills/universal/`). Review round 4, confirmed: the previous fixture used
+# `integrate`/`orchestrator` at a pre-v2 pin — names that existed at no pre-v2
+# tag — so it passed while the only pin that exists in the world returned
+# `no-policy-consumer` exit 0 and told the operator nothing needed to change.
+c="$(make_consumer pin-lag "$V2_POLICY" v0.39.0 gauntlet:pre shepherd:pre)"
 run_audit "$c"
-expect_status "a migrated policy under pre-v2 skills is pin lag, not a pass" 3
+expect_status "a migrated policy on the real last pre-v2 pin is pin lag, not a pass" 3
+expect_says "pin lag names the release boundary it compared against" "$V2_BOUNDARY"
 expect_says "pin lag says to advance source.ref" "advance source.ref"
 expect_says "pin lag says to re-sync" "task sync:skills"
 expect_not_says "pin lag does not tell anyone to migrate an already-migrated policy" "copier update"
@@ -321,18 +336,27 @@ echo "== consumer-pin-audit: a contract-free vendored subset is not pin lag =="
 # Challenge round 2, confirmed: a manifest vendoring only categories with no
 # policy-consuming skill returned pin-lag forever over a migrated policy,
 # telling the operator to advance and re-sync when that could never help.
+# At or past the boundary with still no contract, the consumer genuinely
+# vendors no policy-consuming skill and advancing the pin cannot help.
 c="$(make_consumer no-policy-consumer "$V2_POLICY" v9.0.0 some-frontend-skill:pre another:pre)"
 run_audit "$c"
-expect_status "a vendored set with no policy-consuming skill is not pin lag" 0
+expect_status "a pin past the boundary with no contract is not pin lag" 0
 expect_says "it says advancing the pin would not add a contract" "advancing the pin would not add one"
 expect_not_says "it does not tell anyone to re-sync pointlessly" "task sync:skills"
 
-# The genuine pin-lag case must still fire: the policy-consuming skills ARE
-# vendored, they just predate the contract.
-c="$(make_consumer real-pin-lag "$V2_POLICY" v0.34.1 integrate:pre review:pre)"
+# Below the boundary it is pin lag whatever the old skills were CALLED — the
+# rule is the release boundary, not a table of retired stage names.
+c="$(make_consumer real-pin-lag "$V2_POLICY" v0.34.1 gauntlet:pre shepherd:pre)"
 run_audit "$c"
-expect_status "policy-consuming skills without a contract over a migrated policy is pin lag" 3
+expect_status "a pre-boundary pin is pin lag whatever its skills were named" 3
 expect_says "real pin lag still says to advance source.ref" "advance source.ref"
+
+# A pin that cannot be ordered against the boundary is indeterminate, not a
+# guess in either direction.
+c="$(make_consumer unorderable-pin "$V2_POLICY" main gauntlet:pre)"
+run_audit "$c"
+expect_status "a non-tag pin over a migrated policy is indeterminate" 2
+expect_says "the unorderable-pin error says it cannot be ordered" "cannot be ordered"
 
 echo
 echo "== consumer-pin-audit: schema versions are shapes, not capability levels =="

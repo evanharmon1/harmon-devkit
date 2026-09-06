@@ -53,17 +53,46 @@ set -euo pipefail
 
 self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 
-# The skills that resolve `.devflow.toml` and therefore ship
-# `assets/policy-contract.json` in harmon-devkit. It is the pin-lag test, not
-# the requirement test: the requirement is read from the contracts actually on
-# disk (which is what makes a future policy-consuming skill work without
-# touching this list), but telling a consumer to advance its pin is only
-# actionable if advancing it could add a contract at all. Challenge round 2,
-# confirmed: a manifest vendoring only contract-free categories (`frontend`,
-# say) reported `pin-lag` forever over a migrated policy, instructing the
-# operator to advance and re-sync when repeating those steps could never
-# change the result.
-POLICY_CONSUMING_SKILLS="review integrate orchestrator"
+# The first harmon-devkit release whose `ai/skills/universal/` ships the Dev
+# flow v2 stage skills. This is the pin-lag boundary, and it is deliberately a
+# RELEASE BOUNDARY rather than a list of skill names: the retired `gauntlet`
+# and `shepherd` stages are replaced by `review` and `integrate` and are not
+# supported, so a name table would encode dead vocabulary and need editing on
+# every rename.
+#
+# Evidence, re-checkable with these two commands:
+#
+#   git ls-tree --name-only v0.39.0 ai/skills/universal/
+#       -> gauntlet, shepherd, ... and NO review/integrate
+#   git ls-tree --name-only main ai/skills/universal/
+#       -> review, integrate, orchestrator, ...
+#
+# No tag through v0.39.0 ships `ai/skills/universal/review`; it exists only on
+# `main`, so the first release carrying it is the next one release-please
+# cuts, and the pending release PR is 0.40.0. If release-please cuts a
+# different version, THIS LINE is the only thing to correct:
+# scripts/test-consumer-pin-audit.sh asserts the boundary behaviour relative
+# to this constant, never a hard-coded number.
+#
+# Review round 4, confirmed by reproduction and by git: the previous form was
+# a list of the v2 skill names, so a consumer pinned at v0.39.0 — whose stages
+# are `gauntlet` and `shepherd` — reported `no-policy-consumer` exit 0
+# ("nothing here needs to change") over a freshly migrated policy, when the
+# correct answer is pin lag. The regression test masked it by constructing
+# pre-v2 fixtures under v2 names that never existed at any pre-v2 tag.
+V2_SKILLS_FIRST_RELEASE="v0.40.0"
+
+# ref_is_release_tag REF — REF is an orderable release tag.
+ref_is_release_tag() {
+    printf '%s' "$1" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+# ref_predates_v2_skills REF — REF is a release tag strictly older than the
+# boundary above, so nothing it vendored can declare a policy contract.
+ref_predates_v2_skills() {
+    [ "$1" != "$V2_SKILLS_FIRST_RELEASE" ] &&
+        [ "$(printf '%s\n%s\n' "$1" "$V2_SKILLS_FIRST_RELEASE" | sort -V | head -n 1)" = "$1" ]
+}
 
 # The schema version the shipped reader can operate under. Used only to warn
 # when a policy has moved ahead of the toolchain — the requirement itself is
@@ -271,12 +300,8 @@ fi
 required=0
 declared_versions=""
 requiring_skills=""
-policy_consumers_present=no
 while IFS= read -r skill_name; do
     [ -n "$skill_name" ] || continue
-    case " $POLICY_CONSUMING_SKILLS " in
-    *" $skill_name "*) policy_consumers_present=yes ;;
-    esac
     # The stamp is authoritative for WHICH skills are vendored, so a managed
     # name the tree does not actually hold is the stamp disagreeing with the
     # tree — the coherence invariant, not "a pre-v2 skill with no contract".
@@ -385,10 +410,17 @@ if [ "$vendored" = no ]; then
     detail="no '.SKILLS_PROVENANCE' stamp under '$dest', so this repository has vendored no skills — the source.ref '$manifest_ref' in $manifest states an intent, not a state. Run 'task sync:skills' to vendor them, then re-run this audit. In harmon-devkit itself, whose '$dest_rel' entries are symlinks into its own ai/skills/ source tree, there is nothing to audit: the pin contract binds consumers."
 elif [ "$required" -eq 0 ]; then
     # No vendored skill declares a requirement, so `satisfied` is not the
-    # question here — whether the POLICY has migrated ahead of the pin is, and
-    # that is only a pin question when the vendored set contains a skill that
-    # WOULD carry a contract at a newer pin.
-    if [ "$policy_version" -gt 0 ] && [ "$policy_consumers_present" = yes ]; then
+    # question here — whether the POLICY has migrated ahead of the pin is. And
+    # "ahead of the pin" is decided by the RELEASE BOUNDARY, not by which skill
+    # names the old pin happened to carry: every release from
+    # $V2_SKILLS_FIRST_RELEASE onward ships stage skills that declare a
+    # contract, so a pin older than it necessarily predates them whatever it
+    # was called, and a pin at or after it that still declares nothing is a
+    # consumer that genuinely vendors no policy-consuming skill.
+    if [ "$policy_version" -gt 0 ] && ! ref_is_release_tag "$vendored_ref"; then
+        indeterminate "the policy declares schema_version $policy_version but the vendored pin '$vendored_ref' is not a comparable release tag, so it cannot be ordered against the first release shipping the version-2 stage skills ($V2_SKILLS_FIRST_RELEASE) — pin a release tag in $manifest and re-run 'task sync:skills'"
+    fi
+    if [ "$policy_version" -gt 0 ] && ref_predates_v2_skills "$vendored_ref"; then
         status=pin-lag
         code=3
         # Name the version the policy ACTUALLY declares, not "version-2".
@@ -396,14 +428,14 @@ elif [ "$required" -eq 0 ]; then
         # told to install version-2 stage skills, which exact-equality
         # comparison can never satisfy — the remedy would leave the repository
         # incompatible no matter how faithfully it was followed.
-        detail="the policy has migrated to schema_version $policy_version but the policy-consuming skills vendored at $vendored_ref declare no policy contract, so they predate it — advance source.ref in $manifest to a skills release whose stage skills declare policy_schema_version $policy_version, then re-run 'task sync:skills'"
+        detail="the policy has migrated to schema_version $policy_version but the pin $vendored_ref predates $V2_SKILLS_FIRST_RELEASE, the first release shipping the version-2 stage skills, so nothing vendored declares a policy contract — advance source.ref in $manifest to a release whose stage skills declare policy_schema_version $policy_version, then re-run 'task sync:skills'"
         if [ "$policy_version" -ne "$POLICY_SCHEMA_VERSION_SUPPORTED" ]; then
             detail="$detail. Note that this reader supports schema_version $POLICY_SCHEMA_VERSION_SUPPORTED, so no released skill set is known to declare $policy_version yet — treat this as a policy ahead of the toolchain rather than a pin you can simply advance"
         fi
     elif [ "$policy_version" -gt 0 ]; then
         status=no-policy-consumer
         code=0
-        detail="the policy declares schema_version $policy_version and the skills vendored at $vendored_ref include none that resolve it ($POLICY_CONSUMING_SKILLS), so there is no pin contract to satisfy — advancing the pin would not add one, and nothing here needs to change"
+        detail="the policy declares schema_version $policy_version and the pin $vendored_ref is already at or past $V2_SKILLS_FIRST_RELEASE, the first release shipping the version-2 stage skills, yet no managed skill declares a policy contract — this consumer vendors no policy-consuming skill, so there is no pin contract to satisfy and advancing the pin would not add one"
     else
         status=compatible
         code=0
@@ -433,7 +465,7 @@ if [ "$as_json" = yes ]; then
         --arg shape "$shape" \
         --argjson policy_version "$policy_version" \
         --arg requiring_skills "$requiring_skills" \
-        --arg policy_consumers_present "$policy_consumers_present" \
+        --arg v2_skills_first_release "$V2_SKILLS_FIRST_RELEASE" \
         --arg detail "$detail" \
         --argjson required "$required" \
         --argjson exit_code "$code" \
@@ -443,7 +475,7 @@ if [ "$as_json" = yes ]; then
           policy_schema_version: $policy_version,
           required_policy_schema_version: $required,
           requiring_skills: $requiring_skills,
-          policy_consuming_skills_vendored: ($policy_consumers_present == "yes"),
+          v2_skills_first_release: $v2_skills_first_release,
           detail: $detail}'
 else
     echo "pin:             $vendored_ref (from $pin_source; manifest declares $manifest_ref)"

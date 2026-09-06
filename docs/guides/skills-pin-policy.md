@@ -69,16 +69,40 @@ table, so no list of release numbers has to be kept current here.
 |---|---|---|
 | 0 | `compatible` | The vendored skills' declared version and the policy's agree (including "neither has migrated"). |
 | 0 | `not-vendored` | No `.SKILLS_PROVENANCE` under `dest` and no unstamped policy-consuming skill beside it: nothing was vendored. Run `task sync:skills` first. |
-| 0 | `no-policy-consumer` | The policy has migrated, but the vendored set contains none of the skills that resolve it, so there is no pin contract to satisfy. Advancing the pin would not add one; nothing needs to change. |
+| 0 | `no-policy-consumer` | The policy has migrated and the pin is already at or past the first release shipping the version-2 stage skills, yet nothing vendored declares a contract — this consumer vendors no policy-consuming skill. Advancing the pin would not add one; nothing needs to change. |
 | 1 | `incompatible` | The vendored skills declare a policy schema version the repository's policy does not have. Run `copier update`; **do not** advance the pin. |
 | 2 | — | Usage error, or **indeterminate under the coherence invariant**. Never reported as a pass. Covers a missing manifest (including one that is not parseable YAML), an unreadable policy, a missing reader, a damaged provenance stamp (no `# ref:` or no `# managed:` line), vendored skills declaring two different schema versions, a contract declaring a non-positive version (`0` is indistinguishable from "no contract"), a **mixed policy** carrying markers from more than one shape at once, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. |
-| 3 | `pin-lag` | The policy migrated and the policy-consuming skills *are* vendored but predate the contract. Advance `source.ref` to a release whose stage skills declare the version the policy declares, then re-run `task sync:skills`. Where the policy has moved ahead of this toolchain entirely (a version the shipped reader does not support), the audit says so rather than sending you after a pin that cannot exist yet. |
+| 3 | `pin-lag` | The policy migrated while the pin still predates the first release shipping the version-2 stage skills. Advance `source.ref` to a release whose stage skills declare the version the policy declares, then re-run `task sync:skills`. Where the policy has moved ahead of this toolchain entirely (a version the shipped reader does not support), the audit says so rather than sending you after a pin that cannot exist yet. |
 
 A schema version names an **incompatible shape**, not a minimum capability
 level — the reader itself requires `schema_version = 2` exactly — so the audit
 compares for equality rather than "at least". By the same reasoning, vendored
 skills declaring two different versions is a broken set that no single policy
 can satisfy, and is reported indeterminate rather than resolved to either one.
+
+### Pin lag is decided by a release boundary, not by skill names
+
+Whether a migrated policy is ahead of its pin is settled by **one release
+boundary** — the first harmon-devkit release whose `ai/skills/universal/`
+ships the version-2 stage skills — and never by a list of skill names. Every
+release from that boundary onward ships stage skills that declare a contract,
+so a pin older than it necessarily predates them *whatever those skills were
+called*, and a pin at or after it that still declares nothing is a consumer
+that genuinely vendors no policy-consuming skill.
+
+That matters because the retired `gauntlet` and `shepherd` stages are replaced
+by `review` and `integrate` and are not supported: a name table would encode
+dead vocabulary and need editing on every rename, and — as review round 4
+found — listing only the new names silently mis-reported the one pin that
+actually exists, since the last pre-v2 release shipped `gauntlet`/`shepherd`
+and neither new name. The boundary constant lives in
+`scripts/consumer-pin-audit.sh` with the `git ls-tree` evidence beside it, and
+the suite reads that constant rather than restating a version, so bumping it
+is a one-line change.
+
+A pin that is not an orderable release tag (a branch, a SHA) cannot be
+compared against the boundary at all, and is reported indeterminate rather
+than guessed in either direction.
 
 ### The coherence invariant
 
