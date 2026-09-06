@@ -259,7 +259,21 @@ cat >"$nvm_prefix/lib/node_modules/@github/copilot/cli.sh" <<'EOF'
 #!/usr/bin/env bash
 # Resolves its own real path first, the way a launcher reached through a
 # symlink does, then reads a sibling package as a dependency.
-here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Portable symlink resolution: macOS's system readlink has no -f, so this
+# follows the chain one hop at a time — the same idiom scripts/lib/
+# readonly-sandbox.sh's sandbox_realpath uses. With `readlink -f` here the
+# stub resolved to the scratch root, printed an empty DEP= and failed the
+# assertion below on every macOS run.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+    link_dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in
+    /*) ;;
+    *) src="$link_dir/$src" ;;
+    esac
+done
+here="$(cd -P "$(dirname "$src")" && pwd)"
 echo "DEP=$(cat "$here/../../helper/message.txt" 2>/dev/null)"
 echo "P1 src/app.txt:1 — a finding"
 EOF
@@ -659,5 +673,29 @@ git -C "$work" config diff.external "$tmp/empty-diff-driver.sh"
 ) || fail "an external diff driver emptied the patch and the scratch checkout kept the old content"
 git -C "$work" config --unset diff.external
 git -C "$work" checkout -- tracked.txt
+
+echo "==> the review path uses no GNU-only construct macOS lacks"
+# Three of these shipped in this change and each one broke every non-dry-run
+# pass on macOS while looking harmless in review: `find -printf`, `sort -z`,
+# `xargs -r`, `readlink -f`. docs/conventions.md requires these scripts to stay
+# portable to macOS bash 3.2, and scripts/test-skills.sh already bans the same
+# family for its own recipe. This is the guard that stops them coming back —
+# checked against the real files rather than a copy, so it covers the library
+# whichever suite runs first.
+for gnu_only_file in scripts/finder-review.sh scripts/lib/readonly-sandbox.sh \
+    scripts/lib/review-scope.sh; do
+    while IFS= read -r pattern; do
+        # Skip prose: only flag a construct that is actually invoked, not one
+        # named in a comment explaining why it is banned.
+        if grep -nE "^[^#]*$pattern" "$repo/$gnu_only_file" >/dev/null 2>&1; then
+            fail "$gnu_only_file uses the GNU-only construct '$pattern'; it is unavailable on macOS, which docs/conventions.md lists as supported"
+        fi
+    done <<'PATTERNS'
+find .* -printf
+sort -z
+xargs .*-r[ 	]
+readlink -f
+PATTERNS
+done
 
 echo "finder review runner OK"

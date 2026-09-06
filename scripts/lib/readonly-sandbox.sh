@@ -96,6 +96,28 @@ sandbox_resolve_bwrap() {
     return 1
 }
 
+# `readlink -f` is GNU-only — macOS's system readlink has no -f — so this
+# resolves a path to its real location the portable way: follow the link chain
+# one hop at a time with bare `readlink`, then canonicalise the directory with
+# `cd`/`pwd -P`. The hop limit stops a symlink cycle from spinning forever.
+sandbox_realpath() {
+    local path="$1" dir link hops=0
+    while [ -L "$path" ] && [ "$hops" -lt 40 ]; do
+        dir="$(cd -P "$(dirname "$path")" 2>/dev/null && pwd)" || break
+        link="$(readlink "$path")" || break
+        case "$link" in
+        /*) path="$link" ;;
+        *) path="$dir/$link" ;;
+        esac
+        hops=$((hops + 1))
+    done
+    dir="$(cd -P "$(dirname "$path")" 2>/dev/null && pwd)" || {
+        printf '%s' "$path"
+        return 0
+    }
+    printf '%s/%s' "$dir" "$(basename "$path")"
+}
+
 # The hasher, as a COMMAND STRING rather than a shell function: the hashing
 # below runs through `xargs`, which execs a command and cannot call a function
 # — an earlier revision did exactly that, so every hash silently produced
@@ -213,7 +235,15 @@ sandbox_snapshot() {
         # No `sort -z` here: BSD sort has no -z, and it bought nothing — the
         # hash lines are sorted below, which is where the determinism the
         # baseline needs actually comes from.
-        xargs -0 -r "${hasher[@]}" <"$files" >"$hashes" || {
+        # No `-r`: BSD xargs does not have it, and this repo bans it outright
+        # (scripts/test-skills.sh names `xargs -r`, `cp --parents` and `cp -t`
+        # as GNU-only because the shipped scripts support macOS bash 3.2). The
+        # `[ -s "$files" ]` guard above is what actually prevents an empty
+        # invocation, so `-r` was buying nothing and costing every macOS run:
+        # the hash step failed and sandbox_create refused before the finder was
+        # ever invoked. Same class as the `find -printf` and `sort -z` bugs
+        # already removed from this function.
+        xargs -0 "${hasher[@]}" <"$files" >"$hashes" || {
             echo "readonly-sandbox: could not hash the scratch tree's contents" >&2
             return 1
         }

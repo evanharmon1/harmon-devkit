@@ -321,7 +321,7 @@ readonly_sandbox_credential_dir="${FINDER_REVIEW_COPILOT_CONFIG_DIR:-${HOME:-/no
 # requires beside it — is where the program actually lives. Binding only the
 # launcher made the finder resolve successfully and then fail to execute.
 bin_path="$(command -v "$bin")"
-bin_target="$(readlink -f "$bin_path" 2>/dev/null || printf '%s' "$bin_path")"
+bin_target="$(sandbox_realpath "$bin_path")"
 # The two FILES, not the directories holding them. Binding `dirname
 # "$bin_path"` handed the finder every sibling of the launcher, and a launcher
 # commonly lives in a personal `~/bin` or a shared prefix alongside unrelated
