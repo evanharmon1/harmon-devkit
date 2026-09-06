@@ -473,17 +473,36 @@ What a split produces, all four parts or it is not a split:
    follow-up, so removing the mechanism does not silently drop the defect it
    existed for;
 4. **one deletion round** confirms the removal, and the stage then exits
-   through its ordinary conditions — the split buys no exception to them.
+   through its ordinary conditions — the split buys no exception to them, and
+   no round the cap forbids. With cap headroom that round is the ordinary next
+   one; decided on the final permitted round there is none to spend, the stage
+   ends `capped`, and confirming the removal is part of what the operator's
+   escalation decides.
 
 The record is two documents, deliberately: the per-finding half is an
 `adjudication.schema.json` entry with `disposition: split` and a `reference`
 naming the filed issue, and the run-level half is `run.schema.json`'s
 `splits[]` naming the mechanism, the issue, its milestone, and the findings
-the split answers. Neither proves the other, so a validator holding both
-checks that they agree — in **both** directions, and a run that claims
-`ready-for-review` must additionally have recorded every split it adjudicated
-and have a later round of that stage standing as the deletion round. Part 4
-above is therefore an invariant of the record, not a hope about the process.
+the split answers.
+
+**What the record proves, and what it does not.** It proves the split was
+**decided** and that the mechanism's issue was **filed**: the two documents
+must agree in both directions, every finding a split names must be adjudicated
+`split` exactly once and name the same issue, no finding is answered by two
+splits, no mechanism is split twice out of one stage, and a run that has
+stopped must have recorded every split it adjudicated. Each of those is
+decidable from the documents in hand, which is why each is enforced.
+
+It does **not** prove parts 1, 3 and 4 of the contract — that the mechanism
+actually left the tree, that the addressed finding's follow-up was really
+filed, that a deletion round confirmed the removal. A record holding no trees,
+no receipts and no issue tracker cannot decide any of them, and a check that
+approximates them only invites a sharper approximation next round. Those are
+the **deletion round's own review** and the exit computation's ordinary
+conditions, which read the reviewed tree rather than a record's claim about
+it. Stating the boundary is the point: an obligation the record cannot check
+is still an obligation, and pretending otherwise is what makes a validator
+look authoritative about something it never examined.
 
 **The signal.** So that a session can propose a split at round 2 rather than
 after nine rounds, the exit script emits a `split_candidate` projection
@@ -954,7 +973,7 @@ absorbed by the issue that carries their criteria;
 
 - **Given** rounds n and n+1 whose every adjudicated P0/P1 finding lives in one mechanism, and round n+1's carry `round:n` provenance the ledger confirms
 - **When** the exit script runs at the cap
-- **Then** the outcome is still `capped`, and the verdict carries `split_candidate.detected: true` naming that mechanism, the rounds that introduced it, and the findings living in it — which the blocker report renders as "split the mechanism out" beside "order more rounds" and "accept as spent"
+- **Then** the outcome is still `capped`, and the verdict carries `split_candidate.detected: true` naming that mechanism, the rounds that introduced it, and the findings living in it. (Rendering that into a blocker report's "split the mechanism out" option is [#813](https://github.com/evanharmon1/harmon-devkit/issues/813); this scenario is about the verdict, which is what ships here.)
 
 ### Scenario: a concentrated round with no round provenance is not a split candidate
 

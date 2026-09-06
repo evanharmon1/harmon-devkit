@@ -296,16 +296,22 @@ keyword, for every one of these:
   names to be adjudicated exactly once, with disposition `split`, whose
   reference names the **same** issue the split entry does — a run record and a
   round record that disagree about where the work went are the "left to memory"
-  failure with a paper trail. Two further checks apply **only once the run
-  claims to be done** (`outcome: "ready-for-review"`), exactly like the
-  deferred-findings converse above, because a split adjudicated in the round
-  currently being worked may legitimately not have reached `splits[]` yet:
-  `checkSplitAdjudicationsRecordedBeforePromotion` walks the *other* direction
-  and rejects a promoted run where some finding was adjudicated `split` and no
-  `splits[]` entry records it, and `checkSplitDeletionRoundBeforePromotion`
-  requires each split to be followed by a later round of its own stage — the
-  "one deletion round confirms the removal" part of the contract, proven
-  rather than assumed. `split` is also the one disposition whose
+  failure with a paper trail. One further check applies once the run has
+  **stopped**, not while it is still in flight, because a split adjudicated in
+  the round currently being worked may legitimately not have reached
+  `splits[]` yet: `checkSplitAdjudicationsRecordedBeforePromotion` walks the
+  *other* direction and rejects a run at **any terminal `outcome`**
+  (`ready-for-review`, `capped`, `escalated`, `abandoned`) where some finding
+  was adjudicated `split` and no `splits[]` entry records it — the contract
+  files the mechanism at the moment of the split, so an abandoned run has lost
+  it just as completely as a promoted one.
+  **What none of these check is whether the mechanism actually left the tree,
+  whether the addressed finding's follow-up was really filed, or whether a
+  deletion round ran** — see `specs/dev-flow-v2.md` § "The split strategy".
+  These documents hold no trees, no receipts and no issue tracker, so a check
+  for any of it can only approximate, and an approximation in a validator
+  reads as authority about something it never examined. Those obligations are
+  real and belong to the deletion round's own review. `split` is also the one disposition whose
   `reference` is *required* rather than merely permitted: an adjudication
   saying a mechanism was split out but naming no issue records the removal and
   loses the work.

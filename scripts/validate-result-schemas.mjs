@@ -2302,47 +2302,6 @@ function checkSplitAdjudicationsRecordedBeforePromotion(document, adjudications,
   }
 }
 
-// checkSplitDeletionRoundBeforePromotion — the split contract's fourth part
-// (specs/dev-flow-v2.md: "one deletion round confirms the removal, and the
-// stage then exits through its ordinary conditions"). Challenge round 1,
-// confirmed: a run could reach ready-for-review with a split recorded in its
-// LAST round and nothing at all confirming the mechanism actually left the
-// tree. Removing the mechanism moves the head, so the ordinary exit already
-// forces a later round in that stage — this makes the run record prove it
-// rather than assume it, in the same place every other promotion invariant
-// lives. A later round of the same stage is exactly that confirmation,
-// because a complete logical round always has an adjudication document.
-function checkSplitDeletionRoundBeforePromotion(document, adjudications, errors) {
-  if (adjudications.length === 0 || document.outcome !== 'ready-for-review') return
-  for (const [index, split] of (document.splits ?? []).entries()) {
-    // A later round NUMBER alone was not confirmation (challenge round 2,
-    // confirmed): a higher-numbered round can review the very same
-    // pre-deletion head, so a promoted run satisfied the check with the
-    // mechanism still in the tree. The document cannot prove the mechanism
-    // is gone — it holds no trees — so this asserts the strongest property
-    // it CAN decide and claims no more than that: a later round of the same
-    // stage reviewed a DIFFERENT head, i.e. the tree changed after the split
-    // and was reviewed again. Proving the mechanism actually left is that
-    // deletion round's own review, not this record's job.
-    const splitRound = adjudications.find(
-      ({ data }) => data.stage === split.stage && data.round === split.round
-    )
-    const splitHead = splitRound?.data?.reviewed_head
-    const confirmed = adjudications.some(
-      ({ data }) =>
-        data.stage === split.stage &&
-        Number.isInteger(data.round) &&
-        data.round > split.round &&
-        (splitHead === undefined || data.reviewed_head !== splitHead)
-    )
-    if (!confirmed) {
-      errors.push(
-        `$run.splits[${index}]: no ${split.stage} round after round ${split.round} reviewed a different head — the split contract requires one deletion round, reviewing the tree the mechanism was removed from, before a run is ready-for-review`
-      )
-    }
-  }
-}
-
 // checkDeferredFindingsSettledBeforePromotion — the converse of
 // checkSettlementsAgainstAdjudications above (which forbids a settlement
 // of anything but a deferred finding): a run cannot claim
@@ -2463,7 +2422,6 @@ function main() {
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
         checkSplitsAgainstAdjudications(instance, options.adjudications, errors)
         checkSplitAdjudicationsRecordedBeforePromotion(instance, options.adjudications, errors)
-        checkSplitDeletionRoundBeforePromotion(instance, options.adjudications, errors)
         checkDeferredFindingsSettledBeforePromotion(instance, options.adjudications, errors)
       }
     }

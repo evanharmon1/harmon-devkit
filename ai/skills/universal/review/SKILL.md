@@ -56,16 +56,18 @@ stage exits through its ordinary conditions.
 
 **Where the deletion round comes from depends on when the split is decided.**
 With cap headroom left it is an ordinary next round. Decided on the **final
-permitted round** it cannot be one: round `cap + 1` is a round the exit
-computation rejects, and a stage may not grant itself the round its own cap
-forbids. There the stage ends `capped`, the split is part of the escalation an
-attributable operator decides, and the deletion round is granted with that
-decision — recorded in `run.json.interventions`. Never take it unilaterally.
-That is what "a split changes no cap" means: it buys no round, it only changes
-what the escalation is about. Write it as
+permitted round** there is none to spend: the exit computation rejects every
+round above the resolved cap, and no intervention makes one legal. There the
+stage ends `capped`, and confirming the removal is part of what the operator's
+escalation decides — never something the stage grants itself. That is what "a
+split changes no cap" means: it buys no round, it only changes what the
+escalation is about. Write it as
 `disposition: split` with a `reference` naming the filed issue — the
 adjudication schema rejects a split that names none — and append the run-level
-half to `run.json.splits`. A split buys no exception to the exit condition.
+half to `run.json.splits`. Those records prove the split was decided and the
+issue filed, which is what they can decide; that the mechanism actually left
+the tree is the deletion round's own review, not a claim the record checks. A
+split buys no exception to the exit condition.
 
 ## Entry gate
 
