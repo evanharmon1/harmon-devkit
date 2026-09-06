@@ -1567,7 +1567,8 @@ function isChronologicallyBefore(a, b) {
 // promotion.promoted_at must be no earlier than the last entry's
 // entered_at; every intervention's `at`, every settlement's
 // `settled_at`, and every split's `split_at` must be no earlier than
-// started_at, and no later than
+// started_at (and a split's, no earlier than its own stage's first
+// transition), and no later than
 // promotion.promoted_at when the run has been promoted; and a
 // settlement's `settled_at` must additionally be no earlier than the
 // run's first `integration` transition's entered_at (a deferred finding
@@ -1672,6 +1673,21 @@ function checkRunChronology(document, errors) {
   // defer to fix/decline/file, which the readiness gate requires before
   // promotion, and the readiness gate is what integration converges
   // toward), so no settlement should predate the run's first arrival there.
+  // A split names the stage it was decided in, so its timestamp is bounded by
+  // that stage's own first transition, not only by the run's start — the same
+  // specific lower bound settlements already get from `integration` below
+  // (challenge, confirmation round): without it a `stage: review` split could
+  // carry a timestamp from before the run ever reached review.
+  for (const [index, split] of (document.splits ?? []).entries()) {
+    if (typeof split.split_at !== 'string' || typeof split.stage !== 'string') continue
+    const stageEntry = transitions.find((transition) => transition.stage === split.stage)
+    if (!stageEntry || typeof stageEntry.entered_at !== 'string') continue
+    if (isChronologicallyBefore(split.split_at, stageEntry.entered_at)) {
+      errors.push(
+        `$run.splits[${index}].split_at: ${split.split_at} must not be before the first ${split.stage} transition's entered_at ${stageEntry.entered_at}`
+      )
+    }
+  }
   const firstIntegrationEntry = transitions.find((transition) => transition.stage === 'integration')
   if (firstIntegrationEntry && typeof firstIntegrationEntry.entered_at === 'string') {
     const firstIntegrationAt = firstIntegrationEntry.entered_at

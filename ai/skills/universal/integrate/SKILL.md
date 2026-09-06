@@ -1441,13 +1441,17 @@ integration's.
 **A split-off mechanism is filed on the current milestone by the agent that
 splits it, at the moment it splits it — never left to memory and never left
 to the maintainer to remember from a comment.** File the issue with the design
-constraints the rounds established, restore whatever finding the mechanism was
-addressing as its own filed follow-up, and record the split in both places the
-schemas provide: the round's adjudication entry
-(`disposition: split` with a `reference` naming that issue — the validator
-rejects a split that names none) and `run.json.splits`, which additionally
-records the milestone. A recommendation to split that files nothing is not a
-split; it is the finding restated.
+constraints the rounds established, and restore whatever finding the mechanism
+was addressing as its own filed follow-up. A recommendation to split that
+files nothing is not a split; it is the finding restated.
+
+**The record is the confidence stage's to write, not this one's.**
+`disposition: split` is invalid at stage `integration` and the schema rejects
+it, so do not write one here: the exit computation produces `split_candidate`
+for `challenge` and `review` only, and a split adjudicated at integration
+would have no signal behind it. An integration finding that looks like a split
+candidate is a finding to carry into the next confidence stage, where the
+disposition and the `run.json.splits` entry are recorded together.
 
 **Then validate the pair.** The two documents are cross-checked only when the
 run record is validated *with* its adjudications, and nothing else in this
@@ -1460,12 +1464,6 @@ that was not adjudicated `split`, an entry naming a different issue than the
 adjudication filed it as, one finding answered by two splits, and one
 mechanism split twice out of a stage. Promoting without it is promoting on an
 unchecked record.
-
-A split is a **confidence-stage** disposition: `disposition: split` is invalid at stage `integration`, and the schema rejects it. The exit
-computation produces `split_candidate` for `challenge` and `review` only, so a
-split adjudicated here would have no signal behind it. An integration finding that
-looks like one is a finding to raise for the next confidence stage, not a
-disposition to record.
 
 ## 7. Leave Project status manual
 

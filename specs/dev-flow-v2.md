@@ -522,13 +522,14 @@ finding of the current round, at least one of them has evidence-backed
 `round:N` provenance, and the **immediately preceding** round's own gating
 findings were concentrated in that same mechanism.
 
-**When it is read.** The signal needs adjudicated priorities, so a round's own
-candidate exists only once that round's adjudication has been written — and
-that document is immutable. So it is a **trajectory reading of a completed
-round, consumed when adjudicating the next one**: at the round-2 checkpoint
-you hold round 1's verdict, and the split disposition you record is on the
-round in front of you. It never informs the dispositions of the round it
-describes, and nothing should be written as though it could.
+**It describes a completed round, and it is evidence rather than a
+workflow.** The signal needs adjudicated priorities, so a candidate exists
+only once its round has been adjudicated. Where the resulting decision is
+*recorded* is the operator's to place and legitimately varies — below the cap
+it is a disposition on the round in hand; at the cap there is no further round
+to spend and the split is part of the escalation. This spec deliberately
+prescribes neither: the exit computation's job is to put the evidence in front
+of whoever decides.
 
 Two properties of that rule are load-bearing. It is **knob-free**:
 concentration is unanimity rather than a fraction, and the trajectory test is

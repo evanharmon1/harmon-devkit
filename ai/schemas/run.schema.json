@@ -293,7 +293,10 @@
             "type": "string",
             "minLength": 1
           },
-          "stage": { "enum": ["challenge", "review", "integration"] },
+          "stage": {
+            "description": "Confidence stages only. `split` is not a valid adjudication disposition at stage `integration` (adjudication.schema.json's own top-level if/then), because dev-flow-exit.mjs produces `split_candidate` for challenge and review alone — so a run-level split naming `integration` could never have a valid adjudication to pair with. Narrowed here too so a consumer validating this schema on its own reaches the same answer.",
+            "enum": ["challenge", "review"]
+          },
           "round": { "type": "integer", "minimum": 1 },
           "issue": {
             "description": "The issue the mechanism was filed as \u2014 a bare number for this repository, or owner/repo#<n> when it was filed elsewhere. Same grammar as a settlement/adjudication reference of type issue_number.",
@@ -311,7 +314,7 @@
             "minItems": 1,
             "items": {
               "type": "string",
-              "pattern": "^(challenge|review|integration)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
+              "pattern": "^(challenge|review)-r[1-9][0-9]*-[a-z0-9-]+-[1-9][0-9]*$"
             }
           },
           "split_at": {

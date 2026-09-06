@@ -45,12 +45,12 @@ procedure-prose. It applies when successive rounds' gating findings concentrate
 in one mechanism, most sharply one an earlier round of this same stage added;
 `verdict.split_candidate` from `scripts/dev-flow-exit.sh` is the computed
 evidence for that judgement and names the mechanism, the rounds that introduced
-it, and the findings living in it. Read it as a trajectory signal about a
-**completed** round: it needs adjudicated priorities, so a round's own
-candidate exists only after that round's immutable adjudication is written.
-At this checkpoint you hold the **previous** round's verdict, and the
-disposition you record is on the round in front of you — the signal never
-informs the round it describes.
+it, and the findings living in it. It describes a **completed**
+round — it needs adjudicated priorities, so a candidate exists only once its
+round has been adjudicated — and it is evidence for your judgement, not a
+prescription about where the decision goes. Below the cap that is a
+disposition on the round in hand; at the cap there is no further round to
+spend and the split is part of the escalation.
 Recording it is four things, all of them or it is not a split: the mechanism
 leaves the change; it is filed as its own issue **on the current milestone**,
 carrying the design constraints the rounds established, by this session at the
