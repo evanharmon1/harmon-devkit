@@ -299,9 +299,10 @@
           },
           "round": { "type": "integer", "minimum": 1 },
           "issue": {
-            "description": "The issue the mechanism was filed as \u2014 a bare number for this repository, or owner/repo#<n> when it was filed elsewhere. Same grammar as a settlement/adjudication reference of type issue_number.",
+            "description": "The issue the mechanism was filed as \u2014 a bare number for this repository, or owner/repo#<n> when it was filed elsewhere. Same grammar as a settlement/adjudication reference of type issue_number, and the same pattern, so a consumer validating this schema alone reaches the answer the semantic validator does instead of accepting an unusable value.",
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)$"
           },
           "milestone": {
             "description": "The milestone that issue was filed on \u2014 'the current milestone' (issue #747), recorded rather than assumed.",

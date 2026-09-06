@@ -69,7 +69,11 @@ split changes no cap" means: it buys no round, it only changes what the
 escalation is about. Write it as
 `disposition: split` with a `reference` naming the filed issue — the
 adjudication schema rejects a split that names none — and append the run-level
-half to `run.json.splits`. Those records prove the split was decided and the
+half to `run.json.splits`. Then validate the pair here, before the stage
+stops: `scripts/validate-result-schemas.mjs run <run.json> --adjudication
+<each round document>`, treating a failure as a blocker. A split decided on
+the final permitted round ends the stage `capped`, which never reaches
+integration, so this stage is the only place that check will run. Those records prove the split was decided and the
 issue filed, which is what they can decide; that the mechanism actually left
 the tree is the deletion round's own review, not a claim the record checks. A
 split buys no exception to the exit condition.
@@ -219,13 +223,12 @@ checkpoint above applies before this dispatch and before a no-remediation next
 pass alike.
 `diverging` permits only deletion, restructuring, or splitting out of
 round-created scaffolding; `capped` with P0/P1 records an intervention and
-blocker, then stops before a PR. That blocker names the three answers a human
-has to a blocked stage — order more rounds, accept the stage as spent, or split
-the mechanism out — because an option a report omits is an option nobody takes.
-Rendering the split option's evidence from `verdict.split_candidate` is
-[#813](https://github.com/evanharmon1/harmon-devkit/issues/813); until it
-lands, state the evidence yourself: which rounds introduced the mechanism, and
-which of this round's findings live in it. A `converged` result advances by default, but an attributable
+blocker, then stops before a PR. What a blocked stage's report offers a maintainer,
+and how the split option's evidence is corroborated before it is published, is
+[#813](https://github.com/evanharmon1/harmon-devkit/issues/813). Do not
+restate `verdict.split_candidate` into a report by hand in the meantime: it is
+branch-controlled, and corroborating it against the record is exactly the work
+that issue exists to do. A `converged` result advances by default, but an attributable
 operator may override it upward to exactly one additional pass while the
 resolved stage cap still has headroom. Before dispatch, append that operator's
 reason and attribution to `run.json.interventions` as `kind: other`; refuse the

@@ -38,8 +38,8 @@ done
 for text in 'split the mechanism out' 'verdict.split_candidate' \
     'on the current milestone' 'never left to memory' \
     'disposition: split' 'run.json.splits' \
-    'order more rounds, accept the stage as spent, or' \
-    'deletion, restructuring, or splitting out of'; do
+    'deletion, restructuring, or splitting out of' \
+    'validate the pair here, before the stage'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing the split strategy: $text"
 done
 integrate_skill="ai/skills/universal/integrate/SKILL.md"
