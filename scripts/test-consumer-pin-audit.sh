@@ -731,6 +731,59 @@ else
 fi
 
 echo
+echo "== the closure recipe validates the BRANCH policy, not only the merge base =="
+# Codex cloud review final cycle, confirmed on this repository's own fixture:
+# `cliResolve` selects only `--merge-base-registry` when a merge-base policy is
+# in play, so a recipe that omits `--registry` leaves `branch_cross_validation`
+# null and never checks the branch policy against the registry that becomes
+# active after merge. A self-modifying policy change could then ship an invalid
+# finder reference.
+BXV="$repo/ai/schemas/fixtures/exit/merge-base-branch-cross-validation-visible"
+if [ -d "$BXV" ]; then
+    # `resolve` legitimately exits non-zero here (gate slugs are indeterminate
+    # without a Taskfile target list), so shield both runs from `set -e`.
+    set +e
+    out="$(node "$READER" resolve --policy "$BXV/policy.toml" \
+        --merge-base-policy "$BXV/policy.merge-base.toml" \
+        --merge-base-registry "$BXV/registry.json" --json 2>/dev/null)"
+    set -e
+    if printf '%s' "$out" | jq -e '.branch_cross_validation == null' >/dev/null 2>&1; then
+        ok "omitting --registry really does leave branch_cross_validation null (the defect)"
+    else
+        bad "the fixture no longer reproduces the omitted-branch-registry state"
+    fi
+    set +e
+    out="$(node "$READER" resolve --policy "$BXV/policy.toml" \
+        --merge-base-policy "$BXV/policy.merge-base.toml" \
+        --merge-base-registry "$BXV/registry.json" \
+        --registry "$BXV/registry.json" --json 2>/dev/null)"
+    set -e
+    if printf '%s' "$out" | jq -e '.branch_cross_validation.errors | length > 0' >/dev/null 2>&1; then
+        ok "supplying --registry surfaces the branch policy's own errors"
+    else
+        bad "supplying --registry did not surface the branch policy's errors"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+    fi
+else
+    bad "fixture merge-base-branch-cross-validation-visible is missing"
+fi
+
+# The recipe itself must carry the flag and the obligation to settle what it
+# reports — the reader deliberately keeps branch_cross_validation out of its
+# exit code, so reading it is the operator's job and the skill has to say so.
+INTEGRATE_MD="$repo/ai/skills/universal/integrate/SKILL.md"
+if grep -q -- '--registry agent-registry.json' "$INTEGRATE_MD"; then
+    ok "the closure recipe passes the branch registry"
+else
+    bad "the closure recipe does not pass --registry agent-registry.json"
+fi
+if grep -q 'branch_cross_validation.errors` entry as a finding to settle' "$INTEGRATE_MD"; then
+    ok "the recipe requires branch_cross_validation errors to be settled before readiness"
+else
+    bad "the recipe does not require branch_cross_validation errors to be settled"
+fi
+
+echo
 echo "== the successor stage skills declare the contract the audit reads =="
 for skill in review integrate orchestrator; do
     contract="$repo/ai/skills/universal/$skill/assets/policy-contract.json"

@@ -189,7 +189,8 @@ git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml"
 git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
 task devflow:policy -- resolve --closure "$mb_dir" \
     --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" \
-    --merge-base-registry "$mb_dir/agent-registry.json" --json
+    --merge-base-registry "$mb_dir/agent-registry.json" \
+    --registry agent-registry.json --json
 ```
 
 **Materialize the reader's whole closure, not just its entrypoint.** The
@@ -212,6 +213,27 @@ then supplied no registry at all and `crossValidate` returned a deterministic
 (Codex cloud review round 3, confirmed). The registry is a repository file and
 therefore exists at the merge base regardless of what the change edits, so
 there is no case where extracting it is wrong.
+
+**Pass the BRANCH registry too, and settle what it reports.** The merge-base
+registry decides what the run *resolves under*; the branch registry is what
+becomes active once the PR merges, and `cliResolve` selects only
+`--merge-base-registry` when a merge-base policy is in play, so omitting
+`--registry` leaves `branch_cross_validation` null and the branch policy is
+never checked against the registry it will actually run against. Verified on
+this repository's own `merge-base-branch-cross-validation-visible` fixture: a
+branch `[stage.review]` naming `not-a-real-finder` resolves **exit 0** with
+`branch_cross_validation: null` when `--registry` is omitted, and reports
+`[stage.review] references unknown finder "not-a-real-finder"` when it is
+supplied.
+
+`branch_cross_validation` is deliberately advisory and never folded into the
+exit code — this repository's merge-base-mutation fixtures poison the branch
+copy on purpose to prove poisoning has no effect on what governs the run, so
+gating the exit on it would fail exactly the scenario those fixtures exist to
+prove safe. That makes reading it your job rather than the tool's: **treat any
+`branch_cross_validation.errors` entry as a finding to settle before readiness**,
+because it names something that will be wrong after merge even though it is
+right now.
 
 One residual `indeterminate` is expected and is not this recipe's to remove:
 gate-slug checking also needs a Taskfile target list, and a *trusted* one would
