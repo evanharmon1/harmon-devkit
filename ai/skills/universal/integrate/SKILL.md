@@ -183,15 +183,13 @@ git show "${base}:scripts/devflow-policy.mjs" >"$mb_dir/scripts/devflow-policy.m
 git show "${base}:scripts/lib/toml-lite.mjs"  >"$mb_dir/scripts/lib/toml-lite.mjs"
 git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml"
 
-# The registry argument is PAIRED with its extraction: supply both or neither.
-mb_registry=()
-if ! git diff --quiet "$base" -- agent-registry.json; then
-    git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
-    mb_registry=(--merge-base-registry "$mb_dir/agent-registry.json")
-fi
+# Always extract the merge-base registry — it is a repository file, so it
+# exists at the merge base whether or not THIS change edits it, and the
+# resolution needs it to cross-validate finder and role references.
+git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
 task devflow:policy -- resolve --closure "$mb_dir" \
     --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" \
-    "${mb_registry[@]}" --json
+    --merge-base-registry "$mb_dir/agent-registry.json" --json
 ```
 
 **Materialize the reader's whole closure, not just its entrypoint.** The
@@ -203,12 +201,26 @@ registry-touching change needs its merge-base registry supplied the same way,
 through `--merge-base-registry`: the reader deliberately refuses to fall back
 to the branch's own `--registry` when a merge-base policy is in play.
 
-**Supply that flag only when you extracted the file.** `cliResolve` reads every
-`--merge-base-registry` path it is given and exits 2 on a missing one, so a
-policy-only or reader-only change that passes the flag unconditionally
-hard-stops the very resolution it needs — the extraction and the argument have
-to move together, which is what the array above is for. If the reader grows
-another dependency, it belongs in this recipe too.
+**Extract it unconditionally, and pass it unconditionally.** These two have to
+agree, and the way to make them agree is to always do both. Passing the flag
+without extracting the file makes `cliResolve` exit 2 on the missing path;
+making *both* conditional on the change touching the registry looked safer but
+was worse, because `cliResolve` selects **only** `--merge-base-registry`
+whenever a merge-base policy is in play, so a policy-only or reader-only change
+then supplied no registry at all and `crossValidate` returned a deterministic
+**exit 3** — a valid migration that never validated its registry references
+(Codex cloud review round 3, confirmed). The registry is a repository file and
+therefore exists at the merge base regardless of what the change edits, so
+there is no case where extracting it is wrong.
+
+One residual `indeterminate` is expected and is not this recipe's to remove:
+gate-slug checking also needs a Taskfile target list, and a *trusted* one would
+have to come from the merge-base tree rather than the branch's own
+`task --list --json` — supplying the branch's list would reintroduce exactly
+the self-modification hazard `--closure` exists to prevent. Read
+`cross_validation.indeterminate` in the JSON to see which check was skipped
+rather than treating exit 3 as a failure. If the reader grows another
+dependency, it belongs in this recipe too.
 
 `--closure <dir>` re-execs the trusted `<dir>/scripts/devflow-policy.mjs`
 before this checkout's own (possibly branch-modified) copy runs any of its

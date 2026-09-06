@@ -602,10 +602,12 @@ expect_says "it requires a JSON number" "JSON number"
 # migrates its policy.
 c="$(make_consumer source-linked-migrated "$V2_POLICY" v0.41.0)"
 rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
-mkdir -p "$c/src/review" "$c/.claude/skills/openspec-local"
-printf -- '---\nname: review\ndescription: f\n---\n' >"$c/src/review/SKILL.md"
+mkdir -p "$c/ai/skills/universal/review" "$c/.claude/skills/openspec-local"
+printf -- '---\nname: review\ndescription: f\n---\n' >"$c/ai/skills/universal/review/SKILL.md"
 printf -- '---\nname: openspec-local\ndescription: f\n---\n' >"$c/.claude/skills/openspec-local/SKILL.md"
-ln -s ../../src/review "$c/.claude/skills/review"
+# The link must resolve into <repo>/ai/skills/ — that is the source-repo
+# signature the exemption keys on, not "a symlink exists somewhere".
+ln -s ../../ai/skills/universal/review "$c/.claude/skills/review"
 run_audit "$c"
 expect_status "a source-linked tree with real local skills is not interrupted-sync residue" 0
 expect_says "it is still reported as never vendored" "vendored no skills"
@@ -636,6 +638,22 @@ if printf '%s' "$out" | jq -e '.migration | test("copier update")' >/dev/null 2>
 else
     bad "the older-shape refusal lost its copier update remedy"
 fi
+
+echo
+echo "== consumer-pin-audit: a symlink exempts only itself, not the tree =="
+# Codex cloud review round 3, confirmed by reproduction: treating ANY symlink
+# as a tree-wide exemption let one unrelated local link suppress the residue
+# check for a real `gauntlet/` left by an interrupted pre-v2 sync, returning
+# exit 0 where 2 is correct. The exemption now requires the SOURCE-repo
+# signature — a link resolving into `<repo>/ai/skills/`.
+c="$(make_consumer stray-symlink-does-not-exempt "$V2_POLICY" v0.39.0 gauntlet:pre)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+mkdir -p "$c/elsewhere/local"
+printf -- '---\nname: local\ndescription: f\n---\n' >"$c/elsewhere/local/SKILL.md"
+ln -s ../../elsewhere/local "$c/.claude/skills/local"
+run_audit "$c"
+expect_status "an unrelated symlink does not exempt real unstamped directories" 2
+expect_says "the residue error still names the real directory" "gauntlet"
 
 echo
 echo "== devflow-policy: an older shape is refused with one actionable message =="

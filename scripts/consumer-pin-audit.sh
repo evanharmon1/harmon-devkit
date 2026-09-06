@@ -352,15 +352,24 @@ else
         for candidate in "$dest"/*; do
             [ -d "$candidate" ] || continue
             if [ -L "$candidate" ]; then
-                # A symlinked skill entry is the SOURCE-repo shape (harmon-devkit
-                # links .claude/skills/<name> into its own ai/skills/), never
-                # something `cp -R` produces. Its presence proves this tree is
-                # not an interrupted sync, so the residue test below does not
-                # apply — Codex cloud review round 2, confirmed: without this,
-                # once #711 migrates this repository's own policy the documented
-                # `task audit:consumer-pin` invocation would exit 2 on its real,
-                # tracked local `openspec-*` directories.
-                source_linked=yes
+                # A symlink is never something `cp -R` produces, so the entry
+                # itself is not sync residue and is skipped.
+                #
+                # It exempts the REST of the tree only when it is the SOURCE-repo
+                # signature specifically: a link pointing into this repository's
+                # own `ai/skills/`, which is how harmon-devkit wires
+                # `.claude/skills/<name>`. Codex cloud review round 3, confirmed
+                # by reproduction: treating ANY symlink as a tree-wide exemption
+                # let one unrelated local link suppress the check for a real
+                # `gauntlet/` left by an interrupted sync, returning exit 0 where
+                # 2 is correct. Requiring the target to resolve inside
+                # `<repo>/ai/skills/` closes that without reintroducing the
+                # round-2 false positive on this repository's own tracked local
+                # `openspec-*` directories.
+                _link_target="$(cd "$(dirname "$candidate")" 2>/dev/null && cd "$(readlink "$candidate")" 2>/dev/null && pwd)" || _link_target=""
+                case "$_link_target" in
+                "$(cd "$repo_root" 2>/dev/null && pwd)"/ai/skills/*) source_linked=yes ;;
+                esac
                 continue
             fi
             [ -f "$candidate/SKILL.md" ] || continue
