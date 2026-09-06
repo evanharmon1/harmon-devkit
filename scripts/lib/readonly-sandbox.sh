@@ -35,14 +35,14 @@
 #   5. the environment stripped of write credentials and of git's credential
 #      helpers, so what does remain has nothing to authenticate with;
 #   6. and afterwards the scratch tree is PROVEN unchanged — the same file
-#      list, modes and sizes, and the same `git status` — or the pass fails as
-#      tampered. It is the same STATE, not an empty one: a scope that includes
+#      list, modes, sizes, symlink targets and CONTENT HASHES, and the same
+#      `git status` — or the pass fails as tampered. It is the same STATE, not an empty one: a scope that includes
 #      uncommitted work makes the tree legitimately dirty, so what must not
 #      change is the dirtiness rather than its absence.
 #
 # (6) is what makes this "verified" rather than "configured": whatever the CLI
-# was allowed to do, a pass is only accepted if the tree it ran against is
-# byte-identical to the one it was given. Network egress is deliberately NOT
+# was allowed to do, a pass is only accepted if the tree it ran against hashes
+# the same as the one it was given — content, not just its shape. Network egress is deliberately NOT
 # severed — the CLI has to reach its model — so this bounds writes and
 # credential access, not the model call itself; a finder is given the diff
 # either way, and that limit is stated rather than papered over.
@@ -131,7 +131,16 @@ sandbox_create() {
     # matches the diff it was given.
     if [ "$include_worktree" = 1 ]; then
         patch="$(mktemp)" || sandbox_create_failed || return 1
-        git diff --binary HEAD >"$patch" 2>/dev/null || true
+        # Fail closed. `|| true` here turned a transient git failure into "no
+        # patch", so a scope containing uncommitted work got a committed-only
+        # checkout while the prompt and manifest claimed otherwise — the
+        # finder would then be reading a tree that contradicts its own input.
+        git diff --binary HEAD >"$patch" || {
+            rm -f "$patch"
+            echo "readonly-sandbox: could not collect the working-tree changes for the scratch checkout" >&2
+            sandbox_create_failed
+            return 1
+        }
         if [ -s "$patch" ]; then
             git -C "$readonly_sandbox_dir" apply --binary --whitespace=nowarn "$patch" 2>/dev/null || {
                 rm -f "$patch"
@@ -166,9 +175,38 @@ sandbox_create() {
 # majority of cases, and `git status` below catches content changes that keep
 # both. `.git` is excluded because it is a FILE in a linked worktree (a
 # pointer at the main repo's admin dir), and git touches nothing else here.
+# The hasher, resolved once. Content is what the snapshot has to compare: an
+# earlier revision recorded type, mode, size and path, and a same-length
+# rewrite that restored the mode passed it unnoticed — which made "byte-
+# identical" a claim this function did not actually check.
+# An ARRAY, not a function: the hashing below runs through `xargs`, which
+# execs a command and cannot call a shell function — an earlier revision did
+# exactly that, so every hash silently produced nothing and the content check
+# it was supposed to add never ran.
+sandbox_hash_cmd() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf 'sha256sum'
+    else
+        printf 'shasum -a 256'
+    fi
+}
+
 sandbox_snapshot() {
+    # %l is the symlink target, so a retarget of the same length is caught too;
+    # it is empty for everything else.
     find "$readonly_sandbox_dir" -mindepth 1 -not -path "$readonly_sandbox_dir/.git" \
-        -printf '%y %m %s %P\n' 2>/dev/null | LC_ALL=C sort
+        -printf '%y %m %s %P %l\n' 2>/dev/null | LC_ALL=C sort
+    printf 'content\n'
+    # Every regular file's CONTENT. This is the check the whole sandbox rests
+    # on — the enforcement can be bypassed on the degraded path, so the proof
+    # has to be real rather than a metadata comparison wearing its name.
+    local -a hasher
+    # shellcheck disable=SC2206 # deliberate word-splitting: a command plus its
+    # flags, not one argument.
+    hasher=($(sandbox_hash_cmd))
+    find "$readonly_sandbox_dir" -mindepth 1 -not -path "$readonly_sandbox_dir/.git" \
+        -type f -print0 2>/dev/null | LC_ALL=C sort -z |
+        xargs -0 -r "${hasher[@]}" 2>/dev/null | LC_ALL=C sort
     # git's own view, folded into the same baseline rather than asserted empty:
     # a scope that includes uncommitted work makes the scratch tree
     # legitimately dirty, so what must not change is the dirtiness, not its

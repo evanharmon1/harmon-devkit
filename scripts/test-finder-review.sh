@@ -215,6 +215,56 @@ grep -Eq 'Read-only file system|Permission denied' <<<"$out" ||
 [ ! -e "$work/TAMPERED.txt" ] ||
     fail "the degraded fallback let a write reach the real worktree"
 
+echo "==> a launcher symlinked into an npm package tree still executes"
+# The documented `npm install -g @github/copilot` — and anything under NVM or
+# a user prefix — puts a symlink in .../bin pointing at a script under a
+# sibling .../lib/node_modules. Binding only the launcher directory left that
+# package absent inside the sandbox, so the finder resolved and then failed to
+# execute.
+nvm_prefix="$tmp/nvm"
+mkdir -p "$nvm_prefix/bin" "$nvm_prefix/lib/node_modules/@github/copilot" \
+    "$nvm_prefix/lib/node_modules/helper"
+cat >"$nvm_prefix/lib/node_modules/helper/message.txt" <<'EOF'
+sibling-dependency
+EOF
+cat >"$nvm_prefix/lib/node_modules/@github/copilot/cli.sh" <<'EOF'
+#!/usr/bin/env bash
+# Resolves its own real path first, the way a launcher reached through a
+# symlink does, then reads a sibling package as a dependency.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+echo "DEP=$(cat "$here/../../helper/message.txt" 2>/dev/null)"
+echo "P1 src/app.txt:1 — a finding"
+EOF
+chmod +x "$nvm_prefix/lib/node_modules/@github/copilot/cli.sh"
+ln -s "../lib/node_modules/@github/copilot/cli.sh" "$nvm_prefix/bin/copilot"
+out="$( (cd "$work" && PATH="$nvm_prefix/bin:$PATH" ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+grep -Fq 'DEP=sibling-dependency' <<<"$out" ||
+    fail "a launcher symlinked into an npm package tree could not execute in the sandbox: $out"
+
+echo "==> a same-length rewrite of an untracked file fails the pass"
+# The tamper check is what the whole boundary rests on, and comparing type,
+# mode, size and path let a same-length rewrite with the mode restored through
+# unnoticed. It compares content now.
+printf 'aaaa\n' >"$work/src/probe.txt"
+(
+    cd "$work" || exit 1
+    # shellcheck source=/dev/null
+    . ./scripts/lib/readonly-sandbox.sh
+    sandbox_create HEAD 1 >/dev/null || exit 1
+    chmod u+w "$readonly_sandbox_dir" "$readonly_sandbox_dir/src/probe.txt"
+    printf 'bbbb\n' >"$readonly_sandbox_dir/src/probe.txt"
+    chmod a-w "$readonly_sandbox_dir/src/probe.txt" "$readonly_sandbox_dir"
+    if sandbox_verify 2>/dev/null; then
+        sandbox_cleanup
+        exit 1
+    fi
+    sandbox_cleanup
+) || {
+    rm -f "$work/src/probe.txt"
+    fail "a same-length rewrite passed the tamper check"
+}
+rm -f "$work/src/probe.txt"
+
 echo "==> the degraded path does not hand over the real home directory"
 # There is no mount namespace to replace HOME with a tmpfs here, so the
 # allowlist alone would have passed the real $HOME through — handing over

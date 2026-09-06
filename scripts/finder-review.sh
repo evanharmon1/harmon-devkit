@@ -29,7 +29,8 @@
 # — a per-run scratch `git worktree` checkout, made unwritable, entered with
 # write credentials and git credential helpers stripped from the environment,
 # under `bwrap --ro-bind` where bubblewrap exists — and then PROVEN: the pass
-# is accepted only if that tree is byte-identical afterwards. Two earlier
+# is accepted only if that tree still hashes the same afterwards, content
+# included. Two earlier
 # revisions tried to stand in for this, first with a comment claiming no tools
 # were granted and then with an operator attestation; neither is verification,
 # and a drifted configuration crossed the boundary in both.
@@ -293,10 +294,27 @@ fi
 # Per tool and overridable, because where a vendor keeps its token is the
 # vendor's business and changes without notice.
 readonly_sandbox_credential_dir="${FINDER_REVIEW_COPILOT_CONFIG_DIR:-${HOME:-/nonexistent}/.copilot}"
-# The sandbox replaces /tmp with a fresh tmpfs, so a CLI installed under it
-# would vanish before it could run. Name its directory explicitly.
+# The sandbox binds an allowlist, so everything this CLI needs to EXECUTE has
+# to be named. Its launcher directory is not enough: a global npm install (the
+# documented `npm install -g @github/copilot`, and anything under NVM or a
+# user-local prefix) puts a symlink in `.../bin` pointing at a script under a
+# sibling `.../lib/node_modules`, and that package — plus the modules it
+# requires beside it — is where the program actually lives. Binding only the
+# launcher made the finder resolve successfully and then fail to execute.
 bin_path="$(command -v "$bin")"
-readonly_sandbox_extra_ro=("$(dirname "$bin_path")")
+bin_target="$(readlink -f "$bin_path" 2>/dev/null || printf '%s' "$bin_path")"
+readonly_sandbox_extra_ro=("$(dirname "$bin_path")" "$(dirname "$bin_target")")
+# The whole node_modules tree the launcher resolves into, where there is one:
+# a package's siblings are its dependencies, and binding the package alone
+# would leave them out.
+sandbox_bind_ancestor="$bin_target"
+while [ "$sandbox_bind_ancestor" != / ] && [ -n "$sandbox_bind_ancestor" ]; do
+    sandbox_bind_ancestor="$(dirname "$sandbox_bind_ancestor")"
+    if [ "$(basename "$sandbox_bind_ancestor")" = node_modules ]; then
+        readonly_sandbox_extra_ro+=("$sandbox_bind_ancestor")
+        break
+    fi
+done
 # The snapshot the resolved scope describes — the finder reads the tree it
 # sits in, so that tree has to be the one its diff is about.
 read -r snapshot_committish snapshot_worktree <<<"$(review_scope_snapshot)"

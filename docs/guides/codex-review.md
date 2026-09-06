@@ -263,8 +263,10 @@ install that for us. So `scripts/lib/readonly-sandbox.sh` builds it:
   a variable nobody thought to name is not passed either.
   `FINDER_REVIEW_SANDBOX_ENV` names one deliberately;
 - and afterwards the scratch tree **proven** unchanged — same files, modes,
-  sizes and `git status` — so a pass that modified it is refused whatever it
-  returned. The same state, not an empty one: a scope carrying uncommitted
+  sizes, symlink targets, **content hashes** and `git status` — so a pass that
+  modified it is refused whatever it returned. Content, not just shape: a
+  same-length rewrite that restored the file mode passed a metadata-only
+  comparison. The same state, not an empty one: a scope carrying uncommitted
   work makes the tree legitimately dirty, and what must not change is the
   dirtiness rather than its absence.
 
