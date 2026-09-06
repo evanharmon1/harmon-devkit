@@ -43,7 +43,8 @@ for text in 'split the mechanism out' 'verdict.split_candidate' \
     grep -Fq "$text" "$skill" || fail "review skill is missing the split strategy: $text"
 done
 integrate_skill="ai/skills/universal/integrate/SKILL.md"
-for text in 'Order more rounds' 'Accept as spent' 'Split the mechanism out' \
+for text in 'order more rounds' 'accept
+as spent' 'split the mechanism out' \
     'which rounds introduced the mechanism' 'which findings live in it' \
     'filed on the current milestone by the agent that' 'never left to memory' \
     'disposition: split' 'run.json.splits'; do
@@ -52,6 +53,10 @@ for text in 'Order more rounds' 'Accept as spent' 'Split the mechanism out' \
 done
 grep -Fq 'The report names three options, never two' "$integrate_skill" ||
     fail "integrate skill's blocker report does not require all three options"
+# The rendering is split out to #813; neither skill may point an integration
+# stop at blocker-comment until it stops borrowing a confidence-stage verdict.
+grep -Fq 'do **not** use `render-dev-flow.sh blocker-comment` for an integration' "$integrate_skill" ||
+    fail "integrate skill does not warn off the untrustworthy integration blocker rendering"
 
 grep -Fq 'display login is non-authoritative metadata' "$skill" ||
     fail "review skill treats mutable display login as evidence identity"

@@ -1426,21 +1426,17 @@ not keep iterating past a stop condition.
 
 **The report names three options, never two.** A maintainer reading a
 cap-reached or no-progress stop has three answers, and a report that offers
-only the first two makes the third invisible:
-
-1. **Order more rounds** — say what remains under the cap, or that raising it
-   is now an explicit human decision.
-2. **Accept as spent** — advance with the unresolved findings recorded and
-   carried forward.
-3. **Split the mechanism out** — when the rounds' findings have concentrated
-   in one mechanism, most sharply one an earlier round of this same PR added.
-   Carry its evidence — **which rounds introduced the mechanism**, and
-   **which findings live in it**. `scripts/render-dev-flow.sh blocker-comment` renders
-   all three from `verdict.split_candidate`, so prefer it to a hand-written
-   report; where no verdict is available (a stop with no round record), state
-   the same evidence from the round summaries yourself, or say plainly that
-   the signal could not be computed. "Not indicated" is a finding; silence is
-   not.
+only the first two makes the third invisible: **order more rounds**, **accept
+as spent**, or **split the mechanism out** — the last when the rounds' findings
+have concentrated in one mechanism, most sharply one an earlier round of this
+same PR added. Its evidence is **which rounds introduced the mechanism**, and
+**which findings live in it** — state it from the round summaries. Rendering it from
+`verdict.split_candidate` is
+[#813](https://github.com/evanharmon1/harmon-devkit/issues/813) — until that
+lands, do **not** use `render-dev-flow.sh blocker-comment` for an integration
+stop: integration writes no verdict of its own, so the projection would report
+the last confidence stage's spent count and mechanism as if they were
+integration's.
 
 **A split-off mechanism is filed on the current milestone by the agent that
 splits it, at the moment it splits it — never left to memory and never left

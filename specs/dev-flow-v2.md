@@ -511,7 +511,11 @@ this decision). And it is a **diagnostic, not an outcome**: no exit outcome,
 exit code, precedence rule, or cap depends on it. A capped stage that would
 have said only "cap reached" can now say which mechanism it capped on and
 offer the split beside "order more rounds" and "accept as spent"; what it may
-not do is decide for the human.
+not do is decide for the human. Publishing that option as a rendered
+blocker report is tracked separately
+([#813](https://github.com/evanharmon1/harmon-devkit/issues/813)): the signal
+and the record land first, and the rendering follows once it can corroborate
+what it publishes.
 
 An `unverified` provenance claim leaves `provenance_share`'s numerator and
 denominator alike, exactly as the `provenance_share` predicate treats it — a
