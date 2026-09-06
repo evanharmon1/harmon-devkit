@@ -1677,8 +1677,8 @@ async function main() {
   // and the trajectory converged as if the document did not exist —
   // adjudicating findings no pass ever produced.
   //
-  // Deliberately measured against every pass the run directory HOLDS for
-  // this stage (plus its slot_failures), not against the assembled/
+  // Deliberately measured against every pass the run directory HOLDS
+  // (plus its slot_failures), not against the assembled/
   // retained rounds: a round whose every pass was REJECTED by receipt
   // validation legitimately assembles no logical round while its
   // adjudication document survives, and the considered behavior there is
@@ -1691,23 +1691,38 @@ async function main() {
   // output modes: --verification-only is a pre-adjudication projection,
   // not permission to hold an adjudication the trajectory cannot account
   // for.
-  const dispatchedRoundNumbers = new Set();
+  //
+  // Cross-stage, for exactly the reason the cap-0 emptiness rule and the
+  // over-cap rule above are: an orphan adjudication is a malformed
+  // trajectory wherever in the run it sits. Scoping BOTH the candidate set
+  // and the dispatched-round index to args.stage made a challenge orphan
+  // invisible while review's exit was computed, so review converged and
+  // returned action "advance" on a trajectory it had never validated —
+  // authorizing the next stage off a run whose earlier stage adjudicated
+  // findings no pass ever produced (integrate cycle 5 on PR #800,
+  // confirmed and reproduced). The index is keyed "<stage>:<round>" rather
+  // than by round number alone so a challenge round 1 can never satisfy a
+  // review round 1 adjudication: widening the scan must not weaken the
+  // match it performs.
+  const dispatchedRounds = new Set();
   for (const p of runDir.passes) {
     const payload = p.envelope.payload;
-    if (payload && payload.stage === args.stage && typeof payload.round === "number") {
-      dispatchedRoundNumbers.add(payload.round);
+    if (payload && typeof payload.stage === "string" && typeof payload.round === "number") {
+      dispatchedRounds.add(`${payload.stage}:${payload.round}`);
     }
   }
   for (const sf of Array.isArray(runDir.runRecord.slot_failures) ? runDir.runRecord.slot_failures : []) {
-    if (sf.stage === args.stage && typeof sf.round === "number") dispatchedRoundNumbers.add(sf.round);
+    if (typeof sf.stage === "string" && typeof sf.round === "number") {
+      dispatchedRounds.add(`${sf.stage}:${sf.round}`);
+    }
   }
   const orphanAdjudication = validAdjudications.find(
-    (a) => a.doc.stage === args.stage && !dispatchedRoundNumbers.has(a.doc.round),
+    (a) => !dispatchedRounds.has(`${a.doc.stage}:${a.doc.round}`),
   );
   if (orphanAdjudication) {
     return indeterminate(
       args,
-      `adjudication document "${orphanAdjudication.name}" names ${args.stage} round ${orphanAdjudication.doc.round}, but no pass or slot_failures record in this run ever named that round — an adjudication with no source pass is an error, not something to ignore`,
+      `adjudication document "${orphanAdjudication.name}" names ${orphanAdjudication.doc.stage} round ${orphanAdjudication.doc.round}, but no pass or slot_failures record in this run ever named that round — an adjudication with no source pass is an error, not something to ignore`,
     );
   }
 
