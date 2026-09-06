@@ -241,4 +241,33 @@ for consumer in scripts/dev-flow-exit.mjs scripts/render-dev-flow.mjs \
     done < <(jq -r '.finders[].slug' "$registry")
 done
 
+echo "==> an off-scale badge does not inherit a known badge's priority"
+# `anchor: anywhere` was a bare substring test, so `P30` matched the `P3` rule
+# and an unknown substantive finding was normalized into the cosmetic,
+# non-gating tier — the exact inverse of the rule that an unrecognized badge
+# is adjudicated as at least a P2.
+head40=3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a
+jq -n --arg head "$head40" '{
+    review: { user: { id: 199175422 }, commit_id: $head,
+              body: "**P30** something nobody has a rule for\n\n**Reviewed commit:** `\($head)`" }
+}' >"$tmp/offscale.json"
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/offscale.json" >"$tmp/offscale.out" 2>&1 || true
+if grep -q '"priority": *"P3"' "$tmp/offscale.out"; then
+    fail "an off-scale P30 badge was normalized as P3: $(cat "$tmp/offscale.out")"
+fi
+
+echo "==> a payload with no current-head evidence is refused, not read as clean"
+# An empty or partial GitHub fetch used to emit findings: [] and exit 0, so
+# missing terminal evidence was indistinguishable from a reviewer that found
+# nothing — and a caller could persist that as a completed slice.
+set +e
+printf '{}' | node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" >/dev/null 2>"$tmp/empty.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "an empty cloud payload exited $status, not 3"
+grep -Fq 'no current-head terminal evidence' "$tmp/empty.err" ||
+    fail "the empty-payload refusal did not name its reason: $(cat "$tmp/empty.err")"
+
 echo "finder normalization OK ($cases fixture(s))"

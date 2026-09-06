@@ -206,12 +206,23 @@ echo "==> no kernel sandbox degrades the pass and says so, rather than refusing"
 # boundary, but its absence FALLS BACK rather than refusing — with every
 # non-bwrap protection still in force and the degradation disclosed, so a
 # reviewer can see which boundary a pass ran under.
+# `|| true` on the command substitution, deliberately. Running as ROOT, mode
+# bits do not deny the write, so the stub succeeds and `sandbox_verify`
+# correctly rejects the modified checkout — a nonzero exit. Under `set -e` the
+# assignment itself then aborted the suite before any assertion ran, so the
+# definition-of-done gate failed in every root-based container. Both outcomes
+# are correct behaviour; what this case asserts is the DISCLOSURE, which is
+# present either way.
 out="$( (cd "$work" && PATH="$writer_bin:$PATH" READONLY_SANDBOX_BWRAP=/nonexistent/bwrap \
-    ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1 || true)"
 grep -Fq 'sandbox: degraded (no bubblewrap)' <<<"$out" ||
     fail "the degraded fallback did not disclose itself: $out"
-grep -Eq 'Read-only file system|Permission denied' <<<"$out" ||
-    fail "the degraded fallback left the scratch checkout writable: $out"
+# As root the write is not denied by mode bits at all; the boundary that then
+# holds is the post-run tamper check, which is the other correct outcome.
+# Accept either — what must never happen is the write landing AND the pass
+# being accepted, which the next assertion and sandbox_verify cover.
+grep -Eq 'Read-only file system|Permission denied|the scratch checkout changed during the pass|read-only checkout it ran against was modified' <<<"$out" ||
+    fail "the degraded fallback neither denied the write nor rejected the tampered checkout: $out"
 [ ! -e "$work/TAMPERED.txt" ] ||
     fail "the degraded fallback let a write reach the real worktree"
 
@@ -516,5 +527,48 @@ while IFS= read -r target; do
 done <<EOF
 $targets
 EOF
+
+echo "==> an untracked symlink is copied as a LINK, never as its target's content"
+# The credential-leak case. `cp -p` dereferences a symlink named on its command
+# line and copies the TARGET's bytes, so an untracked link to ~/.config/gh/
+# hosts.yml used to place that credential inside the otherwise isolated
+# checkout — readable by the finder, over a network the design deliberately
+# leaves open. `cp -P` copies the link itself, which is also what the reviewed
+# scope actually contains.
+canary_dir="$tmp/outside-the-scope"
+mkdir -p "$canary_dir"
+printf 'CREDENTIAL-CANARY-%s\n' "$$" >"$canary_dir/token.txt"
+ln -s "$canary_dir/token.txt" "$work/linked-secret"
+(
+    cd "$work" || exit 1
+    # shellcheck source=/dev/null
+    . ./scripts/lib/readonly-sandbox.sh
+    sandbox_create HEAD 1 >/dev/null || exit 1
+    status=0
+    # The invariant is that no DEREFERENCED COPY was made: the scratch entry
+    # must still be a symlink pointing at the original path. Reading through
+    # it from the host would of course still find the canary — the target has
+    # not moved — but inside the sandbox that path is not bound, so the link
+    # simply dangles. What used to leak was `cp -p` writing the target's bytes
+    # into the checkout as a regular file, which no mount namespace can undo.
+    [ -L "$readonly_sandbox_dir/linked-secret" ] || status=1
+    [ "$(readlink "$readonly_sandbox_dir/linked-secret" 2>/dev/null)" = "$canary_dir/token.txt" ] || status=2
+    sandbox_cleanup
+    exit "$status"
+) || fail "an untracked symlink was dereferenced, placing its target's content in the scratch checkout"
+rm -f "$work/linked-secret"
+
+echo "==> the prompt bound refuses a value too wide for shell arithmetic"
+# A digit-only value past what `test -gt` can compare overflowed the
+# comparison, which then evaluated FALSE — so the bound silently stopped being
+# enforced and an oversized prompt failed later with E2BIG instead.
+set +e
+out="$(run_in_work env FINDER_REVIEW_MAX_PROMPT_BYTES=99999999999999999999 \
+    FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh challenge copilot --uncommitted 2>&1)"
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "an implausibly wide prompt bound exited $status, not 2"
+grep -Fq 'implausibly large' <<<"$out" ||
+    fail "the oversized bound was not refused by name: $out"
 
 echo "finder review runner OK"

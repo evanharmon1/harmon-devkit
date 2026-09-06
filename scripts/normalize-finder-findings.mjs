@@ -159,9 +159,28 @@ function leadingHit(text, rule) {
   return -1
 }
 
+// Is the character at `i` part of the same token as the badge? A bare
+// substring test made `P30` match the `P3` rule and normalize a finding whose
+// badge is off the scale into the cosmetic, non-gating tier — the exact
+// opposite of the rule that an unrecognized badge is adjudicated as at least a
+// P2. Alphanumeric neighbours are what disqualify a hit; punctuation and
+// whitespace do not, because a badge is routinely wrapped (`**P1**`, `P1:`).
+function isWordChar(ch) {
+  return ch !== undefined && /[a-z0-9]/.test(ch)
+}
+
+function includesAsToken(haystack, needle) {
+  let at = haystack.indexOf(needle)
+  while (at !== -1) {
+    if (!isWordChar(haystack[at - 1]) && !isWordChar(haystack[at + needle.length])) return true
+    at = haystack.indexOf(needle, at + 1)
+  }
+  return false
+}
+
 function matchesRule(text, rule) {
   const needle = String(rule.match).toLowerCase()
-  if (rule.anchor === 'anywhere') return text.toLowerCase().includes(needle)
+  if (rule.anchor === 'anywhere') return includesAsToken(text.toLowerCase(), needle)
   // leading-token: the block's first whitespace-delimited token, stripped of
   // the punctuation a badge is commonly wrapped in (**P1**, `P1`, "P1:").
   const token = text.trim().split(/\s+/, 1)[0] ?? ''
@@ -401,6 +420,34 @@ if (finder.raw_shape === 'labelled-text') {
         pushFinding(segment, `comment ${comment.id ?? '?'}`, null, String(comment.id ?? 'comment'))
       }
     }
+  }
+
+  // No current-head artifact from this finder at all is INDETERMINATE, not a
+  // clean review. An empty or partial GitHub fetch — `{}` was enough —
+  // previously emitted a successful result with `findings: []`, which a caller
+  // could persist as a completed slice: missing terminal evidence was
+  // indistinguishable from a reviewer that found nothing. A finder that states
+  // its own count is covered by the stricter reconciliation below; this is the
+  // floor for the ones that do not. It asks only that SOMETHING attributable
+  // to this finder and bound to this head appears on one of the surfaces its
+  // registry entry declares — a review, an inline comment, or a stamped
+  // top-level comment. A genuinely clean cloud review still carries its
+  // review or comment, so this does not refuse a real empty result.
+  const sawCurrentHeadArtifact =
+    (payload.review !== undefined && payload.review !== null && byThisFinder(payload.review) && atThisHead(payload.review)) ||
+    (payload.comments ?? []).some((c) => byThisFinder(c) && inlineAtThisHead(c)) ||
+    (payload.top_level_comments ?? []).some((c) => {
+      if (!byThisFinder(c)) return false
+      const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(String(c.body ?? ''))
+      return Boolean(stamp) && opts.reviewedHead.startsWith(stamp[1].toLowerCase())
+    })
+  if (!sawCurrentHeadArtifact) {
+    die(
+      `${finder.slug} produced no artifact attributable to it at ${opts.reviewedHead} on any surface its registry entry declares — ` +
+        `the supplied payload carries no current-head terminal evidence, and emitting an empty slice would make a missing or partial fetch ` +
+        `indistinguishable from a review that found nothing`,
+      3
+    )
   }
 
   // The finder's own declared finding count, where its registry entry states

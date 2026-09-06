@@ -1713,6 +1713,32 @@ function tryDelegateToClosure(argv) {
     return 1;
   }
   const passthrough = [...argv.slice(0, idx), ...argv.slice(idx + 2)];
+  // A per-run finder selection may NOT cross into a reader that predates it.
+  // The merge-base copy is deliberately the one that decides a self-modifying
+  // change, and one written before --add-finder/--select-finder existed
+  // ignores them: the run would resolve to the configured finders alone, exit
+  // 0, and disclose nothing — an explicitly requested review slot silently
+  // gone, which is the one outcome per-run selection may never produce.
+  // Refuse, exactly as a missing merge-base reader is refused above; a
+  // narrower reader is no more trustworthy than an absent one.
+  const wantsSelection = passthrough.some(
+    (a) => a === "--add-finder" || a === "--select-finder" || a.startsWith("--add-finder=") || a.startsWith("--select-finder="),
+  );
+  if (wantsSelection) {
+    let trustedSource = "";
+    try {
+      trustedSource = readFileSync(trustedScript, "utf8");
+    } catch (err) {
+      console.error(`devflow-policy: could not read the --closure reader to check its flag support: ${err.message}`);
+      return 1;
+    }
+    if (!trustedSource.includes("--add-finder") || !trustedSource.includes("--select-finder")) {
+      console.error(
+        `devflow-policy: the --closure reader (${trustedScript}) predates --add-finder/--select-finder and would silently drop the requested finder(s) — refusing rather than resolving a narrower set with no disclosure`,
+      );
+      return 1;
+    }
+  }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
   if (result.error) {
     console.error(`devflow-policy: could not exec the --closure reader: ${result.error.message}`);

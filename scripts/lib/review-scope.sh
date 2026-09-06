@@ -388,6 +388,18 @@ collect_untracked_diff() {
     }
     while IFS= read -r -d '' path; do
         [ -n "$path" ] || continue
+        # Belt and braces, not a live bug fix. `git diff --no-index` really
+        # does open a FIFO and block forever waiting for a writer — but
+        # `git ls-files --others` above does not enumerate FIFOs, sockets or
+        # devices at all, so one cannot reach this loop today. The check
+        # guards the day that listing source changes, and costs one test per
+        # path. A symlink is left to the diff, which renders it as its target
+        # path rather than following it.
+        if [ ! -L "$path" ] && [ ! -f "$path" ]; then
+            rm -f "$listing"
+            echo "collect_review_diff: untracked path is not a regular file or symlink, refusing the scope: $path" >&2
+            return 1
+        fi
         # `git diff --no-index` exits 1 when the two inputs DIFFER, which is
         # the normal outcome here — every untracked file differs from
         # /dev/null. Only 0 and 1 are success; anything else (the file
@@ -408,6 +420,36 @@ collect_untracked_diff() {
     rm -f "$listing"
 }
 
+# A scope that includes uncommitted work must refuse a dirty submodule rather
+# than review around it. `git diff` renders a modified submodule as its gitlink
+# marker (`Subproject commit ...-dirty`) and NOT as the changed lines inside
+# it, and the scratch checkout leaves the submodule uninitialized — so the
+# finder gets neither the content diff nor a tree it could inspect, while the
+# manifest above the prompt claims the submodule is covered. A clean result
+# could then be banked for a review that never saw the change. Capturing the
+# nested diff properly is the better answer and is out of this change's scope;
+# refusing is the honest one.
+refuse_dirty_submodules() {
+    local sm
+    [ -f .gitmodules ] || return 0
+    # '+' = the checked-out commit differs from the index, 'U' = conflicts.
+    if git submodule status --recursive 2>/dev/null | command grep -qE '^[+U]'; then
+        echo "collect_review_diff: a submodule's checked-out commit differs from the index; refusing a scope that would review only the gitlink" >&2
+        return 1
+    fi
+    while IFS= read -r sm; do
+        [ -n "$sm" ] || continue
+        # An uninitialized submodule has no .git to ask, and contributes no
+        # uncommitted content to miss.
+        [ -e "$sm/.git" ] || continue
+        if [ -n "$(git -C "$sm" status --porcelain 2>/dev/null)" ]; then
+            echo "collect_review_diff: submodule '$sm' has uncommitted changes that a superproject diff cannot show; refusing the scope" >&2
+            return 1
+        fi
+    done < <(git submodule status --recursive 2>/dev/null | awk '{ print $2 }')
+    return 0
+}
+
 collect_review_diff() {
     case "$review_diff_spec" in
     base:*)
@@ -422,11 +464,13 @@ collect_review_diff() {
         fi
         ;;
     worktree)
+        refuse_dirty_submodules || return 1
         git diff --ignore-submodules=none HEAD || return 1
         collect_untracked_diff || return 1
         ;;
     both:*)
         local base="${review_diff_spec#both:}"
+        refuse_dirty_submodules || return 1
         printf 'Committed changes (git diff %s...HEAD):\n' "$base"
         # `|| return 1` on the COMMITTED half too. Without it a transient git
         # failure here was swallowed — this function is called from an `||`

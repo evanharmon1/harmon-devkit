@@ -730,4 +730,42 @@ set -e
 grep -Fq 'no longer active for this branch generation' "$tmp/stale-run.out" ||
     fail "stale-generation rejection was not reported"
 
+echo "==> a --closure reader predating per-run selection is refused, not silently obeyed"
+# The merge-base reader is deliberately the one that decides a self-modifying
+# change. One written before --add-finder/--select-finder existed IGNORES
+# them: the run would resolve to the configured finders alone, exit 0 and
+# disclose nothing — an explicitly requested review slot silently gone, which
+# is the one outcome per-run selection may never produce.
+closure_dir="$tmp/stale-closure"
+mkdir -p "$closure_dir/scripts"
+cat >"$closure_dir/scripts/devflow-policy.mjs" <<'STALE'
+// A reader from before #796: it knows --policy and --registry and nothing
+// about per-run finder selection.
+console.log(JSON.stringify({ resolved: "by the stale merge-base reader" }))
+process.exitCode = 0
+STALE
+set +e
+node scripts/devflow-policy.mjs resolve --closure "$closure_dir" \
+    --policy .devflow.toml --registry agent-registry.json \
+    --add-finder review:copilot-verification --json >"$tmp/closure.out" 2>&1
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail "a closure reader that cannot honour --add-finder resolved anyway: $(cat "$tmp/closure.out")"
+grep -Fq 'predates --add-finder/--select-finder' "$tmp/closure.out" ||
+    fail "the stale-closure refusal did not name its reason: $(cat "$tmp/closure.out")"
+grep -Fq 'by the stale merge-base reader' "$tmp/closure.out" &&
+    fail "the stale closure reader was executed despite lacking the flags"
+
+echo "==> a --closure reader that does support selection is still delegated to"
+current_closure="$tmp/current-closure"
+mkdir -p "$current_closure/scripts"
+cp scripts/devflow-policy.mjs "$current_closure/scripts/devflow-policy.mjs"
+set +e
+node scripts/devflow-policy.mjs resolve --closure "$current_closure" \
+    --policy .devflow.toml --registry agent-registry.json \
+    --add-finder review:copilot-verification --json >"$tmp/closure-ok.out" 2>&1
+set -e
+grep -Fq 'predates --add-finder/--select-finder' "$tmp/closure-ok.out" &&
+    fail "a current closure reader was wrongly refused: $(cat "$tmp/closure-ok.out")"
+
 echo "review skill fixtures OK"

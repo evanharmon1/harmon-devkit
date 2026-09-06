@@ -91,6 +91,54 @@ sandbox_resolve_bwrap() {
 # below runs through `xargs`, which execs a command and cannot call a function
 # — an earlier revision did exactly that, so every hash silently produced
 # nothing and the content check it was supposed to add never ran at all.
+# The stat flavour, resolved once. GNU coreutils and BSD/macOS `stat` take
+# incompatible flags, and `find -printf` — which an earlier revision used to
+# build this listing in one call — does not exist on BSD at all. That made
+# every non-dry-run local finder pass fail on macOS while creating this
+# baseline, against docs/conventions.md's requirement that shell here stays
+# portable to macOS bash 3.2. Neither flavour follows a symlink by default,
+# which is what this listing wants: the link's own mode, not its target's.
+sandbox_stat_cmd() {
+    if stat -c '%f' . >/dev/null 2>&1; then
+        printf 'gnu'
+    elif stat -f '%p' . >/dev/null 2>&1; then
+        printf 'bsd'
+    else
+        return 1
+    fi
+}
+
+# One listing line per path: type, mode, size, path relative to the scratch
+# root, and the symlink target (empty for everything else, so a retarget of
+# the same length is still caught).
+sandbox_stat_line() {
+    local flavour path rel type mode size target
+    flavour="$1"
+    path="$2"
+    rel="${path#"$readonly_sandbox_dir"/}"
+    if [ -L "$path" ]; then
+        type=l
+        target="$(readlink "$path")" || return 1
+    elif [ -d "$path" ]; then
+        type=d
+        target=
+    elif [ -f "$path" ]; then
+        type=f
+        target=
+    else
+        type=o
+        target=
+    fi
+    if [ "$flavour" = gnu ]; then
+        mode="$(stat -c '%a' "$path")" || return 1
+        size="$(stat -c '%s' "$path")" || return 1
+    else
+        mode="$(stat -f '%Lp' "$path")" || return 1
+        size="$(stat -f '%z' "$path")" || return 1
+    fi
+    printf '%s %s %s %s %s\n' "$type" "$mode" "$size" "$rel" "$target"
+}
+
 sandbox_hash_cmd() {
     if command -v sha256sum >/dev/null 2>&1; then
         printf 'sha256sum'
@@ -114,7 +162,11 @@ sandbox_hash_cmd() {
 # the main repo's admin dir), and git touches nothing else here.
 sandbox_snapshot() {
     local -a hasher
-    local listing files hashes
+    local listing files hashes stat_flavour path
+    stat_flavour="$(sandbox_stat_cmd)" || {
+        echo "readonly-sandbox: no usable stat to describe the scratch tree with" >&2
+        return 1
+    }
     # shellcheck disable=SC2206 # deliberate word-splitting: a command plus its
     # flags, not one argument.
     hasher=($(sandbox_hash_cmd)) || {
@@ -134,10 +186,12 @@ sandbox_snapshot() {
     # shellcheck disable=SC2064 # expand the paths now, not at trap time.
     trap "rm -f '$listing' '$files' '$hashes'" RETURN
 
-    # %l is the symlink target, so a retarget of the same length is caught too;
-    # it is empty for everything else.
-    find "$readonly_sandbox_dir" -mindepth 1 -not -path "$readonly_sandbox_dir/.git" \
-        -printf '%y %m %s %P %l\n' >"$listing" || {
+    while IFS= read -r -d '' path; do
+        sandbox_stat_line "$stat_flavour" "$path" >>"$listing" || {
+            echo "readonly-sandbox: could not describe $path" >&2
+            return 1
+        }
+    done < <(find "$readonly_sandbox_dir" -mindepth 1 -not -path "$readonly_sandbox_dir/.git" -print0) || {
         echo "readonly-sandbox: could not list the scratch tree" >&2
         return 1
     }
@@ -147,7 +201,10 @@ sandbox_snapshot() {
         return 1
     }
     if [ -s "$files" ]; then
-        LC_ALL=C sort -z <"$files" | xargs -0 -r "${hasher[@]}" >"$hashes" || {
+        # No `sort -z` here: BSD sort has no -z, and it bought nothing — the
+        # hash lines are sorted below, which is where the determinism the
+        # baseline needs actually comes from.
+        xargs -0 -r "${hasher[@]}" <"$files" >"$hashes" || {
             echo "readonly-sandbox: could not hash the scratch tree's contents" >&2
             return 1
         }
@@ -234,11 +291,39 @@ sandbox_create() {
         fi
         rm -f "$patch"
         # Untracked files are part of the scope the manifest claims, so they
-        # are part of the tree the finder may read.
+        # are part of the tree the finder may read — which is exactly why this
+        # loop FAILS CLOSED. An entry that cannot be reproduced used to be
+        # skipped silently, leaving the manifest claiming coverage the scratch
+        # tree did not have.
+        #
+        # `cp -P` is the security-relevant flag, not a style choice: `cp -p`
+        # DEREFERENCES a symlink named on its command line and copies the
+        # target's CONTENT. An untracked link to a readable credential — say
+        # ~/.config/gh/hosts.yml — therefore landed inside the otherwise
+        # isolated checkout as a regular file, where the finder could read it
+        # and send it out over the deliberately-open network, defeating the
+        # tmpfs HOME the rest of this boundary rests on. `-P` copies the link
+        # itself, which is also what the scope actually contains.
         while IFS= read -r -d '' untracked; do
             [ -n "$untracked" ] || continue
-            mkdir -p "$readonly_sandbox_dir/$(dirname "$untracked")" 2>/dev/null || continue
-            cp -p "$untracked" "$readonly_sandbox_dir/$untracked" 2>/dev/null || true
+            # Special files are refused rather than copied: a FIFO blocks the
+            # copy forever waiting for a writer, and a device or socket is not
+            # reviewable content in any case.
+            if [ ! -L "$untracked" ] && [ ! -f "$untracked" ]; then
+                echo "readonly-sandbox: untracked path is not a regular file or symlink, refusing the scope: $untracked" >&2
+                sandbox_create_failed
+                return 1
+            fi
+            mkdir -p "$readonly_sandbox_dir/$(dirname "$untracked")" || {
+                echo "readonly-sandbox: could not create the scratch directory for $untracked" >&2
+                sandbox_create_failed
+                return 1
+            }
+            cp -Pp "$untracked" "$readonly_sandbox_dir/$untracked" || {
+                echo "readonly-sandbox: could not reproduce the untracked path $untracked in the scratch checkout" >&2
+                sandbox_create_failed
+                return 1
+            }
         done < <(git ls-files -z --others --exclude-standard)
     fi
     # `a-w` covers the owner too, which is the point: this process runs as the

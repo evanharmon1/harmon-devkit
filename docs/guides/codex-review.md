@@ -93,6 +93,21 @@ node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
   --add-finder review:copilot-verification --json
 ```
 
+> **Prerequisite: a schema_version 2 `.devflow.toml`.** `devflow-policy.mjs
+> resolve` reads the v2 operating policy only, and **this repository's
+> `.devflow.toml` is still legacy-shaped**, so the command above exits non-zero
+> here with a migration message rather than resolving anything. Adding the
+> `[stage.*]` snippet above is *not* that migration — a v2 policy also needs
+> `[rounds.*]`, `[breadth.*]`, `[gates]`, `[convergence]`, `[role.*]` and
+> `[strategy.*]`, and the template is harmon-init's
+> ([harmon-init#1081](https://github.com/evanharmon1/harmon-init/issues/1081),
+> tracked here as
+> [#711](https://github.com/evanharmon1/harmon-devkit/issues/711)). Until that
+> lands, per-run selection is available to repositories already on v2; on a
+> legacy policy, run a second finder directly with its own task target
+> (`task challenge:copilot` / `task review:copilot`), which needs no policy
+> resolution at all.
+
 The effective set is the union of the configured finders and the requested
 ones, `--select-finder` included: a selection narrower than the config keeps
 the omitted finders and says so. Disclose the effective set in the PR body

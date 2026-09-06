@@ -240,9 +240,20 @@ ${manifest}"
 # guide documented it and an operator may have set it; what it bounds is the
 # whole prompt, which is what the name FINDER_REVIEW_MAX_PROMPT_BYTES says.
 prompt_bytes="${FINDER_REVIEW_MAX_PROMPT_BYTES:-${FINDER_REVIEW_MAX_DIFF_BYTES:-60000}}"
+# The 18-digit ceiling is the same one codex-review.sh applies, and for the
+# same reason: it is about what `test -gt` can compare, not a view on plausible
+# sizes. A wider digit-only value passed this validation and then overflowed
+# the arithmetic comparison below with "integer expression expected", which
+# evaluates FALSE — so the bound silently stopped being enforced and a
+# genuinely oversized prompt failed later with E2BIG instead of the promised
+# refusal.
 case "$prompt_bytes" in
 '' | *[!0-9]*)
     echo "FINDER_REVIEW_MAX_PROMPT_BYTES must be a non-negative integer (got: '${prompt_bytes}')" >&2
+    exit 2
+    ;;
+[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*)
+    echo "FINDER_REVIEW_MAX_PROMPT_BYTES is implausibly large (got: '${prompt_bytes}'); use 0 to disable the bound" >&2
     exit 2
     ;;
 esac
