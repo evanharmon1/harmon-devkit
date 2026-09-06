@@ -370,6 +370,26 @@ else
             unstamped="$unstamped $(basename "$candidate")"
         done
     fi
+    # A stamp elsewhere in the repository outranks the manifest's word that
+    # nothing was vendored here. `dest` comes from `.skills-sync.yaml`, which
+    # anyone can edit without re-running the sync, so repointing `dest` at an
+    # empty path turned "v2 skills over an unmigrated policy" into a clean
+    # exit 0 — a manifest edit alone silenced the audit (Codex cloud review,
+    # confirmed). The stamp is a real file with a recorded ref and managed
+    # list; finding one outside `$dest` means the tree and the manifest
+    # disagree about where the skills live, which this audit cannot resolve
+    # offline and must not paper over. `.git` and `node_modules` are excluded
+    # because neither can hold a live vendored tree.
+    stale_prov=""
+    if [ -d "$repo_root" ]; then
+        stale_prov="$(find "$repo_root" -name .SKILLS_PROVENANCE -type f \
+            -not -path '*/.git/*' -not -path '*/node_modules/*' 2>/dev/null |
+            head -n 5)"
+    fi
+    if [ -n "$stale_prov" ]; then
+        indeterminate "no '.SKILLS_PROVENANCE' under the manifest's dest '$dest', but the repository holds one elsewhere ($(printf '%s' "$stale_prov" | paste -sd, -)) — '.skills-sync.yaml' declares a destination the vendored tree is not at, so the manifest is not evidence that nothing is vendored; re-run 'task sync:skills' so the tree and the manifest agree, or point --manifest at the tree you mean to audit"
+    fi
+
     if [ -n "$unstamped" ]; then
         # shellcheck disable=SC2086 # deliberate word-splitting into a CSV
         indeterminate "'$dest' holds vendored policy-consuming skills ($(printf '%s\n' $unstamped | sort -u | paste -sd, -)) but no '.SKILLS_PROVENANCE' stamp — sync-skills.sh removes the stamp before it copies and rewrites it last, so this is an interrupted sync, not a never-vendored checkout; re-run 'task sync:skills'"
@@ -499,6 +519,35 @@ fi
 
 satisfied=no
 [ "$required" -gt 0 ] && [ "$shape" = v2 ] && [ "$policy_version" -eq "$required" ] && satisfied=yes
+
+# `detect` answers "what shape is this", not "can the stages run against it".
+# A file containing only `schema_version = 2` detects as v2 and exits 0, while
+# `resolve` on the same file exits 1 ("policy has no rigor_order ranking") —
+# so the audit reported `compatible` for a policy every stage refuses, which
+# is precisely the incomplete `copier update` it exists to catch and a direct
+# violation of the invariant in this file's own banner (Codex cloud review,
+# confirmed by execution). Satisfaction therefore asks the reader the question
+# the consumer will actually ask it.
+#
+# The accepted statuses are the reader's documented resolve contract: 0
+# resolved clean, 3 resolved with an INDETERMINATE cross-validation — which is
+# the ordinary answer here, since this audit supplies no registry or Taskfile
+# target list and has no business inventing either. 1 is the refusal that
+# matters, and 2 is unreadable input; both are indeterminate for the audit
+# rather than a verdict, because "the reader says no" is never a pass and is
+# also not the `incompatible` the exit-1 code means (that one names a SHAPE
+# mismatch the pin can describe).
+if [ "$satisfied" = yes ]; then
+    resolve_err=""
+    set +e
+    resolve_err="$(node "$reader" resolve --policy "$policy" --json 2>&1 >/dev/null)"
+    resolve_status=$?
+    set -e
+    case "$resolve_status" in
+    0 | 3) : ;;
+    *) indeterminate "policy '$policy' detects as schema version $policy_version but the shared reader refuses to resolve it (resolve exit $resolve_status: ${resolve_err:-no diagnostic}) — every stage will refuse the same way, so this is an incomplete migration, not a satisfied pin; finish the 'copier update' that migrated it (the reader's own refusal message names the harmon-init release) and re-run" ;;
+    esac
+fi
 
 if [ "$vendored" = no ]; then
     status=not-vendored

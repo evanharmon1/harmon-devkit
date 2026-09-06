@@ -812,6 +812,129 @@ for skill in review integrate orchestrator implement retro; do
     fi
 done
 
+echo "== detect is not resolve: a v2 policy the reader refuses is never compatible =="
+# Codex cloud review, confirmed by execution: a file containing only
+# `schema_version = 2` detects as v2 (exit 0) while `resolve` on the same file
+# exits 1, so the audit approved a policy every stage refuses — the exact
+# incomplete `copier update` it exists to catch, and a direct violation of its
+# own banner invariant.
+c="$(make_consumer detect-only-v2 none v0.41.0 review:v2)"
+printf 'schema_version = 2\n' >"$c/.devflow.toml"
+# The premise the regression rests on, asserted rather than assumed.
+set +e
+node "$READER" detect --policy "$c/.devflow.toml" --json >/dev/null 2>&1
+ds=$?
+node "$READER" resolve --policy "$c/.devflow.toml" >/dev/null 2>&1
+rs=$?
+set -e
+if [ "$ds" -eq 0 ] && [ "$rs" -eq 1 ]; then
+    ok "premise holds: detect exits 0 and resolve exits 1 on a bare schema_version = 2"
+else
+    bad "premise broken: detect exit $ds, resolve exit $rs (expected 0 and 1)"
+fi
+run_audit "$c"
+expect_status "an incomplete v2 policy is indeterminate, not compatible" 2
+expect_says "it names the reader's refusal" "the shared reader refuses to resolve it"
+expect_not_says "it does not report compatibility" "compatible"
+
+echo "== a resolvable v2 policy still passes the resolve probe =="
+# The guard must not turn every v2 consumer indeterminate: the reader's
+# documented exit 3 (resolved, cross-validation indeterminate) is the ORDINARY
+# answer here, since the audit supplies no registry or Taskfile target list.
+c="$(make_consumer resolvable-v2 "$V2_POLICY" v0.41.0 review:v2)"
+run_audit "$c"
+expect_status "a complete v2 policy under v2 skills is still compatible" 0
+
+echo "== a dest edit does not silence the audit while a stamped tree survives =="
+# Codex cloud review, confirmed: `dest` comes from the mutable manifest, so
+# repointing it at an empty path turned "v2 skills over an unmigrated policy"
+# into a clean exit 0 — a manifest edit alone hid the skew.
+c="$(make_consumer moved-dest "$LEGACY_POLICY" v0.41.0 review:v2)"
+run_audit "$c"
+expect_status "before the edit it is the incompatibility it should be" 1
+sed -i 's|^dest: .claude/skills$|dest: .claude/skills-moved|' "$c/.skills-sync.yaml"
+mkdir -p "$c/.claude/skills-moved"
+run_audit "$c"
+expect_status "after the edit it is indeterminate, not not-vendored" 2
+expect_says "it names the stamp it found elsewhere" ".SKILLS_PROVENANCE"
+expect_not_says "it does not report the tree as never vendored" "no skills are vendored here"
+
+echo "== a genuinely unvendored repository is still a clean exit 0 =="
+# The stale-stamp search must not make every never-synced checkout
+# indeterminate: with no stamp ANYWHERE, `not-vendored` remains correct.
+c="$(make_consumer never-synced "$V2_POLICY" v0.41.0 review:v2)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+rm -rf "$c/.claude/skills/review/assets"
+run_audit "$c"
+expect_status "no stamp anywhere is still not-vendored" 0
+expect_says "and says so" "no skills are vendored here"
+
+echo "== the closure recipe supplies a Taskfile target list and settles indeterminates =="
+BXV="$repo/ai/schemas/fixtures/exit/merge-base-branch-cross-validation-visible"
+if [ -d "$BXV" ]; then
+    bogus="$TMPROOT/bogus-gate.toml"
+    sed 's/^round_code = "verify"/round_code = "definitely:not:a:target"/' \
+        "$BXV/policy.toml" >"$bogus"
+    if grep -q 'definitely:not:a:target' "$bogus"; then
+        ok "the bogus-gate fixture was actually built"
+    else
+        bad "the bogus-gate fixture did not substitute [gates].round_code"
+    fi
+    set +e
+    without="$(node "$READER" resolve --policy "$bogus" \
+        --merge-base-policy "$BXV/policy.merge-base.toml" \
+        --merge-base-registry "$BXV/registry.json" \
+        --registry "$BXV/registry.json" --json 2>/dev/null)"
+    with="$(node "$READER" resolve --policy "$bogus" \
+        --merge-base-policy "$BXV/policy.merge-base.toml" \
+        --merge-base-registry "$BXV/registry.json" \
+        --registry "$BXV/registry.json" --taskfile-dir "$repo" --json 2>/dev/null)"
+    set -e
+    if printf '%s' "$without" |
+        jq -e '[.branch_cross_validation.errors[] | select(test("Taskfile target"))] | length == 0' >/dev/null 2>&1; then
+        ok "without --taskfile-dir a nonexistent gate target raises no error"
+    else
+        bad "without --taskfile-dir the bogus gate target was unexpectedly reported"
+    fi
+    if printf '%s' "$without" |
+        jq -e '(.branch_cross_validation.indeterminate | length) > 0' >/dev/null 2>&1; then
+        ok "without --taskfile-dir gate checking is reported indeterminate"
+    else
+        bad "without --taskfile-dir gate checking was not reported indeterminate"
+    fi
+    if printf '%s' "$with" |
+        jq -e '[.branch_cross_validation.errors[] | select(test("definitely:not:a:target"))] | length > 0' >/dev/null 2>&1; then
+        ok "with --taskfile-dir the nonexistent gate target is a hard error"
+    else
+        bad "with --taskfile-dir the bogus gate target was not reported"
+    fi
+else
+    bad "missing fixture for the gate-target regression: $BXV"
+fi
+
+echo "== the recipe invokes the materialized reader, not the branch task target =="
+# A branch-controlled `devflow:policy` target can drop `--closure`, so routing
+# the trusted resolution through it defeats the closure entirely; and a
+# Taskfile-only change never entered the closure path at all.
+# shellcheck disable=SC2016 # the literal recipe text is the assertion
+if grep -Fq 'node "$mb_dir/scripts/devflow-policy.mjs" resolve --closure' "$INTEGRATE_MD"; then
+    ok "the closure recipe invokes the materialized reader by path"
+else
+    bad "the closure recipe does not invoke the materialized reader by path"
+fi
+if grep -Fq 'task devflow:policy -- resolve --closure' "$INTEGRATE_MD"; then
+    bad "the closure recipe still routes through the branch task target"
+else
+    ok "the closure recipe no longer routes through the branch task target"
+fi
+for needle in 'Taskfile.yml' '--taskfile-dir .' 'branch_cross_validation.indeterminate'; do
+    if grep -Fq -- "$needle" "$INTEGRATE_MD"; then
+        ok "the closure section states '$needle'"
+    else
+        bad "the closure section does not state '$needle'"
+    fi
+done
+
 echo
 echo "consumer-pin-audit tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

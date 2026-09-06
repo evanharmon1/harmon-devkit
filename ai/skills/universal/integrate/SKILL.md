@@ -164,16 +164,23 @@ legacy shape or the v1 shape, and never resolves either by hand
 its refusal names the markers it actually found, so no procedure here has to
 restate an older shape's vocabulary in order to reject it.
 
-**On an ordinary review** — the change under review does not touch
-`scripts/devflow-policy.mjs`, `.devflow.toml`, or `agent-registry.json` —
-`task devflow:policy -- resolve --policy .devflow.toml --json` (add
-`--rigor <level>` for an explicit override) is the whole invocation.
+**On an ordinary review** — the change under review touches none of
+`scripts/devflow-policy.mjs`, `scripts/lib/toml-lite.mjs`, `.devflow.toml`,
+`agent-registry.json`, `Taskfile.yml`, or `taskfiles/` —
+`task devflow:policy -- resolve --policy .devflow.toml --taskfile-dir . --json`
+(add `--rigor <level>` for an explicit override) is the whole invocation.
 
-**When the change under review touches any of those three files, that bare
+**When the change under review touches any file on that list, that bare
 invocation resolves the BRANCH's own (possibly self-lowered) copy** — the
 reader's self-modification protection only activates when `--closure` and
 `--merge-base-policy` are explicitly supplied (Codex cloud-review cycle on
-PR harmon-devkit#758). Materialize the merge-base copies first:
+PR harmon-devkit#758). `Taskfile.yml` and `taskfiles/` are on the list for a
+reason that is not obvious: they carry no caps, but `devflow:policy` is
+defined there, so a change to them can decide **which reader runs and with
+which arguments** — a branch that drops `--closure` from that target
+disables the whole protection without touching a single file the old
+three-file list named, and a Taskfile-only change never entered this path at
+all. Materialize the merge-base copies first:
 
 ```sh
 base="$(git merge-base HEAD "$base_ref")"           # $base_ref from §1
@@ -187,10 +194,13 @@ git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml"
 # exists at the merge base whether or not THIS change edits it, and the
 # resolution needs it to cross-validate finder and role references.
 git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
-task devflow:policy -- resolve --closure "$mb_dir" \
+# Invoke the MATERIALIZED reader by path, never through `task devflow:policy`:
+# the task target is branch-controlled, so routing through it lets the branch
+# choose the command line that is supposed to constrain it.
+node "$mb_dir/scripts/devflow-policy.mjs" resolve --closure "$mb_dir" \
     --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" \
     --merge-base-registry "$mb_dir/agent-registry.json" \
-    --registry agent-registry.json --json
+    --registry agent-registry.json --taskfile-dir . --json
 ```
 
 **Materialize the reader's whole closure, not just its entrypoint.** The
@@ -235,14 +245,29 @@ prove safe. That makes reading it your job rather than the tool's: **treat any
 because it names something that will be wrong after merge even though it is
 right now.
 
-One residual `indeterminate` is expected and is not this recipe's to remove:
-gate-slug checking also needs a Taskfile target list, and a *trusted* one would
-have to come from the merge-base tree rather than the branch's own
-`task --list --json` — supplying the branch's list would reintroduce exactly
-the self-modification hazard `--closure` exists to prevent. Read
-`cross_validation.indeterminate` in the JSON to see which check was skipped
-rather than treating exit 3 as a failure. If the reader grows another
-dependency, it belongs in this recipe too.
+**Supply the Taskfile target list, and settle any `indeterminate` that
+survives.** Without `--taskfile-dir`, gate-slug checking is skipped on both
+sides, so a branch pointing `[gates].round_code` at a target that does not
+exist resolves clean and fails later when the stage tries to run it. `.` — the
+branch worktree — is the correct oracle here rather than the merge-base tree,
+and it is safe in the only direction that matters: a branch cannot make a
+missing target look present without actually defining it, at which point it
+exists and the gate is real. The single hazard runs the other way (deleting a
+target the merge-base policy names), and that surfaces as an **error**, which
+is fail-closed. Verified on this repository's
+`merge-base-branch-cross-validation-visible` fixture: with
+`[gates].round_code` repointed at a nonexistent target, omitting
+`--taskfile-dir` yields `indeterminate: no Taskfile target list was supplied`
+and no error, while supplying it yields
+`[gates].round_code = "…" is not an existing Taskfile target`.
+
+Read `cross_validation.indeterminate` and
+`branch_cross_validation.indeterminate` in the JSON, and treat **any** entry
+left in either as a finding to settle before readiness, exactly as an `errors`
+entry is. Exit 3 is not an expected residue to wave through — it says a check
+this recipe asked for could not be decided, which is the same standing as a
+check that failed. If the reader grows another dependency, it belongs in this
+recipe too.
 
 `--closure <dir>` re-execs the trusted `<dir>/scripts/devflow-policy.mjs`
 before this checkout's own (possibly branch-modified) copy runs any of its
