@@ -118,10 +118,12 @@ usage() {
 Usage:
   readiness-gate.sh check --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
-      [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
+      --remediation-cap N [--codex-recheck STATE_FILE]
+      [--allow-edited-root ID]...
   readiness-gate.sh audit --repo OWNER/REPO --pr N --head SHA
       --record DIR --integrator-result FILE --integration-cap N
-      [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
+      --remediation-cap N [--codex-recheck STATE_FILE]
+      [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
@@ -155,6 +157,15 @@ pairs only with a non-null one, and that codex_cycle.cycle never exceeds it
 process, so there is no legitimate case for omitting it: a null codex_cycle
 with the flag missing used to be silently trusted as proof the resolved cap
 was 0, when it was really just the integrator's own unverified claim.
+--remediation-cap N is required, for the same reason --integration-cap is
+(harmon-devkit#685, challenge round 1): each integration -> implement ->
+integration loop the record's own stage_transitions[] records is one
+remediation round, and the count may not exceed the cap. Left optional, a
+caller that simply omitted the flag would skip the policy check entirely and
+an over-cap run would still promote — enforcement is not something a caller
+opts into. The resolved value is the caller's (this script does not read
+.devflow.toml), and the same resolution that yields --integration-cap yields
+this one.
 --codex-recheck STATE_FILE is optional and, when codex_cycle reports a clean
 exit_code 0, re-confirms it read-only by re-running check-codex-cloud-
 review.sh's own `check` against STATE_FILE (the same on-disk state the
@@ -232,12 +243,13 @@ head=
 record_dir=
 integrator_result=
 integration_cap=
+remediation_cap=
 codex_recheck_state=
 allowed_edited_roots='[]'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --codex-recheck | --allow-edited-root)
+    --repo | --pr | --head | --record | --integrator-result | --integration-cap | --remediation-cap | --codex-recheck | --allow-edited-root)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo=$2 ;;
@@ -246,6 +258,7 @@ while [ "$#" -gt 0 ]; do
         --record) record_dir=$2 ;;
         --integrator-result) integrator_result=$2 ;;
         --integration-cap) integration_cap=$2 ;;
+        --remediation-cap) remediation_cap=$2 ;;
         --codex-recheck) codex_recheck_state=$2 ;;
         --allow-edited-root)
             printf '%s' "$2" | grep -Eq '^[1-9][0-9]*$' ||
@@ -283,6 +296,8 @@ valid_repo "$repo" || die "invalid repository: $repo"
 valid_uint "$pr" || die "invalid PR number: $pr"
 [ -z "$integration_cap" ] || valid_uint_or_zero "$integration_cap" ||
     die "--integration-cap must be a non-negative integer"
+[ -z "$remediation_cap" ] || valid_uint_or_zero "$remediation_cap" ||
+    die "--remediation-cap must be a non-negative integer"
 
 # check gates promotion, so the PR must still be draft; audit answers the
 # reconcile question for a PR somebody already promoted, so it drops exactly
@@ -311,6 +326,10 @@ check | audit)
     # (the /integrate skill) always resolves this value early in its own
     # process, so there is no legitimate case for omitting it here.
     [ -n "$integration_cap" ] || usage
+    # Required for the same reason (harmon-devkit#685, challenge round 1):
+    # an optional policy check is one a caller can skip by omission, and a
+    # skipped remediation check promotes an over-cap run.
+    [ -n "$remediation_cap" ] || usage
     ;;
 fingerprint) ;;
 *) usage ;;
@@ -906,9 +925,98 @@ active_run_id="$(jq -er '.run_id | select(type == "string")' "$run_json" 2>/dev/
     indeterminate malformed-data "run.json carries no run_id"
 active_initiated_by="$(jq -er '.initiated_by | select(type == "string")' "$run_json" 2>/dev/null)" ||
     indeterminate malformed-data "run.json carries no initiated_by"
+# The run's known finding universe, so the validator's
+# checkAppliedDispositionsKnownFindingIds actually runs here
+# (harmon-devkit#685: "nested integrator passes' applied_dispositions ids are
+# validated against the run's known finding universe"). That check is gated
+# on --known-ids, and this gate — the production caller — was not passing it,
+# so a clean integrator pass could claim dispositions for findings that never
+# existed and still authorize promotion; only impossible integration ids were
+# caught, by the flagless half of the check. Challenge round 2, confirmed.
+#
+# The universe is every finding the record's own PASSES produced — the ids
+# raised under `passes/`, and nothing else. An adjudication is a judgement
+# ABOUT a finding, never evidence that one was produced: integrate cycle 2 on
+# PR #800 showed that harvesting adjudication ids too lets a fabricated
+# same-run adjudication whitelist an arbitrary id, since
+# `render-dev-flow readiness-input` explicitly continues past an adjudication
+# row with no pass behind it. Narrowing to passes removes that class rather
+# than patching it — every legitimately adjudicated finding was raised by a
+# pass, so a complete record already contains it, and a record missing that
+# pass is incomplete in a way the gate should fail closed on. An id in
+# neither the passes nor the gated payload's own findings[] (which the
+# validator checks separately) names nothing the record can account for.
+#
+# `--record` is the dev-flow-v2 record directory the review stage retains
+# and this stage consumes, so both subdirectories are its documented
+# contents, not an assumption about the caller.
+# A plain glob and jq, never find/xargs: this script must keep running on
+# the minimal toolset its own no-GNU-timeout path already restricts PATH to,
+# and jq is the only thing here that is not a shell builtin.
+# mktemp, never a $$-derived name: on a shared host $TMPDIR is world-writable
+# and a PID-derived path is predictable, so `>` would follow a symlink an
+# attacker planted there and truncate whatever the invoking user can write.
+# Challenge round 3 (P2), confirmed.
+known_ids_file="$(mktemp "${TMPDIR:-/tmp}/readiness-gate-known-ids.XXXXXX")" ||
+    indeterminate malformed-data "could not create a temporary file for the run's known finding ids"
+# `|| :` so the trap's own last command always succeeds: this script's
+# verdict IS its exit code, and a cleanup that fails — `rm` missing from a
+# restricted PATH, a read-only TMPDIR — must never be what the caller reads
+# instead of fail/indeterminate/pass.
+trap 'rm -f "$known_ids_file" 2>/dev/null || :' EXIT
+{
+    for known_ids_doc in "$record_dir"/passes/*.json; do
+        [ -f "$known_ids_doc" ] || continue
+        # SEMANTICALLY validate each pass before trusting its ids, rather
+        # than approximating validity with a status/role filter of our own.
+        # `status: "completed"` does not establish it — a structurally valid
+        # pass whose `counts` disagree with its findings is rejected by
+        # validate-result-schemas.mjs while render-dev-flow's readiness-input,
+        # which is only structural, lets it through (integrate cycle 3 on
+        # PR #800). Running the real validator is both stricter and less code:
+        # it subsumes the blocked-role rule this filter used to hand-roll,
+        # including the distinction that a blocked confidence-role pass
+        # carries no findings while a blocked integrator legitimately does.
+        node "$validate_result_schemas" envelope "$known_ids_doc" \
+            --run-id "$active_run_id" --initiated-by "$active_initiated_by" \
+            >/dev/null 2>&1 || continue
+        jq -r '.payload.findings[]?.id // empty' "$known_ids_doc" 2>/dev/null || true
+    done
+} | jq -Rn '[inputs | select(. != "")] | unique' >"$known_ids_file" 2>/dev/null || true
+# An unreadable or absent record leaves an EMPTY universe rather than no
+# check: an empty FILE would make the validator's own --known-ids parse fail
+# (a usage error), where an empty ARRAY is the honest "this run has produced
+# no findings the record can account for" — and still enforcing.
+[ -s "$known_ids_file" ] || printf '[]\n' >"$known_ids_file"
 node "$validate_result_schemas" envelope "$integrator_result" \
-    --run-id "$active_run_id" --initiated-by "$active_initiated_by" >/dev/null 2>&1 ||
-    indeterminate codex-indeterminate "--integrator-result $integrator_result is not a schema-valid result.envelope for the active run ($active_run_id/$active_initiated_by)"
+    --run-id "$active_run_id" --initiated-by "$active_initiated_by" \
+    --known-ids "$known_ids_file" >/dev/null 2>&1 ||
+    indeterminate codex-indeterminate "--integrator-result $integrator_result is not a schema-valid result.envelope for the active run ($active_run_id/$active_initiated_by), or names an applied disposition outside the run's known finding universe"
+
+# harmon-devkit#685: "promotion.head equals the head of the final integrator
+# result and its accepted-cycle reviewed commit; a stale integration pass
+# cannot certify a newer promoted head". Two of those three equalities are
+# already proven — the envelope head against the gated head just below, and
+# accepted.reviewed_commit against the envelope head by the validator's own
+# receipt pass above. The third, run.json's own recorded promotion.head, was
+# bound to nothing at all: `audit` judges an already-promoted PR, so its
+# record carries a promotion entry, and nothing compared that entry's head
+# against the head being judged. A record whose promotion names an older
+# commit is either a promotion of a different head or a record that has
+# fallen behind its PR — either way the gate is not judging what was
+# actually promoted, and `audit`'s verdict would be about the wrong commit.
+#
+# `check` runs before promotion, so a non-null promotion there is itself
+# inconsistent — but only when it disagrees with this head: a re-run of
+# `check` after a promotion that was undone legitimately still carries the
+# entry for this same head. Both modes therefore apply the identical rule
+# (equality when present), rather than one forbidding what the other
+# requires.
+record_promotion_head="$(jq -r '.promotion.head // ""' "$run_json" 2>/dev/null)" ||
+    indeterminate malformed-data "run.json's promotion could not be read"
+if [ -n "$record_promotion_head" ] && [ "$record_promotion_head" != "$head" ]; then
+    indeterminate promotion-head-mismatch "run.json records promotion.head $record_promotion_head, not the gated $head — a stale integration pass cannot certify a newer promoted head (harmon-devkit#685)"
+fi
 integrator_role="$(jq -er '.role | select(type == "string")' \
     "$integrator_result" 2>/dev/null)" ||
     indeterminate malformed-data "integrator result carries no role"
@@ -1061,6 +1169,135 @@ integrator_verdict="$(jq -er '.payload.verdict | select(type == "string")' \
     indeterminate malformed-data "integrator result carries no verdict"
 [ "$integrator_verdict" = clean ] ||
     fail_condition integrator-not-clean "integrator result verdict is $integrator_verdict, not clean — only a completed clean pass for this head can be gated; re-dispatch after what it is waiting on or reporting is settled"
+
+# 9d. Remediation loops against the resolved remediation cap
+# (harmon-devkit#685: "integration -> implement -> integration loops are
+# counted against [rounds.<policy>].remediation; exceeding it is capped with
+# escalation, and code-changing integration dispositions past the cap are
+# rejected"). The count is the record's own, not a claim the pass makes:
+# stage_transitions[] records every stage the run entered, so every
+# `integration` entry AFTER the first is a return to it, and the count of
+# returns is the number of remediation loops. Every return necessarily went
+# back through implement, because integration's only outgoing edge IS
+# implement (run.schema.json's ALLOWED_EDGES, enforced by
+# validate-result-schemas.mjs's checkStageTransitionsOrder, which also
+# refuses a first-visit implement -> integration as a premature remediation
+# return). The path back in may then run implement -> verify -> ... ->
+# integration or implement -> integration; either way it is one loop.
+#
+# One condition, not two. The criterion's second half — "code-changing
+# integration dispositions past the cap are rejected" — needs no separate
+# branch, and a branch written for it was wrong (challenge round 1,
+# confirmed). Past the cap, THIS condition already rejects the pass whatever
+# its dispositions. AT the cap it must not fire at all: SKILL.md's dispatch
+# contract has `applied_dispositions` carry everything "accumulated so far
+# this integration stage, so a pass that comes back clean can echo them", so
+# the fix that CAUSED the final loop is still listed on the clean pass that
+# closes it. Reading that as "a code change still needs applying" refuses
+# precisely the run that converged exactly on budget. A pass that genuinely
+# still owes a code change is not clean, and step 9c already refuses it.
+remediation_loops="$(jq -r '[.stage_transitions[]? | select(.stage == "integration")] | length | if . > 0 then . - 1 else 0 end' \
+    "$run_json" 2>/dev/null)" ||
+    indeterminate malformed-data "run.json's stage_transitions could not be read for the remediation-loop count"
+[ "$remediation_loops" -le "$remediation_cap" ] ||
+    fail_condition remediation-capped "the record shows $remediation_loops integration -> implement -> integration remediation loop(s), exceeding --remediation-cap $remediation_cap — escalate rather than promote (harmon-devkit#685)"
+# The LOWER bound, and the complement of the ceiling above. A code-changing
+# disposition (fix/restructure/delete) means code changed during integration,
+# and integration's ONLY outgoing edge is implement (run.schema.json's
+# ALLOWED_EDGES, with no self-loop and no repeated consecutive stage) — so
+# such a disposition cannot exist without the record showing at least one
+# integration -> implement -> integration re-entry. Zero loops alongside one
+# is an inconsistent record that would promote having spent no remediation
+# round at all, which at --remediation-cap 0 is the whole budget.
+#
+# Deliberately "at least one", NOT "at least the round the finding came
+# from". Integrate cycle 2 asked for the stronger, round-indexed form and
+# cycle 3 showed it unsound: a finding id's round segment is its pass's
+# `integration_round`, and that schema field counts PASSES, not rounds
+# ("integration_round counts passes, cycle counts Codex cycles"). Waiting
+# and re-dispatching advance it while spending no remediation round, so a
+# finding first raised by pass 2 and fixed by the first fix push has one
+# legitimate loop and a round-indexed bound would reject it forever. The
+# residual it was reaching for — one recorded loop covering several later
+# code-changing cycles — needs per-finding loop attribution the record does
+# not carry, and is filed rather than approximated (see the follow-up).
+#
+# Distinct from the at-cap branch challenge round 2 deleted: that one refused
+# a pass AT the ceiling for echoing the very fix that caused its own final
+# loop. This refuses a record claiming a code change with no loop recorded
+# anywhere, which no legitimate trajectory produces.
+if [ "$remediation_loops" -eq 0 ]; then
+    code_changing="$(jq -r '[.[] | select(.disposition == "fix" or .disposition == "restructure" or .disposition == "delete") | .finding_id] | join(", ")' \
+        <<<"$applied_dispositions" 2>/dev/null)" ||
+        indeterminate malformed-data "applied_dispositions could not be read for the remediation-loop lower bound"
+    [ -z "$code_changing" ] ||
+        fail_condition remediation-capped "the gated pass applies code-changing disposition(s) ($code_changing) but the record shows no integration -> implement -> integration remediation loop at all — a code change during integration always records one (harmon-devkit#685)"
+fi
+
+# 9e. Every adjudicated round has its own issue evidence comment
+# (harmon-devkit#685: "every adjudicated round has a matching issue evidence
+# marker (destination: issue, same stage/round); a `pr`-destination marker
+# does not substitute"). validate-result-schemas.mjs enforces the same rule
+# over a run record, but its missing-marker half deliberately waits for
+# `outcome: ready-for-review` — a run adjudicates a round and THEN publishes
+# its evidence, so an unconditional document check would fault the normal
+# in-flight sequence. That relaxation leaves the invariant unenforced at
+# exactly the moment it matters most, since promotion is what makes the
+# record the durable artifact a harvester reads back. Challenge round 3,
+# confirmed: gating promotion is the missing half, not a duplicate of it.
+#
+# Read from the record the gate already holds: each adjudication document's
+# (stage, round) against run.json's own evidence_comments[]. A marker with
+# round: null is a per-stage rollup and satisfies nothing here; a `pr`
+# marker naming the round is called out separately, because the schema has
+# the rollup link BACK to the per-round issue comments and so posted after
+# them.
+for evidence_adj in "$record_dir"/adjudications/*.json; do
+    [ -f "$evidence_adj" ] || continue
+    evidence_pair="$(jq -r '[.stage, .round] | @tsv' "$evidence_adj" 2>/dev/null)" || continue
+    evidence_stage="${evidence_pair%%	*}"
+    evidence_round="${evidence_pair##*	}"
+    [ -n "$evidence_stage" ] && [ -n "$evidence_round" ] &&
+        [ "$evidence_stage" != null ] && [ "$evidence_round" != null ] || continue
+    evidence_destinations="$(jq -r --arg stage "$evidence_stage" --argjson round "$evidence_round" \
+        --arg run_id "$active_run_id" \
+        '[.evidence_comments[]?.marker
+          | select(.run_id == $run_id and .stage == $stage and .round == $round)
+          | .destination] | unique | join(",")' \
+        "$run_json" 2>/dev/null)" ||
+        indeterminate malformed-data "run.json's evidence_comments could not be read"
+    case ",${evidence_destinations}," in
+    *,issue,*) ;;
+    *,pr,*)
+        fail_condition evidence-marker-missing "$evidence_stage round $evidence_round is adjudicated but its only evidence marker has destination \"pr\" — the per-round record belongs on the issue, and a pr comment never substitutes for it (harmon-devkit#685)"
+        ;;
+    *)
+        fail_condition evidence-marker-missing "$evidence_stage round $evidence_round is adjudicated but no evidence marker with destination \"issue\" records it — post its round evidence before promoting (harmon-devkit#685)"
+        ;;
+    esac
+done
+
+# Authenticity backstop, deliberately AFTER the per-round conditions above so
+# the specific, actionable one reports first. The flat evidence_comments[]
+# projection is not self-authenticating: it is derived from the append-only
+# evidence_registrations[] chain, and render-dev-flow's readiness-input
+# validates structure only — so a record can carry an out-of-band marker with
+# the right stage/round/destination that the chain never registered, or a
+# settlement the adjudications do not support. The record's own SEMANTIC
+# validation recomputes the chain digests (checkRunChainIntegrity), binds every
+# marker's run_id (checkEvidenceMarkerRunId), and re-applies the
+# adjudication/marker rule for an ended run. Codex cloud-review cycle 1 on
+# PR #800, confirmed.
+evidence_validate_args=()
+for evidence_adj in "$record_dir"/adjudications/*.json; do
+    [ -f "$evidence_adj" ] || continue
+    evidence_validate_args+=(--adjudication "$evidence_adj")
+done
+[ "${#evidence_validate_args[@]}" -gt 0 ] || evidence_validate_args=(--no-adjudications)
+if ! record_semantic_err="$(node "$validate_result_schemas" run "$run_json" \
+    "${evidence_validate_args[@]}" 2>&1 >/dev/null)"; then
+    indeterminate malformed-data "run.json fails its own semantic validation against the record's adjudication set — its evidence chain, markers, or settlements cannot be trusted: $(printf '%s' "$record_semantic_err" | head -1)"
+fi
 
 # 10. Freeze the evaluated fingerprint, then re-fetch every surface FRESH
 # and require equality before any pass. The evaluated fingerprint hashes the

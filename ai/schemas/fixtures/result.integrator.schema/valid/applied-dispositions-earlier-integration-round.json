@@ -1,0 +1,65 @@
+{
+  "schema": 2,
+  "role": "integrator",
+  "status": "completed",
+  "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
+  "produced_at": "2026-08-29T18:00:00Z",
+  "producer": {
+    "harness": "claude-code",
+    "model": "claude-sonnet-5",
+    "tier": "standard"
+  },
+  "run": {
+    "run_id": "run-6851-applied-disposition-earlier-round",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "checks": [
+      {
+        "name": "ci/build",
+        "bucket": "pass",
+        "run_id": "1001",
+        "required": true
+      },
+      {
+        "name": "ci/test",
+        "bucket": "pass",
+        "run_id": "1002",
+        "required": true
+      },
+      {
+        "name": "ci/optional-lint",
+        "bucket": "skipping",
+        "run_id": "1006",
+        "required": false
+      }
+    ],
+    "codex_cycle": {
+      "head": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae",
+      "cycle": 2,
+      "attempt": 1,
+      "trigger_comment_id": "555000111",
+      "exit_code": 0,
+      "accepted": {
+        "surface": "review",
+        "id": "777888",
+        "reviewed_commit": "916dffcd5dc9abf53dc2082ecd8e4dcbe71359ae"
+      }
+    },
+    "integration_round": 3,
+    "findings": [],
+    "unanswered_thread_roots": [],
+    "settled_at": "2026-08-29T18:00:00Z",
+    "verdict": "clean",
+    "applied_dispositions": [
+      {
+        "finding_id": "integration-r1-codex-cli-1",
+        "disposition": "decline"
+      },
+      {
+        "finding_id": "challenge-r9-codex-cli-1",
+        "disposition": "file"
+      }
+    ]
+  }
+}
