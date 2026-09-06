@@ -78,10 +78,10 @@ function indeterminate(args, reason) {
 // to know or assume which role produced a given pass.
 const PASS_VALIDATION_KIND = "envelope";
 
-// The two confidence stages, named once. Both cross-stage trajectory rules
-// below — the orphan-adjudication scan and its mirror, the adjudication
-// coverage scan — must range over exactly the same set, and two separate
-// literals would let them drift apart silently.
+// The two confidence stages, named once, for the cross-stage trajectory rules
+// below (the cap-integrity scans and the orphan-adjudication scan) so they
+// cannot drift apart. The adjudication COVERAGE scan is deliberately not among
+// them — see the note at `missingAdjudication`.
 const CONFIDENCE_STAGES = ["challenge", "review"];
 
 class ExitIndeterminate extends Error {}
@@ -1740,48 +1740,31 @@ async function main() {
   // for it (exit-computation spec: "every retained pass to have exactly
   // one adjudication document").
   //
-  // Cross-stage, and for the same reason its mirror above is (integrate
-  // cycle 7 on PR #800, confirmed and reproduced): making only the
-  // adjudication -> pass direction scan every stage left the two halves of
-  // one invariant with different scopes, which reads as symmetric while
-  // being nothing of the kind. A completed, schema-valid challenge pass
-  // carrying no adjudication document at all still let review converge and
-  // return action "advance".
+  // This direction stays scoped to the stage under computation, deliberately.
+  // Integrate cycle 7 asked for it to be cross-stage like its mirror above,
+  // and cycle 9 then proved that widening unsound as built: `validAdjudications`
+  // passes OTHER-stage adjudications through unvalidated (see its construction
+  // above — only `args.stage` documents get the run_id and schema checks), which
+  // is harmless for the orphan scan that reads just `.stage` and `.round`, but
+  // not for a coverage scan, where an invalid or foreign-run document does not
+  // merely fail to be an orphan — it actively SATISFIES `hasAdjudication`. A
+  // foreign `run_id` on a challenge adjudication converged and returned
+  // `action: "advance"` with zero diagnostics (integrate cycle 9 on PR #800,
+  // confirmed and reproduced), which is a regression on exactly the kind of
+  // trajectory-integrity property harmon-devkit#685 exists to enforce.
   //
-  // `rounds` itself stays scoped to args.stage — it feeds round counting,
-  // contiguity and the verdict, all of which are per-stage by definition —
-  // so the other confidence stage is assembled separately for coverage
-  // only, and the gap is reported keyed "<stage>:<round>" exactly as the
-  // orphan direction is.
-  const coverageGaps = [];
-  try {
-    for (const coverageStage of CONFIDENCE_STAGES) {
-      // A stage with no resolved [stage.*] configuration cannot be
-      // assembled (assembleLogicalRounds derives its expected slot set from
-      // resolvedStage.finders); skipping it preserves the prior behaviour
-      // for that case rather than crashing on an unconfigured stage.
-      if (coverageStage !== args.stage && !resolved.stages[coverageStage]) continue;
-      const stageRounds =
-        coverageStage === args.stage
-          ? rounds
-          : assembleLogicalRounds(coverageStage, validPasses, validAdjudications, resolved.stages[coverageStage], runDir.runRecord);
-      for (const r of stageRounds) {
-        if (r.status === "complete" && (!r.hasAdjudication || r.findings.some((f) => f.adjudicated_priority === null))) {
-          coverageGaps.push(`${coverageStage}:${r.round}`);
-        }
-      }
-    }
-  } catch (err) {
-    if (err instanceof ExitIndeterminate) {
-      return indeterminate(args, err.message);
-    }
-    throw err;
-  }
-  if (coverageGaps.length > 0 && !args["verification-only"]) {
-    return indeterminate(
-      args,
-      `a completed round has no adjudication document, or a finding in it has no matching adjudication entry (${coverageGaps.join(", ")})`,
-    );
+  // Reverted rather than hardened in place: doing it correctly means validating
+  // every confidence stage's adjudications before this scan, which is the same
+  // work as making BOTH directions cross-stage over validated inputs, and that
+  // belongs in one change with its own review rather than bolted onto this one.
+  // Tracked as harmon-devkit#824; until it lands, the asymmetry is the safe
+  // state — an unenforced invariant is weaker than this file should be, but
+  // an invariant an invalid document can satisfy is worse than not checking.
+  const missingAdjudication = rounds.some(
+    (r) => r.status === "complete" && (!r.hasAdjudication || r.findings.some((f) => f.adjudicated_priority === null)),
+  );
+  if (missingAdjudication && !args["verification-only"]) {
+    return indeterminate(args, "a completed round has no adjudication document, or a finding in it has no matching adjudication entry");
   }
 
   // --current-head must be an INDEPENDENTLY captured value (the caller's own
