@@ -413,6 +413,24 @@ BODY
 expect_flagged "\`return 0\` in a comment does not satisfy the reporter check" \
     "$(fixture test-prose-return.sh "$body")" 'no `return 0`'
 
+cat >"$body" <<'BODY'
+printf '%s\n' "$x" | grep -q y
+BODY
+mv "$TMPROOT/eq-probe.sh" "$TMPROOT/eq-probe.sh" 2>/dev/null || true
+fixture 'x=y.sh' "$body" >/dev/null
+expect_flagged "a file whose name looks like an awk variable assignment is still read" \
+    "$TMPROOT/x=y.sh" 'grep -q'
+
+cat >"$body" <<'BODY'
+printf '%s\n' "$x" | grep -q y
+BODY
+{
+    echo '# shell-robustness: exempt-file — declared on the very first line'
+    cat "$body"
+} >"$TMPROOT/first-line-exempt.sh"
+expect_clean "an exempt-file declaration on line 1 is honoured" \
+    "$TMPROOT/first-line-exempt.sh"
+
 echo "==> the guard reads what it is asked to read"
 
 if out="$("$GUARD" "$TMPROOT/definitely-absent.sh" 2>&1)"; then

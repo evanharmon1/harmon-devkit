@@ -56,6 +56,25 @@
 # positives are loud and cost a reviewer one annotation. False negatives were
 # invisible and cost four review rounds.
 #
+# TWO KNOWN LIMITATIONS, both accepted deliberately. Closing either needs the
+# parsing this guard exists to avoid, and each fails in a bounded way:
+#
+#   * A here-doc fixture containing a well-formed `begin-exempt` … `end-exempt`
+#     pair exempts the real code between those fixtures. Telling a marker in
+#     fixture text from a marker in code needs here-doc tracking — the lexer
+#     that produced a bypass in every review round. Mitigations: `exempt-file`,
+#     which disables a WHOLE file, is restricted to the file header where
+#     fixture text cannot reach; both markers must carry a reason; and an
+#     unclosed block is itself reported.
+#
+#   * The reporter check asks whether an executable `return 0` is PRESENT in
+#     the block, so one inside an `if` satisfies it even though the ordinary
+#     path may still end on a failing `echo`. Answering "does every path end
+#     safely" is body and path analysis, which was deleted from this guard
+#     after producing a finding in every round. The `return 0` sweep in the
+#     change that introduced this guard already removed the defect tree-wide;
+#     this check exists to stop it returning in the obvious form.
+#
 # Scope: every tracked *.sh / *.bash except snippets/ — the same set
 # scripts/shell-quality.sh lints. The reporter check additionally applies only
 # to test-*.sh suites.
@@ -124,6 +143,12 @@ for f in "${files[@]}"; do
     }
 
     # Exemption markers. Each needs a reason; a bare marker is itself reported.
+    # Header state, updated BEFORE the exemption rules below. Computing it
+    # after them rejected a declaration on line 1 of a sourced fragment, and
+    # then advised moving it above the first line of code — where it already was.
+    { if (FNR == 1) in_header = 1
+      if (in_header && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ && $0 !~ /^#!/) in_header = 0 }
+
     # A file-level exemption is only honoured in the file HEADER — the comment
     # block before the first line of code. Otherwise a here-doc fixture that
     # merely CONTAINS a well-formed marker would switch the gate off for the
@@ -152,8 +177,6 @@ for f in "${files[@]}"; do
 
     {
         # The header is the leading run of blank, shebang and comment lines.
-        if (in_header == 0 && FNR == 1) in_header = 1
-        if (in_header && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/) in_header = 0
 
         line = $0
         inline_ok = 0
@@ -207,7 +230,7 @@ for f in "${files[@]}"; do
     END {
         if (block) printf "%s:%d: `begin-exempt` is never closed — everything after it would be silently exempt\n", FILE, block_line
     }
-    ' "$f"
+    ' <"$f"
 done >>"$findings"
 
 # ── reporter helpers (test suites only) ─────────────────────────────────────
@@ -216,14 +239,17 @@ for f in "${files[@]}"; do
     */test-*.sh | test-*.sh) ;;
     *) continue ;;
     esac
+    # The file arrives on STDIN, never as an awk operand: awk reads an operand
+    # matching `name=value` as a variable assignment, so a tracked file legally
+    # named `x=y.sh` would be silently skipped while the guard reported clean.
     awk -v FILE="$f" '
     function reason_ok(s,   t) {
         t = s
         if (!sub(/^.*shell-robustness:[[:space:]]*(ok|begin-exempt|exempt-file)[[:space:]]*/, "", t)) return 0
         return (t ~ /^(—|--)[[:space:]]*[^[:space:]]/)
     }
-    FNR == 1 { in_header = 1 }
-    in_header && /[^[:space:]]/ && !/^[[:space:]]*#/ { in_header = 0 }
+    { if (FNR == 1) in_header = 1
+      if (in_header && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ && $0 !~ /^#!/) in_header = 0 }
     /shell-robustness:[[:space:]]*exempt-file/ { if (in_header && reason_ok($0)) exempt_file = 1; next }
     /shell-robustness:[[:space:]]*begin-exempt/ { if (reason_ok($0)) block = 1; next }
     /shell-robustness:[[:space:]]*end-exempt/ { block = 0; next }
@@ -265,7 +291,7 @@ for f in "${files[@]}"; do
             printf "%s:%d: reporter `%s()` — no `return 0` in its block, so its own status is read as the assertion s. Add `return 0`, or annotate it if it always exits.\n", FILE, open, name
         next
     }
-    ' "$f"
+    ' <"$f"
 done >>"$findings"
 
 if [ -s "$findings" ]; then
