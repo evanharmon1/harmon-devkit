@@ -88,9 +88,19 @@ else
     #
     # NUL-delimited: a tracked filename may legally contain a newline, and
     # splitting one into nonexistent pieces would silently shrink the scan.
+    # Captured, not process-substituted: `< <(git …)` discards git's exit
+    # status, so a partial index read would silently shrink the scan and the
+    # guard would call the remainder clean. That is this PR's own defect class.
+    _list="$(mktemp)"
+    if ! git ls-files -z -- '*.sh' '*.bash' ':(exclude)snippets/**' >"$_list"; then
+        rm -f "$_list"
+        echo "lint-shell-robustness: could not enumerate tracked shell files" >&2
+        exit 1
+    fi
     while IFS= read -r -d '' f; do
         files+=("$f")
-    done < <(git ls-files -z -- '*.sh' '*.bash' ':(exclude)snippets/**')
+    done <"$_list"
+    rm -f "$_list"
 fi
 
 [ ${#files[@]} -gt 0 ] || {
@@ -114,8 +124,19 @@ for f in "${files[@]}"; do
     }
 
     # Exemption markers. Each needs a reason; a bare marker is itself reported.
+    # A file-level exemption is only honoured in the file HEADER — the comment
+    # block before the first line of code. Otherwise a here-doc fixture that
+    # merely CONTAINS a well-formed marker would switch the gate off for the
+    # rest of the file, and this scanner reads here-doc text on purpose.
     /shell-robustness:[[:space:]]*exempt-file/ {
-        if (reason_ok($0)) { exempt_file = 1 } else { printf "%s:%d: `exempt-file` marker with no reason after the dash\n", FILE, FNR }
+        if (!in_header) {
+            # Not a live claim inside an already-exempt region: there it is
+            # fixture text, which is exactly what this rule exists to ignore.
+            if (!exempt_file && !block)
+                printf "%s:%d: `exempt-file` outside the file header is ignored — move it above the first line of code\n", FILE, FNR
+        }
+        else if (reason_ok($0)) exempt_file = 1
+        else printf "%s:%d: `exempt-file` marker with no reason after the dash\n", FILE, FNR
         next
     }
     /shell-robustness:[[:space:]]*begin-exempt/ {
@@ -130,6 +151,10 @@ for f in "${files[@]}"; do
     }
 
     {
+        # The header is the leading run of blank, shebang and comment lines.
+        if (in_header == 0 && FNR == 1) in_header = 1
+        if (in_header && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/) in_header = 0
+
         line = $0
         inline_ok = 0
         if (line ~ /shell-robustness:[[:space:]]*ok/) {
@@ -142,19 +167,19 @@ for f in "${files[@]}"; do
         skip = (exempt_file || block || inline_ok)
 
         # R1 — a pipe feeding a grep that carries a quiet flag.
-        if (!skip && line ~ /(^|[^|])\|[[:space:]]*grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+        if (!skip && line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: `| grep -q` — grep exits on match, SIGPIPEs the producer, and `pipefail` turns a MATCH into a failure\n", FILE, FNR
         # R2 — a pipe feeding a grep whose options continue on the next line.
-        else if (!skip && line ~ /(^|[^|])\|[[:space:]]*grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]*\\[[:space:]]*$/)
+        else if (!skip && line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]*\\[[:space:]]*$/)
             printf "%s:%d: `| grep \\` — options continue on the next line; a quiet flag here would be the SIGPIPE shape\n", FILE, FNR
         # R3a — the previous line ends with a SINGLE pipe (not `||`, which is
         # an or-list, and not `\`, which continues an argument list) and this
         # line leads with a quiet grep.
         else if (!skip && prev ~ /(^|[^|])\|[[:space:]]*$/ &&
-                 line ~ /^[[:space:]]*grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+                 line ~ /^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: continued `| grep -q` pipeline — same SIGPIPE shape, split across lines\n", FILE, FNR
         # R3b — this line itself leads with the pipe (`producer \` then `| grep -q`).
-        else if (!skip && line ~ /^[[:space:]]*\|[[:space:]]*grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+        else if (!skip && line ~ /^[[:space:]]*\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: continued `| grep -q` pipeline — same SIGPIPE shape, split across lines\n", FILE, FNR
         # R3c — BOTH continuations at once: `producer |`, then `grep \`, then
         # `-q pattern` on a third line. R3a wants the flag on the grep line and
@@ -168,8 +193,8 @@ for f in "${files[@]}"; do
         # keeps, and it tracks a formatting fact rather than shell grammar.
         if (line ~ /\\[[:space:]]*$/ &&
             (grep_cont ||
-             (prev ~ /(^|[^|])\|[[:space:]]*$/ && line ~ /^[[:space:]]*\|?[[:space:]]*grep([[:space:]]|$)/) ||
-             line ~ /(^|[^|])\|[[:space:]]*grep([[:space:]]|$)/))
+             (prev ~ /(^|[^|])\|[[:space:]]*$/ && line ~ /^[[:space:]]*\|?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+)?grep([[:space:]]|$)/) ||
+             line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+)?grep([[:space:]]|$)/))
             grep_cont = 1
         else
             grep_cont = 0
@@ -197,7 +222,9 @@ for f in "${files[@]}"; do
         if (!sub(/^.*shell-robustness:[[:space:]]*(ok|begin-exempt|exempt-file)[[:space:]]*/, "", t)) return 0
         return (t ~ /^(—|--)[[:space:]]*[^[:space:]]/)
     }
-    /shell-robustness:[[:space:]]*exempt-file/ { if (reason_ok($0)) exempt_file = 1; next }
+    FNR == 1 { in_header = 1 }
+    in_header && /[^[:space:]]/ && !/^[[:space:]]*#/ { in_header = 0 }
+    /shell-robustness:[[:space:]]*exempt-file/ { if (in_header && reason_ok($0)) exempt_file = 1; next }
     /shell-robustness:[[:space:]]*begin-exempt/ { if (reason_ok($0)) block = 1; next }
     /shell-robustness:[[:space:]]*end-exempt/ { block = 0; next }
     exempt_file || block { next }
@@ -222,10 +249,15 @@ for f in "${files[@]}"; do
         sub(/[[:space:]]*\{.*$/, "", name)
         gsub(/[[:space:]]/, "", name)
         open = FNR
-        found = ($0 ~ /return 0/) || ($0 ~ /shell-robustness:[[:space:]]*ok/ && reason_ok($0))
+        # `return 0` must be a STATEMENT, not any textual occurrence: a
+        # `# TODO: add return 0` comment used to satisfy this check while the
+        # reporter still ended on a failing `echo`.
+        found = ($0 ~ /(^|;)[[:space:]]*return 0[[:space:]]*;?[[:space:]]*(\}[[:space:]]*)?$/) ||
+            ($0 ~ /shell-robustness:[[:space:]]*ok/ && reason_ok($0))
         while (!found && (getline nxt) > 0) {
             if (nxt ~ /shell-robustness:[[:space:]]*ok/ && reason_ok(nxt)) { found = 1; break }
-            if (nxt ~ /return 0/) { found = 1; break }
+            if (nxt !~ /^[[:space:]]*#/ &&
+                nxt ~ /(^|;)[[:space:]]*return 0[[:space:]]*;?[[:space:]]*(\}[[:space:]]*)?$/) { found = 1; break }
             if (nxt ~ /^\}/) break
             if (nxt ~ /^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)/) break
         }

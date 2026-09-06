@@ -385,6 +385,34 @@ BODY
 expect_flagged "a standalone } inside a generated fixture no longer ends the block early" \
     "$(fixture test-nested-brace.sh "$body")" 'no `return 0`'
 
+# Codex cloud review on the draft PR: four more ways past the gate.
+
+cat >"$body" <<'BODY'
+printf '%s\n' "$x" | LC_ALL=C grep -q needle
+printf '%s\n' "$x" | command grep -q needle
+BODY
+expect_flagged "a quiet grep behind an env assignment or \`command\`" \
+    "$(fixture prefixed-grep.sh "$body")" 'grep -q'
+
+cat >"$body" <<'BODY'
+cat <<EOF
+# shell-robustness: exempt-file — fixture text that only LOOKS like a marker
+EOF
+printf '%s\n' "$y" | grep -q boom
+BODY
+expect_flagged "an exempt-file marker in fixture text cannot switch the gate off" \
+    "$(fixture fake-exempt.sh "$body")" 'grep -q'
+
+cat >"$body" <<'BODY'
+ok() {
+    pass=$((pass + 1))
+    # TODO: add return 0
+    echo "  ok $*"
+}
+BODY
+expect_flagged "\`return 0\` in a comment does not satisfy the reporter check" \
+    "$(fixture test-prose-return.sh "$body")" 'no `return 0`'
+
 echo "==> the guard reads what it is asked to read"
 
 if out="$("$GUARD" "$TMPROOT/definitely-absent.sh" 2>&1)"; then
