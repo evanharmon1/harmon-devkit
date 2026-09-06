@@ -43,20 +43,20 @@ for text in 'split the mechanism out' 'verdict.split_candidate' \
     grep -Fq "$text" "$skill" || fail "review skill is missing the split strategy: $text"
 done
 integrate_skill="ai/skills/universal/integrate/SKILL.md"
-for text in 'order more rounds' 'accept
-as spent' 'split the mechanism out' \
-    'which rounds introduced the mechanism' 'which findings live in it' \
-    'filed on the current milestone by the agent that' 'never left to memory' \
-    'disposition: split' 'run.json.splits'; do
+# What integration owns of the split: the filing obligation, and the rule that
+# splitting is not an integration move. What a blocked stop OFFERS a
+# maintainer, and how it renders, is #813's — deliberately not asserted here.
+for text in 'filed on the current milestone by the agent that' \
+    'never left to memory'; do
     grep -Fq "$text" "$integrate_skill" ||
-        fail "integrate skill is missing the split strategy: $text"
+        fail "integrate skill is missing the split filing obligation: $text"
 done
-grep -Fq 'The report names three options, never two' "$integrate_skill" ||
-    fail "integrate skill's blocker report does not require all three options"
-# The rendering is split out to #813; neither skill may point an integration
-# stop at blocker-comment until it stops borrowing a confidence-stage verdict.
-grep -Fq 'do **not** use `render-dev-flow.sh blocker-comment` for an integration' "$integrate_skill" ||
+# The rendering is split out to #813; the skill must still warn an integration
+# stop off blocker-comment, which borrows a confidence-stage verdict.
+grep -Fq 'Do not use `render-dev-flow.sh blocker-comment` for an integration stop' "$integrate_skill" ||
     fail "integrate skill does not warn off the untrustworthy integration blocker rendering"
+grep -Fq 'Splitting is not an integration move' "$integrate_skill" ||
+    fail "integrate skill does not state that splitting is not an integration move"
 # A split is recorded in two documents that are cross-checked only when the run
 # record is validated WITH its adjudications, and nothing else in the stage
 # does that (the readiness gate calls the renderer, which does not read
@@ -64,8 +64,6 @@ grep -Fq 'do **not** use `render-dev-flow.sh blocker-comment` for an integration
 # only.
 grep -Fq 'scripts/validate-result-schemas.mjs run <run.json> --adjudication' "$integrate_skill" ||
     fail "integrate skill does not validate the split's cross-document state"
-grep -Fq 'invalid at stage `integration`' "$integrate_skill" ||
-    fail "integrate skill does not state that a split is a confidence-stage disposition"
 
 grep -Fq 'display login is non-authoritative metadata' "$skill" ||
     fail "review skill treats mutable display login as evidence identity"

@@ -1424,19 +1424,12 @@ unresolved and why (including
 findings you dispute, with evidence), and what you recommend. Then end — do
 not keep iterating past a stop condition.
 
-**The report names three options, never two.** A maintainer reading a
-cap-reached or no-progress stop has three answers, and a report that offers
-only the first two makes the third invisible: **order more rounds**, **accept
-as spent**, or **split the mechanism out** — the last when the rounds' findings
-have concentrated in one mechanism, most sharply one an earlier round of this
-same PR added. Its evidence is **which rounds introduced the mechanism**, and
-**which findings live in it** — state it from the round summaries. Rendering it from
-`verdict.split_candidate` is
-[#813](https://github.com/evanharmon1/harmon-devkit/issues/813) — until that
-lands, do **not** use `render-dev-flow.sh blocker-comment` for an integration
-stop: integration writes no verdict of its own, so the projection would report
-the last confidence stage's spent count and mechanism as if they were
-integration's.
+**Do not use `render-dev-flow.sh blocker-comment` for an integration stop.**
+Integration writes no verdict of its own, so the projection would report the
+last confidence stage's spent count and mechanism as if they were
+integration's. Write the summary yourself. What a blocked stop should offer a
+maintainer, and how it is rendered, is
+[#813](https://github.com/evanharmon1/harmon-devkit/issues/813).
 
 **A split-off mechanism is filed on the current milestone by the agent that
 splits it, at the moment it splits it — never left to memory and never left
@@ -1447,11 +1440,9 @@ files nothing is not a split; it is the finding restated.
 
 **The record is the confidence stage's to write, not this one's.**
 `disposition: split` is invalid at stage `integration` and the schema rejects
-it, so do not write one here: the exit computation produces `split_candidate`
-for `challenge` and `review` only, and a split adjudicated at integration
-would have no signal behind it. An integration finding that looks like a split
-candidate is a finding to carry into the next confidence stage, where the
-disposition and the `run.json.splits` entry are recorded together.
+it: the exit computation produces `split_candidate` for `challenge` and
+`review` only, so a split adjudicated here would have no signal behind it.
+Splitting is not an integration move.
 
 **Then validate the pair.** The two documents are cross-checked only when the
 run record is validated *with* its adjudications, and nothing else in this

@@ -290,7 +290,9 @@ Every result is an **envelope** wrapping a per-role payload
   thread roots, `settled_at`, `applied_dispositions`.
 - The **adjudication record** is a separate, orchestrator-authored document
   keyed by finding id: adjudicated priority and final disposition
-  (`fix | restructure | delete | decline | defer | file`). `defer` is the
+  (`fix | restructure | delete | decline | defer | file | split`, the last a
+  confidence-stage disposition only — see "The split strategy" below).
+  `defer` is the
   disposition while a finding is carried to the integration stage; there it
   is settled to `fix`, `decline`, or `file` (a follow-up issue) — the three
   terminal answers the readiness gate accepts. The settlement is **appended,
