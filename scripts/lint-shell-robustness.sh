@@ -142,19 +142,19 @@ for f in "${files[@]}"; do
         skip = (exempt_file || block || inline_ok)
 
         # R1 — a pipe feeding a grep that carries a quiet flag.
-        if (!skip && line ~ /(^|[^|])\|[[:space:]]*grep([[:space:]]+-[^[:space:]|]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+        if (!skip && line ~ /(^|[^|])\|[[:space:]]*grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: `| grep -q` — grep exits on match, SIGPIPEs the producer, and `pipefail` turns a MATCH into a failure\n", FILE, FNR
         # R2 — a pipe feeding a grep whose options continue on the next line.
-        else if (!skip && line ~ /(^|[^|])\|[[:space:]]*grep([[:space:]]+-[^[:space:]|]+)*[[:space:]]*\\[[:space:]]*$/)
+        else if (!skip && line ~ /(^|[^|])\|[[:space:]]*grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]*\\[[:space:]]*$/)
             printf "%s:%d: `| grep \\` — options continue on the next line; a quiet flag here would be the SIGPIPE shape\n", FILE, FNR
         # R3a — the previous line ends with a SINGLE pipe (not `||`, which is
         # an or-list, and not `\`, which continues an argument list) and this
         # line leads with a quiet grep.
         else if (!skip && prev ~ /(^|[^|])\|[[:space:]]*$/ &&
-                 line ~ /^[[:space:]]*grep([[:space:]]+-[^[:space:]|]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+                 line ~ /^[[:space:]]*grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: continued `| grep -q` pipeline — same SIGPIPE shape, split across lines\n", FILE, FNR
         # R3b — this line itself leads with the pipe (`producer \` then `| grep -q`).
-        else if (!skip && line ~ /^[[:space:]]*\|[[:space:]]*grep([[:space:]]+-[^[:space:]|]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+        else if (!skip && line ~ /^[[:space:]]*\|[[:space:]]*grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: continued `| grep -q` pipeline — same SIGPIPE shape, split across lines\n", FILE, FNR
 
         prev = $0
@@ -202,9 +202,8 @@ for f in "${files[@]}"; do
         inner = $0
         sub(/^[^{]*\{/, "", inner)
         sub(/\}[[:space:]]*$/, "", inner)
-        if (inner !~ /(^|[[:space:];&|(])exit([[:space:]]|$)/ &&
-            !($0 ~ /shell-robustness:[[:space:]]*ok/ && reason_ok($0)) &&
-            inner !~ /;[[:space:]]*return 0[[:space:]]*;?[[:space:]]*$/)
+        if (!($0 ~ /shell-robustness:[[:space:]]*ok/ && reason_ok($0)) &&
+            inner !~ /(^|;)[[:space:]]*(return 0|exit([[:space:]]+[0-9]+)?)[[:space:]]*;?[[:space:]]*$/)
             printf "%s:%d: reporter `%s()` must end with `return 0` — otherwise its own status is read as the assertion s\n", FILE, FNR, name
         next
     }
@@ -217,18 +216,19 @@ for f in "${files[@]}"; do
         sub(/[[:space:]]*\(\).*$/, "", name)
         sub(/[[:space:]]*\{.*$/, "", name)
         gsub(/[[:space:]]/, "", name)
-        open = FNR; fname = name; last = ""; exits = 0; ann = 0
-        for (i = FNR; i <= FNR + 60; i++) {
-            if ((getline nxt) <= 0) break
+        open = FNR; fname = name; last = ""; ann = 0; closed = 0
+        while ((getline nxt) > 0) {
             if (nxt ~ /shell-robustness:[[:space:]]*ok/ && reason_ok(nxt)) ann = 1
-            if (nxt ~ /(^|[[:space:];&|(])exit([[:space:]]|$)/) exits = 1
-            if (nxt ~ /^[[:space:]]*\}[[:space:]]*$/) {
-                if (!exits && !ann && last !~ /^[[:space:]]*return 0[[:space:]]*;?[[:space:]]*$/)
-                    printf "%s:%d: reporter `%s()` must end with `return 0` — otherwise its own status is read as the assertion s\n", FILE, open, fname
-                break
-            }
+            if (nxt ~ /^[[:space:]]*\}[[:space:]]*$/) { closed = 1; break }
             if (nxt ~ /[^[:space:]]/ && nxt !~ /^[[:space:]]*#/) last = nxt
         }
+        # `exit` excuses a reporter only when it TERMINATES the body: a
+        # conditional `exit` still leaves an ordinary path whose status is
+        # returned, which is the defect this check exists for.
+        if (!closed)
+            printf "%s:%d: reporter `%s()` — closing brace never found, so the body was not inspected\n", FILE, open, fname
+        else if (!ann && last !~ /^[[:space:]]*(return 0|exit([[:space:]]+[0-9]+)?)[[:space:]]*;?[[:space:]]*$/)
+            printf "%s:%d: reporter `%s()` must end with `return 0` (or `exit`) — otherwise its own status is read as the assertion s\n", FILE, open, fname
         next
     }
     ' "$f"

@@ -312,6 +312,48 @@ BODY
 expect_flagged "an end-exempt with no open block is reported" \
     "$(fixture stray-end.sh "$body")" 'no open'
 
+# Review round 2: three more ways past the scan.
+
+cat >"$body" <<'BODY'
+producer | grep -e needle -q
+BODY
+expect_flagged "an operand between grep and its quiet flag" \
+    "$(fixture operand-before-flag.sh "$body")" 'grep -q'
+
+cat >"$body" <<'BODY'
+[ "$(printf '%s\n' "$OUT" | grep -c '^x$')" -eq 1 ] || exit 1
+[ "$(printf '%s\n' "$x" | grep -cv '^$')" -eq 1 ] || exit 1
+BODY
+expect_clean "the operand scan stops at a command boundary, not at the enclosing test's -eq" \
+    "$(fixture operand-boundary.sh "$body")"
+
+cat >"$body" <<'BODY'
+ok() {
+    pass=$((pass + 1))
+    if fatal; then exit 1; fi
+    echo "  ok $*"
+}
+BODY
+expect_flagged "a CONDITIONAL exit does not excuse a reporter" \
+    "$(fixture test-cond-exit.sh "$body")" 'return 0'
+
+cat >"$body" <<'BODY'
+fail() {
+    echo "TEST FAIL: $*" >&2
+    exit 1
+}
+BODY
+expect_clean "an exit that terminates the body still excuses it" \
+    "$(fixture test-term-exit.sh "$body")"
+
+cat >"$body" <<'BODY'
+ok() {
+    pass=$((pass + 1))
+    echo "  ok $*"
+BODY
+expect_flagged "a reporter whose closing brace is never found is reported, not accepted" \
+    "$(fixture test-unclosed-fn.sh "$body")" 'never found'
+
 echo "==> the guard reads what it is asked to read"
 
 if out="$("$GUARD" "$TMPROOT/definitely-absent.sh" 2>&1)"; then
