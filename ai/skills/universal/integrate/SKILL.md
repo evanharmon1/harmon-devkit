@@ -178,12 +178,26 @@ PR harmon-devkit#758). Materialize the merge-base copies first:
 ```sh
 base="$(git merge-base HEAD "$base_ref")"           # $base_ref from §1
 mb_dir="$(mktemp -d)"
-mkdir -p "$mb_dir/scripts"
+mkdir -p "$mb_dir/scripts/lib"
 git show "${base}:scripts/devflow-policy.mjs" >"$mb_dir/scripts/devflow-policy.mjs"
+git show "${base}:scripts/lib/toml-lite.mjs"  >"$mb_dir/scripts/lib/toml-lite.mjs"
 git show "${base}:.devflow.toml" >"$mb_dir/devflow.toml"
+# Only when the change under review also edits the registry:
+git show "${base}:agent-registry.json" >"$mb_dir/agent-registry.json"
 task devflow:policy -- resolve --closure "$mb_dir" \
-    --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" --json
+    --policy .devflow.toml --merge-base-policy "$mb_dir/devflow.toml" \
+    --merge-base-registry "$mb_dir/agent-registry.json" --json
 ```
+
+**Materialize the reader's whole closure, not just its entrypoint.** The
+reader imports `scripts/lib/toml-lite.mjs`, so extracting the entrypoint alone
+makes the re-exec fail with `ERR_MODULE_NOT_FOUND` before it resolves
+anything — and since this path is now the only one (there is no hand-decoding
+fallback), that failure is a hard stop rather than a degraded mode. A
+registry-touching change needs its merge-base registry supplied the same way,
+through `--merge-base-registry`: the reader deliberately refuses to fall back
+to the branch's own `--registry` when a merge-base policy is in play. If the
+reader grows another dependency, it belongs in this recipe too.
 
 `--closure <dir>` re-execs the trusted `<dir>/scripts/devflow-policy.mjs`
 before this checkout's own (possibly branch-modified) copy runs any of its

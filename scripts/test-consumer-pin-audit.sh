@@ -443,6 +443,13 @@ printf 'schema_version = 2\ndefault_method = "plan"\n[method]\nrank = ["oneshot"
     >"$incoherent_policy/mixed.toml"
 printf '[rigor.standard]\nchallenge = 3\n' >"$incoherent_policy/partial.toml"
 
+# A stamp with no `# managed:` line is deliberately NOT in this table: Codex
+# cloud review confirmed it is the LEGACY stamp generation, which
+# sync-skills.sh's own `managed_names` still honours, so refusing it rejected a
+# valid state. Its behaviour is asserted in the round-1 regression block below.
+# A stamp with no `# ref:` line stays incoherent — sync-skills.sh dies on that
+# one too.
+#
 # name|policy fixture|skill specs|mutation applied to the built consumer
 INCOHERENT_CASES="
 policy-is-mixed|$incoherent_policy/mixed.toml|review:v2 integrate:v2|none
@@ -451,7 +458,6 @@ policy-incomplete-with-v2-skills|$incoherent_policy/partial.toml|review:v2|none
 contract-version-zero|LEGACY|review:v2|zero_contract
 contract-version-noninteger|LEGACY|review:v2|noninteger_contract
 contract-versions-disagree|V2|review:v2 integrate:v3|none
-stamp-has-no-managed-line|LEGACY|review:v2|strip_managed
 stamp-has-no-ref-line|LEGACY|review:v2|strip_ref
 managed-name-has-no-directory|LEGACY|review:v2|drop_dir
 managed-name-has-no-payload|LEGACY|review:v2|drop_skill_md
@@ -464,7 +470,6 @@ apply_mutation() {
     none) ;;
     zero_contract) printf '{"skill":"review","policy_schema_version":0}\n' >"$d/review/assets/policy-contract.json" ;;
     noninteger_contract) printf '{"skill":"review","policy_schema_version":"two"}\n' >"$d/review/assets/policy-contract.json" ;;
-    strip_managed) grep -v '^# managed:' "$d/.SKILLS_PROVENANCE" >"$root/p.tmp" && mv "$root/p.tmp" "$d/.SKILLS_PROVENANCE" ;;
     strip_ref) grep -v '^# ref:' "$d/.SKILLS_PROVENANCE" >"$root/p.tmp" && mv "$root/p.tmp" "$d/.SKILLS_PROVENANCE" ;;
     drop_dir) rm -rf "$d/review" ;;
     drop_skill_md) rm -f "$d/review/SKILL.md" ;;
@@ -505,6 +510,66 @@ expect_status "invariant: a coherent v1 policy still gets a verdict, not exit 2"
 c="$(make_consumer inv-empty-managed "$LEGACY_POLICY" v0.34.1)"
 run_audit "$c"
 expect_status "invariant: an empty '# managed:' line is coherent, not damage" 0
+
+echo
+echo "== consumer-pin-audit: Codex cloud review round 1 regressions =="
+# [P1] Version ordering must not depend on GNU `sort -V` (docs/conventions.md
+# requires macOS bash 3.2 portability). The defect was silent: the pipeline
+# fails, the comparison reads false, and pin lag degrades to a clean exit 0.
+# Exercised by running the audit with a PATH whose `sort` rejects -V, the way
+# BSD sort does.
+bsd_sort_dir="$TMPROOT/bsd-sort-bin"
+mkdir -p "$bsd_sort_dir"
+cat >"$bsd_sort_dir/sort" <<'BSDSORT'
+#!/bin/sh
+for a in "$@"; do
+    case "$a" in
+    -V | --version-sort) echo "sort: illegal option -- V" >&2; exit 2 ;;
+    esac
+done
+exec /usr/bin/sort "$@"
+BSDSORT
+chmod +x "$bsd_sort_dir/sort"
+c="$(make_consumer bsd-sort-pin-lag "$V2_POLICY" v0.39.0 gauntlet:pre shepherd:pre)"
+set +e
+out="$(PATH="$bsd_sort_dir:$PATH" "$AUDIT" --repo-root "$c" 2>&1)"
+status=$?
+set -e
+expect_status "pin lag is still detected where sort(1) has no -V" 3
+expect_says "the no-GNU-sort run still names the boundary" "$V2_BOUNDARY"
+
+# [P1] A PRE-v2 interrupted sync leaves gauntlet/shepherd, which carry no
+# contract; over a MIGRATED policy those cannot be shown local and the pairing
+# is unauditable. Previously this exited 0 as `not-vendored`.
+c="$(make_consumer unstamped-prev2-migrated "$V2_POLICY" v0.39.0 gauntlet:pre shepherd:pre)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "unstamped pre-v2 directories under a migrated policy are indeterminate" 2
+expect_says "the error says they cannot be shown local" "cannot be shown to be local"
+
+# The counterpart: over an UNMIGRATED policy the same directories are the
+# ordinary local-skills case and must stay a clean pass.
+c="$(make_consumer unstamped-prev2-legacy "$LEGACY_POLICY" v0.39.0 gauntlet:pre shepherd:pre)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "unstamped directories under an unmigrated policy stay a clean pass" 0
+
+# [P2] A legacy provenance stamp (no `# managed:` line) is a valid older
+# generation that sync-skills.sh's own managed_names still honours, not damage.
+c="$(make_consumer legacy-stamp "$V2_POLICY" v0.34.1 gauntlet:pre)"
+printf '# ref: v0.34.1 (deadbeef)\n# categories: universal\n' \
+    >"$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "a legacy stamp without '# managed:' is audited, not refused" 3
+expect_says "the legacy-stamp verdict is pin lag from its recorded ref" "advance source.ref"
+
+# [P2] A policy AHEAD of the vendored skills must never be told to migrate
+# down to the skills' version.
+c="$(make_consumer ahead-policy "$TMPROOT/future-policy.toml" v0.41.0 review:v2)"
+run_audit "$c"
+expect_status "a policy ahead of the skills is incompatible" 1
+expect_says "it says the policy is ahead of these skills" "ahead of these skills"
+expect_not_says "it never tells a newer policy to run copier update" "copier update"
 
 echo
 echo "== devflow-policy: an older shape is refused with one actionable message =="

@@ -89,9 +89,36 @@ ref_is_release_tag() {
 
 # ref_predates_v2_skills REF — REF is a release tag strictly older than the
 # boundary above, so nothing it vendored can declare a policy contract.
+#
+# Compared field by field rather than with `sort -V`: that option is GNU-only
+# and docs/conventions.md requires these scripts to stay portable to macOS
+# bash 3.2, where BSD `sort` has no `-V`. Codex cloud review, confirmed: the
+# failure there is silent rather than loud — the pipeline fails, the equality
+# test is simply false, and a migrated policy over genuinely pre-v2 skills
+# falls through to `no-policy-consumer` exit 0 instead of `pin-lag`, which is
+# the exact defect the release boundary was added to fix.
+#
+# (The review suggested reusing a portable comparison from sync-skills.sh;
+# that script only ever compares refs for EQUALITY and has no ordering
+# helper, so this is written here rather than borrowed.)
 ref_predates_v2_skills() {
-    [ "$1" != "$V2_SKILLS_FIRST_RELEASE" ] &&
-        [ "$(printf '%s\n%s\n' "$1" "$V2_SKILLS_FIRST_RELEASE" | sort -V | head -n 1)" = "$1" ]
+    _rp_a="${1#v}"
+    _rp_b="${V2_SKILLS_FIRST_RELEASE#v}"
+    _rp_a1="${_rp_a%%.*}"
+    _rp_b1="${_rp_b%%.*}"
+    _rp_a="${_rp_a#*.}"
+    _rp_b="${_rp_b#*.}"
+    _rp_a2="${_rp_a%%.*}"
+    _rp_b2="${_rp_b%%.*}"
+    _rp_a3="${_rp_a#*.}"
+    _rp_b3="${_rp_b#*.}"
+    if [ "$_rp_a1" -ne "$_rp_b1" ]; then
+        [ "$_rp_a1" -lt "$_rp_b1" ]
+    elif [ "$_rp_a2" -ne "$_rp_b2" ]; then
+        [ "$_rp_a2" -lt "$_rp_b2" ]
+    else
+        [ "$_rp_a3" -lt "$_rp_b3" ]
+    fi
 }
 
 # The schema version the shipped reader can operate under. Used only to warn
@@ -227,6 +254,8 @@ prov="$dest/.SKILLS_PROVENANCE"
 vendored=no
 vendored_ref=""
 managed=""
+legacy_stamp=no
+unstamped_any=""
 pin_source=manifest
 if [ -f "$prov" ]; then
     vendored=yes
@@ -244,12 +273,25 @@ if [ -f "$prov" ]; then
     # manages nothing, and must stay a valid zero-skill answer.
     grep -q '^# ref:' "$prov" ||
         indeterminate "provenance '$prov' has no '# ref:' line, so the vendored pin is unknown; re-run 'task sync:skills'"
-    grep -q '^# managed:' "$prov" ||
-        indeterminate "provenance '$prov' has no '# managed:' line, so the vendored skill set is unknown; re-run 'task sync:skills'"
+    # A stamp with NO `# managed:` line is the LEGACY generation, not damage:
+    # scripts/sync-skills.sh's own `managed_names` recognizes it and
+    # reconstructs the set from the recorded ref and categories. Codex cloud
+    # review, confirmed: refusing it rejected a state the synchronizer still
+    # considers valid, for a consumer deliberately holding a pre-v2 pin.
+    #
+    # The audit cannot reconstruct that set offline (sync-skills clones the
+    # pin to do it), but it does not need to: with no enumerable contracts the
+    # requirement is zero, and the release boundary below decides the verdict
+    # from the recorded `# ref:` alone — which is the right answer for a stamp
+    # generation that predates the v2 skills anyway.
+    legacy_stamp=no
+    grep -q '^# managed:' "$prov" || legacy_stamp=yes
     vendored_ref="$(sed -n 's/^# ref:[[:space:]]*//p' "$prov" | head -n 1 | sed 's/[[:space:]]*(.*)$//')"
     [ -n "$vendored_ref" ] ||
         indeterminate "provenance '$prov' has an empty '# ref:' line, so the vendored pin is unknown; re-run 'task sync:skills'"
-    managed="$(sed -n 's/^# managed:[[:space:]]*//p' "$prov" | head -n 1 | tr ',' '\n' | tr -d ' ')"
+    if [ "$legacy_stamp" = no ]; then
+        managed="$(sed -n 's/^# managed:[[:space:]]*//p' "$prov" | head -n 1 | tr ',' '\n' | tr -d ' ')"
+    fi
 else
     # No stamp is NOT proof that nothing was vendored. Challenge round 2,
     # confirmed against sync-skills.sh's own write order: `cmd_sync` does
@@ -270,11 +312,32 @@ else
     # entry is a source checkout rather than an interrupted sync —
     # harmon-devkit's own `.claude/skills/<name>` links into `ai/skills/` and
     # must stay a clean exit 0.
+    # Two signals, because an interrupted sync leaves different traces
+    # depending on WHICH generation was being copied:
+    #
+    #   * a v2 sync leaves contract-carrying directories — provable evidence
+    #     of vendored v2 skills, refused whatever the policy is;
+    #   * a PRE-v2 sync leaves `gauntlet`/`shepherd`, which carry no contract
+    #     and are indistinguishable from local skills by inspection alone.
+    #     Codex cloud review, confirmed: those slipped through and the
+    #     `vendored=no` branch then exited 0 `not-vendored` even against a
+    #     schema-v2 policy — approving exactly the broken pairing this audit
+    #     exists to detect.
+    #
+    # The second signal is therefore qualified by the policy: unstamped skill
+    # directories over a MIGRATED policy cannot be shown safe, so they are
+    # indeterminate. Over an unmigrated policy they are the ordinary
+    # local-skills case (this repository's own `.claude/skills` holds local
+    # `openspec-*` skills beside its symlinks), and stay a clean exit 0.
+    # Symlinks are excluded throughout: `cp -R` produces real directories.
     unstamped=""
+    unstamped_any=""
     if [ -d "$dest" ]; then
         for candidate in "$dest"/*; do
             [ -d "$candidate" ] || continue
             [ -L "$candidate" ] && continue
+            [ -f "$candidate/SKILL.md" ] || continue
+            unstamped_any="$unstamped_any $(basename "$candidate")"
             [ -f "$candidate/assets/policy-contract.json" ] || continue
             unstamped="$unstamped $(basename "$candidate")"
         done
@@ -283,6 +346,8 @@ else
         # shellcheck disable=SC2086 # deliberate word-splitting into a CSV
         indeterminate "'$dest' holds policy-consuming skills ($(printf '%s\n' $unstamped | sort -u | paste -sd, -)) but no '.SKILLS_PROVENANCE' stamp — sync-skills.sh removes the stamp before it copies and rewrites it last, so this is an interrupted sync, not a never-vendored checkout; re-run 'task sync:skills'"
     fi
+    # The policy-qualified half of this test needs the detected shape, which
+    # is resolved further down; it fires there.
     vendored_ref="$manifest_ref"
 fi
 
@@ -367,6 +432,15 @@ fi
 
 # ── verdict ──────────────────────────────────────────────────────────────────
 #
+# The deferred half of the unstamped-tree test (see the provenance block): a
+# migrated policy cannot be audited against skill directories that carry no
+# stamp, because they cannot be shown to be local rather than the residue of a
+# pre-v2 sync interrupted before the stamp was rewritten.
+if [ "$vendored" = no ] && [ -n "$unstamped_any" ] && [ "$policy_version" -gt 0 ]; then
+    # shellcheck disable=SC2086 # deliberate word-splitting into a CSV
+    indeterminate "the policy declares schema_version $policy_version but '$dest' holds skill directories ($(printf '%s\n' $unstamped_any | sort -u | paste -sd, -)) with no '.SKILLS_PROVENANCE' stamp — they cannot be shown to be local rather than a pre-v2 sync interrupted before the stamp was rewritten, so the pin cannot be audited against a migrated policy; re-run 'task sync:skills'"
+fi
+
 # The coherence invariant applied to the policy: a shape the reader cannot
 # classify as exactly one recognized shape has no pin verdict, so it is
 # refused before any comparison. This replaces what were separate `mixed` and
@@ -451,7 +525,16 @@ else
     if [ "$shape" = absent ]; then
         detail="the skills vendored at $vendored_ref require schema_version $required (requiring skills: $requiring_skills) but '$policy' does not exist — render it with 'copier update' before running any Dev flow stage"
     else
-        detail="the skills vendored at $vendored_ref require schema_version $required (requiring skills: $requiring_skills) but the policy is '$shape', declaring schema_version $policy_version — $migration"
+        if [ "$policy_version" -gt "$required" ]; then
+            # The reader's migration message says "migrate to schema_version
+            # 2", which for a policy ALREADY past 2 is a downgrade that could
+            # never make these skills compatible. Codex cloud review,
+            # confirmed. Point at newer skills instead, as the contract-free
+            # branch already does.
+            detail="the policy declares schema_version $policy_version but the skills vendored at $vendored_ref declare schema_version $required (requiring skills: $requiring_skills) — the policy is ahead of these skills, so advance source.ref in $manifest to a release whose stage skills declare schema_version $policy_version rather than migrating the policy backwards"
+        else
+            detail="the skills vendored at $vendored_ref require schema_version $required (requiring skills: $requiring_skills) but the policy is '$shape', declaring schema_version $policy_version — $migration"
+        fi
     fi
 fi
 

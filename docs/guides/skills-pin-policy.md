@@ -104,6 +104,22 @@ A pin that is not an orderable release tag (a branch, a SHA) cannot be
 compared against the boundary at all, and is reported indeterminate rather
 than guessed in either direction.
 
+### What this audit does *not* check
+
+The pin audit answers **"do the pin and the policy agree?"** It does not verify
+that the vendored tree matches what the pinned release actually shipped — that
+is `sync-skills.sh verify` (`task verify:skills`), which clones the pinned ref
+and diffs, so it catches drift such as a file deleted from inside a vendored
+skill by comparison rather than by assumption.
+
+The two are complementary and neither subsumes the other. In particular, a
+managed skill whose `assets/policy-contract.json` has been deleted reads to the
+pin audit as a skill that never declared one, because distinguishing the two
+offline would need a table of which skills are expected to carry a contract —
+and that is exactly the retired-stage-name table this design avoids. Run
+`task verify:skills` for tree integrity; run `task audit:consumer-pin` for the
+pin/policy question.
+
 ### The coherence invariant
 
 The audit states one rule rather than a list of special cases:
