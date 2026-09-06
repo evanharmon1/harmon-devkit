@@ -597,10 +597,10 @@ assert_gate 1 fail checks-failing
 printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
     fail "checks-failing did not name the newer cancelled check: $gate_out"
 
-echo "==> a newer still-running suite remains pending after an older success (harmon-devkit#461)"
+echo "==> a newer still-running suite remains pending after an older cancelled run (harmon-devkit#461)"
 write_defaults
 jq -cn '[{total_count:2,check_runs:[
-    {id:1,name:"guard",status:"completed",conclusion:"success",
+    {id:1,name:"guard",status:"completed",conclusion:"cancelled",
      started_at:"2026-01-01T00:00:00Z",check_suite:{id:50}},
     {id:2,name:"guard",status:"in_progress",conclusion:null,
      started_at:"2026-01-01T00:05:00Z",check_suite:{id:51}}]}]' \
