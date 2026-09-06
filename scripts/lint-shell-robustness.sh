@@ -67,6 +67,12 @@
 #     fixture text cannot reach; both markers must carry a reason; and an
 #     unclosed block is itself reported.
 #
+# Known coverage gap in the pipeline half: the `grep` token itself is matched
+# literally, so a path-qualified (`/usr/bin/grep`), escaped (`\grep`) or quoted
+# spelling is not seen. No such spelling exists in this tree today; the
+# remaining forms are enumerated in #848 to be closed in one change rather than
+# one review round at a time.
+#
 # The two halves are not equally strong, and the header says so rather than
 # leaving a reader to assume otherwise. The PIPELINE check above is a stateless
 # text match and is the deliverable of #689. The REPORTER check below is
