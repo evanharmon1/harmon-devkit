@@ -598,8 +598,7 @@ assert_unit() {
     # always-proceed policy (antigravity-settings.json). Strip comment lines
     # first so an explanatory comment naming the bot file is not a false match;
     # the regex then matches the bot defaults filename but not the "-dev.json".
-    if grep -Ev '^[[:space:]]*#' "${repo_root}/.devcontainer/dev/post-create.sh" |
-        grep -Eq 'antigravity-settings\.json'; then
+    if grep -Eq 'antigravity-settings\.json' < <(grep -Ev '^[[:space:]]*#' "${repo_root}/.devcontainer/dev/post-create.sh"); then
         fail "human dev profile applies the bot-only always-proceed Antigravity policy"
     fi
 
@@ -724,7 +723,7 @@ assert_unit() {
     # run this here" warning; a substring test would read that warning as the
     # very thing it warns against, and the check would be worse than useless.
     offers_login() {
-        printf '%s\n' "$1" | grep -qE '^[[:space:]]*gh[[:space:]]+auth[[:space:]]+login'
+        grep -qE '^[[:space:]]*gh[[:space:]]+auth[[:space:]]+login' <<<"$1"
     }
 
     help_out="$(unset DEVCONTAINER_GH_AUTH && "$bash_bin" -c '. "$2"; . "$1"; gh_auth_help "gh auth setup-git"' _ "$helper_src" "$scopes_lib")"

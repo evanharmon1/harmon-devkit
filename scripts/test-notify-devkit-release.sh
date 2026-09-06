@@ -15,6 +15,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 cases=0
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }
@@ -43,7 +44,8 @@ run() {
 
 start() {
     cases=$((cases + 1))
-    echo "==> $1"
+    echo "==> $1" || true
+    return 0
 }
 
 start "a stable tag dispatches exactly the event the receiver listens for"

@@ -36,6 +36,7 @@ log="${test_tmp}/gh.log"
 mkdir -p "$bin_dir" "$fixtures" "$record_dir/adjudications" "$record_dir/passes"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "FAIL: $*" >&2
     exit 1
 }
@@ -615,7 +616,7 @@ jq -cn '[{total_count:2,check_runs:[
     >"${fixtures}/check-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
+grep -Fq 'lint' <<<"$gate_out" ||
     fail "checks-failing did not name the failing check: $gate_out"
 
 echo "==> a pending (unconcluded) check run fails as checks-pending"
@@ -626,7 +627,7 @@ jq -cn '[{total_count:2,check_runs:[
     >"${fixtures}/check-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-pending
-printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
+grep -Fq 'verify' <<<"$gate_out" ||
     fail "checks-pending did not name the pending check: $gate_out"
 
 echo "==> a failing latest legacy status fails as checks-failing"
@@ -657,7 +658,7 @@ oversized_bytes="$(wc -c <"${fixtures}/check-runs.pages.json")"
     fail "the ARG_MAX fixture shrank to ${oversized_bytes} bytes — below the per-argument limit it exists to exceed, so it no longer reproduces"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
+grep -Fq 'lint' <<<"$gate_out" ||
     fail "the oversized payload was not classified — the failing check went unnamed: $gate_out"
 
 # The downstream twin of the same death: with the classification surviving
@@ -674,9 +675,9 @@ jq -cn '[{total_count:60000,
     >"${fixtures}/check-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'broken-0' ||
+grep -Fq 'broken-0' <<<"$gate_out" ||
     fail "the bounded detail names no failing check: $gate_out"
-printf '%s\n' "$gate_out" | grep -Eq 'and 599[0-9]+ more' ||
+grep -Eq 'and 599[0-9]+ more' <<<"$gate_out" ||
     fail "the bounded detail does not carry the truncation count: $gate_out"
 detail_bytes="$(printf '%s' "$gate_out" | wc -c)"
 [ "$detail_bytes" -lt 8192 ] ||
@@ -718,7 +719,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not name the check whose latest run fails: $gate_out"
 
 echo "==> a cancelled check suite superseded by a later success passes (harmon-devkit#461)"
@@ -747,7 +748,7 @@ jq -cn '[{total_count:1,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not name the cancelled check: $gate_out"
 
 echo "==> a newer cancelled suite supersedes an earlier success and blocks (harmon-devkit#461)"
@@ -764,7 +765,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not name the newer cancelled check: $gate_out"
 
 echo "==> a newer still-running suite remains pending after an older cancelled run (harmon-devkit#461)"
@@ -781,7 +782,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-pending
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-pending did not name the still-running check: $gate_out"
 
 echo "==> a suite that started later but was delivered earlier is not mistaken for the latest"
@@ -825,7 +826,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not surface the failing workflow's guard job when a same-named passing job from a different workflow has a higher id: $gate_out"
 
 echo "==> the same workflow answering two different trigger events is kept apart (harmon-devkit#714 round 1)"
@@ -847,7 +848,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
+grep -Fq 'verify' <<<"$gate_out" ||
     fail "checks-failing did not surface the failed pull_request run when a later workflow_dispatch of the same workflow/job succeeded: $gate_out"
 
 echo "==> two jobs in one workflow that render the same name are BOTH kept when they coexist in the latest suite (harmon-devkit#714 round 2)"
@@ -872,7 +873,7 @@ jq -cn '[{total_count:1,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'verify' ||
+grep -Fq 'verify' <<<"$gate_out" ||
     fail "checks-failing did not surface the failing sibling job when a same-named passing sibling shares its (latest) suite: $gate_out"
 
 echo "==> a same-sha run scoped to a DIFFERENT PR cannot supersede this PR's failure (harmon-devkit#714 round 3)"
@@ -897,7 +898,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not survive when a higher-suite-id run scoped to a different PR shared the same name/workflow/event: $gate_out"
 
 echo "==> an empty pull_requests association still allows the normal collapse (unscoped, as before)"
@@ -942,7 +943,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not survive when a later run naming multiple PRs (including this one) shared the same name/workflow/event: $gate_out"
 
 echo "==> a failing run that itself names multiple PRs still surfaces (ambiguous is kept, not dropped)"
@@ -957,7 +958,7 @@ jq -cn '[{total_count:1,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "a failing run naming multiple PRs (including this one) was dropped instead of surfaced: $gate_out"
 
 echo "==> two ambiguous (multi-PR) suites do not clear one another (harmon-devkit#714 review r2)"
@@ -981,7 +982,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not survive when a later ambiguous suite's success shared its nominal workflow/event with an earlier ambiguous failure: $gate_out"
 
 echo "==> a failing run unambiguously scoped to another PR is dropped outright, not just its metadata (harmon-devkit#714 review r2)"
@@ -1019,7 +1020,7 @@ jq -cn '[{total_count:2,check_runs:[
     >"${fixtures}/check-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'lint' ||
+grep -Fq 'lint' <<<"$gate_out" ||
     fail "checks-failing did not survive when a different non-Actions app's later success shared a check name with an earlier failure: $gate_out"
 
 echo "==> a shared head where BOTH PRs get an empty pull_requests is still told apart by branch name (harmon-devkit#714 shepherd, PR #723)"
@@ -1044,7 +1045,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not survive when a later run on a DIFFERENT branch (both sides reporting empty pull_requests) shared the same name/workflow/event: $gate_out"
 
 echo "==> a push/workflow_dispatch run on another branch is never excluded by the branch heuristic (harmon-devkit#714 shepherd r2)"
@@ -1068,7 +1069,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not survive a push-triggered failure on an unrelated branch, which the branch heuristic must not exclude: $gate_out"
 
 echo "==> a multi-PR run that OMITS this PR entirely is excluded, not treated as ambiguous (harmon-devkit#714 shepherd r2)"
@@ -1105,7 +1106,7 @@ jq -cn '[{total_count:1,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not survive a push run whose only pull_requests association names a different PR: $gate_out"
 
 echo "==> two push suites on different branches sharing a sha are kept apart by branch (harmon-devkit#714 shepherd r3)"
@@ -1128,7 +1129,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not survive when a push suite on a different branch shared the workflow/event but not the branch: $gate_out"
 
 echo "==> an EMPTY check list is indeterminate, never a pass"
@@ -1179,7 +1180,7 @@ write_review_r1_pass review-r1-codex-cli-1
 # has settled the one deferred finding the adjudication above declares.
 run_gate
 assert_gate 1 fail deferred-unsettled
-printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-1' ||
+grep -Fq 'review-r1-codex-cli-1' <<<"$gate_out" ||
     fail "deferred-unsettled did not name the unsettled finding: $gate_out"
 
 echo "==> the same finding, once settled in run.json, passes that condition"
@@ -1246,7 +1247,7 @@ node "$validator" envelope "$findings_result" >/dev/null ||
     fail "with-findings fixture failed schema validation"
 run_gate --integrator-result "$findings_result"
 assert_gate 1 fail unresolved-integrator-findings
-printf '%s\n' "$gate_out" | grep -Fq 'integration-r1-human-1' ||
+grep -Fq 'integration-r1-human-1' <<<"$gate_out" ||
     fail "unresolved-integrator-findings did not name the finding: $gate_out"
 
 # 9c (Codex cloud-review cycle on PR harmon-devkit#758): a pass that never
@@ -1280,7 +1281,7 @@ write_defaults
 pending_result="$(write_integrator_pass_fixture cap-zero-pending completed pending)"
 run_gate --integrator-result "$pending_result" --integration-cap 0
 assert_gate 1 fail integrator-not-clean
-printf '%s\n' "$gate_out" | grep -Fq 'verdict is pending' ||
+grep -Fq 'verdict is pending' <<<"$gate_out" ||
     fail "integrator-not-clean did not name the verdict: $gate_out"
 
 echo "==> a cap-0 pass with status blocked fails as integrator-not-clean"
@@ -1288,7 +1289,7 @@ write_defaults
 blocked_result="$(write_integrator_pass_fixture cap-zero-blocked blocked pending)"
 run_gate --integrator-result "$blocked_result" --integration-cap 0
 assert_gate 1 fail integrator-not-clean
-printf '%s\n' "$gate_out" | grep -Fq 'status is blocked' ||
+grep -Fq 'status is blocked' <<<"$gate_out" ||
     fail "integrator-not-clean did not name the status: $gate_out"
 
 echo "==> a cap-0 pass with verdict escalate fails as integrator-not-clean"
@@ -1304,7 +1305,7 @@ jq -cn '[[{id:900,user:{login:"reviewer-bot"},path:"f.sh",in_reply_to_id:null,
            body:"finding"}]]' >"${fixtures}/inline.pages.json"
 run_gate
 assert_gate 1 fail threads-unanswered
-printf '%s\n' "$gate_out" | grep -Fq '900' ||
+grep -Fq '900' <<<"$gate_out" ||
     fail "threads-unanswered did not name the root: $gate_out"
 
 echo "==> an answered thread passes; a reviewer follow-up after the reply fails"
@@ -1428,7 +1429,7 @@ missing_rc=$?
 set -e
 [ "$missing_rc" -eq 2 ] ||
     fail "a missing --integrator-result file should exit 2, got $missing_rc: $missing_out"
-printf '%s\n' "$missing_out" | grep -Fq 'integrator-result' ||
+grep -Fq 'integrator-result' <<<"$missing_out" ||
     fail "the missing-integrator-result error does not name the flag: $missing_out"
 
 echo "==> an integrator result naming a different head is refused before the Codex condition is read"
@@ -1551,7 +1552,7 @@ jq -cn --arg repo example/repo --argjson pr 493 --arg head "$head_sha" \
 run_gate --integrator-result "$recheck_disagree_result" --integration-cap 1 \
     --codex-recheck "$not_attached_state"
 assert_gate 2 indeterminate codex-stale
-printf '%s\n' "$gate_out" | grep -Fq 'not attached' ||
+grep -Fq 'not attached' <<<"$gate_out" ||
     fail "codex-stale did not surface the real checker's own complaint: $gate_out"
 
 # promotion.head equals the final integrator result's head AND its
@@ -1582,7 +1583,7 @@ jq -cn --arg head "$head_sha" '
             applied_dispositions:[]}}' >"$stale_result"
 validator_out="$(node "$validator" envelope "$stale_result" 2>&1)" &&
     fail "a stale accepted.reviewed_commit should fail schema validation, got: $validator_out"
-printf '%s\n' "$validator_out" | grep -Fq 'reviewed_commit' ||
+grep -Fq 'reviewed_commit' <<<"$validator_out" ||
     fail "the validator's rejection does not name reviewed_commit: $validator_out"
 
 # Codex cloud-review cycle on PR harmon-devkit#758: a Codex-clean cycle
@@ -1680,7 +1681,7 @@ echo "==> #685(10): an applied_disposition the record has no evidence for anywhe
 write_defaults
 run_gate --integrator-result "$fresh_result"
 assert_gate 2 indeterminate codex-indeterminate
-printf '%s\n' "$gate_out" | grep -Fq "known finding universe" ||
+grep -Fq "known finding universe" <<<"$gate_out" ||
     fail "#685(10): the gate did not name the finding universe: $gate_out"
 
 # A disposition claim alone, with no durable settlement behind it, cannot
@@ -1716,7 +1717,7 @@ node "$validator" envelope "$undisclosed_result" >/dev/null ||
     fail "undisclosed-disposition fixture failed schema validation"
 run_gate --integrator-result "$undisclosed_result"
 assert_gate 1 fail deferred-unsettled
-printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
+grep -Fq 'review-r1-codex-cli-9' <<<"$gate_out" ||
     fail "deferred-unsettled did not name the unsettled finding: $gate_out"
 
 echo "==> applied_dispositions naming a finding WITH a matching settlement passes"
@@ -1819,7 +1820,7 @@ node "$validator" envelope "$mismatched_disposition_result" >/dev/null ||
     fail "mismatched-disposition fixture failed schema validation"
 run_gate --integrator-result "$mismatched_disposition_result"
 assert_gate 1 fail disposition-unsettled
-printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
+grep -Fq 'review-r1-codex-cli-9' <<<"$gate_out" ||
     fail "disposition-unsettled did not name the mismatched finding: $gate_out"
 
 # ---------------------------------------------------------------------------
@@ -1873,7 +1874,7 @@ for disposition in decline file; do
     disposition_result="$(write_disposition_result "unsettled-${disposition}" "$disposition")"
     run_gate --integrator-result "$disposition_result"
     assert_gate 1 fail deferred-unsettled
-    printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
+    grep -Fq 'review-r1-codex-cli-9' <<<"$gate_out" ||
         fail "#685(9) ${disposition}: gate did not name the unsettled finding: $gate_out"
 done
 
@@ -1928,7 +1929,7 @@ disposition_result="$(write_disposition_result marker-missing decline)"
 run_gate --integrator-result "$disposition_result"
 skip_evidence_markers=0
 assert_gate 1 fail evidence-marker-missing
-printf '%s\n' "$gate_out" | grep -Fq 'review round 1' ||
+grep -Fq 'review round 1' <<<"$gate_out" ||
     fail "#685(7): the gate did not name the unrecorded round: $gate_out"
 
 echo "==> #685(7): a pr-destination marker for that round does not substitute"
@@ -1940,7 +1941,7 @@ skip_evidence_markers=1
 run_gate --integrator-result "$disposition_result"
 skip_evidence_markers=0
 assert_gate 1 fail evidence-marker-missing
-printf '%s\n' "$gate_out" | grep -Fq 'never substitutes' ||
+grep -Fq 'never substitutes' <<<"$gate_out" ||
     fail "#685(7): the gate did not say a pr comment never substitutes: $gate_out"
 
 echo "==> #685(7): the same round, once its issue evidence is recorded, promotes"
@@ -2123,7 +2124,7 @@ bad_cap_rc=$?
 set -e
 [ "$bad_cap_rc" -eq 2 ] ||
     fail "#685(4): a malformed --remediation-cap should exit 2, got $bad_cap_rc: $bad_cap_out"
-printf '%s\n' "$bad_cap_out" | grep -Fq -- '--remediation-cap must be a non-negative integer' ||
+grep -Fq -- '--remediation-cap must be a non-negative integer' <<<"$bad_cap_out" ||
     fail "#685(4): malformed --remediation-cap did not name the flag: $bad_cap_out"
 
 # --- #685 criterion 5: codex_cycle.cycle <= [rounds].integration; cap 0 =>
@@ -2175,7 +2176,7 @@ jq -cn --arg head "$head_sha" --arg body "$edited_body" \
       user:{id:4242,login:"pr-author"}}' >"${fixtures}/second-pr.json"
 run_gate
 assert_gate 1 fail content-moved
-printf '%s\n' "$gate_out" | grep -Fq 'PR-title/body' ||
+grep -Fq 'PR-title/body' <<<"$gate_out" ||
     fail "content-moved did not name the changed surface: $gate_out"
 
 echo "==> a top-level comment landing mid-gate fails as content-moved"
@@ -2185,7 +2186,7 @@ jq -cn '[[{id:70,user:{login:"reviewer-bot"},body:"a late finding",
     >"${fixtures}/second-top.pages.json"
 run_gate
 assert_gate 1 fail content-moved
-printf '%s\n' "$gate_out" | grep -Fq 'top-level-comments' ||
+grep -Fq 'top-level-comments' <<<"$gate_out" ||
     fail "content-moved did not name the changed surface: $gate_out"
 
 echo "==> a check turning red mid-gate fails on the final re-evaluation"
@@ -2195,7 +2196,7 @@ jq -cn '[{total_count:1,check_runs:[
     >"${fixtures}/second-check-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'late-red' ||
+grep -Fq 'late-red' <<<"$gate_out" ||
     fail "the final re-evaluation did not name the late-failing check: $gate_out"
 
 echo "==> without GNU timeout the gate still runs, loudly unbounded"
@@ -2240,7 +2241,7 @@ gate_rc=$?
 set -e
 check_watchdog "$gate_rc" no-timeout-fallback "$gate_out"
 assert_gate 0 pass ready
-printf '%s\n' "$gate_out" | grep -Fq 'no GNU timeout' ||
+grep -Fq 'no GNU timeout' <<<"$gate_out" ||
     fail "the timeout fallback must warn that calls are unbounded: $gate_out"
 
 echo "==> #685: a cleanup that cannot run never becomes the verdict"
@@ -2352,7 +2353,7 @@ refuse_case() {
     set -e
     [ "$ro_rc" -eq 2 ] ||
         fail "gh-ro $label: expected refusal rc 2, got $ro_rc: $ro_out"
-    printf '%s\n' "$ro_out" | grep -Fq 'refused' ||
+    grep -Fq 'refused' <<<"$ro_out" ||
         fail "gh-ro $label: refusal did not say refused: $ro_out"
     if grep -q '^api ' "$log"; then
         fail "gh-ro $label: a refused invocation still reached gh: $(cat "$log")"
@@ -2424,7 +2425,7 @@ wb_refuse_case() {
     set -e
     [ "$wb_rc" -eq 2 ] ||
         fail "gh-write-broker $label: expected refusal rc 2, got $wb_rc: $wb_out"
-    printf '%s\n' "$wb_out" | grep -qE 'refused|Usage:' ||
+    grep -qE 'refused|Usage:' <<<"$wb_out" ||
         fail "gh-write-broker $label: refusal did not say refused or print usage: $wb_out"
     if grep -q '^api ' "$log"; then
         fail "gh-write-broker $label: a refused invocation still reached gh: $(cat "$log")"

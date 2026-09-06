@@ -15,9 +15,18 @@ repo="$(git rev-parse --show-toplevel)"
 cd "${repo}"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }
+
+# Every scratch file below lives in this per-run directory rather than in a
+# shared-tmp `<name>-$$` path. `$$` is unique only among *live* processes: a
+# crashed run leaves its files behind, and a later run whose PID has been
+# recycled reads them. A private directory removed on exit cannot collide with
+# a concurrent run or inherit a stale one's leftovers.
+scratch="$(mktemp -d)"
+trap 'rm -rf "${scratch}"' EXIT
 
 command -v node >/dev/null 2>&1 || fail "node is required"
 command -v task >/dev/null 2>&1 || fail "task is required"
@@ -113,66 +122,66 @@ console.log("ledger-availability smoke check OK");
 '
 
 echo "== devflow-policy.mjs never operates under this repo'\''s live legacy .devflow.toml =="
-if node scripts/devflow-policy.mjs resolve --policy .devflow.toml >/tmp/dfp-live-$$.out 2>/tmp/dfp-live-$$.err; then
-    rm -f "/tmp/dfp-live-$$.out" "/tmp/dfp-live-$$.err"
+if node scripts/devflow-policy.mjs resolve --policy .devflow.toml >"${scratch}/dfp-live-$$.out" 2>"${scratch}/dfp-live-$$.err"; then
+    rm -f "${scratch}/dfp-live-$$.out" "${scratch}/dfp-live-$$.err"
     fail "resolve against the live .devflow.toml unexpectedly succeeded — it must refuse the legacy shape"
 fi
-grep -q "legacy" "/tmp/dfp-live-$$.err" || {
-    cat "/tmp/dfp-live-$$.err" >&2
-    rm -f "/tmp/dfp-live-$$.out" "/tmp/dfp-live-$$.err"
+grep -q "legacy" "${scratch}/dfp-live-$$.err" || {
+    cat "${scratch}/dfp-live-$$.err" >&2
+    rm -f "${scratch}/dfp-live-$$.out" "${scratch}/dfp-live-$$.err"
     fail "refusal message did not name the legacy shape"
 }
-rm -f "/tmp/dfp-live-$$.out" "/tmp/dfp-live-$$.err"
+rm -f "${scratch}/dfp-live-$$.out" "${scratch}/dfp-live-$$.err"
 echo "OK: live .devflow.toml (legacy shape) is refused as the operating policy"
 
 echo "== --closure refuses a merge base with no reader (never falls back to the branch copy) =="
 empty_closure="$(mktemp -d)"
 mkdir -p "${empty_closure}/scripts"
 if node scripts/devflow-policy.mjs resolve --policy .devflow.toml --closure "${empty_closure}" \
-    >/dev/null 2>"/tmp/dfp-closure-$$.err"; then
-    rm -rf "${empty_closure}" "/tmp/dfp-closure-$$.err"
+    >/dev/null 2>"${scratch}/dfp-closure-$$.err"; then
+    rm -rf "${empty_closure}" "${scratch}/dfp-closure-$$.err"
     fail "--closure with no reader in the closure directory unexpectedly succeeded"
 fi
-grep -q "reader must land" "/tmp/dfp-closure-$$.err" || {
-    cat "/tmp/dfp-closure-$$.err" >&2
-    rm -rf "${empty_closure}" "/tmp/dfp-closure-$$.err"
+grep -q "reader must land" "${scratch}/dfp-closure-$$.err" || {
+    cat "${scratch}/dfp-closure-$$.err" >&2
+    rm -rf "${empty_closure}" "${scratch}/dfp-closure-$$.err"
     fail "refusal message did not explain that the reader must land on the merge base first"
 }
-rm -rf "${empty_closure}" "/tmp/dfp-closure-$$.err"
+rm -rf "${empty_closure}" "${scratch}/dfp-closure-$$.err"
 echo "OK: a merge base predating the reader itself is refused, not silently satisfied by the branch copy"
 
 echo "== devflow-policy.mjs usage errors =="
-if node scripts/devflow-policy.mjs resolve >/dev/null 2>/tmp/dfp-usage-$$.err; then
-    rm -f "/tmp/dfp-usage-$$.err"
+if node scripts/devflow-policy.mjs resolve >/dev/null 2>"${scratch}/dfp-usage-$$.err"; then
+    rm -f "${scratch}/dfp-usage-$$.err"
     fail "resolve with no --policy unexpectedly succeeded"
 fi
-grep -q -- "--policy" "/tmp/dfp-usage-$$.err" || fail "usage error did not mention --policy"
-rm -f "/tmp/dfp-usage-$$.err"
+grep -q -- "--policy" "${scratch}/dfp-usage-$$.err" || fail "usage error did not mention --policy"
+rm -f "${scratch}/dfp-usage-$$.err"
 echo "OK: resolve without --policy is a usage error"
 
-if node scripts/devflow-policy.mjs detect >/dev/null 2>/tmp/dfp-detect-usage-$$.err; then
-    rm -f "/tmp/dfp-detect-usage-$$.err"
+if node scripts/devflow-policy.mjs detect >/dev/null 2>"${scratch}/dfp-detect-usage-$$.err"; then
+    rm -f "${scratch}/dfp-detect-usage-$$.err"
     fail "detect with no --policy unexpectedly succeeded"
 fi
-grep -q -- "--policy" "/tmp/dfp-detect-usage-$$.err" || fail "detect usage error did not mention --policy"
-rm -f "/tmp/dfp-detect-usage-$$.err"
+grep -q -- "--policy" "${scratch}/dfp-detect-usage-$$.err" || fail "detect usage error did not mention --policy"
+rm -f "${scratch}/dfp-detect-usage-$$.err"
 echo "OK: detect without --policy is a usage error, not an uncaught exception"
 
 if node scripts/devflow-policy.mjs detect --policy /nonexistent-devflow-policy.toml \
-    >/tmp/dfp-detect-missing-$$.out 2>/tmp/dfp-detect-missing-$$.err; then
-    rm -f "/tmp/dfp-detect-missing-$$.out" "/tmp/dfp-detect-missing-$$.err"
+    >"${scratch}/dfp-detect-missing-$$.out" 2>"${scratch}/dfp-detect-missing-$$.err"; then
+    rm -f "${scratch}/dfp-detect-missing-$$.out" "${scratch}/dfp-detect-missing-$$.err"
     fail "detect with a missing --policy file unexpectedly succeeded"
 fi
-grep -q "ENOENT\|could not read/parse" "/tmp/dfp-detect-missing-$$.err" ||
+grep -q "ENOENT\|could not read/parse" "${scratch}/dfp-detect-missing-$$.err" ||
     fail "detect on a missing --policy file did not report a clean read/parse error"
-grep -q "at readFileSync\|at loadTomlFile" "/tmp/dfp-detect-missing-$$.err" &&
+grep -q "at readFileSync\|at loadTomlFile" "${scratch}/dfp-detect-missing-$$.err" &&
     fail "detect on a missing --policy file leaked a raw Node stack trace instead of a clean error"
-rm -f "/tmp/dfp-detect-missing-$$.out" "/tmp/dfp-detect-missing-$$.err"
+rm -f "${scratch}/dfp-detect-missing-$$.out" "${scratch}/dfp-detect-missing-$$.err"
 echo "OK: detect on a missing --policy file fails closed, no uncaught stack trace"
 
 if node scripts/devflow-policy.mjs detect --policy /nonexistent-devflow-policy.toml --json \
-    >/tmp/dfp-detect-json-$$.out 2>/tmp/dfp-detect-json-$$.err; then
-    rm -f "/tmp/dfp-detect-json-$$.out" "/tmp/dfp-detect-json-$$.err"
+    >"${scratch}/dfp-detect-json-$$.out" 2>"${scratch}/dfp-detect-json-$$.err"; then
+    rm -f "${scratch}/dfp-detect-json-$$.out" "${scratch}/dfp-detect-json-$$.err"
     fail "detect --json with a missing --policy file unexpectedly succeeded"
 fi
 node -e '
@@ -181,17 +190,17 @@ const body = fs.readFileSync(process.argv[1], "utf8").trim();
 if (!body) { console.error("detect --json emitted no stdout body for a read/parse failure"); process.exit(1); }
 const parsed = JSON.parse(body);
 if (parsed.shape !== null || !parsed.error) { console.error("detect --json body did not report a structured error: " + body); process.exit(1); }
-' "/tmp/dfp-detect-json-$$.out" || fail "detect --json did not emit a structured error body on a read/parse failure"
-rm -f "/tmp/dfp-detect-json-$$.out" "/tmp/dfp-detect-json-$$.err"
+' "${scratch}/dfp-detect-json-$$.out" || fail "detect --json did not emit a structured error body on a read/parse failure"
+rm -f "${scratch}/dfp-detect-json-$$.out" "${scratch}/dfp-detect-json-$$.err"
 echo "OK: detect --json emits a structured error body (not empty stdout) on a read/parse failure"
 
 echo "== dev-flow-exit.mjs usage errors =="
-if node scripts/dev-flow-exit.mjs --stage nonsense --run /nonexistent --policy /nonexistent >/dev/null 2>/tmp/dfe-usage-$$.err; then
-    rm -f "/tmp/dfe-usage-$$.err"
+if node scripts/dev-flow-exit.mjs --stage nonsense --run /nonexistent --policy /nonexistent >/dev/null 2>"${scratch}/dfe-usage-$$.err"; then
+    rm -f "${scratch}/dfe-usage-$$.err"
     fail "dev-flow-exit with an invalid --stage unexpectedly succeeded"
 fi
-grep -q -- "--stage" "/tmp/dfe-usage-$$.err" || fail "usage error did not mention --stage"
-rm -f "/tmp/dfe-usage-$$.err"
+grep -q -- "--stage" "${scratch}/dfe-usage-$$.err" || fail "usage error did not mention --stage"
+rm -f "${scratch}/dfe-usage-$$.err"
 echo "OK: an invalid --stage is a usage error"
 
 echo "== dev-flow-exit.mjs refuses a policy cross-validation would reject, even standalone (no --registry/--task-targets) =="
@@ -200,46 +209,46 @@ mkdir -p "${empty_run}/passes" "${empty_run}/adjudications"
 printf '{"run_id":"run-crossval-check","initiated_by":"human","receipts":[]}' >"${empty_run}/run.json"
 if node scripts/dev-flow-exit.mjs --run "${empty_run}" --stage review \
     --policy ai/schemas/fixtures/exit/breadth-insufficient-for-fallback-chain/policy.toml \
-    --current-head deadbeef --json >/dev/null 2>"/tmp/dfe-crossval-$$.err"; then
-    rm -rf "${empty_run}" "/tmp/dfe-crossval-$$.err"
+    --current-head deadbeef --json >/dev/null 2>"${scratch}/dfe-crossval-$$.err"; then
+    rm -rf "${empty_run}" "${scratch}/dfe-crossval-$$.err"
     fail "dev-flow-exit against a breadth-insufficient policy unexpectedly succeeded"
 fi
-grep -q "cannot cover" "/tmp/dfe-crossval-$$.err" || {
-    cat "/tmp/dfe-crossval-$$.err" >&2
-    rm -rf "${empty_run}" "/tmp/dfe-crossval-$$.err"
+grep -q "cannot cover" "${scratch}/dfe-crossval-$$.err" || {
+    cat "${scratch}/dfe-crossval-$$.err" >&2
+    rm -rf "${empty_run}" "${scratch}/dfe-crossval-$$.err"
     fail "refusal message did not explain the breadth shortfall"
 }
-rm -rf "${empty_run}" "/tmp/dfe-crossval-$$.err"
+rm -rf "${empty_run}" "${scratch}/dfe-crossval-$$.err"
 echo "OK: dev-flow-exit refuses a policy that fails cross-validation before ever reading --run"
 
 echo "== task devflow:policy -- detect reports v2 for a v2 policy =="
 if ! task devflow:policy -- detect --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
-    >"/tmp/dfp-detect-v2-$$.out" 2>"/tmp/dfp-detect-v2-$$.err"; then
-    cat "/tmp/dfp-detect-v2-$$.out" "/tmp/dfp-detect-v2-$$.err" >&2
-    rm -f "/tmp/dfp-detect-v2-$$.out" "/tmp/dfp-detect-v2-$$.err"
+    >"${scratch}/dfp-detect-v2-$$.out" 2>"${scratch}/dfp-detect-v2-$$.err"; then
+    cat "${scratch}/dfp-detect-v2-$$.out" "${scratch}/dfp-detect-v2-$$.err" >&2
+    rm -f "${scratch}/dfp-detect-v2-$$.out" "${scratch}/dfp-detect-v2-$$.err"
     fail "task devflow:policy -- detect on a v2 policy unexpectedly failed (exit 0 means v2)"
 fi
-grep -q "shape: v2" "/tmp/dfp-detect-v2-$$.out" || {
-    cat "/tmp/dfp-detect-v2-$$.out" >&2
-    rm -f "/tmp/dfp-detect-v2-$$.out" "/tmp/dfp-detect-v2-$$.err"
+grep -q "shape: v2" "${scratch}/dfp-detect-v2-$$.out" || {
+    cat "${scratch}/dfp-detect-v2-$$.out" >&2
+    rm -f "${scratch}/dfp-detect-v2-$$.out" "${scratch}/dfp-detect-v2-$$.err"
     fail "detect did not report shape: v2"
 }
-rm -f "/tmp/dfp-detect-v2-$$.out" "/tmp/dfp-detect-v2-$$.err"
+rm -f "${scratch}/dfp-detect-v2-$$.out" "${scratch}/dfp-detect-v2-$$.err"
 echo "OK: task devflow:policy -- detect reports v2 through the Taskfile wrapper"
 
 echo "== task devflow:policy -- detect reports legacy for this repo's own .devflow.toml =="
 if task devflow:policy -- detect --policy .devflow.toml \
-    >"/tmp/dfp-detect-legacy-$$.out" 2>"/tmp/dfp-detect-legacy-$$.err"; then
-    cat "/tmp/dfp-detect-legacy-$$.out" "/tmp/dfp-detect-legacy-$$.err" >&2
-    rm -f "/tmp/dfp-detect-legacy-$$.out" "/tmp/dfp-detect-legacy-$$.err"
+    >"${scratch}/dfp-detect-legacy-$$.out" 2>"${scratch}/dfp-detect-legacy-$$.err"; then
+    cat "${scratch}/dfp-detect-legacy-$$.out" "${scratch}/dfp-detect-legacy-$$.err" >&2
+    rm -f "${scratch}/dfp-detect-legacy-$$.out" "${scratch}/dfp-detect-legacy-$$.err"
     fail "task devflow:policy -- detect on this repo's own legacy policy unexpectedly reported v2 (exit 0)"
 fi
-grep -q "shape: legacy" "/tmp/dfp-detect-legacy-$$.out" || {
-    cat "/tmp/dfp-detect-legacy-$$.out" >&2
-    rm -f "/tmp/dfp-detect-legacy-$$.out" "/tmp/dfp-detect-legacy-$$.err"
+grep -q "shape: legacy" "${scratch}/dfp-detect-legacy-$$.out" || {
+    cat "${scratch}/dfp-detect-legacy-$$.out" >&2
+    rm -f "${scratch}/dfp-detect-legacy-$$.out" "${scratch}/dfp-detect-legacy-$$.err"
     fail "detect did not report shape: legacy for this repo's own .devflow.toml"
 }
-rm -f "/tmp/dfp-detect-legacy-$$.out" "/tmp/dfp-detect-legacy-$$.err"
+rm -f "${scratch}/dfp-detect-legacy-$$.out" "${scratch}/dfp-detect-legacy-$$.err"
 echo "OK: task devflow:policy -- detect reports legacy through the Taskfile wrapper"
 echo "   (detect only classifies shape — it never resolves — so reading the live"
 echo "   .devflow.toml here is the same sanctioned exception as the refusal check above)"
@@ -248,18 +257,18 @@ echo "== task devflow:policy -- resolve works through the Taskfile wrapper, not 
 if ! task devflow:policy -- resolve --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
     --registry ai/schemas/fixtures/exit/single-round-clean-converge/registry.json \
     --task-targets ai/schemas/fixtures/exit/single-round-clean-converge/task-targets.json --json \
-    >"/tmp/dfp-task-resolve-$$.out" 2>"/tmp/dfp-task-resolve-$$.err"; then
-    cat "/tmp/dfp-task-resolve-$$.out" "/tmp/dfp-task-resolve-$$.err" >&2
-    rm -f "/tmp/dfp-task-resolve-$$.out" "/tmp/dfp-task-resolve-$$.err"
+    >"${scratch}/dfp-task-resolve-$$.out" 2>"${scratch}/dfp-task-resolve-$$.err"; then
+    cat "${scratch}/dfp-task-resolve-$$.out" "${scratch}/dfp-task-resolve-$$.err" >&2
+    rm -f "${scratch}/dfp-task-resolve-$$.out" "${scratch}/dfp-task-resolve-$$.err"
     fail "task devflow:policy -- resolve unexpectedly failed"
 fi
-grep -v -e '^::group::' -e '^::endgroup::' "/tmp/dfp-task-resolve-$$.out" |
+grep -v -e '^::group::' -e '^::endgroup::' "${scratch}/dfp-task-resolve-$$.out" |
     node -e 'JSON.parse(require("node:fs").readFileSync(0, "utf8"))' || {
-    cat "/tmp/dfp-task-resolve-$$.out" >&2
-    rm -f "/tmp/dfp-task-resolve-$$.out" "/tmp/dfp-task-resolve-$$.err"
+    cat "${scratch}/dfp-task-resolve-$$.out" >&2
+    rm -f "${scratch}/dfp-task-resolve-$$.out" "${scratch}/dfp-task-resolve-$$.err"
     fail "task devflow:policy -- resolve --json (its Taskfile ::group::/::endgroup:: wrapper stripped) did not produce valid JSON"
 }
-rm -f "/tmp/dfp-task-resolve-$$.out" "/tmp/dfp-task-resolve-$$.err"
+rm -f "${scratch}/dfp-task-resolve-$$.out" "${scratch}/dfp-task-resolve-$$.err"
 echo "OK: task devflow:policy -- resolve produces valid JSON through the Taskfile wrapper"
 echo "   (Taskfile.yml's global output: group wraps every task's stdout in"
 echo "   ::group::<task>/::endgroup:: markers — a caller parsing --json through"
@@ -276,21 +285,21 @@ echo "== task devflow:exit works through the Taskfile wrapper, not just the bare
 task devflow:exit -- --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
     --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
     --current-head 0101010101010101010101010101010101010101 --json \
-    >"/tmp/dfe-task-$$.out" 2>"/tmp/dfe-task-$$.err" || true
-outcome="$(grep -v -e '^::group::' -e '^::endgroup::' "/tmp/dfe-task-$$.out" | node -e '
+    >"${scratch}/dfe-task-$$.out" 2>"${scratch}/dfe-task-$$.err" || true
+outcome="$(grep -v -e '^::group::' -e '^::endgroup::' "${scratch}/dfe-task-$$.out" | node -e '
   const body = require("node:fs").readFileSync(0, "utf8");
   console.log(JSON.parse(body).outcome);
 ')" || {
-    cat "/tmp/dfe-task-$$.out" "/tmp/dfe-task-$$.err" >&2
-    rm -f "/tmp/dfe-task-$$.out" "/tmp/dfe-task-$$.err"
+    cat "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err" >&2
+    rm -f "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err"
     fail "task devflow:exit --json (its Taskfile ::group::/::endgroup:: wrapper stripped) did not produce valid JSON"
 }
 [ "${outcome}" = "converged" ] || {
-    cat "/tmp/dfe-task-$$.out" >&2
-    rm -f "/tmp/dfe-task-$$.out" "/tmp/dfe-task-$$.err"
+    cat "${scratch}/dfe-task-$$.out" >&2
+    rm -f "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err"
     fail "task devflow:exit: expected outcome \"converged\" for this fixture, got \"${outcome}\""
 }
-rm -f "/tmp/dfe-task-$$.out" "/tmp/dfe-task-$$.err"
+rm -f "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err"
 echo "OK: task devflow:exit produces the correct verdict JSON through the Taskfile wrapper"
 
 # `|| true` on every dev-flow-exit.mjs invocation below: its exit code IS
@@ -317,13 +326,13 @@ span_head=0101010101010101010101010101010101010101
 # below is the timestamp under test and never the copy itself.
 node scripts/dev-flow-exit.mjs --run "${span_dir}/run" --stage review \
     --policy "${span_dir}/policy.toml" --current-head "${span_head}" --json \
-    >"/tmp/dfe-span-control-$$.out" 2>/dev/null || true
-[ "$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).outcome)' "/tmp/dfe-span-control-$$.out")" = converged ] || {
-    cat "/tmp/dfe-span-control-$$.out" >&2
-    rm -rf "${span_dir}" "/tmp/dfe-span-control-$$.out"
+    >"${scratch}/dfe-span-control-$$.out" 2>/dev/null || true
+[ "$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).outcome)' "${scratch}/dfe-span-control-$$.out")" = converged ] || {
+    cat "${scratch}/dfe-span-control-$$.out" >&2
+    rm -rf "${span_dir}" "${scratch}/dfe-span-control-$$.out"
     fail "the unmodified run-span fixture no longer converges — the control for the two bounds below is broken"
 }
-rm -f "/tmp/dfe-span-control-$$.out"
+rm -f "${scratch}/dfe-span-control-$$.out"
 
 # $1 = produced_at to plant, $2 = the phrase the diagnostic must carry.
 assert_span_rejection() {
@@ -336,7 +345,7 @@ assert_span_rejection() {
     ' "${span_dir}/run/passes/review-r1-codex-cli.json" "$1"
     node scripts/dev-flow-exit.mjs --run "${span_dir}/run" --stage review \
         --policy "${span_dir}/policy.toml" --current-head "${span_head}" --json \
-        >"/tmp/dfe-span-$$.out" 2>/dev/null || true
+        >"${scratch}/dfe-span-$$.out" 2>/dev/null || true
     node -e '
       const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
       const phrase = process.argv[2];
@@ -349,12 +358,12 @@ assert_span_rejection() {
         console.error("the pass was rejected but the stage still converged on it");
         process.exit(1);
       }
-    ' "/tmp/dfe-span-$$.out" "$2" || {
-        cat "/tmp/dfe-span-$$.out" >&2
-        rm -rf "${span_dir}" "/tmp/dfe-span-$$.out"
+    ' "${scratch}/dfe-span-$$.out" "$2" || {
+        cat "${scratch}/dfe-span-$$.out" >&2
+        rm -rf "${span_dir}" "${scratch}/dfe-span-$$.out"
         fail "#685: produced_at $1 was not rejected as $2"
     }
-    rm -f "/tmp/dfe-span-$$.out"
+    rm -f "${scratch}/dfe-span-$$.out"
 }
 
 assert_span_rejection "2026-08-29T08:00:00Z" "is before the run's own started_at"
@@ -376,17 +385,17 @@ assert_bound_refusal() {
     mv "${bound_dir}/run/run.json.tmp" "${bound_dir}/run/run.json"
     node scripts/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
         --policy "${bound_dir}/policy.toml" --current-head "${span_head}" --json \
-        >"/tmp/dfe-bound-$$.out" 2>/dev/null || true
+        >"${scratch}/dfe-bound-$$.out" 2>/dev/null || true
     node -e '
       const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
       if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
       if (!body.reason.includes(process.argv[2])) { console.error(`reason did not name the malformed bound: ${body.reason}`); process.exit(1); }
-    ' "/tmp/dfe-bound-$$.out" "$2" || {
-        cat "/tmp/dfe-bound-$$.out" >&2
-        rm -rf "${bound_dir}" "/tmp/dfe-bound-$$.out"
+    ' "${scratch}/dfe-bound-$$.out" "$2" || {
+        cat "${scratch}/dfe-bound-$$.out" >&2
+        rm -rf "${bound_dir}" "${scratch}/dfe-bound-$$.out"
         fail "#685: a malformed bound ($1) did not refuse the trajectory"
     }
-    rm -f "/tmp/dfe-bound-$$.out"
+    rm -f "${scratch}/dfe-bound-$$.out"
 }
 
 assert_bound_refusal '.started_at = 12345' "started_at is present but not a string"
@@ -400,13 +409,13 @@ jq '.promotion = null' "${bound_dir}/run/run.json" >"${bound_dir}/run/run.json.t
 mv "${bound_dir}/run/run.json.tmp" "${bound_dir}/run/run.json"
 node scripts/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
     --policy "${bound_dir}/policy.toml" --current-head "${span_head}" --json \
-    >"/tmp/dfe-bound-null-$$.out" 2>/dev/null || true
-[ "$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).outcome)' "/tmp/dfe-bound-null-$$.out")" = converged ] || {
-    cat "/tmp/dfe-bound-null-$$.out" >&2
-    rm -rf "${bound_dir}" "/tmp/dfe-bound-null-$$.out"
+    >"${scratch}/dfe-bound-null-$$.out" 2>/dev/null || true
+[ "$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).outcome)' "${scratch}/dfe-bound-null-$$.out")" = converged ] || {
+    cat "${scratch}/dfe-bound-null-$$.out" >&2
+    rm -rf "${bound_dir}" "${scratch}/dfe-bound-null-$$.out"
     fail "#685: a null promotion is the not-promoted-yet case and must not refuse the trajectory"
 }
-rm -rf "${bound_dir}" "/tmp/dfe-bound-null-$$.out"
+rm -rf "${bound_dir}" "${scratch}/dfe-bound-null-$$.out"
 echo "OK: a present-but-malformed bound is terminal; a null promotion is not"
 
 echo "== #685: a present-but-non-array receipts/slot_failures is a structured indeterminate, never a stack trace =="
@@ -423,7 +432,7 @@ assert_array_refusal() {
     mv "${array_dir}/run/run.json.tmp" "${array_dir}/run/run.json"
     node scripts/dev-flow-exit.mjs --run "${array_dir}/run" --stage review \
         --policy "${array_dir}/policy.toml" --current-head "${span_head}" --json \
-        >"/tmp/dfe-array-$$.out" 2>/dev/null || true
+        >"${scratch}/dfe-array-$$.out" 2>/dev/null || true
     node -e '
       const fs = require("node:fs");
       const raw = fs.readFileSync(process.argv[1], "utf8");
@@ -431,12 +440,12 @@ assert_array_refusal() {
       const body = JSON.parse(raw);
       if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
       if (!body.reason.includes(process.argv[2])) { console.error(`reason did not name the malformed field: ${body.reason}`); process.exit(1); }
-    ' "/tmp/dfe-array-$$.out" "$2" || {
-        cat "/tmp/dfe-array-$$.out" >&2
-        rm -rf "${array_dir}" "/tmp/dfe-array-$$.out"
+    ' "${scratch}/dfe-array-$$.out" "$2" || {
+        cat "${scratch}/dfe-array-$$.out" >&2
+        rm -rf "${array_dir}" "${scratch}/dfe-array-$$.out"
         fail "#685: a non-array collection ($1) did not produce a structured indeterminate"
     }
-    rm -f "/tmp/dfe-array-$$.out"
+    rm -f "${scratch}/dfe-array-$$.out"
 }
 
 assert_array_refusal '.receipts = {"kind":"transition"}' "receipts is present but not an array"
@@ -454,7 +463,7 @@ cp -r "${span_fixture}/." "${null_pass_dir}/"
 printf 'null\n' >"${null_pass_dir}/run/passes/review-r1-codex-cli.json"
 node scripts/dev-flow-exit.mjs --run "${null_pass_dir}/run" --stage review \
     --policy "${null_pass_dir}/policy.toml" --current-head "${span_head}" --json \
-    >"/tmp/dfe-nullpass-$$.out" 2>/dev/null || true
+    >"${scratch}/dfe-nullpass-$$.out" 2>/dev/null || true
 node -e '
   const fs = require("node:fs");
   const raw = fs.readFileSync(process.argv[1], "utf8");
@@ -462,12 +471,12 @@ node -e '
   const body = JSON.parse(raw);
   if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
   if (!body.reason.includes("does not contain a JSON object")) { console.error(`reason did not name the malformed pass: ${body.reason}`); process.exit(1); }
-' "/tmp/dfe-nullpass-$$.out" || {
-    cat "/tmp/dfe-nullpass-$$.out" >&2
-    rm -rf "${null_pass_dir}" "/tmp/dfe-nullpass-$$.out"
+' "${scratch}/dfe-nullpass-$$.out" || {
+    cat "${scratch}/dfe-nullpass-$$.out" >&2
+    rm -rf "${null_pass_dir}" "${scratch}/dfe-nullpass-$$.out"
     fail "#685: a JSON-null pass file did not produce a structured indeterminate"
 }
-rm -rf "${null_pass_dir}" "/tmp/dfe-nullpass-$$.out"
+rm -rf "${null_pass_dir}" "${scratch}/dfe-nullpass-$$.out"
 echo "OK: a malformed pass envelope exits with a verdict body, not a stack trace"
 
 echo "== #685: a recorded verify -> security edge needs a cap-0 review policy, exactly like verify -> review =="
@@ -502,7 +511,7 @@ node -e '
 rm -f "${skip_dir}"/run/passes/*.json "${skip_dir}"/run/adjudications/*.json
 node scripts/dev-flow-exit.mjs --run "${skip_dir}/run" --stage review \
     --policy "${skip_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 --json \
-    >"/tmp/dfe-skip-sec-$$.out" 2>/dev/null || true
+    >"${scratch}/dfe-skip-sec-$$.out" 2>/dev/null || true
 node -e '
   const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
   if (body.outcome !== "indeterminate") { console.error(`expected indeterminate, got ${body.outcome}`); process.exit(1); }
@@ -510,12 +519,12 @@ node -e '
     console.error(`reason did not name the skipped review stage and its cap: ${body.reason}`);
     process.exit(1);
   }
-' "/tmp/dfe-skip-sec-$$.out" 'with no earlier transition into "review", but the resolved review cap is 3' || {
-    cat "/tmp/dfe-skip-sec-$$.out" >&2
-    rm -rf "${skip_dir}" "/tmp/dfe-skip-sec-$$.out"
+' "${scratch}/dfe-skip-sec-$$.out" 'with no earlier transition into "review", but the resolved review cap is 3' || {
+    cat "${scratch}/dfe-skip-sec-$$.out" >&2
+    rm -rf "${skip_dir}" "${scratch}/dfe-skip-sec-$$.out"
     fail "#685: a recorded verify -> security edge under a nonzero review cap was not refused"
 }
-rm -rf "${skip_dir}" "/tmp/dfe-skip-sec-$$.out"
+rm -rf "${skip_dir}" "${scratch}/dfe-skip-sec-$$.out"
 echo "OK: verify -> security is refused under a nonzero review cap"
 
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="

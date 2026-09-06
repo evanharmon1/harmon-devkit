@@ -36,8 +36,9 @@ cd "$repo"
 
 fails=0
 fail() {
-    echo "TEST FAIL: $*" >&2
+    echo "TEST FAIL: $*" >&2 || true
     fails=$((fails + 1))
+    return 0
 }
 
 for required in label-registry.json label-registry.schema.json \
@@ -416,17 +417,17 @@ if ! "$guidance_helper" validate "$migrated_manifest" >/dev/null 2>&1; then
 fi
 migrated_records="$("$guidance_helper" render "$migrated_manifest")" ||
     fail "render should render a migrated (devflow-sourced) manifest"
-printf '%s\n' "$migrated_records" |
-    grep -qxF 'value|strategy:plan|strategy|strategy|strategy|human,agent|true|devflow|false|false|false' ||
+grep -qxF 'value|strategy:plan|strategy|strategy|strategy|human,agent|true|devflow|false|false|false' \
+    <<<"$migrated_records" ||
     fail "render should surface a devflow-sourced value exactly like an inline one"
-printf '%s\n' "$migrated_records" |
-    grep -qxF 'value|rigor:standard|rigor|rigor|strategy|human|true|devflow|false|false|false' ||
+grep -qxF 'value|rigor:standard|rigor|rigor|strategy|human|true|devflow|false|false|false' \
+    <<<"$migrated_records" ||
     fail "render should surface a devflow-sourced rigor value exactly like an inline one"
-if printf '%s\n' "$migrated_records" | grep -q '^value|method:'; then
+if grep -q '^value|method:' <<<"$migrated_records"; then
     fail "the retired method family must not render any value records"
 fi
-printf '%s\n' "$migrated_records" |
-    grep -qxF 'family|method|method|strategy||true|devflow|false|true' ||
+grep -qxF 'family|method|method|strategy||true|devflow|false|true' \
+    <<<"$migrated_records" ||
     fail "the retired method family record itself should still render (retired: true, values empty)"
 
 # A devflow-sourced family follows the same closed-family rule as inline: no

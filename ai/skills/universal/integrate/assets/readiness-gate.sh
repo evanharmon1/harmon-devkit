@@ -261,7 +261,7 @@ while [ "$#" -gt 0 ]; do
         --remediation-cap) remediation_cap=$2 ;;
         --codex-recheck) codex_recheck_state=$2 ;;
         --allow-edited-root)
-            printf '%s' "$2" | grep -Eq '^[1-9][0-9]*$' ||
+            grep -Eq '^[1-9][0-9]*$' <<<"$2" ||
                 die "--allow-edited-root must be a thread root comment ID"
             allowed_edited_roots=$(jq -cn \
                 --argjson prior "$allowed_edited_roots" \
@@ -275,19 +275,19 @@ while [ "$#" -gt 0 ]; do
 done
 
 valid_repo() {
-    printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+    grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' <<<"$1"
 }
 
 valid_uint() {
-    printf '%s' "$1" | grep -Eq '^[1-9][0-9]*$'
+    grep -Eq '^[1-9][0-9]*$' <<<"$1"
 }
 
 valid_uint_or_zero() {
-    printf '%s' "$1" | grep -Eq '^(0|[1-9][0-9]*)$'
+    grep -Eq '^(0|[1-9][0-9]*)$' <<<"$1"
 }
 
 valid_sha() {
-    printf '%s' "$1" | grep -Eq '^[0-9a-fA-F]{40}$'
+    grep -Eq '^[0-9a-fA-F]{40}$' <<<"$1"
 }
 
 [ -n "$repo" ] || usage

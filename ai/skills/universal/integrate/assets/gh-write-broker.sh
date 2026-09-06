@@ -73,11 +73,11 @@ refuse() {
 command -v gh >/dev/null 2>&1 || refuse "gh is required"
 
 valid_repo() {
-    printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+    grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' <<<"$1"
 }
 
 valid_uint() {
-    printf '%s' "$1" | grep -Eq '^[1-9][0-9]*$'
+    grep -Eq '^[1-9][0-9]*$' <<<"$1"
 }
 
 [ "$#" -gt 0 ] || usage

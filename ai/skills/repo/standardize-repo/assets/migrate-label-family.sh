@@ -463,7 +463,12 @@ cmd_transfer() {
         gh "$kind" edit "$number" --repo "$repo" --add-label "$new_exact" >/dev/null ||
             die 1 "transfer aborted, nothing deleted: could not add '$new_exact' to" \
                 "$kind #$number"
-        item_labels "$kind" "$number" "$repo" | grep -qxF "$new_exact" ||
+        # Captured, not process-substituted: `< <(cmd)` discards the
+        # producer's status, so a `gh` read that printed the label and then
+        # failed would verify as success. An unread label is not a verified
+        # one — the read must succeed AND contain it.
+        item_label_list="$(item_labels "$kind" "$number" "$repo")" &&
+            grep -qxF "$new_exact" <<<"$item_label_list" ||
             die 1 "transfer aborted, nothing deleted: '$new_exact' did not verify on" \
                 "$kind #$number after the add reported success"
     done <"$tmp"
@@ -486,7 +491,13 @@ cmd_transfer() {
         number="$(printf '%s' "$line" | jq -r '.number')"
         is_pr="$(printf '%s' "$line" | jq -r '.is_pr')"
         kind="$(gh_kind "$is_pr")"
-        item_labels "$kind" "$number" "$repo" | grep -qxF "$new_exact" ||
+        # This loop decides whether the SOURCE label may be deleted, so a read
+        # that fails must count as missing rather than as present. Process
+        # substitution hid a partial `gh` failure here: the label printed, grep
+        # matched, `missing` stayed empty, and the source was deleted on an
+        # incomplete verification.
+        item_label_list="$(item_labels "$kind" "$number" "$repo")" &&
+            grep -qxF "$new_exact" <<<"$item_label_list" ||
             printf '  #%s (%s)\n' "$number" "$kind" >>"$missing"
     done <"$final"
     if [ -s "$missing" ]; then

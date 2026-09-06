@@ -19,6 +19,7 @@ helper=".devcontainer/scripts/check-image-staleness.sh"
 }
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }
@@ -78,16 +79,16 @@ rm "$root/checkout/shell-aliases.sh"                                # removed si
 run_helper "$root/baked" "$root/checkout"
 [ "$rc" -eq 0 ] || fail "drift exited ${rc} — the warning must never break the lifecycle"
 [ -n "$out" ] || fail "drift produced no warning at all"
-printf '%s\n' "$out" | grep -q 'image is stale: 3 ' ||
+grep -q 'image is stale: 3 ' <<<"$out" ||
     fail "expected a count of 3 in the summary line, got: ${out}"
-printf '%s\n' "$out" | grep -q 'rebuild' ||
+grep -q 'rebuild' <<<"$out" ||
     fail "the summary line does not name the remedy: ${out}"
 for name in starship.toml protect-files.sh shell-aliases.sh; do
-    printf '%s\n' "$out" | grep -q "$name" || fail "the drifted file ${name} is not named: ${out}"
+    grep -q "$name" <<<"$out" || fail "the drifted file ${name} is not named: ${out}"
 done
 # Names only, never contents — this output lands in a lifecycle log, and the
 # config it compares references tokens, hostnames, and machine paths.
-if printf '%s\n' "$out" | grep -q 'palette'; then
+if grep -q 'palette' <<<"$out"; then
     fail "the warning printed file CONTENTS: ${out}"
 fi
 
@@ -104,9 +105,9 @@ mkdir "$root/checkout/starship.toml" # file in the image, directory in the check
 run_helper "$root/baked" "$root/checkout"
 [ "$rc" -eq 0 ] || fail "a type flip exited ${rc}, not 0"
 [ -n "$out" ] || fail "a type flip was reported as a clean tree"
-printf '%s\n' "$out" | grep -q 'image is stale: 1 ' ||
+grep -q 'image is stale: 1 ' <<<"$out" ||
     fail "expected a count of 1 for the type flip, got: ${out}"
-printf '%s\n' "$out" | grep -q 'starship.toml' ||
+grep -q 'starship.toml' <<<"$out" ||
     fail "the type-flipped path is not named: ${out}"
 
 # ---- 2b2. an executable-bit flip alone is drift ----
@@ -121,9 +122,9 @@ chmod +x "$root/baked/starship.toml" # x in the image, not in the checkout
 run_helper "$root/baked" "$root/checkout"
 [ "$rc" -eq 0 ] || fail "an x-bit flip exited ${rc}, not 0"
 [ -n "$out" ] || fail "an x-bit flip was reported as a clean tree"
-printf '%s\n' "$out" | grep -q 'image is stale: 1 ' ||
+grep -q 'image is stale: 1 ' <<<"$out" ||
     fail "expected a count of 1 for the x-bit flip, got: ${out}"
-printf '%s\n' "$out" | grep -q 'starship.toml (executable bit)' ||
+grep -q 'starship.toml (executable bit)' <<<"$out" ||
     fail "the x-bit-flipped path is not named with its reason: ${out}"
 
 # ---- 2b3. content + mode changing together is ONE drifted config ----
@@ -135,7 +136,7 @@ root="$(fixture bothdims)"
 printf 'palette = "z"\n' >"$root/checkout/starship.toml"
 chmod +x "$root/checkout/starship.toml"
 run_helper "$root/baked" "$root/checkout"
-printf '%s\n' "$out" | grep -q 'image is stale: 1 ' ||
+grep -q 'image is stale: 1 ' <<<"$out" ||
     fail "content+mode on one file must count once, got: ${out}"
 [ "$(printf '%s\n' "$out" | grep -c 'starship.toml')" -eq 1 ] ||
     fail "the path is listed more than once: ${out}"
@@ -149,7 +150,7 @@ root="$(fixture andname)"
 printf 'a\n' >"$root/baked/settings and hooks.json"
 printf 'b\n' >"$root/checkout/settings and hooks.json"
 run_helper "$root/baked" "$root/checkout"
-printf '%s\n' "$out" | grep -qF 'settings and hooks.json' ||
+grep -qF 'settings and hooks.json' <<<"$out" ||
     fail "the ' and '-bearing filename was truncated: ${out}"
 
 # ---- 2c. a broken comparison is indeterminate, never fresh ----
@@ -169,7 +170,7 @@ ln -s /nonexistent-target-harmon-test "$root/checkout/dangling-link"
 run_helper "$root/baked" "$root/checkout"
 [ "$rc" -eq 0 ] || fail "a dangling symlink exited ${rc} — warn-only means exit 0 even when indeterminate"
 [ -n "$out" ] || fail "a broken comparison was reported as a clean tree"
-printf '%s\n' "$out" | grep -qi 'indeterminate' ||
+grep -qi 'indeterminate' <<<"$out" ||
     fail "a broken comparison did not announce itself as indeterminate: ${out}"
 
 # ---- 3. no baked directory: absence is not staleness ----

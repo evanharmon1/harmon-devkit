@@ -14,6 +14,7 @@ repo="$(git rev-parse --show-toplevel)"
 cd "$repo"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }
@@ -346,9 +347,7 @@ for taskfile in Taskfile.yml template/Taskfile.yml.jinja; do
         # explaining why the key is there, and that comment names the key — so a
         # substring match passes on the prose alone and the assertion silently
         # stops asserting. (It did, until a mutation test caught it.)
-        printf '%s\n' "$block" |
-            grep -vE '^[[:space:]]*#' |
-            grep -qE '^[[:space:]]*interactive:[[:space:]]*true[[:space:]]*$' ||
+        grep -qE '^[[:space:]]*interactive:[[:space:]]*true[[:space:]]*$' < <(printf '%s\n' "$block" | grep -vE '^[[:space:]]*#') ||
             fail "${taskfile}: ${t} lacks 'interactive: true' — global 'output: group' hides its terminal from the script"
     done
 done
@@ -381,9 +380,9 @@ for taskfile in Taskfile.yml template/Taskfile.yml.jinja; do
         inblock { print }
     ' "$taskfile")"
     [ -n "$block" ] || fail "${taskfile}: setup:github task not found"
-    printf '%s\n' "$block" | grep -Fq './scripts/setup-github.sh --repo "{{.REPO}}"' ||
+    grep -Fq './scripts/setup-github.sh --repo "{{.REPO}}"' <<<"$block" ||
         fail "${taskfile}: setup:github does not delegate to scripts/setup-github.sh"
-    if printf '%s\n' "$block" | grep -Eq 'gh api|^[[:space:]]*-[[:space:]]*\|'; then
+    if grep -Eq 'gh api|^[[:space:]]*-[[:space:]]*\|' <<<"$block"; then
         fail "${taskfile}: setup:github contains inline action logic instead of a trivial script command"
     fi
 done

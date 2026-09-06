@@ -283,9 +283,9 @@ elif [ "$template_is_explicit" -eq 0 ]; then
         exit 2
     }
     remote_tag_object=""
-    if printf '%s\n' "$src_ref" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+    if grep -Eq '^[0-9a-fA-F]{40}$' <<<"$src_ref"; then
         :
-    elif printf '%s\n' "$src_ref" | grep -Eq '^[0-9a-fA-F]{7,39}$'; then
+    elif grep -Eq '^[0-9a-fA-F]{7,39}$' <<<"$src_ref"; then
         echo "FAIL: abbreviated recorded commits are not accepted" >&2
         exit 2
     else

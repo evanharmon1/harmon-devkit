@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
             exit 2
         }
         ack="$2"
-        if ! printf '%s\n' "$ack" | grep -qE '^@[A-Za-z0-9_/-]+=@[A-Za-z0-9_/-]+$'; then
+        if ! grep -qE '^@[A-Za-z0-9_/-]+=@[A-Za-z0-9_/-]+$' <<<"$ack"; then
             usage
             echo "FAIL: malformed CODEOWNERS acknowledgement: $ack" >&2
             exit 2
@@ -268,7 +268,7 @@ fi
 if { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } && have task; then
     tasklist="$(task --color=false --list-all 2>/dev/null || true)"
     for t in verify check security status:setup install:hooks; do
-        if ! printf '%s\n' "$tasklist" | grep -qE "^[* ]*${t}:([[:space:]]|\$)"; then
+        if ! grep -qE "^[* ]*${t}:([[:space:]]|\$)" <<<"$tasklist"; then
             err "Taskfile missing required target: ${t}"
         fi
     done
@@ -293,7 +293,7 @@ if [ -d .github/workflows ] && { [ -f Taskfile.yml ] || [ -f Taskfile.yaml ]; } 
             sed -E 's/.*task +//' | sort -u || true
     )"
     for t in $called; do
-        if ! printf '%s\n' "$tasklist" | grep -qE "^[* ]*${t}:([[:space:]]|\$)"; then
+        if ! grep -qE "^[* ]*${t}:([[:space:]]|\$)" <<<"$tasklist"; then
             err "workflow calls 'task ${t}' but the Taskfile has no such target"
         fi
     done
@@ -849,8 +849,7 @@ $(cat "$composite_file")"
                 'hashicorp/setup-terraform@' \
                 'terraform-linters/setup-tflint@' \
                 'astral-sh/setup-uv@'; do
-                if ! printf '%s\n' "$gate_provision_text" |
-                    grep -qE "^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+${setup_action}"; then
+                if ! grep -qE "^[[:space:]]*-?[[:space:]]*uses:[[:space:]]+${setup_action}" <<<"$gate_provision_text"; then
                     err "$workflow_file job '$gate_job' runs 'task check' but neither it nor the composite actions it uses provisions Terraform lint dependency: $setup_action"
                 fi
             done
@@ -1199,7 +1198,7 @@ if [ -f "$ruleset_file" ]; then
             "$ruleset_file" | sort -u
     )"
     has_ruleset_context() {
-        printf '%s\n' "$ruleset_contexts" | grep -qxF "$1"
+        grep -qxF "$1" <<<"$ruleset_contexts"
     }
     # Match a workflow `branches:` pattern. GitHub's Actions filter patterns are
     # NOT shell globs, and every difference points at accepting a filter that
@@ -1547,13 +1546,13 @@ if [ -f "$ruleset_file" ]; then
         # `synchronize` a pushed commit never re-reports on the new head SHA.
         # merge_group has exactly one activity type, so a list that omits
         # `checks_requested` (an empty list, a typo) never runs in the queue.
-        if printf '%s\n' "$keys" | grep -qx types; then
+        if grep -qx types <<<"$keys"; then
             case "$event" in
             pull_request) required_types="opened synchronize reopened" ;;
             *) required_types="checks_requested" ;;
             esac
             for required_type in $required_types; do
-                if ! printf '%s\n' "$values" | grep -qx "types $required_type"; then
+                if ! grep -qx "types $required_type" <<<"$values"; then
                     printf "its %s types: filter omits '%s', so some protected run never reports\n" \
                         "$event" "$required_type"
                     return 0
@@ -1561,7 +1560,7 @@ if [ -f "$ruleset_file" ]; then
             done
         fi
         for branch in $branches; do
-            if printf '%s\n' "$keys" | grep -qx branches; then
+            if grep -qx branches <<<"$keys"; then
                 # GitHub evaluates the patterns IN ORDER and the last match
                 # wins, so `['!main', main]` does run on main.
                 state=""
@@ -2288,11 +2287,10 @@ if [ -n "$codeql_workflow" ]; then
     )"
     has_javascript_source=false
     has_python_source=false
-    if printf '%s\n' "$first_party_source_files" |
-        grep -qE '\.(cjs|mjs|js|jsx|cts|mts|ts|tsx)$'; then
+    if grep -qE '\.(cjs|mjs|js|jsx|cts|mts|ts|tsx)$' <<<"$first_party_source_files"; then
         has_javascript_source=true
     fi
-    if printf '%s\n' "$first_party_source_files" | grep -qE '\.py$'; then
+    if grep -qE '\.py$' <<<"$first_party_source_files"; then
         has_python_source=true
     fi
 
@@ -2505,19 +2503,19 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
         for ack in "${codeowner_acks[@]}"; do
             old="${ack%%=*}"
             new="${ack#*=}"
-            if ! printf '%s\n' "$before" | grep -qxF "$old"; then
+            if ! grep -qxF "$old" <<<"$before"; then
                 err "CODEOWNERS acknowledgement is stale: $old was not present on main"
                 continue
             fi
-            if ! printf '%s\n' "$dropped" | grep -qxF "$old"; then
+            if ! grep -qxF "$old" <<<"$dropped"; then
                 err "CODEOWNERS acknowledgement is extra: $old was not actually dropped"
                 continue
             fi
-            if ! printf '%s\n' "$after" | grep -qxF "$new"; then
+            if ! grep -qxF "$new" <<<"$after"; then
                 err "CODEOWNERS acknowledgement is not materialized: replacement $new is absent"
                 continue
             fi
-            if printf '%s' "$acknowledged_old" | grep -qxF "$old"; then
+            if grep -qxF "$old" <<<"$acknowledged_old"; then
                 err "CODEOWNERS owner acknowledged more than once: $old"
                 continue
             fi
@@ -2529,7 +2527,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
 
     unacknowledged=""
     for owner in $dropped; do
-        if ! printf '%s' "$acknowledged_old" | grep -qxF "$owner"; then
+        if ! grep -qxF "$owner" <<<"$acknowledged_old"; then
             unacknowledged="${unacknowledged}${owner}
 "
         fi

@@ -508,9 +508,15 @@ cleanup() {
         # refusal is relaxed, this stays correct instead of silently deleting a
         # stranger's branch.
         branch_is_ours=0
+        # Captured, not piped and not process-substituted. `cmd | grep -q`
+        # loses a MATCH to SIGPIPE under pipefail; `grep -q < <(cmd)` discards
+        # a partial `git` failure, which here would read a stranger's branch as
+        # one this run created. A list we could not read is not evidence of
+        # ownership, so a failed `git` leaves branch_is_ours at 0.
         if [ "$branch_owned" -eq 0 ] &&
             [ "$branch_created" -eq 1 ] && [ "$tree_registered_before" -eq 0 ] &&
-            git worktree list --porcelain | grep -qxF "worktree $tree"; then
+            worktree_records="$(git worktree list --porcelain)" &&
+            grep -qxF "worktree $tree" <<<"$worktree_records"; then
             branch_is_ours=1
         fi
         # `rmdir`, never `rm -rf`. What this run created is either a worktree
@@ -535,7 +541,7 @@ cleanup() {
         # prune has nothing left to do that is ours to do. A record surviving
         # both is reported, never swept.
         rollback_tree_gone=1
-        if git worktree list --porcelain | grep -qxF "worktree $tree"; then
+        if grep -qxF "worktree $tree" < <(git worktree list --porcelain); then
             rollback_tree_gone=0
             echo "worktree:new: $tree is still registered after rollback — clear it with 'task worktree:rm -- $name'" >&2
         fi
@@ -554,7 +560,7 @@ cleanup() {
             # HEAD (challenge round 3).
             if [ "$rollback_tree_gone" -eq 0 ]; then
                 echo "worktree:new: leaving branch '$branch' alone — its worktree could not be removed and still has it checked out" >&2
-            elif git worktree list --porcelain | grep -qxF "branch refs/heads/$branch"; then
+            elif grep -qxF "branch refs/heads/$branch" < <(git worktree list --porcelain); then
                 # A non-cooperating client — a raw `git worktree add`,
                 # outside the branch lock — can attach the just-published
                 # branch before this run's own attach fails on it, and

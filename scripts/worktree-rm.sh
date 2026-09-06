@@ -807,12 +807,12 @@ fi
 # directory is re-checked immediately before acting for the same reason — a
 # recreated worktree has one, a genuinely stale record does not.
 prune_err=""
-if [ "$stale_record" -eq 1 ] && git worktree list --porcelain | grep -qxF "worktree $tree"; then
+if [ "$stale_record" -eq 1 ] && grep -qxF "worktree $tree" < <(git worktree list --porcelain); then
     if [ -d "$tree" ]; then
         die "$tree was recreated while this removal was running (another 'task worktree:new'?) — refusing to remove a worktree this run did not"
     fi
     prune_err="$(git worktree remove "$tree" 2>&1 >/dev/null)" || true
-    if git worktree list --porcelain | grep -qxF "worktree $tree"; then
+    if grep -qxF "worktree $tree" < <(git worktree list --porcelain); then
         # `remove --force` is NOT enough for a locked record — git answers a
         # single force with "use 'remove -f -f' to override or unlock first" —
         # so the instruction leads with the unlock, which is the path that also

@@ -136,13 +136,42 @@ acquire_lock() {
     lock_claim_file="${candidate_lock_file}.claim.$$.$RANDOM"
     printf '%s\n' "$candidate_owner" >"$lock_claim_file"
     lock_attempts=0
+    nonfile_observations=0
     dead_owner=""
     dead_observations=0
     while ! ln "$lock_claim_file" "$candidate_lock_file" 2>/dev/null; do
-        if [ ! -e "$candidate_lock_file" ]; then
+        # The holder can release the lock between any two tests here, so a
+        # successful `-e` says nothing about the next syscall. Ask the question
+        # that decides the action first — is it a regular file? — and only then
+        # ask whether it is still there at all, so "gone" reads as the ordinary
+        # race it is instead of as a corrupt lock. Testing `-e` first and
+        # dying on the following `-f` inverts that: it makes a benign release
+        # fatal, which is what flaked `monitor serializes concurrent
+        # reservations` under a loaded machine (#689).
+        if [ ! -f "$candidate_lock_file" ]; then
+            # Two probes cannot be atomic, so BOTH orders have a race. Testing
+            # `-e` first and dying on `-f` makes a benign release fatal (the
+            # original #689 flake). Testing `-f` first and dying on `-e` makes a
+            # legitimate ACQUISITION by another contender fatal: the lock is
+            # absent for `-f`, another process creates it, and `-e` then reports
+            # a "corrupt" lock that is in fact a valid regular file.
+            #
+            # So the fatal path re-checks the TYPE, and requires it to stay
+            # wrong across consecutive observations. A contender's lock appearing
+            # mid-probe reads as a retry; only a path that is persistently
+            # present and persistently not a regular file is a misconfiguration.
+            if [ -e "$candidate_lock_file" ] && [ ! -f "$candidate_lock_file" ]; then
+                nonfile_observations=$((nonfile_observations + 1))
+                if [ "$nonfile_observations" -ge 3 ]; then
+                    die "monitor lock is not a file: $candidate_lock_file"
+                fi
+                sleep 0.1
+            else
+                nonfile_observations=0
+            fi
             continue
         fi
-        [ -f "$candidate_lock_file" ] || die "monitor lock is not a file: $candidate_lock_file"
+        nonfile_observations=0
         observed_owner="$(cat "$candidate_lock_file" 2>/dev/null || true)"
         if [ -n "$observed_owner" ] && ! lock_owner_alive "$observed_owner"; then
             if [ "$observed_owner" = "$dead_owner" ]; then

@@ -42,7 +42,7 @@ command -v claude >/dev/null 2>&1 ||
     die "the claude CLI is required (or run the skill interactively via" \
         "your agent session instead)"
 command -v gh >/dev/null 2>&1 || die "the gh CLI is required"
-claude --help 2>/dev/null | grep -q -- "--setting-sources" ||
+grep -q -- "--setting-sources" < <(claude --help 2>/dev/null) ||
     die "this claude CLI lacks --setting-sources; refusing to launch the" \
         "worker with the repo's settings grants in effect — upgrade the CLI"
 

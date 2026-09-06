@@ -23,6 +23,7 @@ git -C "$test_repo" commit -q --allow-empty -m "current head"
 cd "$test_repo"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "FAIL: $*" >&2
     exit 1
 }
@@ -2285,9 +2286,9 @@ conflicting_rc=$?
 set -e
 [ "$conflicting_rc" -eq 2 ] ||
     fail "a conflicting --timeout-min should fail closed: $conflicting_out"
-printf '%s' "$conflicting_out" | grep -Fq '10' ||
+grep -Fq '10' <<<"$conflicting_out" ||
     fail "conflict message did not name the persisted value: $conflicting_out"
-printf '%s' "$conflicting_out" | grep -Fq '15' ||
+grep -Fq '15' <<<"$conflicting_out" ||
     fail "conflict message did not name the requested value: $conflicting_out"
 
 echo "==> a legacy state without timeout_min keeps the 15-minute default (no --timeout-min flag)"
@@ -2423,7 +2424,7 @@ zero_rc=$?
 set -e
 [ "$zero_rc" -eq 2 ] ||
     fail "a zero persisted timeout should fail closed, got rc=$zero_rc: $zero_out"
-printf '%s' "$zero_out" | grep -Fq 'timeout_min' ||
+grep -Fq 'timeout_min' <<<"$zero_out" ||
     fail "corrupt timeout_min error did not name the field: $zero_out"
 
 new_cycle
@@ -2899,7 +2900,7 @@ jq -cn \
 run_settle --surface comment --id 78 --disposition declined --note "answered"
 [ "$settle_rc" -eq 2 ] ||
     fail "a multi-finding target must demand --covers, got rc=$settle_rc: $settle_out"
-printf '%s' "$settle_out" | grep -Fq -- "--covers" ||
+grep -Fq -- "--covers" <<<"$settle_out" ||
     fail "the refusal must name the flag and the count: $settle_out"
 
 echo "==> a wrong coverage count is refused"

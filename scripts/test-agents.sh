@@ -18,11 +18,13 @@ pass=0
 fail=0
 ok() {
     pass=$((pass + 1))
-    echo "  ✓ $*"
+    echo "  ✓ $*" || true
+    return 0
 }
 bad() {
     fail=$((fail + 1))
-    echo "  ✗ $*" >&2
+    echo "  ✗ $*" >&2 || true
+    return 0
 }
 
 # guard DIR — run the guard with DIR as the repo root.
@@ -44,7 +46,7 @@ expect_fail_contains() {
     if output="$(guard "$dir" 2>&1)"; then
         bad "$desc (expected non-zero exit)"
         [ -z "$output" ] || printf '%s\n' "$output" | sed 's/^/      /' >&2
-    elif printf '%s\n' "$output" | grep -qF "$needle"; then
+    elif grep -qF "$needle" <<<"$output"; then
         ok "$desc"
     else
         bad "$desc (missing diagnostic: $needle)"
