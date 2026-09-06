@@ -463,7 +463,11 @@ echo "==> a git failure in either half is refused, not read as an empty half"
 real_git="$(command -v git)"
 cat >"${test_tmp}/bin/git" <<GITSTUB
 #!/usr/bin/env bash
-if [ -n "\${FAIL_GIT_DIFF:-}" ] && [ "\${1:-}" = "diff" ] && [ "\${2:-}" = "--name-status" ]; then
+# Matched by SCANNING the arguments, not by position: the review path also
+# passes --no-ext-diff, and pinning --name-status to \$2 made this stub stop
+# intercepting the moment a flag was added ahead of it — the case would then
+# pass by never simulating the failure at all.
+if [ -n "\${FAIL_GIT_DIFF:-}" ] && [ "\${1:-}" = "diff" ] && printf '%s\n' "\$@" | grep -Fxq -- --name-status; then
     echo "fatal: simulated missing object" >&2
     exit 128
 fi

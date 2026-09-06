@@ -162,7 +162,7 @@ echo "==> a badge mentioned mid-sentence does not split a finding"
 # gate" into fabricated findings, one of which could pick up a spurious higher
 # severity. Both finders lead a finding with its badge, so a cut is made only
 # where the badge opens a line.
-jq -n '{review:{id:1,commit_id:"0303030303030303030303030303030303030303",
+jq -n '{review:{id:1,state:"COMMENTED",commit_id:"0303030303030303030303030303030303030303",
       user:{id:199175422},
       body:"### Codex Review\n\n**P1** The gate accepts an empty list, the same class as the P0/P1 rule in AGENTS.md.\n\n**Reviewed commit:** `0303030303030303030303030303030303030303`"},
     comments:[]}' >"$tmp/prose.json"
@@ -248,7 +248,7 @@ echo "==> an off-scale badge does not inherit a known badge's priority"
 # is adjudicated as at least a P2.
 head40=3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a
 jq -n --arg head "$head40" '{
-    review: { user: { id: 199175422 }, commit_id: $head,
+    review: { state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
               body: "**P30** something nobody has a rule for\n\n**Reviewed commit:** `\($head)`" }
 }' >"$tmp/offscale.json"
 node "$normalizer" --finder codex-cloud --stage integration --round 1 \
@@ -276,7 +276,7 @@ echo "==> a current-head review that states no declared verdict is not terminal"
 # declared clean verdict nor anything decodable — used to satisfy it and emit a
 # successful empty slice.
 jq -n --arg head "$head40" '{
-    review: { user: { id: 199175422 }, commit_id: $head,
+    review: { state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
               body: "Still working on it, nothing to report yet." }
 }' >"$tmp/nonterminal.json"
 set +e
@@ -290,7 +290,7 @@ set -e
 echo "==> a clean verdict in the finder's own declared words IS terminal"
 clean_verdict="$(jq -r '.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.clean_verdict' "$registry")"
 jq -n --arg head "$head40" --arg v "$clean_verdict" '{
-    review: { user: { id: 199175422 }, commit_id: $head, body: $v }
+    review: { state: "COMMENTED", user: { id: 199175422 }, commit_id: $head, body: $v }
 }' >"$tmp/clean.json"
 node "$normalizer" --finder codex-cloud --stage integration --round 1 \
     --registry "$registry" --reviewed-head "$head40" <"$tmp/clean.json" >/dev/null ||
@@ -317,7 +317,7 @@ echo "==> an inline comment from an earlier review is refused, not banked"
 # place. Same actor, same head, different review: banking it reports a stale
 # finding as this round's.
 jq -n --arg head "$head40" '{
-    review: { id: 2, user: { id: 199175422 }, commit_id: $head,
+    review: { id: 2, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
               body: "Codex Review: didn'"'"'t find any major issues." },
     comments: [ { id: 9, pull_request_review_id: 1, user: { id: 199175422 },
                   original_commit_id: $head, path: "a.js", line: 1,
@@ -335,7 +335,7 @@ grep -Fq 'belongs to review 1' "$tmp/stale-review.err" ||
 
 echo "==> an inline comment with no review attribution is refused"
 jq -n --arg head "$head40" '{
-    review: { id: 2, user: { id: 199175422 }, commit_id: $head,
+    review: { id: 2, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
               body: "Codex Review: didn'"'"'t find any major issues." },
     comments: [ { id: 9, user: { id: 199175422 }, original_commit_id: $head,
                   path: "a.js", line: 1, body: "P1 unattributed" } ]
@@ -352,7 +352,7 @@ echo "==> a line-start off-scale badge keeps the P2 floor"
 # priorityOf() consults the line-start path FIRST, so a boundary check that
 # lived only in the fallback path never decided anything.
 jq -n --arg head "$head40" '{
-    review: { id: 3, user: { id: 199175422 }, commit_id: $head,
+    review: { id: 3, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
               body: "Codex Review: didn'"'"'t find any major issues." },
     comments: [ { id: 9, pull_request_review_id: 3, user: { id: 199175422 },
                   original_commit_id: $head, path: "a.js", line: 1,
@@ -369,7 +369,7 @@ echo "==> a quoted clean verdict inside pending narration is not terminal"
 # The declared sentence must OPEN the body. Quoting it while saying the review
 # is still pending is not a verdict.
 jq -n --arg head "$head40" '{
-    review: { id: 4, user: { id: 199175422 }, commit_id: $head,
+    review: { id: 4, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
               body: "Review is still pending; someone quoted: Codex Review: didn'"'"'t find any major issues. No verdict has been issued." }
 }' >"$tmp/quoted-clean.json"
 set +e
@@ -379,5 +379,56 @@ node "$normalizer" --finder codex-cloud --stage integration --round 1 \
 status=$?
 set -e
 [ "$status" -eq 3 ] || fail "a quoted clean verdict inside pending narration exited $status, not 3"
+
+echo "==> a dismissed review is not a clean verdict"
+# Under inline-comment-count the review's existence IS the signal, so a
+# dismissed review carrying no comments was banked as clean.
+for bad_state in DISMISSED PENDING; do
+    copilot_actor="$(jq -r '.finders[] | select(.slug == "copilot-cloud") | .trusted_actor_id' "$registry")"
+    jq -n --arg head "$head40" --arg st "$bad_state" --argjson actor "$copilot_actor" '{
+        review: { id: 5, state: $st, user: { id: $actor }, commit_id: $head, body: "" }
+    }' >"$tmp/state-$bad_state.json"
+    set +e
+    node "$normalizer" --finder copilot-cloud --stage integration --round 1 \
+        --registry "$registry" --reviewed-head "$head40" <"$tmp/state-$bad_state.json" >/dev/null 2>&1
+    status=$?
+    set -e
+    [ "$status" -eq 3 ] || fail "a $bad_state review was accepted as terminal (exit $status)"
+done
+
+echo "==> a review with no state at all is refused"
+copilot_actor="$(jq -r '.finders[] | select(.slug == "copilot-cloud") | .trusted_actor_id' "$registry")"
+jq -n --arg head "$head40" --argjson actor "$copilot_actor" '{
+    review: { id: 6, user: { id: $actor }, commit_id: $head, body: "" }
+}' >"$tmp/state-absent.json"
+set +e
+node "$normalizer" --finder copilot-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/state-absent.json" >/dev/null 2>&1
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "a review with no state was accepted as terminal (exit $status)"
+
+echo "==> a success reaction on the trigger IS a terminal clean result"
+# codex-cloud declares `reaction` as a terminal surface and the integrate
+# checker already treats a fresh +1 on the trigger as clean; refusing it here
+# blocked a genuinely complete cycle.
+success_reaction="$(jq -r '.finders[] | select(.slug == "codex-cloud") | .collection.terminal_signals.success_reaction' "$registry")"
+jq -n --arg r "$success_reaction" '{
+    trigger_reactions: [ { content: $r, user: { id: 199175422 } } ]
+}' >"$tmp/reaction.json"
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/reaction.json" >/dev/null ||
+    fail "a declared success reaction on the trigger was not accepted as terminal"
+
+echo "==> another actor's reaction is not this finder's verdict"
+jq -n --arg r "$success_reaction" '{
+    trigger_reactions: [ { content: $r, user: { id: 1 } } ]
+}' >"$tmp/reaction-foreign.json"
+set +e
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/reaction-foreign.json" >/dev/null 2>&1
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "a stray reaction from another actor was accepted as terminal (exit $status)"
 
 echo "finder normalization OK ($cases fixture(s))"

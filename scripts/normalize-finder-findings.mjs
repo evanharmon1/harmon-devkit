@@ -511,19 +511,48 @@ if (finder.raw_shape === 'labelled-text') {
         return Boolean(declaredCount) && new RegExp(String(declaredCount).replace(/\[\[:space:\]\]/g, '\\s'), 'i').test(text)
       case 'inline-comment-count':
         // The inline comments ARE the result and a review carrying none is
-        // the clean verdict, so the review's existence at this head is the
-        // signal. There is no sentence or count to match.
+        // the clean verdict, so a SUBMITTED review's existence at this head is
+        // the signal. There is no sentence or count to match — which is
+        // exactly why the state check below carries the whole weight here.
         return true
       default:
         return false
     }
   }
+  // A review's STATE says whether it is a verdict at all. `DISMISSED` and
+  // `PENDING` are explicitly not: under `inline-comment-count`, where the
+  // review's existence is the whole signal, a dismissed review carrying no
+  // comments was being banked as a clean result. Missing or unrecognized is
+  // refused for the same reason a missing verdict is — this decoder does not
+  // get to assume a state it was not told.
+  const SUBMITTED_REVIEW_STATES = new Set(['approved', 'changes_requested', 'commented'])
+  const reviewIsSubmitted = (review) => {
+    const state = review?.state
+    if (state === undefined || state === null) return false
+    return SUBMITTED_REVIEW_STATES.has(String(state).toLowerCase())
+  }
+  // The `reaction` surface, where the finder declares one. A fresh success
+  // reaction on the exact trigger comment is a complete clean verdict for
+  // codex-cloud, and the integrate checker already treats it as one — so a
+  // reaction-only cycle used to exit 3 here as though no evidence existed,
+  // refusing a result that is genuinely terminal. It must be THIS finder's
+  // reaction, the declared success content, and on the trigger the caller
+  // names, so a stray 👍 from anyone else proves nothing.
+  const successReaction = finder.collection?.terminal_signals?.success_reaction
+  const sawSuccessReaction =
+    surfaces.has('reaction') &&
+    Boolean(successReaction) &&
+    (payload.trigger_reactions ?? []).some(
+      (r) => byThisFinder(r) && String(r.content ?? '').toLowerCase() === String(successReaction).toLowerCase()
+    )
   const sawCurrentHeadArtifact =
+    sawSuccessReaction ||
     (surfaces.has('review') &&
       payload.review !== undefined &&
       payload.review !== null &&
       byThisFinder(payload.review) &&
       atThisHead(payload.review) &&
+      reviewIsSubmitted(payload.review) &&
       bodyIsTerminal(payload.review.body)) ||
     // An inline comment at this head is a finding, and a finding is terminal.
     (surfaces.has('inline') && (payload.comments ?? []).some((c) => byThisFinder(c) && inlineAtThisHead(c))) ||

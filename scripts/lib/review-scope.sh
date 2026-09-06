@@ -38,7 +38,11 @@ git_status_porcelain() {
     git status --porcelain --untracked-files=all --ignore-submodules=none "$@"
 }
 git_diff_name_status() {
-    git diff --name-status --ignore-submodules=none "$@"
+    # `--no-ext-diff` on every diff this file takes: `diff.external` is
+    # ordinary repo or user config, and a helper that exits 0 with no output
+    # silently empties the manifest and the content diff alike, which reads as
+    # "nothing changed" rather than as a failure.
+    git diff --no-ext-diff --name-status --ignore-submodules=none "$@"
 }
 
 # An empty scope has no correct outcome, so no target path may reach Codex
@@ -199,7 +203,7 @@ resolve_review_scope() {
             if git rev-parse --verify --quiet "$2^" >/dev/null; then
                 manifest="$(git_diff_name_status "$2^" "$2" 2>/dev/null | cap_manifest || true)"
             else
-                manifest="$(git diff-tree --no-commit-id --name-status -r --root --ignore-submodules=none "$2" 2>/dev/null | cap_manifest || true)"
+                manifest="$(git diff-tree --no-ext-diff --no-commit-id --name-status -r --root --ignore-submodules=none "$2" 2>/dev/null | cap_manifest || true)"
             fi
             target_kind="commit"
             review_diff_spec="commit:$2"
@@ -407,7 +411,7 @@ collect_untracked_diff() {
         # swallowed, or the prompt would carry a partial diff while still
         # claiming the manifest above it is authoritative.
         status=0
-        git diff --no-index --ignore-submodules=none -- /dev/null "$path" || status=$?
+        git diff --no-ext-diff --no-index --ignore-submodules=none -- /dev/null "$path" || status=$?
         case "$status" in
         0 | 1) ;;
         *)
@@ -463,19 +467,19 @@ refuse_dirty_submodules() {
 collect_review_diff() {
     case "$review_diff_spec" in
     base:*)
-        git diff --ignore-submodules=none "${review_diff_spec#base:}...HEAD"
+        git diff --no-ext-diff --ignore-submodules=none "${review_diff_spec#base:}...HEAD"
         ;;
     commit:*)
         local sha="${review_diff_spec#commit:}"
         if git rev-parse --verify --quiet "${sha}^" >/dev/null; then
-            git diff --ignore-submodules=none "${sha}^" "$sha"
+            git diff --no-ext-diff --ignore-submodules=none "${sha}^" "$sha"
         else
-            git diff-tree --no-commit-id -p -r --root --ignore-submodules=none "$sha"
+            git diff-tree --no-ext-diff --no-commit-id -p -r --root --ignore-submodules=none "$sha"
         fi
         ;;
     worktree)
         refuse_dirty_submodules || return 1
-        git diff --ignore-submodules=none HEAD || return 1
+        git diff --no-ext-diff --ignore-submodules=none HEAD || return 1
         collect_untracked_diff || return 1
         ;;
     both:*)
@@ -489,9 +493,9 @@ collect_review_diff() {
         # halves were present while carrying only one, which is the same
         # partial-review-reads-as-clean failure the empty-scope refusals exist
         # to prevent.
-        git diff --ignore-submodules=none "${base}...HEAD" || return 1
+        git diff --no-ext-diff --ignore-submodules=none "${base}...HEAD" || return 1
         printf '\nUncommitted changes (git diff HEAD, plus untracked files):\n'
-        git diff --ignore-submodules=none HEAD || return 1
+        git diff --no-ext-diff --ignore-submodules=none HEAD || return 1
         collect_untracked_diff || return 1
         ;;
     *)

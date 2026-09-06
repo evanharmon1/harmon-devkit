@@ -451,7 +451,11 @@ real_git="$(command -v git)"
 cat >"$fail_bin/git" <<EOF
 #!/usr/bin/env bash
 # Fail only the untracked-file diff; every other git call is the real one.
-if [ "\$1" = diff ] && [ "\$2" = --no-index ]; then
+# Matched by SCANNING the arguments rather than by position: the review path
+# also passes --no-ext-diff, and pinning --no-index to \$2 made this stub stop
+# intercepting the moment a flag was added ahead of it — the case then passed
+# by not simulating the failure at all.
+if [ "\$1" = diff ] && printf '%s\n' "\$@" | grep -Fxq -- --no-index; then
     echo "simulated git failure" >&2
     exit 128
 fi
@@ -627,5 +631,33 @@ EOF
 else
     echo "==> SKIPPED (no bubblewrap on this host): launcher-sibling isolation"
 fi
+
+echo "==> an external diff driver cannot empty the scratch checkout's patch"
+# `diff.external` is ordinary repo/user config and git honours it: a helper
+# that exits 0 with no output yields an EMPTY patch, so the scratch tree keeps
+# the pre-change content while the manifest says the file is covered — a clean
+# result banked for work the finder never saw.
+printf 'old-content\n' >"$work/tracked.txt"
+git -C "$work" add tracked.txt
+git -C "$work" commit -qm 'add tracked file'
+printf 'new-content\n' >"$work/tracked.txt"
+cat >"$tmp/empty-diff-driver.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$tmp/empty-diff-driver.sh"
+git -C "$work" config diff.external "$tmp/empty-diff-driver.sh"
+(
+    cd "$work" || exit 1
+    # shellcheck source=/dev/null
+    . ./scripts/lib/readonly-sandbox.sh
+    sandbox_create HEAD 1 >/dev/null || exit 1
+    status=0
+    grep -q 'new-content' "$readonly_sandbox_dir/tracked.txt" || status=1
+    sandbox_cleanup
+    exit "$status"
+) || fail "an external diff driver emptied the patch and the scratch checkout kept the old content"
+git -C "$work" config --unset diff.external
+git -C "$work" checkout -- tracked.txt
 
 echo "finder review runner OK"

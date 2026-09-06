@@ -284,7 +284,14 @@ sandbox_create() {
         # patch", so a scope containing uncommitted work got a committed-only
         # checkout while the prompt and manifest claimed otherwise — the
         # finder would then be reading a tree that contradicts its own input.
-        git diff --binary HEAD >"$patch" || {
+        # `--no-ext-diff` is load-bearing, not tidiness. `diff.external` is
+        # ordinary repository or user configuration, and git honours it here:
+        # a helper that exits 0 without output yields an EMPTY patch, so the
+        # scratch checkout keeps the pre-change content while the manifest
+        # above the prompt says the file is covered — a finder then reviews the
+        # old tree and its clean result is banked for work it never saw. Every
+        # diff this review path takes passes it, for the same reason.
+        git diff --no-ext-diff --binary HEAD >"$patch" || {
             rm -f "$patch"
             echo "readonly-sandbox: could not collect the working-tree changes for the scratch checkout" >&2
             sandbox_create_failed
