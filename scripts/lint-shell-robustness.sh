@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lint-shell-robustness.sh — guard the two shell idioms whose EXIT STATUS LIES.
 #
-# 1. `PRODUCER | grep -q PATTERN` under `set -o pipefail` (#689).  # shell-robustness: ok — this line names the shape the guard forbids
+# 1. `PRODUCER | grep -q PATTERN` under `set -o pipefail` (#689). # shell-robustness: ok — this line names the shape the guard forbids
 #    `grep -q` exits the moment it matches. The producer is usually still
 #    writing, so it takes SIGPIPE and dies 141; `pipefail` then reports the
 #    whole pipeline as FAILED even though grep MATCHED. Measured here: 0/100
@@ -43,7 +43,7 @@
 # here-doc bodies, inside quoted strings, everywhere — and makes each genuine
 # exception state itself out loud:
 #
-#   … code …                 # shell-robustness: ok — why this one is fine
+#   … code …                # shell-robustness: ok — why this one is fine
 #
 #   # shell-robustness: begin-exempt — why this whole region is fine
 #   … lines, e.g. a here-doc whose body must stay byte-exact …
@@ -55,6 +55,10 @@
 # is itself an error, so the escape hatch cannot be used silently. False
 # positives are loud and cost a reviewer one annotation. False negatives were
 # invisible and cost four review rounds.
+#
+# Scope: every tracked *.sh / *.bash except snippets/ — the same set
+# scripts/shell-quality.sh lints. The reporter check additionally applies only
+# to test-*.sh suites.
 #
 # Usage: ./scripts/lint-shell-robustness.sh [file ...]
 #   With no arguments, checks every tracked file in scope.
@@ -75,11 +79,18 @@ if [ $# -gt 0 ]; then
 else
     REPO_ONLY=1
     cd "$(git rev-parse --show-toplevel)"
+    # EVERY tracked shell file, matching scripts/shell-quality.sh. A guard
+    # scoped to scripts/ and ai/skills/ reported the repository clean while
+    # `.claude/hooks/` and `.devcontainer/` carried the defect — including two
+    # hooks that fail OPEN on it (see the exemption reasons there).
+    # Snippets are excluded for the same reason shell-quality excludes them:
+    # they are deliberately incomplete fragments.
+    #
     # NUL-delimited: a tracked filename may legally contain a newline, and
     # splitting one into nonexistent pieces would silently shrink the scan.
     while IFS= read -r -d '' f; do
         files+=("$f")
-    done < <(git ls-files -z -- 'scripts/*.sh' 'ai/skills/*.sh')
+    done < <(git ls-files -z -- '*.sh' '*.bash' ':(exclude)snippets/**')
 fi
 
 [ ${#files[@]} -gt 0 ] || {
@@ -92,7 +103,15 @@ trap 'rm -f "${findings}"' EXIT
 
 for f in "${files[@]}"; do
     awk -v FILE="$f" '
-    function reason_ok(s) { return (s ~ /(—|--)[[:space:]]*[^[:space:]]/) }
+    # The reason must follow the MARKER. Matching a dash anywhere on the line
+    # let an earlier `--option` stand in for it, so
+    # `producer | grep --quiet x # shell-robustness: ok` passed with no reason
+    # at all — silently, which is the one thing this design exists to prevent.
+    function reason_ok(s,   t) {
+        t = s
+        if (!sub(/^.*shell-robustness:[[:space:]]*(ok|begin-exempt|exempt-file)[[:space:]]*/, "", t)) return 0
+        return (t ~ /^(—|--)[[:space:]]*[^[:space:]]/)
+    }
 
     # Exemption markers. Each needs a reason; a bare marker is itself reported.
     /shell-robustness:[[:space:]]*exempt-file/ {
@@ -100,10 +119,15 @@ for f in "${files[@]}"; do
         next
     }
     /shell-robustness:[[:space:]]*begin-exempt/ {
-        if (reason_ok($0)) { block = 1 } else { printf "%s:%d: `begin-exempt` marker with no reason after the dash\n", FILE, FNR }
+        if (reason_ok($0)) { block = 1; block_line = FNR } else { printf "%s:%d: `begin-exempt` marker with no reason after the dash\n", FILE, FNR }
         next
     }
-    /shell-robustness:[[:space:]]*end-exempt/ { block = 0; next }
+    /shell-robustness:[[:space:]]*end-exempt/ {
+        if (!block) printf "%s:%d: `end-exempt` with no open `begin-exempt`\n", FILE, FNR
+        block = 0
+        block_line = 0
+        next
+    }
 
     {
         line = $0
@@ -135,6 +159,12 @@ for f in "${files[@]}"; do
 
         prev = $0
     }
+
+    # An unclosed block would suppress every later finding in the file, so the
+    # typo must be the error rather than a silent licence.
+    END {
+        if (block) printf "%s:%d: `begin-exempt` is never closed — everything after it would be silently exempt\n", FILE, block_line
+    }
     ' "$f"
 done >>"$findings"
 
@@ -145,11 +175,39 @@ for f in "${files[@]}"; do
     *) continue ;;
     esac
     awk -v FILE="$f" '
-    function reason_ok(s) { return (s ~ /(—|--)[[:space:]]*[^[:space:]]/) }
+    # The reason must follow the MARKER. Matching a dash anywhere on the line
+    # let an earlier `--option` stand in for it, so
+    # `producer | grep --quiet x # shell-robustness: ok` passed with no reason
+    # at all — silently, which is the one thing this design exists to prevent.
+    function reason_ok(s,   t) {
+        t = s
+        if (!sub(/^.*shell-robustness:[[:space:]]*(ok|begin-exempt|exempt-file)[[:space:]]*/, "", t)) return 0
+        return (t ~ /^(—|--)[[:space:]]*[^[:space:]]/)
+    }
     /shell-robustness:[[:space:]]*exempt-file/ { if (reason_ok($0)) exempt_file = 1; next }
     /shell-robustness:[[:space:]]*begin-exempt/ { if (reason_ok($0)) block = 1; next }
     /shell-robustness:[[:space:]]*end-exempt/ { block = 0; next }
     exempt_file || block { next }
+
+    # A ONE-LINE definition: `ok() { …; }`. This repo used that spelling until
+    # this change converted it, so a guard that ignores it would not stop its
+    # return. The body is whatever sits between the braces.
+    $0 ~ /^[[:space:]]*(function[[:space:]]+)?(ok|bad|pass|fail|failed|good|note|warn|skip|skipped|report)[[:space:]]*(\(\))?[[:space:]]*\{.*\}[[:space:]]*$/ &&
+    $0 ~ /(^[[:space:]]*function[[:space:]]|\(\))/ {
+        name = $0
+        sub(/^[[:space:]]*function[[:space:]]+/, "", name)
+        sub(/[[:space:]]*\(\).*$/, "", name)
+        sub(/[[:space:]]*\{.*$/, "", name)
+        gsub(/[[:space:]]/, "", name)
+        inner = $0
+        sub(/^[^{]*\{/, "", inner)
+        sub(/\}[[:space:]]*$/, "", inner)
+        if (inner !~ /(^|[[:space:];&|(])exit([[:space:]]|$)/ &&
+            !($0 ~ /shell-robustness:[[:space:]]*ok/ && reason_ok($0)) &&
+            inner !~ /;[[:space:]]*return 0[[:space:]]*;?[[:space:]]*$/)
+            printf "%s:%d: reporter `%s()` must end with `return 0` — otherwise its own status is read as the assertion s\n", FILE, FNR, name
+        next
+    }
 
     # All four bash spellings, plus the brace on its own line.
     $0 ~ /^[[:space:]]*(function[[:space:]]+)?(ok|bad|pass|fail|failed|good|note|warn|skip|skipped|report)[[:space:]]*(\(\))?[[:space:]]*(\{)?[[:space:]]*$/ &&

@@ -11,7 +11,7 @@ command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 [[ -n "$command" ]] || exit 0
 
 # Only police git invocations.
-printf '%s' "$command" | grep -qE '\bgit\b' || exit 0
+printf '%s' "$command" | grep -qE '\bgit\b' || exit 0 # shell-robustness: ok — pre-existing; the fail-open risk is tracked in #822 and deliberately not fixed in a test-robustness PR
 
 if command -v python3 >/dev/null 2>&1; then
     if ! python3 -c '

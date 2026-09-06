@@ -271,6 +271,47 @@ BODY
 expect_flagged "a block exemption covers its region and nothing after it" \
     "$(fixture exempt-block.sh "$body")" ':6:'
 
+# Review round 1 found three ways the escape hatch or the reporter scan could
+# be slipped. Each is pinned here.
+
+cat >"$body" <<'BODY'
+producer | grep --quiet x # shell-robustness: ok
+BODY
+expect_flagged "a reason must follow the MARKER, not merely appear on the line" \
+    "$(fixture reason-anchored.sh "$body")" 'no reason'
+
+cat >"$body" <<'BODY'
+ok() { echo "check $*"; }
+BODY
+expect_flagged "a one-line reporter definition is inspected" \
+    "$(fixture test-oneline.sh "$body")" 'return 0'
+
+cat >"$body" <<'BODY'
+ok() { echo "check $*"; return 0; }
+BODY
+expect_clean "a one-line reporter that ends in return 0" \
+    "$(fixture test-oneline-ok.sh "$body")"
+
+cat >"$body" <<'BODY'
+fail() { echo "boom" >&2; exit 1; }
+BODY
+expect_clean "a one-line reporter that exits" \
+    "$(fixture test-oneline-exits.sh "$body")"
+
+cat >"$body" <<'BODY'
+# shell-robustness: begin-exempt — a real reason, but never closed
+x=1
+printf '%s\n' "$y" | grep -q boom
+BODY
+expect_flagged "an unclosed begin-exempt is an error, not a licence to EOF" \
+    "$(fixture unclosed-block.sh "$body")" 'never closed'
+
+cat >"$body" <<'BODY'
+# shell-robustness: end-exempt
+BODY
+expect_flagged "an end-exempt with no open block is reported" \
+    "$(fixture stray-end.sh "$body")" 'no open'
+
 echo "==> the guard reads what it is asked to read"
 
 if out="$("$GUARD" "$TMPROOT/definitely-absent.sh" 2>&1)"; then
