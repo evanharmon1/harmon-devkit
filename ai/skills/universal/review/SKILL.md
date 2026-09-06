@@ -91,10 +91,19 @@ has produced exactly one pass at the same `reviewed_head`; an incomplete one is
 produced a pass is carried only in its `finder`/`slot` fields and in its
 finding ids (`<stage>-r<round>-<finder>-<n>`); adjudication, the exit
 computation and the renderer read `findings[]` and never branch on it, so a
-finder's own output shape and severity vocabulary are decoded once — by
-`scripts/normalize-finder-findings.mjs`, against that finder's
-`agent-registry.json` `raw_shape` and `severity_map` — before it reaches any of
-them.
+finder's own output shape and severity vocabulary are decoded once, against
+that finder's `agent-registry.json` `raw_shape` and `severity_map`, before it
+reaches any of them. **Where that decoding happens is what `raw_shape`
+selects.** A `github-review-json` finder — the PR-side cloud reviews — has a
+machine-readable payload, so `scripts/normalize-finder-findings.mjs` decodes it
+mechanically and fails closed on anything it cannot decode. A `labelled-text`
+finder — every local CLI pass, Codex's included — has only free text, so that
+program refuses it by design: its output is the dispatched
+`challenger`/`reviewer` role's evidence source, and the role reads the badges
+against that same `severity_map` and returns the decoded findings inside its
+own `result.challenger`/`result.reviewer` envelope (below). Routing a
+`labelled-text` pass into the normalizer is a defect rather than a fallback —
+it would report every local finder unavailable.
 
 **Per-run finder selection.** An attributable operator instruction for this run
 may add finders to a stage's configured set, or name the set it wants; it may
