@@ -447,6 +447,12 @@ expect_flagged "an OPTION-bearing command prefix (env -i, command -p)" \
     "$(fixture prefix-opts.sh "$body")" 'grep -q'
 
 cat >"$body" <<'BODY'
+seq 100000 | env -u LC_ALL grep -q 1
+BODY
+expect_flagged "a prefix option that takes a separate ARGUMENT (env -u NAME)" \
+    "$(fixture prefix-optarg.sh "$body")" 'grep -q'
+
+cat >"$body" <<'BODY'
 seq 100000 | \
     grep -q 1
 BODY

@@ -199,19 +199,19 @@ for f in "${files[@]}"; do
         skip = (exempt_file || block || inline_ok)
 
         # R1 — a pipe feeding a grep that carries a quiet flag.
-        if (!skip && line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+        if (!skip && line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([^[:space:]|)\];&]+[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: `| grep -q` — grep exits on match, SIGPIPEs the producer, and `pipefail` turns a MATCH into a failure\n", FILE, FNR
         # R2 — a pipe feeding a grep whose options continue on the next line.
-        else if (!skip && line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]*\\[[:space:]]*$/)
+        else if (!skip && line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([^[:space:]|)\];&]+[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]*\\[[:space:]]*$/)
             printf "%s:%d: `| grep \\` — options continue on the next line; a quiet flag here would be the SIGPIPE shape\n", FILE, FNR
         # R3a — the previous line ends with a SINGLE pipe (not `||`, which is
         # an or-list, and not `\`, which continues an argument list) and this
         # line leads with a quiet grep.
         else if (!skip && prev ~ /(^|[^|])\|[[:space:]]*\\?[[:space:]]*$/ &&
-                 line ~ /^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+                 line ~ /^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([^[:space:]|)\];&]+[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: continued `| grep -q` pipeline — same SIGPIPE shape, split across lines\n", FILE, FNR
         # R3b — this line itself leads with the pipe (`producer \` then `| grep -q`).
-        else if (!skip && line ~ /^[[:space:]]*\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+        else if (!skip && line ~ /^[[:space:]]*\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([^[:space:]|)\];&]+[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: continued `| grep -q` pipeline — same SIGPIPE shape, split across lines\n", FILE, FNR
         # R3c — BOTH continuations at once: `producer |`, then `grep \`, then
         # `-q pattern` on a third line. R3a wants the flag on the grep line and
@@ -225,8 +225,8 @@ for f in "${files[@]}"; do
         # keeps, and it tracks a formatting fact rather than shell grammar.
         if (line ~ /\\[[:space:]]*$/ &&
             (grep_cont ||
-             (prev ~ /(^|[^|])\|[[:space:]]*\\?[[:space:]]*$/ && line ~ /^[[:space:]]*\|?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]|$)/) ||
-             line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]|$)/))
+             (prev ~ /(^|[^|])\|[[:space:]]*\\?[[:space:]]*$/ && line ~ /^[[:space:]]*\|?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([^[:space:]|)\];&]+[[:space:]]+)*)?grep([[:space:]]|$)/) ||
+             line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([^[:space:]|)\];&]+[[:space:]]+)*)?grep([[:space:]]|$)/))
             grep_cont = 1
         else
             grep_cont = 0
