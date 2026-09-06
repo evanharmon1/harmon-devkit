@@ -2562,6 +2562,7 @@ expect_ok "update guidance waives classifier prerequisites for a skills-source r
 # SHIPS_CLASSIFIER_NATIVELY, `-eq 3` on the diagnostic) broke the moment the
 # detector grew a line, and never said anything about WHERE the waiver applies:
 # all three sites could collapse into one and the totals would still match.
+# shell-robustness: begin-exempt — the pipeline runs in a `sh -c`/`bash -c` subshell that never enables pipefail
 expect_ok "update guidance waives skills-sync at the pre-review guard site" \
     sh -c 'grep -A5 -F "$2" "$1" | grep -qF "$3"' sh \
     "$STANDARDIZE_REFS/mode-update.md" \
@@ -2582,6 +2583,7 @@ expect_ok "update guidance keeps the skill_categories carve-out for a native cla
     "$STANDARDIZE_REFS/mode-update.md" \
     'required skill_categories question is not active' \
     '[ "$SHIPS_CLASSIFIER_NATIVELY" != "true" ]'
+# shell-robustness: end-exempt
 # The detector is lifted out of the doc and RUN against throwaway repos below,
 # so its marker pair has to stay unique file-wide: a second copy of either
 # marker would widen the sed range and hand `bash -eu` a truncated program.
@@ -2646,6 +2648,7 @@ expect_ok "classifier detector requires a regular-file integrate entry point" \
 # The verb probes must anchor on the helper's dispatch arms, not on the usage
 # strings a comment can print — that difference is the whole finding.
 for cls_verb in reserve attach check show reap; do
+    # shell-robustness: begin-exempt — the pipeline runs in a `sh -c`/`bash -c` subshell that never enables pipefail
     expect_ok "classifier detector anchors $cls_verb on a dispatch case arm" \
         sh -c 'grep -F "$2" "$1" | grep -qF classifier_code_has' sh \
         "$GU_CLASSIFIER_SNIPPET" "^$cls_verb\\)"
@@ -2661,6 +2664,7 @@ expect_fail "classifier detector code no longer anchors on printable usage strin
 expect_ok "classifier detector anchors the pending and escalate exit contract" \
     sh -c 'for needle in "$2" "$3" "$4" "$5"; do
         grep -F "$needle" "$1" | grep -qF classifier_code_has || exit 1
+    # shell-robustness: end-exempt
     done' sh \
     "$GU_CLASSIFIER_SNIPPET" \
     '^emit pending ' '^exit 11$' '^emit escalate ' '^exit 13$'
@@ -2992,7 +2996,9 @@ classifier_verdict_frozen_pipefail() {
 freeze_classifier_probe code-pipeline <<'SUPERSEDEDPIPE'
 SKILLS_SOURCE_CLASSIFIER="ai/skills/universal/shepherd/assets/check-codex-cloud-review.sh"
 classifier_code_has() {
+    # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
     sed 's/^[[:space:]]*//' "$SKILLS_SOURCE_CLASSIFIER" | grep -v '^#' | grep -qE "$1"
+    # shell-robustness: end-exempt
 }
 if classifier_code_has '^reserve\)'; then
     SHIPS_CLASSIFIER_NATIVELY=true
@@ -3092,9 +3098,11 @@ SUPERSEDED
 # (too strict) and accepted keys appearing only in the body (too loose).
 freeze_classifier_probe frontmatter-greps <<'SUPERSEDEDFM'
 SKILLS_SOURCE_SHEPHERD_SKILL="ai/skills/universal/shepherd/SKILL.md"
+# shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
 if head -n 1 "$SKILLS_SOURCE_SHEPHERD_SKILL" | grep -qxF -- '---' &&
     grep -qE '^name:[[:space:]]*shepherd[[:space:]]*$' "$SKILLS_SOURCE_SHEPHERD_SKILL" &&
     grep -qE '^description:[[:space:]]*[^[:space:]]' "$SKILLS_SOURCE_SHEPHERD_SKILL"; then
+# shell-robustness: end-exempt
     SHIPS_CLASSIFIER_NATIVELY=true
 else
     SHIPS_CLASSIFIER_NATIVELY=false
@@ -3939,12 +3947,14 @@ expect_ok "hand-off retires the verdict before the report" \
 expect_ok "the schema overview names the classes and notes in use" \
     sh -c 'over="$(grep -n "Silent non-adoption is the one gap" "$1" | cut -d: -f1)"
         seg="$(sed -n "${over},$((over + 22))p" "$1")"
+        # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
         printf "%s\n" "$seg" | grep -qF "co-owned-prose" &&
         printf "%s\n" "$seg" | grep -qF "known-false-verified" &&
         printf "%s\n" "$seg" | grep -qF "unverified-equivalent" &&
         printf "%s\n" "$seg" | grep -qF "gitkeep" &&
         printf "%s\n" "$seg" | grep -qF "unknown-until-apply"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+# shell-robustness: end-exempt
 expect_fail "no pre-redesign class label survives in the guidance" \
     grep -qE "gitkeep-benign|filtered-known" "$STANDARDIZE_REFS/mode-update.md"
 # Grepping the recipe proves it says the right words; running it proves the words
@@ -4193,10 +4203,12 @@ expect_ok "audit drift class K routes MISSING to the non-adoption gotcha" \
 # pre-filter form cannot) and the Markdown basename test directly under it.
 expect_ok "co-owned prose globs agree between diff-template.sh and the non-adoption snippet" \
     sh -c 'for f in "$1" "$2"; do
+        # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
         grep -A2 -E "^[[:space:]]*docs/\* \| specs/\*\)$" "$f" |
             grep -qF "case \"\${1##*/}\" in" || exit 1
         grep -A2 -E "^[[:space:]]*docs/\* \| specs/\*\)$" "$f" |
             grep -qE "^[[:space:]]*\*\.md\) return 0 ;;$" || exit 1
+        # shell-robustness: end-exempt
     done' sh \
     "$STANDARDIZE_ASSETS/diff-template.sh" "$GU_NONADOPT_SNIPPET"
 # The pointer to that duplicate has to name the symbol that exists and the
@@ -4222,6 +4234,7 @@ expect_ok "the named helper is the one the snippet actually defines" \
 # `--literal-pathspecs` a rendered `docs/[a].md` silently answers about
 # `docs/a.md` — wrong index mode, wrong staged verdict, and for the clobber gate
 # a claim about a file nobody touched.
+# shell-robustness: begin-exempt — the pipeline runs in a `sh -c`/`bash -c` subshell that never enables pipefail
 expect_ok "every pathspec-taking git probe is pinned literal" \
     sh -c 'test "$(grep -cE "(ls-files|ls-tree|diff --cached)[^|]*-- \"" "$1")" -gt 0 &&
         ! grep -nE "git -C \"\\\$target\" (ls-files|ls-tree|diff)" "$1" |
@@ -4236,6 +4249,7 @@ expect_ok "the equivalence walk honors the physical-parent guard" \
         sed -n "/^has_nested_terraform_root() {/,/^}$/p" "$1" |
             grep -qF -- "-name .terraform -prune"' sh \
     "$STANDARDIZE_ASSETS/diff-template.sh"
+# shell-robustness: end-exempt
 # The REST of the co-owned list must NOT be mirrored. Co-ownership is a content
 # exemption and absence is not content, so a missing AGENTS.md or LICENSE is a
 # row like any other — now carrying a note instead of vanishing into a count.
@@ -4338,11 +4352,13 @@ expect_ok "non-adoption snippet discloses the contested Brewfile instead of filt
 # command substitution made the assignment inherit exit 1, so a `bash -eu` shell
 # died before the gate below it could reach the seeding block that gate exists
 # to trigger — after the expensive discovery loop, and for no reason.
+# shell-robustness: begin-exempt — the pipeline runs in a `sh -c`/`bash -c` subshell that never enables pipefail
 expect_ok "update guidance keeps the reviewed-keyset probe errexit-safe" \
     sh -c 'grep -qF "REVIEWED_KEYSET_OID=\"\"" "$1" &&
         ! grep -A1 -F "REVIEWED_KEYSET_OID=\"\$(" "$1" |
             grep -qE "^[[:space:]]*test -e"' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+# shell-robustness: end-exempt
 expect_ok "update guidance states its snippet execution assumptions up front" \
     sh -c 'grep -qF "on both the producer and the consumer" "$1" &&
         grep -qF "file 1 is not in sorted order" "$1"' sh \
@@ -4452,6 +4468,7 @@ expect_ok "orphan sweep renders from the frozen guarded source" \
             cut -d: -f1)"
         test -n "$end" || exit 1
         block="$(sed -n "$((end - 6)),${end}p" "$1")"
+        # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
         printf "%s\n" "$block" |
             grep -qF "run_guarded_copier copy --trust --defaults --skip-tasks" &&
         printf "%s\n" "$block" |
@@ -4459,6 +4476,7 @@ expect_ok "orphan sweep renders from the frozen guarded source" \
         printf "%s\n" "$block" |
             grep -qF "\"\$HARMON_INIT_SOURCE\" \"\$RENDERED_TREE\""' sh \
     "$STANDARDIZE_REFS/mode-update.md"
+# shell-robustness: end-exempt
 expect_fail "orphan sweep never renders from a mutable checkout or tag" \
     grep -qF 'copier copy --trust --defaults --skip-tasks --vcs-ref=<new>' \
     "$STANDARDIZE_REFS/mode-update.md"
@@ -5305,7 +5323,9 @@ printf '%s\n' '# managed: gauntlet, integrate' \
 expect_ok "verify-applied stays silent about never-vendored skills with provenance" \
     bash -c '
         output="$(bash "$1" "$2" 2>&1)" || exit $?
+        # shell-robustness: begin-exempt — the pipeline is quoted text passed to another shell, not code this shell runs
         ! printf "%s\\n" "$output" | grep -qF ".skills-sync.yaml is never vendored"
+        # shell-robustness: end-exempt
     ' _ "$STANDARDIZE_ASSETS/verify-applied.sh" "$AGG_TARGET"
 write_required_results_helper generic
 expect_fail "verify-applied rejects a generic success-or-skipped result helper" \
@@ -10050,9 +10070,11 @@ expect_ok "the changed-in-range exclusion leaves no conflict artifacts" \
 # tells the operator to read it rather than assume their old version returned.
 expect_ok "the recreated file carries the render's content, not the repo's" \
     grep -qxF '* @owner' "$SKIP_PROJ/.github/CODEOWNERS"
+# shell-robustness: begin-exempt — the pipeline runs in a `sh -c`/`bash -c` subshell that never enables pipefail
 expect_ok "the recreated file arrives untracked" \
     sh -c 'git -C "$1" status --porcelain -- .github/CODEOWNERS |
         grep -q "^??"' sh "$SKIP_PROJ"
+# shell-robustness: end-exempt
 
 # Move the original mutable tag after the guarded snapshot exists. Copier 9.16
 # re-describes the baseline internally, so this proves its nested clone resolves
@@ -10255,6 +10277,7 @@ printf '%s\n' staged-change >"$RB_TARGET/staged.txt"
 git -C "$RB_TARGET" add -- staged.txt
 printf '%s\n' unstaged-change >"$RB_TARGET/unstaged.txt"
 printf '%s\n' untracked-change >"$RB_TARGET/untracked.txt"
+# shell-robustness: begin-exempt — the pipeline runs in a `sh -c`/`bash -c` subshell that never enables pipefail
 expect_ok "rollback preview includes staged and unstaged tracked changes" \
     sh -c 'git -C "$1" diff HEAD --stat | grep -qF staged.txt &&
         git -C "$1" diff HEAD --stat | grep -qF unstaged.txt' sh \
@@ -10262,6 +10285,7 @@ expect_ok "rollback preview includes staged and unstaged tracked changes" \
 expect_ok "rollback preview includes untracked removal candidates" \
     sh -c 'git -C "$1" clean -nd | grep -qF untracked.txt' sh \
     "$RB_TARGET"
+# shell-robustness: end-exempt
 git -C "$RB_TARGET" restore \
     --source="$(
         cat "$RB_TARGET/.copier-guarded-update/start-head"

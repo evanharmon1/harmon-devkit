@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# test-lint-shell-robustness.sh — unit tests for lint-shell-robustness.sh, the
-# guard that keeps the two status-lying shell idioms from #689 out of the tree.
+# test-lint-shell-robustness.sh — unit tests for lint-shell-robustness.sh.
 #
-# Why fixtures at all: run against a clean checkout the guard's only answer is
-# "clean", so every detection path could be replaced with a no-op and CI would
-# stay green. These fixtures are what make its findings load-bearing — and,
-# just as importantly, what pin the shapes it must NOT flag: quoted text,
-# comments, `||` chains and here-document bodies all contain the literal
-# characters the scan looks for, and a guard that fires on those is one people
-# route around instead of obeying.
+# The guard is deliberately over-eager and has no shell parser, so this suite
+# is organised around that contract rather than around a lexer's corner cases:
+#
+#   1. every forbidden shape is flagged, including in contexts a parser would
+#      have excused — comments, here-doc bodies, quoted strings, subshells;
+#   2. the ELEVEN inputs that made the previous, parsing version of this guard
+#      report a file CLEAN are each flagged now (see "mooted bypasses" below);
+#   3. the fixed shapes and ordinary non-pipeline greps are not flagged;
+#   4. an exemption must state a reason, and a marker without one is itself a
+#      finding — the escape hatch cannot be used silently.
+#
+# shell-robustness: exempt-file — every forbidden construct below is a
+# deliberate fixture. This file IS the guard's corpus of things that must be
+# flagged, so annotating each one individually would say nothing a reader
+# cannot already see from the assertion names.
 #
 # Run via `task test:lint-shell-robustness`.
 set -euo pipefail
@@ -36,9 +43,6 @@ bad() {
 # always arrives through a file so a here-doc in the fixture cannot terminate
 # the one that carried it.
 fixture() {
-    # Separate `local` statements: bash expands every word of a single `local`
-    # before running it, so `path="$TMPROOT/$name"` would read the OUTER
-    # `name` — unset, and fatal under `set -u`.
     local name="$1" body="$2"
     local path="$TMPROOT/$name"
     {
@@ -49,7 +53,6 @@ fixture() {
     printf '%s\n' "$path"
 }
 
-# expect_clean DESC PATH — the guard accepts the fixture.
 expect_clean() {
     local desc="$1" path="$2" output
     if output="$("$GUARD" "$path" 2>&1)"; then
@@ -60,7 +63,7 @@ expect_clean() {
     fi
 }
 
-# expect_flagged DESC PATH NEEDLE — the guard rejects it AND says why. A
+# expect_flagged DESC PATH NEEDLE — rejected AND for the stated reason. A
 # rejection that fires for an unrelated reason is a passing test proving
 # nothing.
 expect_flagged() {
@@ -78,255 +81,139 @@ expect_flagged() {
 
 body="$TMPROOT/body"
 
-echo "==> the pipefail/SIGPIPE pipeline is rejected"
+echo "==> the forbidden pipeline is flagged wherever it appears"
 
 cat >"$body" <<'BODY'
-out="$(printf 'hello\n')"
 printf '%s\n' "$out" | grep -qF hello
 BODY
-expect_flagged "printf into grep -qF" "$(fixture printf-pipe.sh "$body")" '| grep -q` pipeline'
-
-cat >"$body" <<'BODY'
-if echo "$x" | grep -q needle; then :; fi
-BODY
-expect_flagged "echo into grep -q, inside an if" "$(fixture echo-pipe.sh "$body")" 'grep -q'
-
-cat >"$body" <<'BODY'
-git worktree list --porcelain | grep -qx "worktree $t" || exit 1
-BODY
-expect_flagged "a command into grep -qx" "$(fixture cmd-pipe.sh "$body")" 'grep -q'
+expect_flagged "a plain pipeline" "$(fixture plain.sh "$body")" 'grep -q'
 
 cat >"$body" <<'BODY'
 seq 1 3 | grep --quiet 2
-BODY
-expect_flagged "the long --quiet spelling" "$(fixture long-quiet.sh "$body")" 'grep -q'
-
-cat >"$body" <<'BODY'
 seq 1 3 | grep -F -q 2
 BODY
-expect_flagged "a quiet flag in a later option word" "$(fixture split-flag.sh "$body")" 'grep -q'
-
-cat >"$body" <<'BODY'
-sed 's/a/b/' file | grep -v '^#' | grep -qE 'x'
-BODY
-expect_flagged "the last stage of a longer pipeline" "$(fixture long-pipe.sh "$body")" 'grep -q'
-
-# Regression: a HERESTRING is not a here-document. Reading `<<<"$var"` as one
-# made the scanner treat the rest of the file as here-doc body and report a
-# repository full of the idiom it hunts as clean — a silent, total false
-# negative, and the worst failure a guard can have.
-cat >"$body" <<'BODY'
-grep -qF a <<<"$first"
-printf '%s\n' "$second" | grep -qF b
-BODY
-expect_flagged "a herestring does not blind the rest of the file" \
-    "$(fixture after-herestring.sh "$body")" 'grep -q'
-
-cat >"$body" <<'BODY'
-cat >"$f" <<'INNER'
-printf '%s\n' "$x" | grep -q y
-INNER
-printf '%s\n' "$z" | grep -q w
-BODY
-expect_flagged "a real here-doc masks its body and nothing after it" \
-    "$(fixture after-heredoc.sh "$body")" ':6:'
-
-# Forms a line-oriented, depth-0-only scan lets through. Each still inherits
-# `pipefail` and carries the identical defect, so a guard that calls them clean
-# is not enforcing its own contract (challenge round 1, P1).
-cat >"$body" <<'BODY'
-( printf '%s\n' "$x" | grep -q needle )
-BODY
-expect_flagged "a pipeline inside a subshell" \
-    "$(fixture nested-subshell.sh "$body")" ':3:'
-
-cat >"$body" <<'BODY'
-v="$(printf '%s\n' "$x" | grep -q needle && echo yes)"
-BODY
-expect_flagged "a pipeline inside a command substitution in double quotes" \
-    "$(fixture nested-cmdsub.sh "$body")" ':3:'
+expect_flagged "long --quiet and a split option word" \
+    "$(fixture flags.sh "$body")" 'grep -q'
 
 cat >"$body" <<'BODY'
 printf '%s\n' "$x" |
     grep -q needle
 BODY
 expect_flagged "a pipeline continued onto the next line" \
-    "$(fixture continued-pipe.sh "$body")" ':4:'
+    "$(fixture continued.sh "$body")" 'continued'
 
 cat >"$body" <<'BODY'
 printf '%s\n' "$x" \
     | grep -q needle
 BODY
 expect_flagged "a continuation whose next line leads with the pipe" \
-    "$(fixture continued-leading-pipe.sh "$body")" ':4:'
+    "$(fixture leading-pipe.sh "$body")" 'grep -q'
 
-# A multi-line command substitution. With per-line state the closing `"` reads
-# as an OPENING quote and every later line looks like text — a total silent
-# bypass of the gate (challenge round 2, P1).
 cat >"$body" <<'BODY'
-x="$(
-    printf hi
-)"
-printf '%s\n' "$y" | grep -q boom
+printf '%s\n' "$x" | grep \
+    -q needle
 BODY
-expect_flagged "a multi-line command substitution does not invert the quote state" \
-    "$(fixture multiline-cmdsub.sh "$body")" ':6:'
+expect_flagged "grep options continued onto the next line" \
+    "$(fixture cont-opts.sh "$body")" 'options continue'
 
-# One command can open several here-docs, and their bodies are consecutive.
-# Activating only the first scans the second's first line as shell code
-# (challenge round 2, P2).
+echo "==> contexts a parser would have excused are flagged too, by design"
+
 cat >"$body" <<'BODY'
-cat <<'A' <<'B'
-printf x | grep -q x
-A
-printf y | grep -q y
-B
-printf '%s\n' "$after" | grep -q boom
+# A comment mentioning printf | grep -q needle as prose.
 BODY
-expect_flagged "several here-docs opened by one command are all masked" \
-    "$(fixture multi-heredoc.sh "$body")" ':8:'
-if out="$("$GUARD" "$TMPROOT/multi-heredoc.sh" 2>&1)"; then
-    bad "multi-heredoc fixture unexpectedly passed"
-elif [ "$(grep -c 'grep -q` pipeline' <<<"$out")" -eq 1 ]; then
-    ok "only the line after both here-doc bodies is flagged"
-else
-    bad "a here-doc body was scanned as code"
-    printf '%s\n' "$out" | sed 's/^/      /' >&2
-fi
+expect_flagged "the shape named inside a comment" \
+    "$(fixture in-comment.sh "$body")" 'grep -q'
 
-# A carried quote that CLOSES mid-line leaves real code and a real comment
-# behind it. Treating the whole line as quoted let an apostrophe in that
-# comment reopen quoting and blind everything after — a reproducible bypass of
-# this gate (challenge round 3, P1).
 cat >"$body" <<'BODY'
-x='a
-b' # don't reopen quoting
-printf '%s\n' "$y" | grep -q boom
+sh -c 'grep -A5 -F "$2" "$1" | grep -qF "$3"' sh a b c
 BODY
-expect_flagged "a quote closing mid-line does not blind the code after it" \
-    "$(fixture quote-closes-midline.sh "$body")" ':5:'
+expect_flagged "the shape inside a quoted sh -c argument" \
+    "$(fixture in-quotes.sh "$body")" 'grep -q'
 
-echo "==> the fixed shapes, and lookalikes, are accepted"
+cat >"$body" <<'BODY'
+cat >"$bin/gh" <<'STUB'
+printf '%s' "$*" | grep -q issueType
+STUB
+BODY
+expect_flagged "the shape inside a here-doc body" \
+    "$(fixture in-heredoc.sh "$body")" 'grep -q'
+
+echo "==> the eleven bypasses of the previous, parsing guard (all mooted)"
+
+# Each of these made the lexer-based version report the file CLEAN. The
+# restructure deletes the lexer, so all of them are simply text now.
+printf 'grep -qF a <<<"$f"\nprintf "%%s\\n" "$y" | grep -qF b\n' >"$body"
+expect_flagged "1. a herestring earlier in the file" \
+    "$(fixture m1.sh "$body")" 'grep -q'
+
+printf '# do not reopen quoting\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body"
+expect_flagged "2. an apostrophe in a comment" "$(fixture m2.sh "$body")" 'grep -q'
+
+printf 'x="$(\nprintf hi\n)"\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body"
+expect_flagged "3. a multi-line command substitution" \
+    "$(fixture m3.sh "$body")" 'grep -q'
+
+printf "x='a\nb' # don't reopen\nprintf \"%%s\\\\n\" \"\$y\" | grep -q b\n" >"$body"
+expect_flagged "4. a quote closing mid-line before a comment" \
+    "$(fixture m4.sh "$body")" 'grep -q'
+
+printf 'cat <<A <<B\nx\nA\ny\nB\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body"
+expect_flagged "5. several here-docs opened by one command" \
+    "$(fixture m5.sh "$body")" 'grep -q'
+
+printf 'cat <<EOF-X\nf\nEOF-X\nprintf "%%s\\n" "$y" | grep -q b\n' >"$body"
+expect_flagged "6. an unquoted here-doc delimiter with punctuation" \
+    "$(fixture m6.sh "$body")" 'grep -q'
+
+printf 'x="`printf "%%s" "$v" | grep -q needle`"\n' >"$body"
+expect_flagged "7. a legacy backtick substitution inside double quotes" \
+    "$(fixture m7.sh "$body")" 'grep -q'
+
+printf 'printf "%%s\\n" "$x" | grep \\\n    -q needle\n' >"$body"
+expect_flagged "8. grep options continued across a line" \
+    "$(fixture m8.sh "$body")" 'options continue'
+
+printf 'ok()\n{\n    pass=$((pass+1))\n    echo "x"\n}\n' >"$body"
+expect_flagged "9. a reporter whose opening brace is on its own line" \
+    "$(fixture test-m9.sh "$body")" 'return 0'
+
+printf 'ok() {\n    pass=$((pass+1))\n    log "$*"\n}\n' >"$body"
+expect_flagged "10. a reporter that delegates its printing" \
+    "$(fixture test-m10.sh "$body")" 'return 0'
+
+printf '( printf "%%s\\n" "$x" | grep -q n )\n' >"$body"
+expect_flagged "11. a pipeline inside a subshell" \
+    "$(fixture m11.sh "$body")" 'grep -q'
+
+echo "==> the fixed shapes and ordinary greps are accepted"
 
 cat >"$body" <<'BODY'
 grep -qF hello <<<"$out"
 grep -q needle < <(some-command --flag)
 grep -qE '^x$' "$file"
+out="$(cmd)" && grep -q needle <<<"$out"
 BODY
-expect_clean "herestring, process substitution and a plain file grep" \
+expect_clean "herestring, process substitution, file grep, capture-then-grep" \
     "$(fixture fixed.sh "$body")"
 
 cat >"$body" <<'BODY'
-# A comment mentioning `printf | grep -q needle` as prose.
-value=1 # trailing note: echo "$x" | grep -q y
-BODY
-expect_clean "the idiom named in a comment" "$(fixture comment.sh "$body")"
-
-cat >"$body" <<'BODY'
-sh -c 'grep -A5 -F "$2" "$1" | grep -qF "$3"' sh a b c
-BODY
-expect_clean "a pipeline quoted inside sh -c (no pipefail there)" \
-    "$(fixture quoted.sh "$body")"
-
-cat >"$body" <<'BODY'
-if [ "$rc" -ne 0 ] || grep -qi 'unknown flag' "$file"; then :; fi
-BODY
-expect_clean "an || chain, which is not a pipeline" "$(fixture orchain.sh "$body")"
-
-# The stub a suite writes for a PATH shim is data, not code this guard owns —
-# and some here-doc bodies are deliberately frozen snapshots of superseded
-# code, which must keep their defects to stay evidence.
-cat >"$body" <<'BODY'
-cat >"$bin/gh" <<'STUB'
-if printf '%s' "$*" | grep -q issueType; then echo yes; fi
-STUB
-cat >"$bin/other" <<-'INDENTED'
-	echo "$x" | grep -q y
-	INDENTED
-BODY
-expect_clean "here-document bodies, plain and <<- indented" \
-    "$(fixture heredoc.sh "$body")"
-
-cat >"$body" <<'BODY'
-printf '%s\n' "$out" | grep -c hello
-printf '%s\n' "$out" | grep hello >/dev/null
+seq 1 3 | grep -c 2
+seq 1 3 | grep 2 >/dev/null
+seq 1 3 | grep -v 2 | wc -l
 BODY
 expect_clean "a non-quiet grep, which reads its input to EOF" \
     "$(fixture nonquiet.sh "$body")"
 
-# Two ways a line-based lexer can go blind. Both were real defects in this
-# scanner, and both are silent — the guard reports "clean" over a tree full of
-# the idiom, which is strictly worse than no guard at all.
 cat >"$body" <<'BODY'
-expect_ok "a multi-line sh -c script is quoted text, not code" \
-    sh -c 'for n in "$2" "$3"; do
-        grep -F "$n" "$1" | grep -qF marker || exit 1
-    done' sh "$file" a b
-printf '%s\n' "$after" | grep -qF boom
+if [ "$rc" -ne 0 ] || grep -qi 'unknown flag' "$file"; then :; fi
+[ "$(printf '%s\n' "$x" | grep -c .)" -eq 2 ] || exit 1
+expect_fail "no match" \
+    grep -qF 'Old Project' "$TABLE"
 BODY
-expect_flagged "a multi-line quoted sh -c body is skipped, the code after it is not" \
-    "$(fixture multiline-quote.sh "$body")" ':7:'
+expect_clean "an || chain, a counting grep, and a backslash-continued argument list" \
+    "$(fixture lookalikes.sh "$body")"
 
-cat >"$body" <<'BODY'
-# An apostrophe in prose: don't let it open a string that never closes.
-printf '%s\n' "$after" | grep -qF boom
-BODY
-expect_flagged "an apostrophe in a comment does not blind the next line" \
-    "$(fixture comment-apostrophe.sh "$body")" ':4:'
-
-# POSIX `sh` has no `pipefail`, so the defect cannot occur there — and `<<<`
-# and `< <( )` are bashisms such a script could not adopt anyway. A file with
-# NO shebang stays in scope: it may be sourced into bash (challenge round 2,
-# P2).
-printf '#!/bin/sh\nprintf "%%s\\n" "$x" | grep -q y\n' >"$TMPROOT/posix.sh"
-expect_clean "a #!/bin/sh script is out of scope for the pipeline rule" \
-    "$TMPROOT/posix.sh"
-printf 'printf "%%s\\n" "$x" | grep -q y\n' >"$TMPROOT/noshebang.sh"
-expect_flagged "a file with no shebang stays in scope" \
-    "$TMPROOT/noshebang.sh" 'grep -q'
-
-echo "==> reporter helpers must not be able to lie about an assertion"
-
-# The reporter scan is scoped to suites, so the fixtures below are named
-# test-*.sh to be checked at all — which is itself an assertion at the end.
-# Bash spells a definition four ways. Recognizing only `name()` lets a reporter
-# written any other way past the guard (challenge round 3, P2).
-cat >"$body" <<'BODY'
-ok () {
-    pass=$((pass + 1))
-    echo "  ok $*"
-}
-BODY
-expect_flagged "a reporter declared as \`name () {\`" \
-    "$(fixture test-r7.sh "$body")" 'must end with `return 0`'
-
-cat >"$body" <<'BODY'
-function ok {
-    pass=$((pass + 1))
-    echo "  ok $*"
-}
-BODY
-expect_flagged "a reporter declared as \`function name {\`" \
-    "$(fixture test-r8.sh "$body")" 'must end with `return 0`'
-
-cat >"$body" <<'BODY'
-function ok() {
-    pass=$((pass + 1))
-    echo "  ok $*" || true
-    return 0
-}
-BODY
-expect_clean "a fixed reporter declared as \`function name() {\`" \
-    "$(fixture test-r9.sh "$body")"
-
-cat >"$body" <<'BODY'
-ok() {
-    pass=$((pass + 1))
-    echo "  ✓ $*"
-}
-BODY
-expect_flagged "a counting reporter with no return 0" \
-    "$(fixture test-r1.sh "$body")" 'must end with `return 0`'
+echo "==> reporter helpers"
 
 cat >"$body" <<'BODY'
 ok() {
@@ -334,8 +221,14 @@ ok() {
     echo "  ✓ $*" || true
     return 0
 }
+function bad {
+    fail=$((fail + 1))
+    echo "  ✗ $*" >&2 || true
+    return 0
+}
 BODY
-expect_clean "the same reporter, fixed" "$(fixture test-r2.sh "$body")"
+expect_clean "reporters that end in return 0, in two spellings" \
+    "$(fixture test-good.sh "$body")"
 
 cat >"$body" <<'BODY'
 fail() {
@@ -344,48 +237,56 @@ fail() {
 }
 BODY
 expect_clean "a reporter that exits — its status is never read" \
-    "$(fixture test-r3.sh "$body")"
-
-cat >"$body" <<'BODY'
-note() { printf '  %s\n' "$*"; }
-BODY
-expect_flagged "a single-line reporter with no return 0" \
-    "$(fixture test-r4.sh "$body")" 'must end with `return 0`'
-
-cat >"$body" <<'BODY'
-build_fixture() {
-    mkdir -p "$1"
-    echo "made $1"
-}
-BODY
-expect_clean "an ordinary helper that happens to echo" \
-    "$(fixture test-r5.sh "$body")"
-
-cat >"$body" <<'BODY'
-render() {
-    cases=$((cases + 1))
-    echo "==> $1"
-}
-BODY
-expect_flagged "a counter-incrementing helper under any name" \
-    "$(fixture test-r6.sh "$body")" 'must end with `return 0`'
+    "$(fixture test-exits.sh "$body")"
 
 cat >"$body" <<'BODY'
 ok() {
     pass=$((pass + 1))
-    echo "  ✓ $*"
+    echo "  ok $*"
 }
 BODY
 expect_clean "the reporter scan is scoped to test-*.sh suites" \
     "$(fixture helper-lib.sh "$body")"
 
+echo "==> an exemption must state a reason"
+
+cat >"$body" <<'BODY'
+printf '%s\n' "$x" | grep -q y # shell-robustness: ok — quoted fixture text, not code
+BODY
+expect_clean "an inline exemption with a reason suppresses the finding" \
+    "$(fixture exempt-inline.sh "$body")"
+
+cat >"$body" <<'BODY'
+printf '%s\n' "$x" | grep -q y # shell-robustness: ok
+BODY
+expect_flagged "an inline exemption with NO reason is itself a finding" \
+    "$(fixture exempt-noreason.sh "$body")" 'no reason'
+
+cat >"$body" <<'BODY'
+# shell-robustness: begin-exempt — a frozen snapshot that must keep its defect
+printf '%s\n' "$x" | grep -q y
+# shell-robustness: end-exempt
+printf '%s\n' "$z" | grep -q w
+BODY
+expect_flagged "a block exemption covers its region and nothing after it" \
+    "$(fixture exempt-block.sh "$body")" ':6:'
+
+echo "==> the guard reads what it is asked to read"
+
+if out="$("$GUARD" "$TMPROOT/definitely-absent.sh" 2>&1)"; then
+    bad "a missing named file was reported clean"
+elif grep -qF 'no such file' <<<"$out"; then
+    ok "a missing named file is refused, not silently skipped"
+else
+    bad "a missing named file failed, but not with 'no such file'"
+    printf '%s\n' "$out" | sed 's/^/      /' >&2
+fi
+
 echo "==> the hazard the guard exists for is real, and the fixed shapes are not"
-# The guard's whole premise is that `producer | grep -q` can report a MATCH as
-# a failure. Assert the FIXED shapes stay correct on a payload far past the
-# 64 KiB pipe buffer — that is the deterministic half. The legacy shape's
-# verdict is recorded as a diagnostic rather than asserted: it is a race on
-# how much is still in flight when grep exits, so pinning it would be pinning
-# a probability.
+
+# The guard's premise, exercised rather than asserted. The fixed shapes are the
+# hard assertion; the legacy shape's verdict is a diagnostic, because it is a
+# race and pinning it would be pinning a probability.
 big="$(seq 1 40000)"
 haystack="NEEDLE
 $big"
@@ -402,9 +303,6 @@ else
     bad "process substitution: the same match read as a FAILURE"
 fi
 
-# The legacy shape has to live in a here-doc: it is exactly what this guard
-# forbids, so writing it inline would (correctly) fail the guard's own run over
-# the repository below.
 cat >"$TMPROOT/legacy-probe.sh" <<'PROBE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -421,16 +319,6 @@ case "$legacy" in
     "— the defect, reproduced" || true ;;
 *) echo "  · note: the legacy pipeline exited $legacy (not the SIGPIPE path)" || true ;;
 esac
-
-echo "==> a path the caller named but that is not there is an error, not clean"
-if out="$("$GUARD" "$TMPROOT/definitely-absent.sh" 2>&1)"; then
-    bad "a missing named file was reported clean"
-elif grep -qF 'no such file' <<<"$out"; then
-    ok "a missing named file is refused, not silently skipped"
-else
-    bad "a missing named file failed, but not with 'no such file'"
-    printf '%s\n' "$out" | sed 's/^/      /' >&2
-fi
 
 echo "==> the guard is wired to the real tree"
 if "$GUARD" >/dev/null 2>&1; then
