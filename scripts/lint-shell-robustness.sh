@@ -156,6 +156,23 @@ for f in "${files[@]}"; do
         # R3b — this line itself leads with the pipe (`producer \` then `| grep -q`).
         else if (!skip && line ~ /^[[:space:]]*\|[[:space:]]*grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: continued `| grep -q` pipeline — same SIGPIPE shape, split across lines\n", FILE, FNR
+        # R3c — BOTH continuations at once: `producer |`, then `grep \`, then
+        # `-q pattern` on a third line. R3a wants the flag on the grep line and
+        # R2 wants the pipe and grep to share one, so neither sees this alone.
+        else if (!skip && grep_cont &&
+                 line ~ /(^|[[:space:]])(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+            printf "%s:%d: continued `| grep -q` pipeline — the quiet flag continues onto a third line\n", FILE, FNR
+
+        # One bit of state: a PIPED grep whose option list is still open across
+        # backslash continuations. This is the only cross-line state the guard
+        # keeps, and it tracks a formatting fact rather than shell grammar.
+        if (line ~ /\\[[:space:]]*$/ &&
+            (grep_cont ||
+             (prev ~ /(^|[^|])\|[[:space:]]*$/ && line ~ /^[[:space:]]*\|?[[:space:]]*grep([[:space:]]|$)/) ||
+             line ~ /(^|[^|])\|[[:space:]]*grep([[:space:]]|$)/))
+            grep_cont = 1
+        else
+            grep_cont = 0
 
         prev = $0
     }
@@ -175,10 +192,6 @@ for f in "${files[@]}"; do
     *) continue ;;
     esac
     awk -v FILE="$f" '
-    # The reason must follow the MARKER. Matching a dash anywhere on the line
-    # let an earlier `--option` stand in for it, so
-    # `producer | grep --quiet x # shell-robustness: ok` passed with no reason
-    # at all — silently, which is the one thing this design exists to prevent.
     function reason_ok(s,   t) {
         t = s
         if (!sub(/^.*shell-robustness:[[:space:]]*(ok|begin-exempt|exempt-file)[[:space:]]*/, "", t)) return 0
@@ -189,46 +202,35 @@ for f in "${files[@]}"; do
     /shell-robustness:[[:space:]]*end-exempt/ { block = 0; next }
     exempt_file || block { next }
 
-    # A ONE-LINE definition: `ok() { …; }`. This repo used that spelling until
-    # this change converted it, so a guard that ignores it would not stop its
-    # return. The body is whatever sits between the braces.
-    $0 ~ /^[[:space:]]*(function[[:space:]]+)?(ok|bad|pass|fail|failed|good|note|warn|skip|skipped|report)[[:space:]]*(\(\))?[[:space:]]*\{.*\}[[:space:]]*$/ &&
+    # A reporter-named definition, in any of bash s four spellings and whether
+    # or not the opening brace shares the line. Its block is then scanned for
+    # the PRESENCE of `return 0` — nothing more.
+    #
+    # This deliberately does not parse the body. Earlier versions matched
+    # braces, classified `exit` as terminating or not, and special-cased
+    # one-line definitions; every review round found another corner in that
+    # analysis, the last being a standalone `}` inside a here-doc that
+    # generates shell fixture text. Presence-of-`return 0` has no corners: the
+    # block ends at the first top-level `}`, the next definition, or EOF, and
+    # stopping early can only produce a LOUD false positive that one
+    # annotation answers.
+    $0 ~ /^[[:space:]]*(function[[:space:]]+)?(ok|bad|pass|fail|failed|good|note|warn|skip|skipped|report)[[:space:]]*(\(\))?([[:space:]]*\{.*)?[[:space:]]*$/ &&
     $0 ~ /(^[[:space:]]*function[[:space:]]|\(\))/ {
         name = $0
         sub(/^[[:space:]]*function[[:space:]]+/, "", name)
         sub(/[[:space:]]*\(\).*$/, "", name)
         sub(/[[:space:]]*\{.*$/, "", name)
         gsub(/[[:space:]]/, "", name)
-        inner = $0
-        sub(/^[^{]*\{/, "", inner)
-        sub(/\}[[:space:]]*$/, "", inner)
-        if (!($0 ~ /shell-robustness:[[:space:]]*ok/ && reason_ok($0)) &&
-            inner !~ /(^|;)[[:space:]]*(return 0|exit([[:space:]]+[0-9]+)?)[[:space:]]*;?[[:space:]]*$/)
-            printf "%s:%d: reporter `%s()` must end with `return 0` — otherwise its own status is read as the assertion s\n", FILE, FNR, name
-        next
-    }
-
-    # All four bash spellings, plus the brace on its own line.
-    $0 ~ /^[[:space:]]*(function[[:space:]]+)?(ok|bad|pass|fail|failed|good|note|warn|skip|skipped|report)[[:space:]]*(\(\))?[[:space:]]*(\{)?[[:space:]]*$/ &&
-    $0 ~ /(^[[:space:]]*function[[:space:]]|\(\))/ {
-        name = $0
-        sub(/^[[:space:]]*function[[:space:]]+/, "", name)
-        sub(/[[:space:]]*\(\).*$/, "", name)
-        sub(/[[:space:]]*\{.*$/, "", name)
-        gsub(/[[:space:]]/, "", name)
-        open = FNR; fname = name; last = ""; ann = 0; closed = 0
-        while ((getline nxt) > 0) {
-            if (nxt ~ /shell-robustness:[[:space:]]*ok/ && reason_ok(nxt)) ann = 1
-            if (nxt ~ /^[[:space:]]*\}[[:space:]]*$/) { closed = 1; break }
-            if (nxt ~ /[^[:space:]]/ && nxt !~ /^[[:space:]]*#/) last = nxt
+        open = FNR
+        found = ($0 ~ /return 0/) || ($0 ~ /shell-robustness:[[:space:]]*ok/ && reason_ok($0))
+        while (!found && (getline nxt) > 0) {
+            if (nxt ~ /shell-robustness:[[:space:]]*ok/ && reason_ok(nxt)) { found = 1; break }
+            if (nxt ~ /return 0/) { found = 1; break }
+            if (nxt ~ /^\}/) break
+            if (nxt ~ /^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)/) break
         }
-        # `exit` excuses a reporter only when it TERMINATES the body: a
-        # conditional `exit` still leaves an ordinary path whose status is
-        # returned, which is the defect this check exists for.
-        if (!closed)
-            printf "%s:%d: reporter `%s()` — closing brace never found, so the body was not inspected\n", FILE, open, fname
-        else if (!ann && last !~ /^[[:space:]]*(return 0|exit([[:space:]]+[0-9]+)?)[[:space:]]*;?[[:space:]]*$/)
-            printf "%s:%d: reporter `%s()` must end with `return 0` (or `exit`) — otherwise its own status is read as the assertion s\n", FILE, open, fname
+        if (!found)
+            printf "%s:%d: reporter `%s()` — no `return 0` in its block, so its own status is read as the assertion s. Add `return 0`, or annotate it if it always exits.\n", FILE, open, name
         next
     }
     ' "$f"

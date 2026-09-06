@@ -55,6 +55,7 @@ export GH_STUB_RESULT=true
 export GH_STUB_RC=0
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "FAIL: $*" >&2
     exit 1
 }

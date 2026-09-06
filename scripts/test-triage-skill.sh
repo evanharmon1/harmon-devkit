@@ -30,6 +30,7 @@ wrapper="./scripts/triage.sh"
 repo="testowner/testrepo"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }

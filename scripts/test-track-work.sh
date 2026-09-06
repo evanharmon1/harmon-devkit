@@ -21,6 +21,7 @@ status_sh="./ai/skills/universal/track-work/assets/set-issue-status.sh"
 repo="evanharmon1/harmon-devkit"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }

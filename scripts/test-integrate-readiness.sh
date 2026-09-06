@@ -36,6 +36,7 @@ log="${test_tmp}/gh.log"
 mkdir -p "$bin_dir" "$fixtures" "$record_dir/adjudications"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "FAIL: $*" >&2
     exit 1
 }

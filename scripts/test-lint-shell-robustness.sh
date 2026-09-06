@@ -236,8 +236,12 @@ fail() {
     exit 1
 }
 BODY
-expect_clean "a reporter that exits — its status is never read" \
-    "$(fixture test-exits.sh "$body")"
+# The rule is presence-of-`return 0`, so an always-exiting reporter is flagged
+# until it says so. That is the deliberate trade: one visible annotation
+# instead of an `exit`-anywhere exemption that a CONDITIONAL exit could slip
+# through (review round 2).
+expect_flagged "an always-exiting reporter is flagged until it is annotated" \
+    "$(fixture test-exits.sh "$body")" 'no `return 0`'
 
 cat >"$body" <<'BODY'
 ok() {
@@ -295,8 +299,8 @@ expect_clean "a one-line reporter that ends in return 0" \
 cat >"$body" <<'BODY'
 fail() { echo "boom" >&2; exit 1; }
 BODY
-expect_clean "a one-line reporter that exits" \
-    "$(fixture test-oneline-exits.sh "$body")"
+expect_flagged "a one-line always-exiting reporter, likewise" \
+    "$(fixture test-oneline-exits.sh "$body")" 'no `return 0`'
 
 cat >"$body" <<'BODY'
 # shell-robustness: begin-exempt — a real reason, but never closed
@@ -327,32 +331,59 @@ BODY
 expect_clean "the operand scan stops at a command boundary, not at the enclosing test's -eq" \
     "$(fixture operand-boundary.sh "$body")"
 
+# Review round 3: a pipeline split across BOTH continuations.
+cat >"$body" <<'BODY'
+printf '%s\n' "$x" |
+    grep \
+    -q needle
+BODY
+expect_flagged "a pipeline whose pipe, grep and quiet flag are all on different lines" \
+    "$(fixture both-continuations.sh "$body")" 'third line'
+
+# The reporter check is presence-of-`return 0`, nothing more. Body analysis —
+# brace matching, exit-termination, one-line special cases — is gone, and with
+# it the whole class of finding it kept producing.
 cat >"$body" <<'BODY'
 ok() {
     pass=$((pass + 1))
-    if fatal; then exit 1; fi
     echo "  ok $*"
 }
 BODY
-expect_flagged "a CONDITIONAL exit does not excuse a reporter" \
-    "$(fixture test-cond-exit.sh "$body")" 'return 0'
+expect_flagged "a reporter with no return 0 in its block" \
+    "$(fixture test-noreturn.sh "$body")" 'no `return 0`'
+
+cat >"$body" <<'BODY'
+ok() {
+    pass=$((pass + 1))
+    echo "  ok $*" || true
+    return 0
+}
+BODY
+expect_clean "a reporter with return 0" "$(fixture test-hasreturn.sh "$body")"
 
 cat >"$body" <<'BODY'
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }
 BODY
-expect_clean "an exit that terminates the body still excuses it" \
-    "$(fixture test-term-exit.sh "$body")"
+expect_clean "an always-exiting reporter carrying the annotation" \
+    "$(fixture test-annotated.sh "$body")"
 
 cat >"$body" <<'BODY'
 ok() {
     pass=$((pass + 1))
+    cat >"$f" <<XX
+inner() {
+    return 0
+}
+XX
     echo "  ok $*"
+}
 BODY
-expect_flagged "a reporter whose closing brace is never found is reported, not accepted" \
-    "$(fixture test-unclosed-fn.sh "$body")" 'never found'
+expect_flagged "a standalone } inside a generated fixture no longer ends the block early" \
+    "$(fixture test-nested-brace.sh "$body")" 'no `return 0`'
 
 echo "==> the guard reads what it is asked to read"
 

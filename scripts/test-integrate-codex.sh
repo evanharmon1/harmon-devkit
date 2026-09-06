@@ -23,6 +23,7 @@ git -C "$test_repo" commit -q --allow-empty -m "current head"
 cd "$test_repo"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "FAIL: $*" >&2
     exit 1
 }

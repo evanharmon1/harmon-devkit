@@ -19,6 +19,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     [ -f "$tmp/out" ] && sed 's/^/    /' "$tmp/out" >&2
     exit 1
