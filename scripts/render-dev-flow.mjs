@@ -1504,18 +1504,36 @@ function blockerOptions(verdict, stage, policy, rows) {
 // be an adjudicated P0/P1 of that stage and round in the adjudications this
 // same record supplies. Fail closed: an uncorroborated candidate reports the
 // disagreement instead of the recommendation.
-function splitCandidateUncorroborated(candidate, rows, stage) {
-  const gating = new Set(
-    rows
-      .filter(
-        (row) =>
-          row.stage === stage &&
-          row.round === candidate.round &&
-          (row.entry.adjudicated_priority === 'P0' || row.entry.adjudicated_priority === 'P1')
-      )
-      .map((row) => row.entry.finding_id)
-  )
-  return candidate.finding_ids.filter((id) => !gating.has(id))
+// Returns a human-readable disagreement, or null when the candidate is fully
+// corroborated. Set EQUALITY, not containment (challenge round 2, confirmed):
+// proving each named id is *a* gating finding left the candidate free to name
+// one valid finding from a multi-mechanism round while still rendering the
+// authoritative claim that ALL of them are concentrated in one mechanism —
+// which is the whole basis for recommending removal. `concentration: 1` is
+// exactly the assertion that the named set IS the round's gating set, so that
+// is what gets checked.
+function splitCandidateDisagreement(candidate, rows, stage) {
+  const gating = rows
+    .filter(
+      (row) =>
+        row.stage === stage &&
+        row.round === candidate.round &&
+        (row.entry.adjudicated_priority === 'P0' || row.entry.adjudicated_priority === 'P1')
+    )
+    .map((row) => row.entry.finding_id)
+  const gatingSet = new Set(gating)
+  const named = new Set(candidate.finding_ids)
+  const unknown = candidate.finding_ids.filter((id) => !gatingSet.has(id))
+  if (unknown.length > 0) {
+    return `it names ${unknown.map((id) => neutralizeMarkers(id)).join(', ')} as gating finding(s) of ${stage} round ${candidate.round}, which this record's adjudications do not`
+  }
+  const missing = gating.filter((id) => !named.has(id))
+  if (missing.length > 0) {
+    return `it claims every gating finding of ${stage} round ${candidate.round} is concentrated in one mechanism, but this record also adjudicates ${missing
+      .map((id) => neutralizeMarkers(id))
+      .join(', ')} as gating and the candidate does not name ${missing.length > 1 ? 'them' : 'it'}`
+  }
+  return null
 }
 
 // verdict.json is branch-controlled content and this projection is published
@@ -1540,13 +1558,9 @@ function splitOptionEvidence(verdict, rows, stage) {
     return `not indicated at round ${candidate.round} — ${because ?? `signal reason \`${neutralizeMarkers(String(candidate.reason))}\``}.`
   }
   const candidateStage = typeof verdict.stage === 'string' && verdict.stage !== '' ? verdict.stage : stage
-  const uncorroborated = splitCandidateUncorroborated(candidate, rows, candidateStage)
-  if (uncorroborated.length > 0) {
-    return (
-      `signal not corroborated by this record — it names ` +
-      `${uncorroborated.map((id) => neutralizeMarkers(id)).join(', ')} as gating finding(s) of ${candidateStage} round ` +
-      `${candidate.round}, which this record's adjudications do not. Recompute the exit before acting on it.`
-    )
+  const disagreement = splitCandidateDisagreement(candidate, rows, candidateStage)
+  if (disagreement) {
+    return `signal not corroborated by this record — ${disagreement}. Recompute the exit before acting on it.`
   }
   const rounds = candidate.introduced_by_rounds
   const introduced =

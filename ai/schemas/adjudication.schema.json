@@ -29,6 +29,14 @@
     "adjudicationEntry": {
       "type": "object",
       "additionalProperties": false,
+      "$comment": "The if/then below publishes the split contract's no-data-loss rule as a SCHEMA keyword rather than leaving it to this repository's semantic validator alone (challenge round 2, confirmed): `disposition` and `reference` are siblings of one entry, so a standard draft-2020-12 validator — Foreman's Python at a pinned tag included — can and must enforce it too, otherwise the published schema accepts a split that filed nothing while only scripts/validate-result-schemas.mjs rejects it. The script keeps its own check, which additionally constrains the reference TYPE and value shape.",
+      "if": {
+        "properties": { "disposition": { "const": "split" } },
+        "required": ["disposition"]
+      },
+      "then": {
+        "required": ["reference"]
+      },
       "required": [
         "finding_id",
         "reviewer_priority",

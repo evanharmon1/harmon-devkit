@@ -73,6 +73,7 @@ is_context_only_fixture() {
     */run.schema/invalid/split-issue-disagrees-with-adjudication.json) return 0 ;;
     */run.schema/invalid/split-adjudication-not-recorded.json) return 0 ;;
     */run.schema/invalid/split-without-deletion-round.json) return 0 ;;
+    */run.schema/invalid/split-omitted-on-capped-run.json) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -802,8 +803,27 @@ run_context_case \
     "a promoted run whose split has no later round confirming the removal is rejected" \
     run \
     "$fixtures_dir/run.schema/invalid/split-without-deletion-round.json" \
-    "confirms the mechanism's removal" \
+    "reviewed a different head" \
     --adjudication "$settlement_cross_check_adjudication" \
+    --adjudication "$split_promotion_adjudication"
+
+# Challenge round 2, both confirmed: a later round NUMBER is not a deletion
+# round if it reviewed the same pre-deletion head, and the split projection is
+# owed at every TERMINAL outcome, not only at ready-for-review.
+run_context_case \
+    "a later round reviewing the same head does not confirm the removal" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-without-deletion-round.json" \
+    "reviewed a different head" \
+    --adjudication "$settlement_cross_check_adjudication" \
+    --adjudication "$split_promotion_adjudication" \
+    --adjudication "$fixtures_dir/run.schema/invalid/split-same-head-round.adjudication.json"
+
+run_context_case \
+    "a capped run whose splits[] omits an adjudicated split is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-omitted-on-capped-run.json" \
+    "was adjudicated split but no splits[] entry records it" \
     --adjudication "$split_promotion_adjudication"
 
 # The positive control for both: with every split recorded AND a later review

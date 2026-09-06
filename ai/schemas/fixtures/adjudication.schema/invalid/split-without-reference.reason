@@ -1,1 +1,1 @@
-reference: required for disposition split — the split-off mechanism must name the issue it was filed as
+$adjudication.adjudications[0]: missing required property reference

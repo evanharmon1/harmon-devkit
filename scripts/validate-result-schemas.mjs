@@ -1037,19 +1037,15 @@ function checkAdjudicationEntries(document, errors) {
     // evidence with, and defer's own evidence belongs on its eventual
     // settlement instead — the schema description's own "never deferred"
     // promise, which was previously only documented, not enforced.
-    // A `split` disposition is the one that REQUIRES its reference rather
-    // than merely permitting one. The split strategy's whole contract is
-    // that the mechanism is filed as its own issue by the agent that splits
-    // it, "never left to memory" (#747) — an adjudication saying a mechanism
-    // was split out but naming no issue records the removal and loses the
-    // work, which is strictly worse than not splitting. Checked before the
-    // shape checks below so a missing reference is reported as the missing
-    // filing it is, not as a type mismatch.
-    if (entry.disposition === 'split' && !(entry.reference && typeof entry.reference === 'object')) {
-      errors.push(
-        `$adjudication.adjudications[finding_id=${entry.finding_id}].reference: required for disposition split — the split-off mechanism must name the issue it was filed as`
-      )
-    }
+    // A `split` REQUIRES its reference rather than merely permitting one —
+    // "filed by the agent that splits it, never left to memory" (#747). That
+    // requirement now lives in adjudication.schema.json itself as an
+    // if/then (challenge round 2), so a standard validator enforces it too
+    // and this function never sees a split without one:
+    // validateAdjudicationInstance runs the schema first and reaches these
+    // semantic checks only when it produced no errors. What stays here is
+    // the half a schema keyword cannot express — that the reference must be
+    // an `issue_number`, and that its value is a usable issue reference.
     if (entry.reference && typeof entry.reference === 'object') {
       const { reference } = entry
       const expectedReferenceType = { fix: 'sha', file: 'issue_number', decline: 'comment_id', split: 'issue_number' }
@@ -2280,7 +2276,14 @@ function checkSplitsAgainstAdjudications(document, adjudications, errors) {
 // round currently being worked may legitimately not have reached run.splits
 // yet, and only a promoted run must have every one of them recorded.
 function checkSplitAdjudicationsRecordedBeforePromotion(document, adjudications, errors) {
-  if (adjudications.length === 0 || document.outcome !== 'ready-for-review') return
+  // Every TERMINAL outcome, not just ready-for-review (challenge round 2,
+  // confirmed): the contract files the mechanism AT THE MOMENT of the split,
+  // so a run that ends `capped`, `escalated`, or `abandoned` with a `split`
+  // adjudication and no splits[] entry has lost the mechanism and milestone
+  // from the durable projection just as completely as a promoted one. What
+  // the non-terminal case buys is only that a split adjudicated in the round
+  // being worked has not yet had to reach run.splits.
+  if (adjudications.length === 0 || document.outcome === null || document.outcome === undefined) return
   const recorded = new Set()
   for (const split of document.splits ?? []) {
     for (const findingId of split.finding_ids ?? []) {
@@ -2292,7 +2295,7 @@ function checkSplitAdjudicationsRecordedBeforePromotion(document, adjudications,
       if (entry.disposition !== 'split' || typeof entry.finding_id !== 'string') continue
       if (!recorded.has(entry.finding_id)) {
         errors.push(
-          `$run.splits: finding ${entry.finding_id} was adjudicated split but no splits[] entry records it, required when outcome is ready-for-review`
+          `$run.splits: finding ${entry.finding_id} was adjudicated split but no splits[] entry records it, required once the run reaches a terminal outcome`
         )
       }
     }
@@ -2312,12 +2315,29 @@ function checkSplitAdjudicationsRecordedBeforePromotion(document, adjudications,
 function checkSplitDeletionRoundBeforePromotion(document, adjudications, errors) {
   if (adjudications.length === 0 || document.outcome !== 'ready-for-review') return
   for (const [index, split] of (document.splits ?? []).entries()) {
+    // A later round NUMBER alone was not confirmation (challenge round 2,
+    // confirmed): a higher-numbered round can review the very same
+    // pre-deletion head, so a promoted run satisfied the check with the
+    // mechanism still in the tree. The document cannot prove the mechanism
+    // is gone — it holds no trees — so this asserts the strongest property
+    // it CAN decide and claims no more than that: a later round of the same
+    // stage reviewed a DIFFERENT head, i.e. the tree changed after the split
+    // and was reviewed again. Proving the mechanism actually left is that
+    // deletion round's own review, not this record's job.
+    const splitRound = adjudications.find(
+      ({ data }) => data.stage === split.stage && data.round === split.round
+    )
+    const splitHead = splitRound?.data?.reviewed_head
     const confirmed = adjudications.some(
-      ({ data }) => data.stage === split.stage && Number.isInteger(data.round) && data.round > split.round
+      ({ data }) =>
+        data.stage === split.stage &&
+        Number.isInteger(data.round) &&
+        data.round > split.round &&
+        (splitHead === undefined || data.reviewed_head !== splitHead)
     )
     if (!confirmed) {
       errors.push(
-        `$run.splits[${index}]: no ${split.stage} round after round ${split.round} confirms the mechanism's removal — the split contract requires one deletion round before a run is ready-for-review`
+        `$run.splits[${index}]: no ${split.stage} round after round ${split.round} reviewed a different head — the split contract requires one deletion round, reviewing the tree the mechanism was removed from, before a run is ready-for-review`
       )
     }
   }

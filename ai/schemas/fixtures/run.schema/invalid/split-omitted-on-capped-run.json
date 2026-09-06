@@ -1,0 +1,61 @@
+{
+  "schema": 2,
+  "run_id": "run-6040-settlement-cross-check",
+  "initiated_by": "human",
+  "started_at": "2026-09-03T09:00:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-09-03T09:00:00Z",
+      "exit": "claimed"
+    },
+    {
+      "stage": "claim",
+      "entered_at": "2026-09-03T09:02:00Z",
+      "exit": "planned"
+    },
+    {
+      "stage": "plan",
+      "entered_at": "2026-09-03T09:04:00Z",
+      "exit": "implementer dispatched"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-09-03T09:06:00Z",
+      "exit": "round 1 pushed"
+    },
+    {
+      "stage": "verify",
+      "entered_at": "2026-09-03T09:10:00Z",
+      "exit": "green"
+    },
+    {
+      "stage": "challenge",
+      "entered_at": "2026-09-03T09:14:00Z",
+      "exit": "converged"
+    },
+    {
+      "stage": "review",
+      "entered_at": "2026-09-03T09:20:00Z",
+      "exit": "capped: split adjudicated, run stopped"
+    }
+  ],
+  "interventions": [],
+  "outcome": "capped",
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": [
+    {
+      "seq": 0,
+      "digest": "810b211b9ab1c35dcecbe242785be39c2176030c71f8d84855853ead0964050b",
+      "prev_digest": "genesis",
+      "outcome": "capped",
+      "at": "2026-09-03T09:30:00Z"
+    }
+  ],
+  "splits": []
+}

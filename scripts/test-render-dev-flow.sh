@@ -179,6 +179,25 @@ assert_rc 0
 assert_contains "$out" 'signal not corroborated by this record'
 assert_contains "$out" 'review-r2-codex-cli-3'
 
+echo "==> a candidate naming only SOME of the round's gating findings is uncorroborated"
+# Challenge round 2 (P2, confirmed): proving each named id is *a* gating
+# finding left a stale verdict free to name one valid finding from a
+# multi-mechanism round and still render "carries all N gating findings",
+# which is the entire basis for recommending removal. concentration: 1 asserts
+# the named set IS the round's gating set, so equality is what gets checked.
+partial_split_record="${test_tmp}/partial-split-record"
+cp -R "$split_record_dir" "$partial_split_record"
+jq '.split_candidate.finding_ids = ["review-r2-codex-cli-1"]' \
+    "$partial_split_record/verdict.json" >"${test_tmp}/partial-split-verdict.json"
+mv "${test_tmp}/partial-split-verdict.json" "$partial_split_record/verdict.json"
+run blocker-comment --record "$partial_split_record" --head "$render_head"
+assert_rc 0
+assert_contains "$out" 'signal not corroborated by this record'
+assert_contains "$out" 'review-r2-codex-cli-2'
+assert_contains "$out" 'review-r2-codex-cli-3'
+[[ "$out" != *"Remove it from this change"* ]] ||
+    fail "a candidate that names only part of the gating set must not publish the removal recommendation"
+
 echo "==> a malformed split_candidate is refused rather than rendered as advice"
 bad_split_record="${test_tmp}/bad-split-record"
 cp -R "$split_record_dir" "$bad_split_record"
