@@ -1681,7 +1681,7 @@ echo "==> #685(10): an applied_disposition the record has no evidence for anywhe
 write_defaults
 run_gate --integrator-result "$fresh_result"
 assert_gate 2 indeterminate codex-indeterminate
-printf '%s\n' "$gate_out" | grep -Fq "known finding universe" ||
+grep -Fq "known finding universe" <<<"$gate_out" ||
     fail "#685(10): the gate did not name the finding universe: $gate_out"
 
 # A disposition claim alone, with no durable settlement behind it, cannot
@@ -1874,7 +1874,7 @@ for disposition in decline file; do
     disposition_result="$(write_disposition_result "unsettled-${disposition}" "$disposition")"
     run_gate --integrator-result "$disposition_result"
     assert_gate 1 fail deferred-unsettled
-    printf '%s\n' "$gate_out" | grep -Fq 'review-r1-codex-cli-9' ||
+    grep -Fq 'review-r1-codex-cli-9' <<<"$gate_out" ||
         fail "#685(9) ${disposition}: gate did not name the unsettled finding: $gate_out"
 done
 
@@ -1929,7 +1929,7 @@ disposition_result="$(write_disposition_result marker-missing decline)"
 run_gate --integrator-result "$disposition_result"
 skip_evidence_markers=0
 assert_gate 1 fail evidence-marker-missing
-printf '%s\n' "$gate_out" | grep -Fq 'review round 1' ||
+grep -Fq 'review round 1' <<<"$gate_out" ||
     fail "#685(7): the gate did not name the unrecorded round: $gate_out"
 
 echo "==> #685(7): a pr-destination marker for that round does not substitute"
@@ -1941,7 +1941,7 @@ skip_evidence_markers=1
 run_gate --integrator-result "$disposition_result"
 skip_evidence_markers=0
 assert_gate 1 fail evidence-marker-missing
-printf '%s\n' "$gate_out" | grep -Fq 'never substitutes' ||
+grep -Fq 'never substitutes' <<<"$gate_out" ||
     fail "#685(7): the gate did not say a pr comment never substitutes: $gate_out"
 
 echo "==> #685(7): the same round, once its issue evidence is recorded, promotes"
@@ -2124,7 +2124,7 @@ bad_cap_rc=$?
 set -e
 [ "$bad_cap_rc" -eq 2 ] ||
     fail "#685(4): a malformed --remediation-cap should exit 2, got $bad_cap_rc: $bad_cap_out"
-printf '%s\n' "$bad_cap_out" | grep -Fq -- '--remediation-cap must be a non-negative integer' ||
+grep -Fq -- '--remediation-cap must be a non-negative integer' <<<"$bad_cap_out" ||
     fail "#685(4): malformed --remediation-cap did not name the flag: $bad_cap_out"
 
 # --- #685 criterion 5: codex_cycle.cycle <= [rounds].integration; cap 0 =>

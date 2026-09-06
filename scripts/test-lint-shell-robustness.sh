@@ -437,6 +437,51 @@ BODY
 expect_clean "an exempt-file declaration on line 1 is honoured" \
     "$TMPROOT/first-line-exempt.sh"
 
+# Cloud review, later cycles: three more prefix/format/naming bypasses.
+
+cat >"$body" <<'BODY'
+seq 100000 | env -i grep -q 1
+seq 100000 | command -p grep -q 1
+BODY
+expect_flagged "an OPTION-bearing command prefix (env -i, command -p)" \
+    "$(fixture prefix-opts.sh "$body")" 'grep -q'
+
+cat >"$body" <<'BODY'
+seq 100000 | \
+    grep -q 1
+BODY
+expect_flagged "a pipe followed by a line-continuation backslash" \
+    "$(fixture pipe-backslash.sh "$body")" 'continued'
+
+# The reporter test is "does it keep a tally", not "is it on a name list". A
+# fixed list missed `expect()` and `start()`, both used in this repository.
+cat >"$body" <<'BODY'
+expect() {
+    pass=$((pass + 1))
+    echo "  ok: $1"
+}
+BODY
+expect_flagged "a counting reporter named outside the vocabulary (expect)" \
+    "$(fixture test-expect.sh "$body")" 'return 0'
+
+cat >"$body" <<'BODY'
+start() {
+    cases=$((cases + 1))
+    echo "==> $1"
+}
+BODY
+expect_flagged "another one (start)" \
+    "$(fixture test-start.sh "$body")" 'return 0'
+
+cat >"$body" <<'BODY'
+helper() {
+    mkdir -p "$1"
+    echo "made $1"
+}
+BODY
+expect_clean "an ordinary helper that echoes but keeps no tally" \
+    "$(fixture test-plain-helper.sh "$body")"
+
 echo "==> the guard reads what it is asked to read"
 
 if out="$("$GUARD" "$TMPROOT/definitely-absent.sh" 2>&1)"; then

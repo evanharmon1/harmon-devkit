@@ -190,19 +190,19 @@ for f in "${files[@]}"; do
         skip = (exempt_file || block || inline_ok)
 
         # R1 — a pipe feeding a grep that carries a quiet flag.
-        if (!skip && line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+        if (!skip && line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: `| grep -q` — grep exits on match, SIGPIPEs the producer, and `pipefail` turns a MATCH into a failure\n", FILE, FNR
         # R2 — a pipe feeding a grep whose options continue on the next line.
-        else if (!skip && line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]*\\[[:space:]]*$/)
+        else if (!skip && line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]*\\[[:space:]]*$/)
             printf "%s:%d: `| grep \\` — options continue on the next line; a quiet flag here would be the SIGPIPE shape\n", FILE, FNR
         # R3a — the previous line ends with a SINGLE pipe (not `||`, which is
         # an or-list, and not `\`, which continues an argument list) and this
         # line leads with a quiet grep.
-        else if (!skip && prev ~ /(^|[^|])\|[[:space:]]*$/ &&
-                 line ~ /^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+        else if (!skip && prev ~ /(^|[^|])\|[[:space:]]*\\?[[:space:]]*$/ &&
+                 line ~ /^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: continued `| grep -q` pipeline — same SIGPIPE shape, split across lines\n", FILE, FNR
         # R3b — this line itself leads with the pipe (`producer \` then `| grep -q`).
-        else if (!skip && line ~ /^[[:space:]]*\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
+        else if (!skip && line ~ /^[[:space:]]*\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]+[^[:space:]|)\];&]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/)
             printf "%s:%d: continued `| grep -q` pipeline — same SIGPIPE shape, split across lines\n", FILE, FNR
         # R3c — BOTH continuations at once: `producer |`, then `grep \`, then
         # `-q pattern` on a third line. R3a wants the flag on the grep line and
@@ -216,8 +216,8 @@ for f in "${files[@]}"; do
         # keeps, and it tracks a formatting fact rather than shell grammar.
         if (line ~ /\\[[:space:]]*$/ &&
             (grep_cont ||
-             (prev ~ /(^|[^|])\|[[:space:]]*$/ && line ~ /^[[:space:]]*\|?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]|$)/) ||
-             line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]|$)/))
+             (prev ~ /(^|[^|])\|[[:space:]]*\\?[[:space:]]*$/ && line ~ /^[[:space:]]*\|?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]|$)/) ||
+             line ~ /(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*((command|env|exec)[[:space:]]+(-[^[:space:]|]+[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]|]*[[:space:]]+)*)?grep([[:space:]]|$)/))
             grep_cont = 1
         else
             grep_cont = 0
@@ -267,26 +267,35 @@ for f in "${files[@]}"; do
     # block ends at the first top-level `}`, the next definition, or EOF, and
     # stopping early can only produce a LOUD false positive that one
     # annotation answers.
-    $0 ~ /^[[:space:]]*(function[[:space:]]+)?(ok|bad|pass|fail|failed|good|note|warn|skip|skipped|report)[[:space:]]*(\(\))?([[:space:]]*\{.*)?[[:space:]]*$/ &&
+    $0 ~ /^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?([[:space:]]*\{.*)?[[:space:]]*$/ &&
     $0 ~ /(^[[:space:]]*function[[:space:]]|\(\))/ {
+    $0 ~ /\{/ &&
         name = $0
         sub(/^[[:space:]]*function[[:space:]]+/, "", name)
         sub(/[[:space:]]*\(\).*$/, "", name)
         sub(/[[:space:]]*\{.*$/, "", name)
         gsub(/[[:space:]]/, "", name)
+        is_reporter_name = (name ~ /^(ok|bad|pass|fail|failed|good|note|warn|skip|skipped|report|expect|start)$/)
         open = FNR
         # `return 0` must be a STATEMENT, not any textual occurrence: a
         # `# TODO: add return 0` comment used to satisfy this check while the
         # reporter still ended on a failing `echo`.
+        counts = ($0 ~ /[A-Za-z_][A-Za-z0-9_]*=\$\(\([A-Za-z_]/)
         found = ($0 ~ /(^|;)[[:space:]]*return 0[[:space:]]*;?[[:space:]]*(\}[[:space:]]*)?$/) ||
             ($0 ~ /shell-robustness:[[:space:]]*ok/ && reason_ok($0))
-        while (!found && (getline nxt) > 0) {
-            if (nxt ~ /shell-robustness:[[:space:]]*ok/ && reason_ok(nxt)) { found = 1; break }
-            if (nxt !~ /^[[:space:]]*#/ &&
-                nxt ~ /(^|;)[[:space:]]*return 0[[:space:]]*;?[[:space:]]*(\}[[:space:]]*)?$/) { found = 1; break }
+        while ((getline nxt) > 0) {
+            if (nxt ~ /shell-robustness:[[:space:]]*ok/ && reason_ok(nxt)) found = 1
+            else if (nxt !~ /^[[:space:]]*#/ &&
+                nxt ~ /(^|;)[[:space:]]*return 0[[:space:]]*;?[[:space:]]*(\}[[:space:]]*)?$/) found = 1
+            if (nxt !~ /^[[:space:]]*#/ && nxt ~ /[A-Za-z_][A-Za-z0-9_]*=\$\(\([A-Za-z_]/) counts = 1
             if (nxt ~ /^\}/) break
             if (nxt ~ /^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)/) break
         }
+        # A function that keeps a pass/fail tally IS a reporter, whatever it is
+        # called. A fixed name list missed `expect()` and `start()` — both used
+        # in this repository, both repaired by hand in this very change, which
+        # is proof enough that the list was the wrong invariant.
+        if (!is_reporter_name && !counts) next
         if (!found)
             printf "%s:%d: reporter `%s()` — no `return 0` in its block, so its own status is read as the assertion s. Add `return 0`, or annotate it if it always exits.\n", FILE, open, name
         next
