@@ -179,34 +179,79 @@ sandbox_create() {
 # earlier revision recorded type, mode, size and path, and a same-length
 # rewrite that restored the mode passed it unnoticed — which made "byte-
 # identical" a claim this function did not actually check.
-# An ARRAY, not a function: the hashing below runs through `xargs`, which
-# execs a command and cannot call a shell function — an earlier revision did
-# exactly that, so every hash silently produced nothing and the content check
-# it was supposed to add never ran.
+# The hasher, as a COMMAND STRING rather than a shell function: the hashing
+# below runs through `xargs`, which execs a command and cannot call a function
+# — an earlier revision did exactly that, so every hash silently produced
+# nothing and the content check it was supposed to add never ran at all.
 sandbox_hash_cmd() {
     if command -v sha256sum >/dev/null 2>&1; then
         printf 'sha256sum'
-    else
+    elif command -v shasum >/dev/null 2>&1; then
         printf 'shasum -a 256'
+    else
+        return 1
     fi
 }
 
+# Every path under the scratch tree with its type, mode, size, symlink target
+# and CONTENT HASH, plus git's own view. Compared before and after: this is the
+# proof the whole boundary rests on, so it FAILS CLOSED — a hasher that is
+# missing, a hash pipeline that errors, or an empty hash list where regular
+# files exist all abort the snapshot rather than returning a baseline with
+# nothing in it to compare. A baseline carrying zero hashes would accept every
+# same-size, same-mode rewrite, which is the exact defect the hashes were added
+# to close.
+#
+# `.git` is excluded because it is a FILE in a linked worktree (a pointer at
+# the main repo's admin dir), and git touches nothing else here.
 sandbox_snapshot() {
+    local -a hasher
+    local listing files hashes
+    # shellcheck disable=SC2206 # deliberate word-splitting: a command plus its
+    # flags, not one argument.
+    hasher=($(sandbox_hash_cmd)) || {
+        echo "readonly-sandbox: no sha256sum or shasum to hash the scratch tree with" >&2
+        return 1
+    }
+
+    listing="$(mktemp)" || return 1
+    files="$(mktemp)" || {
+        rm -f "$listing"
+        return 1
+    }
+    hashes="$(mktemp)" || {
+        rm -f "$listing" "$files"
+        return 1
+    }
+    # shellcheck disable=SC2064 # expand the paths now, not at trap time.
+    trap "rm -f '$listing' '$files' '$hashes'" RETURN
+
     # %l is the symlink target, so a retarget of the same length is caught too;
     # it is empty for everything else.
     find "$readonly_sandbox_dir" -mindepth 1 -not -path "$readonly_sandbox_dir/.git" \
-        -printf '%y %m %s %P %l\n' 2>/dev/null | LC_ALL=C sort
-    printf 'content\n'
-    # Every regular file's CONTENT. This is the check the whole sandbox rests
-    # on — the enforcement can be bypassed on the degraded path, so the proof
-    # has to be real rather than a metadata comparison wearing its name.
-    local -a hasher
-    # shellcheck disable=SC2206 # deliberate word-splitting: a command plus its
-    # flags, not one argument.
-    hasher=($(sandbox_hash_cmd))
+        -printf '%y %m %s %P %l\n' >"$listing" || {
+        echo "readonly-sandbox: could not list the scratch tree" >&2
+        return 1
+    }
     find "$readonly_sandbox_dir" -mindepth 1 -not -path "$readonly_sandbox_dir/.git" \
-        -type f -print0 2>/dev/null | LC_ALL=C sort -z |
-        xargs -0 -r "${hasher[@]}" 2>/dev/null | LC_ALL=C sort
+        -type f -print0 >"$files" || {
+        echo "readonly-sandbox: could not enumerate the scratch tree's files" >&2
+        return 1
+    }
+    if [ -s "$files" ]; then
+        LC_ALL=C sort -z <"$files" | xargs -0 -r "${hasher[@]}" >"$hashes" || {
+            echo "readonly-sandbox: could not hash the scratch tree's contents" >&2
+            return 1
+        }
+        [ -s "$hashes" ] || {
+            echo "readonly-sandbox: the scratch tree has files but hashed to nothing" >&2
+            return 1
+        }
+    fi
+
+    LC_ALL=C sort <"$listing" || return 1
+    printf 'content\n'
+    LC_ALL=C sort <"$hashes" || return 1
     # git's own view, folded into the same baseline rather than asserted empty:
     # a scope that includes uncommitted work makes the scratch tree
     # legitimately dirty, so what must not change is the dirtiness, not its
@@ -216,6 +261,102 @@ sandbox_snapshot() {
     git --no-optional-locks -C "$readonly_sandbox_dir" status --porcelain \
         --untracked-files=all 2>/dev/null | LC_ALL=C sort
 }
+
+# sandbox_create COMMITTISH INCLUDE_WORKTREE
+# Builds the scratch checkout at the snapshot the resolved scope describes.
+sandbox_create() {
+    local head include_worktree patch
+    head="$(git rev-parse --verify --quiet "${1:-HEAD}^{commit}" 2>/dev/null)" || head=
+    include_worktree="${2:-0}"
+    [ -n "$head" ] || {
+        echo "readonly-sandbox: cannot resolve ${1:-HEAD} to build a scratch checkout" >&2
+        return 1
+    }
+    # Bubblewrap is the default and by far the stronger boundary, but its
+    # absence DEGRADES the pass rather than refusing it (maintainer decision,
+    # superseding the earlier refuse-without-it rule). Every non-bwrap
+    # protection still applies — the scope-accurate scratch tree with its write
+    # bits removed, the real .git left unwritable, the `env -i` allowlist, the
+    # stripped credentials and the post-run tamper check — and the caller
+    # DISCLOSES the degradation so a reviewer can see which boundary a pass ran
+    # under. The residual it accepts is stated plainly: without the kernel
+    # sandbox a linked worktree's .git still points at the real repository, so
+    # `git update-ref` could alter shared refs while the scratch tree itself
+    # looked untouched.
+    readonly_sandbox_degraded=0
+    sandbox_resolve_bwrap || readonly_sandbox_degraded=1
+    readonly_sandbox_dir="$(mktemp -d -t finder-readonly-XXXXXX)" || return 1
+    # The directory has to be EMPTY for `git worktree add`, and mktemp made it.
+    rmdir "$readonly_sandbox_dir" || return 1
+    git worktree add --detach --quiet "$readonly_sandbox_dir" "$head" || {
+        echo "readonly-sandbox: could not create the scratch checkout" >&2
+        return 1
+    }
+    # From here on the worktree is REGISTERED, so every failure path has to
+    # unregister it. The caller installs its cleanup trap only after this
+    # function returns, so a failure in between would otherwise leave a linked
+    # worktree behind permanently — consuming disk and tripping later worktree
+    # operations.
+    sandbox_create_failed() {
+        sandbox_cleanup
+        return 1
+    }
+    # The working tree's own changes, where the resolved scope includes them.
+    # Applied BEFORE the read-only pass below, so what the finder can look at
+    # matches the diff it was given.
+    if [ "$include_worktree" = 1 ]; then
+        patch="$(mktemp)" || sandbox_create_failed || return 1
+        # Fail closed. `|| true` here turned a transient git failure into "no
+        # patch", so a scope containing uncommitted work got a committed-only
+        # checkout while the prompt and manifest claimed otherwise — the
+        # finder would then be reading a tree that contradicts its own input.
+        git diff --binary HEAD >"$patch" || {
+            rm -f "$patch"
+            echo "readonly-sandbox: could not collect the working-tree changes for the scratch checkout" >&2
+            sandbox_create_failed
+            return 1
+        }
+        if [ -s "$patch" ]; then
+            git -C "$readonly_sandbox_dir" apply --binary --whitespace=nowarn "$patch" 2>/dev/null || {
+                rm -f "$patch"
+                echo "readonly-sandbox: could not reproduce the working-tree changes in the scratch checkout" >&2
+                sandbox_create_failed
+                return 1
+            }
+        fi
+        rm -f "$patch"
+        # Untracked files are part of the scope the manifest claims, so they
+        # are part of the tree the finder may read.
+        while IFS= read -r -d '' untracked; do
+            [ -n "$untracked" ] || continue
+            mkdir -p "$readonly_sandbox_dir/$(dirname "$untracked")" 2>/dev/null || continue
+            cp -p "$untracked" "$readonly_sandbox_dir/$untracked" 2>/dev/null || true
+        done < <(git ls-files -z --others --exclude-standard)
+    fi
+    # `a-w` covers the owner too, which is the point: this process runs as the
+    # same user the CLI will.
+    chmod -R a-w "$readonly_sandbox_dir" 2>/dev/null || true
+    # The snapshot is taken AFTER the chmod, so the modes it records are the
+    # ones the pass will see. Taken before, every single run would compare
+    # unequal on mode alone and the tamper check would fire on clean passes —
+    # which is a check that proves nothing.
+    readonly_sandbox_manifest="$(mktemp)" || sandbox_create_failed || return 1
+    sandbox_snapshot >"$readonly_sandbox_manifest" || sandbox_create_failed || return 1
+    printf '%s' "$readonly_sandbox_dir"
+}
+
+# Every path under the scratch tree with its size and mode. Compared before
+# and after: a rewritten file changes size or mode in the overwhelming
+# majority of cases, and `git status` below catches content changes that keep
+# both. `.git` is excluded because it is a FILE in a linked worktree (a
+# pointer at the main repo's admin dir), and git touches nothing else here.
+# The hasher, resolved once. Content is what the snapshot has to compare: an
+# earlier revision recorded type, mode, size and path, and a same-length
+# rewrite that restored the mode passed it unnoticed — which made "byte-
+# identical" a claim this function did not actually check.
+# An ARRAY, not a function: the hashing below runs through `xargs`, which
+# execs a command and cannot call a shell function — an earlier revision did
+# exactly that, so every hash silently produced nothing and the content check
 
 # sandbox_exec CMD... — run a command with the scratch tree as its working
 # directory and no write credentials in its environment.

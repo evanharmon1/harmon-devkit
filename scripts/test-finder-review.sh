@@ -265,6 +265,30 @@ printf 'aaaa\n' >"$work/src/probe.txt"
 }
 rm -f "$work/src/probe.txt"
 
+echo "==> a snapshot that cannot hash fails closed rather than baselining nothing"
+# The hashes ARE the proof. A baseline carrying none would accept every
+# same-size, same-mode rewrite — the exact defect they were added to close —
+# so a missing hasher or a failing pipeline aborts the snapshot.
+(
+    cd "$work" || exit 1
+    # shellcheck source=/dev/null
+    . ./scripts/lib/readonly-sandbox.sh
+    sandbox_create HEAD 0 >/dev/null || exit 1
+    # Hide both hashers from the snapshot's own lookup.
+    hash_probe_bin="$(mktemp -d)"
+    for stub in sha256sum shasum; do
+        printf '#!/bin/sh\nexit 127\n' >"$hash_probe_bin/$stub"
+        chmod +x "$hash_probe_bin/$stub"
+    done
+    if PATH="$hash_probe_bin:$PATH" sandbox_snapshot >/dev/null 2>&1; then
+        rm -rf "$hash_probe_bin"
+        sandbox_cleanup
+        exit 1
+    fi
+    rm -rf "$hash_probe_bin"
+    sandbox_cleanup
+) || fail "a snapshot with no usable hasher was accepted as a baseline"
+
 echo "==> the degraded path does not hand over the real home directory"
 # There is no mount namespace to replace HOME with a tmpfs here, so the
 # allowlist alone would have passed the real $HOME through — handing over

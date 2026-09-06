@@ -247,6 +247,14 @@ case "$prompt_bytes" in
     ;;
 esac
 
+# KNOWN GAP, tracked as harmon-devkit#811: the diff is collected here and the
+# scratch checkout is built from it, but the real worktree is free to change
+# during the model call that follows. A pass over uncommitted work is bound to
+# an unchanged HEAD, and HEAD is only half that scope's identity — so
+# unreviewed dirty content can enter the tree while a pass covering the
+# earlier state is still accepted. Closing it needs a worktree digest captured
+# before collection and re-checked after, which is run-record evidence.
+#
 # A failing diff is a refusal, never an empty one: `set -e` does not apply
 # inside a command substitution's assignment on every shell, so the status is
 # checked explicitly.
