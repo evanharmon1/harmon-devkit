@@ -43,7 +43,8 @@ run() {
 
 start() {
     cases=$((cases + 1))
-    echo "==> $1"
+    echo "==> $1" || true
+    return 0
 }
 
 start "a stable tag dispatches exactly the event the receiver listens for"

@@ -29,7 +29,10 @@ BIN_DIR="$TEST_ROOT/bin"
 mkdir -p "$BIN_DIR"
 export PATH="$BIN_DIR:$PATH"
 
-note() { printf '\n  \033[1;37m%s\033[0m\n' "$*"; }
+note() {
+    printf '\n  \033[1;37m%s\033[0m\n' "$*" || true
+    return 0
+}
 
 # ── Fixture helpers ───────────────────────────────────────────────────
 # build_fixture TAG — a git repo with one commit (the current pin) on main,
@@ -646,7 +649,7 @@ test_usage_exit() {
     FIXTURE="$(build_fixture v0.1.0)"
     _rc=0
     _out="$(run_helper 2>&1)" || _rc=$?
-    echo "$_out" | grep -q usage || {
+    grep -q usage <<<"$_out" || {
         echo "expected usage, got: $_out"
         return 1
     }

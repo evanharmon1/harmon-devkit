@@ -139,10 +139,20 @@ acquire_lock() {
     dead_owner=""
     dead_observations=0
     while ! ln "$lock_claim_file" "$candidate_lock_file" 2>/dev/null; do
-        if [ ! -e "$candidate_lock_file" ]; then
+        # The holder can release the lock between any two tests here, so a
+        # successful `-e` says nothing about the next syscall. Ask the question
+        # that decides the action first — is it a regular file? — and only then
+        # ask whether it is still there at all, so "gone" reads as the ordinary
+        # race it is instead of as a corrupt lock. Testing `-e` first and
+        # dying on the following `-f` inverts that: it makes a benign release
+        # fatal, which is what flaked `monitor serializes concurrent
+        # reservations` under a loaded machine (#689).
+        if [ ! -f "$candidate_lock_file" ]; then
+            if [ -e "$candidate_lock_file" ]; then
+                die "monitor lock is not a file: $candidate_lock_file"
+            fi
             continue
         fi
-        [ -f "$candidate_lock_file" ] || die "monitor lock is not a file: $candidate_lock_file"
         observed_owner="$(cat "$candidate_lock_file" 2>/dev/null || true)"
         if [ -n "$observed_owner" ] && ! lock_owner_alive "$observed_owner"; then
             if [ "$observed_owner" = "$dead_owner" ]; then

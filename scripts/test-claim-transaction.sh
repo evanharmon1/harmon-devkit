@@ -238,8 +238,8 @@ echo "==> successful claims commit markers then the durable record"
 scenario "$empty_issue"
 make_record yes claim:gpt none yes evanharmon1 claim:gpt none
 [ "$(run_claim --claim-label claim:gpt)" = 0 ] || fail "successful claim should exit 0: $(cat "$err")"
-sed -n '1p' "$log" | grep -q -- '--add-assignee evanharmon1' || fail "assignee must be the first write"
-sed -n '2p' "$log" | grep -q -- '--add-label claim:gpt' || fail "label must be the second write"
+grep -q -- '--add-assignee evanharmon1' < <(sed -n '1p' "$log") || fail "assignee must be the first write"
+grep -q -- '--add-label claim:gpt' < <(sed -n '2p' "$log") || fail "label must be the second write"
 [ "$(sed -n '3p' "$log")" = comment ] || fail "record must follow marker writes"
 [ "$(wc -l <"$log" | tr -d ' ')" = 3 ] || fail "transaction must perform no Project board operation"
 

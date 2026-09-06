@@ -674,14 +674,14 @@ fi
 expect_contains "$prune_out" "KEPT  refs/session-cleanup/pin/wt-det" "record prune: orphan commit's pin kept and reported"
 expect_contains "$prune_out" "git update-ref -d 'refs/session-cleanup/pin/wt-det' $det_sha" "record prune: drop remedy is compare-and-delete, immune to record-name reuse"
 worktrees_admin="$(git -C "$fixture" rev-parse --path-format=absolute --git-common-dir)/worktrees"
-if ls "$worktrees_admin" 2>/dev/null | grep -Eq '^(wt-det|wt-br)$'; then
+if grep -Eq '^(wt-det|wt-br)$' < <(ls "$worktrees_admin" 2>/dev/null); then
     fail "record prune: stale records survived the prune"
 fi
 [ "$(git -C "$fixture" rev-parse --quiet --verify refs/session-cleanup/pin/wt-det)" = "$det_sha" ] ||
     fail "record prune: pin does not hold the detached commit"
 git -C "$fixture" rev-parse --quiet --verify refs/session-cleanup/pin/wt-live >/dev/null &&
     fail "record prune: redundant pin for a live worktree was kept"
-if git -C "$fixture" fsck --unreachable 2>/dev/null | grep -q "$det_sha"; then
+if grep -q "$det_sha" < <(git -C "$fixture" fsck --unreachable 2>/dev/null); then
     fail "record prune: detached commit became unreachable despite the pin"
 fi
 echo "ok: record prune pins an orphan detached commit through the prune"

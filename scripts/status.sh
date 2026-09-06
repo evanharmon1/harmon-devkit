@@ -945,7 +945,7 @@ if [[ "${SECTION}" == "setup" ]]; then
                 if out="$(run_timeout "${NETWORK_TIMEOUT}" gh api \
                     "/${PKG_NS}/${OWNER}/packages/container/${REPO}-devcontainer" 2>&1)"; then
                     echo yes >"${d}/ghcr"
-                elif printf '%s' "${out}" | grep -q '404'; then
+                elif grep -q '404' <<<"${out}"; then
                     echo no >"${d}/ghcr"
                 else
                     # e.g. token lacks read:packages — don't claim "missing".
@@ -958,12 +958,12 @@ if [[ "${SECTION}" == "setup" ]]; then
         # ── Feature applicability, detected from local files ──
         # Match both .yml and .yaml — extension is each tool's own convention.
         has_claude_wf=0
-        find .github/workflows -maxdepth 1 \( -name 'claude-*.yml' -o -name 'claude-*.yaml' \) 2>/dev/null | grep -q . && has_claude_wf=1
+        grep -q . < <(find .github/workflows -maxdepth 1 \( -name 'claude-*.yml' -o -name 'claude-*.yaml' \) 2>/dev/null) && has_claude_wf=1
         has_release_wf=0
-        find .github/workflows -maxdepth 1 \( -name 'release.yml' -o -name 'release.yaml' \) 2>/dev/null | grep -q . && has_release_wf=1
+        grep -q . < <(find .github/workflows -maxdepth 1 \( -name 'release.yml' -o -name 'release.yaml' \) 2>/dev/null) && has_release_wf=1
         uses_ci_app=$((has_claude_wf || has_release_wf))
         has_codeql_wf=0
-        find .github/workflows -maxdepth 1 \( -name 'codeql.yml' -o -name 'codeql.yaml' \) 2>/dev/null | grep -q . && has_codeql_wf=1
+        grep -q . < <(find .github/workflows -maxdepth 1 \( -name 'codeql.yml' -o -name 'codeql.yaml' \) 2>/dev/null) && has_codeql_wf=1
         has_semgrep_ci=0
         grep -rEq 'task[[:space:]]+security:sast([[:space:]]|$)' .github/workflows \
             >/dev/null 2>&1 && has_semgrep_ci=1
@@ -1164,7 +1164,7 @@ if [[ "${SECTION}" == "setup" ]]; then
                             while IFS= read -r want; do
                                 [ -z "${want}" ] && continue
                                 want_count=$((want_count + 1))
-                                printf '%s\n' "${have_labels}" | grep -qxF "${want}" ||
+                                grep -qxF "${want}" <<<"${have_labels}" ||
                                     missing_count=$((missing_count + 1))
                             done <<<"${want_labels}"
                             if [ -z "${have_labels}" ] || [ "${want_count}" -eq 0 ]; then
@@ -1181,7 +1181,7 @@ if [[ "${SECTION}" == "setup" ]]; then
                     type_names="$(jq -r 'if type == "array" then (map(.name) | join(",")) else "" end' "${d}/issue-types.json" 2>/dev/null || echo "")"
                     if [ -z "${type_names}" ]; then
                         checkline unknown "Org issue types" "needs admin:org"
-                    elif printf '%s' "${type_names}" | grep -q 'Research'; then
+                    elif grep -q 'Research' <<<"${type_names}"; then
                         checkline ok "Org issue types" "Bug/Feature/Task/Research"
                     else
                         checkline no "Org issue types" "run task setup:github-issue-types"
@@ -1208,7 +1208,7 @@ if [[ "${SECTION}" == "setup" ]]; then
                         wname="${want%%:*}"
                         wtype="${want##*:}"
                         htype="$(printf '%s\n' "${field_rows}" | awk -F'\t' -v n="${wname}" '$1 == n { print $2; exit }')"
-                        if ! printf '%s\n' "${field_rows}" | cut -f1 | grep -qxF "${wname}"; then
+                        if ! grep -qxF "${wname}" < <(printf '%s\n' "${field_rows}" | cut -f1); then
                             missing_fields="${missing_fields}${missing_fields:+, }${wname}"
                         elif [ -n "${htype}" ] && [ "${htype}" != "${wtype}" ]; then
                             wrong_fields="${wrong_fields}${wrong_fields:+, }${wname} is ${htype}"

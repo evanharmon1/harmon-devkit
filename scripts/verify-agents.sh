@@ -296,7 +296,7 @@ EOF
     # --- no collision with a skill name ---------------------------------
     # Match on the filename, not the frontmatter: the two are required to agree
     # above, and the filename is what a consumer's vendored copy is named.
-    if printf '%s\n' "$skill_names" | grep -qxF "$name"; then
+    if grep -qxF "$name" <<<"$skill_names"; then
         err "$md: agent name '$name' collides with the skill of the same name"
         err "  rename one — sibling dests mean nothing fails, it just reads ambiguously"
     fi
@@ -306,7 +306,7 @@ EOF
     # the filename, for the same reason as the collision check above (name ==
     # filename is already enforced; the registry role slug and the vendored
     # path both need to agree with it).
-    if [ -n "$registry_roles" ] && ! printf '%s\n' "$registry_roles" | grep -qxF "$name"; then
+    if [ -n "$registry_roles" ] && ! grep -qxF "$name" <<<"$registry_roles"; then
         err "$md: agent name '$name' does not resolve to a role in $REGISTRY_FILE roles[]"
         err "  every shared agent implements a registered dev-flow-v2 role (specs/dev-flow-v2.md 'Roles and authority')"
     fi

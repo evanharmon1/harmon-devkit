@@ -169,13 +169,13 @@ env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='fix: cleanup, closes #5' PR_
 echo "==> a title violation is reported as the title, not as a body line"
 out="$(env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='fix: cleanup, closes #5' PR_BODY='Nothing to see.' \
     "$closing" --repo "$repo" --body-env PR_BODY --title-env PR_TITLE 2>&1 || true)"
-printf '%s\n' "$out" | grep -q 'PR title' || fail "the violation should be located in the PR title"
+grep -q 'PR title' <<<"$out" || fail "the violation should be located in the PR title"
 
 echo "==> body line numbers stay correct when a title is also scanned"
 out="$(env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='fix: a clean title' PR_BODY='line one
 line two
 Closes #5' "$closing" --repo "$repo" --body-env PR_BODY --title-env PR_TITLE 2>&1 || true)"
-printf '%s\n' "$out" | grep -q 'body line 3' || fail "body line numbers should exclude the title line"
+grep -q 'body line 3' <<<"$out" || fail "body line numbers should exclude the title line"
 
 echo "==> a clean title and a clean body pass together"
 _rc=0
@@ -203,7 +203,7 @@ echo "==> a commit violation is located as a commit message, not a body line"
 out="$(env ISSUE_BODY_DIR="$fixtures" GH_REPO="" PR_TITLE='feat: clean' PR_BODY='Clean.' \
     "$closing" --repo "$repo" --title-env PR_TITLE --body-env PR_BODY \
     --commits-file "$tmp/commits.txt" 2>&1 || true)"
-printf '%s\n' "$out" | grep -q 'commit message line 3' || fail "commit hits should report their own line numbers"
+grep -q 'commit message line 3' <<<"$out" || fail "commit hits should report their own line numbers"
 
 echo "==> an empty --commits-file value means no commits were supplied"
 _rc=0
@@ -1518,11 +1518,11 @@ BODY
 
 echo "==> a rot remediation template matches the canonical skeleton"
 _out="$(printf 'scripts/foo.sh:42 is stale.' | "$rot" 2>&1 || true)"
-printf '%s\n' "$_out" | grep -q '## Problem' ||
+grep -q '## Problem' <<<"$_out" ||
     fail "the rot remediation should teach the canonical Problem skeleton"
-printf '%s\n' "$_out" | grep -q '## Acceptance criteria' ||
+grep -q '## Acceptance criteria' <<<"$_out" ||
     fail "the rot remediation should include Acceptance criteria"
-if printf '%s\n' "$_out" | grep -q '## Invariant'; then
+if grep -q '## Invariant' <<<"$_out"; then
     fail "the rot remediation must not teach the legacy Invariant skeleton"
 fi
 
@@ -1707,8 +1707,8 @@ _rc=0
 
 echo "==> metadata: help documents both owner-type examples and bad usage exits 2"
 help="$($metadata --help 2>&1 || true)"
-printf '%s\n' "$help" | grep -q 'Personal-account example' || fail "help needs a personal example"
-printf '%s\n' "$help" | grep -q 'Organization example' || fail "help needs an organization example"
+grep -q 'Personal-account example' <<<"$help" || fail "help needs a personal example"
+grep -q 'Organization example' <<<"$help" || fail "help needs an organization example"
 [ "$(run_metadata --repo testowner/testrepo --title x --body-file "$valid_body" \
     --owner-type personal --human-authored --label feature)" = 2 ] ||
     fail "missing repo-root should exit 2"
@@ -1733,15 +1733,15 @@ done
 for doc in ai/skills/universal/track-work/SKILL.md \
     ai/skills/universal/track-work/references/issue-authoring.md; do
     normalized_doc="$(tr '\n' ' ' <"$doc")"
-    printf '%s\n' "$normalized_doc" | grep -qi 'target repository' ||
+    grep -qi 'target repository' <<<"$normalized_doc" ||
         fail "$doc must carry the target repository"
-    printf '%s\n' "$normalized_doc" | grep -qi 'title and body contract' ||
+    grep -qi 'title and body contract' <<<"$normalized_doc" ||
         fail "$doc must carry the title and body contract"
-    printf '%s\n' "$normalized_doc" | grep -qi 'concrete labels or explicit *inapplicability' ||
+    grep -qi 'concrete labels or explicit *inapplicability' <<<"$normalized_doc" ||
         fail "$doc must carry concrete labels or explicit inapplicability"
-    printf '%s\n' "$normalized_doc" | grep -qi 'created issue number' ||
+    grep -qi 'created issue number' <<<"$normalized_doc" ||
         fail "$doc must require the created issue number"
-    printf '%s\n' "$normalized_doc" | grep -qi 'unable to decide.*metadata' ||
+    grep -qi 'unable to decide.*metadata' <<<"$normalized_doc" ||
         fail "$doc must define metadata uncertainty"
 done
 
@@ -1805,9 +1805,9 @@ issue_is 33 '## Acceptance criteria
 ' || fail "a profile refusal must not write"
 _out="$(env ISSUE_BODY_DIR="$ticks" GH_REPO="" \
     "$tick" --repo "$repo" --issue 33 --match 'criterion' 2>&1 || true)"
-printf '%s\n' "$_out" | grep -q 'outside the mechanized ticking profile' ||
+grep -q 'outside the mechanized ticking profile' <<<"$_out" ||
     fail "the refusal should say the body is outside the profile"
-printf '%s\n' "$_out" | grep -q 'raw HTML tag' ||
+grep -q 'raw HTML tag' <<<"$_out" ||
     fail "the refusal should name the offending construct and line"
 
 echo "==> --index counts unticked items, not body lines"
@@ -1904,11 +1904,11 @@ if [ "${1:-}" = "api" ] && [ "${2:-}" = "user" ]; then
     printf '%s' "${STUB_LOGIN:-tester}"
     exit 0
 fi
-if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json state'; then
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && grep -q -- '--json state' <<<"$*"; then
     printf '%s:%s' "${STUB_STATE_NAME:-OPEN}" "${STUB_STATE_REASON:-}"
     exit 0
 fi
-if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && printf '%s ' "$@" | grep -q -- '--json assignees'; then
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && grep -q -- '--json assignees' <<<"$*"; then
     printf '%s' "${STUB_ASSIGNEES-tester}"
     exit 0
 fi
@@ -2827,8 +2827,8 @@ STUB
 chmod +x "$stub/gh"
 : >"$tmp/mutations.log"
 show_out=$(env PATH="$stub:$PATH" "$status_sh" --repo "$repo" --issue 5 --show 2>/dev/null)
-printf '%s\n' "$show_out" | grep -qx 'Status=Ready' || fail "--show must report the current Status (got: $show_out)"
-printf '%s\n' "$show_out" | grep -qx 'Agent=Codex' || fail "--show must report the current Agent"
+grep -qx 'Status=Ready' <<<"$show_out" || fail "--show must report the current Status (got: $show_out)"
+grep -qx 'Agent=Codex' <<<"$show_out" || fail "--show must report the current Agent"
 [ ! -s "$tmp/mutations.log" ] || fail "--show must not write"
 
 echo "==> --show refuses to be combined with a write"
@@ -3154,7 +3154,7 @@ grep -q -- '--remove-assignee evanharmon1' "$rc_log" || fail "v1 release must re
 grep -q 'issue comment' "$rc_log" || fail "the supersede comment must be posted"
 
 echo "==> the supersede comment's first line is the exact contract literal"
-head -1 "$rc_body" | grep -Fxq 'Claim released — issue closed (completed). (Supersedes the claim record above.)' ||
+grep -Fxq 'Claim released — issue closed (completed). (Supersedes the claim record above.)' < <(head -1 "$rc_body") ||
     fail "release comment first line must match the contract (got: $(head -1 "$rc_body"))"
 
 echo "==> release requires uninterrupted label ownership after the current leaf"
@@ -3598,7 +3598,7 @@ rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
     '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
 [ "$(RC_FAIL_MATCH='--remove-assignee evanharmon1' run_release --reason r)" = 4 ] || fail "late claimant removal failure should remain retryable"
 first_removed="$(grep -- '--remove-assignee' "$rc_log" | head -n 1)"
-printf '%s' "$first_removed" | grep -q -- '--remove-assignee collaborator' || fail "inherited owner must be removed before claimant"
+grep -q -- '--remove-assignee collaborator' <<<"$first_removed" || fail "inherited owner must be removed before claimant"
 
 echo "==> a failed refresh publish leaves the predecessor as the recoverable current record"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1" 1)")" "$issue_closed_full"

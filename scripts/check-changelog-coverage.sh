@@ -118,14 +118,14 @@ while IFS= read -r line; do
     subject="${line#* }"
 
     # Check 1: short SHA appears in the changelog section.
-    if echo "$covered_shas" | grep -qx "$sha" 2>/dev/null; then
+    if grep -qx "$sha" 2>/dev/null <<<"$covered_shas"; then
         continue
     fi
 
     # Check 2: a GitHub PR number (#NNN) in the commit subject appears in the
     # changelog section.  Squash-merge appends the PR number to the subject line.
     pr="$(echo "$subject" | sed -n 's/.*(#\([0-9]\{1,\}\)).*/\1/p')"
-    if [ -n "$pr" ] && echo "$covered_prs" | grep -qx "#${pr}" 2>/dev/null; then
+    if [ -n "$pr" ] && grep -qx "#${pr}" 2>/dev/null <<<"$covered_prs"; then
         continue
     fi
 

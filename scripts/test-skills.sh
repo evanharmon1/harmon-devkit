@@ -29,11 +29,13 @@ pass=0
 fail=0
 ok() {
     pass=$((pass + 1))
-    echo "  ✓ $*"
+    echo "  ✓ $*" || true
+    return 0
 }
 bad() {
     fail=$((fail + 1))
-    echo "  ✗ $*" >&2
+    echo "  ✗ $*" >&2 || true
+    return 0
 }
 
 # Run a command, succeed the assertion iff it exits 0.
@@ -64,7 +66,7 @@ expect_fail_contains() {
     if output="$("$@" 2>&1)"; then
         bad "$desc (expected non-zero exit)"
         [ -z "$output" ] || printf '%s\n' "$output" | sed 's/^/      /' >&2
-    elif printf '%s\n' "$output" | grep -qF "$needle"; then
+    elif grep -qF "$needle" <<<"$output"; then
         ok "$desc"
     else
         bad "$desc (missing diagnostic: $needle)"
@@ -79,7 +81,7 @@ expect_ok_contains() {
     if ! output="$("$@" 2>&1)"; then
         bad "$desc (expected exit 0)"
         [ -z "$output" ] || printf '%s\n' "$output" | sed 's/^/      /' >&2
-    elif printf '%s\n' "$output" | grep -qF "$needle"; then
+    elif grep -qF "$needle" <<<"$output"; then
         ok "$desc"
     else
         bad "$desc (missing output: $needle)"
@@ -138,7 +140,7 @@ expect_status() {
             bad "$desc (unexpected stdout)"
             sed 's/^/      stdout: /' "$stdout_file" >&2
             [ ! -s "$stderr_file" ] || sed 's/^/      stderr: /' "$stderr_file" >&2
-        elif [ -n "$stderr_needle" ] && ! printf '%s\n' "$stderr" | grep -qF "$stderr_needle"; then
+        elif [ -n "$stderr_needle" ] && ! grep -qF "$stderr_needle" <<<"$stderr"; then
             bad "$desc (missing stderr diagnostic: $stderr_needle)"
             [ ! -s "$stdout_file" ] || sed 's/^/      stdout: /' "$stdout_file" >&2
             [ ! -s "$stderr_file" ] || sed 's/^/      stderr: /' "$stderr_file" >&2
@@ -772,7 +774,7 @@ if collide_out="$(run_sync_at "$CC" sync 2>&1)"; then
 else
     ok "collision with a local skill fails the sync"
 fi
-if echo "$collide_out" | grep -q "local skill 'uni-one' collides"; then
+if grep -q "local skill 'uni-one' collides" <<<"$collide_out"; then
     ok "collision names the local skill in the error"
 else
     bad "collision names the local skill in the error"
@@ -814,7 +816,7 @@ if grow_out="$(run_sync_at "$CG" sync 2>&1)"; then
 else
     ok "legacy + grown categories: colliding local dir fails the sync"
 fi
-if echo "$grow_out" | grep -q "local skill 'fe-one' collides"; then
+if grep -q "local skill 'fe-one' collides" <<<"$grow_out"; then
     ok "legacy + grown categories: collision names the local skill"
 else
     bad "legacy + grown categories: collision names the local skill"
@@ -851,7 +853,7 @@ CE="$TMPROOT/consumer-emptymsg"
 mkdir -p "$CE"
 write_manifest_at "$CE" v0.0.0-test emptycat
 if empty_out="$(run_sync_at "$CE" sync 2>&1)" &&
-    echo "$empty_out" | grep -qF "(0 skills — categories are empty at this ref)"; then
+    grep -qF "(0 skills — categories are empty at this ref)" <<<"$empty_out"; then
     ok "empty-category sync logs the 0-skills message"
 else
     bad "empty-category sync logs the 0-skills message"
@@ -4994,10 +4996,20 @@ for signal_case in "INT 130" "TERM 143"; do
     signal="${signal_case% *}"
     expected="${signal_case#* }"
     cleanup_marker="$TMPROOT/cleanup-$signal"
+    # `kill` returns once the signal is QUEUED, not once it is handled, and
+    # bash runs a trap only at a command boundary. Falling straight through to
+    # `exit 99` therefore races the handler, and loses under load — `exit 130
+    # on SIGINT (got 99)` with two suites on one machine. Waiting on a
+    # background sleep gives the trap a boundary it is guaranteed to reach:
+    # `wait` returns immediately when a trapped signal arrives, so the pass
+    # path stays fast, and a MISSING trap still falls through to `exit 99`
+    # after the bound rather than hanging.
     if CLEANUP_MARKER="$cleanup_marker" bash -c '
         . "$1"
         cleanup() { : >"${CLEANUP_MARKER:?}"; }
         kill "-$2" "$$"
+        sleep 30 &
+        wait "$!"
         exit 99
     ' _ "$signal_fixture" "$signal" >/dev/null 2>&1; then
         rc=0
@@ -6661,7 +6673,7 @@ EOF
 
 if mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template reports executable-mode drift (expected non-zero exit)"
-elif printf '%s\n' "$mode_out" | grep -qF "MODE     scripts/status.sh"; then
+elif grep -qF "MODE     scripts/status.sh" <<<"$mode_out"; then
     ok "diff-template reports executable-mode drift"
 else
     bad "diff-template reports executable-mode drift (MODE diagnostic missing)"
@@ -6687,33 +6699,30 @@ if equivalent_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-t
 else
     bad "diff-template passes after executable mode is restored: $equivalent_out"
 fi
-if printf '%s\n' "$equivalent_out" | grep -qF "EQUIV    terraform/main.tf"; then
+if grep -qF "EQUIV    terraform/main.tf" <<<"$equivalent_out"; then
     ok "diff-template recognizes nested Terraform roots as equivalent"
 else
     bad "diff-template recognizes nested Terraform roots as equivalent"
 fi
-if printf '%s\n' "$equivalent_out" |
-    grep -qF "EQUIV    docs/decisions/0001-record-architecture-decisions.md"; then
+if grep -qF "EQUIV    docs/decisions/0001-record-architecture-decisions.md" <<<"$equivalent_out"; then
     ok "diff-template recognizes a renumbered seed ADR as equivalent"
 else
     bad "diff-template recognizes a renumbered seed ADR as equivalent"
 fi
-if printf '%s\n' "$equivalent_out" |
-    grep -qF "ABSENT   .coderabbit.yaml  (CodeRabbit disabled — expected)"; then
+if grep -qF "ABSENT   .coderabbit.yaml  (CodeRabbit disabled — expected)" <<<"$equivalent_out"; then
     ok "diff-template accepts legacy CodeRabbit opt-out as intentional absence"
 else
     bad "diff-template accepts legacy CodeRabbit opt-out as intentional absence"
 fi
 # That run exits 0, so IGNORED appearing in it is also the proof it never gates.
-if printf '%s\n' "$equivalent_out" | grep -qF "IGNORED  .envrc"; then
+if grep -qF "IGNORED  .envrc" <<<"$equivalent_out"; then
     ok "diff-template reports a gitignored divergence without gating"
 else
     bad "diff-template reports a gitignored divergence without gating"
 fi
 # …and the exemption is granted by the TEMPLATE's own .gitignore, not by the
 # repo's, which is what the parenthetical records.
-if printf '%s\n' "$equivalent_out" |
-    grep -qF "IGNORED  .envrc  (template ships it gitignored"; then
+if grep -qF "IGNORED  .envrc  (template ships it gitignored" <<<"$equivalent_out"; then
     ok "diff-template credits the template's declaration for an IGNORED file"
 else
     bad "diff-template credits the template's declaration for an IGNORED file"
@@ -6729,13 +6738,12 @@ fi
 printf '%s\n' '{ "extends": ["config:base"] }' >"$DT_TARGET/renovate.json"
 if uncurated_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template reports uncurated content drift (expected non-zero exit)"
-elif printf '%s\n' "$uncurated_out" | grep -qF "DRIFT    renovate.json  (uncurated"; then
+elif grep -qF "DRIFT    renovate.json  (uncurated" <<<"$uncurated_out"; then
     ok "diff-template reports uncurated content drift"
 else
     bad "diff-template reports uncurated content drift (DRIFT diagnostic missing)"
 fi
-if printf '%s\n' "$uncurated_out" |
-    grep -qE '^  1 uncurated DRIFT \+ 0 uncurated MODE'; then
+if grep -qE '^  1 uncurated DRIFT \+ 0 uncurated MODE' <<<"$uncurated_out"; then
     ok "diff-template counts uncurated drift in its summary"
 else
     bad "diff-template counts uncurated drift in its summary"
@@ -6752,12 +6760,12 @@ if co_owned_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-tem
 else
     bad "diff-template does not gate on a divergent co-owned file: $co_owned_out"
 fi
-if printf '%s\n' "$co_owned_out" | grep -qF "CO-OWNED AGENTS.md"; then
+if grep -qF "CO-OWNED AGENTS.md" <<<"$co_owned_out"; then
     ok "diff-template reports a divergent co-owned file"
 else
     bad "diff-template reports a divergent co-owned file (CO-OWNED line missing)"
 fi
-if printf '%s\n' "$co_owned_out" | grep -qF "CLAUDE.md"; then
+if grep -qF "CLAUDE.md" <<<"$co_owned_out"; then
     bad "diff-template does not repeat a co-owned divergence per symlink alias"
 else
     ok "diff-template does not repeat a co-owned divergence per symlink alias"
@@ -6768,17 +6776,17 @@ fi
 printf '%s\n' '{ "extends": ["config:base"] }' >"$DT_TARGET/renovate.json"
 show_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_TARGET" 2>&1 || true)"
-if printf '%s\n' "$show_out" | grep -qF 'config:base'; then
+if grep -qF 'config:base' <<<"$show_out"; then
     ok "diff-template --show prints an uncurated diff body"
 else
     bad "diff-template --show prints an uncurated diff body"
 fi
-if printf '%s\n' "$show_out" | grep -qF 'co-owned-body-sentinel'; then
+if grep -qF 'co-owned-body-sentinel' <<<"$show_out"; then
     bad "diff-template --show withholds a co-owned diff body"
 else
     ok "diff-template --show withholds a co-owned diff body"
 fi
-if printf '%s\n' "$show_out" | grep -qF 'envrc-sentinel-withheld'; then
+if grep -qF 'envrc-sentinel-withheld' <<<"$show_out"; then
     bad "diff-template --show withholds a gitignored diff body"
 else
     ok "diff-template --show withholds a gitignored diff body"
@@ -6787,12 +6795,12 @@ fi
 # will never rewrite a _skip_if_exists path, so its content is not the
 # template's business and printing it is pure noise (a release-please changelog
 # would bury the report).
-if printf '%s\n' "$show_out" | grep -qF 'changelog-sentinel-withheld'; then
+if grep -qF 'changelog-sentinel-withheld' <<<"$show_out"; then
     bad "diff-template --show withholds a template-declared repo-owned diff body"
 else
     ok "diff-template --show withholds a template-declared repo-owned diff body"
 fi
-if printf '%s\n' "$show_out" | grep -qF 'workspace-sentinel-withheld'; then
+if grep -qF 'workspace-sentinel-withheld' <<<"$show_out"; then
     bad "diff-template --show withholds a glob-matched repo-owned diff body"
 else
     ok "diff-template --show withholds a glob-matched repo-owned diff body"
@@ -6827,28 +6835,27 @@ if owned_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-templa
 else
     bad "diff-template does not gate on a template-declared repo-owned file: $owned_out"
 fi
-if printf '%s\n' "$owned_out" |
-    grep -qF "OWNED    CHANGELOG.md  (template's _skip_if_exists declares the repo owns it"; then
+if grep -qF "OWNED    CHANGELOG.md  (template's _skip_if_exists declares the repo owns it" <<<"$owned_out"; then
     ok "diff-template reports a divergent _skip_if_exists path as OWNED"
 else
     bad "diff-template reports a divergent _skip_if_exists path as OWNED (OWNED line missing)"
 fi
-if printf '%s\n' "$owned_out" | grep -qF "OWNED    project.code-workspace"; then
+if grep -qF "OWNED    project.code-workspace" <<<"$owned_out"; then
     ok "diff-template matches _skip_if_exists globs the way copier does"
 else
     bad "diff-template matches _skip_if_exists globs the way copier does"
 fi
-if printf '%s\n' "$owned_out" | grep -qF "CO-OWNED project.code-workspace"; then
+if grep -qF "CO-OWNED project.code-workspace" <<<"$owned_out"; then
     bad "diff-template prefers OWNED over CO-OWNED where the two overlap"
 else
     ok "diff-template prefers OWNED over CO-OWNED where the two overlap"
 fi
-if printf '%s\n' "$owned_out" | grep -qE '^(DRIFT|MISSING) +(CHANGELOG\.md|project\.code-workspace)'; then
+if grep -qE '^(DRIFT|MISSING) +(CHANGELOG\.md|project\.code-workspace)' <<<"$owned_out"; then
     bad "diff-template stops reporting declared repo-owned paths as drift"
 else
     ok "diff-template stops reporting declared repo-owned paths as drift"
 fi
-if printf '%s\n' "$owned_out" | grep -qF "2 OWNED"; then
+if grep -qF "2 OWNED" <<<"$owned_out"; then
     ok "diff-template counts OWNED in its summary"
 else
     bad "diff-template counts OWNED in its summary"
@@ -6878,7 +6885,7 @@ if [ "$twin_rc" -eq 1 ]; then
 else
     bad "diff-template gates a declared path the repo carries under the twin extension (got $twin_rc)"
 fi
-if printf '%s\n' "$twin_out" | grep -qF "OWNED    config.yaml"; then
+if grep -qF "OWNED    config.yaml" <<<"$twin_out"; then
     bad "diff-template grants no OWNED through a .yml/.yaml extension alias"
 else
     ok "diff-template grants no OWNED through a .yml/.yaml extension alias"
@@ -6895,7 +6902,7 @@ rm "$DT_OWNED_WT_TARGET/CHANGELOG.md"
 owned_wt_rc=0
 owned_wt_out="$(HARMON_INIT="$DT_TEMPLATE" \
     bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_OWNED_WT_TARGET" 2>&1)" || owned_wt_rc=$?
-if printf '%s\n' "$owned_wt_out" | grep -qF "OWNED    CHANGELOG.md"; then
+if grep -qF "OWNED    CHANGELOG.md" <<<"$owned_wt_out"; then
     bad "diff-template grants no OWNED to a declared path missing from the worktree"
 else
     ok "diff-template grants no OWNED to a declared path missing from the worktree (rc $owned_wt_rc)"
@@ -6910,7 +6917,7 @@ git_commit_all "$DT_EXACT_TARGET" "carry the declared path at its declared name"
 exact_rc=0
 exact_out="$(HARMON_INIT="$DT_TWIN_TEMPLATE" \
     bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_EXACT_TARGET" 2>&1)" || exact_rc=$?
-if printf '%s\n' "$exact_out" | grep -qF "OWNED    config.yml"; then
+if grep -qF "OWNED    config.yml" <<<"$exact_out"; then
     ok "diff-template still grants OWNED at the declared path itself"
 else
     bad "diff-template still grants OWNED at the declared path itself (got rc $exact_rc)"
@@ -6922,7 +6929,7 @@ fi
 chmod +x "$DT_TARGET/CHANGELOG.md"
 if owned_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates mode drift on a template-declared repo-owned file (expected non-zero exit)"
-elif printf '%s\n' "$owned_mode_out" | grep -qF "MODE     CHANGELOG.md"; then
+elif grep -qF "MODE     CHANGELOG.md" <<<"$owned_mode_out"; then
     ok "diff-template gates mode drift on a template-declared repo-owned file"
 else
     bad "diff-template gates mode drift on a template-declared repo-owned file (MODE diagnostic missing)"
@@ -6940,7 +6947,7 @@ git -C "$DT_OWNED_ABSENT" rm -q -- CHANGELOG.md
 git_commit_all "$DT_OWNED_ABSENT" "drop the declared CHANGELOG"
 if owned_absent_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_OWNED_ABSENT" 2>&1)"; then
     bad "diff-template still reports a declared repo-owned path the repo lacks (expected non-zero exit)"
-elif printf '%s\n' "$owned_absent_out" | grep -qF "MISSING  CHANGELOG.md"; then
+elif grep -qF "MISSING  CHANGELOG.md" <<<"$owned_absent_out"; then
     ok "diff-template still reports a declared repo-owned path the repo lacks"
 else
     bad "diff-template still reports a declared repo-owned path the repo lacks (MISSING diagnostic missing)"
@@ -6967,22 +6974,22 @@ if [ "$noskip_rc" -eq 0 ]; then
 else
     bad "diff-template still audits a baseline that predates _skip_if_exists (got $noskip_rc): $noskip_out"
 fi
-if printf '%s\n' "$noskip_out" | grep -qF "declares no _skip_if_exists"; then
+if grep -qF "declares no _skip_if_exists" <<<"$noskip_out"; then
     ok "diff-template says an OWNED-less run was degraded, not normal"
 else
     bad "diff-template says an OWNED-less run was degraded, not normal"
 fi
-if printf '%s\n' "$noskip_out" | grep -qF "diff-template: NOTE —"; then
+if grep -qF "diff-template: NOTE —" <<<"$noskip_out"; then
     ok "diff-template repeats the degraded-derivation note in its summary"
 else
     bad "diff-template repeats the degraded-derivation note in its summary"
 fi
-if printf '%s\n' "$noskip_out" | grep -qF "OWNED    "; then
+if grep -qF "OWNED    " <<<"$noskip_out"; then
     bad "diff-template grants no OWNED exemption without a declaration"
 else
     ok "diff-template grants no OWNED exemption without a declaration"
 fi
-if printf '%s\n' "$noskip_out" | grep -qF "CHANGELOG.md"; then
+if grep -qF "CHANGELOG.md" <<<"$noskip_out"; then
     bad "diff-template keeps CHANGELOG.md's hard skip when no declaration exists"
 else
     ok "diff-template keeps CHANGELOG.md's hard skip when no declaration exists"
@@ -6996,17 +7003,17 @@ dt_skip_decl_variant "$TMPROOT/diff-template-emptyskip-source" '_skip_if_exists:
 emptyskip_rc=0
 emptyskip_out="$(HARMON_INIT="$TMPROOT/diff-template-emptyskip-source" \
     bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || emptyskip_rc=$?
-if printf '%s\n' "$emptyskip_out" | grep -qF "declares an empty _skip_if_exists"; then
+if grep -qF "declares an empty _skip_if_exists" <<<"$emptyskip_out"; then
     ok "diff-template names an empty _skip_if_exists declaration"
 else
     bad "diff-template names an empty _skip_if_exists declaration"
 fi
-if printf '%s\n' "$emptyskip_out" | grep -qF "DRIFT    CHANGELOG.md"; then
+if grep -qF "DRIFT    CHANGELOG.md" <<<"$emptyskip_out"; then
     ok "diff-template audits CHANGELOG.md when the template freezes nothing"
 else
     bad "diff-template audits CHANGELOG.md when the template freezes nothing (got rc $emptyskip_rc)"
 fi
-if printf '%s\n' "$emptyskip_out" | grep -qF "OWNED    "; then
+if grep -qF "OWNED    " <<<"$emptyskip_out"; then
     bad "diff-template grants no OWNED exemption from an empty declaration"
 else
     ok "diff-template grants no OWNED exemption from an empty declaration"
@@ -7027,7 +7034,7 @@ if [ "$upper_rc" -eq 0 ]; then
 else
     bad "diff-template reads a case-varied copier config the way copier discovers it (got $upper_rc): $upper_out"
 fi
-if printf '%s\n' "$upper_out" | grep -qF "OWNED    CHANGELOG.md"; then
+if grep -qF "OWNED    CHANGELOG.md" <<<"$upper_out"; then
     ok "diff-template derives OWNED from a case-varied copier config"
 else
     bad "diff-template derives OWNED from a case-varied copier config"
@@ -7044,7 +7051,7 @@ if [ "$scalarskip_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 on a malformed _skip_if_exists declaration (got $scalarskip_rc)"
 fi
-if printf '%s\n' "$scalarskip_out" | grep -qF "has a malformed _skip_if_exists"; then
+if grep -qF "has a malformed _skip_if_exists" <<<"$scalarskip_out"; then
     ok "diff-template names the malformed _skip_if_exists declaration"
 else
     bad "diff-template names the malformed _skip_if_exists declaration"
@@ -7064,8 +7071,7 @@ if [ "$negskip_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 on a negated _skip_if_exists pattern (got $negskip_rc)"
 fi
-if printf '%s\n' "$negskip_out" |
-    grep -qF "FAIL: negated _skip_if_exists pattern is not supported"; then
+if grep -qF "FAIL: negated _skip_if_exists pattern is not supported" <<<"$negskip_out"; then
     ok "diff-template names the negated _skip_if_exists pattern it refuses"
 else
     bad "diff-template names the negated _skip_if_exists pattern it refuses"
@@ -7100,8 +7106,7 @@ if [ "$dirglob_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 on a _skip_if_exists pattern ending in /* (got $dirglob_rc)"
 fi
-if printf '%s\n' "$dirglob_out" |
-    grep -qF "FAIL: _skip_if_exists pattern ending in '/*' is not supported"; then
+if grep -qF "FAIL: _skip_if_exists pattern ending in '/*' is not supported" <<<"$dirglob_out"; then
     ok "diff-template names the divergent directory glob it refuses"
 else
     bad "diff-template names the divergent directory glob it refuses"
@@ -7133,7 +7138,7 @@ if [ "$envops_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 on a pattern using the template's own _envops delimiter (got $envops_rc)"
 fi
-if printf '%s\n' "$envops_out" | grep -qF "it uses the template's own _envops delimiter '<%'"; then
+if grep -qF "it uses the template's own _envops delimiter '<%'" <<<"$envops_out"; then
     ok "diff-template names the derived _envops delimiter it refused on"
 else
     bad "diff-template names the derived _envops delimiter it refused on"
@@ -7179,7 +7184,7 @@ upperbase_rc=0
 upperbase_out="$(HARMON_INIT="$DT_UPPERBASE_TEMPLATE" \
     bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)" || upperbase_rc=$?
 if [ "$upperbase_rc" -eq 2 ] &&
-    printf '%s\n' "$upperbase_out" | grep -qF "has no copier.yml at"; then
+    grep -qF "has no copier.yml at" <<<"$upperbase_out"; then
     ok "diff-template reads no declaration from a case-varied copier BASENAME"
 else
     bad "diff-template reads no declaration from a case-varied copier BASENAME (got $upperbase_rc)"
@@ -7210,8 +7215,7 @@ if [ "$unicodeskip_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 on a non-ASCII _skip_if_exists pattern (got $unicodeskip_rc)"
 fi
-if printf '%s\n' "$unicodeskip_out" |
-    grep -qF "FAIL: non-ASCII _skip_if_exists pattern is not supported"; then
+if grep -qF "FAIL: non-ASCII _skip_if_exists pattern is not supported" <<<"$unicodeskip_out"; then
     ok "diff-template names the non-ASCII _skip_if_exists pattern it refuses"
 else
     bad "diff-template names the non-ASCII _skip_if_exists pattern it refuses"
@@ -7231,7 +7235,7 @@ if [ "$caseskip_rc" -eq 1 ]; then
 else
     bad "diff-template matches _skip_if_exists case-sensitively, as copier does (got $caseskip_rc)"
 fi
-if printf '%s\n' "$caseskip_out" | grep -qF "OWNED    CHANGELOG.md"; then
+if grep -qF "OWNED    CHANGELOG.md" <<<"$caseskip_out"; then
     bad "diff-template grants no OWNED exemption on a case-mismatched declaration"
 else
     ok "diff-template grants no OWNED exemption on a case-mismatched declaration"
@@ -7252,8 +7256,7 @@ if [ "$jinjaskip_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 on a templated _skip_if_exists pattern (got $jinjaskip_rc)"
 fi
-if printf '%s\n' "$jinjaskip_out" |
-    grep -qF "FAIL: templated _skip_if_exists pattern is not supported"; then
+if grep -qF "FAIL: templated _skip_if_exists pattern is not supported" <<<"$jinjaskip_out"; then
     ok "diff-template names the templated _skip_if_exists pattern it refuses"
 else
     bad "diff-template names the templated _skip_if_exists pattern it refuses"
@@ -7269,23 +7272,22 @@ printf '%s\n' 'EXAMPLE_TOKEN=tracked-secret-sentinel' >"$DT_TARGET/secrets.env"
 if tracked_ignored_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a tracked ignore-matched file (expected non-zero exit)"
-elif printf '%s\n' "$tracked_ignored_out" | grep -qF "DRIFT    secrets.env  (uncurated"; then
+elif grep -qF "DRIFT    secrets.env  (uncurated" <<<"$tracked_ignored_out"; then
     ok "diff-template gates a tracked ignore-matched file"
 else
     bad "diff-template gates a tracked ignore-matched file (DRIFT diagnostic missing)"
 fi
-if printf '%s\n' "$tracked_ignored_out" | grep -qF "IGNORED  secrets.env"; then
+if grep -qF "IGNORED  secrets.env" <<<"$tracked_ignored_out"; then
     bad "diff-template does not downgrade a tracked ignore-matched file to IGNORED"
 else
     ok "diff-template does not downgrade a tracked ignore-matched file to IGNORED"
 fi
-if printf '%s\n' "$tracked_ignored_out" | grep -qF 'tracked-secret-sentinel'; then
+if grep -qF 'tracked-secret-sentinel' <<<"$tracked_ignored_out"; then
     bad "diff-template --show withholds a gating ignore-matched diff body"
 else
     ok "diff-template --show withholds a gating ignore-matched diff body"
 fi
-if printf '%s\n' "$tracked_ignored_out" |
-    grep -qF '(diff withheld — path matches an ignore pattern'; then
+if grep -qF '(diff withheld — path matches an ignore pattern' <<<"$tracked_ignored_out"; then
     ok "diff-template --show says why a gating ignore-matched diff was withheld"
 else
     bad "diff-template --show says why a gating ignore-matched diff was withheld"
@@ -7301,18 +7303,17 @@ printf '%s\n' '{ "permissions": { "token": "curated-secret-sentinel" } }' \
 if curated_withheld_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a curated ignore-matched file (expected non-zero exit)"
-elif printf '%s\n' "$curated_withheld_out" | grep -qF "DRIFT    .claude/settings.json"; then
+elif grep -qF "DRIFT    .claude/settings.json" <<<"$curated_withheld_out"; then
     ok "diff-template gates a curated ignore-matched file"
 else
     bad "diff-template gates a curated ignore-matched file (DRIFT diagnostic missing)"
 fi
-if printf '%s\n' "$curated_withheld_out" | grep -qF 'curated-secret-sentinel'; then
+if grep -qF 'curated-secret-sentinel' <<<"$curated_withheld_out"; then
     bad "diff-template --show withholds a CURATED ignore-matched diff body"
 else
     ok "diff-template --show withholds a CURATED ignore-matched diff body"
 fi
-if printf '%s\n' "$curated_withheld_out" |
-    grep -qF '(diff withheld — path matches an ignore pattern'; then
+if grep -qF '(diff withheld — path matches an ignore pattern' <<<"$curated_withheld_out"; then
     ok "diff-template --show says why a curated ignore-matched diff was withheld"
 else
     bad "diff-template --show says why a curated ignore-matched diff was withheld"
@@ -7330,18 +7331,17 @@ printf '%s\n' '{ "editor.tabSize": 4, "note": "repo-only-ignored-sentinel" }' \
 if repo_only_ignored_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a repo-only-ignored template file (expected non-zero exit)"
-elif printf '%s\n' "$repo_only_ignored_out" |
-    grep -qF "DRIFT    .vscode/settings.json  (repo-ignored, but the template tracks this file"; then
+elif grep -qF "DRIFT    .vscode/settings.json  (repo-ignored, but the template tracks this file" <<<"$repo_only_ignored_out"; then
     ok "diff-template gates a repo-only-ignored template file"
 else
     bad "diff-template gates a repo-only-ignored template file (DRIFT diagnostic missing)"
 fi
-if printf '%s\n' "$repo_only_ignored_out" | grep -qF "IGNORED  .vscode/settings.json"; then
+if grep -qF "IGNORED  .vscode/settings.json" <<<"$repo_only_ignored_out"; then
     bad "diff-template grants no IGNORED exemption on a repo-only ignore rule"
 else
     ok "diff-template grants no IGNORED exemption on a repo-only ignore rule"
 fi
-if printf '%s\n' "$repo_only_ignored_out" | grep -qF 'repo-only-ignored-sentinel'; then
+if grep -qF 'repo-only-ignored-sentinel' <<<"$repo_only_ignored_out"; then
     bad "diff-template --show withholds a repo-only-ignored body that gates"
 else
     ok "diff-template --show withholds a repo-only-ignored body that gates"
@@ -7357,17 +7357,17 @@ printf '%s\n' '#!/usr/bin/env bash' 'echo docs' 'docs-script-sentinel' \
 if docs_script_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a non-prose file under docs/ (expected non-zero exit)"
-elif printf '%s\n' "$docs_script_out" | grep -qF "DRIFT    docs/build-docs.sh  (uncurated"; then
+elif grep -qF "DRIFT    docs/build-docs.sh  (uncurated" <<<"$docs_script_out"; then
     ok "diff-template gates a non-prose file under docs/"
 else
     bad "diff-template gates a non-prose file under docs/ (DRIFT diagnostic missing)"
 fi
-if printf '%s\n' "$docs_script_out" | grep -qF "CO-OWNED docs/build-docs.sh"; then
+if grep -qF "CO-OWNED docs/build-docs.sh" <<<"$docs_script_out"; then
     bad "diff-template does not co-own a non-prose file under docs/"
 else
     ok "diff-template does not co-own a non-prose file under docs/"
 fi
-if printf '%s\n' "$docs_script_out" | grep -qF 'docs-script-sentinel'; then
+if grep -qF 'docs-script-sentinel' <<<"$docs_script_out"; then
     ok "diff-template --show prints the body of a non-prose docs/ file"
 else
     bad "diff-template --show prints the body of a non-prose docs/ file"
@@ -7383,7 +7383,7 @@ if docs_prose_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-t
 else
     bad "diff-template still co-owns Markdown prose under docs/: $docs_prose_out"
 fi
-if printf '%s\n' "$docs_prose_out" | grep -qF "CO-OWNED docs/guide.md"; then
+if grep -qF "CO-OWNED docs/guide.md" <<<"$docs_prose_out"; then
     ok "diff-template reports divergent docs/ prose as CO-OWNED"
 else
     bad "diff-template reports divergent docs/ prose as CO-OWNED (line missing)"
@@ -7398,12 +7398,12 @@ git -C "$DT_TARGET" checkout HEAD -- docs/guide.md
 chmod +x "$DT_TARGET/docs/guide.md"
 if co_owned_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a mode change on a co-owned file (expected non-zero exit)"
-elif printf '%s\n' "$co_owned_mode_out" | grep -qF "MODE     docs/guide.md"; then
+elif grep -qF "MODE     docs/guide.md" <<<"$co_owned_mode_out"; then
     ok "diff-template gates a mode change on a co-owned file"
 else
     bad "diff-template gates a mode change on a co-owned file (MODE diagnostic missing)"
 fi
-if printf '%s\n' "$co_owned_mode_out" | grep -qF "CO-OWNED docs/guide.md"; then
+if grep -qF "CO-OWNED docs/guide.md" <<<"$co_owned_mode_out"; then
     bad "diff-template reports no content class for a mode-only co-owned divergence"
 else
     ok "diff-template reports no content class for a mode-only co-owned divergence"
@@ -7416,17 +7416,17 @@ printf '%s\n' '# Guide' 'seeded guide prose' 'co-owned-mode-sentinel' \
 if co_owned_both_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates mode drift on a divergent co-owned file (expected non-zero exit)"
-elif printf '%s\n' "$co_owned_both_out" | grep -qF "MODE     docs/guide.md"; then
+elif grep -qF "MODE     docs/guide.md" <<<"$co_owned_both_out"; then
     ok "diff-template gates mode drift on a divergent co-owned file"
 else
     bad "diff-template gates mode drift on a divergent co-owned file (MODE diagnostic missing)"
 fi
-if printf '%s\n' "$co_owned_both_out" | grep -qF "CO-OWNED docs/guide.md"; then
+if grep -qF "CO-OWNED docs/guide.md" <<<"$co_owned_both_out"; then
     ok "diff-template keeps the co-owned content class alongside a MODE finding"
 else
     bad "diff-template keeps the co-owned content class alongside a MODE finding"
 fi
-if printf '%s\n' "$co_owned_both_out" | grep -qF 'co-owned-mode-sentinel'; then
+if grep -qF 'co-owned-mode-sentinel' <<<"$co_owned_both_out"; then
     bad "diff-template --show withholds a co-owned body that also has mode drift"
 else
     ok "diff-template --show withholds a co-owned body that also has mode drift"
@@ -7439,12 +7439,12 @@ chmod -x "$DT_TARGET/docs/guide.md"
 chmod -x "$DT_TARGET/docs/build-docs.sh"
 if uncurated_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates an exec-bit loss on an uncurated file (expected non-zero exit)"
-elif printf '%s\n' "$uncurated_mode_out" | grep -qF "MODE     docs/build-docs.sh"; then
+elif grep -qF "MODE     docs/build-docs.sh" <<<"$uncurated_mode_out"; then
     ok "diff-template gates an exec-bit loss on an uncurated file"
 else
     bad "diff-template gates an exec-bit loss on an uncurated file (MODE diagnostic missing)"
 fi
-if printf '%s\n' "$uncurated_mode_out" | grep -qF "DRIFT    docs/build-docs.sh"; then
+if grep -qF "DRIFT    docs/build-docs.sh" <<<"$uncurated_mode_out"; then
     bad "diff-template reports no content class for a mode-only uncurated divergence"
 else
     ok "diff-template reports no content class for a mode-only uncurated divergence"
@@ -7461,7 +7461,7 @@ rm "$DT_TARGET/CLAUDE.md"
 cp "$DT_TARGET/AGENTS.md" "$DT_TARGET/CLAUDE.md"
 if flattened_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a co-owned symlink flattened to a file (expected non-zero exit)"
-elif printf '%s\n' "$flattened_out" | grep -qF "DRIFT    CLAUDE.md  (symlink mismatch"; then
+elif grep -qF "DRIFT    CLAUDE.md  (symlink mismatch" <<<"$flattened_out"; then
     ok "diff-template gates a co-owned symlink flattened to a file"
 else
     bad "diff-template gates a co-owned symlink flattened to a file (diagnostic missing)"
@@ -7479,7 +7479,7 @@ expect_ok "diff-template rebuilds an unstaged deleted symlink from the index" \
 git -C "$DT_TARGET" add -u -- CLAUDE.md
 if missing_link_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template reports a staged symlink deletion (expected non-zero exit)"
-elif printf '%s\n' "$missing_link_out" | grep -qF "MISSING  CLAUDE.md"; then
+elif grep -qF "MISSING  CLAUDE.md" <<<"$missing_link_out"; then
     ok "diff-template reports a staged symlink deletion as MISSING"
 else
     bad "diff-template reports a staged symlink deletion (MISSING diagnostic absent)"
@@ -7492,7 +7492,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'echo customized status' \
     >"$DT_TARGET/scripts/status.sh"
 if curated_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template reports curated content drift (expected non-zero exit)"
-elif printf '%s\n' "$curated_out" | grep -qF "DRIFT    scripts/status.sh"; then
+elif grep -qF "DRIFT    scripts/status.sh" <<<"$curated_out"; then
     ok "diff-template reports curated content drift"
 else
     bad "diff-template reports curated content drift (DRIFT diagnostic missing)"
@@ -7509,8 +7509,7 @@ rm "$DT_TARGET/scripts/status.sh"
 ln -s status-impl.sh "$DT_TARGET/scripts/status.sh"
 if curated_link_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a curated file flattened into a symlink (expected non-zero exit)"
-elif printf '%s\n' "$curated_link_out" |
-    grep -qF "DRIFT    scripts/status.sh  (symlink mismatch"; then
+elif grep -qF "DRIFT    scripts/status.sh  (symlink mismatch" <<<"$curated_link_out"; then
     ok "diff-template gates a curated file flattened into a symlink"
 else
     bad "diff-template gates a curated file flattened into a symlink (diagnostic missing)"
@@ -7528,8 +7527,7 @@ git -C "$DT_TARGET" checkout HEAD -- scripts/status.sh
 git -C "$DT_TARGET" rm --cached -q -- renovate.json
 if staged_rm_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a staged removal whose worktree copy survives (expected non-zero exit)"
-elif printf '%s\n' "$staged_rm_out" |
-    grep -qF "MISSING  renovate.json  (tracked in HEAD but staged for removal"; then
+elif grep -qF "MISSING  renovate.json  (tracked in HEAD but staged for removal" <<<"$staged_rm_out"; then
     ok "diff-template gates a staged removal whose worktree copy survives"
 else
     bad "diff-template gates a staged removal whose worktree copy survives (MISSING diagnostic absent)"
@@ -7540,13 +7538,12 @@ printf '%s\n' 'EXAMPLE_TOKEN=staged-removal-sentinel' >"$DT_TARGET/secrets.env"
 git -C "$DT_TARGET" rm --cached -q -- secrets.env
 if staged_rm_ignored_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a staged removal of an ignore-matched path (expected non-zero exit)"
-elif printf '%s\n' "$staged_rm_ignored_out" |
-    grep -qF "MISSING  secrets.env  (tracked in HEAD but staged for removal"; then
+elif grep -qF "MISSING  secrets.env  (tracked in HEAD but staged for removal" <<<"$staged_rm_ignored_out"; then
     ok "diff-template gates a staged removal of an ignore-matched path"
 else
     bad "diff-template gates a staged removal of an ignore-matched path (MISSING diagnostic absent)"
 fi
-if printf '%s\n' "$staged_rm_ignored_out" | grep -qF "IGNORED  secrets.env"; then
+if grep -qF "IGNORED  secrets.env" <<<"$staged_rm_ignored_out"; then
     bad "diff-template grants no IGNORED exemption to a staged removal"
 else
     ok "diff-template grants no IGNORED exemption to a staged removal"
@@ -7557,8 +7554,7 @@ git -C "$DT_TARGET" checkout HEAD -- secrets.env
 git -C "$DT_TARGET" rm --cached -q -- scripts/status.sh
 if staged_rm_curated_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a staged removal of a curated file (expected non-zero exit)"
-elif printf '%s\n' "$staged_rm_curated_out" |
-    grep -qF "MISSING  scripts/status.sh  (tracked in HEAD but staged for removal"; then
+elif grep -qF "MISSING  scripts/status.sh  (tracked in HEAD but staged for removal" <<<"$staged_rm_curated_out"; then
     ok "diff-template gates a staged removal of a curated file"
 else
     bad "diff-template gates a staged removal of a curated file (MISSING diagnostic absent)"
@@ -7597,14 +7593,12 @@ if [ "$probe_fail_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 when an ignore probe errors (got $probe_fail_rc)"
 fi
-if printf '%s\n' "$probe_fail_out" |
-    grep -qF "FAIL: cannot evaluate the repo's ignore rules"; then
+if grep -qF "FAIL: cannot evaluate the repo's ignore rules" <<<"$probe_fail_out"; then
     ok "diff-template names the ignore probe that could not be evaluated"
 else
     bad "diff-template names the ignore probe that could not be evaluated"
 fi
-if printf '%s\n' "$probe_fail_out" |
-    grep -qE 'vscode-probe-leak-sentinel|envrc-sentinel-withheld'; then
+if grep -qE 'vscode-probe-leak-sentinel|envrc-sentinel-withheld' <<<"$probe_fail_out"; then
     bad "diff-template prints no diff body when an ignore probe errors"
 else
     ok "diff-template prints no diff body when an ignore probe errors"
@@ -7626,13 +7620,12 @@ if [ "$init_fail_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 when the template ignore evaluator cannot be built (got $init_fail_rc)"
 fi
-if printf '%s\n' "$init_fail_out" |
-    grep -qF "FAIL: cannot initialize the template ignore evaluator"; then
+if grep -qF "FAIL: cannot initialize the template ignore evaluator" <<<"$init_fail_out"; then
     ok "diff-template says why the template ignore evaluator is unavailable"
 else
     bad "diff-template says why the template ignore evaluator is unavailable"
 fi
-if printf '%s\n' "$init_fail_out" | grep -qF 'envrc-sentinel-withheld'; then
+if grep -qF 'envrc-sentinel-withheld' <<<"$init_fail_out"; then
     bad "diff-template prints no diff body when the ignore evaluator is unavailable"
 else
     ok "diff-template prints no diff body when the ignore evaluator is unavailable"
@@ -7668,13 +7661,12 @@ if [ "$corrupt_git_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 when it cannot tell whether the target is a work tree (got $corrupt_git_rc)"
 fi
-if printf '%s\n' "$corrupt_git_out" |
-    grep -qF "FAIL: cannot determine whether"; then
+if grep -qF "FAIL: cannot determine whether" <<<"$corrupt_git_out"; then
     ok "diff-template says it could not classify the target work tree"
 else
     bad "diff-template says it could not classify the target work tree"
 fi
-if printf '%s\n' "$corrupt_git_out" | grep -qF 'corrupt-git-leak-sentinel'; then
+if grep -qF 'corrupt-git-leak-sentinel' <<<"$corrupt_git_out"; then
     bad "diff-template prints no diff body when work-tree detection fails"
 else
     ok "diff-template prints no diff body when work-tree detection fails"
@@ -7697,13 +7689,12 @@ ln -s ../diff-template-outside-scripts "$DT_LINKED_TARGET/scripts"
 if linked_curated_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_LINKED_TARGET" 2>&1)"; then
     bad "diff-template gates a curated file under a symlinked parent (expected non-zero exit)"
-elif printf '%s\n' "$linked_curated_out" |
-    grep -qF "DRIFT    scripts/status.sh  (parent directory is a symlink leaving the repository"; then
+elif grep -qF "DRIFT    scripts/status.sh  (parent directory is a symlink leaving the repository" <<<"$linked_curated_out"; then
     ok "diff-template gates a curated file under a symlinked parent"
 else
     bad "diff-template gates a curated file under a symlinked parent (diagnostic missing)"
 fi
-if printf '%s\n' "$linked_curated_out" | grep -qF 'EXTERNAL-SCRIPT-SENTINEL'; then
+if grep -qF 'EXTERNAL-SCRIPT-SENTINEL' <<<"$linked_curated_out"; then
     bad "diff-template reads no content through a symlinked parent (curated)"
 else
     ok "diff-template reads no content through a symlinked parent (curated)"
@@ -7725,13 +7716,12 @@ ln -s ../diff-template-outside-vscode "$DT_LINKED_SWEEP/.vscode"
 if linked_sweep_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_LINKED_SWEEP" 2>&1)"; then
     bad "diff-template gates a swept file under a symlinked parent (expected non-zero exit)"
-elif printf '%s\n' "$linked_sweep_out" |
-    grep -qF "DRIFT    .vscode/settings.json  (parent directory is a symlink leaving the repository"; then
+elif grep -qF "DRIFT    .vscode/settings.json  (parent directory is a symlink leaving the repository" <<<"$linked_sweep_out"; then
     ok "diff-template gates a swept file under a symlinked parent"
 else
     bad "diff-template gates a swept file under a symlinked parent (diagnostic missing)"
 fi
-if printf '%s\n' "$linked_sweep_out" | grep -qF 'EXTERNAL-VSCODE-SENTINEL'; then
+if grep -qF 'EXTERNAL-VSCODE-SENTINEL' <<<"$linked_sweep_out"; then
     bad "diff-template reads no content through a symlinked parent (sweep)"
 else
     ok "diff-template reads no content through a symlinked parent (sweep)"
@@ -7749,8 +7739,7 @@ ln -s real-vscode "$DT_LINKED_INSIDE/.vscode"
 if linked_inside_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     "$DT_LINKED_INSIDE" 2>&1)"; then
     bad "diff-template gates an in-tree symlinked parent (expected non-zero exit)"
-elif printf '%s\n' "$linked_inside_out" |
-    grep -qF "DRIFT    .vscode/settings.json  (parent directory is a symlink; the template renders real directories"; then
+elif grep -qF "DRIFT    .vscode/settings.json  (parent directory is a symlink; the template renders real directories" <<<"$linked_inside_out"; then
     ok "diff-template gates an in-tree symlinked parent"
 else
     bad "diff-template gates an in-tree symlinked parent (diagnostic missing)"
@@ -7777,12 +7766,12 @@ rm "$DT_OUTER_TARGET/renovate.json"
 if outer_index_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_OUTER_TARGET" 2>&1)"; then
     bad "diff-template reports a nested plain target's absent file as MISSING (expected non-zero exit)"
-elif printf '%s\n' "$outer_index_out" | grep -qF "MISSING  renovate.json"; then
+elif grep -qF "MISSING  renovate.json" <<<"$outer_index_out"; then
     ok "diff-template reports a nested plain target's absent file as MISSING"
 else
     bad "diff-template reports a nested plain target's absent file as MISSING (diagnostic missing)"
 fi
-if printf '%s\n' "$outer_index_out" | grep -qF 'outer-repo-blob-sentinel'; then
+if grep -qF 'outer-repo-blob-sentinel' <<<"$outer_index_out"; then
     bad "diff-template never resolves a nested plain target through the outer index"
 else
     ok "diff-template never resolves a nested plain target through the outer index"
@@ -7802,8 +7791,7 @@ ln -s ../nowhere-at-all "$DT_SWAPPED_DIR/scripts"
 if swapped_dir_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_SWAPPED_DIR" 2>&1)"; then
     bad "diff-template gates a tracked dir swapped for a dangling symlink (expected non-zero exit)"
-elif printf '%s\n' "$swapped_dir_out" |
-    grep -qF "DRIFT    scripts/status.sh  (parent directory is a symlink that leads nowhere"; then
+elif grep -qF "DRIFT    scripts/status.sh  (parent directory is a symlink that leads nowhere" <<<"$swapped_dir_out"; then
     ok "diff-template gates a tracked dir swapped for a dangling symlink"
 else
     bad "diff-template gates a tracked dir swapped for a dangling symlink (diagnostic missing)"
@@ -7819,8 +7807,7 @@ ln -s ../diff-template-empty-outside "$DT_SWAPPED_OUT/scripts"
 if swapped_out_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_SWAPPED_OUT" 2>&1)"; then
     bad "diff-template gates a tracked dir swapped for an outside symlink (expected non-zero exit)"
-elif printf '%s\n' "$swapped_out_out" |
-    grep -qF "DRIFT    scripts/status.sh  (parent directory is a symlink leaving the repository"; then
+elif grep -qF "DRIFT    scripts/status.sh  (parent directory is a symlink leaving the repository" <<<"$swapped_out_out"; then
     ok "diff-template gates a tracked dir swapped for an outside symlink"
 else
     bad "diff-template gates a tracked dir swapped for an outside symlink (diagnostic missing)"
@@ -7835,12 +7822,12 @@ fi
 rm -rf "$DT_TARGET/.vscode"
 if absent_dir_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template reports a file under an absent directory as MISSING (expected non-zero exit)"
-elif printf '%s\n' "$absent_dir_out" | grep -qF "MISSING  .vscode/settings.json"; then
+elif grep -qF "MISSING  .vscode/settings.json" <<<"$absent_dir_out"; then
     ok "diff-template reports a file under an absent directory as MISSING"
 else
     bad "diff-template reports a file under an absent directory as MISSING (diagnostic missing)"
 fi
-if printf '%s\n' "$absent_dir_out" | grep -qF ".vscode/settings.json  (parent directory"; then
+if grep -qF ".vscode/settings.json  (parent directory" <<<"$absent_dir_out"; then
     bad "diff-template calls an absent directory absent, not structural"
 else
     ok "diff-template calls an absent directory absent, not structural"
@@ -7893,13 +7880,13 @@ git_commit_all "$DT_NEWDIR_TARGET" "target predates the nested directory"
 if newdir_out="$(HARMON_INIT="$DT_NEWDIR_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     "$DT_NEWDIR_TARGET" 2>&1)"; then
     bad "diff-template reports a whole absent nested directory as MISSING (expected non-zero exit)"
-elif printf '%s\n' "$newdir_out" | grep -qF "MISSING  newdir/nested/two.txt" &&
-    printf '%s\n' "$newdir_out" | grep -qF "MISSING  newdir/one.txt"; then
+elif grep -qF "MISSING  newdir/nested/two.txt" <<<"$newdir_out" &&
+    grep -qF "MISSING  newdir/one.txt" <<<"$newdir_out"; then
     ok "diff-template reports a whole absent nested directory as MISSING"
 else
     bad "diff-template reports a whole absent nested directory as MISSING (diagnostic missing)"
 fi
-if printf '%s\n' "$newdir_out" | grep -qF "parent directory"; then
+if grep -qF "parent directory" <<<"$newdir_out"; then
     bad "diff-template reports no structural finding for an absent nested directory"
 else
     ok "diff-template reports no structural finding for an absent nested directory"
@@ -7926,12 +7913,12 @@ expect_ok "diff-template baselines clean against a plain dir nested in another r
 printf '%s\n' '{ "extends": ["config:base"] }' >"$DT_NESTED_TARGET/renovate.json"
 if nested_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_NESTED_TARGET" 2>&1)"; then
     bad "diff-template gates a nested plain target the parent repo ignores (expected non-zero exit)"
-elif printf '%s\n' "$nested_out" | grep -qF "DRIFT    renovate.json  (uncurated"; then
+elif grep -qF "DRIFT    renovate.json  (uncurated" <<<"$nested_out"; then
     ok "diff-template gates a nested plain target the parent repo ignores"
 else
     bad "diff-template gates a nested plain target the parent repo ignores (DRIFT diagnostic missing)"
 fi
-if printf '%s\n' "$nested_out" | grep -qF "IGNORED  "; then
+if grep -qF "IGNORED  " <<<"$nested_out"; then
     bad "diff-template borrows no IGNORED class from a nested target's parent repo"
 else
     ok "diff-template borrows no IGNORED class from a nested target's parent repo"
@@ -7945,12 +7932,12 @@ printf '%s\n' 'export EXAMPLE_SETTING=plain-dir-envrc-sentinel' \
 if nested_envrc_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_NESTED_TARGET" 2>&1)"; then
     bad "diff-template gates a template-ignored file in a plain dir (expected non-zero exit)"
-elif printf '%s\n' "$nested_envrc_out" | grep -qF "DRIFT    .envrc"; then
+elif grep -qF "DRIFT    .envrc" <<<"$nested_envrc_out"; then
     ok "diff-template gates a template-ignored file in a plain dir"
 else
     bad "diff-template gates a template-ignored file in a plain dir (DRIFT diagnostic missing)"
 fi
-if printf '%s\n' "$nested_envrc_out" | grep -qF 'plain-dir-envrc-sentinel'; then
+if grep -qF 'plain-dir-envrc-sentinel' <<<"$nested_envrc_out"; then
     bad "diff-template --show withholds a template-ignored body without a repo rule"
 else
     ok "diff-template --show withholds a template-ignored body without a repo rule"
@@ -7993,18 +7980,17 @@ git_commit_all "$DT_NOIGNORE_TARGET" "no-ignore target"
 if noignore_out="$(HARMON_INIT="$DT_NOIGNORE_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_NOIGNORE_TARGET" 2>&1)"; then
     bad "diff-template grants no IGNORED class when the render ships no .gitignore (expected non-zero exit)"
-elif printf '%s\n' "$noignore_out" |
-    grep -qF "DRIFT    .envrc  (repo-ignored, but the template tracks this file"; then
+elif grep -qF "DRIFT    .envrc  (repo-ignored, but the template tracks this file" <<<"$noignore_out"; then
     ok "diff-template grants no IGNORED class when the render ships no .gitignore"
 else
     bad "diff-template grants no IGNORED class when the render ships no .gitignore (DRIFT diagnostic missing)"
 fi
-if printf '%s\n' "$noignore_out" | grep -qF "IGNORED  "; then
+if grep -qF "IGNORED  " <<<"$noignore_out"; then
     bad "diff-template emits no IGNORED line for a render with no ignore rules"
 else
     ok "diff-template emits no IGNORED line for a render with no ignore rules"
 fi
-if printf '%s\n' "$noignore_out" | grep -qF 'noignore-sentinel'; then
+if grep -qF 'noignore-sentinel' <<<"$noignore_out"; then
     bad "diff-template --show still withholds a repo-ignored body with no render rules"
 else
     ok "diff-template --show still withholds a repo-ignored body with no render rules"
@@ -8021,15 +8007,14 @@ cp "$DT_TEMPLATE/template/renovate.json" "$DT_TARGET/renovate.json"
 if staged_content_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     --show "$DT_TARGET" 2>&1)"; then
     bad "diff-template reports a staged uncurated divergence the worktree hides (expected non-zero exit)"
-elif printf '%s\n' "$staged_content_out" |
-    grep -qF "DRIFT    renovate.json  (uncurated — staged content differs"; then
+elif grep -qF "DRIFT    renovate.json  (uncurated — staged content differs" <<<"$staged_content_out"; then
     ok "diff-template reports a staged uncurated divergence the worktree hides"
 else
     bad "diff-template reports a staged uncurated divergence the worktree hides (DRIFT diagnostic missing)"
 fi
 # No body: the staged bytes are not the disk copy `diff -u` would be reading,
 # and the line already says everything actionable.
-if printf '%s\n' "$staged_content_out" | grep -qF 'staged-only-sentinel'; then
+if grep -qF 'staged-only-sentinel' <<<"$staged_content_out"; then
     bad "diff-template prints no body for a staged-only divergence"
 else
     ok "diff-template prints no body for a staged-only divergence"
@@ -8043,8 +8028,7 @@ git -C "$DT_TARGET" checkout HEAD -- renovate.json
 git -C "$DT_TARGET" update-index --chmod=+x -- renovate.json
 if staged_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template reports a staged mode change the worktree hides (expected non-zero exit)"
-elif printf '%s\n' "$staged_mode_out" |
-    grep -qF "MODE     renovate.json  (staged mode differs"; then
+elif grep -qF "MODE     renovate.json  (staged mode differs" <<<"$staged_mode_out"; then
     ok "diff-template reports a staged mode change the worktree hides"
 else
     bad "diff-template reports a staged mode change the worktree hides (MODE diagnostic missing)"
@@ -8061,13 +8045,12 @@ printf '%s\n' '{ "extends": ["mixed-state-sentinel"] }' >"$DT_TARGET/renovate.js
 git -C "$DT_TARGET" update-index --chmod=+x -- renovate.json
 if mixed_state_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template reports both a worktree and a staged dimension (expected non-zero exit)"
-elif printf '%s\n' "$mixed_state_out" | grep -qF "DRIFT    renovate.json  (uncurated"; then
+elif grep -qF "DRIFT    renovate.json  (uncurated" <<<"$mixed_state_out"; then
     ok "diff-template reports both a worktree and a staged dimension"
 else
     bad "diff-template reports both a worktree and a staged dimension (DRIFT diagnostic missing)"
 fi
-if printf '%s\n' "$mixed_state_out" |
-    grep -qF "MODE     renovate.json  (staged mode differs"; then
+if grep -qF "MODE     renovate.json  (staged mode differs" <<<"$mixed_state_out"; then
     ok "diff-template reports a staged mode change alongside worktree content drift"
 else
     bad "diff-template reports a staged mode change alongside worktree content drift"
@@ -8085,8 +8068,7 @@ cp "$DT_TEMPLATE/template/scripts/status.sh" "$DT_TARGET/scripts/status.sh"
 chmod +x "$DT_TARGET/scripts/status.sh"
 if staged_curated_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template reports a staged curated divergence the worktree hides (expected non-zero exit)"
-elif printf '%s\n' "$staged_curated_out" |
-    grep -qF "DRIFT    scripts/status.sh  (staged content differs"; then
+elif grep -qF "DRIFT    scripts/status.sh  (staged content differs" <<<"$staged_curated_out"; then
     ok "diff-template reports a staged curated divergence the worktree hides"
 else
     bad "diff-template reports a staged curated divergence the worktree hides (DRIFT diagnostic missing)"
@@ -8106,7 +8088,7 @@ if staged_prose_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff
 else
     bad "diff-template does not gate a staged co-owned prose divergence: $staged_prose_out"
 fi
-if printf '%s\n' "$staged_prose_out" | grep -qF "DRIFT    AGENTS.md"; then
+if grep -qF "DRIFT    AGENTS.md" <<<"$staged_prose_out"; then
     bad "diff-template reports no staged DRIFT for co-owned prose"
 else
     ok "diff-template reports no staged DRIFT for co-owned prose"
@@ -8125,8 +8107,7 @@ git -C "$DT_TARGET" update-index --add --cacheinfo \
     "120000,$staged_link_blob,AGENTS.md"
 if staged_structural_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a staged structural change on a co-owned path (expected non-zero exit)"
-elif printf '%s\n' "$staged_structural_out" |
-    grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch"; then
+elif grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch" <<<"$staged_structural_out"; then
     ok "diff-template gates a staged structural change on a co-owned path"
 else
     bad "diff-template gates a staged structural change on a co-owned path (diagnostic missing)"
@@ -8145,13 +8126,12 @@ git -C "$DT_TARGET" update-index --add --cacheinfo \
     "120000,$staged_link_blob,AGENTS.md"
 if mixed_co_owned_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a staged alias under co-owned prose drift (expected non-zero exit)"
-elif printf '%s\n' "$mixed_co_owned_out" |
-    grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch"; then
+elif grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch" <<<"$mixed_co_owned_out"; then
     ok "diff-template gates a staged alias under co-owned prose drift"
 else
     bad "diff-template gates a staged alias under co-owned prose drift (diagnostic missing)"
 fi
-if printf '%s\n' "$mixed_co_owned_out" | grep -qF "CO-OWNED AGENTS.md"; then
+if grep -qF "CO-OWNED AGENTS.md" <<<"$mixed_co_owned_out"; then
     ok "diff-template keeps the co-owned prose class alongside a staged alias"
 else
     bad "diff-template keeps the co-owned prose class alongside a staged alias"
@@ -8175,13 +8155,12 @@ printf '%s\n' '# Test Project agents' 'seeded agent prose' 'committed-customizat
     >"$DT_TARGET/AGENTS.md"
 if staged_clobber_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template gates a staged clobber of co-owned prose (expected non-zero exit)"
-elif printf '%s\n' "$staged_clobber_out" |
-    grep -qF "DRIFT    AGENTS.md  (staged copy is byte-identical to the template"; then
+elif grep -qF "DRIFT    AGENTS.md  (staged copy is byte-identical to the template" <<<"$staged_clobber_out"; then
     ok "diff-template gates a staged clobber of co-owned prose"
 else
     bad "diff-template gates a staged clobber of co-owned prose (diagnostic missing)"
 fi
-if printf '%s\n' "$staged_clobber_out" | grep -qF "CO-OWNED AGENTS.md"; then
+if grep -qF "CO-OWNED AGENTS.md" <<<"$staged_clobber_out"; then
     bad "diff-template replaces the co-owned line when the clobber is staged"
 else
     ok "diff-template replaces the co-owned line when the clobber is staged"
@@ -8203,7 +8182,7 @@ if unstaged_edit_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/dif
 else
     bad "diff-template reports no clobber when nothing is staged: $unstaged_edit_out"
 fi
-if printf '%s\n' "$unstaged_edit_out" | grep -qF "staged copy is byte-identical"; then
+if grep -qF "staged copy is byte-identical" <<<"$unstaged_edit_out"; then
     bad "diff-template calls an unstaged local edit no clobber"
 else
     ok "diff-template calls an unstaged local edit no clobber"
@@ -8230,7 +8209,7 @@ if inherited_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-te
 else
     bad "diff-template does not gate an unstaged reconciliation to the template: $inherited_out"
 fi
-if printf '%s\n' "$inherited_out" | grep -qF "staged content differs"; then
+if grep -qF "staged content differs" <<<"$inherited_out"; then
     bad "diff-template claims no staged content for an index entry inherited from HEAD"
 else
     ok "diff-template claims no staged content for an index entry inherited from HEAD"
@@ -8248,7 +8227,7 @@ if inherited_mode_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/di
 else
     bad "diff-template does not gate an unstaged mode reconciliation: $inherited_mode_out"
 fi
-if printf '%s\n' "$inherited_mode_out" | grep -qF "staged mode differs"; then
+if grep -qF "staged mode differs" <<<"$inherited_mode_out"; then
     bad "diff-template claims no staged mode for an index mode inherited from HEAD"
 else
     ok "diff-template claims no staged mode for an index mode inherited from HEAD"
@@ -8271,17 +8250,17 @@ chmod +x "$DT_MODE_ONLY_STAGE/AGENTS.md"
 if mode_only_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     "$DT_MODE_ONLY_STAGE" 2>&1)"; then
     bad "diff-template gates the real mode divergence beside a staged chmod (expected non-zero exit)"
-elif printf '%s\n' "$mode_only_out" | grep -qF "MODE     AGENTS.md"; then
+elif grep -qF "MODE     AGENTS.md" <<<"$mode_only_out"; then
     ok "diff-template gates the real mode divergence beside a staged chmod"
 else
     bad "diff-template gates the real mode divergence beside a staged chmod (MODE diagnostic missing)"
 fi
-if printf '%s\n' "$mode_only_out" | grep -qF "staged copy is byte-identical"; then
+if grep -qF "staged copy is byte-identical" <<<"$mode_only_out"; then
     bad "diff-template claims no prose clobber when only a mode was staged"
 else
     ok "diff-template claims no prose clobber when only a mode was staged"
 fi
-if printf '%s\n' "$mode_only_out" | grep -qF "CO-OWNED AGENTS.md"; then
+if grep -qF "CO-OWNED AGENTS.md" <<<"$mode_only_out"; then
     ok "diff-template keeps the co-owned class when only a mode was staged"
 else
     bad "diff-template keeps the co-owned class when only a mode was staged"
@@ -8306,8 +8285,7 @@ git -C "$DT_STAGED_TYPE" update-index --add --cacheinfo \
 if staged_type_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     "$DT_STAGED_TYPE" 2>&1)"; then
     bad "diff-template gates an index-only file-to-symlink conversion (expected non-zero exit)"
-elif printf '%s\n' "$staged_type_out" |
-    grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch"; then
+elif grep -qF "DRIFT    AGENTS.md  (staged symlink mismatch" <<<"$staged_type_out"; then
     ok "diff-template gates an index-only file-to-symlink conversion"
 else
     bad "diff-template gates an index-only file-to-symlink conversion (diagnostic missing)"
@@ -8336,8 +8314,7 @@ cp "$DT_TEMPLATE/template/renovate.json" "$DT_STAGED_UNLINK/renovate.json"
 if staged_unlink_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     "$DT_STAGED_UNLINK" 2>&1)"; then
     bad "diff-template gates a staged symlink-to-file conversion (expected non-zero exit)"
-elif printf '%s\n' "$staged_unlink_out" |
-    grep -qF "DRIFT    renovate.json  (uncurated — staged content differs"; then
+elif grep -qF "DRIFT    renovate.json  (uncurated — staged content differs" <<<"$staged_unlink_out"; then
     ok "diff-template gates a staged symlink-to-file conversion"
 else
     bad "diff-template gates a staged symlink-to-file conversion (DRIFT diagnostic missing)"
@@ -8359,8 +8336,7 @@ cp "$DT_TEMPLATE/template/renovate.json" "$DT_UNBORN/renovate.json"
 if unborn_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     "$DT_UNBORN" 2>&1)"; then
     bad "diff-template reports staged divergence before the first commit (expected non-zero exit)"
-elif printf '%s\n' "$unborn_out" |
-    grep -qF "DRIFT    renovate.json  (uncurated — staged content differs"; then
+elif grep -qF "DRIFT    renovate.json  (uncurated — staged content differs" <<<"$unborn_out"; then
     ok "diff-template reports staged divergence before the first commit"
 else
     bad "diff-template reports staged divergence before the first commit (DRIFT diagnostic missing)"
@@ -8379,7 +8355,7 @@ if unborn_clobber_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/di
 else
     bad "diff-template claims no clobber in a repo with no commits: $unborn_clobber_out"
 fi
-if printf '%s\n' "$unborn_clobber_out" | grep -qF "staged copy is byte-identical"; then
+if grep -qF "staged copy is byte-identical" <<<"$unborn_clobber_out"; then
     bad "diff-template makes no clobber claim without a committed customization"
 else
     ok "diff-template makes no clobber claim without a committed customization"
@@ -8402,8 +8378,7 @@ if [ "$bad_index_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 when a staged-removal probe errors (got $bad_index_rc)"
 fi
-if printf '%s\n' "$bad_index_out" |
-    grep -qF "FAIL: cannot evaluate the index entry"; then
+if grep -qF "FAIL: cannot evaluate the index entry" <<<"$bad_index_out"; then
     ok "diff-template names the staged-removal probe that could not be evaluated"
 else
     bad "diff-template names the staged-removal probe that could not be evaluated"
@@ -8432,13 +8407,12 @@ if [ "$foreign_wt_rc" -eq 2 ]; then
 else
     bad "diff-template exits 2 when the target's own .git reports a foreign work tree (got $foreign_wt_rc)"
 fi
-if printf '%s\n' "$foreign_wt_out" |
-    grep -qF "FAIL: $DT_FOREIGN_WT has its own .git but git reports a different work tree"; then
+if grep -qF "FAIL: $DT_FOREIGN_WT has its own .git but git reports a different work tree" <<<"$foreign_wt_out"; then
     ok "diff-template says the target's work tree is not where its .git says"
 else
     bad "diff-template says the target's work tree is not where its .git says"
 fi
-if printf '%s\n' "$foreign_wt_out" | grep -qF 'foreign-worktree-leak-sentinel'; then
+if grep -qF 'foreign-worktree-leak-sentinel' <<<"$foreign_wt_out"; then
     bad "diff-template prints no diff body for a foreign-work-tree target"
 else
     ok "diff-template prints no diff body for a foreign-work-tree target"
@@ -8507,7 +8481,7 @@ git_commit_all "$DT_LINKIGNORE_TARGET" "target mirrors the symlink .gitignore"
 if linkignore_out="$(HARMON_INIT="$DT_LINKIGNORE_TEMPLATE" \
     bash "$STANDARDIZE_ASSETS/diff-template.sh" --show "$DT_LINKIGNORE_TARGET" 2>&1)"; then
     bad "diff-template gates paths a symlink .gitignore cannot enforce (expected non-zero exit)"
-elif printf '%s\n' "$linkignore_out" | grep -qF "DRIFT    .envrc"; then
+elif grep -qF "DRIFT    .envrc" <<<"$linkignore_out"; then
     ok "diff-template gates paths a symlink .gitignore cannot enforce"
 else
     bad "diff-template gates paths a symlink .gitignore cannot enforce (DRIFT diagnostic missing)"
@@ -8515,25 +8489,24 @@ fi
 # The leak control: the repo has no rule of its own for .envrc, so the body is
 # withheld only because the template marked the path local — through a link git
 # itself will not follow.
-if printf '%s\n' "$linkignore_out" | grep -qF 'linkignore-envrc-sentinel'; then
+if grep -qF 'linkignore-envrc-sentinel' <<<"$linkignore_out"; then
     bad "diff-template withholds a body a symlink .gitignore marks local"
 else
     ok "diff-template withholds a body a symlink .gitignore marks local"
 fi
 # The git-parity control: a real clone enforces nothing from that link, so the
 # repo's own ignore rule cannot be upgraded into the template's declaration.
-if printf '%s\n' "$linkignore_out" |
-    grep -qF "DRIFT    secrets.env  (repo-ignored, but the template tracks this file"; then
+if grep -qF "DRIFT    secrets.env  (repo-ignored, but the template tracks this file" <<<"$linkignore_out"; then
     ok "a symlink .gitignore grants no IGNORED class git would not grant"
 else
     bad "a symlink .gitignore grants no IGNORED class git would not grant"
 fi
-if printf '%s\n' "$linkignore_out" | grep -qF "IGNORED  "; then
+if grep -qF "IGNORED  " <<<"$linkignore_out"; then
     bad "diff-template emits no IGNORED line for unenforceable template rules"
 else
     ok "diff-template emits no IGNORED line for unenforceable template rules"
 fi
-if printf '%s\n' "$linkignore_out" | grep -qF 'linkignore-secrets-sentinel'; then
+if grep -qF 'linkignore-secrets-sentinel' <<<"$linkignore_out"; then
     bad "diff-template withholds a repo-ignored body under a symlink .gitignore"
 else
     ok "diff-template withholds a repo-ignored body under a symlink .gitignore"
@@ -8578,8 +8551,7 @@ git_commit_all "$DT_DANGLE_TARGET" "target mirrors the dangling alias"
 if dangle_out="$(HARMON_INIT="$DT_DANGLE_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     "$DT_DANGLE_TARGET" 2>&1)"; then
     bad "diff-template reports a curated path rendered as a dangling symlink (expected non-zero exit)"
-elif printf '%s\n' "$dangle_out" |
-    grep -qF "DRIFT    scripts/status.sh  (template renders a dangling symlink"; then
+elif grep -qF "DRIFT    scripts/status.sh  (template renders a dangling symlink" <<<"$dangle_out"; then
     ok "diff-template reports a curated path rendered as a dangling symlink"
 else
     bad "diff-template reports a curated path rendered as a dangling symlink (DRIFT diagnostic missing)"
@@ -8599,12 +8571,12 @@ printf '%s\n' '# vendored module source' \
 if tf_cache_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     "$DT_TF_CACHE" 2>&1)"; then
     bad "diff-template counts no .terraform cache as a nested root (expected non-zero exit)"
-elif printf '%s\n' "$tf_cache_out" | grep -qF "MISSING  terraform/main.tf"; then
+elif grep -qF "MISSING  terraform/main.tf" <<<"$tf_cache_out"; then
     ok "diff-template counts no .terraform cache as a nested root"
 else
     bad "diff-template counts no .terraform cache as a nested root (MISSING diagnostic absent)"
 fi
-if printf '%s\n' "$tf_cache_out" | grep -qF "EQUIV    terraform/main.tf"; then
+if grep -qF "EQUIV    terraform/main.tf" <<<"$tf_cache_out"; then
     bad "diff-template awards no EQUIV on a terraform init cache alone"
 else
     ok "diff-template awards no EQUIV on a terraform init cache alone"
@@ -8630,12 +8602,12 @@ fi
 if tf_linked_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" \
     "$DT_TF_LINKED" 2>&1)"; then
     bad "diff-template resolves no Terraform equivalence through a symlinked parent (expected non-zero exit)"
-elif printf '%s\n' "$tf_linked_out" | grep -qF "MISSING  terraform/main.tf"; then
+elif grep -qF "MISSING  terraform/main.tf" <<<"$tf_linked_out"; then
     ok "diff-template resolves no Terraform equivalence through a symlinked parent"
 else
     bad "diff-template resolves no Terraform equivalence through a symlinked parent (MISSING diagnostic absent)"
 fi
-if printf '%s\n' "$tf_linked_out" | grep -qF "EQUIV    terraform/main.tf"; then
+if grep -qF "EQUIV    terraform/main.tf" <<<"$tf_linked_out"; then
     bad "diff-template awards no EQUIV for a root outside the repository"
 else
     ok "diff-template awards no EQUIV for a root outside the repository"
@@ -8647,7 +8619,7 @@ expect_ok "diff-template compares an unstaged tracked deletion from the index" \
 git -C "$DT_TARGET" add -u -- scripts/status.sh
 if staged_delete_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
     bad "diff-template reports a staged deletion (expected non-zero exit)"
-elif printf '%s\n' "$staged_delete_out" | grep -qF "MISSING  scripts/status.sh"; then
+elif grep -qF "MISSING  scripts/status.sh" <<<"$staged_delete_out"; then
     ok "diff-template reports a staged deletion as MISSING"
 else
     bad "diff-template reports a staged deletion (MISSING diagnostic absent)"
@@ -10174,8 +10146,7 @@ expect_ok "copier update applies a template-side deletion" \
     test ! -e "$GU_TARGET/retired-doc.md"
 expect_ok "copier update creates a file the target template added" \
     test -f "$GU_TARGET/new-doc.md"
-if git -C "$GU_TARGET" diff --name-only --diff-filter=U |
-    grep -qxF .gitignore; then
+if grep -qxF .gitignore < <(git -C "$GU_TARGET" diff --name-only --diff-filter=U); then
     printf '%s\n' '.vscode/*' \
         '!.vscode/settings.json' \
         '!.vscode/new.json' >"$GU_TARGET/.gitignore"

@@ -41,8 +41,9 @@ wrappers_glob=".devcontainer/config/claude-providers.sh"
 
 fails=0
 fail() {
-    echo "DRIFT: $*" >&2
+    echo "DRIFT: $*" >&2 || true
     fails=$((fails + 1))
+    return 0
 }
 
 for required in "$registry" "$schema" "$validator" "$renderer"; do
@@ -70,13 +71,13 @@ rendered="$(node "$renderer" all "$registry")"
 names="$(printf '%s\n' "$rendered" | sed -n 's/|.*//p')"
 
 # 2a. No retired agent:* labels may appear anywhere in the rendered set.
-if printf '%s\n' "$names" | grep -q '^agent:'; then
+if grep -q '^agent:' <<<"$names"; then
     fail "rendered labels still contain a retired agent:* label — the agent vocabulary is now suggest:/claim: (ADR 0005 D6)"
 fi
 
 # 2b. Only FAMILY-level suggest:/claim: are seeded (exactly one colon in the
 # name); a two-colon name would be a seeded model-level label.
-if printf '%s\n' "$names" | grep -Eq '^(suggest|claim):[a-z0-9-]+:'; then
+if grep -Eq '^(suggest|claim):[a-z0-9-]+:' <<<"$names"; then
     fail "a model-level suggest:/claim: label is being seeded — model-level labels are created on demand, only family-level are provisioned (AC2)"
 fi
 

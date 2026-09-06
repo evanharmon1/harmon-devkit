@@ -89,22 +89,22 @@ run() {
 
 echo "==> clean tree, no local main/master: falls back to origin/HEAD's branch"
 out="$(run challenge)" || fail "challenge exited non-zero: $out"
-echo "$out" | grep -q "STUB-ARGS: exec review" || fail "codex exec review not invoked: $out"
-echo "$out" | grep -q -- "--model gpt-5.6-sol" || fail "review model is not pinned to gpt-5.6-sol: $out"
-echo "$out" | grep -q -- "--config model_reasoning_effort=high" || fail "review reasoning is not pinned high: $out"
-echo "$out" | grep -q "base branch 'origin/develop'" || fail "remote-qualified fallback base missing: $out"
-echo "$out" | grep -q "ADVERSARIAL" || fail "challenge mode instructions missing: $out"
-echo "$out" | grep -q "feature.txt" || fail "changed-file manifest missing from branch-scope prompt: $out"
+grep -q "STUB-ARGS: exec review" <<<"$out" || fail "codex exec review not invoked: $out"
+grep -q -- "--model gpt-5.6-sol" <<<"$out" || fail "review model is not pinned to gpt-5.6-sol: $out"
+grep -q -- "--config model_reasoning_effort=high" <<<"$out" || fail "review reasoning is not pinned high: $out"
+grep -q "base branch 'origin/develop'" <<<"$out" || fail "remote-qualified fallback base missing: $out"
+grep -q "ADVERSARIAL" <<<"$out" || fail "challenge mode instructions missing: $out"
+grep -q "feature.txt" <<<"$out" || fail "changed-file manifest missing from branch-scope prompt: $out"
 # A clean tree has no second half, so the split manifest must not appear —
 # otherwise the union headers would be noise the reviewer has to interpret.
-echo "$out" | grep -q "Uncommitted changes (git status" && fail "clean tree emitted an uncommitted manifest section: $out"
+grep -q "Uncommitted changes (git status" <<<"$out" && fail "clean tree emitted an uncommitted manifest section: $out"
 # The gate is only meaningful if the scale it gates on is defined in the
 # prompt — Codex's own priority labels are an undocumented convention.
-echo "$out" | grep -q "Only P0 and P1 decide" || fail "challenge prompt missing the P0/P1 gating rule: $out"
-echo "$out" | grep -q "Still report P2s" || fail "challenge prompt missing the report-P2s instruction: $out"
+grep -q "Only P0 and P1 decide" <<<"$out" || fail "challenge prompt missing the P0/P1 gating rule: $out"
+grep -q "Still report P2s" <<<"$out" || fail "challenge prompt missing the report-P2s instruction: $out"
 # An unreported P2 never reaches the PR body, so the handoff clause is what
 # makes "reported but non-gating" different from "ignored".
-echo "$out" | grep -q "carried into the pull request description" || fail "challenge prompt missing the P2 handoff clause: $out"
+grep -q "carried into the pull request description" <<<"$out" || fail "challenge prompt missing the P2 handoff clause: $out"
 # P3 is cosmetic and the cloud reviewer emits badges this prompt never sent,
 # so both the fourth level and the off-scale floor have to survive edits.
 # The prompt assertions below read the RENDERED instructions, so they cannot
@@ -116,17 +116,17 @@ if grep -q "never deferred" "${repo}/scripts/codex-review.sh"; then
     fail "codex-review.sh's header still claims a P3 is never deferred — deferral is decided by adjudication, not by the badge"
 fi
 
-echo "$out" | grep -q "P3 — cosmetic" || fail "challenge prompt missing the P3 level: $out"
-echo "$out" | grep -q "adjudicated as at least a P2" || fail "challenge prompt missing the off-scale badge floor: $out"
-echo "$out" | grep -q "hypothesis the" ||
+grep -q "P3 — cosmetic" <<<"$out" || fail "challenge prompt missing the P3 level: $out"
+grep -q "adjudicated as at least a P2" <<<"$out" || fail "challenge prompt missing the off-scale badge floor: $out"
+grep -q "hypothesis the" <<<"$out" ||
     fail "challenge prompt missing the label-is-a-hypothesis rule — an under-labelled P3 could be dropped without adjudication (harmon-init#923 shepherd r2): $out"
-! echo "$out" | grep -q "not carried into the pull request description" ||
+! grep -q "not carried into the pull request description" <<<"$out" ||
     fail "challenge prompt still claims a P3 is never deferred — deferral is decided by adjudication, not by the badge: $out"
 
 echo "==> origin/HEAD outranks a stray local main"
 git branch -q main "$(git rev-list --max-parents=0 HEAD)"
 out="$(run challenge)" || fail "challenge with stray local main exited non-zero: $out"
-echo "$out" | grep -q "base branch 'origin/develop'" || fail "stray local main hijacked base detection: $out"
+grep -q "base branch 'origin/develop'" <<<"$out" || fail "stray local main hijacked base detection: $out"
 git branch -q -D main
 
 echo "==> --base with no merge base fails fast"
@@ -134,21 +134,21 @@ unrelated="$(git_t commit-tree "$(git mktree </dev/null)" -m orphan)"
 if out="$(run review --base "$unrelated" 2>&1)"; then
     fail "--base with unrelated history accepted: $out"
 fi
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite no merge base: $out"
-echo "$out" | grep -q "no merge base" || fail "missing no-merge-base message: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite no merge base: $out"
+grep -q "no merge base" <<<"$out" || fail "missing no-merge-base message: $out"
 
 echo "==> explicit --base and focus text reach the prompt"
 out="$(run review --base origin/develop watch the hooks)" || fail "review --base exited non-zero: $out"
-echo "$out" | grep -q "base branch 'origin/develop'" || fail "--base not honored: $out"
-echo "$out" | grep -q "VERIFICATION-CHECKPOINT" || fail "review mode instructions missing: $out"
-echo "$out" | grep -q "watch the hooks" || fail "focus text missing from prompt: $out"
-echo "$out" | grep -q "Only P0 and P1 decide" || fail "review prompt missing the P0/P1 gating rule: $out"
-echo "$out" | grep -q "carried into the pull request description" || fail "review prompt missing the P2 handoff clause: $out"
-echo "$out" | grep -q "P3 — cosmetic" || fail "review prompt missing the P3 level: $out"
-echo "$out" | grep -q "adjudicated as at least a P2" || fail "review prompt missing the off-scale badge floor: $out"
-echo "$out" | grep -q "hypothesis the" ||
+grep -q "base branch 'origin/develop'" <<<"$out" || fail "--base not honored: $out"
+grep -q "VERIFICATION-CHECKPOINT" <<<"$out" || fail "review mode instructions missing: $out"
+grep -q "watch the hooks" <<<"$out" || fail "focus text missing from prompt: $out"
+grep -q "Only P0 and P1 decide" <<<"$out" || fail "review prompt missing the P0/P1 gating rule: $out"
+grep -q "carried into the pull request description" <<<"$out" || fail "review prompt missing the P2 handoff clause: $out"
+grep -q "P3 — cosmetic" <<<"$out" || fail "review prompt missing the P3 level: $out"
+grep -q "adjudicated as at least a P2" <<<"$out" || fail "review prompt missing the off-scale badge floor: $out"
+grep -q "hypothesis the" <<<"$out" ||
     fail "review prompt missing the label-is-a-hypothesis rule — an under-labelled P3 could be dropped without adjudication (harmon-init#923 shepherd r2): $out"
-! echo "$out" | grep -q "not carried into the pull request description" ||
+! grep -q "not carried into the pull request description" <<<"$out" ||
     fail "review prompt still claims a P3 is never deferred — deferral is decided by adjudication, not by the badge: $out"
 
 echo "==> --base warns when the ref lags an upstream HEAD already contains"
@@ -172,10 +172,10 @@ git_t merge -q --no-edit origin/develop
 out="$(run review --base basestale)" || fail "stale-base run exited non-zero (must stay advisory): $out"
 # Advisory, not fatal: the review still has to happen, or the warning has
 # turned a nudge into a refusal.
-echo "$out" | grep -q "STUB-ARGS: exec review" || fail "stale-base warning suppressed the review: $out"
-echo "$out" | grep -q "lags its upstream 'origin/develop'" || fail "stale-base warning missing: $out"
-echo "$out" | grep -q "contains 2 commits that already merged upstream" || fail "stale-base warning miscounted the carried commits: $out"
-echo "$out" | grep -q -- "--base origin/develop" || fail "stale-base warning does not name the remote-qualified ref: $out"
+grep -q "STUB-ARGS: exec review" <<<"$out" || fail "stale-base warning suppressed the review: $out"
+grep -q "lags its upstream 'origin/develop'" <<<"$out" || fail "stale-base warning missing: $out"
+grep -q "contains 2 commits that already merged upstream" <<<"$out" || fail "stale-base warning miscounted the carried commits: $out"
+grep -q -- "--base origin/develop" <<<"$out" || fail "stale-base warning does not name the remote-qualified ref: $out"
 
 echo "==> --base warns on a HALF-updated branch, where the upstream tip is not in HEAD"
 # Base at A, upstream since advanced A->B->C, HEAD carrying B but not C. The
@@ -186,8 +186,8 @@ echo "==> --base warns on a HALF-updated branch, where the upstream tip is not i
 git checkout -q -b halfway "$pre_merge"
 git_t merge -q --no-edit origin/develop~1
 out="$(run review --base basestale)" || fail "half-updated stale-base run exited non-zero: $out"
-echo "$out" | grep -q "lags its upstream 'origin/develop'" || fail "no warning on a half-updated branch: $out"
-echo "$out" | grep -q "contains 1 commit that already merged upstream" || fail "half-updated warning miscounted (or mis-pluralized) the carried commits: $out"
+grep -q "lags its upstream 'origin/develop'" <<<"$out" || fail "no warning on a half-updated branch: $out"
+grep -q "contains 1 commit that already merged upstream" <<<"$out" || fail "half-updated warning miscounted (or mis-pluralized) the carried commits: $out"
 git checkout -q feature
 
 echo "==> a stale base whose upstream commits are NOT in HEAD stays silent"
@@ -196,7 +196,7 @@ echo "==> a stale base whose upstream commits are NOT in HEAD stays silent"
 # a warning here would be a false positive on a healthy run.
 git checkout -q -b prestale "$pre_merge"
 out="$(run review --base basestale)" || fail "pre-merge stale-base run exited non-zero: $out"
-echo "$out" | grep -q "lags its upstream" && fail "warned on a base whose upstream commits HEAD does not contain: $out"
+grep -q "lags its upstream" <<<"$out" && fail "warned on a base whose upstream commits HEAD does not contain: $out"
 git checkout -q feature
 
 echo "==> --base refs with no upstream never warn"
@@ -205,8 +205,8 @@ echo "==> --base refs with no upstream never warn"
 git tag basetag basestale
 for ref in basetag "$(git rev-parse basestale)" origin/develop; do
     out="$(run review --base "$ref")" || fail "--base '$ref' exited non-zero: $out"
-    echo "$out" | grep -q "STUB-ARGS: exec review" || fail "--base '$ref' did not reach codex: $out"
-    echo "$out" | grep -q "lags its upstream" && fail "--base '$ref' has no upstream but warned: $out"
+    grep -q "STUB-ARGS: exec review" <<<"$out" || fail "--base '$ref' did not reach codex: $out"
+    grep -q "lags its upstream" <<<"$out" && fail "--base '$ref' has no upstream but warned: $out"
 done
 
 echo "==> a tree-neutral upstream gap does not warn"
@@ -229,7 +229,7 @@ echo n >neutral.txt
 git add neutral.txt
 git_t commit -q -m "work on top of the tree-neutral gap"
 out="$(run review --base neutralbase)" || fail "tree-neutral run exited non-zero: $out"
-echo "$out" | grep -q "lags its upstream" && fail "warned on an upstream gap that changes no files: $out"
+grep -q "lags its upstream" <<<"$out" && fail "warned on an upstream gap that changes no files: $out"
 git checkout -q feature
 
 echo "==> the full-ref spelling of a local branch still warns"
@@ -238,7 +238,7 @@ echo "==> the full-ref spelling of a local branch still warns"
 # without normalization this spelling would skip the check silently.
 for ref in refs/heads/basestale heads/basestale; do
     out="$(run review --base "$ref")" || fail "--base '$ref' exited non-zero: $out"
-    echo "$out" | grep -q "lags its upstream 'origin/develop'" || fail "--base '$ref' skipped the stale-base check: $out"
+    grep -q "lags its upstream 'origin/develop'" <<<"$out" || fail "--base '$ref' skipped the stale-base check: $out"
 done
 
 echo "==> commits plus a dirty tree review BOTH halves, in labelled sections"
@@ -251,17 +251,17 @@ echo x >dirty.txt
 mkdir newdir
 echo y >newdir/inner.txt
 out="$(run review)" || fail "commits-plus-dirty review exited non-zero: $out"
-echo "$out" | grep -q "BOTH parts are in scope" || fail "commits plus a dirty tree did not select the union scope: $out"
-echo "$out" | grep -q "uncommitted work in the working tree" || fail "union scope does not name the worktree half: $out"
-echo "$out" | grep -q "origin/develop...HEAD" || fail "union scope does not name the committed half: $out"
+grep -q "BOTH parts are in scope" <<<"$out" || fail "commits plus a dirty tree did not select the union scope: $out"
+grep -q "uncommitted work in the working tree" <<<"$out" || fail "union scope does not name the worktree half: $out"
+grep -q "origin/develop...HEAD" <<<"$out" || fail "union scope does not name the committed half: $out"
 committed_half="$(printf '%s\n' "$out" | sed -n '/^Committed changes (git diff/,/^Uncommitted changes (git status/p')"
 uncommitted_half="$(printf '%s\n' "$out" | sed -n '/^Uncommitted changes (git status/,$p')"
 [ -n "$committed_half" ] || fail "union manifest missing its committed section: $out"
 [ -n "$uncommitted_half" ] || fail "union manifest missing its uncommitted section: $out"
-echo "$committed_half" | grep -q "feature.txt" || fail "committed half missing the branch's own commit: $out"
-echo "$committed_half" | grep -q "dirty.txt" && fail "worktree file filed under the committed heading: $out"
-echo "$uncommitted_half" | grep -q "dirty.txt" || fail "untracked file missing from the uncommitted half: $out"
-echo "$uncommitted_half" | grep -q "newdir/inner.txt" || fail "file inside untracked dir missing from manifest (collapsed to dir entry): $out"
+grep -q "feature.txt" <<<"$committed_half" || fail "committed half missing the branch's own commit: $out"
+grep -q "dirty.txt" <<<"$committed_half" && fail "worktree file filed under the committed heading: $out"
+grep -q "dirty.txt" <<<"$uncommitted_half" || fail "untracked file missing from the uncommitted half: $out"
+grep -q "newdir/inner.txt" <<<"$uncommitted_half" || fail "file inside untracked dir missing from manifest (collapsed to dir entry): $out"
 rm -rf dirty.txt newdir
 
 echo "==> a >200-entry dirty tree still reviews (no SIGPIPE abort) and marks truncation"
@@ -273,8 +273,8 @@ while [ "$i" -le 250 ]; do
     i=$((i + 1))
 done
 out="$(run review)" || fail "large dirty tree aborted the review (pipefail/SIGPIPE regression): $out"
-echo "$out" | grep -q "STUB-ARGS: exec review" || fail "codex not invoked on large dirty tree: $out"
-echo "$out" | grep -q "manifest truncated at 200 entries" || fail "truncation marker missing on >200-entry manifest: $out"
+grep -q "STUB-ARGS: exec review" <<<"$out" || fail "codex not invoked on large dirty tree: $out"
+grep -q "manifest truncated at 200 entries" <<<"$out" || fail "truncation marker missing on >200-entry manifest: $out"
 rm -f bulk_f*.txt
 
 echo "==> clean tree at the base tip refuses, non-zero, without invoking codex"
@@ -284,18 +284,18 @@ git checkout -q -b tipcheck origin/develop
 if out="$(run review)"; then
     fail "nothing-to-review case exited zero (reads as a clean pass): $out"
 fi
-echo "$out" | grep -q "Nothing to review" || fail "expected nothing-to-review message: $out"
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite nothing to review: $out"
+grep -q "Nothing to review" <<<"$out" || fail "expected nothing-to-review message: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite nothing to review: $out"
 
 echo "==> at the base tip, a dirty tree reviews the worktree alone"
 # The other side of the union: with no commits beyond the base there is no
 # second half, so the split manifest and its headings must not appear.
 echo tipwork >tipwork.txt
 out="$(run review)" || fail "dirty tree at the base tip exited non-zero: $out"
-echo "$out" | grep -q "Review the uncommitted work" || fail "base-tip dirty tree did not select the uncommitted scope: $out"
-echo "$out" | grep -q "BOTH parts are in scope" && fail "union scope selected with no commits beyond the base: $out"
-echo "$out" | grep -q "Committed changes (git diff" && fail "empty committed half still emitted a manifest section: $out"
-echo "$out" | grep -q "tipwork.txt" || fail "worktree file missing from manifest: $out"
+grep -q "Review the uncommitted work" <<<"$out" || fail "base-tip dirty tree did not select the uncommitted scope: $out"
+grep -q "BOTH parts are in scope" <<<"$out" && fail "union scope selected with no commits beyond the base: $out"
+grep -q "Committed changes (git diff" <<<"$out" && fail "empty committed half still emitted a manifest section: $out"
+grep -q "tipwork.txt" <<<"$out" || fail "worktree file missing from manifest: $out"
 rm -f tipwork.txt
 
 echo "==> --base level with its base refuses, non-zero, without invoking codex"
@@ -305,25 +305,25 @@ echo "==> --base level with its base refuses, non-zero, without invoking codex"
 if out="$(run challenge --base origin/develop)"; then
     fail "--base with an empty diff was accepted: $out"
 fi
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite an empty --base diff: $out"
-echo "$out" | grep -q "Nothing to review" || fail "missing empty--base refusal message: $out"
-echo "$out" | grep -q -- "--uncommitted" || fail "empty --base refusal does not name the fix: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite an empty --base diff: $out"
+grep -q "Nothing to review" <<<"$out" || fail "missing empty--base refusal message: $out"
+grep -q -- "--uncommitted" <<<"$out" || fail "empty --base refusal does not name the fix: $out"
 
 echo "==> --base on a dirty tree says the uncommitted work is out of scope"
 echo scratch >scratch.txt
 if out="$(run challenge --base origin/develop)"; then
     fail "--base with an empty diff was accepted on a dirty tree: $out"
 fi
-echo "$out" | grep -q "working tree is dirty" || fail "no dirty-tree note on --base: $out"
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite an empty --base diff: $out"
+grep -q "working tree is dirty" <<<"$out" || fail "no dirty-tree note on --base: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite an empty --base diff: $out"
 
 echo "==> --uncommitted on a clean tree refuses, non-zero, without invoking codex"
 rm -f scratch.txt
 if out="$(run review --uncommitted)"; then
     fail "--uncommitted on a clean tree was accepted: $out"
 fi
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite a clean tree: $out"
-echo "$out" | grep -q "Nothing to review" || fail "missing empty--uncommitted refusal message: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite a clean tree: $out"
+grep -q "Nothing to review" <<<"$out" || fail "missing empty--uncommitted refusal message: $out"
 
 echo "==> status.showUntrackedFiles=no cannot hide an untracked-only tree"
 # Both the auto dirty-tree test and the --base warning read `git status`; with
@@ -333,12 +333,12 @@ echo "==> status.showUntrackedFiles=no cannot hide an untracked-only tree"
 git_t config status.showUntrackedFiles no
 echo hidden >hidden.txt
 out="$(run review)" || fail "untracked-only tree with showUntrackedFiles=no exited non-zero: $out"
-echo "$out" | grep -q "uncommitted work" || fail "untracked-only tree was not seen as dirty: $out"
-echo "$out" | grep -q "hidden.txt" || fail "untracked file missing from manifest: $out"
+grep -q "uncommitted work" <<<"$out" || fail "untracked-only tree was not seen as dirty: $out"
+grep -q "hidden.txt" <<<"$out" || fail "untracked file missing from manifest: $out"
 if out="$(run challenge --base origin/develop)"; then
     fail "--base with an empty diff was accepted: $out"
 fi
-echo "$out" | grep -q "working tree is dirty" || fail "dirty-tree note suppressed by showUntrackedFiles=no: $out"
+grep -q "working tree is dirty" <<<"$out" || fail "dirty-tree note suppressed by showUntrackedFiles=no: $out"
 rm -f hidden.txt
 git_t config --unset status.showUntrackedFiles
 
@@ -347,8 +347,8 @@ git_t commit -q --allow-empty -m "empty commit"
 if out="$(run review --commit HEAD)"; then
     fail "--commit on an empty commit was accepted: $out"
 fi
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite an empty commit diff: $out"
-echo "$out" | grep -q "Nothing to review" || fail "missing empty--commit refusal message: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite an empty commit diff: $out"
+grep -q "Nothing to review" <<<"$out" || fail "missing empty--commit refusal message: $out"
 git_t reset -q --hard HEAD~1
 
 echo "==> bad mode is rejected"
@@ -360,24 +360,24 @@ echo "==> invalid explicit targets fail fast without invoking codex"
 if out="$(run review --base no-such-ref 2>&1)"; then
     fail "--base with an unresolvable ref was accepted: $out"
 fi
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite bad --base ref: $out"
-echo "$out" | grep -q "does not resolve" || fail "missing fail-fast message for bad --base: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite bad --base ref: $out"
+grep -q "does not resolve" <<<"$out" || fail "missing fail-fast message for bad --base: $out"
 if out="$(run challenge --commit 0000000000000000000000000000000000000000 2>&1)"; then
     fail "--commit with an unresolvable sha was accepted: $out"
 fi
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite bad --commit sha: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite bad --commit sha: $out"
 
 echo "==> conflicting target flags are rejected"
 if out="$(run review --base origin/develop --uncommitted 2>&1)"; then
     fail "conflicting target flags accepted (last-wins regression): $out"
 fi
-echo "$out" | grep -q "mutually exclusive" || fail "missing conflicting-flags message: $out"
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite conflicting flags: $out"
+grep -q "mutually exclusive" <<<"$out" || fail "missing conflicting-flags message: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite conflicting flags: $out"
 
 echo "==> --commit manifests cover root and merge commits"
 root_sha="$(git rev-list --max-parents=0 HEAD | tail -1)"
 out="$(run review --commit "$root_sha")" || fail "root-commit review exited non-zero: $out"
-echo "$out" | grep -q "codex-review.sh" || fail "root commit manifest empty (missing --root): $out"
+grep -q "codex-review.sh" <<<"$out" || fail "root commit manifest empty (missing --root): $out"
 git checkout -q -b mergetest feature
 git branch -q sidebr "$root_sha"
 git checkout -q sidebr
@@ -388,8 +388,8 @@ git checkout -q mergetest
 git_t merge -q --no-ff -m merge sidebr >/dev/null 2>&1 || fail "fixture merge failed"
 merge_sha="$(git rev-parse HEAD)"
 out="$(run review --commit "$merge_sha")" || fail "merge-commit review exited non-zero: $out"
-echo "$out" | grep -q "side.txt" || fail "merge commit manifest missing first-parent change: $out"
-echo "$out" | grep -q "feature.txt" && fail "merge manifest includes pre-merge mainline files (diff-tree -m regression): $out"
+grep -q "side.txt" <<<"$out" || fail "merge commit manifest missing first-parent change: $out"
+grep -q "feature.txt" <<<"$out" && fail "merge manifest includes pre-merge mainline files (diff-tree -m regression): $out"
 
 echo "==> a submodule-only change is not misread as empty under diff.ignoreSubmodules=all"
 # The empty-scope guard turns "no files changed" into a hard refusal, so a
@@ -411,7 +411,7 @@ git add vendored
 git_t commit -q -m "bump submodule pointer only"
 git_t config diff.ignoreSubmodules all
 out="$(run review --base "$submod_base")" || fail "submodule-only diff refused as empty: $out"
-echo "$out" | grep -q "vendored" || fail "submodule gitlink missing from manifest: $out"
+grep -q "vendored" <<<"$out" || fail "submodule gitlink missing from manifest: $out"
 git_t config --unset diff.ignoreSubmodules
 
 echo "==> an unresolvable base refuses, on a dirty tree as much as a clean one"
@@ -431,17 +431,17 @@ git init -q -b feature "$norem"
     if out="$(./scripts/codex-review.sh review 2>&1)"; then
         fail "clean tree with no detectable base was accepted: $out"
     fi
-    echo "$out" | grep -q "Could not resolve a base" || fail "missing unresolvable-base message: $out"
-    echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked with no resolvable base: $out"
+    grep -q "Could not resolve a base" <<<"$out" || fail "missing unresolvable-base message: $out"
+    grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked with no resolvable base: $out"
     echo loose >loose.txt
     if out="$(./scripts/codex-review.sh review 2>&1)"; then
         fail "dirty tree with no detectable base reviewed the worktree alone and exited 0: $out"
     fi
-    echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked on a partial scope: $out"
-    echo "$out" | grep -q -- "--uncommitted" || fail "refusal does not name the deliberate narrow target: $out"
+    grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked on a partial scope: $out"
+    grep -q -- "--uncommitted" <<<"$out" || fail "refusal does not name the deliberate narrow target: $out"
     # ...and that named escape must actually work, or the refusal is a dead end.
     out="$(./scripts/codex-review.sh review --uncommitted 2>&1)" || fail "--uncommitted refused with no base: $out"
-    echo "$out" | grep -q "loose.txt" || fail "worktree file missing from --uncommitted manifest: $out"
+    grep -q "loose.txt" <<<"$out" || fail "worktree file missing from --uncommitted manifest: $out"
 )
 
 echo "==> a git failure in either half is refused, not read as an empty half"
@@ -470,13 +470,13 @@ echo halfwork >halfwork.txt
 if out="$(FAIL_GIT_DIFF=1 run review)"; then
     fail "an unreadable branch diff was reviewed as an empty half and exited 0: $out"
 fi
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked with a committed half that could not be read: $out"
-echo "$out" | grep -q "refusing rather than reading an unreadable" || fail "missing unreadable-diff refusal message: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked with a committed half that could not be read: $out"
+grep -q "refusing rather than reading an unreadable" <<<"$out" || fail "missing unreadable-diff refusal message: $out"
 if out="$(FAIL_GIT_STATUS=1 run review)"; then
     fail "an unreadable worktree was reviewed as clean and exited 0: $out"
 fi
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked with a worktree half that could not be read: $out"
-echo "$out" | grep -q "refusing rather than reading an unreadable worktree" || fail "missing unreadable-worktree refusal message: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked with a worktree half that could not be read: $out"
+grep -q "refusing rather than reading an unreadable worktree" <<<"$out" || fail "missing unreadable-worktree refusal message: $out"
 rm -f halfwork.txt "${test_tmp}/bin/git"
 
 # The reported bug: one codex_models_manager decode error inlines the entire
@@ -524,8 +524,8 @@ echo "==> a non-numeric bound is refused before the CLI is invoked"
 if out="$(CODEX_REVIEW_MAX_STDERR_BYTES=abc ./scripts/codex-review.sh review --uncommitted 2>&1)"; then
     fail "non-numeric bound accepted: $out"
 fi
-echo "$out" | grep -q "STUB-ARGS" && fail "codex invoked despite an invalid bound: $out"
-echo "$out" | grep -q "must be a non-negative integer" || fail "missing validation message: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "codex invoked despite an invalid bound: $out"
+grep -q "must be a non-negative integer" <<<"$out" || fail "missing validation message: $out"
 
 echo "==> a bound past INT64_MAX is refused rather than leaking a shell error"
 # All-digit but too wide for `test -eq`, which fails with "integer expression
@@ -534,8 +534,8 @@ echo "==> a bound past INT64_MAX is refused rather than leaking a shell error"
 if out="$(CODEX_REVIEW_MAX_STDERR_BYTES=999999999999999999999 ./scripts/codex-review.sh review --uncommitted 2>&1)"; then
     fail "an INT64_MAX-exceeding bound was accepted: $out"
 fi
-echo "$out" | grep -q "integer expression expected" && fail "shell arithmetic error leaked to the caller: $out"
-echo "$out" | grep -q "implausibly large" || fail "missing implausible-bound message: $out"
+grep -q "integer expression expected" <<<"$out" && fail "shell arithmetic error leaked to the caller: $out"
+grep -q "implausibly large" <<<"$out" || fail "missing implausible-bound message: $out"
 # The widest value that still compares cleanly must keep working.
 CODEX_REVIEW_MAX_STDERR_BYTES=999999999999999999 STUB_BIG_STDERR=40000 \
     ./scripts/codex-review.sh review --uncommitted >/dev/null 2>"$big_err" ||
@@ -567,7 +567,7 @@ if out="$( (
 ) 2>&1)"; then
     fail "gate enable accepted an install scoped to another repo: $out"
 fi
-echo "$out" | grep -q "not installed" || fail "missing not-installed message for foreign-scoped install: $out"
+grep -q "not installed" <<<"$out" || fail "missing not-installed message for foreign-scoped install: $out"
 
 echo "==> gate: refuses to arm when the companion reports not ready"
 fake_plugin="${test_tmp}/fake-plugin"
@@ -596,7 +596,7 @@ if out="$( (
 ) 2>&1)"; then
     fail "gate armed despite companion ready:false: $out"
 fi
-echo "$out" | grep -q "not ready" || fail "missing not-ready refusal message: $out"
+grep -q "not ready" <<<"$out" || fail "missing not-ready refusal message: $out"
 
 echo "==> gate: arms when the companion reports ready"
 out="$( (
@@ -604,7 +604,7 @@ out="$( (
     run_tty "${repo}/scripts/codex-gate.sh" enable
 ) 2>&1)" ||
     fail "gate enable failed with companion ready:true: $out"
-echo "$out" | grep -q "companion invoked: setup --enable-review-gate" || fail "companion toggle not invoked after readiness pass: $out"
+grep -q "companion invoked: setup --enable-review-gate" <<<"$out" || fail "companion toggle not invoked after readiness pass: $out"
 
 echo "==> gate: refuses when the plugin is explicitly disabled in settings"
 ws="${test_tmp}/ws"
@@ -617,7 +617,7 @@ if out="$( (
 ) 2>&1)"; then
     fail "gate armed despite plugin disabled in settings: $out"
 fi
-echo "$out" | grep -q "explicitly disabled" || fail "missing disabled-plugin refusal message: $out"
+grep -q "explicitly disabled" <<<"$out" || fail "missing disabled-plugin refusal message: $out"
 
 echo "==> gate: status warns that an armed flag is inert when the plugin is disabled"
 out="$(
@@ -626,18 +626,18 @@ out="$(
         "${ws}/scripts/codex-gate.sh" status
     ) 2>&1
 )" || fail "status exited non-zero in disabled-plugin workspace: $out"
-echo "$out" | grep -q "INERT" || fail "status did not flag the inert gate flag: $out"
+grep -q "INERT" <<<"$out" || fail "status did not flag the inert gate flag: $out"
 
 echo "==> gate: enable refuses in a non-interactive shell"
 if out="$(CLAUDE_CONFIG_DIR="${fake_claude}2" CLAUDE_PLUGIN_DATA="${test_tmp}/plugin-data" FAKE_READY=true "${repo}/scripts/codex-gate.sh" enable </dev/null 2>&1)"; then
     fail "non-interactive enable was accepted (silent arming bypass): $out"
 fi
-echo "$out" | grep -q "non-interactive" || fail "missing non-interactive enable refusal message: $out"
+grep -q "non-interactive" <<<"$out" || fail "missing non-interactive enable refusal message: $out"
 
 echo "==> gate: disable refuses in a non-interactive shell"
 if out="$(CLAUDE_CONFIG_DIR="${fake_claude}2" CLAUDE_PLUGIN_DATA="${test_tmp}/plugin-data" "${repo}/scripts/codex-gate.sh" disable </dev/null 2>&1)"; then
     fail "non-interactive disable was accepted (agent could disarm its own gate): $out"
 fi
-echo "$out" | grep -q "non-interactive" || fail "missing non-interactive disable refusal message: $out"
+grep -q "non-interactive" <<<"$out" || fail "missing non-interactive disable refusal message: $out"
 
 echo "codex-review + codex-gate guards OK (38 cases)"

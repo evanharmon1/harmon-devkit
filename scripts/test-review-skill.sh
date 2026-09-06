@@ -330,8 +330,8 @@ jq -n --arg run fixture-run --arg head "$head" --arg role challenger --arg finde
           role: $role, finder: $finder, marker: $marker, body: $body, payload_digest: $digest}
       ]}' \
     >"$tmp/landed.json"
-monitor_reconcile --state "$state" --event crash-write --observed "$tmp/landed.json" |
-    grep -Fq 'adopt crash-write' || fail "crash-after-write action was not adopted"
+monitor_out="$(monitor_reconcile --state "$state" --event crash-write --observed "$tmp/landed.json")" &&
+    grep -Fq 'adopt crash-write' <<<"$monitor_out" || fail "crash-after-write action was not adopted"
 jq -e '.cursor == "crash-write" and .actions[0].state == "adopted"' "$state" >/dev/null ||
     fail "adoption did not durably advance the cursor"
 jq -e '.actions[0].postcondition.comment_id == "42"' "$state" >/dev/null ||
@@ -403,27 +403,25 @@ grep -Fq 'absent comment observation contains an authenticated match' \
     "$tmp/comment-candidate-match.out" ||
     fail "authenticated comment match did not block retry"
 jq -n '{status: "absent", comments: []}' >"$tmp/comment-candidate-empty.json"
-monitor_reconcile --state "$state" --event comment-retry \
-    --observed "$tmp/comment-candidate-empty.json" |
-    grep -Fq 'retry comment-retry' || fail "empty authenticated candidate set did not authorize retry"
+monitor_out="$(monitor_reconcile --state "$state" --event comment-retry --observed "$tmp/comment-candidate-empty.json")" &&
+    grep -Fq 'retry comment-retry' <<<"$monitor_out" || fail "empty authenticated candidate set did not authorize retry"
 jq '.status = "landed" | .event = "comment-retry" | .action = "comment" |
     .head = .comments[0].head' "$tmp/comment-candidate.json" >"$tmp/comment-candidate-landed.json"
-monitor_reconcile --state "$state" --event comment-retry \
-    --observed "$tmp/comment-candidate-landed.json" |
-    grep -Fq 'adopt comment-retry' || fail "retried comment was not adopted"
+monitor_out="$(monitor_reconcile --state "$state" --event comment-retry --observed "$tmp/comment-candidate-landed.json")" &&
+    grep -Fq 'adopt comment-retry' <<<"$monitor_out" || fail "retried comment was not adopted"
 
 echo "==> monitor durably enforces the total agent-run budget"
 monitor_agent_run() {
     "$monitor" reserve-agent-run "${active_args[@]}" --state "$state" "$@"
 }
-monitor_agent_run --event initial-implementer --max-agent-runs 2 --writer feature-owner |
-    grep -Fq 'reserved agent-run initial-implementer 1/2' ||
+monitor_out="$(monitor_agent_run --event initial-implementer --max-agent-runs 2 --writer feature-owner)" &&
+    grep -Fq 'reserved agent-run initial-implementer 1/2' <<<"$monitor_out" ||
     fail "first agent run was not reserved"
-monitor_agent_run --event initial-implementer --max-agent-runs 2 --writer feature-owner |
-    grep -Fq 'adopt agent-run initial-implementer 1/2' ||
+monitor_out="$(monitor_agent_run --event initial-implementer --max-agent-runs 2 --writer feature-owner)" &&
+    grep -Fq 'adopt agent-run initial-implementer 1/2' <<<"$monitor_out" ||
     fail "agent-run re-arm spent a duplicate slot"
-monitor_agent_run --event remediation-r1 --max-agent-runs 2 --writer feature-owner |
-    grep -Fq 'reserved agent-run remediation-r1 2/2' ||
+monitor_out="$(monitor_agent_run --event remediation-r1 --max-agent-runs 2 --writer feature-owner)" &&
+    grep -Fq 'reserved agent-run remediation-r1 2/2' <<<"$monitor_out" ||
     fail "remediation agent run was not reserved"
 jq -e '.agent_run_budget.max_agent_runs == 2 and
     (.agent_run_budget.reservations | length) == 2' "$state" >/dev/null ||
@@ -456,8 +454,8 @@ grep -Fq 'only the feature-branch owner may reserve an agent run' "$tmp/lane-age
 monitor_reserve --state "$state" --event absent-write --action push \
     --expected-head "$head" --writer feature-owner >/dev/null
 jq -n '{status: "absent"}' >"$tmp/absent.json"
-monitor_reconcile --state "$state" --event absent-write --observed "$tmp/absent.json" |
-    grep -Fq 'retry absent-write' || fail "absent action was not marked retryable"
+monitor_out="$(monitor_reconcile --state "$state" --event absent-write --observed "$tmp/absent.json")" &&
+    grep -Fq 'retry absent-write' <<<"$monitor_out" || fail "absent action was not marked retryable"
 jq -e '.cursor == "comment-retry" and
     ([.actions[] | select(.event == "absent-write" and .state == "reserved")] | length) == 1' \
     "$state" >/dev/null ||
@@ -531,9 +529,8 @@ grep -Fq 'assembled lane selection does not match reservation' "$tmp/e2-wrong-pl
 "$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
     --observed "$tmp/e2.json" >/dev/null
 jq -n '{status: "absent"}' >"$tmp/stale.json"
-"$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 \
-    --observed "$tmp/stale.json" |
-    grep -Fq 'adopt e2' || fail "adopted action was retryable"
+monitor_out="$("$monitor" reconcile "${ordered_args[@]}" --state "$ordered_state" --event e2 --observed "$tmp/stale.json")" &&
+    grep -Fq 'adopt e2' <<<"$monitor_out" || fail "adopted action was retryable"
 
 echo "==> monitor serializes concurrent reservations"
 concurrent_run_id="concurrent-run"

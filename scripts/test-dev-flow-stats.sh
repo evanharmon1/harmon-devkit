@@ -2755,7 +2755,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "fork: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "chain broken\|indeterminate" || fail "fork: expected a chain-break/indeterminate reason, got: $out"
+grep -qi "chain broken\|indeterminate" <<<"$out" || fail "fork: expected a chain-break/indeterminate reason, got: $out"
 
 echo "== chain fork does not abort the whole --repo scan: other issues still count =="
 python3 - "$tmp/scenarios/fork.json" "$tmp/scenarios/happy.json" "$tmp/scenarios/fork-plus-happy.json" <<'PY'
@@ -2836,7 +2836,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "tamper: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "tamper" || fail "tamper: expected a tamper-shaped reason, got: $out"
+grep -qi "tamper" <<<"$out" || fail "tamper: expected a tamper-shaped reason, got: $out"
 
 echo "== stale non-terminal run terminalizes as abandoned at --as-of =="
 export DFSTATS_DB="$tmp/scenarios/stale.json"
@@ -2876,7 +2876,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "missing trust config: expected exit 2, got $rc"
-echo "$out" | grep -qi "trusted-actor" || fail "missing trust config: expected an explanatory error"
+grep -qi "trusted-actor" <<<"$out" || fail "missing trust config: expected an explanatory error"
 
 echo "== omator#397: the real committed trajectory harvests and renders =="
 export DFSTATS_DB="$tmp/scenarios/omator-397.json"
@@ -3006,7 +3006,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-deleted-evidence-1 -
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "deleted-evidence: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "deleted-entry tampering\|no longer exists" || fail "deleted-evidence: expected a deleted-entry-tampering reason, got: $out"
+grep -qi "deleted-entry tampering\|no longer exists" <<<"$out" || fail "deleted-evidence: expected a deleted-entry-tampering reason, got: $out"
 
 echo "== post-ready fix detection is position-based: catches a cherry-picked (older-timestamped) commit a timestamp check would miss =="
 export DFSTATS_DB="$tmp/scenarios/postfix-cherrypick.json"
@@ -3036,7 +3036,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-deleted-record-1 --t
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "deleted-record: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "deleted-entry tampering\|no longer exists" || fail "deleted-record: expected a deleted-entry-tampering reason, got: $out"
+grep -qi "deleted-entry tampering\|no longer exists" <<<"$out" || fail "deleted-record: expected a deleted-entry-tampering reason, got: $out"
 
 echo "== a legitimately edited run-record (content changed after the index was created) still authenticates — the P0 regression =="
 export DFSTATS_DB="$tmp/scenarios/edited-record.json"
@@ -3091,7 +3091,7 @@ for flag_args in "--as-of" "--since" "--stale-after-days"; do
     rc=$?
     set -e
     [ "$rc" -eq 2 ] || fail "missing-value ($flag_args --json): expected exit 2, got $rc: $out"
-    echo "$out" | grep -qi "requires a value" || fail "missing-value ($flag_args --json): expected a 'requires a value' reason, got: $out"
+    grep -qi "requires a value" <<<"$out" || fail "missing-value ($flag_args --json): expected a 'requires a value' reason, got: $out"
 done
 
 echo "== a listed evidence entry naming a foreign run_id in its own marker is rejected, not silently merged =="
@@ -3101,7 +3101,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run run-foreign-evidence-1 -
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "foreign-evidence: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "does not bind to run\|tamper" || fail "foreign-evidence: expected a binding-mismatch reason, got: $out"
+grep -qi "does not bind to run\|tamper" <<<"$out" || fail "foreign-evidence: expected a binding-mismatch reason, got: $out"
 
 echo "== conflicting payloads under one marker resolve by lowest id, unconditionally (reverted round-1 regression) =="
 export DFSTATS_DB="$tmp/scenarios/conflicting-dup.json"
@@ -3139,7 +3139,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "edited-registration: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "evidence_registrations.*chain broken\|tamper" || fail "edited-registration: expected an evidence_registrations chain-break reason, got: $out"
+grep -qi "evidence_registrations.*chain broken\|tamper" <<<"$out" || fail "edited-registration: expected an evidence_registrations chain-break reason, got: $out"
 
 echo "== round 4 of #663: evidence_comments[] naming a different comment than its own (untouched, valid) chain fails closed =="
 export DFSTATS_DB="$tmp/scenarios/swapped-comment-id.json"
@@ -3149,7 +3149,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "swapped-comment-id: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "evidence_comments.*does not match\|out-of-band edit" || fail "swapped-comment-id: expected an evidence_comments/evidence_registrations mismatch reason, got: $out"
+grep -qi "evidence_comments.*does not match\|out-of-band edit" <<<"$out" || fail "swapped-comment-id: expected an evidence_comments/evidence_registrations mismatch reason, got: $out"
 
 echo "== review round 1: a human-initiated re-kick after a failed run is itself an intervention, even with empty interventions[] on both runs =="
 export DFSTATS_DB="$tmp/scenarios/multirun-human-rekick.json"
@@ -3184,7 +3184,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "forged-author: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "not this run's own trusted author\|forged-author" || fail "forged-author: expected a forged-author reason, got: $out"
+grep -qi "not this run's own trusted author\|forged-author" <<<"$out" || fail "forged-author: expected a forged-author reason, got: $out"
 
 echo "== review round 2: fresh evidence_registrations activity keeps a long-in-one-stage run out of stale-abandoned terminalization =="
 export DFSTATS_DB="$tmp/scenarios/active-not-stale.json"
@@ -3199,7 +3199,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "marker-payload-mismatch: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "identity mismatch\|declares run_id" || fail "marker-payload-mismatch: expected an identity-mismatch reason, got: $out"
+grep -qi "identity mismatch\|declares run_id" <<<"$out" || fail "marker-payload-mismatch: expected an identity-mismatch reason, got: $out"
 
 echo "== review round 3: a duplicate chain entry sharing seq/digest/prev_digest but different content is a fork, not a silently-discarded duplicate =="
 export DFSTATS_DB="$tmp/scenarios/tampered-duplicate.json"
@@ -3209,7 +3209,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "tampered-duplicate: expected exit 3 (indeterminate), got $rc: $out"
-echo "$out" | grep -qi "different content\|forked chain" || fail "tampered-duplicate: expected a forked-chain reason, got: $out"
+grep -qi "different content\|forked chain" <<<"$out" || fail "tampered-duplicate: expected a forked-chain reason, got: $out"
 
 echo "== review round 4 (piece 2 of #663): a registry revision eligible at kickoff time narrows a CLI-trusted actor out, even though --trusted-actor-id alone would have accepted it =="
 export DFSTATS_DB="$tmp/scenarios/registry-revision-pin.json"
@@ -3226,7 +3226,7 @@ set -e
 # not-found, exactly as the record-author check alone already did for the
 # identical reason before this fix unified the two.
 [ "$rc" -eq 3 ] || fail "registry-revision-pin: narrowed run should report indeterminate once the eligible registry revision excludes its only author, got rc=$rc: $out"
-echo "$out" | grep -qi "not a registry-trusted actor as of this run's kickoff" || fail "registry-revision-pin: expected a registry-narrowing reason, got: $out"
+grep -qi "not a registry-trusted actor as of this run's kickoff" <<<"$out" || fail "registry-revision-pin: expected a registry-narrowing reason, got: $out"
 
 echo "== review round 4 (piece 2 of #663) / #741: a registry revision REMOVING the author that lands AFTER kickoff is not applied retroactively — the run stays authenticated under the baseline revision in effect at kickoff =="
 run_id_not_yet="$(meta registry-revision-pin .meta.runIdNotYet)"
@@ -3261,7 +3261,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id_init" --trusted
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "mutable-field-tamper (initiated_by): expected indeterminate, got rc=$rc: $out"
-echo "$out" | grep -qi "initiated_by" || fail "mutable-field-tamper (initiated_by): expected an initiated_by mismatch reason, got: $out"
+grep -qi "initiated_by" <<<"$out" || fail "mutable-field-tamper (initiated_by): expected an initiated_by mismatch reason, got: $out"
 
 echo "== shepherd round 2: a claimed started_at in the mutable record body has no effect — the record comment's own created_at is always authoritative =="
 export DFSTATS_DB="$tmp/scenarios/started-at-neutralized.json"
@@ -3289,7 +3289,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "digest-mismatch-duplicate: expected indeterminate (forked chain), got rc=$rc: $out"
-echo "$out" | grep -qi "forked chain" || fail "digest-mismatch-duplicate: expected a forked-chain reason, got: $out"
+grep -qi "forked chain" <<<"$out" || fail "digest-mismatch-duplicate: expected a forked-chain reason, got: $out"
 
 echo "== shepherd round 1: an evidence marker edited from round=1 to round=1junk is rejected, not silently parsed as round:1 =="
 export DFSTATS_DB="$tmp/scenarios/marker-round-tamper.json"
@@ -3299,7 +3299,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "marker-round-tamper: expected indeterminate, got rc=$rc: $out"
-echo "$out" | grep -qi "edited-entry tampering\|no longer matches" || fail "marker-round-tamper: expected an edited-marker reason, got: $out"
+grep -qi "edited-entry tampering\|no longer matches" <<<"$out" || fail "marker-round-tamper: expected an edited-marker reason, got: $out"
 
 echo "== shepherd round 1: a trusted run-index marker with a non-canonical tuple is not recognized as a real index =="
 export DFSTATS_DB="$tmp/scenarios/noncanonical-index.json"
@@ -3341,7 +3341,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "marker-dest-mismatch: expected indeterminate, got rc=$rc: $out"
-echo "$out" | grep -qi "not actually fetched from\|edited-entry tampering" || fail "marker-dest-mismatch: expected a destination-mismatch reason, got: $out"
+grep -qi "not actually fetched from\|edited-entry tampering" <<<"$out" || fail "marker-dest-mismatch: expected a destination-mismatch reason, got: $out"
 
 echo "== shepherd round 2: a registry commit's pre-merge (feature-branch) check-suite time does not backdate when its revision took effect =="
 export DFSTATS_DB="$tmp/scenarios/registry-premerge-checksuite.json"
@@ -3361,7 +3361,7 @@ set -e
 # trust check runs through the same record-kickoff-time mechanism as the
 # record author's.
 [ "$rc" -eq 3 ] || fail "registry-nonmain-branch: expected indeterminate (narrowed by the in-effect registry revision on the trunk branch), got rc=$rc: $out"
-echo "$out" | grep -qi "not a registry-trusted actor as of this run's kickoff" || fail "registry-nonmain-branch: expected a registry-narrowing reason, got: $out"
+grep -qi "not a registry-trusted actor as of this run's kickoff" <<<"$out" || fail "registry-nonmain-branch: expected a registry-narrowing reason, got: $out"
 
 echo "== shepherd round 2: a forged-author evidence marker is reported under forged_comments, not silently dropped =="
 export DFSTATS_DB="$tmp/scenarios/forged-marker-report.json"
@@ -3384,7 +3384,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --asof 2026-09-01T00:00:00Z --
 rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "unrecognized flag: expected usage error (exit 2), got rc=$rc: $out"
-echo "$out" | grep -qi "unrecognized option" || fail "unrecognized flag: expected an unrecognized-option message, got: $out"
+grep -qi "unrecognized option" <<<"$out" || fail "unrecognized flag: expected an unrecognized-option message, got: $out"
 
 echo "== shepherd round 2: an indeterminate exit-script verdict is propagated, not diffed as a policy disagreement =="
 export DFSTATS_DB="$tmp/scenarios/happy.json"
@@ -3412,7 +3412,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "outcome-transitions-unbounded: expected indeterminate, got rc=$rc: $out"
-echo "$out" | grep -qi "outcome_transitions has 2 entries\|one terminal outcome" || fail "outcome-transitions-unbounded: expected an at-most-one-terminal-outcome reason, got: $out"
+grep -qi "outcome_transitions has 2 entries\|one terminal outcome" <<<"$out" || fail "outcome-transitions-unbounded: expected an at-most-one-terminal-outcome reason, got: $out"
 
 echo "== shepherd round 3: a destination=pr marker with a non-null round is rejected, not silently dropped from the trajectory =="
 export DFSTATS_DB="$tmp/scenarios/pr-dest-with-round.json"
@@ -3422,14 +3422,14 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "pr-dest-with-round: expected indeterminate, got rc=$rc: $out"
-echo "$out" | grep -qi "destination=pr with a non-null round" || fail "pr-dest-with-round: expected a destination/round grammar reason, got: $out"
+grep -qi "destination=pr with a non-null round" <<<"$out" || fail "pr-dest-with-round: expected a destination/round grammar reason, got: $out"
 
 echo "== shepherd round 3: post_ready_fix_indeterminate_count is shown in the human-readable --repo output, not just JSON =="
 export DFSTATS_DB="$tmp/scenarios/postfix-unresolvable.json"
 json_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$json_out" | jq -e '.post_ready_fix_indeterminate_count == 1' >/dev/null || fail "postfix-unresolvable: expected post_ready_fix_indeterminate_count 1 in JSON, got: $json_out"
 table_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001)"
-echo "$table_out" | grep -qi "post-ready human fixes indeterminate" || fail "postfix-unresolvable: expected the human-readable form to show post-ready-fix uncertainty, got: $table_out"
+grep -qi "post-ready human fixes indeterminate" <<<"$table_out" || fail "postfix-unresolvable: expected the human-readable form to show post-ready-fix uncertainty, got: $table_out"
 
 echo "== shepherd round 3: the run-record author's trust is evaluated at the RECORD's own kickoff time, not the later run-index post time =="
 export DFSTATS_DB="$tmp/scenarios/registry-trust-record-before-index.json"
@@ -3445,7 +3445,7 @@ set -e
 # (this fixture's index and record share one actor, so both checks fail
 # for the identical reason) — either message proves the same underlying
 # point: trust evaluated at the record's kickoff time, not the index's.
-echo "$out" | grep -qi "not a configured trusted actor\|not a registry-trusted actor as of this run's kickoff" || fail "registry-trust-record-before-index: expected an untrusted-author reason, got: $out"
+grep -qi "not a configured trusted actor\|not a registry-trusted actor as of this run's kickoff" <<<"$out" || fail "registry-trust-record-before-index: expected an untrusted-author reason, got: $out"
 
 echo "== shepherd round 3: an indeterminate run's --since cohort time is the RECORD's own created_at, not the later run-index post time (same fixture, isolates the catch-block fallback from the trust check above) =="
 since_excluded="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --since 2026-09-01T00:15:00Z --json)"
@@ -3461,7 +3461,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "registry-direct-push: expected indeterminate (unresolvable registry history fails closed), got rc=$rc: $out"
-echo "$out" | grep -qi "revision history could not be resolved" || fail "registry-direct-push: expected an unresolvable-history reason, got: $out"
+grep -qi "revision history could not be resolved" <<<"$out" || fail "registry-direct-push: expected an unresolvable-history reason, got: $out"
 
 echo "== shepherd round 4: a run's last activity exactly staleAfterDays before --as-of terminalizes as abandoned; one ms earlier it does not =="
 export DFSTATS_DB="$tmp/scenarios/stale-boundary.json"
@@ -3488,7 +3488,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "record-marker-tamper: expected indeterminate, got rc=$rc: $out"
-echo "$out" | grep -qi "no longer identifies it as this run's run-record" || fail "record-marker-tamper: expected an edited-entry tampering reason, got: $out"
+grep -qi "no longer identifies it as this run's run-record" <<<"$out" || fail "record-marker-tamper: expected an edited-entry tampering reason, got: $out"
 
 echo "== shepherd round 5: the run-index's OWN author trust is decided at the record's kickoff time, isolated from the record-author check via a genuinely different index author =="
 export DFSTATS_DB="$tmp/scenarios/index-author-narrowed.json"
@@ -3498,7 +3498,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "index-author-narrowed: expected indeterminate (index author narrowed out at the record's kickoff time), got rc=$rc: $out"
-echo "$out" | grep -qi "author is not a registry-trusted actor as of this run's kickoff" || fail "index-author-narrowed: expected the index-author-specific reason, got: $out"
+grep -qi "author is not a registry-trusted actor as of this run's kickoff" <<<"$out" || fail "index-author-narrowed: expected the index-author-specific reason, got: $out"
 
 echo "== shepherd round 5: a trusted run-index with a canonical marker but no fenced payload is indeterminate, not silently absent from the cohort =="
 export DFSTATS_DB="$tmp/scenarios/index-no-fence.json"
@@ -3508,7 +3508,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "index-no-fence: expected indeterminate (malformed trusted index), got rc=$rc: $out"
-echo "$out" | grep -qi "canonical marker but no fenced payload" || fail "index-no-fence: expected a malformed-payload reason, got: $out"
+grep -qi "canonical marker but no fenced payload" <<<"$out" || fail "index-no-fence: expected a malformed-payload reason, got: $out"
 repo_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$repo_out" | jq -e '.indeterminate_count == 1' >/dev/null || fail "index-no-fence: expected the --repo scan to count this issue as indeterminate, not silently absent from the cohort, got: $repo_out"
 
@@ -3525,7 +3525,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "ready-no-pr-binding: expected indeterminate, got rc=$rc: $out"
-echo "$out" | grep -qi "ready-for-review without a corresponding PR binding" || fail "ready-no-pr-binding: expected a PR-binding-inconsistency reason, got: $out"
+grep -qi "ready-for-review without a corresponding PR binding" <<<"$out" || fail "ready-no-pr-binding: expected a PR-binding-inconsistency reason, got: $out"
 repo_out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$repo_out" | jq -e '.indeterminate_count == 1' >/dev/null || fail "ready-no-pr-binding: expected the --repo scan to complete and count this issue as indeterminate, not crash entirely, got: $repo_out"
 
@@ -3552,7 +3552,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "malformed-index-stays-canonical: expected the malformed (lower-id) index to stay canonical (indeterminate), got rc=$rc: $out"
-echo "$out" | grep -qi "canonical marker but no fenced payload" || fail "malformed-index-stays-canonical: expected the malformed-payload reason (not authenticating via the later well-formed duplicate), got: $out"
+grep -qi "canonical marker but no fenced payload" <<<"$out" || fail "malformed-index-stays-canonical: expected the malformed-payload reason (not authenticating via the later well-formed duplicate), got: $out"
 # kickoffCreatedAt must be the malformed index's OWN created_at
 # (2026-08-20T00:01:00Z), not null and not the later duplicate's
 # (2026-09-01) — proven via --since: a cutoff of 2026-08-21 (after the
@@ -3569,7 +3569,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "null-round-payload: expected indeterminate (not a crash), got rc=$rc: $out"
-echo "$out" | grep -qi "valid JSON but not an object" || fail "null-round-payload: expected a malformed-round-payload reason, got: $out"
+grep -qi "valid JSON but not an object" <<<"$out" || fail "null-round-payload: expected a malformed-round-payload reason, got: $out"
 set +e
 replay_out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json 2>&1)"
 replay_rc=$?
@@ -3620,7 +3620,7 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_before" --trusted-
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "older-direct-push: run before the resolvable landing should be indeterminate, got rc=$rc: $out"
-echo "$out" | grep -qi "no agent-registry.json revision had landed" || fail "older-direct-push: expected the no-revision reason, got: $out"
+grep -qi "no agent-registry.json revision had landed" <<<"$out" || fail "older-direct-push: expected the no-revision reason, got: $out"
 
 echo "== #741 shepherd round 4: a higher-id duplicate index with an unanswerable write time does not sink a run whose lower-id index is authenticated =="
 export DFSTATS_DB="$tmp/scenarios/later-duplicate-unresolvable.json"
@@ -3675,7 +3675,7 @@ for dir in "$repo"/ai/schemas/fixtures/registry-trust/*/; do
     *) fail "registry-trust/$name: unknown expect.status $expect_status" ;;
     esac
     if [ -n "$expect_reason" ]; then
-        echo "$out" | grep -qiF -- "$expect_reason" || fail "registry-trust/$name: expected the reason to contain '$expect_reason', got: $out"
+        grep -qiF -- "$expect_reason" <<<"$out" || fail "registry-trust/$name: expected the reason to contain '$expect_reason', got: $out"
     fi
     echo "PASS: registry-trust/$name"
     corpus_count=$((corpus_count + 1))

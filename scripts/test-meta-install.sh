@@ -13,10 +13,14 @@ repo="$(git rev-parse --show-toplevel)"
 script="$repo/scripts/meta-install.sh"
 
 failures=0
-pass() { echo "  ok — $1"; }
+pass() {
+    echo "  ok — $1" || true
+    return 0
+}
 fail() {
-    echo "  FAIL — $1" >&2
+    echo "  FAIL — $1" >&2 || true
     failures=$((failures + 1))
+    return 0
 }
 
 # Each case gets its own sandbox: a git repo to satisfy the script's

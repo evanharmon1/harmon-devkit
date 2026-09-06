@@ -22,13 +22,13 @@ out="$(bash "$check" "$exact" 2>&1)" || fail "exact limit exited non-zero"
 
 echo "==> one byte over warns but remains advisory"
 out="$(bash "$check" "$over" 2>&1)" || fail "oversize warning exited non-zero"
-printf '%s' "$out" | grep -q 'Codex reads 32 KiB by default' ||
+grep -q 'Codex reads 32 KiB by default' <<<"$out" ||
     fail "oversize file did not emit the expected warning"
 
 echo "==> GitHub Actions receives an annotation without a failure"
 out="$(GITHUB_ACTIONS=true bash "$check" "$over" 2>&1)" ||
     fail "GitHub warning path exited non-zero"
-printf '%s' "$out" | grep -q '^::warning file=' ||
+grep -q '^::warning file=' <<<"$out" ||
     fail "GitHub warning annotation was not emitted"
 
 echo "==> invalid configuration fails loudly"

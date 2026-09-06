@@ -101,7 +101,7 @@ legacy_labels_for_pre_field_registry() {
 }
 finite_legacy_label_matches_family() {
     local label="$1"
-    legacy_labels_for_pre_field_registry "$family" | grep -Fqx "$label"
+    grep -Fqx "$label" < <(legacy_labels_for_pre_field_registry "$family")
 }
 if [ -n "$registry" ]; then
     [ -r "$registry" ] || {
@@ -220,7 +220,7 @@ while IFS= read -r label; do
             echo "claim identity: malformed ownership label '$label'" >&2
             exit 20
         fi
-        if printf '%s\n' "$legacy_labels" | grep -Fqx "$label"; then
+        if grep -Fqx "$label" <<<"$legacy_labels"; then
             if [ -z "$claim_model" ]; then
                 same="$label"
             else

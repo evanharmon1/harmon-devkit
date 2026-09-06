@@ -31,11 +31,13 @@ pass=0
 fail=0
 ok() {
     pass=$((pass + 1))
-    echo "  ✓ $*"
+    echo "  ✓ $*" || true
+    return 0
 }
 bad() {
     fail=$((fail + 1))
-    echo "  ✗ $*" >&2
+    echo "  ✗ $*" >&2 || true
+    return 0
 }
 
 [ -x "$asset" ] || {
@@ -279,7 +281,7 @@ if grep -q ' -f \| -F \|--raw-field\|--field\|--input' "$log"; then
 else
     ok "no subcommand under test ever calls gh api with a request-field flag"
 fi
-if grep -q '^api ' "$log" && grep '^api ' "$log" | grep -qv -- '--method GET'; then
+if grep -q '^api ' "$log" && grep -qv -- '--method GET' < <(grep '^api ' "$log"); then
     bad "every gh api call must pin --method GET"
 else
     ok "every gh api call this run made pinned --method GET"

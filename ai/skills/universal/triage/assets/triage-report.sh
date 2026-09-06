@@ -144,13 +144,13 @@ validate_entries() {
     while IFS= read -r line || [ -n "$line" ]; do
         lineno=$((lineno + 1))
         if [ -n "$pending" ]; then
-            printf '%s' "$line" | grep -q "^<!-- triage-entry:${pending} -->$" ||
+            grep -q "^<!-- triage-entry:${pending} -->$" <<<"$line" ||
                 die 2 "malformed entries file: heading for #$pending (line" \
                     "$((lineno - 1))) is not followed by <!-- triage-entry:$pending -->"
             pending=""
             continue
         fi
-        if printf '%s' "$line" | grep -qE '^### #[0-9]+'; then
+        if grep -qE '^### #[0-9]+' <<<"$line"; then
             pending="$(printf '%s' "$line" | sed -E 's/^### #([0-9]+).*/\1/')"
         fi
     done <"$file"
@@ -278,7 +278,7 @@ entries, or triage a narrower window."
             die 2 "could not parse the live report body"
         live_title="$(printf '%s' "$live_json" | jq -r '.title // ""')" ||
             die 2 "could not parse the live report title"
-        printf '%s' "$live" | grep -qF "$MARKER" ||
+        grep -qF "$MARKER" <<<"$live" ||
             die 4 "refused: $repo#$target no longer carries the report marker"
         # Idempotency: identical findings must not churn the issue. The
         # timestamp line is generation metadata, so compare without it and

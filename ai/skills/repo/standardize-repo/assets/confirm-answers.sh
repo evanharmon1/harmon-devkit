@@ -196,7 +196,7 @@ require_private_state_dir() {
         echo "FAIL: state directory is not owned by the current user: $state_dir" >&2
         exit 2
     }
-    if find "$state_dir" -maxdepth 0 \( -perm -g+w -o -perm -o+w \) -print 2>/dev/null | grep -q .; then
+    if grep -q . < <(find "$state_dir" -maxdepth 0 \( -perm -g+w -o -perm -o+w \) -print 2>/dev/null); then
         echo "FAIL: state directory is group- or world-writable; use a private (0700) directory: $state_dir" >&2
         exit 2
     fi
@@ -359,7 +359,7 @@ has_key() {
     awk -F '\t' -v k="$2" '$1 == k { found = 1; exit } END { exit found ? 0 : 1 }' "$1"
 }
 is_listed_sensitive() {
-    printf '%s' "$SENSITIVE_KEYS" | grep -qxF -- "$1"
+    grep -qxF -- "$1" <<<"$SENSITIVE_KEYS"
 }
 
 : >"$work/changed"
@@ -430,7 +430,7 @@ while IFS= read -r key; do
     help_json="$(field "$work/template.tsv" "$key" 3)"
     sensitive=false
     if is_listed_sensitive "$key" ||
-        printf '%s' "$help_json" | grep -Eqi "$SENSITIVE_HELP_RE"; then
+        grep -Eqi "$SENSITIVE_HELP_RE" <<<"$help_json"; then
         flags="$flags SENSITIVE"
         sensitive=true
         printf '%s\n' "$key" >>"$work/sensitive"

@@ -23,11 +23,13 @@ pass=0
 fail=0
 ok() {
     pass=$((pass + 1))
-    echo "  ✓ $*"
+    echo "  ✓ $*" || true
+    return 0
 }
 bad() {
     fail=$((fail + 1))
-    echo "  ✗ $*" >&2
+    echo "  ✗ $*" >&2 || true
+    return 0
 }
 expect_ok() {
     local desc="$1"
@@ -54,7 +56,7 @@ expect_fail_contains() {
         bad "$desc (expected non-zero exit)"
         return
     fi
-    if printf '%s\n' "$output" | grep -qF -- "$needle"; then
+    if grep -qF -- "$needle" <<<"$output"; then
         ok "$desc"
     else
         bad "$desc (exited non-zero but never said: $needle)"

@@ -65,7 +65,7 @@ case "${1:-} ${2:-}" in
     printf '%s\n' "${GH_STUB_VIEWER:-testowner}"
     ;;
 "api graphql")
-    if printf '%s' "$*" | grep -q 'issueTypes(first:'; then
+    if grep -q 'issueTypes(first:' <<<"$*"; then
         [ "${GH_STUB_ENABLED_NATIVE_TYPES:-}" = "ERROR" ] && exit 1
         if [ -n "${GH_STUB_ENABLED_NATIVE_TYPES_JSON:-}" ]; then
             printf '%s\n' "$GH_STUB_ENABLED_NATIVE_TYPES_JSON" |
@@ -74,7 +74,7 @@ case "${1:-} ${2:-}" in
         else
             printf '%s\n' "${GH_STUB_ENABLED_NATIVE_TYPES:-Bug}"
         fi
-    elif printf '%s' "$*" | grep -q 'closedByPullRequestsReferences'; then
+    elif grep -q 'closedByPullRequestsReferences' <<<"$*"; then
         # triage-scan.sh delivery's combined issue-state + closing-refs read.
         # The issue number rides in the -F n=<value> arg; fixture file missing
         # simulates a read failure (cat/set -e exits nonzero).
@@ -124,7 +124,7 @@ api\ repos/*)
     # A --json field set naming issueType emulates the bulk native-Type read:
     # newer gh serves it from issues-open-types.json, older gh (no fixture)
     # rejects the field.
-    if printf '%s' "$*" | grep -q "issueType"; then
+    if grep -q "issueType" <<<"$*"; then
         [ -f "${GH_STUB_DIR:?}/issues-open-types.json" ] || exit 1
         emit "${GH_STUB_DIR:?}/issues-open-types.json"
     else
@@ -137,7 +137,7 @@ api\ repos/*)
 # so a stubbed read call inside a caller's while-read loop cannot eat the
 # loop's remaining input or hang on a never-closing stdin.
 "issue edit")
-    if printf '%s\n' "$*" | grep -qx 'issue edit --help'; then
+    if grep -qx 'issue edit --help' <<<"$*"; then
         if [ "${GH_STUB_NO_TYPE_FLAG:-0}" = 0 ]; then
             printf '%s\n' '  --type string   Set the issue type by name'
         fi
@@ -150,11 +150,11 @@ api\ repos/*)
     [ -t 0 ] || cat >/dev/null
     [ "${GH_STUB_EDIT_FAIL:-0}" = 0 ] || exit 1
     if [ "${GH_STUB_EDIT_FAIL_ON_REMOVE:-0}" = 1 ] &&
-        printf '%s\n' "$*" | grep -q -- '--remove-label'; then
+        grep -q -- '--remove-label' <<<"$*"; then
         exit 1
     fi
     if [ "${GH_STUB_EDIT_FAIL_ON_ADD:-0}" = 1 ] &&
-        printf '%s\n' "$*" | grep -q -- '--add-label'; then
+        grep -q -- '--add-label' <<<"$*"; then
         exit 1
     fi
     if [ -n "${GH_STUB_NATIVE_TYPE_FILE:-}" ]; then

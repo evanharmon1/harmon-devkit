@@ -107,15 +107,15 @@ run_launcher "$db_ok"
 listed="$(VSCODE_STATE_DB="$db_ok" bash "$launcher" 2>/dev/null)"
 [ "$(printf '%s\n' "$listed" | grep -c .)" -eq 2 ] ||
     fail "expected 2 listed entries on stdout, got: ${listed}"
-printf '%s\n' "$listed" | grep -q '/workspaces/harmon-init' ||
+grep -q '/workspaces/harmon-init' <<<"$listed" ||
     fail "the harmon-init entry is missing: ${listed}"
-printf '%s\n' "$listed" | grep -q '/workspaces/evanharmon-site' ||
+grep -q '/workspaces/evanharmon-site' <<<"$listed" ||
     fail "the percent-encoded '+' entry is missing: ${listed}"
-if printf '%s\n' "$listed" | grep -q 'notes'; then
+if grep -q 'notes' <<<"$listed"; then
     fail "an ordinary (non-dev-container) folder was listed: ${listed}"
 fi
 # The hex blob is decoded far enough to name the checkout on the host.
-printf '%s\n' "$listed" | grep -q 'host /srv/coder/harmon-init' ||
+grep -q 'host /srv/coder/harmon-init' <<<"$listed" ||
     fail "the hostPath was not decoded out of the hex authority: ${listed}"
 
 # ---- 2. a unique match launches that entry, matched case-insensitively ----
@@ -123,9 +123,9 @@ printf '%s\n' "$listed" | grep -q 'host /srv/coder/harmon-init' ||
 echo "==> a unique match launches the right URI"
 run_launcher "$db_ok" HARMON-Init
 [ "$rc" -eq 0 ] || fail "a unique match exited ${rc}, not 0"
-printf '%s\n' "$out" | grep -qF -- "--folder-uri ${uri_init}" ||
+grep -qF -- "--folder-uri ${uri_init}" <<<"$out" ||
     fail "did not launch the harmon-init URI: ${out}"
-if printf '%s\n' "$out" | grep -qF -- "$uri_site"; then
+if grep -qF -- "$uri_site" <<<"$out"; then
     fail "the launch command names the wrong entry too: ${out}"
 fi
 
@@ -164,14 +164,14 @@ profiles="$(VSCODE_STATE_DB="$db_prof" bash "$launcher" 2>/dev/null)"
 line_dev="$(printf '%s\n' "$profiles" | grep 'dev/devcontainer.json' || true)"
 line_bot="$(printf '%s\n' "$profiles" | grep -v 'dev/devcontainer.json' || true)"
 [ -n "$line_dev" ] || fail "the dev profile's config path was not decoded: ${profiles}"
-printf '%s\n' "$line_bot" | grep -q 'config .devcontainer/devcontainer.json' ||
+grep -q 'config .devcontainer/devcontainer.json' <<<"$line_bot" ||
     fail "the bot profile's config path was not decoded: ${profiles}"
 [ "$line_dev" != "$line_bot" ] || fail "the two profiles rendered identically: ${profiles}"
 
 echo "==> each profile is selectable by its config path"
 run_launcher "$db_prof" dev/devcontainer.json
 [ "$rc" -eq 0 ] || fail "selecting the dev profile by config path exited ${rc}: ${out}"
-printf '%s\n' "$out" | grep -qF -- "--folder-uri ${uri_dev}" ||
+grep -qF -- "--folder-uri ${uri_dev}" <<<"$out" ||
     fail "the config-path match launched the wrong profile: ${out}"
 
 echo "==> each profile is selectable by its token"
@@ -186,13 +186,13 @@ tok_bot="$(token_of "$line_bot")"
     fail "the token is not the first 8 hex of sha256(uri): ${tok_bot}"
 run_launcher "$db_prof" "$tok_bot"
 [ "$rc" -eq 0 ] || fail "selecting the bot profile by token exited ${rc}: ${out}"
-printf '%s\n' "$out" | grep -qF -- "--folder-uri ${uri_bot}" ||
+grep -qF -- "--folder-uri ${uri_bot}" <<<"$out" ||
     fail "the token match launched the wrong profile: ${out}"
 
 echo "==> an ambiguity between the profiles points at the token"
 run_launcher "$db_prof" harmon-init
 [ "$rc" -eq 1 ] || fail "the two profiles were not reported as ambiguous (exit ${rc}): ${out}"
-printf '%s\n' "$out" | grep -q 'token' ||
+grep -q 'token' <<<"$out" ||
     fail "the ambiguous message does not mention the token: ${out}"
 
 # ---- 3. an ambiguous match refuses, and shows what to choose between ----
@@ -202,11 +202,11 @@ printf '%s\n' "$out" | grep -q 'token' ||
 echo "==> an ambiguous match exits 1 and lists the candidates"
 run_launcher "$db_ok" workspaces
 [ "$rc" -eq 1 ] || fail "an ambiguous match exited ${rc}, not 1"
-printf '%s\n' "$out" | grep -q '/workspaces/harmon-init' ||
+grep -q '/workspaces/harmon-init' <<<"$out" ||
     fail "the ambiguous listing omits harmon-init: ${out}"
-printf '%s\n' "$out" | grep -q '/workspaces/evanharmon-site' ||
+grep -q '/workspaces/evanharmon-site' <<<"$out" ||
     fail "the ambiguous listing omits evanharmon-site: ${out}"
-if printf '%s\n' "$out" | grep -qF -- "--folder-uri"; then
+if grep -qF -- "--folder-uri" <<<"$out"; then
     fail "an ambiguous match launched something anyway: ${out}"
 fi
 
@@ -217,14 +217,14 @@ fi
 echo "==> no match exits 1 with the manual-flow pointer"
 run_launcher "$db_ok" nonesuch
 [ "$rc" -eq 1 ] || fail "an unmatched name exited ${rc}, not 1"
-printf '%s\n' "$out" | grep -q 'docs/guides/devcontainers.md' ||
+grep -q 'docs/guides/devcontainers.md' <<<"$out" ||
     fail "the no-match message does not point at the guide: ${out}"
 
 echo "==> a recents list with no dev-container entries says the same thing"
 db_plain="$(make_db plain '{"entries":[{"folderUri":"file:///srv/coder/notes"}]}')"
 run_launcher "$db_plain" harmon-init
 [ "$rc" -ne 0 ] || fail "a recents list with no dev containers exited 0"
-printf '%s\n' "$out" | grep -q 'docs/guides/devcontainers.md' ||
+grep -q 'docs/guides/devcontainers.md' <<<"$out" ||
     fail "the empty-list message does not point at the guide: ${out}"
 
 echo "==> the no-entries path survives an explicit -u, and lists nothing"
@@ -244,9 +244,9 @@ out="$(VSCODE_STATE_DB="$db_plain" bash -u "$launcher" 2>&1)"
 rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "the no-entries listing exited 0 under -u"
-printf '%s\n' "$out" | grep -q 'no dev-container entries' ||
+grep -q 'no dev-container entries' <<<"$out" ||
     fail "the no-entries listing did not print its message under -u: ${out}"
-if printf '%s\n' "$out" | grep -q 'unbound variable'; then
+if grep -q 'unbound variable' <<<"$out"; then
     fail "an empty array was expanded on the no-entries path: ${out}"
 fi
 
@@ -274,7 +274,7 @@ if [ "$(uname -s)" = "Linux" ]; then
     rc=$?
     set -e
     [ "$rc" -eq 0 ] || fail "the XDG default path was not consulted (exit ${rc}): ${out}"
-    printf '%s\n' "$out" | grep -qF -- "--folder-uri ${uri_init}" ||
+    grep -qF -- "--folder-uri ${uri_init}" <<<"$out" ||
         fail "the XDG default path found the wrong entry: ${out}"
 else
     echo "    (skipped: XDG is the Linux branch, and this host is $(uname -s))"
@@ -285,9 +285,9 @@ fi
 echo "==> a missing database exits nonzero naming the path"
 run_launcher "${tmp_root}/absent.vscdb"
 [ "$rc" -ne 0 ] || fail "a missing database exited 0"
-printf '%s\n' "$out" | grep -q 'no VS Code state database' ||
+grep -q 'no VS Code state database' <<<"$out" ||
     fail "a missing database did not say so: ${out}"
-if printf '%s\n' "$out" | grep -qi 'line [0-9]\|command not found'; then
+if grep -qi 'line [0-9]\|command not found' <<<"$out"; then
     fail "a missing database produced a bash trace: ${out}"
 fi
 
@@ -302,7 +302,7 @@ con.close()
 PY
 run_launcher "$db_nokey"
 [ "$rc" -ne 0 ] || fail "a database without the recents key exited 0"
-printf '%s\n' "$out" | grep -q 'no recently-opened list' ||
+grep -q 'no recently-opened list' <<<"$out" ||
     fail "a database without the recents key did not say so: ${out}"
 
 echo "==> a database that is not a state.vscdb exits nonzero"
@@ -310,7 +310,7 @@ db_junk="${tmp_root}/junk.vscdb"
 printf 'not a database\n' >"$db_junk"
 run_launcher "$db_junk"
 [ "$rc" -ne 0 ] || fail "a non-database file exited 0"
-printf '%s\n' "$out" | grep -q 'could not read' ||
+grep -q 'could not read' <<<"$out" ||
     fail "a non-database file did not say so: ${out}"
 
 echo "==> a missing python3 exits nonzero saying how to get one"
@@ -319,7 +319,7 @@ out="$(VSCODE_STATE_DB="$db_ok" PYTHON_BIN="${tmp_root}/no-such-python" bash "$l
 rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "a missing python3 exited 0"
-printf '%s\n' "$out" | grep -q 'no working python3' ||
+grep -q 'no working python3' <<<"$out" ||
     fail "a missing python3 did not say so: ${out}"
 
 echo "open-devcontainer: all cases passed"
