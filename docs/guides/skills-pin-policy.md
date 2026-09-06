@@ -68,7 +68,7 @@ table, so no list of release numbers has to be kept current here.
 | Code | Status | Meaning and fix |
 |---|---|---|
 | 0 | `compatible` | The vendored skills' declared version and the policy's agree (including "neither has migrated"). |
-| 0 | `not-vendored` | No `.SKILLS_PROVENANCE` under `dest` and no unstamped policy-consuming skill beside it: nothing was vendored. Run `task sync:skills` first. |
+| 0 | `not-vendored` | No `.SKILLS_PROVENANCE` under `dest` and no unstamped **contract-carrying** skill beside it: nothing was vendored. Run `task sync:skills` first. See the limitation below. |
 | 0 | `no-policy-consumer` | The policy has migrated and the pin is already at or past the first release shipping the version-2 stage skills, yet nothing vendored declares a contract — this consumer vendors no policy-consuming skill. Advancing the pin would not add one; nothing needs to change. |
 | 1 | `incompatible` | The vendored skills declare a policy schema version the repository's policy does not have. Run `copier update`; **do not** advance the pin. |
 | 2 | — | Usage error, or **indeterminate under the coherence invariant**. Never reported as a pass. Covers a missing manifest (including one that is not parseable YAML), an unreadable policy, a missing reader, a damaged provenance stamp (no `# ref:` or no `# managed:` line), vendored skills declaring two different schema versions, a contract declaring a non-positive version (`0` is indistinguishable from "no contract"), a **mixed policy** carrying markers from more than one shape at once, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. |
@@ -103,6 +103,36 @@ is a one-line change.
 A pin that is not an orderable release tag (a branch, a SHA) cannot be
 compared against the boundary at all, and is reported indeterminate rather
 than guessed in either direction.
+
+### One decidable rule for unstamped trees
+
+With no provenance stamp, `sync-skills.sh`'s own rule is that **nothing is
+managed** — so a contract-free directory beside a missing stamp is genuinely
+indistinguishable from a local skill. This repository is the worked example: its
+`.claude/skills` holds six real, tracked `openspec-*` directories that are
+purely local.
+
+The audit therefore decides only what it can prove. A **real (non-symlink)
+directory carrying `assets/policy-contract.json` with no stamp** is vendored
+version-2 residue — `sync-skills.sh` removes the stamp before copying and
+rewrites it last, and only a vendored stage skill carries a contract — and that
+is indeterminate, exit 2. Contract-free directories are **not guessed at**; the
+`not-vendored` verdict says so and points at `task verify:skills`, which clones
+the pinned ref and diffs, and so can answer by comparison what this audit
+cannot answer by inspection.
+
+Symlinked entries are skipped individually, never tree-wide: `cp -R` produces
+real directories, so a symlink cannot be sync residue, and a source checkout
+legitimately links to contract-carrying skills (this repository's
+`.claude/skills/{review,integrate,orchestrator}` do exactly that).
+
+*History, because the shape of this rule is the point.* An earlier version
+counted **every** real directory as residue and then added a tree-wide "this
+looks like a source checkout" exemption to undo the false positives. That
+exemption produced a P1 in three consecutive review rounds — broadened, then
+narrowed by link target, and still leaking tree-wide. It was deleted rather
+than scoped a fourth time: it existed only to neutralise an undecidable check,
+so removing both left one provable rule and nothing to leak.
 
 ### What this audit does *not* check
 

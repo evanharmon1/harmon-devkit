@@ -256,7 +256,6 @@ vendored_ref=""
 managed=""
 managed_declared=no
 legacy_stamp=no
-unstamped_any=""
 pin_source=manifest
 if [ -f "$prov" ]; then
     vendored=yes
@@ -327,63 +326,54 @@ else
     # entry is a source checkout rather than an interrupted sync —
     # harmon-devkit's own `.claude/skills/<name>` links into `ai/skills/` and
     # must stay a clean exit 0.
-    # Two signals, because an interrupted sync leaves different traces
-    # depending on WHICH generation was being copied:
+    # ONE rule, and it is the only one this audit can actually decide:
     #
-    #   * a v2 sync leaves contract-carrying directories — provable evidence
-    #     of vendored v2 skills, refused whatever the policy is;
-    #   * a PRE-v2 sync leaves `gauntlet`/`shepherd`, which carry no contract
-    #     and are indistinguishable from local skills by inspection alone.
-    #     Codex cloud review, confirmed: those slipped through and the
-    #     `vendored=no` branch then exited 0 `not-vendored` even against a
-    #     schema-v2 policy — approving exactly the broken pairing this audit
-    #     exists to detect.
+    #   a REAL (non-symlink) directory carrying `assets/policy-contract.json`,
+    #   with no stamp beside it, is vendored version-2 residue.
     #
-    # The second signal is therefore qualified by the policy: unstamped skill
-    # directories over a MIGRATED policy cannot be shown safe, so they are
-    # indeterminate. Over an unmigrated policy they are the ordinary
-    # local-skills case (this repository's own `.claude/skills` holds local
-    # `openspec-*` skills beside its symlinks), and stay a clean exit 0.
-    # Symlinks are excluded throughout: `cp -R` produces real directories.
+    # `sync-skills.sh` removes the stamp before it copies and rewrites it last,
+    # so that pairing means an interrupted sync, and a policy contract is
+    # something only a vendored stage skill carries — a local skill has none.
+    # Both halves are provable from the tree.
+    #
+    # The tree-wide "this looks like a source checkout" exemption that used to
+    # sit here is DELETED rather than scoped a fourth time. It produced a P1 in
+    # three consecutive rounds (broadened, then narrowed by link target, and
+    # still leaking tree-wide), which is the accretion signature: it existed
+    # only to undo a companion check that counted EVERY real directory as
+    # residue, and that check was never decidable. With no stamp,
+    # `sync-skills.sh`'s own rule is that nothing is managed, so a
+    # contract-free directory is indistinguishable from a local skill —
+    # harmon-devkit's own `.claude/skills` holds six real, tracked
+    # `openspec-*` directories that are exactly that. Deleting the undecidable
+    # check removes the need for any exemption, and with no exemption there is
+    # nothing left to leak.
+    #
+    # What is lost is detection of an interrupted PRE-v2 sync (contract-free
+    # `gauntlet`/`shepherd` residue). That was never decidable here either, and
+    # it is not undetectable in general: `sync-skills.sh verify`
+    # (`task verify:skills`) clones the pinned ref and diffs, so it answers
+    # tree-integrity questions by comparison instead of by guess. The
+    # `not-vendored` detail below says so rather than leaving the gap silent.
+    #
+    # Symlinks are skipped as ENTRIES, per entry and never tree-wide, for a
+    # reason that is provable rather than heuristic: `cp -R` produces real
+    # directories, so a symlink cannot be sync residue — and a source checkout
+    # legitimately links to contract-carrying skills (this repository's
+    # `.claude/skills/{review,integrate,orchestrator}` do exactly that).
     unstamped=""
-    unstamped_any=""
-    source_linked=no
     if [ -d "$dest" ]; then
         for candidate in "$dest"/*; do
             [ -d "$candidate" ] || continue
-            if [ -L "$candidate" ]; then
-                # A symlink is never something `cp -R` produces, so the entry
-                # itself is not sync residue and is skipped.
-                #
-                # It exempts the REST of the tree only when it is the SOURCE-repo
-                # signature specifically: a link pointing into this repository's
-                # own `ai/skills/`, which is how harmon-devkit wires
-                # `.claude/skills/<name>`. Codex cloud review round 3, confirmed
-                # by reproduction: treating ANY symlink as a tree-wide exemption
-                # let one unrelated local link suppress the check for a real
-                # `gauntlet/` left by an interrupted sync, returning exit 0 where
-                # 2 is correct. Requiring the target to resolve inside
-                # `<repo>/ai/skills/` closes that without reintroducing the
-                # round-2 false positive on this repository's own tracked local
-                # `openspec-*` directories.
-                _link_target="$(cd "$(dirname "$candidate")" 2>/dev/null && cd "$(readlink "$candidate")" 2>/dev/null && pwd)" || _link_target=""
-                case "$_link_target" in
-                "$(cd "$repo_root" 2>/dev/null && pwd)"/ai/skills/*) source_linked=yes ;;
-                esac
-                continue
-            fi
-            [ -f "$candidate/SKILL.md" ] || continue
-            unstamped_any="$unstamped_any $(basename "$candidate")"
+            [ -L "$candidate" ] && continue
             [ -f "$candidate/assets/policy-contract.json" ] || continue
             unstamped="$unstamped $(basename "$candidate")"
         done
     fi
     if [ -n "$unstamped" ]; then
         # shellcheck disable=SC2086 # deliberate word-splitting into a CSV
-        indeterminate "'$dest' holds policy-consuming skills ($(printf '%s\n' $unstamped | sort -u | paste -sd, -)) but no '.SKILLS_PROVENANCE' stamp — sync-skills.sh removes the stamp before it copies and rewrites it last, so this is an interrupted sync, not a never-vendored checkout; re-run 'task sync:skills'"
+        indeterminate "'$dest' holds vendored policy-consuming skills ($(printf '%s\n' $unstamped | sort -u | paste -sd, -)) but no '.SKILLS_PROVENANCE' stamp — sync-skills.sh removes the stamp before it copies and rewrites it last, so this is an interrupted sync, not a never-vendored checkout; re-run 'task sync:skills'"
     fi
-    # The policy-qualified half of this test needs the detected shape, which
-    # is resolved further down; it fires there.
     vendored_ref="$manifest_ref"
 fi
 
@@ -473,15 +463,6 @@ fi
 
 # ── verdict ──────────────────────────────────────────────────────────────────
 #
-# The deferred half of the unstamped-tree test (see the provenance block): a
-# migrated policy cannot be audited against skill directories that carry no
-# stamp, because they cannot be shown to be local rather than the residue of a
-# pre-v2 sync interrupted before the stamp was rewritten.
-if [ "$vendored" = no ] && [ "${source_linked:-no}" = no ] && [ -n "$unstamped_any" ] && [ "$policy_version" -gt 0 ]; then
-    # shellcheck disable=SC2086 # deliberate word-splitting into a CSV
-    indeterminate "the policy declares schema_version $policy_version but '$dest' holds skill directories ($(printf '%s\n' $unstamped_any | sort -u | paste -sd, -)) with no '.SKILLS_PROVENANCE' stamp — they cannot be shown to be local rather than a pre-v2 sync interrupted before the stamp was rewritten, so the pin cannot be audited against a migrated policy; re-run 'task sync:skills'"
-fi
-
 # The coherence invariant applied to the policy: a shape the reader cannot
 # classify as exactly one recognized shape has no pin verdict, so it is
 # refused before any comparison. This replaces what were separate `mixed` and
@@ -522,7 +503,7 @@ satisfied=no
 if [ "$vendored" = no ]; then
     status=not-vendored
     code=0
-    detail="no '.SKILLS_PROVENANCE' stamp under '$dest', so this repository has vendored no skills — the source.ref '$manifest_ref' in $manifest states an intent, not a state. Run 'task sync:skills' to vendor them, then re-run this audit. In harmon-devkit itself, whose '$dest_rel' entries are symlinks into its own ai/skills/ source tree, there is nothing to audit: the pin contract binds consumers."
+    detail="no '.SKILLS_PROVENANCE' stamp under '$dest', so no skills are vendored here — the source.ref '$manifest_ref' in $manifest states an intent, not a state. Run 'task sync:skills' to vendor them, then re-run this audit. NOTE: with no stamp this audit cannot tell a contract-free local skill from the residue of an interrupted PRE-v2 sync, because sync-skills.sh's own rule is that nothing is managed without provenance; run 'task verify:skills', which clones the pinned ref and diffs, for that question."
 elif [ "$required" -eq 0 ]; then
     # No vendored skill declares a requirement, so `satisfied` is not the
     # question here — whether the POLICY has migrated ahead of the pin is. And

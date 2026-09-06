@@ -254,7 +254,7 @@ c="$(make_consumer never-synced "$V2_POLICY" v0.41.0)"
 rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
 run_audit "$c"
 expect_status "a checkout that never ran the sync is reported, not judged" 0
-expect_says "it says nothing was vendored" "vendored no skills"
+expect_says "it says nothing was vendored" "no skills are vendored here"
 
 echo
 echo "== consumer-pin-audit: indeterminate inputs are never a pass =="
@@ -317,7 +317,7 @@ c="$(make_consumer local-only-no-stamp "$LEGACY_POLICY" v0.34.1 my-local:pre oth
 rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
 run_audit "$c"
 expect_status "local skills carrying no contract are not an interrupted sync" 0
-expect_says "it is still reported as never vendored" "vendored no skills"
+expect_says "it is still reported as never vendored" "no skills are vendored here"
 
 # Nor a source checkout whose skill entries are SYMLINKS (harmon-devkit's own
 # .claude/skills shape): `cp -R` makes real directories, a symlink never.
@@ -329,7 +329,7 @@ printf '{"skill":"integrate","policy_schema_version":2}\n' >"$c/src/integrate/as
 ln -s ../../src/integrate "$c/.claude/skills/integrate"
 run_audit "$c"
 expect_status "a symlinked source tree is not an interrupted sync" 0
-expect_says "the symlinked source is reported as never vendored" "vendored no skills"
+expect_says "the symlinked source is reported as never vendored" "no skills are vendored here"
 
 echo
 echo "== consumer-pin-audit: a contract-free vendored subset is not pin lag =="
@@ -538,21 +538,10 @@ set -e
 expect_status "pin lag is still detected where sort(1) has no -V" 3
 expect_says "the no-GNU-sort run still names the boundary" "$V2_BOUNDARY"
 
-# [P1] A PRE-v2 interrupted sync leaves gauntlet/shepherd, which carry no
-# contract; over a MIGRATED policy those cannot be shown local and the pairing
-# is unauditable. Previously this exited 0 as `not-vendored`.
-c="$(make_consumer unstamped-prev2-migrated "$V2_POLICY" v0.39.0 gauntlet:pre shepherd:pre)"
-rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
-run_audit "$c"
-expect_status "unstamped pre-v2 directories under a migrated policy are indeterminate" 2
-expect_says "the error says they cannot be shown local" "cannot be shown to be local"
-
-# The counterpart: over an UNMIGRATED policy the same directories are the
-# ordinary local-skills case and must stay a clean pass.
-c="$(make_consumer unstamped-prev2-legacy "$LEGACY_POLICY" v0.39.0 gauntlet:pre shepherd:pre)"
-rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
-run_audit "$c"
-expect_status "unstamped directories under an unmigrated policy stay a clean pass" 0
+# (The pre-v2 interrupted-sync pair that used to sit here asserted a verdict
+# the deleted mechanism produced by guessing. Contract-free unstamped
+# directories are undecidable offline and are covered above by
+# `contract-free-dirs`, which asserts the stated limitation instead.)
 
 # [P2] A legacy provenance stamp (no `# managed:` line) is a valid older
 # generation that sync-skills.sh's own managed_names still honours, not damage.
@@ -610,7 +599,7 @@ printf -- '---\nname: openspec-local\ndescription: f\n---\n' >"$c/.claude/skills
 ln -s ../../ai/skills/universal/review "$c/.claude/skills/review"
 run_audit "$c"
 expect_status "a source-linked tree with real local skills is not interrupted-sync residue" 0
-expect_says "it is still reported as never vendored" "vendored no skills"
+expect_says "it is still reported as never vendored" "no skills are vendored here"
 
 echo
 echo "== devflow-policy: a policy ahead of this reader is not sent backwards =="
@@ -640,20 +629,54 @@ else
 fi
 
 echo
-echo "== consumer-pin-audit: a symlink exempts only itself, not the tree =="
-# Codex cloud review round 3, confirmed by reproduction: treating ANY symlink
-# as a tree-wide exemption let one unrelated local link suppress the residue
-# check for a real `gauntlet/` left by an interrupted pre-v2 sync, returning
-# exit 0 where 2 is correct. The exemption now requires the SOURCE-repo
-# signature — a link resolving into `<repo>/ai/skills/`.
-c="$(make_consumer stray-symlink-does-not-exempt "$V2_POLICY" v0.39.0 gauntlet:pre)"
+echo "== consumer-pin-audit: unstamped residue is decided ONLY by a policy contract =="
+# The tree-wide "source checkout" exemption is deleted, not scoped again: it
+# produced a P1 in three consecutive rounds (#845 and its predecessors) and
+# existed only to undo a companion check that counted every real directory as
+# residue — a question this audit cannot decide, since with no stamp
+# sync-skills.sh's own rule is that nothing is managed. One provable rule
+# remains: a REAL directory carrying a policy contract, with no stamp, is
+# vendored v2 residue.
+
+# Provable residue is still caught, whatever else is in the tree.
+c="$(make_consumer provable-residue "$V2_POLICY" v0.41.0 review:v2)"
 rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
-mkdir -p "$c/elsewhere/local"
-printf -- '---\nname: local\ndescription: f\n---\n' >"$c/elsewhere/local/SKILL.md"
-ln -s ../../elsewhere/local "$c/.claude/skills/local"
 run_audit "$c"
-expect_status "an unrelated symlink does not exempt real unstamped directories" 2
-expect_says "the residue error still names the real directory" "gauntlet"
+expect_status "an unstamped contract-carrying directory is indeterminate" 2
+expect_says "the residue error names the skill it found" "review"
+
+# ...including beside a symlink, which is the #845 fail-open: no tree-wide
+# state exists any more, so nothing can suppress the check for a sibling.
+c="$(make_consumer provable-residue-beside-link "$V2_POLICY" v0.41.0 review:v2)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+mkdir -p "$c/ai/skills/universal/local"
+printf -- '---\nname: local\ndescription: f\n---\n' >"$c/ai/skills/universal/local/SKILL.md"
+ln -s ../../ai/skills/universal/local "$c/.claude/skills/local"
+run_audit "$c"
+expect_status "a source symlink cannot suppress a sibling's residue check (#845)" 2
+
+# A symlink is skipped as an ENTRY — provably, since `cp -R` makes real
+# directories — and a source checkout legitimately links to contract-carrying
+# skills, which is this repository's own shape.
+c="$(make_consumer symlinked-contract-skill "$V2_POLICY" v0.41.0)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+mkdir -p "$c/ai/skills/universal/review/assets"
+printf -- '---\nname: review\ndescription: f\n---\n' >"$c/ai/skills/universal/review/SKILL.md"
+printf '{"skill":"review","policy_schema_version":2}\n' \
+    >"$c/ai/skills/universal/review/assets/policy-contract.json"
+ln -s ../../ai/skills/universal/review "$c/.claude/skills/review"
+run_audit "$c"
+expect_status "a symlinked contract-carrying skill is not residue" 0
+
+# Contract-FREE directories are undecidable and are no longer guessed at: the
+# verdict says so and names the tool that can decide it by cloning the pin.
+# This is the deliberate trade for deleting the mechanism — stated, not silent.
+c="$(make_consumer contract-free-dirs "$V2_POLICY" v0.39.0 gauntlet:pre)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "contract-free unstamped directories are not guessed at" 0
+expect_says "the verdict states the limitation" "cannot tell a contract-free local skill"
+expect_says "and names the check that can decide it" "task verify:skills"
 
 echo
 echo "== devflow-policy: an older shape is refused with one actionable message =="
