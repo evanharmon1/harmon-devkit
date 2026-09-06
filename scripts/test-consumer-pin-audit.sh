@@ -58,13 +58,18 @@ trap 'rm -rf "$TMPROOT"' EXIT
 
 pass=0
 fail=0
+# Both reporters end with an explicit `return 0`: without it the function's
+# status is the last command's, so a closed or full stdout under `task` would
+# report a PASSING assertion as a failure (#828).
 ok() {
     pass=$((pass + 1))
-    echo "  ✓ $*"
+    echo "  ✓ $*" || true
+    return 0
 }
 bad() {
     fail=$((fail + 1))
-    echo "  ✗ $*" >&2
+    echo "  ✗ $*" >&2 || true
+    return 0
 }
 
 # run_audit DIR [EXTRA...] — run the audit, capturing stdout+stderr in
@@ -94,7 +99,7 @@ expect_status() {
 # expect_says DESC NEEDLE — assert the last run's output contains NEEDLE. A
 # refusal that fires for an unrelated reason is a passing test proving nothing.
 expect_says() {
-    if printf '%s' "$out" | grep -Fq -- "$2"; then
+    if printf '%s' "$out" | grep -F -- "$2" >/dev/null; then
         ok "$1"
     else
         bad "$1 (output does not contain '$2')"
@@ -103,7 +108,7 @@ expect_says() {
 }
 
 expect_not_says() {
-    if printf '%s' "$out" | grep -Fq -- "$2"; then
+    if printf '%s' "$out" | grep -F -- "$2" >/dev/null; then
         bad "$1 (output unexpectedly contains '$2')"
         printf '%s\n' "$out" | sed 's/^/      /' >&2
     else

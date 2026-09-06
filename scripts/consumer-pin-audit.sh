@@ -84,7 +84,18 @@ V2_SKILLS_FIRST_RELEASE="v0.40.0"
 
 # ref_is_release_tag REF — REF is an orderable release tag.
 ref_is_release_tag() {
-    printf '%s' "$1" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$'
+    # No pipe into `grep -q`: grep exits on the first match and SIGPIPEs the
+    # producer, which `pipefail` then turns into a failure for a MATCH.
+    case "$1" in
+    v[0-9]*.[0-9]*.[0-9]* | [0-9]*.[0-9]*.[0-9]*) ;;
+    *) return 1 ;;
+    esac
+    # The glob above admits non-digits inside the components; reject those.
+    _rt="${1#v}"
+    case "$_rt" in
+    *[!0-9.]* | *..* | .* | *.) return 1 ;;
+    esac
+    [ "$(printf '%s' "$_rt" | tr -cd . | wc -c)" -eq 2 ]
 }
 
 # ref_predates_v2_skills REF — REF is a release tag strictly older than the
