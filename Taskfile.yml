@@ -134,6 +134,7 @@ tasks:
       - lint:markdown
       - lint:actions
       - lint:hygiene
+      - lint:shell-robustness
 
   lint:yaml:
     desc: yamllint
@@ -170,6 +171,14 @@ tasks:
     desc: File hygiene (trailing whitespace, EOF newlines, merge markers, etc.)
     cmds:
       - ./scripts/lint-hygiene.sh {{.CLI_ARGS}}
+
+  lint:shell-robustness:
+    # Two idioms shellcheck does not model, both of which report a SUCCESS as a
+    # failure and cost real gate time (#689): `cmd | grep -q` under pipefail,
+    # and a test reporter whose own exit status lands inside the assertion.
+    desc: Shell idioms whose exit status lies (`| grep -q`, reporter helpers)
+    cmds:
+      - ./scripts/lint-shell-robustness.sh {{.CLI_ARGS}}
 
   lint:commit-msg:
     desc: Validate commit message (conventional commits)
@@ -346,6 +355,7 @@ tasks:
       - test:dev-flow-exit
       - test:render-dev-flow
       - test:retro-run-report
+      - test:lint-shell-robustness
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -499,6 +509,11 @@ tasks:
     desc: Behavioral fixtures for lint-hygiene's trigger-phrase adjacency scan
     cmds:
       - ./scripts/test-lint-hygiene.sh
+
+  test:lint-shell-robustness:
+    desc: Unit-test the status-lying shell idiom guard (lint-shell-robustness.sh)
+    cmds:
+      - ./scripts/test-lint-shell-robustness.sh
 
   test:release-title:
     desc: Unit-test the release-content title guard (require-release-title.sh)

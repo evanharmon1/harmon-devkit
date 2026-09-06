@@ -63,6 +63,13 @@ function run(script, args) {
 const VERDICT_EXPECTATION_KEYS = new Set([
   "outcome",
   "reason",
+  // reason_contains: a SUBSTRING match on `reason`, for the indeterminate
+  // refusals whose reason is a full diagnostic sentence rather than a short
+  // enum-like token. Added by harmon-devkit#685's audit lane: a fixture
+  // declaring only {"indeterminate": true} passes for ANY refusal, so two
+  // completely different bugs satisfy it identically — every receipt
+  // invariant carried here names the refusal it is actually about.
+  "reason_contains",
   "rounds_counted",
   "incomplete_round",
   "diagnostic_contains",
@@ -90,6 +97,11 @@ function checkVerdict(expected, actual) {
   }
   if (expected.reason !== undefined && actual.reason !== expected.reason) {
     return `reason: expected "${expected.reason}", got "${actual.reason}"`;
+  }
+  if (expected.reason_contains !== undefined) {
+    if (typeof actual.reason !== "string" || !actual.reason.includes(expected.reason_contains)) {
+      return `reason does not contain "${expected.reason_contains}", got ${JSON.stringify(actual.reason)}`;
+    }
   }
   if (expected.rounds_counted !== undefined && actual.rounds_counted !== expected.rounds_counted) {
     return `rounds_counted: expected ${expected.rounds_counted}, got ${actual.rounds_counted}`;

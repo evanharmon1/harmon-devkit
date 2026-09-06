@@ -20,11 +20,13 @@ pass=0
 fail=0
 ok() {
     pass=$((pass + 1))
-    echo "  ✓ $*"
+    echo "  ✓ $*" || true
+    return 0
 }
 bad() {
     fail=$((fail + 1))
-    echo "  ✗ $*" >&2
+    echo "  ✗ $*" >&2 || true
+    return 0
 }
 
 # newrepo NAME — a throwaway repo with all four scanned trees present and a
@@ -61,7 +63,7 @@ expect_fail_contains() {
     if output="$(guard "$dir" 2>&1)"; then
         bad "$desc (expected non-zero exit)"
         printf '%s\n' "$output" | sed 's/^/      /' >&2
-    elif printf '%s\n' "$output" | grep -qF "$needle"; then
+    elif grep -qF "$needle" <<<"$output"; then
         ok "$desc"
     else
         bad "$desc (rejected, but not for the expected reason: missing '$needle')"

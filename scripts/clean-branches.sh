@@ -91,7 +91,7 @@ if [ -z "$remotes" ]; then
     echo "clean:branches: no remote configured — no merge evidence is possible; nothing to do."
     exit 0
 fi
-if printf '%s\n' "$remotes" | grep -qx origin; then
+if grep -qx origin <<<"$remotes"; then
     remote=origin
 elif [ "$(printf '%s\n' "$remotes" | wc -l | tr -d ' ')" = "1" ]; then
     remote="$remotes"
@@ -418,7 +418,7 @@ delete_one() (
     # Re-check checkout state under the lock: another session can have
     # claimed the branch since classification, and update-ref does not
     # respect git's checked-out guard.
-    if git worktree list --porcelain | grep -Fxq "branch refs/heads/$branch"; then
+    if grep -Fxq "branch refs/heads/$branch" < <(git worktree list --porcelain); then
         echo "SKIP  $branch — became checked out in a worktree since classification"
         exit 3
     fi

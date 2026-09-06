@@ -141,20 +141,19 @@ reap) [ -n "$root_dir" ] || usage ;;
 esac
 
 valid_repo() {
-    printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+    grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' <<<"$1"
 }
 
 valid_uint() {
-    printf '%s' "$1" | grep -Eq '^[1-9][0-9]*$'
+    grep -Eq '^[1-9][0-9]*$' <<<"$1"
 }
 
 valid_sha() {
-    printf '%s' "$1" | grep -Eq '^[0-9a-fA-F]{40}$'
+    grep -Eq '^[0-9a-fA-F]{40}$' <<<"$1"
 }
 
 valid_time() {
-    printf '%s' "$1" |
-        grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+    grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' <<<"$1"
 }
 
 # harmon-devkit#223: the timeout governing an attempt cycle used to live only
@@ -1684,7 +1683,7 @@ check)
     clean_comment_id=""
     while IFS='	' read -r prefix classification comment_id comment_created; do
         [ -n "$prefix" ] || continue
-        printf '%s' "$prefix" | grep -Eq '^[0-9a-fA-F]{7,40}$' || {
+        grep -Eq '^[0-9a-fA-F]{7,40}$' <<<"$prefix" || {
             emit indeterminate "bot review comment contains a malformed commit prefix"
             exit 2
         }
@@ -2002,7 +2001,7 @@ settle)
                 "i"
               ).captures[0].string catch ""
             ')
-        printf '%s' "$settle_prefix" | grep -Eq '^[0-9a-fA-F]{7,40}$' ||
+        grep -Eq '^[0-9a-fA-F]{7,40}$' <<<"$settle_prefix" ||
             die "comment $target_id does not identify a reviewed commit"
         settle_prefix_lower=$(printf '%s' "$settle_prefix" |
             tr '[:upper:]' '[:lower:]')

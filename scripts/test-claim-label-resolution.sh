@@ -7,6 +7,7 @@ resolver="ai/skills/universal/claim/assets/resolve-claim-label.sh"
 runtime_resolver="ai/skills/universal/claim/assets/resolve-runtime-environment.sh"
 transaction_helper="ai/skills/universal/claim/assets/claim-transaction.sh"
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }
