@@ -796,6 +796,17 @@ run_context_case \
     --adjudication "$settlement_cross_check_adjudication" \
     --adjudication "$split_promotion_adjudication"
 
+# The terminal-outcome half of the converse check, which `ready-for-review`
+# alone does not exercise (review round 2, confirmed: the fixture was on the
+# context-only allowlist with no case invoking it, so a regression restoring
+# the ready-for-review-only gate would have gone unnoticed).
+run_context_case \
+    "a capped run whose splits[] omits an adjudicated split is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-omitted-on-capped-run.json" \
+    "was adjudicated split but no splits[] entry records it" \
+    --adjudication "$split_promotion_adjudication"
+
 # The positive control: with every split recorded, the same promoted run
 # validates. Without it, the case above would pass just as well against a
 # check that rejected every split.
