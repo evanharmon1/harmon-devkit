@@ -578,7 +578,7 @@ jq -cn '[{total_count:1,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not name the cancelled check: $gate_out"
 
 echo "==> a newer cancelled suite supersedes an earlier success and blocks (harmon-devkit#461)"
@@ -595,7 +595,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-failing
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-failing did not name the newer cancelled check: $gate_out"
 
 echo "==> a newer still-running suite remains pending after an older cancelled run (harmon-devkit#461)"
@@ -612,7 +612,7 @@ jq -cn '[{total_count:2,workflow_runs:[
     >"${fixtures}/workflow-runs.pages.json"
 run_gate
 assert_gate 1 fail checks-pending
-printf '%s\n' "$gate_out" | grep -Fq 'guard' ||
+grep -Fq 'guard' <<<"$gate_out" ||
     fail "checks-pending did not name the still-running check: $gate_out"
 
 echo "==> a suite that started later but was delivered earlier is not mistaken for the latest"

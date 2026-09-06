@@ -395,6 +395,12 @@ expect_flagged "a quiet grep behind an env assignment or \`command\`" \
     "$(fixture prefixed-grep.sh "$body")" 'grep -q'
 
 cat >"$body" <<'BODY'
+printf '%s\n' "$x" | env LC_ALL=C grep -q needle
+BODY
+expect_flagged "a quiet grep behind \`env VAR=value\`" \
+    "$(fixture env-assign-grep.sh "$body")" 'grep -q'
+
+cat >"$body" <<'BODY'
 cat <<EOF
 # shell-robustness: exempt-file — fixture text that only LOOKS like a marker
 EOF
