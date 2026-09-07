@@ -6,11 +6,13 @@
   // between sections, tripping MD012). It is not hand-edited, so never lint or
   // auto-fix it — doing so creates spurious churn on every `task verify`.
   //
-  // .claude/** holds agent assets — often vendored skills whose markdown follows
-  // upstream conventions. Linting/--fix-ing them mangles content (e.g. MD004
-  // rewrites a leading "+ " in prose to "- "), so exclude it everywhere. Without
-  // this, the lefthook markdown hook (which passes staged files explicitly) would
-  // still touch them even though `task lint:markdown` skips .claude via its glob.
+  // Vendored agent assets — .claude/skills/**, .agents/skills/**, and _bmad/** —
+  // are installer-owned and may be overwritten on reinstall. Their markdown
+  // follows upstream conventions, and linting/--fix-ing it mangles content
+  // (e.g. MD004 rewrites a leading "+ " in prose to "- "), so exclude these
+  // trees everywhere. Without this, the lefthook markdown hook (which passes
+  // staged files explicitly) would still touch them even though
+  // `task lint:markdown` skips them via its glob.
   //
   // The remaining entries are gitignored artifact/cache dirs that can exist on
   // disk (terraform provider cache, uv venv, go-task cache, npm deps) —
@@ -20,6 +22,8 @@
   "ignores": [
     "CHANGELOG.md",
     ".claude/**",
+    ".agents/skills/**",
+    "_bmad/**",
     "**/.terraform/**",
     "**/.venv/**",
     "**/.task/**",

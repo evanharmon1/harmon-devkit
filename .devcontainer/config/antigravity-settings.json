@@ -1,12 +1,15 @@
 {
+  "model": "Gemini 3.7 Flash (High)",
   "toolPermission": "always-proceed",
   "artifactReviewPolicy": "always-proceed",
   "allowNonWorkspaceAccess": true,
   "enableTerminalSandbox": false,
+  "permissions": {},
   "statusLine": {
     "type": "command",
     "command": "/etc/claude-code/statusline.sh",
     "enabled": true,
-    "stack_with_default": false
-  }
+    "stack_with_default": true
+  },
+  "showFeedbackSurvey": false
 }

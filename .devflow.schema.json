@@ -1,0 +1,378 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evanharmon1.github.io/harmon-init/devflow.schema.json",
+  "title": "Harmon Init devflow configuration v2",
+  "description": "Structural contract for schema-version 2 policy files; cross-file references are validated by scripts/test-devflow-config.sh.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "default_rigor",
+    "default_strategy",
+    "rigor_order",
+    "tier_order",
+    "rigor",
+    "rounds",
+    "breadth",
+    "gates",
+    "convergence",
+    "role",
+    "stage",
+    "strategy"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "default_rigor": { "type": "string" },
+    "default_strategy": { "type": "string" },
+    "rigor_order": { "$ref": "#/$defs/strings" },
+    "tier_order": { "$ref": "#/$defs/strings" },
+    "rigor": { "$ref": "#/$defs/rigor_profiles" },
+    "rounds": { "$ref": "#/$defs/round_profiles" },
+    "breadth": { "$ref": "#/$defs/breadth_profiles" },
+    "spend": { "$ref": "#/$defs/spend_profiles" },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["round_code", "round_docs", "secret_scan", "pre_pr", "docs_only_paths"],
+      "properties": {
+        "round_code": { "type": "string" },
+        "round_docs": { "type": "string" },
+        "secret_scan": { "type": "string" },
+        "pre_pr": { "type": "string" },
+        "docs_only_paths": { "$ref": "#/$defs/strings" }
+      }
+    },
+    "convergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["converged", "diverging"],
+      "properties": {
+        "converged": { "$ref": "#/$defs/convergence_expression" },
+        "diverging": { "$ref": "#/$defs/convergence_expression" }
+      }
+    },
+    "role": { "$ref": "#/$defs/role_profiles" },
+    "stage": { "$ref": "#/$defs/stage_profiles" },
+    "strategy": { "$ref": "#/$defs/strategy_profiles" }
+  },
+  "$defs": {
+    "strings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "strings_allow_empty": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "tier": { "type": "string", "enum": ["local", "economy", "standard", "frontier", "apex"] },
+    "rigor_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rounds",
+        "breadth",
+        "orchestrator_tier",
+        "implementer_tier",
+        "challenger_tier",
+        "reviewer_tier",
+        "integrator_tier",
+        "tier_escalation",
+        "description"
+      ],
+      "properties": {
+        "rounds": { "type": "string", "minLength": 1 },
+        "breadth": { "type": "string", "minLength": 1 },
+        "spend": { "type": "string", "minLength": 1 },
+        "orchestrator_tier": { "$ref": "#/$defs/tier" },
+        "implementer_tier": { "$ref": "#/$defs/tier" },
+        "challenger_tier": { "$ref": "#/$defs/tier" },
+        "reviewer_tier": { "$ref": "#/$defs/tier" },
+        "integrator_tier": { "$ref": "#/$defs/tier" },
+        "tier_escalation": { "type": "boolean" },
+        "description": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "convergence": { "$ref": "#/$defs/convergence_override" }
+      }
+    },
+    "rigor_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/rigor_profile" }
+    },
+    "round_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "challenge",
+        "review",
+        "integration",
+        "remediation",
+        "min_rounds",
+        "wall_clock_min"
+      ],
+      "properties": {
+        "challenge": { "type": "integer", "minimum": 0 },
+        "review": { "type": "integer", "minimum": 0 },
+        "integration": { "type": "integer", "minimum": 0 },
+        "remediation": { "type": "integer", "minimum": 0 },
+        "min_rounds": { "type": "integer", "minimum": 0 },
+        "wall_clock_min": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "round_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/round_profile" }
+    },
+    "breadth_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_agent_runs", "max_parallel_agents"],
+      "properties": {
+        "max_agent_runs": { "type": "integer", "minimum": 1 },
+        "max_parallel_agents": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "breadth_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/breadth_profile" }
+    },
+    "spend_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_tokens": { "type": "integer", "minimum": 1 },
+        "max_usd": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "spend_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/spend_profile" }
+    },
+    "role_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tier", "families"],
+      "properties": {
+        "tier": { "$ref": "#/$defs/tier" },
+        "families": { "$ref": "#/$defs/strings" },
+        "harnesses": { "$ref": "#/$defs/strings" }
+      }
+    },
+    "role_profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orchestrator", "implementer", "challenger", "reviewer", "integrator"],
+      "properties": {
+        "orchestrator": { "$ref": "#/$defs/role_profile" },
+        "implementer": { "$ref": "#/$defs/role_profile" },
+        "challenger": { "$ref": "#/$defs/role_profile" },
+        "reviewer": { "$ref": "#/$defs/role_profile" },
+        "integrator": { "$ref": "#/$defs/role_profile" }
+      }
+    },
+    "stage_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "finders": { "$ref": "#/$defs/strings_allow_empty" },
+        "finder_fallbacks": { "$ref": "#/$defs/strings_allow_empty" },
+        "pool": { "$ref": "#/$defs/strings_allow_empty" }
+      }
+    },
+    "stage_profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implement", "challenge", "review", "integration"],
+      "properties": {
+        "implement": { "$ref": "#/$defs/stage_profile" },
+        "challenge": { "$ref": "#/$defs/stage_profile" },
+        "review": { "$ref": "#/$defs/stage_profile" },
+        "integration": { "$ref": "#/$defs/stage_profile" }
+      }
+    },
+    "strategy_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topology", "planning", "delegation", "human_gates", "description"],
+      "allOf": [
+        {
+          "if": {
+            "required": ["topology"],
+            "properties": { "topology": { "const": "lead-and-workers" } }
+          },
+          "then": {
+            "required": ["coordination", "min_agents"],
+            "properties": { "delegation": { "const": "required" } },
+            "not": {
+              "anyOf": [
+                { "required": ["selection"] },
+                { "required": ["synthesis"] },
+                { "required": ["distinct_families"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["topology"],
+            "properties": { "topology": { "const": "independent-proposals" } }
+          },
+          "then": {
+            "required": ["selection", "synthesis", "min_agents"],
+            "properties": { "delegation": { "const": "required" } }
+          }
+        },
+        {
+          "if": {
+            "required": ["topology"],
+            "properties": {
+              "topology": { "enum": ["single-agent", "human-directed"] }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["coordination"] },
+                { "required": ["selection"] },
+                { "required": ["synthesis"] },
+                { "required": ["min_agents"] },
+                { "required": ["distinct_families"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["topology"],
+            "properties": { "topology": { "const": "single-agent" } }
+          },
+          "then": { "properties": { "delegation": { "enum": ["none", "optional"] } } }
+        }
+      ],
+      "properties": {
+        "topology": {
+          "enum": ["single-agent", "lead-and-workers", "independent-proposals", "human-directed"]
+        },
+        "planning": { "enum": ["inline", "explicit", "independent", "collaborative"] },
+        "delegation": { "enum": ["none", "optional", "required"] },
+        "human_gates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/human_gate" },
+          "uniqueItems": true
+        },
+        "description": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "coordination": { "const": "parallel-when-independent" },
+        "selection": { "const": "judge" },
+        "synthesis": { "type": "boolean" },
+        "min_agents": { "type": "integer", "minimum": 2 },
+        "distinct_families": { "type": "boolean" }
+      }
+    },
+    "human_gate": {
+      "enum": [
+        "after-discovery",
+        "after-plan",
+        "before-delegation",
+        "before-selection",
+        "before-synthesis",
+        "before-scope-expansion",
+        "before-budget-escalation",
+        "before-publication",
+        "before-ready-for-review",
+        "each-phase"
+      ]
+    },
+    "strategy_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/strategy_profile" }
+    },
+    "convergence_expression": {
+      "oneOf": [{ "$ref": "#/$defs/convergence_all" }, { "$ref": "#/$defs/convergence_any" }]
+    },
+    "convergence_item": {
+      "oneOf": [
+        { "$ref": "#/$defs/predicate_no_gating_findings" },
+        { "$ref": "#/$defs/predicate_provenance_share" },
+        { "$ref": "#/$defs/predicate_count_rising" },
+        { "$ref": "#/$defs/predicate_repeat_after_fix" },
+        { "$ref": "#/$defs/convergence_all" },
+        { "$ref": "#/$defs/convergence_any" }
+      ]
+    },
+    "convergence_all": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["all"],
+      "properties": {
+        "all": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/convergence_item" }
+        }
+      }
+    },
+    "convergence_any": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["any"],
+      "properties": {
+        "any": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/convergence_item" }
+        }
+      }
+    },
+    "predicate_no_gating_findings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["predicate"],
+      "properties": { "predicate": { "const": "no_gating_findings" } }
+    },
+    "predicate_provenance_share": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["predicate", "min"],
+      "properties": {
+        "predicate": { "const": "provenance_share" },
+        "min": { "type": "number", "minimum": 0, "maximum": 1 },
+        "exclude_classes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["design", "correctness", "consistency", "hardening", "nit"] }
+        }
+      }
+    },
+    "predicate_count_rising": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["predicate", "increases"],
+      "properties": {
+        "predicate": { "const": "count_rising" },
+        "increases": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "predicate_repeat_after_fix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["predicate"],
+      "properties": { "predicate": { "const": "repeat_after_fix" } }
+    },
+    "convergence_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "converged": { "$ref": "#/$defs/convergence_expression" },
+        "diverging": { "$ref": "#/$defs/convergence_expression" }
+      }
+    }
+  }
+}

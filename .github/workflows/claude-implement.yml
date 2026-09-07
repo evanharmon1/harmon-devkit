@@ -169,8 +169,14 @@ jobs:
           permission-issues: write
       # Exception to the repo-wide `persist-credentials: false` hardening:
       # this checkout deliberately persists the short-lived narrow CI App token
-      # so Claude's `git push` of the working branch can authenticate. The token
-      # is least-privilege (minted above) and expires with the job.
+      # for two reasons. Claude's `git push` of the working branch needs it to
+      # authenticate; and — like claude-review/claude-plan — when this workflow
+      # is triggered on an open PR, claude-code-action's tag mode `git fetch`es
+      # the PR head branch BEFORE it configures its own git auth (setupBranch
+      # runs ahead of configureGitAuth — anthropics/claude-code-action#1236),
+      # so a credential-less checkout would fail with "could not read Username"
+      # on a private repo. The token is least-privilege (minted above) and
+      # expires with the job.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0

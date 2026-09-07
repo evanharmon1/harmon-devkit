@@ -1,0 +1,673 @@
+{
+  "schema_version": 1,
+  "kind": "harmon-init.devflow.conformance",
+  "description": "Language-neutral v1 inputs and normalized-result expectations for .devflow.toml consumers.",
+  "result_schema_version": 1,
+  "cases": [
+    {
+      "name": "defaults",
+      "basis": "branch",
+      "expect": {
+        "exit": 0,
+        "result": {
+          "result_schema_version": 1,
+          "config_source": "branch",
+          "config_schema_version": 1,
+          "selections": {
+            "rigor": { "value": "standard", "source": "default" },
+            "strategy": { "value": "plan", "source": "default" }
+          },
+          "review": {
+            "challenge": 3,
+            "review": 3,
+            "shepherd": 4,
+            "min_rounds": 1,
+            "min_rounds_scope": ["challenge", "review"],
+            "policy": "standard",
+            "source": "profile"
+          },
+          "tiers": {
+            "orchestrator": {
+              "value": "frontier",
+              "requested": "frontier",
+              "source": "profile",
+              "off_profile": false,
+              "preflight_required": false
+            },
+            "implementer": {
+              "value": "standard",
+              "requested": "standard",
+              "source": "profile",
+              "off_profile": false,
+              "preflight_required": false
+            },
+            "reviewer": {
+              "value": "frontier",
+              "requested": "frontier",
+              "source": "profile",
+              "off_profile": false,
+              "preflight_required": false
+            }
+          },
+          "budget": {
+            "name": "standard",
+            "source": "profile",
+            "max_agent_runs": 6,
+            "max_parallel_agents": 3,
+            "wall_clock_min": 120,
+            "allow_tier_escalation": true
+          },
+          "strategy_fields": {
+            "topology": "single-agent",
+            "planning": "explicit",
+            "delegation": "optional",
+            "human_gates": [],
+            "description": "Strategy: agent plans then implements; no human plan gate"
+          },
+          "disclosure": {
+            "off_default": false,
+            "off_profile": false,
+            "same_family_reviewer": null
+          },
+          "requires_confirmation": false,
+          "preflight_required": false,
+          "warnings": [],
+          "errors": []
+        }
+      }
+    },
+    {
+      "name": "explicit-overrides-win",
+      "basis": "branch",
+      "labels": ["rigor:trivial", "strategy:orchestrate"],
+      "overrides": ["rigor=deep", "strategy=plan"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": {
+            "rigor": { "value": "deep", "source": "explicit" },
+            "strategy": { "value": "plan", "source": "explicit" }
+          },
+          "review": {
+            "challenge": 5,
+            "review": 5,
+            "shepherd": 6,
+            "min_rounds": 1,
+            "policy": "deep",
+            "source": "profile"
+          },
+          "tiers": {
+            "orchestrator": { "value": "apex", "requested": "apex", "source": "profile" },
+            "implementer": { "value": "frontier", "requested": "frontier", "source": "profile" },
+            "reviewer": { "value": "apex", "requested": "apex", "source": "profile" }
+          },
+          "budget": {
+            "name": "deep",
+            "source": "profile",
+            "max_agent_runs": 20,
+            "max_parallel_agents": 4,
+            "wall_clock_min": 480,
+            "allow_tier_escalation": true
+          },
+          "disclosure": { "off_default": true },
+          "requires_confirmation": false
+        }
+      }
+    },
+    {
+      "name": "retired-method-label-is-ignored",
+      "basis": "branch",
+      "labels": ["method:council"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": {
+            "rigor": { "value": "standard", "source": "default" },
+            "strategy": { "value": "plan", "source": "default" }
+          },
+          "warnings": []
+        }
+      }
+    },
+    {
+      "name": "explicit-nondefault-strategy-projects-fields",
+      "basis": "branch",
+      "overrides": ["strategy=orchestrate"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "strategy": { "value": "orchestrate", "source": "explicit" } },
+          "strategy_fields": {
+            "topology": "lead-and-workers",
+            "planning": "explicit",
+            "delegation": "required",
+            "human_gates": [],
+            "coordination": "parallel-when-independent",
+            "min_agents": 2,
+            "description": "Strategy: lead agent delegates bounded work to parallel workers"
+          },
+          "disclosure": { "off_default": true }
+        }
+      }
+    },
+    {
+      "name": "explicit-council-projects-independent-proposals-fields",
+      "basis": "branch",
+      "overrides": ["strategy=council"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "strategy": { "value": "council", "source": "explicit" } },
+          "strategy_fields": {
+            "topology": "independent-proposals",
+            "planning": "independent",
+            "delegation": "required",
+            "human_gates": [],
+            "selection": "judge",
+            "synthesis": true,
+            "min_agents": 2,
+            "description": "Strategy: independent proposals, judged; best or synthesis wins (2+ agents)"
+          }
+        }
+      }
+    },
+    {
+      "name": "explicit-plan-approved-projects-human-gate",
+      "basis": "branch",
+      "overrides": ["strategy=plan-approved"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "strategy": { "value": "plan-approved", "source": "explicit" } },
+          "strategy_fields": {
+            "topology": "single-agent",
+            "planning": "explicit",
+            "delegation": "optional",
+            "human_gates": ["after-plan"],
+            "description": "Strategy: plan requires human approval before implementation"
+          }
+        }
+      }
+    },
+    {
+      "name": "explicit-human-led-projects-human-directed-fields",
+      "basis": "branch",
+      "overrides": ["strategy=human-led"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "strategy": { "value": "human-led", "source": "explicit" } },
+          "strategy_fields": {
+            "topology": "human-directed",
+            "planning": "collaborative",
+            "delegation": "optional",
+            "human_gates": ["after-discovery", "after-plan", "before-publication"],
+            "description": "Strategy: human owns central decisions; AI does bounded pieces"
+          }
+        }
+      }
+    },
+    {
+      "name": "interactive-untrusted-label-needs-confirmation",
+      "basis": "branch",
+      "labels": ["rigor:deep"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "rigor": { "value": "deep", "source": "label" } },
+          "requires_confirmation": true,
+          "disclosure": { "off_default": true }
+        }
+      }
+    },
+    {
+      "name": "interactive-downward-rigor-label-needs-confirmation",
+      "basis": "branch",
+      "labels": ["rigor:light"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "rigor": { "value": "light", "source": "label" } },
+          "requires_confirmation": true,
+          "disclosure": { "off_default": true }
+        }
+      }
+    },
+    {
+      "name": "interactive-strategy-label-needs-confirmation",
+      "basis": "branch",
+      "labels": ["strategy:oneshot"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "strategy": { "value": "oneshot", "source": "label" } },
+          "strategy_fields": {
+            "topology": "single-agent",
+            "planning": "inline",
+            "delegation": "none",
+            "human_gates": [],
+            "description": "Strategy: single agent, no separate plan phase"
+          },
+          "requires_confirmation": true,
+          "disclosure": { "off_default": true }
+        }
+      }
+    },
+    {
+      "name": "unattended-unauthorized-label-is-ignored",
+      "basis": "branch",
+      "labels": ["rigor:trivial"],
+      "unattended": true,
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": {
+            "rigor": { "value": "standard", "source": "default" }
+          }
+        },
+        "warning_diagnostics": [{ "code": "untrusted_label_ignored", "subject": "label" }]
+      }
+    },
+    {
+      "name": "unattended-unauthorized-strategy-label-is-ignored",
+      "basis": "branch",
+      "labels": ["strategy:council"],
+      "unattended": true,
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "strategy": { "value": "plan", "source": "default" } }
+        },
+        "warning_diagnostics": [{ "code": "untrusted_label_ignored", "subject": "label" }]
+      }
+    },
+    {
+      "name": "unattended-unauthorized-tier-label-is-ignored",
+      "basis": "branch",
+      "labels": ["tier:apex"],
+      "unattended": true,
+      "expect": {
+        "exit": 0,
+        "result": {
+          "tiers": {
+            "orchestrator": { "value": "frontier", "requested": "frontier", "source": "profile" },
+            "implementer": { "value": "standard", "requested": "standard", "source": "profile" },
+            "reviewer": { "value": "frontier", "requested": "frontier", "source": "profile" }
+          }
+        },
+        "warning_diagnostics": [{ "code": "untrusted_label_ignored", "subject": "label" }]
+      }
+    },
+    {
+      "name": "unattended-authorized-label-applies",
+      "basis": "branch",
+      "labels": ["rigor:deep"],
+      "trusted_labels": ["rigor:deep"],
+      "unattended": true,
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "rigor": { "value": "deep", "source": "label" } },
+          "requires_confirmation": false
+        }
+      }
+    },
+    {
+      "name": "unattended-standalone-trusted-label-applies",
+      "basis": "branch",
+      "trusted_labels": ["rigor:deep"],
+      "unattended": true,
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "rigor": { "value": "deep", "source": "label" } },
+          "requires_confirmation": false
+        }
+      }
+    },
+    {
+      "name": "unattended-standalone-trusted-strategy-label-applies",
+      "basis": "branch",
+      "trusted_labels": ["strategy:orchestrate"],
+      "unattended": true,
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "strategy": { "value": "orchestrate", "source": "label" } },
+          "strategy_fields": {
+            "topology": "lead-and-workers",
+            "coordination": "parallel-when-independent",
+            "min_agents": 2
+          },
+          "requires_confirmation": false
+        }
+      }
+    },
+    {
+      "name": "unattended-standalone-trusted-tier-label-applies",
+      "basis": "branch",
+      "trusted_labels": ["tier:economy"],
+      "unattended": true,
+      "expect": {
+        "exit": 0,
+        "result": {
+          "tiers": {
+            "orchestrator": { "value": "frontier", "requested": "frontier", "source": "profile" },
+            "implementer": { "value": "economy", "requested": "economy", "source": "label" },
+            "reviewer": { "value": "frontier", "requested": "frontier", "source": "profile" }
+          },
+          "requires_confirmation": false,
+          "disclosure": { "off_profile": true }
+        }
+      }
+    },
+    {
+      "name": "multiple-rigor-labels-strongest-wins",
+      "basis": "branch",
+      "labels": ["rigor:light", "rigor:deep"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "rigor": { "value": "deep", "source": "label" } }
+        }
+      }
+    },
+    {
+      "name": "multiple-rigor-labels-strongest-wins-in-reverse-order",
+      "basis": "branch",
+      "labels": ["rigor:deep", "rigor:light"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "rigor": { "value": "deep", "source": "label" } }
+        }
+      }
+    },
+    {
+      "name": "multiple-strategy-labels-are-ambiguous",
+      "basis": "branch",
+      "labels": ["strategy:plan", "strategy:orchestrate"],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [{ "code": "ambiguous_strategy", "subject": "strategy" }]
+      }
+    },
+    {
+      "name": "unattended-trusted-strategy-conflict-defaults-with-warning",
+      "basis": "branch",
+      "labels": ["strategy:plan", "strategy:orchestrate"],
+      "trusted_labels": ["strategy:plan", "strategy:orchestrate"],
+      "unattended": true,
+      "expect": {
+        "exit": 0,
+        "result": {
+          "selections": { "strategy": { "value": "plan", "source": "default" } }
+        },
+        "warning_diagnostics": [{ "code": "ambiguous_strategy", "subject": "strategy" }]
+      }
+    },
+    {
+      "name": "concrete-tier-beats-adaptive",
+      "basis": "branch",
+      "labels": ["tier:adaptive", "tier:economy"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "tiers": {
+            "implementer": {
+              "value": "economy",
+              "requested": "economy",
+              "source": "label"
+            }
+          },
+          "disclosure": { "off_profile": true }
+        }
+      }
+    },
+    {
+      "name": "adaptive-tier-uses-consumer-preflight-result",
+      "basis": "branch",
+      "labels": ["tier:adaptive"],
+      "adaptive_result": "apex",
+      "expect": {
+        "exit": 0,
+        "result": {
+          "tiers": {
+            "implementer": {
+              "value": "apex",
+              "requested": "adaptive",
+              "source": "label",
+              "off_profile": true,
+              "preflight_required": false
+            }
+          },
+          "requires_confirmation": true,
+          "preflight_required": false,
+          "disclosure": { "off_profile": true }
+        }
+      }
+    },
+    {
+      "name": "adaptive-tier-without-preflight-result-requires-classification",
+      "basis": "branch",
+      "labels": ["tier:adaptive"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "tiers": {
+            "implementer": {
+              "value": "standard",
+              "requested": "adaptive",
+              "source": "label",
+              "off_profile": false,
+              "preflight_required": true
+            }
+          },
+          "requires_confirmation": false,
+          "preflight_required": true,
+          "disclosure": { "off_profile": false }
+        }
+      }
+    },
+    {
+      "name": "scoped-and-unqualified-tier-conflict-is-strongest-wins",
+      "basis": "branch",
+      "labels": ["tier:economy", "tier:implementer:frontier"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "tiers": {
+            "implementer": {
+              "value": "frontier",
+              "requested": "frontier",
+              "source": "label"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "scoped-and-unqualified-tier-conflict-is-strongest-wins-in-reverse-order",
+      "basis": "branch",
+      "labels": ["tier:implementer:frontier", "tier:economy"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "tiers": {
+            "implementer": { "value": "frontier", "requested": "frontier", "source": "label" }
+          }
+        }
+      }
+    },
+    {
+      "name": "scoped-reviewer-tier-targets-only-reviewer",
+      "basis": "branch",
+      "labels": ["tier:reviewer:economy"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "tiers": {
+            "orchestrator": { "value": "frontier", "requested": "frontier", "source": "profile" },
+            "implementer": { "value": "standard", "requested": "standard", "source": "profile" },
+            "reviewer": { "value": "economy", "requested": "economy", "source": "label" }
+          },
+          "requires_confirmation": true,
+          "disclosure": { "off_profile": true }
+        }
+      }
+    },
+    {
+      "name": "unqualified-tier-label-targets-only-implementer",
+      "basis": "branch",
+      "labels": ["tier:economy"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "tiers": {
+            "orchestrator": { "value": "frontier", "requested": "frontier", "source": "profile" },
+            "implementer": { "value": "economy", "requested": "economy", "source": "label" },
+            "reviewer": { "value": "frontier", "requested": "frontier", "source": "profile" }
+          }
+        }
+      }
+    },
+    {
+      "name": "explicit-tier-override-beats-tier-label",
+      "basis": "branch",
+      "labels": ["tier:apex"],
+      "overrides": ["tier=economy"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "tiers": {
+            "implementer": {
+              "value": "economy",
+              "requested": "economy",
+              "source": "explicit"
+            }
+          },
+          "requires_confirmation": false,
+          "disclosure": { "off_profile": true }
+        }
+      }
+    },
+    {
+      "name": "absent-config-uses-built-in-fallback",
+      "basis": "absent",
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_source": "absent",
+          "config_schema_version": null,
+          "selections": {
+            "rigor": { "value": "standard", "source": "builtin" },
+            "strategy": { "value": "plan", "source": "builtin" }
+          },
+          "review": {
+            "challenge": 3,
+            "review": 3,
+            "shepherd": 4,
+            "min_rounds": 1
+          }
+        },
+        "warning_diagnostics": [{ "code": "config_absent", "subject": "config" }]
+      }
+    },
+    {
+      "name": "absent-config-honors-supported-explicit-input",
+      "basis": "absent",
+      "overrides": ["rigor=standard"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_source": "absent",
+          "selections": { "rigor": { "value": "standard", "source": "explicit" } }
+        },
+        "warning_diagnostics": [{ "code": "config_absent", "subject": "config" }]
+      }
+    },
+    {
+      "name": "absent-config-rejects-unsupported-trusted-input",
+      "basis": "absent",
+      "trusted_labels": ["rigor:deep"],
+      "unattended": true,
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [{ "code": "invalid_override", "subject": "override" }],
+        "warning_diagnostics": [{ "code": "config_absent", "subject": "config" }]
+      }
+    },
+    {
+      "name": "partial-config-is-rejected",
+      "basis": "branch",
+      "config_replacements": [["default_strategy = \"plan\"", ""]],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [{ "code": "invalid_config", "subject": "config" }]
+      }
+    },
+    {
+      "name": "unsupported-schema-version-is-rejected",
+      "basis": "branch",
+      "config_replacements": [["schema_version = 1", "schema_version = 2"]],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [{ "code": "invalid_config", "subject": "config" }]
+      }
+    },
+    {
+      "name": "missing-schema-version-is-rejected",
+      "basis": "branch",
+      "config_replacements": [["schema_version = 1\n\n", ""]],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [{ "code": "invalid_config", "subject": "config" }]
+      }
+    },
+    {
+      "name": "unknown-top-level-key-is-rejected",
+      "basis": "branch",
+      "config_replacements": [["schema_version = 1", "schema_version = 1\nunknown_v1_key = true"]],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [{ "code": "invalid_config", "subject": "config" }]
+      }
+    },
+    {
+      "name": "malformed-config-is-rejected",
+      "basis": "branch",
+      "config_replacements": [["schema_version = 1", "schema_version = ["]],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [{ "code": "invalid_config", "subject": "config" }]
+      }
+    },
+    {
+      "name": "incompatible-strategy-is-rejected",
+      "basis": "branch",
+      "overrides": ["rigor=trivial", "strategy=council"],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [{ "code": "incompatible_strategy", "subject": "strategy" }]
+      }
+    },
+    {
+      "name": "self-edit-reads-merge-base-config",
+      "basis": "merge-base",
+      "config_replacements": [["default_rigor    = \"standard\"", "default_rigor    = \"deep\""]],
+      "merge_base_replacements": [
+        ["schema_version = 1\n\n", ""],
+        ["default_rigor    = \"standard\"", "default_rigor    = \"trivial\""]
+      ],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_source": "merge-base",
+          "config_schema_version": 0,
+          "selections": { "rigor": { "value": "trivial", "source": "default" } }
+        },
+        "warning_diagnostics": [{ "code": "legacy_merge_base_config", "subject": "config" }]
+      }
+    }
+  ]
+}

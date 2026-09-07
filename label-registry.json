@@ -167,13 +167,20 @@
           "trust_note": "not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary"
         },
         {
+          "value": "dependencies",
+          "provision": false,
+          "writer_note": "Renovate, when it manages dependency updates",
+          "trust_note": "not provisioned — Renovate creates it on demand; never deleted by setup",
+          "lifecycle_note": "tool-managed by Renovate"
+        },
+        {
           "value": "enhancement",
           "description": "New feature or request",
           "color": "A2EEEF",
           "retired": true,
           "writer_note": "nobody — replaced by `feature`",
           "trust_note": "retired — the GitHub repo-creation default this vocabulary replaces with `feature`; never provisioned",
-          "lifecycle_note": "rename BEFORE provisioning creates `feature` (`gh label edit enhancement --name feature`, association-preserving); once `feature` exists the rename is refused — re-label the issues and delete `enhancement`"
+          "lifecycle_note": "use guarded `--prune` with `--migrate enhancement=feature`"
         }
       ]
     },
@@ -207,6 +214,10 @@
         {
           "value": "integration",
           "description": "External boundary: webhooks, API clients, credentials"
+        },
+        {
+          "value": "infra",
+          "description": "Hosts, networking, containers, provisioning — IaC and config rather than app code"
         }
       ]
     },
@@ -387,30 +398,42 @@
     {
       "family": "rigor",
       "prefix": "rigor",
-      "purpose": "Which round-cap level in .devflow.toml an agent works the issue under; values must match its [rigor.*] tables.",
+      "purpose": "How much confidence, effort, depth, and budget an agent works the issue under; values must match .devflow.toml's [rigor.*] tables.",
       "axis": "strategy",
-      "source": "inline",
+      "source": "devflow",
       "writers": ["human"],
       "writer_note": "humans, at triage — **never an agent on itself**",
       "readers": "agents, when entering the Dev Loop",
       "lifecycle": "durable",
-      "lifecycle_note": "set when the default budget is wrong for the change; survives the work",
-      "trust_note": "provisioned; **read by agents** — selects a round-cap level, arms nothing",
+      "lifecycle_note": "set when the default rigor is wrong for the change; survives the work",
+      "trust_note": "provisioned; **read by agents** — selects a rounds policy, five role tiers, and a breadth envelope; arms nothing",
       "exclusive": false,
       "provision": true,
       "color": "D4C5F9",
       "values": [
         {
+          "value": "cursory",
+          "description": "Rigor: one quick adversarial glance, economy elsewhere — near-zero-risk changes"
+        },
+        {
           "value": "light",
-          "description": "Dev Loop caps: trivial, low-blast-radius change"
+          "description": "Rigor: light rounds, frontier orchestrator/challenger, economy implementer"
         },
         {
           "value": "standard",
-          "description": "Dev Loop caps: the default budget"
+          "description": "Rigor: standard rounds and breadth, frontier challenger, standard implementer — the default"
+        },
+        {
+          "value": "thorough",
+          "description": "Rigor: thorough rounds, apex orchestrator/challenger, frontier reviewer"
         },
         {
           "value": "deep",
-          "description": "Dev Loop caps: security, migrations, irreversible paths"
+          "description": "Rigor: deep rounds, apex orchestrator/challenger, frontier implementer/reviewer"
+        },
+        {
+          "value": "forensic",
+          "description": "Rigor: maximum scrutiny at every role — irreversible failure modes, security, data paths"
         }
       ]
     },
@@ -422,10 +445,10 @@
       "source": "inline",
       "writers": ["human"],
       "writer_note": "humans, at triage or planning — never an agent on itself",
-      "readers": "humans and agents — resolved to a model via `.devflow.toml` `[tier]` (ADR 0006)",
+      "readers": "humans and agents — overrides the implementer tier; models are classified in `agent-registry.json` (ADR 0006/0007)",
       "lifecycle": "durable",
       "lifecycle_note": "set when the default tier would be wrong; strongest-wins resolution per ADR 0006",
-      "trust_note": "provisioned; **advisory** — resolved to a concrete value via `.devflow.toml`; arms nothing",
+      "trust_note": "provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing",
       "exclusive": false,
       "provision": true,
       "color": "7057FF",
@@ -457,44 +480,198 @@
       ]
     },
     {
-      "family": "method",
-      "prefix": "method",
-      "purpose": "Execution topology for working the issue; conflicts resolve by the config-backed rank.",
+      "family": "tier-role",
+      "prefix": null,
+      "purpose": "Role-scoped tier override: pins one role to a tier, refining (never replacing) the rigor profile for that role alone.",
       "axis": "strategy",
       "source": "inline",
       "writers": ["human"],
       "writer_note": "humans, at triage or planning — never an agent on itself",
-      "readers": "humans and agents — resolved to a topology via `.devflow.toml` `default_method`/`[method]` (ADR 0006)",
+      "readers": "humans and agents — targets exactly the role it names; models are classified in `agent-registry.json` (ADR 0006/0007), unlike the unqualified `tier:<value>` which targets the implementer only",
       "lifecycle": "durable",
-      "lifecycle_note": "set when the default method would be wrong; config-backed rank resolution per ADR 0006",
-      "trust_note": "provisioned; **advisory** — resolved to a concrete value via `.devflow.toml`; arms nothing",
+      "lifecycle_note": "set when one role's tier should differ from the rigor's own profile; strongest-wins per role",
+      "trust_note": "provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing",
       "exclusive": false,
+      "provision": true,
+      "color": "7057FF",
+      "values": [
+        {
+          "value": "tier:orchestrator:local",
+          "description": "Tier override: pin the orchestrator to local — self-hosted endpoint first"
+        },
+        {
+          "value": "tier:orchestrator:economy",
+          "description": "Tier override: pin the orchestrator to economy — cheapest qualified hosted model"
+        },
+        {
+          "value": "tier:orchestrator:standard",
+          "description": "Tier override: pin the orchestrator to standard — reliable general-purpose coding model"
+        },
+        {
+          "value": "tier:orchestrator:frontier",
+          "description": "Tier override: pin the orchestrator to frontier — opus-class heavyweight, no warm-up"
+        },
+        {
+          "value": "tier:orchestrator:apex",
+          "description": "Tier override: pin the orchestrator to apex — mythos-class leading edge"
+        },
+        {
+          "value": "tier:implementer:local",
+          "description": "Tier override: pin the implementer to local — self-hosted endpoint first"
+        },
+        {
+          "value": "tier:implementer:economy",
+          "description": "Tier override: pin the implementer to economy — cheapest qualified hosted model"
+        },
+        {
+          "value": "tier:implementer:standard",
+          "description": "Tier override: pin the implementer to standard — reliable general-purpose coding model"
+        },
+        {
+          "value": "tier:implementer:frontier",
+          "description": "Tier override: pin the implementer to frontier — opus-class heavyweight, no warm-up"
+        },
+        {
+          "value": "tier:implementer:apex",
+          "description": "Tier override: pin the implementer to apex — mythos-class leading edge"
+        },
+        {
+          "value": "tier:reviewer:local",
+          "description": "Tier override: pin the reviewer to local — self-hosted endpoint first"
+        },
+        {
+          "value": "tier:reviewer:economy",
+          "description": "Tier override: pin the reviewer to economy — cheapest qualified hosted model"
+        },
+        {
+          "value": "tier:reviewer:standard",
+          "description": "Tier override: pin the reviewer to standard — reliable general-purpose coding model"
+        },
+        {
+          "value": "tier:reviewer:frontier",
+          "description": "Tier override: pin the reviewer to frontier — opus-class heavyweight, no warm-up"
+        },
+        {
+          "value": "tier:reviewer:apex",
+          "description": "Tier override: pin the reviewer to apex — mythos-class leading edge"
+        },
+        {
+          "value": "tier:challenger:local",
+          "description": "Tier override: pin the challenger to local — self-hosted endpoint first"
+        },
+        {
+          "value": "tier:challenger:economy",
+          "description": "Tier override: pin the challenger to economy — cheapest qualified hosted model"
+        },
+        {
+          "value": "tier:challenger:standard",
+          "description": "Tier override: pin the challenger to standard — reliable general-purpose coding model"
+        },
+        {
+          "value": "tier:challenger:frontier",
+          "description": "Tier override: pin the challenger to frontier — opus-class heavyweight, no warm-up"
+        },
+        {
+          "value": "tier:challenger:apex",
+          "description": "Tier override: pin the challenger to apex — mythos-class leading edge"
+        },
+        {
+          "value": "tier:integrator:local",
+          "description": "Tier override: pin the integrator to local — self-hosted endpoint first"
+        },
+        {
+          "value": "tier:integrator:economy",
+          "description": "Tier override: pin the integrator to economy — cheapest qualified hosted model"
+        },
+        {
+          "value": "tier:integrator:standard",
+          "description": "Tier override: pin the integrator to standard — reliable general-purpose coding model"
+        },
+        {
+          "value": "tier:integrator:frontier",
+          "description": "Tier override: pin the integrator to frontier — opus-class heavyweight, no warm-up"
+        },
+        {
+          "value": "tier:integrator:apex",
+          "description": "Tier override: pin the integrator to apex — mythos-class leading edge"
+        }
+      ]
+    },
+    {
+      "family": "method",
+      "prefix": "method",
+      "purpose": "Retired: execution topology now lives in the `strategy` family (`.devflow.toml` `[strategy.*]`).",
+      "axis": "strategy",
+      "source": "inline",
+      "writers": [],
+      "writer_note": "nobody — renamed to strategy:*",
+      "readers": "humans — retired, see `strategy:*`",
+      "lifecycle": "durable",
+      "lifecycle_note": "migrate each with guarded `--prune` and repeatable `--migrate method:<v>=strategy:<v>`",
+      "trust_note": "retired — execution topology renamed to the `strategy` family; never provisioned",
+      "exclusive": false,
+      "provision": false,
+      "retired": true,
+      "values": [
+        {
+          "value": "oneshot"
+        },
+        {
+          "value": "plan"
+        },
+        {
+          "value": "plan-approved"
+        },
+        {
+          "value": "orchestrate"
+        },
+        {
+          "value": "council"
+        },
+        {
+          "value": "human-led"
+        }
+      ]
+    },
+    {
+      "family": "strategy",
+      "prefix": "strategy",
+      "purpose": "Which execution strategy in .devflow.toml [strategy.*] an agent works the issue under; conflicts are ambiguous, never ranked.",
+      "axis": "strategy",
+      "source": "devflow",
+      "writers": ["human"],
+      "writer_note": "humans, at triage or planning — never an agent on itself",
+      "readers": "agents, when entering the Dev Loop — Foreman does not consume it yet (out of scope here)",
+      "lifecycle": "durable",
+      "lifecycle_note": "set when the default strategy is wrong for the change; survives the work",
+      "trust_note": "provisioned; **read by agents** — selects an execution topology, arms nothing",
+      "exclusive": true,
       "provision": true,
       "color": "BF3989",
       "values": [
         {
           "value": "oneshot",
-          "description": "Execution: single agent, no separate plan phase"
+          "description": "Strategy: single agent, no separate plan phase"
         },
         {
           "value": "plan",
-          "description": "Execution: agent plans then implements; no human plan gate"
+          "description": "Strategy: agent plans then implements; no human plan gate"
         },
         {
           "value": "plan-approved",
-          "description": "Execution: plan requires human approval before implementation"
+          "description": "Strategy: plan requires human approval before implementation"
         },
         {
           "value": "orchestrate",
-          "description": "Execution: conductor session drives subagents, possibly across related issues"
+          "description": "Strategy: lead agent delegates bounded work to parallel workers"
         },
         {
           "value": "council",
-          "description": "Execution: N independent implementations; judged, best or synthesis wins"
+          "description": "Strategy: independent proposals, judged; best or synthesis wins (2+ agents)"
         },
         {
           "value": "human-led",
-          "description": "Execution: human owns central decisions; AI does bounded pieces"
+          "description": "Strategy: human owns central decisions; AI does bounded pieces"
         }
       ]
     },
@@ -584,7 +761,7 @@
       "writer_note": "nobody — never seeded into a new repo",
       "readers": "claim skills (and `claim-release.yml` where present), which still recognize it",
       "lifecycle": "claim-release",
-      "lifecycle_note": "delete once live claims are re-mapped to `claim:*`",
+      "lifecycle_note": "after choosing the actual claim family, use guarded `--prune` with repeatable `--migrate OLD=NEW`",
       "trust_note": "legacy; inert",
       "exclusive": false,
       "provision": false,
@@ -737,14 +914,14 @@
     {
       "family": "github-defaults",
       "prefix": null,
-      "purpose": "GitHub's repo-creation defaults that remain in the vocabulary; never provisioned, never deleted by setup.",
+      "purpose": "GitHub's repo-creation defaults that remain in the vocabulary; never provisioned and protected from maintenance pruning.",
       "axis": "meta",
       "source": "inline",
       "writers": ["human"],
       "writer_note": "GitHub, at repo creation",
       "readers": "humans",
       "lifecycle": "durable",
-      "lifecycle_note": "prune by hand if you do not want them",
+      "lifecycle_note": "adopted; leave in place — inventory reporting and guarded pruning exclude it",
       "trust_note": "not provisioned, never deleted by setup",
       "exclusive": false,
       "provision": false,

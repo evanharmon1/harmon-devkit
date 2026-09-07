@@ -22,34 +22,17 @@ environment — against the items below
 
 - [ ] `task install` — Brewfile deps, and lefthook git hooks
 - [ ] `task verify` passes locally
-- [ ] Verify `harmon-devkit.code-workspace` opens the repo's folder in VS Code and has a unique VS Code Workspace color. Then add any other related repos (e.g. other org repos) to the `folders` list in the workspace file so you have quick access to those repos
-- [ ] Extend `.gitignore` for your stack — the template ships a base; add stack-specific entries via [gitignore.io](https://www.toptal.com/developers/gitignore)
-- [ ] macOS: add a Raycast quicklink/alias that opens the `harmon-devkit.code-workspace`
-- [ ] macOS (Bunch): scaffold the launcher with `task util:bunch-add` (if not generated at copier time), then `task util:bunch-install` to move it to iCloud and leave a `.meta/*.bunch` symlink (re-run install if missing)
-
-## 2. GitHub repo settings
-
-- [ ] **Confirm draft pull requests are available on this repo** — every agent
-      PR opens as a draft and is promoted only by the readiness gate (AGENTS.md,
-      "Dev Loop"). GitHub restricts draft PRs on **private** repositories to its
-      paid plans, so on a private free-plan repo `gh pr create --draft` fails
-      outright and the whole lifecycle stops at its first step. Check the current
-      plan matrix in [GitHub's draft-PR
-      docs](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/changing-the-stage-of-a-pull-request);
-      if drafts are unavailable, make the repo public, upgrade the plan, or
-      decide deliberately not to run agent workflows here — do not "fix" it by
-      dropping `--draft`, which would make an open PR mean nothing again.
-- [ ] **Automated settings** — run `task setup:github` (idempotent, safe to
-      re-run): enables **Dependabot alerts** and **private vulnerability
-      reporting** when public. Do not add `dependabot.yml`: Renovate owns routine
-      and vulnerability-remediation PRs; Dependabot owns advisory alerts.
-- [ ] **Bot PAT** — the agent's `GH_TOKEN`. If a fine-grained PAT already covers
-`evanharmon1`,
-      just add this repo to its **selected repositories**; a token is scoped to one
-      resource owner, so a **new owner needs a new PAT**. Both layers are required —
-      the collaborator grant above sets the ceiling, the PAT's repo list reaches it.
-      Procedure: [guides/bot-account.md](guides/bot-account.md).
-- [ ] Import the branch ruleset (see [architecture/branch-protection.md](architecture/branch-protection.md)) — do this once `build.yml` is on `main` so the required `verify`/`security` checks resolve. **Use the UI import:** Settings → Rules → Rulesets → **New ruleset ▸ Import a ruleset** → select `.github/Branch Protection Ruleset - Protect Main.json`. (Prefer the UI over `gh api … rulesets`: the API `POST` is not idempotent — re-running creates a duplicate ruleset — and currently rejects the `merge_queue` rule. To later change the ruleset, edit the existing one in the UI rather than re-importing.)
+- [ ] Import the branch ruleset (see [architecture/branch-protection.md](architecture/branch-protection.md)) — do this once `build.yml`, `devcontainer-build.yml` are on `main` so the required `verify`/`security`/`devcontainer-verify` checks resolve. **Use the UI import:** Settings → Rules → Rulesets → **New ruleset ▸ Import a ruleset** → select `.github/Branch Protection Ruleset - Protect Main.json`. (Prefer the UI over `gh api … rulesets`: the API `POST` is not idempotent — re-running creates a duplicate ruleset — and currently rejects the `merge_queue` rule. To later change the ruleset, edit the existing one in the UI rather than re-importing.)
+- [ ] **[human-only] Add `closing-keywords` to the live branch ruleset** — after
+      the `closing-keywords` build job has reported once, edit the existing
+      main-branch ruleset in Settings → Rules → Rulesets and add that exact
+      required status check. Do not re-import the JSON solely for this change:
+      GitHub creates a duplicate ruleset rather than updating the live one.
+- [ ] **[human-only] Enable unattributed-changes approval in the live branch
+      ruleset** — after a `copier update` adds this parameter, edit the existing
+      main-branch ruleset in Settings → Rules → Rulesets and enable the matching
+      additional-approval setting. Do not re-import the JSON: GitHub creates a
+      duplicate ruleset rather than updating the live one.
 
 - [ ] **Install and activate Renovate** — install the
       [Renovate app](https://github.com/apps/renovate) for **Only select
@@ -190,6 +173,15 @@ environment — against the items below
       Retiring them is a deliberate, irreversible operator step — see
       [project-management.md](project-management.md), "Migrating a board that
       still has one."
+- [ ] **Upgrading from a release before harmon-init#1047
+      (`method:*` → `strategy:*`)?** Run `task setup:github-labels` first so
+      the `strategy:*` destinations exist, then use the read-only report and
+      guarded maintenance flow below. For each live value among `oneshot`,
+      `plan`, `plan-approved`, `orchestrate`, `council`, and `human-led`, pass
+      one `--migrate method:<v>=strategy:<v>`; the guarded flow attempts to move
+      associations for matching issues, PRs, and discussions found in its paginated snapshots,
+      re-reads them, and only then allows `--prune` to remove zero-association
+      retired labels.
 - [ ] Labels: run `task setup:github-labels` to seed this repo's starter label
       families from `label-registry.json`      (see the generated taxonomy table in
       [project-management.md](project-management.md)) — grow `domain:` values
@@ -198,158 +190,105 @@ environment — against the items below
       is product-independent and normally needs no edits. Labels are per-repo,
       so run it in each repo; org default labels (org Settings → Repository,
       UI-only) only seed new repos.
-- [ ] **After a `copier update` that adds a genuinely new label family**
-      (e.g. `tier:<role>:*`), re-run `task setup:github-labels` to provision
-      it here — it is additive and never deletes, so existing labels and the
-      issues they sit on are untouched — then classify open issues with the
-      added family.
-- [ ] **[human-only] `strategy:*` is not a new family — it is `method:*`
-      renamed (harmon-init#1047).** If this repo has no live `method:*`
-      labels, the plain additive step above is enough. If it does,
-      **rename before provisioning**: `task setup:github-labels` creates
-      `strategy:<value>` fresh, and GitHub label names are unique, so a
-      rename attempted after that line runs is rejected as a name collision —
-      leaving an orphaned old label beside an empty new one instead of one
-      migrated label. Use
-      [`assets/migrate-label-family.sh`](../ai/skills/repo/standardize-repo/assets/migrate-label-family.sh)
-      (the mechanism `mode-update.md` §6b walks through) — `inventory method`
-      first (refuses while any issue/PR carries more than one `method:*`
-      label; the old family had no `exclusive` constraint, the new one does),
-      then `rename method:<value> strategy:<value> --execute` for each of the
-      six values, then `verify method` to confirm none remain. If a value's
-      `strategy:*` destination already exists live, `rename` refuses and
-      points at `transfer` instead, which adds-and-verifies onto every item
-      before deleting the source.
-- [ ] **[human-only] Retire any legacy `agent:*` claim labels** — needed only
-      where `gh label list --limit 1000` still shows the harness-named family
-      (`agent:claude-code`, `agent:gemini-cli`, …) a pre-registry harmon-init
-      seeded. **Start with an explicit `--limit 1000` on every `gh label list`,
-      `gh issue list`, and `gh pr list` in this step**: all three default to 30.
-      If any list returns exactly 1000 entries (`--json name --jq length` for
-      labels; `--json number --jq length` for issues and PRs), treat it as capped:
-      double the limit and re-run until the count is below the cap before any
-      rename or delete. Otherwise a clean-looking result can leave legacy
-      labels, in-flight claims, or labelled pull requests unseen.
-      `setup-github-labels` never deletes a label, so the old family
-      survives beside the registry-rendered `claim:*` one, and every reader
-      tolerates both — this is cleanup, not a fix for something broken.
-      **Rename, never re-create**: `gh label edit agent:claude-code --name
-      claim:claude --repo <owner/repo>` edits the label object in place, so every
-      issue and PR carrying it keeps it, where create-then-delete would silently
-      drop those associations. Map by **model family, not harness** —
-      `agent:gemini-cli` → `claim:gemini`, `agent:kimi-k2` → `claim:kimi`,
-      `agent:qwen-code` → `claim:qwen` — these three are fixed-family
-      harnesses, so the mapping is unconditional. `agent:github-copilot` is
-      **not**: Copilot is a broker (registry `family_constraint.kind:
-      "broker"`, default `mai`), so an old claim under that label may
-      actually have run GPT, Claude, or another brokered family — check the
-      claim/session record for which one before renaming, and rename to
-      `claim:<actual-family>` (only `claim:mai` when the record confirms
-      MAI). When the actual family can't be recovered: for a live claim,
-      settle it with its owner first rather than guess; for a
-      released/historical one, just delete the stale `agent:github-copilot`
-      label off that issue/PR instead of renaming it — a guessed family is
-      worse than none, since the claim label's whole meaning is the family.
-      Target names otherwise come from
-      `node scripts/agent-registry-labels.mjs suggest-claim`.
-      **Destination-collision procedure**: a rename whose target already
-      exists is rejected by GitHub (`gh label edit` errors: the destination
-      name is already in use — e.g. `claim:claude` already exists from a prior
-      `setup-github-labels` run). When that happens, migrate ASSOCIATIONS
-      instead of the label object: for every issue and PR carrying the old
-      label, add the destination label and remove the old one
-      (`gh issue edit <number> --add-label claim:claude --remove-label
-      agent:claude-code --repo <owner/repo>`; the same `--add-label
-      X --remove-label Y` pair works on `gh pr edit`), then delete the
-      now-empty old label (`gh label delete agent:claude-code --repo
-      <owner/repo> --yes`) once a re-read of `gh issue list --label
-      agent:claude-code --state all --limit 1000` **and** the equivalent
-      `gh pr list` both return nothing — only then is it safe to delete; the
-      other checklist items below that reference this procedure reuse it
-      verbatim. Enumerate **`gh pr list` as well as `gh issue list`**
-      throughout, collision or not: labels apply to
-      pull requests too and `gh issue list` never returns them, so deleting the
-      legacy label afterwards would drop exactly the associations the re-labelling
-      missed — the loss this whole item exists to avoid. Check for in-flight
-      claims first — `gh issue list --label agent:… --state all --limit 1000`
-      **and** `gh pr list --label agent:… --state all --limit 1000`: a claim
-      record naming the old label will not release the renamed one, so settle or
-      amend those records in the same sitting. Re-read `gh label list --limit 1000` afterwards — no `agent:*`
-      should remain.
-- [ ] **[human-only] Retire pre-2026-refresh `codex`/`copilot` agent labels** —
-      needed only where an explicit enumeration shows
-      `suggest:codex`/`claim:codex` or `suggest:copilot`/`claim:copilot`
-      still exist: `gh label list --repo <owner/repo> --limit 1000 --json
-      name --jq '.[].name' | grep -E '^(suggest|claim):(codex|copilot)$'`
-      (the default `gh label list --limit 200` paged listing can miss these
-      on a repo with many labels — use this enumeration, not the paged form,
-      everywhere in this item). harmon-init issue #751 replaced those
-      harness-named families with model-family vocabulary: Codex maps to `gpt`;
-      Copilot is a broker that defaults to `mai`, but each association must use
-      the actual family recovered by the procedure below.
-      A `setup-github-labels` re-run never deletes the old family, so it
-      survives beside the new registry-rendered one.
+- [ ] **After a `copier update` that adds label families** (e.g. `tier:*` — a
+      pure addition), re-run `task setup:github-labels` to provision the new
+      labels here — it is additive and never deletes, so existing labels and
+      the issues they sit on are untouched — then classify open issues with the
+      added families. A RENAMED family (like `method:*` → `strategy:*` above)
+      is not a pure addition — provision the new destinations first, then
+      migrate the old associations before retiring their labels.
+- [ ] **[human-only] Inspect live label drift before retiring anything** — keep
+      the default setup path additive, then run
+      `./scripts/setup-github-labels.sh --repo <owner/repo> --report-unregistered`
+      with the same `--foreman` / `--release-please` profile flags used for
+      setup when you want to mirror provisioning. Maintenance protection still
+      includes every non-retired registered family, including gated tool labels,
+      when those flags are omitted. This is read-only: it pages through the
+      live labels, all-state issues and pull requests, and repository
+      discussions, and reports separate association counts. An indeterminate read is a stop, not
+      permission to clean up.
+- [ ] **[human-only] Retire any legacy `agent:*` claim labels or pre-2026
+      `codex`/`copilot` labels** — use the guarded maintenance flow, never a
+      direct `gh label delete` or a hand-written association list. Perform its
+      write path in a quiescent maintenance window: pause claim/release,
+      Foreman, release-please, and other human/API label writers for the whole
+      run. `--report-unregistered` is read-only, but its counts are a snapshot;
+      run it again immediately before `--prune`.
 
-      **`codex` → `gpt` is a fixed mapping** (Codex only ever ran GPT) —
-      **rename, never re-create**, the same way as the `agent:*` item above:
-      `gh label edit suggest:codex --name suggest:gpt --repo <owner/repo>`
-      (repeat for `claim:codex`), which preserves issue/PR associations
-      instead of dropping them.
+      For fixed-family sources, these mappings are authoritative:
+      `agent:claude-code` → `claim:claude`, `agent:codex` → `claim:gpt`,
+      `agent:gemini-cli` → `claim:gemini`, `agent:kimi-k2` → `claim:kimi`, `agent:qwen-code` →
+      `claim:qwen`, `suggest:codex` → `suggest:gpt`, and `claim:codex` →
+      `claim:gpt`. Pass one repeatable `--migrate OLD=NEW` per exact live
+      source, together with `--prune`; for example,
+      `./scripts/setup-github-labels.sh --repo <owner/repo> --prune
+      --migrate agent:gemini-cli=claim:gemini`. `--migrate` does not match a
+      prefix, so each live model-level source needs its own mapping. The
+      `OLD=NEW` form contains exactly one `=`; a label name containing `=` must
+      be relabeled per record instead of passed to bulk migration. Move only
+      the family segment for fixed mappings and preserve the recorded model
+      suffix, e.g. `suggest:codex:sol` → `suggest:gpt:sol` and
+      `claim:codex:sol` → `claim:gpt:sol`; model-level labels refine rather
+      than replace their family-level label, and the command retains or adds
+      both associations. If a recognized model-level
+      destination is absent, the command creates it after confirmation by
+      copying metadata from the live family label; missing family labels stop
+      maintenance and require setup first.
 
-      **`copilot` is NOT a fixed mapping — apply the same broker caution as
-      the `agent:github-copilot` entry in the `agent:*` item above, not a
-      blanket rename to `mai`.** Copilot is a broker (registry
-      `family_constraint.kind: "broker"`, default `mai`): a `claim:copilot`
-      may have actually run GPT, Claude, or another brokered family, and
-      `suggest:copilot` only ever named a harness preference, never an MAI
-      one. For `claim:copilot`, follow the `agent:*` item's procedure exactly
-      — check the claim/session record for the actual family and rename to
-      `claim:<actual-family>` (only `claim:mai` when the record confirms
-      MAI); when unrecoverable, settle a live claim with its owner first, or
-      delete the stale label from a released/historical issue/PR instead of
-      guessing. For `suggest:copilot`, there is no rename to make: re-express
-      the intent by re-labelling each issue with whichever family it actually
-      meant, or drop the label, rather than mechanically renaming a harness
-      name into a family slot it never occupied.
+      Use this association-migration path, not `gh label edit` or a hand-written
+      create-then-delete sequence: the command validates a live registry
+      destination or creates a recognized on-demand model destination as
+      described above, attempts the association move for each matching issue,
+      PR, and discussion found in its paginated snapshots, then permits
+      `--prune` only when a fresh snapshot
+      shows the source has zero associations. Enumerate
+      model-level names explicitly with `gh label list --repo <owner/repo>
+      --limit 1000 --json name --jq '.[].name' | grep -E
+      '^(suggest|claim):(codex|copilot):'`; for each source, inspect all-state
+      `gh issue list --label <old> --state all --limit 1000` **and**
+      `gh pr list --label <old> --state all --limit 1000`. An exactly-full
+      manual result is capped; increase the limit and rerun before writes. The
+      maintenance path itself uses `gh api --paginate` and refuses an
+      indeterminate read.
 
-      **If the destination already exists** — a `setup-github-labels` re-run
-      already created `suggest:gpt`/`claim:mai` before this cleanup runs —
-      `gh label edit` is rejected the same way; use the **destination-collision
-      procedure from the `agent:*` item above** (add the new label to every
-      issue/PR carrying the old one, remove the old, then delete the old label
-      once empty) instead of trying to rename over it. Check for in-flight
-      claims first — `gh issue list --label claim:codex --state all --limit
-      1000` **and** `gh pr list --label claim:codex --state all --limit
-      1000` (repeat for `claim:copilot`, remembering the broker caution above
-      governs what you rename it to) — and settle or amend any that name the
-      old label before renaming it out from under them. Re-run the
-      enumeration above afterwards — it should return nothing.
+      Copilot is a broker, not a fixed family: `mai` is only the picker default
+      and is never a guessed destination. Do **not** pass
+      `agent:github-copilot*`, `suggest:copilot*`, or `claim:copilot*` to bulk
+      `--migrate` — the command rejects broker-derived sources because one
+      destination cannot represent mixed runtime records. For
+      `suggest:copilot`, there is no claim/session record: re-express each
+      issue/PR's planning intent as `suggest:<actual-family>` or drop the old
+      association; do not rename it to `suggest:mai`. For `claim:copilot`,
+      inspect each issue/PR's claim/session record and relabel that record to
+      `claim:<actual-family>`; use `claim:mai` only when the record confirms
+      MAI. Apply the same per-record distinction to
+      `suggest:copilot:<model>`/`claim:copilot:<model>` and preserve a model
+      suffix only after the actual family is known. Include Discussions in that
+      per-record inventory: the read-only report gives their association count,
+      and the Discussions UI or GraphQL API identifies the records to relabel.
+      If a live claim's record is
+      missing, settle it with its owner or leave the label untouched rather
+      than guess. Add and verify the per-record destination before removing the
+      old association; after every record is handled, a fresh zero-association
+      snapshot may permit guarded `--prune` to attempt retiring the source.
 
-      **Also check for model-level labels naming the old family** —
-      `suggest:codex:<model>` / `claim:codex:<model>` /
-      `suggest:copilot:<model>` / `claim:copilot:<model>` (`suggest:codex:sol`,
-      `claim:copilot:code-1-flash`, …). Those are created on demand rather than
-      seeded, so the same paged-listing gap applies — enumerate with the
-      family prefix: `gh label list --repo <owner/repo> --limit 1000 --json
-      name --jq '.[].name' | grep -E '^(suggest|claim):(codex|copilot):'`.
-      Rename each `codex:<model>` label the same fixed-mapping way,
-      **preserving its model suffix** (`suggest:codex:sol` →
-      `suggest:gpt:sol` — the model slug is unchanged, only the family
-      segment moves), and run the same in-flight-claim check per label before
-      renaming it (`gh issue list --label suggest:codex:sol --state all
-      --limit 1000` / `gh pr list --label suggest:codex:sol --state all
-      --limit 1000`, one pair per label found). **`copilot:<model>` labels get
-      the same broker treatment as the family-level ones above** — determine
-      the actual family per label from its claim/session record and rename
-      preserving the suffix (`claim:copilot:code-1-flash` →
-      `claim:<actual-family>:code-1-flash`), or remove/re-express rather than
-      assume `mai`. **Collisions use the same destination-collision procedure
-      too** — a model-level label can already exist for the same reason a
-      family-level one can (an on-demand `suggest:gpt:sol` created before this
-      cleanup ran) — migrate associations from `suggest:codex:sol` to
-      `suggest:gpt:sol` and delete `suggest:codex:sol` once it carries no
-      issues or PRs, rather than renaming over the existing one. Re-run the
-      `grep` above afterwards — it should return nothing.
+      Before moving any in-flight `claim:*`/legacy `agent:*` marker, settle the
+      claim or amend its durable record in the same sitting: its release path
+      names the exact label it will remove, and moving only the issue/PR
+      association strands the replacement marker. Interactive runs confirm on
+      the TTY; automation must state destructive intent again with separate
+      `--yes` (piped stdin is refused).
+
+      The command verifies each migration around source removal, then takes one
+      complete, bounded post-migration association snapshot before the deletion
+      batch and fails closed on read/verification errors, but GitHub has no transaction or
+      compare-and-swap that binds the final read to the following edit/DELETE.
+      A concurrent writer can still change labels after that read and before
+      the request, and the command cannot undo a successful concurrent
+      mutation. If writers were not paused or any verification drifts, treat
+      the operation as incomplete, reconcile live associations, and rerun in a
+      new quiet window; do not infer association preservation from a successful
+      exit alone; this is a guarded best-effort operation at that API boundary.
 - [ ] Project views: create the starter views (Board / Triage / Agent queue /
       Planning / Mine) in the Project UI — Projects V2 has no view API,
       so this is a one-time manual step. Filters/layouts are in

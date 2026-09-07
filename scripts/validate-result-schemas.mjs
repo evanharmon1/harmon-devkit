@@ -1466,12 +1466,12 @@ function checkSettlementReferenceType(document, errors) {
 // diagram draws no such edge.
 const ALLOWED_EDGES = {
   kickoff: new Set(['claim']),
-  claim: new Set(['explore', 'plan']),
+  claim: new Set(['explore', 'plan', 'implement']),
   explore: new Set(['plan']),
   plan: new Set(['implement']),
   implement: new Set(['verify', 'integration']),
   verify: new Set(['challenge', 'review', 'security']),
-  challenge: new Set(['implement', 'review']),
+  challenge: new Set(['implement', 'review', 'security']),
   review: new Set(['implement', 'security']),
   security: new Set(['integration', 'implement']),
   integration: new Set(['implement'])

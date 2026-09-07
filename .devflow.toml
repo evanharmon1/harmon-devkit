@@ -1,182 +1,451 @@
-# .devflow.toml — round caps for the Dev Loop stages defined in AGENTS.md.
+# .devflow.toml — the portable execution-policy vocabulary for the Dev Loop.
+# rigor: how much confidence/effort a change gets. strategy: how the work is
+# organized. New in v2: [gates] (which Taskfile target gates which push),
+# [rounds] (vertical appetite: review rounds + wall clock), [breadth]
+# (horizontal scale: agent runs + parallelism), [convergence] (computed stage
+# exits), [role.*] (per-role tier baselines and family/harness preferences),
+# [stage.*] (stage → registry actors). Model-tier CLASSIFICATION lives in
+# agent-registry.json (each model entry carries its stratum); this file holds
+# only tier_order and the per-role/per-rigor tier CHOICES.
+# Anchor spec: specs/dev-flow-v2.md (harmon-devkit).
 #
-# The numbers live here rather than in prose so that there is exactly one place
-# to change them and one place to read them.
-#
-# Resolution order (AGENTS.md states the rule; only this file states numbers):
-#
-#   explicit instruction in the session
-#     > a rigor:* label on the issue, where the repo provisions them
-#       > default_rigor below
-#         > the built-in fallback stated in AGENTS.md, if this file is absent
-#
-# Announce the resolved caps on entering the Dev Loop and carry them into the
-# PR body, so the budget a change was reviewed under is on the record rather
-# than recalled.
-#
-# When the change under review edits THIS FILE, resolve its caps AND floor
-# from the merge-base copy rather than the branch copy — otherwise a branch
-# can lower the very gate it is changing, a self-lowered min_rounds buying an
-# earlier empty-round exit. An explicit human instruction still overrides.
-#
-# These are ceilings, not quotas. A stage exits the moment any of its exit
-# conditions in AGENTS.md is met: two consecutive rounds adjudicated to zero
-# P0/P1, any single round with no findings at all (once `min_rounds` rounds
-# have run), or a round that hits the cap below having adjudicated to zero
-# P0/P1 — the confirming round it would otherwise owe is one the cap forbids,
-# so a clean last round is convergence, not grounds to escalate. Nothing here
-# obliges a round to be run.
-#
-# `min_rounds` is the one number here that is a floor rather than a ceiling: it
-# is the minimum number of rounds a stage must actually run before the
-# empty-round instant exit is available. The other two exits already run two
-# rounds and one capped round respectively, so any floor of 2 or less is
-# satisfied by construction and `min_rounds` binds only the empty-round path.
-#
-# Retuning these is expected. The Dev Loop assumes five invariants, and nothing
-# at runtime will tell you if an edit breaks one:
-#   - every level defines challenge, review, shepherd and min_rounds, all
-#     integers
-#   - challenge and review are >= 2, because the exit condition needs two
-#     consecutive adjudicated-clean rounds; at 1, one finding is an escalation
-#   - min_rounds is 1 or 2, never more: two consecutive adjudicated-clean
-#     rounds — empty rounds included — exit a stage at round 2 whatever the
-#     floor says, so a value above 2 is a budget no stage ever spends
-#   - shepherd is the same in every level (see below)
-#   - default_rigor names a level that exists here
-#
-# `challenge` and `review` are inert wherever no second-model reviewer is
-# configured: those stages never run, so their caps bound nothing. `shepherd`
-# always applies.
+# Schema v2 is an incompatible change under ADR 0008: v1 consumers reject
+# this file with a migration hint; v2 consumers refuse the v1/legacy shapes.
+schema_version = 2
 
-default_rigor = "standard"
+default_rigor    = "standard"
+default_strategy = "plan"
 
-# Strategy-axis defaults (tier/method) — the [tier.*] tables and the full
-# rationale are at the bottom of this file; these two scalars must live up here
-# at top level, above the first [table] header, or TOML would nest them under
-# it. `default_tier` is the tier a consumer's preflight resolves `adaptive` to
-# and the fallback for an issue with no tier:* label — it must be concrete, so
-# validation rejects `adaptive` (ADR D7). `default_method` is the fallback for
-# an issue with no method:* label; the fixed method conflict-rank ships in the
-# [method] table at the bottom of this file (ADR 0006 D4).
-default_tier   = "standard"
-default_method = "plan"
+# (ranking) Weakest → strongest; the only definition of "strongest" for rigor:* label
+# conflicts. Retunable (validator requires a permutation of [rigor.*] keys).
+rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
 
-# `shepherd` is deliberately identical in every level, and is not a knob to
-# turn down.
+# (ranking) The model-capability ladder, weakest → strongest. The strata
+# CLASSIFY registry models — every model entry in agent-registry.json
+# families[].models[] carries `tier: "<rung>"` (frontier is opus-class, apex
+# mythos-class), and a family with two models at one rung marks one
+# `default: true` — so resolving a model is a registry lookup: the resolved
+# family's model at the resolved rung. Two tier:* labels on one issue resolve
+# to whichever sorts later here (a conflict only ever buys more capability;
+# a concrete tier beats `adaptive`). Escalation climbs one rung at a time in
+# this order, fires on failure/refusal/operator policy — never cost alone —
+# only where the resolved rigor's tier_escalation allows it, and never
+# switches family or vendor (family fallback is [role.*].families' separate,
+# horizontal axis). An exhausted ladder stops with a report.
+tier_order = ["local", "economy", "standard", "frontier", "apex"]
+
+# ── Resolution ──────────────────────────────────────────────────────────────
+#   explicit operator instruction (attributable channel; never issue/PR text)
+#     > rigor:*/strategy:* labels > defaults above > built-in fallback
+# tier:<role>:* labels refine the resolved profile ([role.*] baseline, then
+# the rigor level's *_tier override). Off-default/off-profile resolutions are
+# disclosed in the PR body. Merge-base rule: when the change under review
+# edits THIS FILE or agent-registry.json, every value read during policy
+# resolution comes from the merge-base copy. Nothing here arms anything;
+# .foreman.toml remains the arming surface, and Foreman derives
+# [verify].default from [gates].pre_pr (foreman#183).
 #
-# `challenge` and `review` bound work the agent generates itself — each round's
-# fixes are the next round's input — which is exactly what makes capping them
-# low safe. `shepherd` bounds *other people's* findings: CI failures, human
-# review, Codex. Lowering it does not reduce effort spent; it abandons reviews
-# that are already unanswered, and the readiness gate then refuses to promote
-# the PR anyway. The key is present so that a level is one consistent shape.
+# Announcement line (worked example — fill in what actually resolved):
+#   rigor: standard (default) → rounds standard: challenge ≤3, review ≤3,
+#   integration ≤4, remediation ≤4, min_rounds 1, wall_clock 120m ·
+#   breadth standard: runs ≤6, parallel ≤3 · tiers orch/impl/chal/rev/integ
+#   = frontier/standard/frontier/standard/economy · strategy: plan (default)
 
-# Trivial, low-blast-radius work: doc touch-ups, mechanical bumps, typo fixes.
+# ── Array semantics (every array key's comment names its kind) ──────────────
+#   preference  ordered any-of: first configured+available entry serves; fall
+#               over on failure/quota — substitution disclosed in the PR body
+#   chain       ordered, consumed strictly in sequence
+#   all-of      unordered set: every entry must be satisfied
+#   allowlist   unordered set: membership restricts what MAY be used — never
+#               an ordering
+#   ranking     ordered scale definition, not a selection
+
+# ── Rigor levels ────────────────────────────────────────────────────────────
+# Each names a [rounds.*] policy, a [breadth.*] envelope, five role tiers,
+# and tier_escalation (whether roles may climb tier_order, one rung at a
+# time).
+# Invariants: orchestrator_tier >= implementer_tier; challenger_tier >=
+# implementer_tier; reviewer_tier >= implementer_tier (ladder order — minima,
+# not maxima). challenger vs reviewer: adversarial design attack is
+# judgment-heavy and rides a stratum above verification review at most levels.
+
+[rigor.cursory]
+rounds            = "cursory"
+breadth           = "cursory"
+orchestrator_tier = "standard"
+implementer_tier  = "economy"
+challenger_tier   = "standard"
+reviewer_tier     = "economy"
+integrator_tier   = "economy"
+tier_escalation   = false
+description       = "Rigor: one quick adversarial glance, economy elsewhere — near-zero-risk changes"
+
 [rigor.light]
-challenge  = 2 # 2 is the floor, never 1: the exit condition needs two
-review     = 2 # consecutive adjudicated-clean rounds, so a cap of 1 turns any
-shepherd   = 4 # single finding into an immediate escalation.
-min_rounds = 1 # a clean first round is enough for work this small.
+rounds            = "light"
+breadth           = "light"
+orchestrator_tier = "frontier"
+implementer_tier  = "economy"
+challenger_tier   = "frontier"
+reviewer_tier     = "standard"
+integrator_tier   = "economy"
+tier_escalation   = false
+description       = "Rigor: light rounds, frontier orchestrator/challenger, economy implementer"
 
-# The default for ordinary changes.
 [rigor.standard]
-challenge  = 3
-review     = 3
-shepherd   = 4
-min_rounds = 1
+rounds            = "standard"
+breadth           = "standard"
+orchestrator_tier = "frontier"
+implementer_tier  = "standard"
+challenger_tier   = "frontier"
+reviewer_tier     = "standard"
+integrator_tier   = "economy"
+tier_escalation   = true
+description       = "Rigor: standard rounds and breadth, frontier challenger, standard implementer — the default"
 
-# Security, migrations, data paths — anything with an irreversible failure mode.
+[rigor.thorough]
+rounds            = "thorough"
+breadth           = "thorough"
+orchestrator_tier = "apex"
+implementer_tier  = "standard"
+challenger_tier   = "apex"
+reviewer_tier     = "frontier"
+integrator_tier   = "economy"
+tier_escalation   = true
+description       = "Rigor: thorough rounds, apex orchestrator/challenger, frontier reviewer"
+
 [rigor.deep]
-challenge  = 5
-review     = 5
-shepherd   = 4
-min_rounds = 1
+rounds            = "deep"
+breadth           = "deep"
+orchestrator_tier = "apex"
+implementer_tier  = "frontier"
+challenger_tier   = "apex"
+reviewer_tier     = "frontier"
+integrator_tier   = "economy"
+tier_escalation   = true
+description       = "Rigor: deep rounds, apex orchestrator/challenger, frontier implementer/reviewer"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Strategy axes — tier (which model stratum works an issue) and method (which
-# execution topology). Added under harmon-init#855, per ADR 0006. This config is
-# self-contained: the ADR (recorded in the harmon-init repository) holds the
-# rationale a consumer does not need to resolve the axes.
-#
-# These tables are INERT ROUTING PREFERENCES, never dependencies (ADR D1): a
-# generated repo invokes no model and runs no workflow because a table exists,
-# and an acting consumer may select only among vendors and harnesses the
-# operator has already configured and authenticated. The shipped defaults create
-# no account, trial, or paid-SaaS dependency, and escalation can never switch a
-# repo to a vendor it does not already use.
-#
-# The model slugs below are agent-registry.json family→model slugs. harmon-init
-# validates this file at release time with scripts/test-devflow-config.sh (a
-# root-only guard with no template counterpart — a generated repo carries this
-# config but not the script): every slug resolves against the registry,
-# default_tier/default_method (declared up top beside default_rigor) name
-# provisioned values, `adaptive` is rejected as default_tier, escalate_to is
-# referential/acyclic/monotonic toward `apex` (and `local` → `economy`), and a
-# [tier.local] entry binds to a registered `-local` harness. A consumer editing
-# these tables owns them the way it owns its AGENTS.md, and re-runs that check
-# only if it vendors the script itself.
-#
-# The tier ladder is `local → economy → standard → frontier → apex` (ADR D2);
-# `adaptive` is off-ladder and never a concrete map. `frontier` is opus-class,
-# `apex` is mythos-class (fable, sol). Families appear at a tier only where they
-# have a model of that stratum — the top strata are genuinely narrow, so most
-# families top out at `standard`. `escalate_to` climbs toward `apex` and fires
-# on failure, refusal, or operator policy — never cost alone (ADR D3); an
-# exhausted chain stops with a report rather than switching vendor or
-# downgrading.
+[rigor.forensic]
+rounds            = "forensic"
+breadth           = "forensic"
+orchestrator_tier = "apex"
+implementer_tier  = "frontier"
+challenger_tier   = "apex"
+reviewer_tier     = "apex"
+integrator_tier   = "standard"
+tier_escalation   = true
+description       = "Rigor: maximum scrutiny at every role — irreversible failure modes, security, data paths"
 
-# Self-hosted stratum. Opt-in per family: an entry must bind to a registered
-# `-local` endpoint-variant harness (ADR 0005 D9), and today only
-# claude-code-qwen-local (family qwen) is registered — so `local` is qwen-only
-# until more are added. `tier:local` escalates to `economy` (ADR D2).
-[tier.local]
-endpoint    = "local"
-escalate_to = ["economy"]
-qwen        = "coder-30b"   # served locally by claude-code-qwen-local
+# A [rigor.<level>.convergence] table may replace `converged`, `diverging`,
+# or both with a full composed expression, but only when the replacement is
+# provably tighter than the matching [convergence] catalog value.
 
-[tier.economy]
-escalate_to = ["standard"]
-claude   = "haiku"
-gpt      = "luna"
-gemini   = "3-5-flash-lite"
-qwen     = "coder"
-deepseek = "v4-flash"
-glm      = "4-7-flash"
-mai      = "code-1-flash"
+# ── Rounds — vertical appetite: review rounds, fix cycles, wall clock ───────
+# challenge/review: max heuristic passes per confidence stage; 0 disables the
+# stage (exit `capped`, reason `disabled`). min_rounds is the floor per
+# confidence stage below which the single-empty-round exit cannot fire;
+# effective floor is min(min_rounds, cap).
+# Generated projects set challenge/review and min_rounds to 0 when
+# use_codex_review is off, and integration to 0 when use_codex_cloud_review
+# is off. Their matching [stage.*].finders arrays render empty below, so an
+# opt-out never leaves an enabled stage with no installed reviewer task.
+# integration: bounds CODEX RE-REVIEW CYCLES ONLY. Human and CI findings are
+# always answered — uncapped. 0 waives only the Codex cycle (the readiness
+# gate's Codex condition drops out; every other condition stays). A fix after
+# the last permitted cycle = `capped`: blocker report naming the unreviewed
+# head, PR stays draft. The verdict is never waived.
+# remediation: bounds fix pushes in the integration stage. Terminal action is
+# escalation with the unresolved findings listed — never abandonment, never
+# promotion past them. 0 = the first finding needing a code fix escalates.
+# wall_clock_min: elapsed-time ceiling for the whole run; at it, stop and
+# post a blocker report — never trim an unfinished stage to fit.
+# A fully-disabled custom policy (all caps 0) remains schema-valid for repos
+# that want zero AI review at a level; no shipped level uses one.
 
-[tier.standard]
-escalate_to = ["frontier"]
-claude   = "sonnet"
-gpt      = "terra"
-gemini   = "3-6-flash"
-qwen     = "coder-plus"
-deepseek = "v4-pro"
-glm      = "5-2"
-mai      = "thinking-1"
-kimi     = "k3"
-minimax  = "m3"
-mistral  = "devstral-small-2"
+[rounds.cursory]
+challenge      = 1
+review         = 1
+integration    = 1
+remediation    = 2
+min_rounds     = 1
+wall_clock_min = 30
 
-# Opus-class. Narrow by design — few families ship a model at this stratum.
-[tier.frontier]
-escalate_to = ["apex"]
-claude = "opus"
-gemini = "3-1-pro"
-qwen   = "max"
+[rounds.light]
+challenge      = 2
+review         = 2
+integration    = 3
+remediation    = 3
+min_rounds     = 1
+wall_clock_min = 60
 
-# Mythos-class (fable, sol) — the top of the ladder, so escalate_to is empty.
-[tier.apex]
-escalate_to = []
-claude = "fable"
-gpt    = "sol"
+[rounds.standard]
+challenge      = 3
+review         = 3
+integration    = 4
+remediation    = 4
+min_rounds     = 1
+wall_clock_min = 120
 
-# The method conflict-resolution rank (ADR 0006 D4), most human oversight first.
-# It is shipped as config — not left to prose — so a
-# consumer resolves conflicting method:* labels from a machine-readable order
-# rather than re-deriving one, and it is FIXED: validation pins it to this exact
-# order so every consumer resolves identically. `default_method` (declared up
-# top) is the only method knob. Topologies with no inherent ordering
-# (`council` vs `orchestrate`) still resolve deterministically because of it.
-[method]
-rank = ["human-led", "plan-approved", "council", "orchestrate", "plan", "oneshot"]
+[rounds.thorough]
+challenge      = 4
+review         = 4
+integration    = 5
+remediation    = 5
+min_rounds     = 1
+wall_clock_min = 240
+
+[rounds.deep]
+challenge      = 5
+review         = 5
+integration    = 6
+remediation    = 6
+min_rounds     = 1
+wall_clock_min = 480
+
+[rounds.forensic]
+challenge      = 6
+review         = 6
+integration    = 8
+remediation    = 8
+min_rounds     = 2   # forensic: a single empty round never ends a stage
+wall_clock_min = 720
+
+# ── Breadth — horizontal scale: how many agents, how wide ───────────────────
+# max_agent_runs: total dispatches across the run (orchestration +
+# implementation work; review passes are [rounds]'s axis, not counted here).
+# Confidence dispatches are not debited from this implementation envelope,
+# but fail-closed validation still requires its numeric allowance to cover a
+# configured primary finder's one retry; every shipped breadth is therefore >= 2.
+# max_parallel_agents: concurrent ceiling. Strategy compatibility reads both:
+# council needs parallel >= min_agents AND runs >= min_agents + 1; orchestrate
+# needs both >= min_agents. council/orchestrate under cursory (2/1) are
+# documented incompatibilities.
+
+[breadth.cursory]
+max_agent_runs      = 2
+max_parallel_agents = 1
+
+[breadth.light]
+max_agent_runs      = 3
+max_parallel_agents = 2
+
+[breadth.standard]
+max_agent_runs      = 6
+max_parallel_agents = 3
+
+[breadth.thorough]
+max_agent_runs      = 12
+max_parallel_agents = 4
+
+[breadth.deep]
+max_agent_runs      = 20
+max_parallel_agents = 4
+
+[breadth.forensic]
+max_agent_runs      = 30
+max_parallel_agents = 6
+
+# ── Spend — cost ceilings (schema-only, unshipped) ──────────────────────────
+# max_tokens / max_usd are defined in .devflow.schema.json but ABSENT from
+# every shipped envelope: a consumer that cannot measure tokens or spend must
+# report the limit as UNENFORCED rather than claim an enforcement it cannot
+# perform. Add a table only when the repo gains that measurement:
+# [spend.standard]
+# max_tokens = 20000000
+# max_usd    = 25
+
+# ── Gates — which Taskfile target gates which push ──────────────────────────
+# Values are BARE Taskfile target names — never argv, paths, or shell. The
+# validator refuses anything that is not an existing target (no spaces, no
+# slashes), so this file can select among the repo's own commands but never
+# mint one. Consumers compose `task <target>`; Foreman derives
+# [verify].default from pre_pr the same way (foreman#183).
+[gates]
+round_code      = "verify"            # round push touching any code path
+round_docs      = "check"             # diff entirely inside docs_only_paths
+secret_scan     = "security:secrets"  # unconditional, every push
+pre_pr          = "security"          # after asserting a round-gate marker on
+                                      # the head; task ci stays on-demand
+# The ONLY copy of the docs-only allowlist; the push helper re-derives the
+# classification from the diff — never trusts the caller's word for it.
+docs_only_paths = ["docs/**", "specs/**", "**/*.md"]   # (allowlist)
+
+# ── Convergence — the exit script computes continue|converged|diverging|capped
+# A catalog of named predicates composed per outcome — not fixed knobs.
+# Per-rigor overrides may only tighten. (Predicate names/shapes are the exit
+# script's surface — harmon-devkit#636.)
+[convergence]
+converged = { all = [ { predicate = "no_gating_findings" } ] }
+diverging = { any = [
+  { predicate = "count_rising", increases = 2 },
+  { predicate = "repeat_after_fix" },
+  { predicate = "provenance_share", min = 0.5, exclude_classes = ["design"] },
+] }
+
+# ── Roles — tier baseline per role; the rigor profile's *_tier overrides ────
+# A role is a contract (result schema + permitted writes), declared in
+# agent-registry.json roles[]. challenger and reviewer are distinct roles
+# with distinct contracts: challenger attacks the design (attack scenarios,
+# design-level findings, de-scaffolding recommendations); reviewer verifies
+# the implementation (consistency evidence, test-gap classes). Both share
+# the common finding core the exit script computes over.
+# families (preference): the first family the operator has configured and
+# authenticated serves the role; fall over on failure/quota — horizontal
+# fallback, disclosed. harnesses (preference, optional): among the registry
+# harnesses that implement this role AND can run the resolved family, first
+# available wins; absent = any registered harness serving the resolved
+# family (every shipped role states it explicitly; absence is for consumers
+# trimming the file). Multiplexers like Herdr make running a role in a non-default
+# harness routine, which is why harness is a preference here rather than a
+# fact of the environment. Resolution per role: family first, then harness
+# within that family — a family with no available harness falls through to
+# the next family. Model = the resolved family's registry model at the
+# resolved tier (its `default` where the family has two at that rung). All
+# slugs resolve against agent-registry.json (families[], harnesses[]); a
+# harness that cannot run the resolved family is skipped, not an error.
+# Family diversity (challenger/reviewer differing from the implementer's
+# family where possible) is a constraint layered on top, per docs.
+[role.orchestrator]
+tier      = "apex"     # the session driving the run
+families  = ["claude", "gpt"]              # (preference) moot when a human
+[role.implementer]
+tier      = "standard"
+families  = ["claude", "gpt", "gemini"]    # (preference)
+harnesses = ["claude-code", "codex-cli", "antigravity"]  # (preference)
+[role.challenger]
+tier      = "frontier" # adversarial design attack — judgment-heavy
+families  = ["gpt", "claude", "gemini"]    # (preference) leads off-family
+                                           # from the implementer by default
+harnesses = ["codex-cli", "claude-code"]  # (preference) — for
+                                           # challenger/reviewer this bites
+                                           # only where the stage's finders[]
+                                           # do not already pin a harness:
+                                           # ordering finder_fallbacks, or a
+                                           # stage with no explicit list
+[role.reviewer]
+tier      = "standard" # verification checkpoint — more mechanical
+families  = ["gpt", "claude", "gemini"]    # (preference)
+harnesses = ["codex-cli", "claude-code"]  # (preference) — same
+                                           # finder-pinning caveat as challenger
+[role.integrator]
+tier      = "economy"  # follows the checker protocol; no judgment required
+families  = ["claude", "gpt"]              # (preference)
+harnesses = ["claude-code"]   # (preference) — live every run:
+                                           # the integrator is the dispatched
+                                           # polling agent driving the cycle,
+                                           # NOT the codex-cloud finder whose
+                                           # verdict it collects
+
+# ── Stages — stage → registry actors ────────────────────────────────────────
+# Monomorphic keys; the KEY carries the semantics, the value is always a
+# plain array of agent-registry.json slugs (never commands — those live one
+# hop away, behind the registry entry's Taskfile target):
+#   finders           (all-of) every listed finder returns a completed pass at
+#                     the same reviewed_head or the round is incomplete
+#                     (finder_unavailable after one retry — never a round
+#                     silently one finder short)
+#   finder_fallbacks  (preference) tried in order when a primary finder is
+#                     unavailable after its retry; a substituted pass is
+#                     recorded and disclosed in the PR body like an
+#                     off-profile tier
+#   pool              (allowlist, OPTIONAL) registry harness slugs
+#                     eligible to implement on this stage. ABSENT (the
+#                     default) = every registered harness implementing the
+#                     stage's role, ordered by the role's `families`. Present
+#                     = restrict to these. Never a preference order — that is
+#                     [role.*].families' job. N and constraints (council's
+#                     distinct_families) come from strategy and breadth
+# Validation: every actor on a stage must implement that stage's role —
+# implement→implementer, challenge→challenger, review→reviewer,
+# integration→integrator — and a pr-cloud-surface finder is refused on a
+# pre-PR stage. Slugs below resolve against agent-registry.json (#635).
+
+[stage.implement]
+# pool = ["claude-code", "codex", "gemini-cli"]   # restriction only; default
+                                                  # is all implementer-capable
+                                                  # registered harnesses
+
+[stage.challenge]
+finders = ["codex-adversarial"]
+# finder_fallbacks = []
+
+[stage.review]
+finders = ["codex-verification"]
+# finder_fallbacks = []
+
+[stage.integration]
+finders = ["codex-cloud"]
+# finder_fallbacks = []
+
+# ── Strategies — how the work is organized ──────────────────────────────────
+# topology/planning/delegation/coordination semantics and the
+# strategy-x-rigor compatibility rules are unchanged from schema v1
+# (docs/guides/devflow.md). Actor selection is [stage.*]'s job; strategies
+# state shape and constraints only.
+[strategy.oneshot]
+topology    = "single-agent"
+planning    = "inline"
+delegation  = "none"
+human_gates = []
+description = "Strategy: single agent, no separate plan phase"
+
+[strategy.plan]
+topology    = "single-agent"
+planning    = "explicit"
+delegation  = "optional"
+human_gates = []
+description = "Strategy: agent plans then implements; no human plan gate"
+
+[strategy.plan-approved]
+topology    = "single-agent"
+planning    = "explicit"
+delegation  = "optional"
+human_gates = ["after-plan"]
+description = "Strategy: plan requires human approval before implementation"
+
+[strategy.orchestrate]
+topology     = "lead-and-workers"
+planning     = "explicit"
+delegation   = "required"
+coordination = "parallel-when-independent"
+min_agents   = 2
+human_gates  = []
+description  = "Strategy: lead agent delegates bounded work to parallel workers"
+
+[strategy.council]
+topology         = "independent-proposals"
+planning         = "independent"
+delegation       = "required"
+selection        = "judge"
+synthesis        = true
+min_agents       = 2
+distinct_families = true   # proposers drawn from the implement stage's
+                           # eligible harnesses (pool where present) must span
+                           # distinct families where the eligibility allows it
+human_gates      = []
+description      = "Strategy: independent proposals, judged; best or synthesis wins (2+ agents)"
+
+[strategy.human-led]
+topology    = "human-directed"
+planning    = "collaborative"
+delegation  = "optional"
+human_gates = ["after-discovery", "after-plan", "before-publication"]
+description = "Strategy: human owns central decisions; AI does bounded pieces"
+
+# ── Model tiers ─────────────────────────────────────────────────────────────
+# There is no [tier.*] section in schema v2. The v1 family→model maps,
+# escalate_to chains, and the local-endpoint binding all restated registry
+# facts and are gone:
+#   - stratum classification → agent-registry.json: each families[].models[]
+#     entry carries `tier` (and `default: true` where a family has two models
+#     at one rung), e.g.
+#       { "slug": "fable",  "display_name": "Fable",  "tier": "apex"     }
+#       { "slug": "opus",   "display_name": "Opus",   "tier": "frontier" }
+#       { "slug": "sonnet", "display_name": "Sonnet", "tier": "standard" }
+#       { "slug": "haiku",  "display_name": "Haiku",  "tier": "economy"  }
+#   - escalation chains → derived: one rung up tier_order (see top of file)
+#   - local endpoint binding → the registry's `-local` harness variants
+#     (ADR 0005) already carry it; `local`-tier models are those served by a
+#     registered local harness
+# Adding a model is now ONE edit in ONE file (the registry); this file never
+# names a concrete model. Both files resolve under the merge-base rule when
+# edited by the change under review.

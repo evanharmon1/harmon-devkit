@@ -66,20 +66,19 @@ rel_to_root() {
 #
 # LC_ALL=C pins the message wording the parser below matches: these strings are
 # localized, and a translated `diff` would silently report zero drift forever.
-# Exit 1 means "differences found" — the expected case. Exit >=2 means the
-# comparison itself broke (a dangling symlink's target, an unreadable entry)
-# and is handled below as INDETERMINATE, never as fresh.
+# Exit 1 means "differences found" — the expected case. A diagnostic on stderr
+# or exit >=2 means the comparison itself broke (a dangling symlink's target,
+# an unreadable entry) and is handled below as INDETERMINATE, never as fresh.
+# BSD diff can emit a dangling-symlink diagnostic while still exiting 0, so the
+# exit code alone is not a portable integrity signal.
+if ! diff_err="$(mktemp)"; then
+    echo "devcontainer config staleness is indeterminate: unable to create a diagnostic file" >&2
+    exit 0
+fi
 diff_rc=0
-diff_out="$(LC_ALL=C diff -q -r "${baked}" "${checkout}" 2>/dev/null)" || diff_rc=$?
-
-# BSD diff can exit 0 while writing only a diagnostic for two equal dangling
-# symlinks. Detect unreadable link targets ourselves so that platform quirk
-# cannot turn an indeterminate comparison into a false "fresh" result.
-for root in "${baked}" "${checkout}"; do
-    while IFS= read -r link; do
-        [ -e "${link}" ] || diff_rc=2
-    done < <(find "${root}" -type l 2>/dev/null)
-done
+diff_out="$(LC_ALL=C diff -q -r "${baked}" "${checkout}" 2>"${diff_err}")" || diff_rc=$?
+diff_err_out="$(cat "${diff_err}")"
+rm -f "${diff_err}"
 count=0
 names=""
 while IFS= read -r line; do
@@ -160,7 +159,7 @@ EOF_XBIT
 # INCOMPLETE, and an incomplete comparison must never read as fresh: that is
 # the false negative this helper exists to prevent, one layer down. Say
 # "indeterminate" loudly instead — still exit 0, still warn-only.
-if [ "${diff_rc}" -ge 2 ]; then
+if [ "${diff_rc}" -ge 2 ] || [ -n "${diff_err_out}" ]; then
     echo "==> image staleness indeterminate: the config comparison failed partway (diff exit ${diff_rc}) — treat as possibly stale and rebuild if in doubt"
 fi
 

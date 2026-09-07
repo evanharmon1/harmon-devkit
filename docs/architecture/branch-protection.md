@@ -8,9 +8,9 @@ This document explains the branch protection ruleset applied to `main` and how i
 
 An importable copy of the ruleset ships in this repo at
 `.github/Branch Protection Ruleset - Protect Main.json`. Apply it through the
-GitHub **UI import** — do this only once `build.yml` are on
+GitHub **UI import** — do this only once `build.yml`, `devcontainer-build.yml` are on
 `main`, so the required
-`verify`/`security` checks can actually report.
+`verify`/`security`/`devcontainer-verify` checks can actually report.
 Importing first wedges the repository: a required check with no workflow to emit
 it stays pending forever and blocks every pull request.
 
@@ -41,6 +41,21 @@ duplicates). The
 now supports `merge_queue`, but safe automation must first discover exactly one
 matching live ruleset and then `PUT` its id. The UI import keeps the initial
 application explicit and reviewable; edit the existing ruleset thereafter.
+
+### Auditing live ruleset drift
+
+Run `task audit:ruleset` after a template update or a manual ruleset change to
+compare the checked-in import file with the live ruleset named in it. The audit
+uses GitHub's read-only ruleset API, ignores server-owned ids and timestamps,
+sorts rules and required-check contexts, and prints a diff when policy fields
+drift. Exit status 2 means GitHub access, repository discovery, or ruleset
+lookup was unavailable; it is not a clean result.
+
+The audit is deliberately read-only. Apply a confirmed change manually in
+Settings → Rules → Rulesets → Protect Main, because the REST API is not a safe
+idempotent replacement: it can create duplicates and currently rejects the
+`merge_queue` rule. Re-run the audit after the UI change and update the checked-in
+import template separately when the intended policy changes.
 
 ## Dependabot and Renovate
 
@@ -168,6 +183,7 @@ This mirrors the importable
         "dismiss_stale_reviews_on_push": true,
         "required_reviewers": [],
         "require_code_owner_review": true,
+        "require_extra_approval_for_unattributed_changes": true,
         "require_last_push_approval": true,
         "required_review_thread_resolution": true,
         "allowed_merge_methods": ["squash", "rebase"]
@@ -185,6 +201,14 @@ This mirrors the importable
           },
           {
             "context": "security",
+            "integration_id": 15368
+          },
+          {
+            "context": "closing-keywords",
+            "integration_id": 15368
+          },
+          {
+            "context": "devcontainer-verify",
             "integration_id": 15368
           }
         ]
@@ -251,6 +275,7 @@ This is the core rule that prevents the AI agent from pushing directly to `main`
 | ----------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `required_approving_review_count`   | `1`                    | At least one approving review required before merge                                                                                                                                                                           |
 | `require_code_owner_review`         | `true`                 | The approving review **must** come from a designated code owner (see CODEOWNERS file). A review from the bot or any non-code-owner does not satisfy this.                                                                     |
+| `require_extra_approval_for_unattributed_changes` | `true`                 | Requires an additional approval when a pull request contains changes without an attributable actor.                                                                                                                           |
 | `require_last_push_approval`        | `true`                 | The person who pushed the most recent commit cannot be the one to approve it. Since the bot pushes, the bot cannot self-approve — even if it could submit reviews. A human code owner must approve after the bot's last push. |
 | `dismiss_stale_reviews_on_push`     | `true`                 | If the bot pushes new commits after a human approves, the approval is dismissed and the human must re-review. Prevents a pattern where the bot gets approval, then pushes different code and merges.                          |
 | `required_review_thread_resolution` | `true`                 | All review comments must be resolved before merge. Prevents merging while a human reviewer still has open concerns.                                                                                                           |
@@ -267,11 +292,58 @@ The required checks are the build gates (see
 | ---------- | ----------------------------------------------------------------------------------------------- |
 | `verify`   | Aggregate gate — rolls up `lint`, and `security` so one check reports overall pass/fail |
 | `security` | gitleaks + dependency audit; Semgrep CE when this job owns the visibility/profile SAST route |
+| `closing-keywords` | Metadata-only PR gate: a same-repository closing keyword may pass only when its issue has no unchecked task-list items; it reports a successful no-op on push, merge-queue, and manual runs |
+| `devcontainer-verify` | Aggregate for `devcontainer-build.yml`. Runs on every event with **no `paths:` filter** — its `devcontainer-changes` job decides internally, so an unrelated PR is a deliberate, reported no-op. See "Fork pull requests and `merge_group` for `devcontainer-verify`" below |
 
 Requiring the stable `verify` aggregate alongside the direct `security` context
 keeps the required-check list small while preserving explicit security visibility.
 
-Snyk PR/App checks are absent by default. Only a high-consequence repository that deliberately adopts
+### Fork pull requests and `merge_group` for `devcontainer-verify`
+
+`devcontainer-verify` reports success with nothing having run on a fork pull
+request — the same shape as `verify`/`security`above: every repository-controlled job in `devcontainer-build.yml` is
+skipped at the fork trust boundary, and the aggregate verifies exactly that.
+Before approving or merging a fork PR that touches `.devcontainer/**`,
+review its diff for anything touching `.github/workflows/**` or
+`scripts/devcontainer-*`, then get a real, credentialed CI run by pushing
+its branch to a same-repository branch and opening a throwaway pull request
+against `main` — never merge it, and never use `pull_request_target`
+instead.
+
+On a `merge_group` event, `devcontainer-verify` still requires
+`build-merge-group` to succeed — it validates that the devcontainer image
+builds. A runtime guard living in the same file a queued change can edit
+would not have been a real credential boundary here, since `merge_group`
+runs the workflow definition from the queued candidate tree itself, and
+GitHub does not expose that pull request's fork-vs-same-repo origin on
+`merge_group` the way it does on `pull_request`. `permissions:` is not
+immutable either — a PR could widen it back to `packages: write` the same
+way it could edit anything else in this file. What actually stops that is
+`require_code_owner_review` (this repository's CODEOWNERS covers every
+file, workflows included), so widening a permissions block is a
+conspicuous, reviewable line a human must approve first. What the narrow,
+dedicated `permissions: {contents: read}` block on `build-merge-group`
+buys, given that review holds, is that no _step_ it runs — trusted or
+attacker-added, without also touching `permissions:` itself — can
+authenticate to the registry: GitHub resolves that job's token from this
+block before any step executes, and no `docker/login-action` step exists
+here under any condition to notice its absence. The credentialed
+`devcontainer-assert-bot` job (it starts a real container and needs a
+registry login for its cache, which is a static field in
+`.devcontainer/devcontainer.json` this workflow cannot condition per job)
+stands down entirely on `merge_group` instead, and `devcontainer-verify`
+treats that skip as the expected, passing outcome.
+
+Every job that runs on `merge_group` (`devcontainer-changes`,
+`build-merge-group`, `devcontainer-verify`) is also pinned to
+`runs-on: ubuntu-latest`, ignoring the `CI_RUNS_ON` variable entirely — see
+[ci-cd.md](ci-cd.md)'s "Security boundaries". A repository that has pointed
+`CI_RUNS_ON` at a persistent self-hosted runner must never have that
+runner's filesystem, credentials, or a prior job's leftovers exposed to a
+queued, possibly fork-authored devcontainer build.
+Snyk PR/App checks are absent by default. The generated
+scheduled Snyk workflow is advisory and never a required check; it has no PR or
+push trigger. Only a high-consequence repository that deliberately adopts
 paid Snyk should consider per-PR scans and whether to make them merge
 requirements. See [security.md](security.md) for the scanner policy.
 

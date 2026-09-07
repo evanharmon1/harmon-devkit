@@ -1,0 +1,18 @@
+{
+  "claude-code-action": {
+    "executable": null,
+    "reason": "runs as a GitHub Actions workflow; no devcontainer-installable binary"
+  },
+  "qwen-code": {
+    "executable": "qwen",
+    "reason": "not installed in the shared devcontainer image"
+  },
+  "goose": {
+    "executable": "goose",
+    "reason": "not installed in the shared devcontainer image"
+  },
+  "cline": {
+    "executable": "clite",
+    "reason": "not installed in the shared devcontainer image (published @cline/cli package's binary name)"
+  }
+}

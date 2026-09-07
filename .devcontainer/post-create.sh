@@ -9,19 +9,30 @@ export DEVCONTAINER_GIT_EMAIL="evanharmon1-bot@users.noreply.github.com"
 # the operator's credential inside a bypassPermissions agent container.
 export DEVCONTAINER_GH_AUTH="token"
 
+# Ordering is load-bearing (AGENTS.md;
+# https://github.com/evanharmon1/harmon-init/tree/main/openspec/changes/archive/2026-09-05-bot-autonomy-bootstrap):
+#   (i)   post-create-common.sh — ownership fixing and, on Coder, the
+#         persistent-volume symlink setup MUST run before anything below
+#         writes into those directories, or a write lands as the wrong owner
+#         or into container-local storage the Coder block would later
+#         disregard.
+#   (ii)  ensure-antigravity-cli.sh — reconciles ~/.local/bin/agy-real and the
+#         plain agy symlink from the rendered HARMON_BOT_AUTONOMY_ANTIGRAVITY
+#         marker, before the bot-autonomy antigravity module acts on top of
+#         whatever this leaves at ~/.local/bin/agy.
+#   (iii) bot-autonomy.sh apply — every installed harness's bot policy, so a
+#         fresh container's very first agent invocation already reflects it.
+#   (iv)  the conductor step — spawns a `claude` process on first
+#         registration, so it must not run before (iii) has succeeded.
+#   (v)   bot-autonomy.sh verify — at the end of post-create, so a divergence
+#         between what apply wrote and the harness's actual effective state
+#         (e.g. an already-present workspace-level override) fails container
+#         creation instead of surfacing only at the next post-start.
 bash .devcontainer/scripts/post-create-common.sh
-
-# Bot profile: default Claude to bypassPermissions (no per-action prompts) —
-# the container is the isolation boundary. The dev profile deliberately omits
-# this so a human gets the normal prompt-on-action default.
-bash .devcontainer/scripts/enable-claude-bypass.sh
-bash .devcontainer/scripts/enable-codex-bypass.sh
-
-# Opted-in bot profile: run Antigravity without permission prompts too. The
-# helper preserves unrelated settings and records prior policy for rollback.
 bash /usr/local/share/devcontainer-config/ensure-antigravity-cli.sh
-bash /usr/local/share/devcontainer-config/apply-antigravity-settings.sh apply \
-    /usr/local/share/devcontainer-config/antigravity-settings.json "$PWD"
+bash .devcontainer/scripts/bot-autonomy.sh apply
+bash .devcontainer/scripts/post-create-conductor.sh
+bash .devcontainer/scripts/bot-autonomy.sh verify
 
 # Install repo-managed git hooks (source of truth: .devcontainer/hooks/).
 # This replaces the default git-lfs hooks with versions that also handle
