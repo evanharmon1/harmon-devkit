@@ -241,7 +241,9 @@
         "invocation",
         "collection",
         "trusted_actor_id",
-        "trusted_actor_login"
+        "trusted_actor_login",
+        "raw_shape",
+        "severity_map"
       ],
       "properties": {
         "slug": { "$ref": "#/$defs/slug" },
@@ -282,13 +284,69 @@
           }
         },
         "collection": {
-          "description": "Required (non-null) for a pr-cloud finder, and null for a local-cli finder (which is invoked directly, never collected).",
+          "description": "Required (non-null) for a pr-cloud finder, and null for a local-cli finder (which is invoked directly, never collected). `trigger` and `terminal_signals` externalize what the integrate checker used to hard-code for Codex alone (#796), so a second cloud finder is a registry entry rather than a second checker.",
           "type": ["object", "null"],
           "additionalProperties": false,
-          "required": ["type", "protocol"],
+          "required": ["type", "protocol", "trigger", "terminal_signals"],
           "properties": {
             "type": { "const": "shepherd-checker" },
-            "protocol": { "type": "string", "minLength": 1 }
+            "protocol": { "type": "string", "minLength": 1 },
+            "trigger": {
+              "description": "How a current-head cloud-review cycle is requested for this finder. review-comment posts `body` as a PR conversation comment (Codex, CodeRabbit); requested-reviewer adds `reviewer_login` through the pulls/requested_reviewers API (Copilot code review). Cross-file validation requires exactly the field the mechanism uses and null for the other.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mechanism", "body", "reviewer_login"],
+              "properties": {
+                "mechanism": { "enum": ["review-comment", "requested-reviewer"] },
+                "body": { "type": ["string", "null"], "minLength": 1 },
+                "reviewer_login": { "type": ["string", "null"], "minLength": 1 }
+              }
+            },
+            "terminal_signals": {
+              "description": "What makes a result terminal for a captured head, per finder rather than per checker. `surfaces` is which GitHub surfaces carry this finder's evidence; `head_binding` is how a piece of evidence proves which commit it reviewed; `verdict_mode` selects the classification rule and which of the remaining fields it consumes. A field a mode does not consume is null — cross-file validation enforces the pairing so a half-declared profile cannot fall back to Codex's.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "surfaces",
+                "head_binding",
+                "verdict_mode",
+                "clean_verdict",
+                "actionable_pattern",
+                "severity_marker",
+                "metadata_line",
+                "about_summary",
+                "heading",
+                "carrier_sentence",
+                "success_reaction",
+                "pending_reaction"
+              ],
+              "properties": {
+                "surfaces": {
+                  "description": "reaction: a reaction on the trigger comment. comment: a top-level PR conversation comment. review: a PR review body. inline: an inline review comment.",
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "enum": ["reaction", "comment", "review", "inline"] }
+                },
+                "head_binding": {
+                  "description": "reviewed-commit-line: the evidence body names the reviewed commit in prose (Codex's `**Reviewed commit:** <sha>`), which is the only binding a top-level comment can carry. review-commit-id: GitHub's own review.commit_id field.",
+                  "enum": ["reviewed-commit-line", "review-commit-id"]
+                },
+                "verdict_mode": {
+                  "description": "clean-sentence: the body must open with `clean_verdict` and carry nothing but this finder's own metadata (consumes clean_verdict, severity_marker, metadata_line, about_summary, heading, carrier_sentence). actionable-count: the body states its own finding count (consumes actionable_pattern). inline-comment-count: the finder states no verdict and the count of its current-head inline comments is the verdict (consumes none of them).",
+                  "enum": ["clean-sentence", "actionable-count", "inline-comment-count"]
+                },
+                "clean_verdict": { "type": ["string", "null"], "minLength": 1 },
+                "actionable_pattern": { "type": ["string", "null"], "minLength": 1 },
+                "severity_marker": { "type": ["string", "null"], "minLength": 1 },
+                "metadata_line": { "type": ["string", "null"], "minLength": 1 },
+                "about_summary": { "type": ["string", "null"], "minLength": 1 },
+                "heading": { "type": ["string", "null"], "minLength": 1 },
+                "carrier_sentence": { "type": ["string", "null"], "minLength": 1 },
+                "success_reaction": { "type": ["string", "null"], "minLength": 1 },
+                "pending_reaction": { "type": ["string", "null"], "minLength": 1 }
+              }
+            }
           }
         },
         "trusted_actor_id": {
@@ -299,6 +357,36 @@
           "description": "The human-readable login paired with trusted_actor_id (e.g. chatgpt-codex-connector[bot]) — documentation only; the id is the immutable, authoritative value.",
           "type": ["string", "null"],
           "minLength": 1
+        },
+        "raw_shape": {
+          "description": "The shape this finder's raw output arrives in, which scripts/normalize-finder-findings.mjs decodes into the shared finding core (#796). labelled-text: a text report whose findings are blank-line-separated blocks carrying a severity label somewhere in the block — every local-cli finder, whether the label is a P-badge this repo's own prompt asked for or the finder's own vocabulary. github-review-json: a GitHub review plus its inline comments — every pr-cloud finder, which is collected rather than invoked. Cross-file validation binds each value to its surface, because a surface cannot produce the other one's shape.",
+          "enum": ["labelled-text", "github-review-json"]
+        },
+        "severity_map": {
+          "description": "How this finder's own severity vocabulary maps onto the P0-P3 scale scripts/codex-review.sh defines (AGENTS.md 'Severity gating'). `rules` is ordered and first-match-wins, each `match` being a case-insensitive string found at the position its own `anchor` names; `default` is the priority for a finding no rule matches; P3 is excluded from it because AGENTS.md 'Severity gating' adjudicates a finding badged off the scale, or not badged at all, as AT LEAST a P2 -- a P3 default would silently drop exactly those findings below the floor. The map produces the finding's `priority`, which is a HYPOTHESIS: the adjudicated priority is still the verdict.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["default", "rules"],
+          "properties": {
+            "default": { "enum": ["P0", "P1", "P2"] },
+            "rules": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["match", "priority", "anchor"],
+                "properties": {
+                  "match": { "type": "string", "minLength": 1 },
+                  "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+                  "anchor": {
+                    "description": "WHERE `match` has to appear for the rule to fire. leading-token: it is the first whitespace-delimited token of the finding, stripped of surrounding punctuation -- what scripts/lib/review-instructions/severity.txt asks a local-CLI finder for ('as the first token of the finding'), and the only anchor under which narration like 'No P0 or P1 findings.' does not read as a P0. anywhere: it appears at any position, which is how a cloud reviewer badges a finding mid-body and how a vendor's own label ('Potential issue') arrives.",
+                    "enum": ["leading-token", "anywhere"]
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

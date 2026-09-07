@@ -1298,6 +1298,42 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
 // CLI
 // ---------------------------------------------------------------------------
 
+// Pull every occurrence of a repeatable `--flag value` pair out of an argv,
+// returning the values and the argv without them — the same helper
+// devflow-policy.mjs carries, for the same reason: parseArgs is last-wins and
+// is shared with every other flag, so a dropped occurrence would silently
+// reduce the finder set rather than erroring.
+function extractRepeatable(argv, flag) {
+  const values = [];
+  const rest = [];
+  // BOTH spellings. `--flag value` and the equally conventional
+  // `--flag=value` must mean the same thing: the equals form used to fall
+  // through to generic parsing, which recorded an unused composite key and
+  // left the run resolving to the configured finders alone — exit 0, no
+  // disclosure, a requested slot silently gone. The closure guard already
+  // treats `--flag=` as a selection request, so ignoring it here was
+  // internally inconsistent as well as lossy.
+  const eq = `${flag}=`;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith(eq)) {
+      values.push(argv[i].slice(eq.length));
+      continue;
+    }
+    if (argv[i] !== flag) {
+      rest.push(argv[i]);
+      continue;
+    }
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("--")) {
+      values.push("");
+      continue;
+    }
+    values.push(value);
+    i++;
+  }
+  return { values, rest };
+}
+
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i++) {
@@ -1340,6 +1376,35 @@ function tryDelegateToClosure(argv) {
     return 1;
   }
   const passthrough = [...argv.slice(0, idx), ...argv.slice(idx + 2)];
+  // Same guard as devflow-policy.mjs's, for the same reason and on the same
+  // trust boundary: a merge-base reader written before per-run finder
+  // selection existed IGNORES --add-finder/--select-finder, so the run would
+  // resolve to the configured slots alone and exit 0 with no disclosure — an
+  // explicitly requested finder silently gone. Fixing only the policy reader
+  // left this sibling path unguarded, which is exactly the hole the closure
+  // mechanism exists to close.
+  const wantsSelection = passthrough.some(
+    (a) =>
+      a === "--add-finder" ||
+      a === "--select-finder" ||
+      a.startsWith("--add-finder=") ||
+      a.startsWith("--select-finder="),
+  );
+  if (wantsSelection) {
+    let trustedSource = "";
+    try {
+      trustedSource = readFileSync(trustedScript, "utf8");
+    } catch (err) {
+      console.error(`dev-flow-exit: could not read the --closure reader to check its flag support: ${err.message}`);
+      return 1;
+    }
+    if (!trustedSource.includes("--add-finder") || !trustedSource.includes("--select-finder")) {
+      console.error(
+        `dev-flow-exit: the --closure reader (${trustedScript}) predates --add-finder/--select-finder and would silently drop the requested finder(s) — refusing rather than computing an exit over a narrower set with no disclosure`,
+      );
+      return 1;
+    }
+  }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
   if (result.error) {
     console.error(`dev-flow-exit: could not exec the --closure reader: ${result.error.message}`);
@@ -1357,11 +1422,21 @@ async function main() {
   // top-level imports, above. Resolves relative to THIS file, same as a
   // static import would; the only difference that matters is WHEN it runs.
   const { parseToml, TomlError } = await import("./lib/toml-lite.mjs");
-  const { resolvePolicy, crossValidate, PolicyError } = await import("./devflow-policy.mjs");
+  const { resolvePolicy, crossValidate, PolicyError, applyFinderSelection } =
+    await import("./devflow-policy.mjs");
 
-  const args = parseArgs(argv);
+  // --add-finder / --select-finder are repeatable and must be lifted out
+  // before parseArgs, which is last-wins. See devflow-policy.mjs's own
+  // extractRepeatable for why a repeatable option is separated rather than
+  // changing how every flag parses.
+  const addFinders = extractRepeatable(argv, "--add-finder");
+  const selectFinders = extractRepeatable(addFinders.rest, "--select-finder");
+  const args = parseArgs(selectFinders.rest);
   if (!args.run || !args.stage || !args.policy) {
-    console.error("usage: dev-flow-exit.mjs --run <dir> --stage <challenge|review> --policy <file> [options]");
+    console.error(
+      "usage: dev-flow-exit.mjs --run <dir> --stage <challenge|review> --policy <file>\n" +
+        "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]... [options]",
+    );
     return 1;
   }
   if (args.stage !== "challenge" && args.stage !== "review") {
@@ -1400,6 +1475,24 @@ async function main() {
   const crossErrors = crossValidate(resolved, null, null).filter((e) => !e.startsWith("indeterminate:"));
   if (crossErrors.length > 0) {
     console.error(`dev-flow-exit: policy fails cross-validation: ${crossErrors[0]}`);
+    return 1;
+  }
+
+  // A per-run finder selection has to reach THIS resolution too (#796
+  // challenge round 3): devflow-policy.mjs applies --add-finder to its own
+  // in-memory result, and this script re-resolves the same file
+  // independently, so without the identical union its primarySlots would omit
+  // the added finder, drop that finder's pass and findings, and could report
+  // the round converged on the configured slots alone.
+  //
+  // AFTER cross-validation, exactly as the reader does it (#796 challenge
+  // round G). Applying it before put the added finder inside crossValidate's
+  // breadth arithmetic, so a tight policy the RESOLVER accepts was rejected
+  // here — the same rule disagreeing with itself across two files, and the
+  // skill says confidence finders never consume [breadth].max_agent_runs.
+  const selection = applyFinderSelection(resolved, addFinders.values, selectFinders.values);
+  if (selection.error) {
+    console.error(`dev-flow-exit: ${selection.error}`);
     return 1;
   }
 

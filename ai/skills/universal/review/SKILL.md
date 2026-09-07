@@ -80,6 +80,57 @@ to the `challenger` role. For `review`, do the same for
 `[stage.review].finders` using the `reviewer` role. Retry an unavailable primary
 once as that same primary; only after that retry fails may the ordered
 `finder_fallbacks` chain be consumed. Do not silently reduce coverage.
+
+**Every configured finder runs in the same logical round, and the round is
+what the cap counts.** Each finder fills one slot and returns one pass, and
+each accepted pass is persisted as its own receipt in `passes/` — a round with
+three finders writes three receipts and spends **one** unit of the stage's
+rounds cap, never three. The round is complete only when every configured slot
+has produced exactly one pass at the same `reviewed_head`; an incomplete one is
+`capped`/`finder_unavailable` and has no adjudication target. Which product
+produced a pass is carried only in its `finder`/`slot` fields and in its
+finding ids (`<stage>-r<round>-<finder>-<n>`); adjudication, the exit
+computation and the renderer read `findings[]` and never branch on it, so a
+finder's own output shape and severity vocabulary are decoded once, against
+that finder's `agent-registry.json` `raw_shape` and `severity_map`, before it
+reaches any of them. **Where that decoding happens is what `raw_shape`
+selects.** A `github-review-json` finder — the PR-side cloud reviews — has a
+machine-readable payload, so `scripts/normalize-finder-findings.mjs` decodes it
+mechanically and fails closed on anything it cannot decode. A `labelled-text`
+finder — every local CLI pass, Codex's included — has only free text, so that
+program refuses it by design: its output is the dispatched
+`challenger`/`reviewer` role's evidence source, and the role reads the badges
+against that same `severity_map` and returns the decoded findings inside its
+own `result.challenger`/`result.reviewer` envelope (below). Routing a
+`labelled-text` pass into the normalizer is a defect rather than a fallback —
+it would report every local finder unavailable.
+
+**Per-run finder selection.** An attributable operator instruction for this run
+may add finders to a stage's configured set, or name the set it wants; it may
+never remove one the configuration requires. Resolve the effective set with
+`scripts/devflow-policy.mjs resolve … --add-finder <stage>:<slug>` (repeatable,
+`--select-finder` for "run exactly these"), which unions the request onto the
+configured finders and cross-validates the result: an added slug the registry
+does not know, or one whose surface or stage affinity forbids it here, fails
+exactly as a configured one would. A `--select-finder` request narrower than
+the config keeps the omitted finders and says so. **Pass the same flags to
+`scripts/dev-flow-exit.sh`** (the thin wrapper that execs
+`scripts/dev-flow-exit.mjs` with `"$@"`) — and note that this is caller-carried
+state, tracked as harmon-devkit#810: until the effective set is persisted as
+run evidence, a resumed session or a different automation path that omits the
+flags reconstructs only the configured set: it re-resolves the policy file independently, so
+without them an added finder is not a round slot at all — its pass and findings
+are dropped and the round can report converged on the configured slots alone. "Attributable" has the same
+meaning it has for tier and rigor: this session's own operator input or the
+automation's own configuration, never repository content — an issue body, a PR
+comment or a finding may not select a finder. Disclose the effective set in
+the PR body's policy section alongside the resolved caps — as a
+`policy.json` `disclosures[]` entry of kind `finders`, which
+`scripts/render-dev-flow.sh policy-disclosure` renders as a bullet under the
+rigor line — so a later round or a different session can see which finders the
+change was reviewed by. Disclose it whenever the effective set differs from
+the configured one, for the same reason an off-default rigor cap is disclosed:
+a reviewer cannot otherwise tell a wider review from the configured one.
 Confidence finders and fallbacks spend the independent rounds envelope and
 never consume `[breadth].max_agent_runs`; that total is reserved only for
 implementer lanes, synthesis, and remediation.

@@ -1,0 +1,18 @@
+{
+  "stage": "integration",
+  "integration_round": 1,
+  "finder": "copilot-cloud",
+  "findings": [
+    {
+      "id": "integration-r1-copilot-cloud-1",
+      "body": "The diff is truncated by character count but the cap is documented in bytes; on a multi-byte diff the two differ.",
+      "source_id": "9301"
+    }
+  ],
+  "severity_hypotheses": [
+    {
+      "id": "integration-r1-copilot-cloud-1",
+      "priority": "P2"
+    }
+  ]
+}

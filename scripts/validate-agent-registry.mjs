@@ -397,6 +397,132 @@ if (errors.length === 0) {
     }
   }
 
+  // ── finder collection profiles, raw shapes and severity maps (#796) ─────
+  // A second cloud finder is meant to be a REGISTRY entry rather than a second
+  // checker, so the trigger mechanism, the terminal-result signals and the
+  // severity vocabulary all live in the entry. That only holds if a
+  // half-declared profile is refused here: a mode whose driving field is null
+  // would otherwise reach the checker and silently take Codex's path.
+  const SURFACE_RAW_SHAPE = { 'pr-cloud': 'github-review-json', 'local-cli': 'labelled-text' }
+  // Per verdict_mode, the terminal_signals fields the mode CONSUMES (each must
+  // be non-null) and the fields it cannot consume (each must be null).
+  // severity_marker is deliberately in neither list: it is an extra
+  // fail-closed guard on a body, not a mode driver, and is optional in all
+  // three modes.
+  const VERDICT_MODE_FIELDS = {
+    'clean-sentence': {
+      required: ['clean_verdict', 'metadata_line', 'about_summary', 'heading', 'carrier_sentence'],
+      forbidden: ['actionable_pattern']
+    },
+    'actionable-count': {
+      required: ['actionable_pattern'],
+      forbidden: ['clean_verdict', 'metadata_line', 'about_summary', 'heading', 'carrier_sentence']
+    },
+    'inline-comment-count': {
+      required: [],
+      forbidden: ['clean_verdict', 'actionable_pattern', 'metadata_line', 'about_summary', 'heading', 'carrier_sentence']
+    }
+  }
+
+  const finderActorIds = new Map()
+  for (const finder of registry.finders) {
+    const expectedRawShape = SURFACE_RAW_SHAPE[finder.surface]
+    if (expectedRawShape && finder.raw_shape !== expectedRawShape) {
+      semanticError(
+        `finder ${finder.slug} has surface ${finder.surface} but raw_shape ${finder.raw_shape} — a ${finder.surface} finder can only produce ${expectedRawShape}`
+      )
+    }
+    // A shared actor id would make two finders' evidence indistinguishable:
+    // the checker authenticates a result by immutable actor id alone, so one
+    // finder's clean verdict would satisfy the other's cycle.
+    if (typeof finder.trusted_actor_id === 'string') {
+      const owner = finderActorIds.get(finder.trusted_actor_id)
+      if (owner) {
+        semanticError(
+          `finder ${finder.slug} shares trusted_actor_id ${finder.trusted_actor_id} with finder ${owner} — two finders' evidence would be indistinguishable`
+        )
+      } else {
+        finderActorIds.set(finder.trusted_actor_id, finder.slug)
+      }
+    }
+    // First-match-wins means a repeated `match` makes the later rule dead
+    // configuration — and silently the WRONG priority, since the earlier rule
+    // answers for it.
+    const seenMatches = new Set()
+    for (const rule of finder.severity_map?.rules ?? []) {
+      // Keyed on match AND anchor: the same string anchored two ways is two
+      // different tests, and only an identical pair is unreachable.
+      const key = `${rule.anchor}\u0000${String(rule.match).toLowerCase()}`
+      if (seenMatches.has(key)) {
+        semanticError(
+          `finder ${finder.slug} severity_map repeats match "${rule.match}" at anchor ${rule.anchor} — rules are ordered and first-match-wins, so the later rule can never apply`
+        )
+      }
+      seenMatches.add(key)
+    }
+    const collection = finder.collection
+    if (collection === null || collection === undefined) continue
+
+    const trigger = collection.trigger
+    if (trigger) {
+      const usesBody = trigger.mechanism === 'review-comment'
+      if (usesBody && (trigger.body === null || trigger.reviewer_login !== null)) {
+        semanticError(
+          `finder ${finder.slug} declares a review-comment trigger but not exactly a body — mechanism review-comment posts \`body\` and names no reviewer`
+        )
+      }
+      if (!usesBody && (trigger.reviewer_login === null || trigger.body !== null)) {
+        semanticError(
+          `finder ${finder.slug} declares a requested-reviewer trigger but not exactly a reviewer_login — mechanism requested-reviewer names \`reviewer_login\` and posts no body`
+        )
+      }
+    }
+
+    const signals = collection.terminal_signals
+    if (!signals) continue
+    const modeFields = VERDICT_MODE_FIELDS[signals.verdict_mode]
+    if (modeFields) {
+      for (const field of modeFields.required) {
+        if (signals[field] === null) {
+          semanticError(
+            `finder ${finder.slug} verdict_mode ${signals.verdict_mode} requires terminal_signals.${field}, which is null`
+          )
+        }
+      }
+      for (const field of modeFields.forbidden) {
+        if (signals[field] !== null) {
+          semanticError(
+            `finder ${finder.slug} verdict_mode ${signals.verdict_mode} does not consume terminal_signals.${field}, which must be null`
+          )
+        }
+      }
+    }
+    const surfaces = new Set(signals.surfaces ?? [])
+    const reactions = [signals.success_reaction, signals.pending_reaction]
+    if (!surfaces.has('reaction') && reactions.some((value) => value !== null)) {
+      semanticError(
+        `finder ${finder.slug} declares a trigger reaction but does not list the reaction surface — an unpolled surface cannot make a result terminal`
+      )
+    }
+    if (surfaces.has('reaction') && reactions.every((value) => value === null)) {
+      semanticError(
+        `finder ${finder.slug} lists the reaction surface but names no success or pending reaction — there is nothing on it to read`
+      )
+    }
+    // A top-level conversation comment carries no commit_id, so the only thing
+    // that can bind one to a head is the reviewed-commit line in its own body.
+    if (surfaces.has('comment') && signals.head_binding !== 'reviewed-commit-line') {
+      semanticError(
+        `finder ${finder.slug} lists the comment surface under head_binding ${signals.head_binding} — a top-level comment carries no commit_id and can only be bound by its own reviewed-commit line`
+      )
+    }
+    if (signals.head_binding === 'review-commit-id' && !surfaces.has('review')) {
+      semanticError(
+        `finder ${finder.slug} binds heads through review-commit-id but does not list the review surface — nothing it polls carries a commit_id`
+      )
+    }
+  }
+
   // ── trusted_orchestrator_actor_ids (#741; specs/dev-flow-v2.md 'Evidence')
   // The structural schema already binds the shape (array, minItems 1,
   // uniqueItems, integer items). Two things it cannot say: the >= 1 bound

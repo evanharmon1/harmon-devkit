@@ -1304,6 +1304,41 @@ function readTaskTargets(explicitFile, taskfileDir) {
   return null;
 }
 
+// Pull every occurrence of a repeatable `--flag value` pair out of an argv,
+// returning the values and the argv without them. parseArgs is last-wins by
+// design and is shared with every other flag, so a repeatable option is
+// separated here rather than by changing how all of them parse.
+function extractRepeatable(argv, flag) {
+  const values = [];
+  const rest = [];
+  // BOTH spellings. `--flag value` and the equally conventional
+  // `--flag=value` must mean the same thing: the equals form used to fall
+  // through to generic parsing, which recorded an unused composite key and
+  // left the run resolving to the configured finders alone — exit 0, no
+  // disclosure, a requested slot silently gone. The closure guard already
+  // treats `--flag=` as a selection request, so ignoring it here was
+  // internally inconsistent as well as lossy.
+  const eq = `${flag}=`;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith(eq)) {
+      values.push(argv[i].slice(eq.length));
+      continue;
+    }
+    if (argv[i] !== flag) {
+      rest.push(argv[i]);
+      continue;
+    }
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("--")) {
+      values.push("");
+      continue;
+    }
+    values.push(value);
+    i++;
+  }
+  return { values, rest };
+}
+
 function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -1322,6 +1357,122 @@ function parseArgs(argv) {
     }
   }
   return args;
+}
+
+// Union the configured finders for a stage with the ones this run asked for.
+// Never removes: `configured` always comes first and always survives, which
+// is what makes an operator request incapable of reducing coverage.
+// Returns { error } on a malformed request, or { disclosures } — one entry
+// per stage the request touched, whether or not it changed anything, because
+// "you asked for a subset and got the union" is exactly the outcome that has
+// to reach the PR body.
+export function applyFinderSelection(resolved, addRequests, selectRequests) {
+  const parse = (raw, flag) => {
+    const text = String(raw ?? "");
+    const at = text.indexOf(":");
+    if (at <= 0 || at === text.length - 1) {
+      return { error: `${flag} expects <stage>:<finder-slug>, got "${text}"` };
+    }
+    const stage = text.slice(0, at);
+    const slug = text.slice(at + 1);
+    if (!STAGES.includes(stage)) {
+      return { error: `${flag} names unknown stage "${stage}" (expected one of ${STAGES.join(", ")})` };
+    }
+    return { stage, slug };
+  };
+
+  const requested = new Map();
+  for (const [flag, list] of [["--add-finder", addRequests], ["--select-finder", selectRequests]]) {
+    for (const raw of list) {
+      const parsed = parse(raw, flag);
+      if (parsed.error) return { error: parsed.error };
+      const key = parsed.stage;
+      const entry = requested.get(key) ?? { added: [], selected: [] };
+      const bucket = flag === "--add-finder" ? entry.added : entry.selected;
+      if (!bucket.includes(parsed.slug)) bucket.push(parsed.slug);
+      requested.set(key, entry);
+    }
+  }
+
+  const disclosures = [];
+  for (const [stage, entry] of requested) {
+    const configured = [...(resolved.stages?.[stage]?.finders ?? [])];
+    const fallbacks = resolved.stages?.[stage]?.finder_fallbacks ?? [];
+    // A finder already in this stage's fallback chain cannot simply be
+    // promoted to a primary. specs/dev-flow-v2.md is explicit that "an actor
+    // already serving as a primary or substitute in the round cannot satisfy
+    // a second slot", so the promoted finder would fill its own slot and then
+    // be unavailable to substitute for the primary it was the fallback FOR —
+    // turning a previously viable chain into capped/finder_unavailable. The
+    // selection is refused rather than silently reshaping the chain: which
+    // finder should stop being a fallback is a configuration decision, not
+    // one a per-run request can make on the operator's behalf.
+    for (const slug of [...entry.added, ...entry.selected]) {
+      if (configured.includes(slug)) continue;
+      if (fallbacks.includes(slug)) {
+        return {
+          error:
+            `cannot add "${slug}" as a primary finder for stage "${stage}": it is already in ` +
+            `[stage.${stage}].finder_fallbacks, and one actor cannot fill two slots in a round — ` +
+            `remove it from the fallback chain in the config first`,
+        };
+      }
+    }
+    const wanted = [...entry.added, ...entry.selected];
+    const effective = [...configured];
+    for (const slug of wanted) if (!effective.includes(slug)) effective.push(slug);
+    // Only a --select-finder request can be narrower than the config; an
+    // --add-finder one says nothing about what to drop.
+    const retained =
+      entry.selected.length > 0 ? configured.filter((slug) => !entry.selected.includes(slug)) : [];
+    if (resolved.stages?.[stage]) resolved.stages[stage].finders = effective;
+    disclosures.push({
+      stage,
+      configured,
+      requested: wanted,
+      effective,
+      retained_despite_selection: retained,
+    });
+  }
+  if (disclosures.length > 0) resolved.finder_selection = disclosures;
+  return { disclosures };
+}
+
+// Registry checks for finders a per-run selection ADDED, without the breadth
+// arithmetic crossValidate applies to the configured set. Mirrors the same
+// three rules crossValidate uses for a configured finder: it must exist, it
+// must not be pr-cloud on a pre-PR stage, and its own registry entry must
+// permit the stage it was added to.
+export function validateSelectedFinders(resolved, registryDoc, disclosures) {
+  const errors = [];
+  if (!registryDoc) {
+    if (disclosures.some((d) => d.requested.length > 0)) {
+      errors.push("indeterminate: no registry was supplied — per-run finder additions could not be checked");
+    }
+    return errors;
+  }
+  const finderBySlug = new Map((registryDoc.finders || []).map((f) => [f.slug, f]));
+  for (const disclosure of disclosures) {
+    const added = disclosure.effective.filter((slug) => !disclosure.configured.includes(slug));
+    for (const slug of added) {
+      const finder = finderBySlug.get(slug);
+      if (!finder) {
+        errors.push(`[stage.${disclosure.stage}] per-run selection adds unknown finder "${slug}"`);
+        continue;
+      }
+      if (PRE_PR_STAGES.has(disclosure.stage) && finder.surface === "pr-cloud") {
+        errors.push(
+          `[stage.${disclosure.stage}] per-run selection adds "${slug}", whose surface is pr-cloud, on a pre-PR stage`,
+        );
+      }
+      if (Array.isArray(finder.stages) && !finder.stages.includes(disclosure.stage)) {
+        errors.push(
+          `[stage.${disclosure.stage}] per-run selection adds "${slug}", whose registry entry permits only stage(s) ${finder.stages.join(", ")}`,
+        );
+      }
+    }
+  }
+  return errors;
 }
 
 function loadTomlFile(filePath) {
@@ -1412,6 +1563,19 @@ function cliResolve(args) {
   // merge-base policy's own finder references, even though the merge-base
   // rule's whole point is that branch-controlled data must never affect
   // what a self-modifying diff resolves to.
+  // ── per-run finder selection (#796) ──────────────────────────────────────
+  // An attributable operator may ask this RUN to use finders the config does
+  // not name — a second reviewer family for one risky change, say. What it
+  // can never do is take one away: the effective set is the UNION of the
+  // configured finders and the requested ones, in that order, so a request
+  // that names a subset does not narrow coverage, it just adds nothing.
+  // `--select-finder` exists to express "run exactly these" and is honoured
+  // to the extent it can be — the configured finders it omits stay in, and
+  // the fact that they stayed is DISCLOSED rather than silently applied.
+  //
+  // Applied before cross-validation on purpose: an added slug the registry
+  // does not know, or one whose surface or stage affinity forbids it here,
+  // must fail the same way a configured one would.
   const registryPath = mergeBaseDoc ? args["merge-base-registry"] : args.registry;
   let registryDoc = null;
   if (registryPath) {
@@ -1423,7 +1587,25 @@ function cliResolve(args) {
     }
   }
   const taskTargets = readTaskTargets(args["task-targets"], args["taskfile-dir"]);
+  // Cross-validate the CONFIGURED policy first, then apply the per-run
+  // selection (#796 deletion round). Doing it the other way round put added
+  // finders inside crossValidate's breadth arithmetic, which sizes a stage's
+  // worst-case finder attempts against [breadth].max_agent_runs — and
+  // ai/skills/universal/review/SKILL.md says in terms that confidence finders
+  // spend the rounds envelope and NEVER consume that budget. An otherwise
+  // valid policy would then be rejected for adding a finder, which is the one
+  // thing per-run selection is for.
   const crossErrors = crossValidate(resolved, registryDoc, taskTargets);
+  const selectionResult = applyFinderSelection(resolved, args.addFinders ?? [], args.selectFinders ?? []);
+  if (selectionResult.error) {
+    console.error(`devflow-policy: ${selectionResult.error}`);
+    return 2;
+  }
+  // The added finders are still checked against the registry — existence,
+  // surface and stage affinity — because an added slug the registry does not
+  // know is exactly as unrunnable as a configured one. Only the breadth
+  // arithmetic is skipped.
+  crossErrors.push(...validateSelectedFinders(resolved, registryDoc, selectionResult.disclosures ?? []));
 
   const indeterminate = crossErrors.filter((e) => e.startsWith("indeterminate:"));
   const hardErrors = crossErrors.filter((e) => !e.startsWith("indeterminate:"));
@@ -1479,6 +1661,15 @@ function cliResolve(args) {
       console.log(`breadth[${resolved.breadth.policy}]: max_agent_runs=${resolved.breadth.max_agent_runs} max_parallel_agents=${resolved.breadth.max_parallel_agents}`);
     }
     console.log(`spend: ${resolved.spend.status}${resolved.spend.policy ? ` (${resolved.spend.policy})` : ""}`);
+    for (const disclosure of resolved.finder_selection ?? []) {
+      console.log(
+        `finders[${disclosure.stage}]: ${disclosure.effective.join(", ")}` +
+          ` (config: ${disclosure.configured.join(", ") || "none"}; requested this run: ${disclosure.requested.join(", ")})` +
+          (disclosure.retained_despite_selection.length > 0
+            ? ` — config-required and NOT removable: ${disclosure.retained_despite_selection.join(", ")}`
+            : ""),
+      );
+    }
     console.log(`gates[${resolved.gates.source}]: round_code=${resolved.gates.round_code} round_docs=${resolved.gates.round_docs} secret_scan=${resolved.gates.secret_scan} pre_pr=${resolved.gates.pre_pr}`);
     if (hardErrors.length > 0) {
       console.log("cross-validation errors:");
@@ -1534,6 +1725,32 @@ function tryDelegateToClosure(argv) {
     return 1;
   }
   const passthrough = [...argv.slice(0, idx), ...argv.slice(idx + 2)];
+  // A per-run finder selection may NOT cross into a reader that predates it.
+  // The merge-base copy is deliberately the one that decides a self-modifying
+  // change, and one written before --add-finder/--select-finder existed
+  // ignores them: the run would resolve to the configured finders alone, exit
+  // 0, and disclose nothing — an explicitly requested review slot silently
+  // gone, which is the one outcome per-run selection may never produce.
+  // Refuse, exactly as a missing merge-base reader is refused above; a
+  // narrower reader is no more trustworthy than an absent one.
+  const wantsSelection = passthrough.some(
+    (a) => a === "--add-finder" || a === "--select-finder" || a.startsWith("--add-finder=") || a.startsWith("--select-finder="),
+  );
+  if (wantsSelection) {
+    let trustedSource = "";
+    try {
+      trustedSource = readFileSync(trustedScript, "utf8");
+    } catch (err) {
+      console.error(`devflow-policy: could not read the --closure reader to check its flag support: ${err.message}`);
+      return 1;
+    }
+    if (!trustedSource.includes("--add-finder") || !trustedSource.includes("--select-finder")) {
+      console.error(
+        `devflow-policy: the --closure reader (${trustedScript}) predates --add-finder/--select-finder and would silently drop the requested finder(s) — refusing rather than resolving a narrower set with no disclosure`,
+      );
+      return 1;
+    }
+  }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
   if (result.error) {
     console.error(`devflow-policy: could not exec the --closure reader: ${result.error.message}`);
@@ -1548,10 +1765,22 @@ function main() {
   if (delegated !== null) return delegated;
 
   const cmd = argv[0];
-  const args = parseArgs(argv.slice(1));
+  // --add-finder / --select-finder are REPEATABLE, and parseArgs keeps only
+  // the last value for a repeated key. Lifting them out before it runs is
+  // what lets a run name several finders without silently dropping all but
+  // the last — a dropped finder is reduced coverage, which is the one thing
+  // per-run selection may never cause.
+  const addFinders = extractRepeatable(argv.slice(1), "--add-finder");
+  const selectFinders = extractRepeatable(addFinders.rest, "--select-finder");
+  const args = parseArgs(selectFinders.rest);
+  args.addFinders = addFinders.values;
+  args.selectFinders = selectFinders.values;
   if (cmd === "detect") return cliDetect(args);
   if (cmd === "resolve") return cliResolve(args);
-  console.error("usage: devflow-policy.mjs <detect|resolve> --policy <file> [options]");
+  console.error(
+    "usage: devflow-policy.mjs <detect|resolve> --policy <file> [--registry <file>] [--rigor <level>]\n" +
+      "       [--add-finder <stage>:<slug>]... [--select-finder <stage>:<slug>]... [--json]",
+  );
   return 2;
 }
 

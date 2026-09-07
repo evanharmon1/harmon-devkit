@@ -1,13 +1,173 @@
-# Codex second-model review
+# Second-model review (Codex, CodeRabbit, Copilot)
 
-A second AI model — the [OpenAI Codex CLI](https://developers.openai.com/codex/cli)
-— reviews changes in this repo: manual review/challenge tasks, plus an optional
-automatic Claude Code → Codex stop-gate. Those tasks are local and advisory:
-nothing runs in CI, no PR check depends on Codex, and `verify`/`ci` never invoke
-it. Repositories can separately opt into a required current-head result from
-Codex cloud review during PR integration. Findings are hypotheses for the
-primary agent to adjudicate — the protocol and the loop caps live in AGENTS.md
-("Second-Model Review").
+A second AI model reviews changes in this repo: manual review/challenge tasks,
+plus an optional automatic Claude Code → Codex stop-gate. Those tasks are local
+and advisory: nothing runs in CI, no PR check depends on them, and `verify`/`ci`
+never invoke them. Repositories can separately opt into a required current-head
+result from a **cloud** reviewer during PR integration. Findings are hypotheses
+for the primary agent to adjudicate — the protocol and the loop caps live in
+AGENTS.md ("Second-Model Review").
+
+The filename stays `codex-review.md`: AGENTS.md links it by that path and
+AGENTS.md is template-owned, so renaming the guide here would break the link
+without fixing anything.
+
+## Which reviewer runs — the finder catalog
+
+A **finder** is one registered review product. `agent-registry.json`'s
+`finders[]` is the catalog, and `.devflow.toml`'s `[stage.<stage>].finders` is
+which of them a stage actually runs (all-of: every listed finder runs in the
+same logical round, and the round spends one unit of the stage's cap however
+many finders it names).
+
+| Finder | Surface | Stage | Needs |
+|---|---|---|---|
+| `codex-adversarial` | local CLI (`task challenge`) | challenge | Codex CLI, authenticated |
+| `codex-verification` | local CLI (`task review`) | review | Codex CLI, authenticated |
+| `codex-cloud` | PR review | integration | Codex connected to the repo through ChatGPT |
+| `coderabbit-adversarial` | local CLI (`task challenge:coderabbit`) | challenge‡ | CodeRabbit CLI, authenticated |
+| `coderabbit-verification` | local CLI (`task review:coderabbit`) | review‡ | CodeRabbit CLI, authenticated |
+| `coderabbit-cloud` | PR review | integration† | the CodeRabbit GitHub app installed on the repo |
+| `copilot-adversarial` | local CLI (`task challenge:copilot`) | challenge | GitHub Copilot CLI, authenticated |
+| `copilot-verification` | local CLI (`task review:copilot`) | review | GitHub Copilot CLI, authenticated |
+| `copilot-cloud` | PR review | integration† | GitHub Copilot code review enabled for the repo |
+
+† **Registered, not yet driven.** `coderabbit-cloud` and `copilot-cloud` are
+declared here — trigger mechanism, trusted actor, terminal-result signals and
+severity map — and their raw output normalizes like any other finder's. What
+does not exist yet is the integration-stage machinery that would *drive* them:
+the trigger broker, the per-finder cycle state and the readiness condition are
+still Codex-only. Naming one in `[stage.integration].finders` therefore
+configures a finder nothing will collect. That work is tracked as
+[#804](https://github.com/evanharmon1/harmon-devkit/issues/804), with the
+trust constraints it has to satisfy; until it lands, the integration stage runs
+Codex alone.
+
+**Codex is the shipped default and the only finder anything here assumes.**
+Nothing installs a CodeRabbit or Copilot CLI, nothing enables either app, and
+no default configuration names them — so the shipped defaults add no account,
+no trial and no paid dependency. Enabling one is a maintainer decision with a
+cost attached: CodeRabbit is a paid product beyond its free tier, and Copilot
+code review needs a Copilot subscription that covers the repository.
+
+‡ **Registered, and refuses locally with its reason.** A confidence-stage slot
+is complete only when its pass reviewed the round's exact `reviewed_head`, and
+CodeRabbit's CLI resolves its own review scope and takes no target from us — so
+`--base`, `--commit` and `--uncommitted` would all run the identical command
+over a scope nobody chose, and the pass would be banked as covering the round
+it does not. `task challenge:coderabbit` therefore refuses, names that reason,
+and points at [#809](https://github.com/evanharmon1/harmon-devkit/issues/809),
+where the binding is tracked. The finder stays registered rather than being
+dropped: what is missing is the binding, not the finder. On the PR the head
+*is* the scope, so `coderabbit-cloud` has no such problem.
+
+**Enabling one is two steps, and both are yours.**
+
+1. *Provision the tool.* For a local-CLI finder, install and authenticate its
+   binary — `coderabbit` for CodeRabbit, `copilot` for the GitHub Copilot CLI.
+   `scripts/finder-review.sh` refuses non-zero when the binary is absent
+   rather than exiting 0, because a skipped finder that exits 0 reads as the
+   clean pass a capped stage exits on. For a PR-side finder, install the app
+   on the repository (the CodeRabbit GitHub app; Copilot code review through
+   the repository's Copilot settings).
+2. *Name it in `.devflow.toml`.* Add the slug to the stage you want it on:
+
+   ```toml
+   [stage.review]
+   finders = ["codex-verification", "copilot-verification"]
+
+   [stage.integration]
+   finders = ["codex-cloud", "coderabbit-cloud"]
+   ```
+
+   A stage may not name a finder outside its registry-declared affinity: a
+   `pr-cloud` finder on `challenge` or `review` is refused at resolution time,
+   because those stages run before a PR exists.
+
+**Per-run selection.** A maintainer can add a finder for one run without
+editing the config, and the resolver will not let a request take one away:
+
+```bash
+node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+  --registry agent-registry.json \
+  --add-finder review:copilot-verification --json
+```
+
+> **Prerequisite: a schema_version 2 `.devflow.toml`.** `devflow-policy.mjs
+> resolve` reads the v2 operating policy only, and **this repository's
+> `.devflow.toml` is still legacy-shaped**, so the command above exits non-zero
+> here with a migration message rather than resolving anything. Adding the
+> `[stage.*]` snippet above is *not* that migration — a v2 policy also needs
+> `[rounds.*]`, `[breadth.*]`, `[gates]`, `[convergence]`, `[role.*]` and
+> `[strategy.*]`, and the template is harmon-init's
+> ([harmon-init#1081](https://github.com/evanharmon1/harmon-init/issues/1081),
+> tracked here as
+> [#711](https://github.com/evanharmon1/harmon-devkit/issues/711)). Until that
+> lands, per-run selection is available to repositories already on v2; on a
+> legacy policy, run a second finder directly with its own task target
+> (`task challenge:copilot` / `task review:copilot`), which needs no policy
+> resolution at all.
+
+The effective set is the union of the configured finders and the requested
+ones, `--select-finder` included: a selection narrower than the config keeps
+the omitted finders and says so. Disclose the effective set in the PR body
+beside the rigor line, so a later round can see which reviewers the change was
+actually reviewed by.
+
+**Recommended combinations.** One finder per stage is the right default, and
+Codex is the one this repo has evidence for. Reach for a second when the extra
+round is cheaper than the defect it might catch:
+
+- *Ordinary change* — Codex alone, on all three stages. Two reviewers on a
+  small change mostly produces two versions of the same finding to adjudicate.
+- *Security, migrations, data paths* — Codex plus Copilot on `review`. They
+  disagree usefully: Codex attacks the design, Copilot is stronger on
+  line-level correctness and test gaps, and the round still costs one cap
+  unit.
+- *The PR-side pairings* — Codex plus CodeRabbit or Copilot on `integration` —
+  are the ones the † above defers: the finders are registered, but nothing
+  drives them yet.
+- *Never* more than one finder from the same family on one stage: the registry
+  refuses two finders sharing one actor identity, and two passes from the same
+  product mostly repeat each other.
+
+**How each finder's severity reaches the P0-P3 scale.** The scale is this
+repo's (`scripts/lib/review-instructions/severity.txt`), never the vendor's.
+A local-CLI finder driven with our own prompt answers in it directly. A
+PR-side finder answers in its own vendor vocabulary, and its registry
+`severity_map` maps that onto ours — for CodeRabbit: `⚠️ Potential issue` → P1,
+`🛠️ Refactor suggestion` → P2, `🧹 Nitpick` → P3, anything unrecognized → P2,
+because AGENTS.md adjudicates an unlabelled finding as at least a P2. Copilot
+code review states no severity at all, so every finding of its enters
+adjudication at P2. **Every one of those is a hypothesis**: the adjudicated
+priority is the verdict, whichever finder produced it.
+
+`scripts/normalize-finder-findings.mjs` applies the map to a **cloud** finder's
+output — a GitHub review, its inline comments, and the top-level comments bound
+by their `Reviewed commit:` line — decoding it into the shared finding core so
+that adjudication, the exit computation and the record renderer never learn
+which product produced a finding.
+`scripts/test-finder-normalization.sh` holds a conformance fixture per
+registered cloud finder, and asserts those three consumers name no finder slug.
+
+A **local-CLI** finder's free text is deliberately not decoded there. Reading
+it is the dispatched role's job — `/review`'s contract says the registry
+invocation "is the role's evidence source, not itself a result envelope", and
+the role applies the same `severity_map`. That is a boundary, not a gap, and
+it is drawn from experience: an earlier revision parsed the text and could not
+converge. Loosening the rule turned narration into findings; tightening it
+dropped real ones. The same conclusion is recorded at length above
+`verdict_class` in `check-codex-cloud-review.sh` — free text "is not a channel
+that can be parsed reliably".
+
+**What is not verified here.** No CodeRabbit or Copilot account is configured
+in this repository, so their cloud contracts — the exact trigger, the exact
+terminal-result shape — are implemented against the vendors' documented
+behaviour and tested against fixtures, not against a live account. The
+registry's `terminal_signals` is where those assumptions live, deliberately, so
+correcting one is a config edit rather than a code change. Every classification
+path fails **closed**: a body the checker cannot classify is indeterminate and
+blocks promotion rather than passing it.
 
 ## Setup
 
@@ -68,6 +228,77 @@ primary agent to adjudicate — the protocol and the loop caps live in AGENTS.md
 |---|---|
 | `task challenge` (= `challenge:codex`) | Adversarial review — tries to break the change: architecture, authz bypasses, data-loss paths, unsafe rollback, races, hidden coupling, operational failure modes, needless complexity |
 | `task review` (= `review:codex`) | Verification checkpoint — double-checks implementation, consistency with repo conventions, error handling, and test coverage |
+
+The same two stages for the opt-in local finder, once its CLI is installed and
+authenticated (nothing here installs one; a missing binary refuses non-zero):
+
+| Command | Finder |
+|---|---|
+| `task challenge:copilot` / `task review:copilot` | `copilot-adversarial` / `copilot-verification` |
+
+It resolves **the same scope** as Codex (`scripts/lib/review-scope.sh`) and
+accepts the same target flags, so the second finder always reviews exactly what
+Codex would have. Copilot is a general agent, so it is driven with this repo's
+own mode and severity prompt and handed the resolved diff, which is why an
+assembled prompt past `FINDER_REVIEW_MAX_PROMPT_BYTES` (60,000 by default;
+`FINDER_REVIEW_MAX_DIFF_BYTES` is the older name and still works) is
+**refused** rather than truncated: the pass could not fetch what was cut, and
+a partial review that exits 0 reads as a clean one. The bound is on the whole
+prompt — diff, manifest, prose and focus text together — because they all ride
+in one argv element.
+
+**The tool boundary is enforced around the CLI, not asked of it.** `/review`
+requires a confidence pass to run with shell, git, network write and
+credentials denied, or the dispatch refused — and no third-party CLI will
+install that for us. So `scripts/lib/readonly-sandbox.sh` builds it:
+
+- **bubblewrap where available**, resolved from `PATH` and then from Codex's
+  bundled `codex-resources/bwrap`. Where it is not, the pass **degrades rather
+  than refusing**: every other protection still applies, and the run discloses
+  `sandbox: degraded (no bubblewrap)` so a reviewer can see which boundary it
+  ran under. The residual that mode accepts, stated plainly: file-mode
+  protection alone stops nothing outside the checkout, and a linked worktree's
+  `.git` points at the real repository, so `git update-ref` could alter shared
+  refs while the scratch tree stayed byte-identical.
+- a per-run scratch checkout **at the scope being reviewed** — the target
+  commit for `--commit`, HEAD plus the working-tree patch and untracked files
+  for scopes that include uncommitted work — made unwritable, inside a
+  filesystem **allowlist** — only `/usr`, the standard library and certificate
+  paths, the finder's own binary directory, the real `.git` (read-only, by
+  name) and the checkout itself. Nothing else is bound, so a credential
+  outside your home directory (`/run/secrets`, a mounted token) is simply not
+  there. `FINDER_REVIEW_SANDBOX_EXTRA_RO` adds a path deliberately;
+- **HOME replaced by a tmpfs**, with only that finder's own credential path
+  bound back in (`FINDER_REVIEW_COPILOT_CONFIG_DIR`, default `~/.copilot`).
+  `~/.config/gh`, `~/.aws`, npm credentials and your `~/.gitconfig` are simply
+  not there, so a finder with shell capability has nothing to authenticate a
+  remote write with;
+- a clean environment: the pass starts from `env -i` and is handed back only
+  `PATH`, `HOME`, `USER`, `LOGNAME`, `TERM`, `LANG` and `TMPDIR`, so a token in
+  a variable nobody thought to name is not passed either.
+  `FINDER_REVIEW_SANDBOX_ENV` names one deliberately;
+- and afterwards the scratch tree **proven** unchanged — same files, modes,
+  sizes, symlink targets, **content hashes** and `git status` — so a pass that
+  modified it is refused whatever it returned. Content, not just shape: a
+  same-length rewrite that restored the file mode passed a metadata-only
+  comparison. The same state, not an empty one: a scope carrying uncommitted
+  work makes the tree legitimately dirty, and what must not change is the
+  dirtiness rather than its absence.
+
+- the PID, IPC and UTS namespaces unshared and the controlling terminal
+  dropped, so the pass cannot see or signal host processes, reach host IPC
+  endpoints, or inject input into your terminal.
+
+Nothing here depends on the vendor's own capability model or on your
+configuration being what you think it is. **The one capability deliberately
+left open is network egress**: the CLI has to reach its model, which is the
+entire reason for dispatching it. So the boundary denies writes, credentials,
+processes and IPC — not the model call, and not what the finder chooses to
+send it. The finder is handed the diff either way, and that is the residual
+this design accepts knowingly rather than one it overlooks. The vendor invocation is overridable without editing the runner,
+so a vendor flag change is a config edit: `FINDER_REVIEW_COPILOT_ARGS` and
+`FINDER_REVIEW_COPILOT_BIN` (`FINDER_REVIEW_DRY_RUN=1` prints the resolved
+command and prompt without invoking anything).
 
 Both accept an explicit target and free-text focus after `--`:
 
