@@ -1,0 +1,41 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "0be78b705d53c46af3ad38a8778e72814d035368",
+  "produced_at": "2026-08-25T09:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "omator-648-replay-review",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "review",
+    "round": 5,
+    "reviewed_head": "0be78b705d53c46af3ad38a8778e72814d035368",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r5-codex-cli-1",
+        "path": "src/lane/bounding.ts",
+        "line": 48,
+        "class": "correctness",
+        "provenance": "round:4",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "the round-4 clamp makes the bound non-monotonic across a wrap"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 1,
+      "P2": 0,
+      "P3": 0
+    }
+  }
+}

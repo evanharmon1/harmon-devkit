@@ -73,6 +73,10 @@ is_context_only_fixture() {
     */run.schema/invalid/settlement-of-fixed-finding.json) return 0 ;;
     */run.schema/invalid/settlement-of-unknown-finding.json) return 0 ;;
     */run.schema/invalid/ready-with-unsettled-deferral.json) return 0 ;;
+    */run.schema/invalid/split-of-fixed-finding.json) return 0 ;;
+    */run.schema/invalid/split-issue-disagrees-with-adjudication.json) return 0 ;;
+    */run.schema/invalid/split-adjudication-not-recorded.json) return 0 ;;
+    */run.schema/invalid/split-omitted-on-capped-run.json) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -768,6 +772,65 @@ run_context_case \
     "$fixtures_dir/run.schema/invalid/settlement-of-unknown-finding.json" \
     "is not adjudicated in any supplied --adjudication document" \
     --adjudication "$settlement_cross_check_adjudication"
+
+split_cross_check_adjudication="$fixtures_dir/run.schema/invalid/split-cross-check.adjudication.json"
+
+# The run-level splits[] projection and the per-finding `split` adjudications
+# are two documents describing one decision (#747). Neither proves the other
+# alone, so the binding is context-only: a split naming a finding that was
+# actually fixed, or naming a different issue than the adjudication filed it
+# as, is the "left to memory" failure with a paper trail.
+run_context_case \
+    "a split naming a finding adjudicated fix (not split) is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-of-fixed-finding.json" \
+    "was adjudicated fix, not split" \
+    --adjudication "$split_cross_check_adjudication"
+
+run_context_case \
+    "a split naming a different issue than its adjudication filed it as is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-issue-disagrees-with-adjudication.json" \
+    "but this split names 999" \
+    --adjudication "$split_cross_check_adjudication"
+
+split_promotion_adjudication="$fixtures_dir/run.schema/invalid/split-promotion.adjudication.json"
+
+# The two halves of the split's promotion contract, both context-only because
+# each needs the adjudication documents the run record cannot see (challenge
+# round 1, both confirmed): splits[] -> adjudications was checked, but neither
+# the converse nor the deletion round was.
+run_context_case \
+    "a promoted run whose splits[] omits a finding adjudicated split is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-adjudication-not-recorded.json" \
+    "was adjudicated split but no splits[] entry records it" \
+    --adjudication "$settlement_cross_check_adjudication" \
+    --adjudication "$split_promotion_adjudication"
+
+# The terminal-outcome half of the converse check, which `ready-for-review`
+# alone does not exercise (review round 2, confirmed: the fixture was on the
+# context-only allowlist with no case invoking it, so a regression restoring
+# the ready-for-review-only gate would have gone unnoticed).
+run_context_case \
+    "a capped run whose splits[] omits an adjudicated split is rejected" \
+    run \
+    "$fixtures_dir/run.schema/invalid/split-omitted-on-capped-run.json" \
+    "was adjudicated split but no splits[] entry records it" \
+    --adjudication "$split_promotion_adjudication"
+
+# The positive control: with every split recorded, the same promoted run
+# validates. Without it, the case above would pass just as well against a
+# check that rejected every split.
+split_complete_run="$test_tmp/split-complete-run.json"
+jq '.splits[0].finding_ids = ["review-r2-codex-cli-1", "review-r2-codex-cli-2"]' \
+    "$fixtures_dir/run.schema/invalid/split-adjudication-not-recorded.json" >"$split_complete_run"
+if ! out="$(node "$validator" run "$split_complete_run" \
+    --adjudication "$settlement_cross_check_adjudication" \
+    --adjudication "$split_promotion_adjudication" 2>&1)"; then
+    fail "a fully recorded split must validate: $out"
+fi
+echo "PASS: a promoted run recording every split validates"
 
 run_context_case \
     "an --adjudication document belonging to a foreign run is rejected" \

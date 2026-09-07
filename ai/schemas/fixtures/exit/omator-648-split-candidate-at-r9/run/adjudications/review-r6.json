@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "omator-648-replay-review",
+  "stage": "review",
+  "round": 6,
+  "reviewed_head": "ec73f140c57c879de250b077717662c8573eb06c",
+  "adjudications": [
+    {
+      "finding_id": "review-r6-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#648 ledger: the round-5 monotonicity fix reintroduces the closed-window admission",
+      "evidence": "the round-5 monotonicity fix reintroduces the closed-window admission",
+      "override": null
+    }
+  ]
+}

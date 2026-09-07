@@ -1,0 +1,80 @@
+schema_version = 2
+default_rigor = "standard"
+default_strategy = "solo"
+rigor_order = ["cursory", "light", "standard", "thorough", "deep", "forensic"]
+tier_order = ["local", "economy", "standard", "frontier", "apex"]
+
+[convergence]
+converged = { all = [ { predicate = "no_gating_findings" } ] }
+diverging = { any = [
+  { predicate = "count_rising", increases = 2 },
+  { predicate = "repeat_after_fix" },
+  { predicate = "provenance_share", min = 0.5, exclude_classes = ["design"] },
+] }
+
+[rigor.standard]
+rounds = "standard"
+breadth = "standard"
+tier_escalation = true
+orchestrator_tier = "apex"
+implementer_tier = "standard"
+challenger_tier = "frontier"
+reviewer_tier = "standard"
+integrator_tier = "economy"
+
+[rounds.standard]
+challenge = 3
+review = 9
+integration = 2
+remediation = 2
+min_rounds = 1
+wall_clock_min = 240
+
+[breadth.standard]
+max_agent_runs = 8
+max_parallel_agents = 3
+
+[gates]
+round_code = "verify"
+round_docs = "check"
+secret_scan = "security:secrets"
+pre_pr = "security"
+docs_only_paths = ["**/*.md", "docs/**"]
+
+[role.orchestrator]
+tier = "apex"
+families = ["claude"]
+
+[role.implementer]
+tier = "standard"
+families = ["claude", "gpt"]
+
+[role.challenger]
+tier = "frontier"
+families = ["gpt"]
+harnesses = ["codex-cli"]
+
+[role.reviewer]
+tier = "standard"
+families = ["gpt"]
+harnesses = ["codex-cli"]
+
+[role.integrator]
+tier = "economy"
+families = ["claude"]
+
+[stage.challenge]
+finders = ["codex-cli"]
+finder_fallbacks = ["gemini-cli"]
+
+[stage.review]
+finders = ["codex-cli"]
+finder_fallbacks = ["gemini-cli"]
+
+[stage.integration]
+finders = ["codex-cli"]
+
+[strategy.solo]
+topology = "single-agent"
+planning = "inline"
+delegation = "none"

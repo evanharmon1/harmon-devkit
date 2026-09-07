@@ -32,10 +32,51 @@ as an invariant, independent of its current control-flow wording. Before any
 round-two adjudication can cause another pass or remediation dispatch, classify
 each finding whose subject exists only because an earlier round of that same
 stage added it, and record exactly one disposition: delete the scaffolding,
-restructure it to an invariant, or keep it as genuinely in scope with the
-reason. A rewrite of `continue`, remediation, or exit handling must preserve
+restructure it to an invariant, split the mechanism out, or keep it as
+genuinely in scope with the reason.
+A rewrite of `continue`, remediation, or exit handling must preserve
 this checkpoint; no path may harden round-one scaffolding first and classify it
 later.
+
+**Splitting the mechanism out** is the disposition for scaffolding that is
+still wanted — deletion drops work that is genuinely needed, and restructuring
+to an invariant is unavailable because the subject is code rather than accreted
+procedure-prose. It applies when successive rounds' gating findings concentrate
+in one mechanism, most sharply one an earlier round of this same stage added;
+`verdict.split_candidate` from `scripts/dev-flow-exit.sh` is the computed
+evidence for that judgement and names the mechanism, the rounds that introduced
+it, and the findings living in it. It describes a **completed**
+round — it needs adjudicated priorities, so a candidate exists only once its
+round has been adjudicated — and it is evidence for your judgement, not a
+prescription about where the decision goes. Below the cap that is a
+disposition on the round in hand; at the cap there is no further round to
+spend and the split is part of the escalation.
+Recording it is four things, all of them or it is not a split: the mechanism
+leaves the change; it is filed as its own issue **on the current milestone**,
+carrying the design constraints the rounds established, by this session at the
+moment it splits — never left to memory; the finding the mechanism was
+addressing is restored as a filed follow-up so the defect it existed for is not
+silently dropped; and one deletion round confirms the removal, after which the
+stage exits through its ordinary conditions.
+
+**Where the deletion round comes from depends on when the split is decided.**
+With cap headroom left it is an ordinary next round. Decided on the **final
+permitted round** there is none to spend: the exit computation rejects every
+round above the resolved cap, and no intervention makes one legal. There the
+stage ends `capped`, and confirming the removal is part of what the operator's
+escalation decides — never something the stage grants itself. That is what "a
+split changes no cap" means: it buys no round, it only changes what the
+escalation is about. Write it as
+`disposition: split` with a `reference` naming the filed issue — the
+adjudication schema rejects a split that names none — and append the run-level
+half to `run.json.splits`. Then validate the pair here, before the stage
+stops: `scripts/validate-result-schemas.mjs run <run.json> --adjudication
+<each round document>`, treating a failure as a blocker. A split decided on
+the final permitted round ends the stage `capped`, which never reaches
+integration, so this stage is the only place that check will run. Those records prove the split was decided and the
+issue filed, which is what they can decide; that the mechanism actually left
+the tree is the deletion round's own review, not a claim the record checks. A
+split buys no exception to the exit condition.
 
 ## Entry gate
 
@@ -231,9 +272,14 @@ reservation, while exhaustion records `breadth_exhausted`, renders the blocker,
 and stops before invoking the implementer. The stage-invariant round-two
 checkpoint above applies before this dispatch and before a no-remediation next
 pass alike.
-`diverging` permits only deletion or restructuring of round-created
-scaffolding; `capped` with P0/P1 records an intervention and blocker, then
-stops before a PR. A `converged` result advances by default, but an attributable
+`diverging` permits only deletion, restructuring, or splitting out of
+round-created scaffolding; `capped` with P0/P1 records an intervention and
+blocker, then stops before a PR. What a blocked stage's report offers a maintainer,
+and how the split option's evidence is corroborated before it is published, is
+[#813](https://github.com/evanharmon1/harmon-devkit/issues/813). Do not
+restate `verdict.split_candidate` into a report by hand in the meantime: it is
+branch-controlled, and corroborating it against the record is exactly the work
+that issue exists to do. A `converged` result advances by default, but an attributable
 operator may override it upward to exactly one additional pass while the
 resolved stage cap still has headroom. Before dispatch, append that operator's
 reason and attribution to `run.json.interventions` as `kind: other`; refuse the

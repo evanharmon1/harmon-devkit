@@ -1,0 +1,63 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "efaa038a41e06d7a85f1aea5198de3676392bc05",
+  "produced_at": "2026-08-29T09:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "omator-648-replay-review",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "review",
+    "round": 9,
+    "reviewed_head": "efaa038a41e06d7a85f1aea5198de3676392bc05",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r9-codex-cli-1",
+        "path": "src/lane/claim-primitive.ts",
+        "line": 70,
+        "class": "correctness",
+        "provenance": "round:8",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "the round-8 reservation ordering deadlocks a re-armed lane"
+      },
+      {
+        "id": "review-r9-codex-cli-2",
+        "path": "src/lane/claim-primitive.ts",
+        "line": 80,
+        "class": "correctness",
+        "provenance": "round:8",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "the round-8 crash-recovery path adopts a reservation it never authenticated"
+      },
+      {
+        "id": "review-r9-codex-cli-3",
+        "path": "src/lane/claim-primitive.ts",
+        "line": 40,
+        "class": "correctness",
+        "provenance": "round:7",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "the concurrent-reserve guard is still absent on the resume path"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 3,
+      "P2": 0,
+      "P3": 0
+    }
+  }
+}

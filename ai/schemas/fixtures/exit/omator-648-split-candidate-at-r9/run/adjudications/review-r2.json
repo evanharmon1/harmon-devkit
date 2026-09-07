@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "run_id": "omator-648-replay-review",
+  "stage": "review",
+  "round": 2,
+  "reviewed_head": "faf1a45aacb8164575b89c1e3100319e6ae4e74a",
+  "adjudications": [
+    {
+      "finding_id": "review-r2-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "omator#648 ledger: the documented ordering contradicts the implemented one",
+      "evidence": "the documented ordering contradicts the implemented one",
+      "override": null
+    },
+    {
+      "finding_id": "review-r2-codex-cli-2",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "omator#648 ledger: no worked example for the empty-batch case",
+      "evidence": "no worked example for the empty-batch case",
+      "override": null
+    }
+  ]
+}

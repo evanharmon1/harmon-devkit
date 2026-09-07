@@ -279,6 +279,42 @@ keyword, for every one of these:
   `--adjudication`, unchanged: settlements are still checked for an
   internal duplicate `finding_id` (`checkSettlements`), just not against
   any adjudication.
+- **Split ↔ adjudication agreement (`--adjudication`, repeatable)** — the
+  split strategy ([#747](https://github.com/evanharmon1/harmon-devkit/issues/747))
+  is recorded in two documents that neither of them proves alone: the
+  per-finding half is an adjudication entry with `disposition: split` and a
+  `reference` naming the issue the mechanism was filed as, and the run-level
+  half is `run.schema.json`'s `splits[]`, which additionally names the
+  mechanism, the stage/round it left at, the **milestone** the issue was filed
+  on, and every finding the split answers. Two checks always run
+  (`checkSplits`, no external context needed): a finding is answered by at most
+  one split, and a mechanism is split out of a given stage at most once (the
+  same mechanism may legitimately recur under a different stage). Given
+  `--adjudication` (or `--no-adjudications`, which asserts a confirmed-empty
+  set and so rejects every split, mirroring the settlements rule above),
+  `checkSplitsAgainstAdjudications` additionally requires every finding a split
+  names to be adjudicated exactly once, with disposition `split`, whose
+  reference names the **same** issue the split entry does — a run record and a
+  round record that disagree about where the work went are the "left to memory"
+  failure with a paper trail. One further check applies once the run has
+  **stopped**, not while it is still in flight, because a split adjudicated in
+  the round currently being worked may legitimately not have reached
+  `splits[]` yet: `checkSplitAdjudicationsRecordedBeforePromotion` walks the
+  *other* direction and rejects a run at **any terminal `outcome`**
+  (`ready-for-review`, `capped`, `escalated`, `abandoned`) where some finding
+  was adjudicated `split` and no `splits[]` entry records it — the contract
+  files the mechanism at the moment of the split, so an abandoned run has lost
+  it just as completely as a promoted one.
+  **What none of these check is whether the mechanism actually left the tree,
+  whether the addressed finding's follow-up was really filed, or whether a
+  deletion round ran** — see `specs/dev-flow-v2.md` § "The split strategy".
+  These documents hold no trees, no receipts and no issue tracker, so a check
+  for any of it can only approximate, and an approximation in a validator
+  reads as authority about something it never examined. Those obligations are
+  real and belong to the deletion round's own review. `split` is also the one disposition whose
+  `reference` is *required* rather than merely permitted: an adjudication
+  saying a mechanism was split out but naming no issue records the removal and
+  loses the work.
 - **Adjudication union uniqueness (`--adjudication`, repeatable)** —
   independent of settlements: across the UNION of every supplied
   `--adjudication` document, a finding_id may be adjudicated at MOST once
@@ -2757,7 +2793,7 @@ authenticated against the target repo.
 | `run.json` | One `run.schema.json` document | For `blocker-comment`, `readiness-input`; optional elsewhere |
 | `adjudications/*.json` | One or more `adjudication.schema.json` documents (one per round) | For `deferred-findings`, `adjudication-record`, `round-table`, `thread-reply-plan`, `readiness-input` |
 | `passes/*.json` | Result envelopes (`role: challenger`, `reviewer`, or `integrator`) the adjudications reference | Optional for most projections — enriches a finding with `path`/`line`/`class`/`provenance`/`finder` (reviewer) or `source_id` (integrator); a finding renders with reduced fidelity (its own `finding_id` as location) when no matching pass is supplied. The "Evidence" column is always the adjudication's own `evidence` field — schema-required, never pass-dependent — never a pass's raw finding text (see "Evidence is always the adjudicated record's own" below). **Required** for `deferred-findings` and `thread-reply-plan` specifically — a missing pass is an indeterminate error for those two, never a reduced-fidelity render, since each feeds a downstream action (a PR-body task list, a GitHub reply) that a thin render would silently corrupt rather than merely shrink |
-| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{stage, outcome, reason, rounds_counted, next_round, corrections[], verified_findings[], retained_rounds?, partial_findings?}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines and authoritative verified provenance. Shape-validated when present: terminal `next_round` may be `null`, while a dispatch value is a positive integer; `corrections` accepts the exit evaluator's structured `{finding_id, field, asserted, corrected, evidence}` entries (legacy display strings remain accepted); and each `verified_findings` entry carries its id plus verified/corrected/unverified provenance and fingerprint facts. Whenever `verified_findings` is supplied (including an empty array), `stage` must identify its `challenge` or `review` confidence stage. The projection covers every supplied adjudication in that stage unless exit computation supplies strictly increasing `retained_rounds`, in which case ancestry-invalidated rounds are excluded and each verified finding must name a retained round. Rendered provenance comes from this verified projection when supplied, never the superseded producer assertion. A terminal `finder_unavailable`/`breadth_exhausted` blocker is the sole projection allowed to carry a pass finding with no adjudication: the verdict identifies its positive `incomplete_round` and exact accepted `partial_findings` ids, and a raw finding renders as partial-round evidence only when it is named there and its ID, envelope run/head/role, and payload stage/round/finder/reviewed-head all bind it to that exact active run and canonical blocker head. Every authoritative adjudication/readiness projection, and an orphan that fails any of those bindings, continues to fail closed. |
+| `verdict.json` | The exit-computation verdict ([#636](https://github.com/evanharmon1/harmon-devkit/issues/636)): `{stage, outcome, reason, rounds_counted, next_round, corrections[], verified_findings[], retained_rounds?, partial_findings?, split_candidate?}`, consumed as-is | Optional — feeds `round-table`'s and `blocker-comment`'s Exit/Spent lines and authoritative verified provenance. Shape-validated when present: terminal `next_round` may be `null`, while a dispatch value is a positive integer; `corrections` accepts the exit evaluator's structured `{finding_id, field, asserted, corrected, evidence}` entries (legacy display strings remain accepted); and each `verified_findings` entry carries its id plus verified/corrected/unverified provenance and fingerprint facts. Whenever `verified_findings` is supplied (including an empty array), `stage` must identify its `challenge` or `review` confidence stage. The projection covers every supplied adjudication in that stage unless exit computation supplies strictly increasing `retained_rounds`, in which case ancestry-invalidated rounds are excluded and each verified finding must name a retained round. Rendered provenance comes from this verified projection when supplied, never the superseded producer assertion. A terminal `finder_unavailable`/`breadth_exhausted` blocker is the sole projection allowed to carry a pass finding with no adjudication: the verdict identifies its positive `incomplete_round` and exact accepted `partial_findings` ids, and a raw finding renders as partial-round evidence only when it is named there and its ID, envelope run/head/role, and payload stage/round/finder/reviewed-head all bind it to that exact active run and canonical blocker head. Every authoritative adjudication/readiness projection, and an orphan that fails any of those bindings, continues to fail closed. `split_candidate` is the additive split-strategy diagnostic ([#747](https://github.com/evanharmon1/harmon-devkit/issues/747)): `{detected, reason, round, mechanism, concentration, provenance_share, introduced_by_rounds[], finding_ids[], consecutive_rounds[]}`. The renderer does **not** consume it yet, and correspondingly does **not** shape-validate it — the other verdict fields listed above are checked because the renderer reads them, and a field nothing reads is not made trustworthy by validating it here. Whatever consumes it owns that check: publishing the split option as blocker-report evidence is [#813](https://github.com/evanharmon1/harmon-devkit/issues/813), split out of #747 after three challenge rounds concentrated there. Two constraints that work carries, established by those rounds: `verdict.json` is branch-controlled, so a detected candidate must be corroborated against the record (its `finding_ids` are exactly that round's adjudicated P0/P1 set — `concentration: 1` asserts nothing less) and no evidence field the record cannot corroborate may be rendered at all; and an integration blocker needs an integration-scoped verdict, never the last confidence stage's. |
 | `policy.json` | Resolved-policy disclosure input (this script's own contract — no upstream schema defines one yet): `{rigor: {level, source}, rounds: {challenge, review, integration, remediation, min_rounds}, disclosures: [{kind, detail}]}` | Required only for `policy-disclosure`. Shape-validated when present: `rigor.level`/`rigor.source` non-empty strings; `rounds` and every one of its five caps are **required** whenever `policy.json` exists at all — a partial or omitted `rounds` would let the rendered rigor line silently disclose an incomplete budget — each a non-negative integer, **except `min_rounds`, which must be positive** (AGENTS.md: every rigor level's floor is always `>= 1`; `0` is semantically invalid for that one key, not just a low value); `disclosures[]` stays optional, each entry `{kind, detail}` |
 
 Every file present is schema-validated (structural shape only — this

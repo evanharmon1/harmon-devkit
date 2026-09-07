@@ -1,5 +1,8 @@
 {
   "outcome": "capped",
   "reason": "findings_remain",
-  "rounds_counted": 3
+  "rounds_counted": 3,
+  "split_candidate_detected": false,
+  "split_candidate_reason": "no_round_provenance",
+  "split_candidate_mechanism": "specs/lawnomator-data-import-export.md"
 }

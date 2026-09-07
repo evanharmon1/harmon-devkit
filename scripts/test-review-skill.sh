@@ -32,6 +32,40 @@ for text in '[stage.challenge].finders' '[stage.review].finders' challenger revi
     'validated finding records' 'override it upward' 'run.json.interventions'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing $text"
 done
+# The split strategy (#747) — the third convergence move, beside deleting the
+# scaffolding and restructuring it to invariants. Asserted as text because
+# that is what it is: policy the stage skills carry, since AGENTS.md here is
+# copier-owned by harmon-init and cannot hold it.
+for text in 'split the mechanism out' 'verdict.split_candidate' \
+    'on the current milestone' 'never left to memory' \
+    'disposition: split' 'run.json.splits' \
+    'deletion, restructuring, or splitting out of' \
+    'validate the pair here, before the stage'; do
+    grep -Fq "$text" "$skill" || fail "review skill is missing the split strategy: $text"
+done
+integrate_skill="ai/skills/universal/integrate/SKILL.md"
+# What integration owns of the split: the filing obligation, and the rule that
+# splitting is not an integration move. What a blocked stop OFFERS a
+# maintainer, and how it renders, is #813's — deliberately not asserted here.
+for text in 'filed on the current milestone by the agent that' \
+    'never left to memory'; do
+    grep -Fq "$text" "$integrate_skill" ||
+        fail "integrate skill is missing the split filing obligation: $text"
+done
+# The rendering is split out to #813; the skill must still warn an integration
+# stop off blocker-comment, which borrows a confidence-stage verdict.
+grep -Fq 'Do not use `render-dev-flow.sh blocker-comment` for an integration stop' "$integrate_skill" ||
+    fail "integrate skill does not warn off the untrustworthy integration blocker rendering"
+grep -Fq 'Splitting is not an integration move' "$integrate_skill" ||
+    fail "integrate skill does not state that splitting is not an integration move"
+# A split is recorded in two documents that are cross-checked only when the run
+# record is validated WITH its adjudications, and nothing else in the stage
+# does that (the readiness gate calls the renderer, which does not read
+# splits). The procedure must say so, and must say a split is confidence-stage
+# only.
+grep -Fq 'scripts/validate-result-schemas.mjs run <run.json> --adjudication' "$integrate_skill" ||
+    fail "integrate skill does not validate the split's cross-document state"
+
 grep -Fq 'display login is non-authoritative metadata' "$skill" ||
     fail "review skill treats mutable display login as evidence identity"
 grep -Fq 'Immediately before that remediation dispatch' "$skill" ||

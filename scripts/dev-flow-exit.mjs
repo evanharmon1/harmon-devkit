@@ -23,6 +23,13 @@
 //
 // Exit codes: 0 continue, 20 converged, 21 diverging, 22 capped,
 // 2 indeterminate, 1 usage/parse error.
+//
+// Every verdict that has a complete latest round also carries an additive
+// `split_candidate` projection — the concentration/provenance evidence a
+// blocker report needs to offer "split the mechanism out" beside "order more
+// rounds" and "accept as spent" (specs/dev-flow-v2.md § The split strategy,
+// issue #747). It is a diagnostic: no outcome, exit code, or cap depends on
+// it, and it needs no policy knob.
 
 import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -1002,11 +1009,19 @@ function predicate_count_rising(retainedRoundsAsc, currentIndex, params) {
   return hasVerifiedRoundProvenance;
 }
 
+// `split` joins fix/restructure/delete as a disposition that CHANGED THE CODE
+// (specs/dev-flow-v2.md § The split strategy): splitting removes the mechanism
+// from the change under review, so a finding that recurs afterwards is the
+// same "the remedy did not stop it" signal a repeat after a fix is — not the
+// producer disagreeing, which is what `decline` marks and what this list has
+// always excluded.
+const CODE_CHANGING_DISPOSITIONS = ["fix", "restructure", "delete", "split"];
+
 function predicate_repeat_after_fix(currentRound) {
   return gatingFindings(currentRound).some((f) => {
     if (f.fingerprintStatus === "unverified") return false;
     if (!f.verifiedFingerprint.startsWith("repeat-of:")) return false;
-    return ["fix", "restructure", "delete"].includes(f.fingerprintTargetDisposition);
+    return CODE_CHANGING_DISPOSITIONS.includes(f.fingerprintTargetDisposition);
   });
 }
 
@@ -1050,6 +1065,131 @@ function evalExpr(expr, ctx) {
   });
   const overall = expr.kind === "all" ? results.every((r) => r.hit) : results.some((r) => r.hit);
   return { overall, results };
+}
+
+// ---------------------------------------------------------------------------
+// Split-candidate signal (specs/dev-flow-v2.md § The split strategy)
+// ---------------------------------------------------------------------------
+//
+// A DIAGNOSTIC, never an outcome. It rides alongside whatever verdict
+// computeVerdict returns and changes none of them — issue #747's "Out of
+// scope" is explicit that the caps and the two-consecutive exit do not move.
+// What it buys is that `capped` can say WHY it capped: a blocker report can
+// offer "split the mechanism out" with evidence instead of only naming the
+// spent limit, and a session can propose the split at round 2 rather than
+// after nine rounds of hardening (omator#648).
+//
+// It takes NO configuration. Concentration is tested as unanimity — one
+// mechanism holds EVERY gating finding of the round — rather than against a
+// fraction, and the trajectory test is the immediately preceding round rather
+// than a window. Both are the only knob-free readings of "findings
+// concentrating in one mechanism across consecutive rounds", which is why
+// .devflow.toml gains no per-stage concentration threshold (#747 criterion 3;
+// openspec/changes/dev-flow-v2/specs/config/spec.md records the decision).
+
+// The mechanism a finding lives in. The rename chain is resolved through the
+// same ledger `verifyProvenance` uses, so a mechanism a later round renamed
+// is still ONE mechanism rather than two paths that never concentrate.
+function mechanismOf(finding, ledger) {
+  return resolveOriginPath(finding.path, finding.round, ledger);
+}
+
+// The mechanism holding the most of this round's gating findings, with its
+// share. Ties break on the path so two implementations agree (the spec's
+// "two implementations given the same rounds and policy must return the same
+// outcome and the same reason" applies to this projection too). Returns null
+// for a round with no gating findings at all — there is nothing to
+// concentrate.
+function concentrationOf(round, ledger) {
+  const gating = gatingFindings(round);
+  if (gating.length === 0) return null;
+  const byMechanism = new Map();
+  for (const finding of gating) {
+    const key = mechanismOf(finding, ledger);
+    if (!byMechanism.has(key)) byMechanism.set(key, []);
+    byMechanism.get(key).push(finding);
+  }
+  const ranked = [...byMechanism.entries()].sort((a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1));
+  const [mechanism, findings] = ranked[0];
+  return { mechanism, findings, concentration: findings.length / gating.length };
+}
+
+function computeSplitCandidate(retainedRoundsAsc, currentIndex, ledger) {
+  const currentRound = retainedRoundsAsc[currentIndex];
+  const current = concentrationOf(currentRound, ledger);
+  if (!current) {
+    return {
+      detected: false,
+      round: currentRound.round,
+      mechanism: null,
+      concentration: 0,
+      provenance_share: 0,
+      introduced_by_rounds: [],
+      finding_ids: [],
+      consecutive_rounds: [currentRound.round],
+      reason: "no_gating_findings",
+    };
+  }
+
+  // Round-wide, deliberately: the issue asks for "the share of a round's
+  // findings whose subject was added by earlier rounds of the same stage",
+  // which is the whole round, not just the concentrated mechanism. Unverified
+  // provenance leaves both numerator and denominator, exactly as
+  // predicate_provenance_share does — a claim no ledger could decide must
+  // neither manufacture nor mask the signal. `exclude_classes` is NOT applied:
+  // that parameter tunes a gating predicate, and this projection is evidence
+  // for a human rather than a gate.
+  const roundDecidable = gatingFindings(currentRound).filter((f) => f.provenanceStatus !== "unverified");
+  const roundAttributed = roundDecidable.filter((f) => f.verifiedProvenance.startsWith("round:"));
+  const provenanceShare = roundDecidable.length === 0 ? 0 : roundAttributed.length / roundDecidable.length;
+
+  const mechanismDecidable = current.findings.filter((f) => f.provenanceStatus !== "unverified");
+  const mechanismAttributed = mechanismDecidable.filter((f) => f.verifiedProvenance.startsWith("round:"));
+  const introducedByRounds = [...new Set(mechanismAttributed.map((f) => Number(f.verifiedProvenance.slice("round:".length))))].sort(
+    (a, b) => a - b,
+  );
+
+  // The immediately preceding round by ROUND NUMBER, not merely the previous
+  // array element — the same adjacency rule the two-consecutive convergence
+  // exit uses, and for the same reason: a retained set with a round excluded
+  // for ancestry would otherwise let two non-adjacent rounds pass as
+  // "consecutive".
+  const previousRound = currentIndex > 0 ? retainedRoundsAsc[currentIndex - 1] : null;
+  const previousAdjacent =
+    previousRound && previousRound.round === currentRound.round - 1 && previousRound.status === "complete"
+      ? previousRound
+      : null;
+  const previous = previousAdjacent ? concentrationOf(previousAdjacent, ledger) : null;
+  const previousConcentratedHere = !!previous && previous.concentration === 1 && previous.mechanism === current.mechanism;
+
+  // The round's own finding order, not a lexicographic sort of the ids: with
+  // ten or more findings "…-10" sorts before "…-2", which reads as a
+  // corrupted list in a blocker report. Round order is already deterministic
+  // (the pass's own findings array), which is all this projection owes.
+  const findingIds = current.findings.map((f) => f.id);
+  const base = {
+    round: currentRound.round,
+    mechanism: current.mechanism,
+    concentration: current.concentration,
+    provenance_share: provenanceShare,
+    introduced_by_rounds: introducedByRounds,
+    finding_ids: findingIds,
+    // Only report the two-round sequence when the CURRENT round is itself
+    // unanimous (cloud review, confirmed): otherwise a result carrying
+    // `concentration: 2/3`, `detected: false` and reason `not_concentrated`
+    // also claimed a concentrated pair of rounds, contradicting itself.
+    consecutive_rounds:
+      previousConcentratedHere && current.concentration === 1 ? [previousAdjacent.round, currentRound.round] : [currentRound.round],
+  };
+
+  if (current.concentration !== 1) return { ...base, detected: false, reason: "not_concentrated" };
+  // "Most sharply a mechanism added by an earlier round of the same PR"
+  // (#747): without at least one EVIDENCE-BACKED round:N attribution the
+  // concentration is just a change with one hot file, which is ordinary
+  // review, not a loop feeding on itself.
+  if (introducedByRounds.length === 0) return { ...base, detected: false, reason: "no_round_provenance" };
+  if (!previousConcentratedHere) return { ...base, detected: false, reason: "not_consecutive" };
+  return { ...base, detected: true, reason: "concentrated_round_provenance" };
 }
 
 // ---------------------------------------------------------------------------
@@ -1123,7 +1263,7 @@ function ancestryRetainedRounds(rounds, currentHead, ancestryOpts) {
   return { withAncestry, retained };
 }
 
-function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHead, ancestryOpts }) {
+function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHead, ancestryOpts, ledger = null }) {
   const { withAncestry, retained } = ancestryRetainedRounds(rounds, currentHead, ancestryOpts);
 
   // An incomplete round (capped/finder_unavailable or
@@ -1165,12 +1305,44 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
   // continue/converged/capped-clean verdict dropped it entirely, even
   // though `fallback-substitutes-for-primary`'s own fixture exercises
   // exactly this case. Aggregated onto `base` once so every verdict below
-  // inherits it via `...base`.
+  // inherits it via `...base`, as is the split-candidate diagnostic below.
+  //
+  // The split-candidate diagnostic rides on EVERY verdict that has an
+  // adjudicated latest round to read — `capped` above all (a blocker report
+  // that can only say "cap reached" is exactly what #747 exists to fix), but
+  // `continue` and `diverging` too, so a session can propose the split at
+  // round 2 instead of at the cap. It is computed from `latest` only when
+  // that round is complete: an incomplete round (finder_unavailable /
+  // breadth_exhausted) has no adjudication, so its findings carry no
+  // adjudicated priority and nothing about concentration could be true or
+  // false of it. Absent rather than false in that case — a reader must be
+  // able to tell "no signal was computable" from "the signal is negative".
+  // Suppressed once ANY retained round is incomplete (review round 1,
+  // confirmed): the branch below terminalizes a finder exhaustion on the
+  // grounds that "no later round is legal" after it, so a candidate computed
+  // from such a later round would advertise evidence drawn from a round the
+  // same verdict is about to declare illegal. Absent, not false — a reader
+  // must still be able to tell "no signal was computable" from "the signal is
+  // negative".
+  const trajectoryIsComplete = retained.every((r) => r.status === "complete");
+  // Also suppressed when the cap was reached but the round that reached it is
+  // not the retained current-head round (cloud review, confirmed): that
+  // verdict returns `capped`/`invalidated` precisely because the final
+  // permitted round cannot be trusted, and `latest` is then an EARLIER round.
+  // Attaching its candidate would let one verdict recommend splitting on
+  // round 2's evidence while declaring round 3 untrustworthy.
+  const capRoundIsTrusted = !capReached || (!!latest && isCurrentHeadRound && latest.round === maxRoundNumber);
+  const splitCandidate =
+    trajectoryIsComplete && capRoundIsTrusted && latest && latest.status === "complete"
+      ? computeSplitCandidate(retained, retained.indexOf(latest), ledger)
+      : null;
+
   const base = {
     stage,
     rounds_counted: retained.filter((r) => r.status === "complete").length,
     next_round: null,
     substitutions: retained.flatMap((r) => r.substitutions || []),
+    ...(splitCandidate ? { split_candidate: splitCandidate } : {}),
   };
 
   // ANY incomplete round (finder_unavailable / breadth_exhausted) among the
@@ -1227,7 +1399,7 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
       // No next_round: `diverging` is an escalating outcome exactly like
       // `capped`/`converged` (neither of which sets one either, both
       // inheriting base.next_round === null) — a session must choose
-      // delete/restructure/genuinely-in-scope before any further round is
+      // delete/restructure/split/genuinely-in-scope before any further round is
       // legitimate, per AGENTS.md's round-2 checkpoint discipline; which of
       // those a fix disposition actually satisfies is the session's
       // judgement to record (issue #636's own "Out of scope" section), not
@@ -1236,7 +1408,7 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
       // next_round here, alongside an action string that names "fix" as one
       // of three options, reads as authorizing an automated continue —
       // exactly the self-feeding loop `diverging` exists to interrupt.
-      return { ...base, outcome: "diverging", reason: hitName, action: "fix-delete-or-restructure" };
+      return { ...base, outcome: "diverging", reason: hitName, action: "fix-delete-restructure-or-split" };
     }
 
     // base.rounds_counted (COMPLETE rounds only), not retained.length (which
@@ -1971,6 +2143,7 @@ async function main() {
               minRounds,
               currentHead,
               ancestryOpts,
+              ledger,
             }),
             corrections,
             diagnostics,
@@ -2007,6 +2180,7 @@ async function main() {
       minRounds,
       currentHead,
       ancestryOpts,
+      ledger,
     });
   }
 
@@ -2075,6 +2249,7 @@ if (isMain) {
 }
 
 export {
+  computeSplitCandidate,
   loadRunDir,
   validateReceipts,
   assembleLogicalRounds,

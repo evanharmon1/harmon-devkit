@@ -136,6 +136,10 @@ const STAGE_ORDER = { challenge: 0, review: 1, integration: 2 }
 // review-stage finding (its own schema fixes `stage` to a `const`).
 const STAGE_ROLES = { challenge: ['challenger', 'reviewer'], review: ['reviewer'], integration: ['integrator'] }
 const SETTLEMENT_GRAMMAR = { fix: 'fixed in', decline: 'declined:', file: 'filed as' }
+// No `split` entry, deliberately (#813): a split receipt must not be published
+// until the renderer applies the semantic reference check
+// validate-result-schemas.mjs owns, so renderThreadReplyPlan fails closed on
+// one rather than publishing a receipt whose filed issue was never validated.
 const REPLY_VERB = { fix: 'Fixed', restructure: 'Restructured', delete: 'Removed', decline: 'Declined', file: 'Filed' }
 
 function usage() {
