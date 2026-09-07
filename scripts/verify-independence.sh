@@ -143,7 +143,7 @@ for target in "${TARGETS[@]}"; do
         # Paths. Machinery can be named rather than written: a committed
         # `ai/example/.dotfiles/config` encodes the checkout layout in its path
         # while every file under it reads clean.
-        if printf '%s\n' "$file" | grep -qEi "$PATTERN"; then
+        if grep -qEi "$PATTERN" <<<"$file"; then
             echo "FAIL: ${file} — personal dotfiles machinery must not ship to consumers" >&2
             fail=1
         fi
@@ -155,7 +155,7 @@ for target in "${TARGETS[@]}"; do
         if [ -L "$file" ]; then
             dest=$(readlink "$file") || continue
             [ -n "$dest" ] || continue
-            if printf '%s\n' "$dest" | grep -qEi "$PATTERN"; then
+            if grep -qEi "$PATTERN" <<<"$dest"; then
                 echo "FAIL: ${file} is a symlink to ${dest}" >&2
                 fail=1
             fi
@@ -268,7 +268,7 @@ for target in "${TARGETS[@]}"; do
                 fail=1
                 continue
             fi
-            if printf '%s\n' "$dest" | grep -qEi "$PATTERN"; then
+            if grep -qEi "$PATTERN" <<<"$dest"; then
                 echo "FAIL: ${path} — the STAGED symlink points at ${dest}" >&2
                 fail=1
             fi

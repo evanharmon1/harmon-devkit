@@ -154,7 +154,7 @@ legacy_labels_for_pre_field_registry() {
 finite_legacy_label_matches_family() {
     local aliases
     aliases="$(legacy_labels_for_pre_field_registry "$family")"
-    printf '%s\n' "$aliases" | grep -Fqx "$claim_label"
+    grep -Fqx "$claim_label" <<<"$aliases"
 }
 legacy_label_matches_family() {
     local has_aliases
@@ -328,7 +328,7 @@ read_login_set() {
             [ "$login" = "$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')" ] || return 1
         count=$((count + 1))
         [ "$count" -le 10 ] || return 1
-        printf '%s\n' "$normalized" | grep -Fxq "$login" && return 1
+        grep -Fxq "$login" <<<"$normalized" && return 1
         normalized="${normalized}${normalized:+$'\n'}$login"
     done
     [ "$count" -gt 0 ] || return 1
@@ -432,7 +432,7 @@ marker_continuous_since_predecessor() {
     esac
 }
 
-if ! head -n 1 "$record_file" | grep -q '^Claiming —'; then
+if ! grep -q '^Claiming —' < <(head -n 1 "$record_file"); then
     echo "claim transaction: record must start with 'Claiming —'" >&2
     exit 2
 fi

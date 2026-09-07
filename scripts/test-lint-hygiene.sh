@@ -30,11 +30,12 @@ expect() {
     rm -rf "$dir"
     if [ "$got" -eq "$want" ]; then
         pass=$((pass + 1))
-        echo "  ok: $name"
+        echo "  ok: $name" || true
     else
         fail=$((fail + 1))
-        echo "  FAIL: $name (want exit $want, got $got)" >&2
+        echo "  FAIL: $name (want exit $want, got $got)" >&2 || true
     fi
+    return 0
 }
 
 echo "==> adjacency forms that rendered copy reconstructs are flagged"

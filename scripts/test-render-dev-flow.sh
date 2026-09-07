@@ -18,6 +18,7 @@ test_tmp="$(mktemp -d -t render-dev-flow-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "FAIL: $*" >&2
     exit 1
 }

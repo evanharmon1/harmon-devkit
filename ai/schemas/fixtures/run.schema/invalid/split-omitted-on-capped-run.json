@@ -43,10 +43,42 @@
   "interventions": [],
   "outcome": "capped",
   "pr": null,
-  "evidence_comments": [],
+  "evidence_comments": [
+    {
+      "id": "2100000003",
+      "author_actor_id": 12345678,
+      "login": "evanharmon1",
+      "digest": "sha256:bbbb111122223333bbbb111122223333bbbb111122223333bbbb111122223333",
+      "marker": {
+        "run_id": "run-6040-settlement-cross-check",
+        "stage": "review",
+        "destination": "issue",
+        "round": 2,
+        "sequence": 1
+      }
+    }
+  ],
   "settlements": [],
   "promotion": null,
-  "evidence_registrations": [],
+  "evidence_registrations": [
+    {
+      "seq": 0,
+      "digest": "32978e99e1d551392a618111292584e1338c5ffff2c823b8d4aeaea2ac3a07d5",
+      "prev_digest": "genesis",
+      "id": "2100000003",
+      "author_actor_id": 12345678,
+      "login": "evanharmon1",
+      "payload_digest": "sha256:bbbb111122223333bbbb111122223333bbbb111122223333bbbb111122223333",
+      "marker": {
+        "run_id": "run-6040-settlement-cross-check",
+        "stage": "review",
+        "destination": "issue",
+        "round": 2,
+        "sequence": 1
+      },
+      "registered_at": "2026-08-29T09:45:00Z"
+    }
+  ],
   "pr_bindings": [],
   "outcome_transitions": [
     {

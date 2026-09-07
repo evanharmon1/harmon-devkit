@@ -150,7 +150,7 @@ fi
 [ -n "$repo" ] && [ -n "$repo_root" ] && [ -n "$owner_type" ] &&
     [ "$title_set" -eq 1 ] &&
     [ -n "$body_file" ] && [ -n "$author_type" ] || usage
-printf '%s\n' "$repo" | grep -Eq '^[^/[:space:]]+/[^/[:space:]]+$' ||
+grep -Eq '^[^/[:space:]]+/[^/[:space:]]+$' <<<"$repo" ||
     die "--repo must be OWNER/REPO (got '$repo')"
 case "$owner_type" in
 personal | organization) ;;
@@ -587,7 +587,7 @@ for label in "${labels[@]+"${labels[@]}"}"; do
         continue
     fi
     printf '%s\n' "$label" >>"$seen_labels"
-    if printf '%s' "$label" | grep -qiE "$FORBIDDEN_RE"; then
+    if grep -qiE "$FORBIDDEN_RE" <<<"$label"; then
         violation "label '$label' belongs to a forbidden authoring-time family"
         continue
     fi
@@ -658,7 +658,7 @@ organization)
         violation "organization repositories use native Issue Type, not --work-type-label"
     [ "$work_type_count" -eq 0 ] ||
         violation "organization repositories use native Issue Type and no work-type label"
-    if printf '%s' "$issue_type" | grep -q '[^[:space:]]'; then
+    if grep -q '[^[:space:]]' <<<"$issue_type"; then
         repo_owner="${repo%%/*}"
         native_types="$(gh api "orgs/$repo_owner/issue-types" --jq '.[].name')" ||
             die "could not read native Issue Types for organization $repo_owner"

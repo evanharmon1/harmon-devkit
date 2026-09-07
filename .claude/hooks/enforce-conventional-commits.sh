@@ -12,7 +12,7 @@ command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 [[ -n "$command" ]] || exit 0
 
 # Only police `git commit` invocations.
-printf '%s' "$command" | grep -qE 'git[[:space:]]+commit\b' || exit 0
+printf '%s' "$command" | grep -qE 'git[[:space:]]+commit\b' || exit 0 # shell-robustness: ok — pre-existing; the fail-open risk is tracked in #822 and deliberately not fixed in a test-robustness PR
 
 msg=""
 
@@ -57,7 +57,7 @@ for seg in segments:
 ' "$command")"
 else
     # Fallback if Python is unavailable
-    if printf '%s' "$command" | grep -q "<<'EOF'"; then
+    if printf '%s' "$command" | grep -q "<<'EOF'"; then # shell-robustness: ok — pre-existing; the fail-open risk is tracked in #822 and deliberately not fixed in a test-robustness PR
         msg="$(printf '%s' "$command" | awk "/<<'\''?EOF'\''?/{flag=1; next} /^EOF\$/{flag=0} flag" | head -n1)"
     fi
     if [[ -z "$msg" ]]; then

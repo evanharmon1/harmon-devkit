@@ -85,6 +85,12 @@ function indeterminate(args, reason) {
 // to know or assume which role produced a given pass.
 const PASS_VALIDATION_KIND = "envelope";
 
+// The two confidence stages, named once, for the cross-stage trajectory rules
+// below (the cap-integrity scans and the orphan-adjudication scan) so they
+// cannot drift apart. The adjudication COVERAGE scan is deliberately not among
+// them — see the note at `missingAdjudication`.
+const CONFIDENCE_STAGES = ["challenge", "review"];
+
 class ExitIndeterminate extends Error {}
 
 // ---------------------------------------------------------------------------
@@ -93,6 +99,41 @@ class ExitIndeterminate extends Error {}
 
 function loadJson(file) {
   return JSON.parse(readFileSync(file, "utf8"));
+}
+
+// Date.parse is not enough for a bound this file trusts. It accepts far more
+// than this schema family's timestamp shape, and — the part that matters —
+// it SILENTLY NORMALIZES an impossible calendar date: "2026-02-30T00:00:00Z"
+// parses happily as March 2nd, so a malformed started_at would bound every
+// pass against an instant a day and a half from the one it names, accepting
+// or rejecting passes on a date nobody wrote. Challenge round 2, confirmed.
+//
+// Same shape and same round-trip test validate-result-schemas.mjs already
+// applies to every *_at field (its TIMESTAMP_PARTS / isRealInstant pair): the
+// value must match the family's own pattern AND survive a round trip through
+// Date back to the identical Y-M-D h:m:s. Duplicated rather than imported
+// because that module is spawned as a subprocess here, never linked — the
+// two are deliberately not coupled at the module level (see
+// PASS_VALIDATION_KIND's own note) — and this is four lines of arithmetic.
+// Returns the epoch milliseconds, or null when the value is not a real
+// instant in that shape.
+const TIMESTAMP_PARTS = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
+
+function realInstant(value) {
+  const parts = TIMESTAMP_PARTS.exec(value);
+  if (!parts) return null;
+  const [, year, month, day, hour, minute, second] = parts;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return null;
+  const d = new Date(ms);
+  const same =
+    d.getUTCFullYear() === Number(year) &&
+    d.getUTCMonth() + 1 === Number(month) &&
+    d.getUTCDate() === Number(day) &&
+    d.getUTCHours() === Number(hour) &&
+    d.getUTCMinutes() === Number(minute) &&
+    d.getUTCSeconds() === Number(second);
+  return same ? ms : null;
 }
 
 // The stage named by the LAST transition receipt, or null if none exists
@@ -112,12 +153,44 @@ function loadRunDir(dir) {
   const runRecordPath = path.join(dir, "run.json");
   if (!existsSync(runRecordPath)) throw new ExitIndeterminate(`run directory ${dir} has no run.json`);
   const runRecord = loadJson(runRecordPath);
+  // `receipts` is read by several callers before validateReceipts ever gets
+  // to apply its own Array.isArray guard — latestActiveStage's for...of is
+  // the first — so a present-but-non-array value threw a raw TypeError, and
+  // under --json that means exit 1 with EMPTY stdout and a stack trace,
+  // exactly where the machine contract promises a structured indeterminate
+  // body on every exit. Review round 1 (P2), confirmed and reproduced;
+  // pre-existing rather than introduced here, but this is the one place that
+  // can settle it for every reader at once. Absent stays absent (the array
+  // is optional); present-and-wrong is terminal, the same rule the
+  // chronology bounds already follow.
+  if (runRecord.receipts !== undefined && !Array.isArray(runRecord.receipts)) {
+    throw new ExitIndeterminate(
+      `run.json's receipts is present but not an array (${JSON.stringify(runRecord.receipts)}) — the trusted receipt sequence cannot be read`,
+    );
+  }
+  if (runRecord.slot_failures !== undefined && !Array.isArray(runRecord.slot_failures)) {
+    throw new ExitIndeterminate(
+      `run.json's slot_failures is present but not an array (${JSON.stringify(runRecord.slot_failures)}) — cannot tell an exhausted slot from an unrecorded one`,
+    );
+  }
 
+  // A pass file holding valid JSON that is not an object — `null` is the
+  // easy one — would otherwise be dereferenced by every later reader
+  // (`p.envelope.payload`, `p.envelope.head`) as a raw TypeError, which
+  // under --json means exit 1 with EMPTY stdout instead of the structured
+  // indeterminate body the machine contract promises. Guarded once here
+  // rather than at each use. Integrate cycle 3 on PR #800 (P2), confirmed.
   const passesDir = path.join(dir, "passes");
   const passes = existsSync(passesDir)
     ? readdirSync(passesDir)
       .filter((f) => f.endsWith(".json"))
-      .map((f) => ({ name: f.replace(/\.json$/, ""), file: path.join(passesDir, f), envelope: loadJson(path.join(passesDir, f)) }))
+      .map((f) => {
+        const envelope = loadJson(path.join(passesDir, f));
+        if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) {
+          throw new ExitIndeterminate(`pass file "${f}" does not contain a JSON object — it cannot be read as a result envelope`);
+        }
+        return { name: f.replace(/\.json$/, ""), file: path.join(passesDir, f), envelope };
+      })
     : [];
 
   const adjDir = path.join(dir, "adjudications");
@@ -248,6 +321,102 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
     return active;
   }
 
+  // The transition receipt that was active when a pass arrived — same walk
+  // as activeStageBefore, but returning the whole entry so the chronology
+  // bound below can read its optional `entered_at`.
+  function activeTransitionBefore(seq) {
+    let active = null;
+    for (const t of transitionsInOrder) {
+      if (t.seq >= seq) break;
+      active = t;
+    }
+    return active;
+  }
+
+  // harmon-devkit#685: "source passes' produced_at fall between run start
+  // and promotion and not before their stage entry". Ordering itself is
+  // never taken from a timestamp — that is the trusted receipt sequence's
+  // job (specs/dev-flow-v2.md: producer-supplied produced_at "SHALL be
+  // only a bounded sanity check ... never an ordering ... boundary"), and
+  // the receipt-order checks above are unchanged. This is exactly that
+  // bounded sanity check: a pass claiming to have been produced before the
+  // run existed, after it was promoted, or before the stage it names was
+  // even entered, is evidence from outside the run's own span however
+  // well-formed it is otherwise.
+  //
+  // Every bound is OPTIONAL and checked only when the run directory
+  // actually supplies it: `run.json`'s own `started_at` and
+  // `promotion.promoted_at`, and a transition receipt's own `entered_at`.
+  // The run directory is a documented SUBSET of the full run record
+  // (ai/schemas/README.md "Run directory layout") — a caller that carries
+  // those fields gets them enforced; one that does not is unchanged, so
+  // this can never turn a legitimate trajectory that simply omits them
+  // into a failure.
+  // A bound that is PRESENT but unparseable fails the whole trajectory
+  // rather than silently disabling itself: "the field is absent" and "the
+  // field is there but nonsense" must not reach the same outcome, or a
+  // typo'd started_at would waive exactly the check it was written to
+  // request. (Absent stays absent — see the OPTIONAL note above.)
+  // Only `undefined` (and, for `promotion`, `null` — the schema's own "not
+  // promoted yet") means ABSENT. Every other present value is checked:
+  // a number, an object, or a null where a timestamp belongs is malformed
+  // producer data, and the run directory is not schema-validated here, so
+  // treating it as absent would silently disable exactly the bound it was
+  // written to request. Challenge round 1, confirmed — the earlier
+  // `typeof value !== "string" -> return null` did precisely that.
+  function boundOrThrow(value, label) {
+    if (value === undefined) return null;
+    if (typeof value !== "string") {
+      throw new ExitIndeterminate(`run.json's ${label} is present but not a string (${JSON.stringify(value)}) — cannot bound any pass against it`);
+    }
+    const parsed = realInstant(value);
+    if (parsed === null) {
+      throw new ExitIndeterminate(`run.json's ${label} "${value}" is not a real instant in this schema family's timestamp shape — cannot bound any pass against it`);
+    }
+    return parsed;
+  }
+  const runStartedAt = boundOrThrow(runRecord.started_at, "started_at");
+  let runPromotedAt = null;
+  if (runRecord.promotion !== undefined && runRecord.promotion !== null) {
+    if (typeof runRecord.promotion !== "object" || Array.isArray(runRecord.promotion)) {
+      throw new ExitIndeterminate(`run.json's promotion is present but not an object (${JSON.stringify(runRecord.promotion)}) — cannot bound any pass against it`);
+    }
+    // A promotion entry that exists at all owes a promoted_at
+    // (run.schema.json requires it), so `undefined` here is malformed too,
+    // not the absent case boundOrThrow's own `undefined` branch covers.
+    if (runRecord.promotion.promoted_at === undefined) {
+      throw new ExitIndeterminate("run.json's promotion has no promoted_at — cannot bound any pass against it");
+    }
+    runPromotedAt = boundOrThrow(runRecord.promotion.promoted_at, "promotion.promoted_at");
+  }
+
+  function chronologyViolation(producedAt, seq) {
+    // The envelope's own produced_at shape is result.envelope.schema.json's
+    // job — validatePassSchema below rejects a malformed one on its own
+    // terms, with its own message, so this bound has nothing to add.
+    if (typeof producedAt !== "string") return null;
+    const t = Date.parse(producedAt);
+    if (Number.isNaN(t)) return null;
+    if (runStartedAt !== null && t < runStartedAt) {
+      return `produced_at "${producedAt}" is before the run's own started_at "${runRecord.started_at}"`;
+    }
+    if (runPromotedAt !== null && t > runPromotedAt) {
+      return `produced_at "${producedAt}" is after the run's promotion.promoted_at "${runRecord.promotion.promoted_at}"`;
+    }
+    const entry = activeTransitionBefore(seq);
+    if (entry) {
+      // Straight to boundOrThrow, with no typeof guard of its own: a guard
+      // here would reintroduce, for this third bound, exactly the
+      // present-but-malformed-reads-as-absent hole challenge round 1 found
+      // in the other two.
+      const enteredAt = boundOrThrow(entry.entered_at, `receipts[${entry.seq}].entered_at`);
+      if (enteredAt !== null && t < enteredAt) {
+        return `produced_at "${producedAt}" is before its own stage "${entry.stage}" was entered at "${entry.entered_at}"`;
+      }
+    }
+    return null;
+  }
+
   const decorated = [];
   const seenIds = new Set();
   const knownIdsFile = tmpDir ? path.join(tmpDir, "known-ids.json") : null;
@@ -308,6 +477,12 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
         level: "reject",
         reason: `stage "${payload.stage}" was not the active stage when this pass arrived (seq ${seq}; active stage was ${active ? `"${active}"` : "none"})`,
       });
+      continue;
+    }
+
+    const chronology = chronologyViolation(env.produced_at, seq);
+    if (chronology) {
+      diagnostics.push({ pass: pass.name, level: "reject", reason: `${chronology} — evidence from outside this run's own span` });
       continue;
     }
 
@@ -1444,6 +1619,95 @@ async function main() {
     );
   }
 
+  // harmon-devkit#685: "stage-skipping in stage_transitions (verify ->
+  // review without challenge, verify -> security without review) is valid
+  // only under the corresponding cap-0 policy". The check above catches
+  // review being computed while challenge is STILL ACTIVE; this catches
+  // the other, quieter shape — a trajectory that records having gone
+  // straight past a confidence stage that its own resolved policy still
+  // budgets rounds for.
+  //
+  // Deliberately keyed on a RECORDED verify -> <stage> edge, i.e. two
+  // consecutive transition receipts, never on "no challenge transition
+  // exists anywhere in this receipt list". The run directory's receipts
+  // array is a documented SUBSET (ai/schemas/README.md "Run directory
+  // layout") — the ordinary case records only the transition(s) for the
+  // stage under test, and inferring a skip from an absence would reject
+  // every such trajectory. An explicit verify -> review edge is a positive
+  // claim about what the run did, and the resolved policy is exactly what
+  // decides whether that claim is legal.
+  //
+  // verify -> security is checked here too even though this script never
+  // computes security's own exit: the trajectory being read is what makes
+  // the claim, and this process holds the policy that settles it — the
+  // same reasoning as every other internal-consistency refusal in this
+  // file (duplicate transitions, over-cap rounds, duplicate adjudications).
+  //
+  // A Map, not an object literal: `stage` is branch-controlled content, and
+  // a plain object's inherited keys ("constructor", "toString", ...) resolve
+  // to truthy values that are not stages at all — the same hazard
+  // lib/toml-lite.mjs's own __proto__ handling exists for.
+  // Each recorded verify -> <stage> edge names EVERY confidence stage it
+  // bypasses, not just the nearest one: verify -> security skips challenge
+  // and review alike, and the budgets are independent, so checking only
+  // review let a `review = 0, challenge = 3` policy advance on an edge that
+  // silently skipped challenge too (integrate cycle 4 on PR #800, confirmed).
+  const SKIP_EDGE_GUARDS = new Map([
+    ["review", ["challenge"]],
+    ["security", ["challenge", "review"]],
+  ]);
+  const transitionStages = (runDir.runRecord.receipts || []).filter((r) => r.kind === "transition");
+
+  // "A cap-0 stage has no rounds" is the other half of the same criterion,
+  // and it holds for EVERY confidence stage the run records, not only for
+  // the one whose exit is being computed. The cap-integrity checks further
+  // down are all scoped to args.stage, so a policy disabling challenge
+  // while the trajectory plainly shows challenge having run was invisible
+  // whenever review was the stage under computation — and the cap-0 branch
+  // of the skip guard below would then accept the skip on the strength of
+  // the very cap the trajectory contradicts. Challenge round 2, confirmed.
+  for (const stage of ["challenge", "review"]) {
+    if (resolved.rounds[stage] !== 0) continue;
+    const visited = transitionStages.some((t) => t.stage === stage);
+    const hasPass = runDir.passes.some((p) => p.envelope.payload && p.envelope.payload.stage === stage);
+    const hasAdjudication = runDir.adjudications.some((a) => a.doc.stage === stage);
+    const hasSlotFailure = (Array.isArray(runDir.runRecord.slot_failures) ? runDir.runRecord.slot_failures : []).some(
+      (sf) => sf.stage === stage,
+    );
+    const evidence = [
+      visited ? "a transition into it" : null,
+      hasPass ? "a pass naming it" : null,
+      hasAdjudication ? "an adjudication naming it" : null,
+      hasSlotFailure ? "a slot_failures record naming it" : null,
+    ].filter(Boolean);
+    if (evidence.length > 0) {
+      return indeterminate(
+        args,
+        `the resolved ${stage} cap is 0 (disabled) but the trajectory records ${evidence.join(", ")} — trajectory inconsistent with its own policy`,
+      );
+    }
+  }
+
+  for (let i = 1; i < transitionStages.length; i++) {
+    if (transitionStages[i - 1].stage !== "verify") continue;
+    const skippedStages = SKIP_EDGE_GUARDS.get(transitionStages[i].stage);
+    if (!skippedStages) continue;
+    for (const skipped of skippedStages) {
+      // Disabled is always fine, and a stage the run demonstrably entered
+      // earlier was not skipped at all: a remediation loop back into review
+      // (review -> implement -> verify -> review, both edges on
+      // run.schema.json's own ALLOWED_EDGES) records exactly this edge after
+      // challenge has already run and exited, and the same shape takes
+      // security -> implement -> verify -> security back into security.
+      if (resolved.rounds[skipped] === 0) continue;
+      if (transitionStages.slice(0, i).some((t) => t.stage === skipped)) continue;
+      return indeterminate(
+        args,
+        `the trusted receipt sequence records a "verify" -> "${transitionStages[i].stage}" transition with no earlier transition into "${skipped}", but the resolved ${skipped} cap is ${resolved.rounds[skipped]} (not disabled) — stage-skipping is legal only under a cap-0 policy for every stage the edge bypasses`,
+      );
+    }
+  }
+
   const validatorPath = args.validator || DEFAULT_VALIDATOR;
   // Preflight the validator's own existence before ever spawning it.
   // Shepherd-stage cloud finding (round 2, about pre-existing code),
@@ -1540,21 +1804,104 @@ async function main() {
   if (cap === 0 && rounds.length > 0) {
     return indeterminate(args, `${args.stage} cap is 0 (disabled) but the trajectory contains round ${rounds[0].round} — trajectory inconsistent with its own policy`);
   }
-  const rawOverCapPassRound = runDir.passes
-    .map((p) => p.envelope.payload)
-    .find((p) => p && p.stage === args.stage && typeof p.round === "number" && p.round > cap);
-  if (rawOverCapPassRound) {
-    return indeterminate(args, `a ${args.stage} pass names round ${rawOverCapPassRound.round}, exceeding the resolved cap (${cap}), even though it did not survive receipt validation — trajectory inconsistent with its own policy`);
-  }
-  const rawOverCapAdjRound = runDir.adjudications.find((a) => a.doc.stage === args.stage && a.doc.round > cap);
-  if (rawOverCapAdjRound) {
-    return indeterminate(args, `a ${args.stage} adjudication names round ${rawOverCapAdjRound.doc.round}, exceeding the resolved cap (${cap}), even though it did not survive validation — trajectory inconsistent with its own policy`);
+  // Over-cap evidence anywhere in the trajectory, not only in the stage
+  // being computed. Every one of these checks used to be scoped to
+  // args.stage, so a challenge round 4 under a challenge cap of 3 stayed
+  // invisible while review's exit was computed and review could converge on
+  // a trajectory its own policy forbids (integrate cycle 3 on PR #800,
+  // confirmed). The cap-0 emptiness rule above is already cross-stage; this
+  // is the same rule for a positive cap.
+  for (const otherStage of CONFIDENCE_STAGES) {
+    const otherCap = resolved.rounds[otherStage];
+    if (typeof otherCap !== "number" || otherCap === 0) continue; // cap 0 handled above
+    const overCapPass = runDir.passes
+      .map((p) => p.envelope.payload)
+      .find((p) => p && p.stage === otherStage && typeof p.round === "number" && p.round > otherCap);
+    if (overCapPass) {
+      return indeterminate(args, `a ${otherStage} pass names round ${overCapPass.round}, exceeding the resolved ${otherStage} cap (${otherCap}), even though it did not survive receipt validation — trajectory inconsistent with its own policy`);
+    }
+    const overCapAdj = runDir.adjudications.find((a) => a.doc.stage === otherStage && a.doc.round > otherCap);
+    if (overCapAdj) {
+      return indeterminate(args, `a ${otherStage} adjudication names round ${overCapAdj.doc.round}, exceeding the resolved ${otherStage} cap (${otherCap}), even though it did not survive validation — trajectory inconsistent with its own policy`);
+    }
+    // slot_failures is round evidence too — assembleLogicalRounds derives a
+    // round number from it exactly as it does from a pass — so a round that
+    // exists ONLY as a slot failure is as over-cap as one with a pass. The
+    // cap-0 emptiness scan above already counts it; leaving it out here made
+    // the two halves of the same rule disagree (integrate cycle 4 on PR #800,
+    // confirmed).
+    const overCapSlotFailure = (Array.isArray(runDir.runRecord.slot_failures) ? runDir.runRecord.slot_failures : []).find(
+      (sf) => sf.stage === otherStage && typeof sf.round === "number" && sf.round > otherCap,
+    );
+    if (overCapSlotFailure) {
+      return indeterminate(args, `a ${otherStage} slot_failures record names round ${overCapSlotFailure.round}, exceeding the resolved ${otherStage} cap (${otherCap}) — trajectory inconsistent with its own policy`);
+    }
   }
   const presentRoundNumbers = [...new Set(rounds.map((r) => r.round))].sort((a, b) => a - b);
   for (let i = 0; i < presentRoundNumbers.length; i++) {
     if (presentRoundNumbers[i] !== i + 1) {
       return indeterminate(args, `${args.stage} rounds are not contiguous from 1 (present: ${presentRoundNumbers.join(", ")}) — trajectory inconsistent with its own policy`);
     }
+  }
+
+  // The OTHER direction of the one-to-one pass/adjudication requirement
+  // (harmon-devkit#685: "every retained pass has exactly one adjudication
+  // document and vice versa (both directions); an unmatched pass is an
+  // error, not ignored"). The pass -> adjudication direction is the
+  // `missingAdjudication` check below; this is adjudication -> pass, and
+  // nothing enforced it: assembleLogicalRounds derives its round numbers
+  // from the stage's passes and slot_failures ONLY, so an adjudication
+  // naming a round the run has no evidence of at all was silently dropped
+  // and the trajectory converged as if the document did not exist —
+  // adjudicating findings no pass ever produced.
+  //
+  // Deliberately measured against every pass the run directory HOLDS
+  // (plus its slot_failures), not against the assembled/
+  // retained rounds: a round whose every pass was REJECTED by receipt
+  // validation legitimately assembles no logical round while its
+  // adjudication document survives, and the considered behavior there is
+  // to continue with a diagnostic so the round can be re-dispatched (the
+  // no-receipt-transition-rejected and stale-run-id-rejected fixtures).
+  // What has no legitimate reading is an adjudication for a round that
+  // was never dispatched at all.
+  //
+  // Placed with the other cap-integrity checks so it applies before BOTH
+  // output modes: --verification-only is a pre-adjudication projection,
+  // not permission to hold an adjudication the trajectory cannot account
+  // for.
+  //
+  // Cross-stage, for exactly the reason the cap-0 emptiness rule and the
+  // over-cap rule above are: an orphan adjudication is a malformed
+  // trajectory wherever in the run it sits. Scoping BOTH the candidate set
+  // and the dispatched-round index to args.stage made a challenge orphan
+  // invisible while review's exit was computed, so review converged and
+  // returned action "advance" on a trajectory it had never validated —
+  // authorizing the next stage off a run whose earlier stage adjudicated
+  // findings no pass ever produced (integrate cycle 5 on PR #800,
+  // confirmed and reproduced). The index is keyed "<stage>:<round>" rather
+  // than by round number alone so a challenge round 1 can never satisfy a
+  // review round 1 adjudication: widening the scan must not weaken the
+  // match it performs.
+  const dispatchedRounds = new Set();
+  for (const p of runDir.passes) {
+    const payload = p.envelope.payload;
+    if (payload && typeof payload.stage === "string" && typeof payload.round === "number") {
+      dispatchedRounds.add(`${payload.stage}:${payload.round}`);
+    }
+  }
+  for (const sf of Array.isArray(runDir.runRecord.slot_failures) ? runDir.runRecord.slot_failures : []) {
+    if (typeof sf.stage === "string" && typeof sf.round === "number") {
+      dispatchedRounds.add(`${sf.stage}:${sf.round}`);
+    }
+  }
+  const orphanAdjudication = validAdjudications.find(
+    (a) => !dispatchedRounds.has(`${a.doc.stage}:${a.doc.round}`),
+  );
+  if (orphanAdjudication) {
+    return indeterminate(
+      args,
+      `adjudication document "${orphanAdjudication.name}" names ${orphanAdjudication.doc.stage} round ${orphanAdjudication.doc.round}, but no pass or slot_failures record in this run ever named that round — an adjudication with no source pass is an error, not something to ignore`,
+    );
   }
 
   // Every retained COMPLETE round needs its own adjudication document,
@@ -1564,6 +1911,27 @@ async function main() {
   // certify convergence with no adjudication document ever having existed
   // for it (exit-computation spec: "every retained pass to have exactly
   // one adjudication document").
+  //
+  // This direction stays scoped to the stage under computation, deliberately.
+  // Integrate cycle 7 asked for it to be cross-stage like its mirror above,
+  // and cycle 9 then proved that widening unsound as built: `validAdjudications`
+  // passes OTHER-stage adjudications through unvalidated (see its construction
+  // above — only `args.stage` documents get the run_id and schema checks), which
+  // is harmless for the orphan scan that reads just `.stage` and `.round`, but
+  // not for a coverage scan, where an invalid or foreign-run document does not
+  // merely fail to be an orphan — it actively SATISFIES `hasAdjudication`. A
+  // foreign `run_id` on a challenge adjudication converged and returned
+  // `action: "advance"` with zero diagnostics (integrate cycle 9 on PR #800,
+  // confirmed and reproduced), which is a regression on exactly the kind of
+  // trajectory-integrity property harmon-devkit#685 exists to enforce.
+  //
+  // Reverted rather than hardened in place: doing it correctly means validating
+  // every confidence stage's adjudications before this scan, which is the same
+  // work as making BOTH directions cross-stage over validated inputs, and that
+  // belongs in one change with its own review rather than bolted onto this one.
+  // Tracked as harmon-devkit#824; until it lands, the asymmetry is the safe
+  // state — an unenforced invariant is weaker than this file should be, but
+  // an invariant an invalid document can satisfy is worse than not checking.
   const missingAdjudication = rounds.some(
     (r) => r.status === "complete" && (!r.hasAdjudication || r.findings.some((f) => f.adjudicated_priority === null)),
   );

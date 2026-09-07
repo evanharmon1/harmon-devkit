@@ -186,7 +186,7 @@ axes_active() {
         local live a
         live="$(live_labels "$repo")"
         for a in $FALLBACK_AXES; do
-            printf '%s\n' "$live" | grep -q "^$a:" && printf '%s\n' "$a"
+            grep -q "^$a:" <<<"$live" && printf '%s\n' "$a"
         done
         return 0
     fi
@@ -245,7 +245,7 @@ allowlist_compute() {
         live="$(live_labels "$repo")"
         axis_values_recognized "$repo" "$manifest"
         for wt in $FALLBACK_WORK_TYPES needs-triage; do
-            printf '%s\n' "$live" | grep -qx "$wt" && printf '%s\n' "$wt"
+            grep -qx "$wt" <<<"$live" && printf '%s\n' "$wt"
         done
         return 0
     fi
@@ -270,7 +270,7 @@ work_types_recognized() {
         local live wt
         live="$(live_labels "$repo")"
         for wt in $FALLBACK_WORK_TYPES; do
-            printf '%s\n' "$live" | grep -qx "$wt" && printf '%s\n' "$wt"
+            grep -qx "$wt" <<<"$live" && printf '%s\n' "$wt"
         done
         return 0
     fi
@@ -362,7 +362,7 @@ cmd_allowlist() {
 
 # in_list NEEDLE LINES — 0 when NEEDLE is one of the newline-separated LINES.
 in_list() {
-    printf '%s\n' "$2" | grep -qxF -- "$1"
+    grep -qxF -- "$1" <<<"$2"
 }
 
 # Print an unambiguous internal state: "unset" or "set:<name>". A prefix is
@@ -475,7 +475,7 @@ cmd_native_types() {
 }
 
 gh_supports_native_type_write() {
-    gh issue edit --help 2>/dev/null | grep -q -- '--type'
+    grep -q -- '--type' < <(gh issue edit --help 2>/dev/null)
 }
 
 cmd_label() {
@@ -565,7 +565,7 @@ cmd_label() {
     done
     # Never-list next — independent of, and senior to, any manifest content.
     for l in "${adds[@]+"${adds[@]}"}"; do
-        if printf '%s' "$l" | grep -qE "$NEVER_RE"; then
+        if grep -qE "$NEVER_RE" <<<"$l"; then
             die 4 "refused: '$l' is on the triage never-list"
         fi
     done

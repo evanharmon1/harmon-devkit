@@ -31,7 +31,7 @@ if command -v code >/dev/null 2>&1; then
 
     # Desktop CLIs expose --open-url, while the remote CLI may accept and
     # ignore it with exit 0. Check the advertised capability before using it.
-    if code --help 2>&1 | grep -q -- '--open-url'; then
+    if code --help 2>&1 | grep -q -- '--open-url'; then # shell-robustness: ok — this script does not enable pipefail, so grep's early exit cannot fail the pipeline
         if code --open-url "$url"; then
             exit 0
         fi
