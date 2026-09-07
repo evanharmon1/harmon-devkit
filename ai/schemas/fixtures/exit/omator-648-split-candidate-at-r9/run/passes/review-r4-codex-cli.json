@@ -1,0 +1,41 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "91abab3aca2bb2e79f1c89b9ec9f4861a4632c7b",
+  "produced_at": "2026-08-24T09:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "omator-648-replay-review",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "review",
+    "round": 4,
+    "reviewed_head": "91abab3aca2bb2e79f1c89b9ec9f4861a4632c7b",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r4-codex-cli-1",
+        "path": "src/lane/bounding.ts",
+        "line": 44,
+        "class": "correctness",
+        "provenance": "round:3",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "the round-3 guard rejects the boundary value it was added to admit"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 1,
+      "P2": 0,
+      "P3": 0
+    }
+  }
+}

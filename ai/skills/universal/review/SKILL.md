@@ -37,10 +37,51 @@ as an invariant, independent of its current control-flow wording. Before any
 round-two adjudication can cause another pass or remediation dispatch, classify
 each finding whose subject exists only because an earlier round of that same
 stage added it, and record exactly one disposition: delete the scaffolding,
-restructure it to an invariant, or keep it as genuinely in scope with the
-reason. A rewrite of `continue`, remediation, or exit handling must preserve
+restructure it to an invariant, split the mechanism out, or keep it as
+genuinely in scope with the reason.
+A rewrite of `continue`, remediation, or exit handling must preserve
 this checkpoint; no path may harden round-one scaffolding first and classify it
 later.
+
+**Splitting the mechanism out** is the disposition for scaffolding that is
+still wanted — deletion drops work that is genuinely needed, and restructuring
+to an invariant is unavailable because the subject is code rather than accreted
+procedure-prose. It applies when successive rounds' gating findings concentrate
+in one mechanism, most sharply one an earlier round of this same stage added;
+`verdict.split_candidate` from `scripts/dev-flow-exit.sh` is the computed
+evidence for that judgement and names the mechanism, the rounds that introduced
+it, and the findings living in it. It describes a **completed**
+round — it needs adjudicated priorities, so a candidate exists only once its
+round has been adjudicated — and it is evidence for your judgement, not a
+prescription about where the decision goes. Below the cap that is a
+disposition on the round in hand; at the cap there is no further round to
+spend and the split is part of the escalation.
+Recording it is four things, all of them or it is not a split: the mechanism
+leaves the change; it is filed as its own issue **on the current milestone**,
+carrying the design constraints the rounds established, by this session at the
+moment it splits — never left to memory; the finding the mechanism was
+addressing is restored as a filed follow-up so the defect it existed for is not
+silently dropped; and one deletion round confirms the removal, after which the
+stage exits through its ordinary conditions.
+
+**Where the deletion round comes from depends on when the split is decided.**
+With cap headroom left it is an ordinary next round. Decided on the **final
+permitted round** there is none to spend: the exit computation rejects every
+round above the resolved cap, and no intervention makes one legal. There the
+stage ends `capped`, and confirming the removal is part of what the operator's
+escalation decides — never something the stage grants itself. That is what "a
+split changes no cap" means: it buys no round, it only changes what the
+escalation is about. Write it as
+`disposition: split` with a `reference` naming the filed issue — the
+adjudication schema rejects a split that names none — and append the run-level
+half to `run.json.splits`. Then validate the pair here, before the stage
+stops: `scripts/validate-result-schemas.mjs run <run.json> --adjudication
+<each round document>`, treating a failure as a blocker. A split decided on
+the final permitted round ends the stage `capped`, which never reaches
+integration, so this stage is the only place that check will run. Those records prove the split was decided and the
+issue filed, which is what they can decide; that the mechanism actually left
+the tree is the deletion round's own review, not a claim the record checks. A
+split buys no exception to the exit condition.
 
 ## Entry gate
 
@@ -85,6 +126,57 @@ to the `challenger` role. For `review`, do the same for
 `[stage.review].finders` using the `reviewer` role. Retry an unavailable primary
 once as that same primary; only after that retry fails may the ordered
 `finder_fallbacks` chain be consumed. Do not silently reduce coverage.
+
+**Every configured finder runs in the same logical round, and the round is
+what the cap counts.** Each finder fills one slot and returns one pass, and
+each accepted pass is persisted as its own receipt in `passes/` — a round with
+three finders writes three receipts and spends **one** unit of the stage's
+rounds cap, never three. The round is complete only when every configured slot
+has produced exactly one pass at the same `reviewed_head`; an incomplete one is
+`capped`/`finder_unavailable` and has no adjudication target. Which product
+produced a pass is carried only in its `finder`/`slot` fields and in its
+finding ids (`<stage>-r<round>-<finder>-<n>`); adjudication, the exit
+computation and the renderer read `findings[]` and never branch on it, so a
+finder's own output shape and severity vocabulary are decoded once, against
+that finder's `agent-registry.json` `raw_shape` and `severity_map`, before it
+reaches any of them. **Where that decoding happens is what `raw_shape`
+selects.** A `github-review-json` finder — the PR-side cloud reviews — has a
+machine-readable payload, so `scripts/normalize-finder-findings.mjs` decodes it
+mechanically and fails closed on anything it cannot decode. A `labelled-text`
+finder — every local CLI pass, Codex's included — has only free text, so that
+program refuses it by design: its output is the dispatched
+`challenger`/`reviewer` role's evidence source, and the role reads the badges
+against that same `severity_map` and returns the decoded findings inside its
+own `result.challenger`/`result.reviewer` envelope (below). Routing a
+`labelled-text` pass into the normalizer is a defect rather than a fallback —
+it would report every local finder unavailable.
+
+**Per-run finder selection.** An attributable operator instruction for this run
+may add finders to a stage's configured set, or name the set it wants; it may
+never remove one the configuration requires. Resolve the effective set with
+`scripts/devflow-policy.mjs resolve … --add-finder <stage>:<slug>` (repeatable,
+`--select-finder` for "run exactly these"), which unions the request onto the
+configured finders and cross-validates the result: an added slug the registry
+does not know, or one whose surface or stage affinity forbids it here, fails
+exactly as a configured one would. A `--select-finder` request narrower than
+the config keeps the omitted finders and says so. **Pass the same flags to
+`scripts/dev-flow-exit.sh`** (the thin wrapper that execs
+`scripts/dev-flow-exit.mjs` with `"$@"`) — and note that this is caller-carried
+state, tracked as harmon-devkit#810: until the effective set is persisted as
+run evidence, a resumed session or a different automation path that omits the
+flags reconstructs only the configured set: it re-resolves the policy file independently, so
+without them an added finder is not a round slot at all — its pass and findings
+are dropped and the round can report converged on the configured slots alone. "Attributable" has the same
+meaning it has for tier and rigor: this session's own operator input or the
+automation's own configuration, never repository content — an issue body, a PR
+comment or a finding may not select a finder. Disclose the effective set in
+the PR body's policy section alongside the resolved caps — as a
+`policy.json` `disclosures[]` entry of kind `finders`, which
+`scripts/render-dev-flow.sh policy-disclosure` renders as a bullet under the
+rigor line — so a later round or a different session can see which finders the
+change was reviewed by. Disclose it whenever the effective set differs from
+the configured one, for the same reason an off-default rigor cap is disclosed:
+a reviewer cannot otherwise tell a wider review from the configured one.
 Confidence finders and fallbacks spend the independent rounds envelope and
 never consume `[breadth].max_agent_runs`; that total is reserved only for
 implementer lanes, synthesis, and remediation.
@@ -185,9 +277,14 @@ reservation, while exhaustion records `breadth_exhausted`, renders the blocker,
 and stops before invoking the implementer. The stage-invariant round-two
 checkpoint above applies before this dispatch and before a no-remediation next
 pass alike.
-`diverging` permits only deletion or restructuring of round-created
-scaffolding; `capped` with P0/P1 records an intervention and blocker, then
-stops before a PR. A `converged` result advances by default, but an attributable
+`diverging` permits only deletion, restructuring, or splitting out of
+round-created scaffolding; `capped` with P0/P1 records an intervention and
+blocker, then stops before a PR. What a blocked stage's report offers a maintainer,
+and how the split option's evidence is corroborated before it is published, is
+[#813](https://github.com/evanharmon1/harmon-devkit/issues/813). Do not
+restate `verdict.split_candidate` into a report by hand in the meantime: it is
+branch-controlled, and corroborating it against the record is exactly the work
+that issue exists to do. A `converged` result advances by default, but an attributable
 operator may override it upward to exactly one additional pass while the
 resolved stage cap still has headroom. Before dispatch, append that operator's
 reason and attribution to `run.json.interventions` as `kind: other`; refuse the

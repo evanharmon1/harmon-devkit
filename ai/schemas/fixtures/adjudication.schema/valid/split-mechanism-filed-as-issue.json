@@ -1,0 +1,19 @@
+{
+  "schema": 2,
+  "run_id": "run-747-split-mechanism-filed-as-issue",
+  "stage": "review",
+  "round": 2,
+  "reviewed_head": "747a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f60",
+  "adjudications": [
+    {
+      "finding_id": "review-r2-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "split",
+      "reason": "confirmed, and it is the third P1 in a row inside the in-flight claim primitive round 1 added — the mechanism is still wanted, so it is split out of this change rather than hardened again",
+      "evidence": "every gating finding of rounds 1 and 2 resolves to src/lane/claim-primitive.ts; the exit computation's split_candidate names it with round:1 provenance",
+      "override": null,
+      "reference": { "type": "issue_number", "value": "649" }
+    }
+  ]
+}

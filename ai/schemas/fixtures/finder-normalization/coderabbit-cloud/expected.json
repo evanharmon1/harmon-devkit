@@ -1,0 +1,27 @@
+{
+  "stage": "integration",
+  "integration_round": 1,
+  "finder": "coderabbit-cloud",
+  "findings": [
+    {
+      "id": "integration-r1-coderabbit-cloud-1",
+      "body": "_⚠️ Potential issue_\n\nThe undecoded report is written to stderr after the pass has already been written to stdout, so a caller piping stdout sees a complete-looking pass.",
+      "source_id": "9201"
+    },
+    {
+      "id": "integration-r1-coderabbit-cloud-2",
+      "body": "_🧹 Nitpick (assertive)_\n\nPrefer `jq -e` over comparing the string output.",
+      "source_id": "9202"
+    }
+  ],
+  "severity_hypotheses": [
+    {
+      "id": "integration-r1-coderabbit-cloud-1",
+      "priority": "P1"
+    },
+    {
+      "id": "integration-r1-coderabbit-cloud-2",
+      "priority": "P3"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "outcome": "capped",
+  "reason": "findings_remain",
+  "rounds_counted": 9,
+  "split_candidate_detected": true,
+  "split_candidate_reason": "concentrated_round_provenance",
+  "split_candidate_mechanism": "src/lane/claim-primitive.ts",
+  "split_candidate_introduced_by_rounds": [7, 8],
+  "split_candidate_finding_ids": [
+    "review-r9-codex-cli-1",
+    "review-r9-codex-cli-2",
+    "review-r9-codex-cli-3"
+  ],
+  "split_candidate_consecutive_rounds": [8, 9]
+}

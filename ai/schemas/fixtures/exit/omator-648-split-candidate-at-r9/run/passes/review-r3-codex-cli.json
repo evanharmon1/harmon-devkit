@@ -1,0 +1,41 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "ff5e396da5fd03057311d7131e2ba1351e455554",
+  "produced_at": "2026-08-23T09:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "omator-648-replay-review",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "review",
+    "round": 3,
+    "reviewed_head": "ff5e396da5fd03057311d7131e2ba1351e455554",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r3-codex-cli-1",
+        "path": "src/lane/bounding.ts",
+        "line": 40,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "the F0 bounding class admits a lane whose window has already closed"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 1,
+      "P2": 0,
+      "P3": 0
+    }
+  }
+}

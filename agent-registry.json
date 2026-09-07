@@ -423,7 +423,17 @@
       "invocation": { "type": "taskfile-target", "target": "challenge:codex" },
       "collection": null,
       "trusted_actor_id": null,
-      "trusted_actor_login": null
+      "trusted_actor_login": null,
+      "raw_shape": "labelled-text",
+      "severity_map": {
+        "default": "P2",
+        "rules": [
+          { "match": "P0", "priority": "P0", "anchor": "leading-token" },
+          { "match": "P1", "priority": "P1", "anchor": "leading-token" },
+          { "match": "P2", "priority": "P2", "anchor": "leading-token" },
+          { "match": "P3", "priority": "P3", "anchor": "leading-token" }
+        ]
+      }
     },
     {
       "slug": "codex-verification",
@@ -435,7 +445,17 @@
       "invocation": { "type": "taskfile-target", "target": "review:codex" },
       "collection": null,
       "trusted_actor_id": null,
-      "trusted_actor_login": null
+      "trusted_actor_login": null,
+      "raw_shape": "labelled-text",
+      "severity_map": {
+        "default": "P2",
+        "rules": [
+          { "match": "P0", "priority": "P0", "anchor": "leading-token" },
+          { "match": "P1", "priority": "P1", "anchor": "leading-token" },
+          { "match": "P2", "priority": "P2", "anchor": "leading-token" },
+          { "match": "P3", "priority": "P3", "anchor": "leading-token" }
+        ]
+      }
     },
     {
       "slug": "codex-cloud",
@@ -445,9 +465,209 @@
       "stages": ["integration"],
       "result_schema": null,
       "invocation": null,
-      "collection": { "type": "shepherd-checker", "protocol": "reserve-trigger-attach-check" },
+      "collection": {
+        "type": "shepherd-checker",
+        "protocol": "reserve-trigger-attach-check",
+        "trigger": {
+          "mechanism": "review-comment",
+          "body": "@codex review",
+          "reviewer_login": null
+        },
+        "terminal_signals": {
+          "surfaces": ["reaction", "comment", "review", "inline"],
+          "head_binding": "reviewed-commit-line",
+          "verdict_mode": "clean-sentence",
+          "clean_verdict": "codex review: didn't find any major issues.",
+          "actionable_pattern": null,
+          "severity_marker": "\\bp[0-9]+\\b",
+          "metadata_line": "^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$",
+          "about_summary": "about codex",
+          "heading": "^#{1,6}[^a-z0-9]*codex review$",
+          "carrier_sentence": "here are some automated review suggestions for this pull request.",
+          "success_reaction": "+1",
+          "pending_reaction": "eyes"
+        }
+      },
       "trusted_actor_id": "199175422",
-      "trusted_actor_login": "chatgpt-codex-connector[bot]"
+      "trusted_actor_login": "chatgpt-codex-connector[bot]",
+      "raw_shape": "github-review-json",
+      "severity_map": {
+        "default": "P2",
+        "rules": [
+          { "match": "P0", "priority": "P0", "anchor": "anywhere" },
+          { "match": "P1", "priority": "P1", "anchor": "anywhere" },
+          { "match": "P2", "priority": "P2", "anchor": "anywhere" },
+          { "match": "P3", "priority": "P3", "anchor": "anywhere" }
+        ]
+      }
+    },
+    {
+      "slug": "coderabbit-adversarial",
+      "display_name": "CodeRabbit Adversarial Review",
+      "surface": "local-cli",
+      "role": "challenger",
+      "stages": ["challenge"],
+      "result_schema": "ai/schemas/result.challenger.schema.json",
+      "invocation": { "type": "taskfile-target", "target": "challenge:coderabbit" },
+      "collection": null,
+      "trusted_actor_id": null,
+      "trusted_actor_login": null,
+      "raw_shape": "labelled-text",
+      "severity_map": {
+        "default": "P2",
+        "rules": [
+          { "match": "potential issue", "priority": "P1", "anchor": "anywhere" },
+          { "match": "refactor suggestion", "priority": "P2", "anchor": "anywhere" },
+          { "match": "nitpick", "priority": "P3", "anchor": "anywhere" }
+        ]
+      }
+    },
+    {
+      "slug": "coderabbit-verification",
+      "display_name": "CodeRabbit Verification Review",
+      "surface": "local-cli",
+      "role": "reviewer",
+      "stages": ["review"],
+      "result_schema": "ai/schemas/result.reviewer.schema.json",
+      "invocation": { "type": "taskfile-target", "target": "review:coderabbit" },
+      "collection": null,
+      "trusted_actor_id": null,
+      "trusted_actor_login": null,
+      "raw_shape": "labelled-text",
+      "severity_map": {
+        "default": "P2",
+        "rules": [
+          { "match": "potential issue", "priority": "P1", "anchor": "anywhere" },
+          { "match": "refactor suggestion", "priority": "P2", "anchor": "anywhere" },
+          { "match": "nitpick", "priority": "P3", "anchor": "anywhere" }
+        ]
+      }
+    },
+    {
+      "slug": "coderabbit-cloud",
+      "display_name": "CodeRabbit Cloud Review",
+      "surface": "pr-cloud",
+      "role": null,
+      "stages": ["integration"],
+      "result_schema": null,
+      "invocation": null,
+      "collection": {
+        "type": "shepherd-checker",
+        "protocol": "reserve-trigger-attach-check",
+        "trigger": {
+          "mechanism": "review-comment",
+          "body": "@coderabbitai review",
+          "reviewer_login": null
+        },
+        "terminal_signals": {
+          "surfaces": ["reaction", "review", "inline"],
+          "head_binding": "review-commit-id",
+          "verdict_mode": "actionable-count",
+          "clean_verdict": null,
+          "actionable_pattern": "actionable comments posted:[[:space:]]*([0-9]+)",
+          "severity_marker": null,
+          "metadata_line": null,
+          "about_summary": null,
+          "heading": null,
+          "carrier_sentence": null,
+          "success_reaction": null,
+          "pending_reaction": "eyes"
+        }
+      },
+      "trusted_actor_id": "136622811",
+      "trusted_actor_login": "coderabbitai[bot]",
+      "raw_shape": "github-review-json",
+      "severity_map": {
+        "default": "P2",
+        "rules": [
+          { "match": "potential issue", "priority": "P1", "anchor": "anywhere" },
+          { "match": "refactor suggestion", "priority": "P2", "anchor": "anywhere" },
+          { "match": "nitpick", "priority": "P3", "anchor": "anywhere" }
+        ]
+      }
+    },
+    {
+      "slug": "copilot-adversarial",
+      "display_name": "Copilot Adversarial Review",
+      "surface": "local-cli",
+      "role": "challenger",
+      "stages": ["challenge"],
+      "result_schema": "ai/schemas/result.challenger.schema.json",
+      "invocation": { "type": "taskfile-target", "target": "challenge:copilot" },
+      "collection": null,
+      "trusted_actor_id": null,
+      "trusted_actor_login": null,
+      "raw_shape": "labelled-text",
+      "severity_map": {
+        "default": "P2",
+        "rules": [
+          { "match": "P0", "priority": "P0", "anchor": "leading-token" },
+          { "match": "P1", "priority": "P1", "anchor": "leading-token" },
+          { "match": "P2", "priority": "P2", "anchor": "leading-token" },
+          { "match": "P3", "priority": "P3", "anchor": "leading-token" }
+        ]
+      }
+    },
+    {
+      "slug": "copilot-verification",
+      "display_name": "Copilot Verification Review",
+      "surface": "local-cli",
+      "role": "reviewer",
+      "stages": ["review"],
+      "result_schema": "ai/schemas/result.reviewer.schema.json",
+      "invocation": { "type": "taskfile-target", "target": "review:copilot" },
+      "collection": null,
+      "trusted_actor_id": null,
+      "trusted_actor_login": null,
+      "raw_shape": "labelled-text",
+      "severity_map": {
+        "default": "P2",
+        "rules": [
+          { "match": "P0", "priority": "P0", "anchor": "leading-token" },
+          { "match": "P1", "priority": "P1", "anchor": "leading-token" },
+          { "match": "P2", "priority": "P2", "anchor": "leading-token" },
+          { "match": "P3", "priority": "P3", "anchor": "leading-token" }
+        ]
+      }
+    },
+    {
+      "slug": "copilot-cloud",
+      "display_name": "Copilot Code Review",
+      "surface": "pr-cloud",
+      "role": null,
+      "stages": ["integration"],
+      "result_schema": null,
+      "invocation": null,
+      "collection": {
+        "type": "shepherd-checker",
+        "protocol": "reserve-request-check",
+        "trigger": {
+          "mechanism": "requested-reviewer",
+          "body": null,
+          "reviewer_login": "copilot-pull-request-reviewer[bot]"
+        },
+        "terminal_signals": {
+          "surfaces": ["review", "inline"],
+          "head_binding": "review-commit-id",
+          "verdict_mode": "inline-comment-count",
+          "clean_verdict": null,
+          "actionable_pattern": null,
+          "severity_marker": null,
+          "metadata_line": null,
+          "about_summary": null,
+          "heading": null,
+          "carrier_sentence": null,
+          "success_reaction": null,
+          "pending_reaction": null
+        }
+      },
+      "trusted_actor_id": "175728472",
+      "trusted_actor_login": "Copilot",
+      "raw_shape": "github-review-json",
+      "severity_map": {
+        "default": "P2",
+        "rules": []
+      }
     }
   ]
 }

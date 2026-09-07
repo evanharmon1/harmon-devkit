@@ -1,0 +1,46 @@
+{
+  "run_id": "omator-648-replay-review",
+  "initiated_by": "human",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r2-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r3-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r4-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r5-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r6-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r7-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r8-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r9-codex-cli"
+    }
+  ]
+}

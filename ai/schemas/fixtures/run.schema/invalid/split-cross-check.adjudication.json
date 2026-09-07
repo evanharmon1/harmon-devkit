@@ -1,0 +1,38 @@
+{
+  "schema": 2,
+  "run_id": "run-747-split-recorded",
+  "stage": "review",
+  "round": 2,
+  "reviewed_head": "747a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f60",
+  "adjudications": [
+    {
+      "finding_id": "review-r2-codex-cli-1",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "split",
+      "reason": "confirmed, and every gating finding of rounds 1 and 2 lives in the primitive round 1 added — split out rather than hardened again",
+      "evidence": "split_candidate names src/lane/claim-primitive.ts with round:1 provenance",
+      "override": null,
+      "reference": { "type": "issue_number", "value": "649" }
+    },
+    {
+      "finding_id": "review-r2-codex-cli-2",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "split",
+      "reason": "same mechanism, same split",
+      "evidence": "split_candidate names src/lane/claim-primitive.ts with round:1 provenance",
+      "override": null,
+      "reference": { "type": "issue_number", "value": "649" }
+    },
+    {
+      "finding_id": "review-r2-codex-cli-3",
+      "reviewer_priority": "P1",
+      "adjudicated_priority": "P1",
+      "disposition": "fix",
+      "reason": "confirmed and fixed in place — it is in the import path, not the primitive",
+      "evidence": "fixed at adjudication time, never split",
+      "override": null
+    }
+  ]
+}

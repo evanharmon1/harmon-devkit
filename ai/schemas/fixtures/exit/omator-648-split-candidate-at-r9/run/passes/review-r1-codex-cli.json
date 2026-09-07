@@ -1,0 +1,63 @@
+{
+  "schema": 2,
+  "role": "reviewer",
+  "status": "completed",
+  "head": "4312d0afa74043e846c6ef6f8c211082080683a2",
+  "produced_at": "2026-08-21T09:00:00Z",
+  "producer": {
+    "harness": "codex-cli",
+    "model": "gpt-5.6-codex",
+    "tier": "frontier"
+  },
+  "run": {
+    "run_id": "omator-648-replay-review",
+    "initiated_by": "human"
+  },
+  "payload": {
+    "stage": "review",
+    "round": 1,
+    "reviewed_head": "4312d0afa74043e846c6ef6f8c211082080683a2",
+    "finder": "codex-cli",
+    "findings": [
+      {
+        "id": "review-r1-codex-cli-1",
+        "path": "src/lane/import.ts",
+        "line": 12,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "lane import drops the trailing record when the batch is exactly one page"
+      },
+      {
+        "id": "review-r1-codex-cli-2",
+        "path": "src/lane/import.ts",
+        "line": 61,
+        "class": "correctness",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P1",
+        "recommended_disposition": "fix",
+        "evidence": "a failed page is retried without resetting the cursor"
+      },
+      {
+        "id": "review-r1-codex-cli-3",
+        "path": "docs/unit-b.md",
+        "line": 33,
+        "class": "nit",
+        "provenance": "original",
+        "fingerprint": "new",
+        "priority": "P2",
+        "recommended_disposition": "fix",
+        "evidence": "the unit B overview still calls the stage 'shepherd'"
+      }
+    ],
+    "counts": {
+      "P0": 0,
+      "P1": 2,
+      "P2": 1,
+      "P3": 0
+    }
+  }
+}

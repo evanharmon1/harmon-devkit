@@ -32,6 +32,40 @@ for text in '[stage.challenge].finders' '[stage.review].finders' challenger revi
     'validated finding records' 'override it upward' 'run.json.interventions'; do
     grep -Fq "$text" "$skill" || fail "review skill is missing $text"
 done
+# The split strategy (#747) — the third convergence move, beside deleting the
+# scaffolding and restructuring it to invariants. Asserted as text because
+# that is what it is: policy the stage skills carry, since AGENTS.md here is
+# copier-owned by harmon-init and cannot hold it.
+for text in 'split the mechanism out' 'verdict.split_candidate' \
+    'on the current milestone' 'never left to memory' \
+    'disposition: split' 'run.json.splits' \
+    'deletion, restructuring, or splitting out of' \
+    'validate the pair here, before the stage'; do
+    grep -Fq "$text" "$skill" || fail "review skill is missing the split strategy: $text"
+done
+integrate_skill="ai/skills/universal/integrate/SKILL.md"
+# What integration owns of the split: the filing obligation, and the rule that
+# splitting is not an integration move. What a blocked stop OFFERS a
+# maintainer, and how it renders, is #813's — deliberately not asserted here.
+for text in 'filed on the current milestone by the agent that' \
+    'never left to memory'; do
+    grep -Fq "$text" "$integrate_skill" ||
+        fail "integrate skill is missing the split filing obligation: $text"
+done
+# The rendering is split out to #813; the skill must still warn an integration
+# stop off blocker-comment, which borrows a confidence-stage verdict.
+grep -Fq 'Do not use `render-dev-flow.sh blocker-comment` for an integration stop' "$integrate_skill" ||
+    fail "integrate skill does not warn off the untrustworthy integration blocker rendering"
+grep -Fq 'Splitting is not an integration move' "$integrate_skill" ||
+    fail "integrate skill does not state that splitting is not an integration move"
+# A split is recorded in two documents that are cross-checked only when the run
+# record is validated WITH its adjudications, and nothing else in the stage
+# does that (the readiness gate calls the renderer, which does not read
+# splits). The procedure must say so, and must say a split is confidence-stage
+# only.
+grep -Fq 'scripts/validate-result-schemas.mjs run <run.json> --adjudication' "$integrate_skill" ||
+    fail "integrate skill does not validate the split's cross-document state"
+
 grep -Fq 'display login is non-authoritative metadata' "$skill" ||
     fail "review skill treats mutable display login as evidence identity"
 grep -Fq 'Immediately before that remediation dispatch' "$skill" ||
@@ -95,6 +129,153 @@ set -e
 [ "$status" -eq 20 ] || fail "expected converged exit 20, got $status"
 jq -e '.outcome == "converged" and .reason == "empty_round" and .rounds_counted == 1' \
     <<<"$out" >/dev/null || fail "fixture exit verdict differs: $out"
+
+echo "==> a multi-finder logical round spends one unit of the cap, with one receipt per pass"
+# #796 acceptance: /review runs every finder in the stage's `finders` array for
+# a round, writes one receipt per finder pass, and advances the cap by ONE.
+# The two fixtures below are the dry runs for that — a two-finder round and a
+# single-finder round of a different family. The pair is Codex+Copilot rather
+# than Codex+CodeRabbit because CodeRabbit is registered PR-side only: its CLI
+# takes no target from us, so a local pass could not be bound to the round's
+# reviewed_head (see docs/guides/codex-review.md). The Codex+CodeRabbit
+# multi-finder round is covered where it is actually supported — the
+# integration stage, in scripts/test-integrate-readiness.sh.
+multi_fixture="ai/schemas/fixtures/exit/multi-finder-round-codex-and-copilot"
+solo_fixture="ai/schemas/fixtures/exit/copilot-only-round"
+multi_head="$(jq -r '."current-head"' "$multi_fixture/invoke.json")"
+
+policy_resolve() {
+    # --registry and --task-targets are not optional here: without them the
+    # reader exits 3 (indeterminate — nothing to cross-validate finder slugs
+    # against), and a per-run finder request that is never cross-validated is
+    # exactly the hole these cases exist to close.
+    node scripts/devflow-policy.mjs resolve --policy "$1/policy.toml" \
+        --registry "$1/registry.json" --task-targets "$1/task-targets.json" \
+        --json "${@:2}"
+}
+[ "$(jq -r '.stages.review.finders | length' <<<"$(policy_resolve "$multi_fixture")")" -eq 2 ] ||
+    fail "the multi-finder fixture does not configure two review-stage primaries"
+[ "$(find "$multi_fixture/run/passes" -name 'review-r1-*.json' | wc -l)" -eq 2 ] ||
+    fail "a two-finder round did not write one pass receipt per finder"
+[ "$(jq -r '[.receipts[] | select(.kind == "pass")] | length' "$multi_fixture/run/run.json")" -eq 2 ] ||
+    fail "a two-finder round did not record one pass receipt per finder in run.json"
+
+set +e
+multi_out="$(node scripts/dev-flow-exit.mjs --run "$multi_fixture/run" --stage review \
+    --policy "$multi_fixture/policy.toml" --current-head "$multi_head" --json)"
+status=$?
+set -e
+[ "$status" -eq 20 ] || fail "multi-finder round did not converge (exit $status): $multi_out"
+jq -e '.rounds_counted == 1' <<<"$multi_out" >/dev/null ||
+    fail "a round with two finders spent more than one unit of the review cap: $multi_out"
+
+echo "==> a single-finder round of a different family converges the same way"
+solo_head="$(jq -r '."current-head"' "$solo_fixture/invoke.json")"
+[ "$(jq -r '.stages.review.finders[0]' <<<"$(policy_resolve "$solo_fixture")")" = copilot-verification ] ||
+    fail "the Copilot-only fixture does not configure copilot-verification"
+set +e
+solo_out="$(node scripts/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
+    --policy "$solo_fixture/policy.toml" --current-head "$solo_head" --json)"
+status=$?
+set -e
+[ "$status" -eq 20 ] || fail "Copilot-only round did not converge (exit $status): $solo_out"
+jq -e '.rounds_counted == 1' <<<"$solo_out" >/dev/null ||
+    fail "a one-finder round did not spend exactly one unit of the review cap: $solo_out"
+
+echo "==> a per-run finder request adds to the config and can never remove from it"
+selection="$(policy_resolve "$solo_fixture" --add-finder review:codex-verification)"
+jq -e '.stages.review.finders == ["copilot-verification", "codex-verification"]' \
+    <<<"$selection" >/dev/null ||
+    fail "an added finder did not join the configured set: $selection"
+narrowed="$(policy_resolve "$multi_fixture" --select-finder review:codex-verification)"
+jq -e '.stages.review.finders == ["codex-verification", "copilot-verification"] and
+    (.finder_selection[0].retained_despite_selection == ["copilot-verification"])' \
+    <<<"$narrowed" >/dev/null ||
+    fail "a narrower per-run selection removed a config-required finder: $narrowed"
+echo "==> a per-run addition is registry-checked but never charged to breadth"
+# crossValidate sizes a stage's worst-case finder attempts against
+# [breadth].max_agent_runs, and the skill says in terms that confidence
+# finders never consume that budget. Applying the selection before that
+# arithmetic made an otherwise valid tight policy fail for adding a finder —
+# the one thing per-run selection is for.
+tight_policy="$tmp/tight-breadth.toml"
+sed 's/^max_agent_runs = 8$/max_agent_runs = 2/; s/^max_parallel_agents = 3$/max_parallel_agents = 2/' \
+    "$solo_fixture/policy.toml" >"$tight_policy"
+node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+    --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
+    --json >/dev/null ||
+    fail "the tight-breadth policy is not valid on its own, so the case proves nothing"
+node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+    --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
+    --add-finder review:codex-verification --json >/dev/null ||
+    fail "adding a finder was charged against [breadth].max_agent_runs"
+set +e
+unknown_add="$(node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+    --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
+    --add-finder review:not-a-registered-finder 2>&1)"
+status=$?
+set -e
+[ "$status" -eq 1 ] || fail "an unregistered per-run addition resolved cleanly (exit $status)"
+grep -Fq 'per-run selection adds unknown finder' <<<"$unknown_add" ||
+    fail "an added finder is no longer registry-checked: $unknown_add"
+
+echo "==> the resolver and the exit computation agree about a per-run addition"
+# The same rule lives in two files, and they disagreed: the exit script applied
+# the selection BEFORE cross-validation, so a tight policy the resolver accepts
+# was rejected there on breadth grounds — for a finder that, by the skill's own
+# rule, consumes no breadth at all.
+node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+    --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
+    --add-finder review:codex-verification --json >/dev/null ||
+    fail "the resolver rejected the tight policy, so the comparison proves nothing"
+set +e
+tight_exit_out="$(node scripts/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
+    --policy "$tight_policy" --current-head "$solo_head" \
+    --add-finder review:codex-verification --json)"
+status=$?
+set -e
+grep -Fq 'cannot cover' <<<"$tight_exit_out" &&
+    fail "the exit computation charged a per-run finder against breadth: $tight_exit_out"
+jq -e '.reason | contains("codex-verification")' <<<"$tight_exit_out" >/dev/null ||
+    fail "the exit computation did not treat the added finder as a round slot: $tight_exit_out"
+
+echo "==> a per-run finder selection reaches the exit computation, not just the resolver"
+# devflow-policy.mjs applies --add-finder to its own in-memory result;
+# dev-flow-exit.mjs re-resolves the same policy file independently. Without the
+# identical union there, an added finder is not a slot: its pass and findings
+# are dropped and the round can report converged on the configured slots alone.
+set +e
+added_slot_out="$(node scripts/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
+    --policy "$solo_fixture/policy.toml" --current-head "$solo_head" \
+    --add-finder review:codex-verification --json)"
+status=$?
+set -e
+[ "$status" -eq 2 ] ||
+    fail "an added finder was not treated as a round slot by the exit computation (exit $status): $added_slot_out"
+jq -e '.outcome == "indeterminate" and (.reason | contains("codex-verification"))' \
+    <<<"$added_slot_out" >/dev/null ||
+    fail "the exit computation did not demand the added finder's own slot: $added_slot_out"
+
+echo "==> the effective finder set renders as a disclosure under the rigor line"
+disclosure_record="$tmp/finder-disclosure"
+mkdir -p "$disclosure_record"
+jq -n '{rigor:{level:"standard",source:"default_rigor"},
+        rounds:{challenge:3,review:3,integration:2,remediation:2,min_rounds:1},
+        disclosures:[{kind:"finders",
+          detail:"review: codex-verification, copilot-verification (config: codex-verification; added this run: copilot-verification)"}]}' \
+    >"$disclosure_record/policy.json"
+disclosure_out="$(scripts/render-dev-flow.sh policy-disclosure --record "$disclosure_record")"
+grep -Fq 'rigor: `standard`' <<<"$disclosure_out" ||
+    fail "the rigor line did not render: $disclosure_out"
+grep -Fq -- '- finders: review: codex-verification, copilot-verification' <<<"$disclosure_out" ||
+    fail "the effective finder set was not disclosed beside the caps: $disclosure_out"
+
+for text in 'spends **one** unit of the stage' 'Per-run finder selection' \
+    'never remove one the configuration requires' \
+    'never repository content' 'disclosures[]` entry of kind `finders`' \
+    'Pass the same flags to'; do
+    grep -Fq "$text" "$skill" || fail "review skill is missing the multi-finder rule: $text"
+done
 
 echo "==> pre-adjudication verification remains distinct from an exit"
 pre_record="$tmp/pre-adjudication"
@@ -580,5 +761,76 @@ set -e
 [ "$status" -eq 2 ] || fail "superseded run reserved a write at the same head"
 grep -Fq 'no longer active for this branch generation' "$tmp/stale-run.out" ||
     fail "stale-generation rejection was not reported"
+
+echo "==> a --closure reader predating per-run selection is refused, not silently obeyed"
+# The merge-base reader is deliberately the one that decides a self-modifying
+# change. One written before --add-finder/--select-finder existed IGNORES
+# them: the run would resolve to the configured finders alone, exit 0 and
+# disclose nothing — an explicitly requested review slot silently gone, which
+# is the one outcome per-run selection may never produce.
+closure_dir="$tmp/stale-closure"
+mkdir -p "$closure_dir/scripts"
+cat >"$closure_dir/scripts/devflow-policy.mjs" <<'STALE'
+// A reader from before #796: it knows --policy and --registry and nothing
+// about per-run finder selection.
+console.log(JSON.stringify({ resolved: "by the stale merge-base reader" }))
+process.exitCode = 0
+STALE
+set +e
+node scripts/devflow-policy.mjs resolve --closure "$closure_dir" \
+    --policy .devflow.toml --registry agent-registry.json \
+    --add-finder review:copilot-verification --json >"$tmp/closure.out" 2>&1
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail "a closure reader that cannot honour --add-finder resolved anyway: $(cat "$tmp/closure.out")"
+grep -Fq 'predates --add-finder/--select-finder' "$tmp/closure.out" ||
+    fail "the stale-closure refusal did not name its reason: $(cat "$tmp/closure.out")"
+grep -Fq 'by the stale merge-base reader' "$tmp/closure.out" &&
+    fail "the stale closure reader was executed despite lacking the flags"
+
+echo "==> a --closure reader that does support selection is still delegated to"
+current_closure="$tmp/current-closure"
+mkdir -p "$current_closure/scripts"
+cp scripts/devflow-policy.mjs "$current_closure/scripts/devflow-policy.mjs"
+set +e
+node scripts/devflow-policy.mjs resolve --closure "$current_closure" \
+    --policy .devflow.toml --registry agent-registry.json \
+    --add-finder review:copilot-verification --json >"$tmp/closure-ok.out" 2>&1
+set -e
+grep -Fq 'predates --add-finder/--select-finder' "$tmp/closure-ok.out" &&
+    fail "a current closure reader was wrongly refused: $(cat "$tmp/closure-ok.out")"
+
+echo "==> the EXIT reader also refuses a closure reader predating finder selection"
+# The sibling of the devflow-policy.mjs guard above. Fixing only the policy
+# reader left this path unguarded, and it sits on the same trust boundary: a
+# merge-base exit reader that ignores the flags computes an exit over a
+# narrower set of slots and says nothing about it.
+stale_exit="$tmp/stale-exit-closure"
+mkdir -p "$stale_exit/scripts"
+cat >"$stale_exit/scripts/dev-flow-exit.mjs" <<'STALE'
+// An exit reader from before #796.
+process.exitCode = 0
+STALE
+set +e
+node scripts/dev-flow-exit.mjs --closure "$stale_exit" --run "$tmp" --stage review \
+    --policy .devflow.toml --add-finder review:copilot-verification >"$tmp/exit-closure.out" 2>&1
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail "the exit reader delegated to a closure that cannot honour --add-finder: $(cat "$tmp/exit-closure.out")"
+grep -Fq 'predates --add-finder/--select-finder' "$tmp/exit-closure.out" ||
+    fail "the exit reader's stale-closure refusal did not name its reason: $(cat "$tmp/exit-closure.out")"
+
+echo "==> the equals form of a finder flag is parsed, not silently dropped"
+# `--add-finder=x` is the conventional spelling and must mean what
+# `--add-finder x` means. It used to fall through to generic parsing, leaving
+# the run with the configured finders alone and no disclosure — while the
+# closure guard already treated the same spelling as a selection request.
+set +e
+node scripts/devflow-policy.mjs resolve --closure "$closure_dir" \
+    --policy .devflow.toml --registry agent-registry.json \
+    --add-finder=review:copilot-verification >"$tmp/eq-form.out" 2>&1
+set -e
+grep -Fq 'predates --add-finder/--select-finder' "$tmp/eq-form.out" ||
+    fail "the equals-form flag was not recognized as a selection request: $(cat "$tmp/eq-form.out")"
 
 echo "review skill fixtures OK"

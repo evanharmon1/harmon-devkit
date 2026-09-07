@@ -1066,19 +1066,29 @@ function checkAdjudicationEntries(document, errors) {
     // "declined or filed directly") map exactly as checkSettlementReferenceType
     // already maps them for a resolved defer's eventual settlement — fix to
     // the commit that fixed it, decline to the comment explaining why, file
-    // to the issue it was filed as (challenge r2). A reference on any OTHER
+    // to the issue it was filed as (challenge r2), and split to the issue the
+    // mechanism was filed as (#747). A reference on any OTHER
     // disposition is rejected outright rather than left unconstrained
     // (challenge r3): restructure and delete have no settlement analogue to
     // evidence with, and defer's own evidence belongs on its eventual
     // settlement instead — the schema description's own "never deferred"
     // promise, which was previously only documented, not enforced.
+    // A `split` REQUIRES its reference rather than merely permitting one —
+    // "filed by the agent that splits it, never left to memory" (#747). That
+    // requirement now lives in adjudication.schema.json itself as an
+    // if/then (challenge round 2), so a standard validator enforces it too
+    // and this function never sees a split without one:
+    // validateAdjudicationInstance runs the schema first and reaches these
+    // semantic checks only when it produced no errors. What stays here is
+    // the half a schema keyword cannot express — that the reference must be
+    // an `issue_number`, and that its value is a usable issue reference.
     if (entry.reference && typeof entry.reference === 'object') {
       const { reference } = entry
-      const expectedReferenceType = { fix: 'sha', file: 'issue_number', decline: 'comment_id' }
+      const expectedReferenceType = { fix: 'sha', file: 'issue_number', decline: 'comment_id', split: 'issue_number' }
       const expected = expectedReferenceType[entry.disposition]
       if (!expected) {
         errors.push(
-          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference: disposition ${entry.disposition} cannot carry a reference — only fix, decline, and file can be evidenced at adjudication time`
+          `$adjudication.adjudications[finding_id=${entry.finding_id}].reference: disposition ${entry.disposition} cannot carry a reference — only fix, decline, file, and split can be evidenced at adjudication time`
         )
       } else if (reference.type !== expected) {
         errors.push(
@@ -1117,6 +1127,13 @@ function checkAdjudicationEntries(document, errors) {
           `$adjudication.adjudications[finding_id=${entry.finding_id}].override: must be null for stage integration (there is no reviewer priority for adjudicated_priority to differ from)`
         )
       }
+      // `split` is excluded structurally instead — adjudication.schema.json
+      // carries a top-level if/then on the document's own `stage`, because
+      // the exit computation produces no `split_candidate` for integration.
+      // `defer` stays a SEMANTIC check: it already had one here and its own
+      // distinct message in the renderer's cross-document validation, and
+      // folding it into the schema enum would change that error surface for
+      // no gain. Narrow only what needed narrowing.
       if (entry.disposition === 'defer') {
         errors.push(
           `$adjudication.adjudications[finding_id=${entry.finding_id}].disposition: defer is not allowed for stage integration (an integration finding needs a terminal answer: fix, restructure, delete, decline, or file)`
@@ -1584,8 +1601,9 @@ function isChronologicallyBefore(a, b) {
 // field): started_at must be no later than the first stage_transitions
 // entry's entered_at; entered_at must be non-decreasing across entries;
 // promotion.promoted_at must be no earlier than the last entry's
-// entered_at; every intervention's `at` and every settlement's
-// `settled_at` must be no earlier than started_at, and no later than
+// entered_at; every intervention's `at`, every settlement's
+// `settled_at`, and every split's `split_at` must be no earlier than
+// started_at, and no later than
 // promotion.promoted_at when the run has been promoted; and a
 // settlement's `settled_at` must additionally be no earlier than the
 // run's first `integration` transition's entered_at (a deferred finding
@@ -1643,6 +1661,11 @@ function checkRunChronology(document, errors) {
         )
       }
     }
+    for (const [index, split] of (document.splits ?? []).entries()) {
+      if (typeof split.split_at === 'string' && isChronologicallyBefore(split.split_at, startedAt)) {
+        errors.push(`$run.splits[${index}].split_at: ${split.split_at} must not be before started_at ${startedAt}`)
+      }
+    }
   }
   // Upper bound: a settlement resolves a finding BEFORE the run can be
   // promoted (the readiness gate requires every deferred finding settled
@@ -1665,6 +1688,17 @@ function checkRunChronology(document, errors) {
       if (typeof settlement.settled_at === 'string' && isChronologicallyBefore(promotedAt, settlement.settled_at)) {
         errors.push(
           `$run.settlements[${index}].settled_at: ${settlement.settled_at} must not be after promotion.promoted_at ${promotedAt}`
+        )
+      }
+    }
+    // A split is a scope decision taken while the change is still under
+    // review, so it is bounded exactly like an intervention: promotion is
+    // the last thing this run's own span contains, and a mechanism split
+    // out after the PR went ready was not split out of this run's change.
+    for (const [index, split] of (document.splits ?? []).entries()) {
+      if (typeof split.split_at === 'string' && isChronologicallyBefore(promotedAt, split.split_at)) {
+        errors.push(
+          `$run.splits[${index}].split_at: ${split.split_at} must not be after promotion.promoted_at ${promotedAt}`
         )
       }
     }
@@ -2168,6 +2202,169 @@ function checkSettlementsAgainstAdjudications(document, adjudications, errors) {
   }
 }
 
+// checkSplits — internal self-consistency of run.splits[], always run
+// (no external context needed). Two rules, both about the record being
+// usable as evidence rather than merely well-shaped:
+//   - a finding is answered by at most ONE split. The same finding named by
+//     two entries means two mechanisms both claim to have answered it, and
+//     nothing in the record says which issue actually carries it.
+//   - a mechanism is split out of a given stage at most once. Splitting the
+//     same mechanism twice in one stage is either a duplicate append or a
+//     second, differently-filed issue for the same code; both need a human,
+//     not a silently-accepted record. The same mechanism CAN legitimately
+//     appear under the two CONFIDENCE stages (challenge split it, review
+//     found more of it) — and only those two, since `split` is not a valid
+//     disposition at `integration` — so the key is the stage/mechanism pair,
+//     not the mechanism alone.
+function checkSplits(document, errors) {
+  if (!Array.isArray(document.splits)) return
+  const seenFindings = new Map()
+  const seenMechanisms = new Set()
+  for (const [index, entry] of document.splits.entries()) {
+    // minLength alone accepts " ", which preserves the milestone exactly as
+    // well as omitting it does (cloud review, confirmed). Same trimmed
+    // non-empty rule already applied to adjudication reason/evidence.
+    for (const field of ['mechanism', 'issue', 'milestone']) {
+      if (typeof entry[field] === 'string' && entry[field].trim() === '') {
+        errors.push(`$run.splits[${index}].${field}: required (non-empty after trimming whitespace)`)
+      }
+    }
+    const mechanismKey = `${entry.stage}\u0000${entry.mechanism}`
+    if (typeof entry.mechanism === 'string' && typeof entry.stage === 'string') {
+      if (seenMechanisms.has(mechanismKey)) {
+        errors.push(
+          `$run.splits[${index}]: mechanism ${JSON.stringify(entry.mechanism)} is split out of stage ${entry.stage} more than once`
+        )
+      }
+      seenMechanisms.add(mechanismKey)
+    }
+    for (const findingId of entry.finding_ids ?? []) {
+      if (typeof findingId !== 'string') continue
+      // A finding id's own <stage>-r<round> segments are part of its grammar
+      // (checkAdjudicationIdAttribution already binds them to the adjudication
+      // document's stage/round), so the split entry's own stage/round can be
+      // checked against them with NO external context at all. Challenge round
+      // 1, confirmed: without this, a `challenge` round-99 split whose
+      // finding_ids are all `review-r2-*` validated, and the run-level entry
+      // is meant to identify exactly which stage and round took the decision.
+      const parsed = parseFindingId(findingId)
+      if (parsed && (parsed.stage !== entry.stage || parsed.round !== entry.round)) {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} belongs to ${parsed.stage} round ${parsed.round}, but this split records ${entry.stage} round ${entry.round}`
+        )
+      }
+      if (seenFindings.has(findingId)) {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} is already answered by splits[${seenFindings.get(findingId)}] — one split per finding`
+        )
+        continue
+      }
+      seenFindings.set(findingId, index)
+    }
+  }
+}
+
+// checkSplitsAgainstAdjudications — the run-level splits[] projection and
+// the per-finding adjudication entries are two documents describing one
+// decision, so neither proves the other on its own. Given --adjudication
+// (or --no-adjudications, which asserts a confirmed-empty set and so
+// rejects every split, exactly as checkSettlementsAgainstAdjudications
+// rejects every settlement), every finding a split claims to answer must be
+// adjudicated exactly once, with disposition `split`, and its adjudication's
+// reference must name the SAME issue the split entry does — otherwise the
+// run record and the round record disagree about where the work went, which
+// is the "left to memory" failure with extra steps.
+function checkSplitsAgainstAdjudications(document, adjudications, errors) {
+  const byFindingId = new Map()
+  for (const { file, data } of adjudications) {
+    for (const entry of data.adjudications ?? []) {
+      if (typeof entry.finding_id !== 'string') continue
+      if (!byFindingId.has(entry.finding_id)) byFindingId.set(entry.finding_id, [])
+      byFindingId.get(entry.finding_id).push({ disposition: entry.disposition, reference: entry.reference, file })
+    }
+  }
+  for (const [index, split] of (document.splits ?? []).entries()) {
+    for (const findingId of split.finding_ids ?? []) {
+      const matches = byFindingId.get(findingId) ?? []
+      if (matches.length === 0) {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} is not adjudicated in any supplied --adjudication document`
+        )
+        continue
+      }
+      if (matches.length > 1) {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} is adjudicated more than once across the supplied --adjudication documents (${matches
+            .map((match) => match.file)
+            .join(', ')})`
+        )
+        continue
+      }
+      if (matches[0].disposition !== 'split') {
+        errors.push(
+          `$run.splits[${index}]: finding ${findingId} was adjudicated ${matches[0].disposition}, not split, in ${matches[0].file}`
+        )
+        continue
+      }
+      const referencedIssue = matches[0].reference?.value
+      if (typeof referencedIssue === 'string' && referencedIssue !== split.issue) {
+        // Both `649` and `owner/repo#649` are legal for the same issue, and
+        // this validator cannot know which repository a bare number means —
+        // it holds no remote. So it does NOT silently equate the two (that
+        // would also equate a bare local number with ANOTHER repo's #649).
+        // What it can do is stop a pure notation difference from reading as
+        // "the two records name different issues", which is what a reviewer
+        // acts on. Cloud review on #852, confirmed.
+        const issueNumber = (value) => /^(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#?([1-9][0-9]*)$/.exec(value)?.[1]
+        const sameNumber = issueNumber(referencedIssue) && issueNumber(referencedIssue) === issueNumber(split.issue)
+        errors.push(
+          sameNumber
+            ? `$run.splits[${index}]: finding ${findingId} names issue ${referencedIssue} in ${matches[0].file} but ${split.issue} here — the same issue number in two notations. Record both in one form, since a bare number and a qualified reference cannot be proven equal without knowing the repository.`
+            : `$run.splits[${index}]: finding ${findingId} was filed as issue ${referencedIssue} in ${matches[0].file}, but this split names ${split.issue}`
+        )
+      }
+    }
+  }
+}
+
+// checkSplitAdjudicationsRecordedBeforePromotion — the converse of
+// checkSplitsAgainstAdjudications, which only ever walks splits[] toward the
+// adjudications. Challenge round 1, confirmed: an adjudication carrying
+// `disposition: split` whose finding NO splits[] entry names validated
+// silently, losing the run-level mechanism/milestone projection that the
+// readiness gate and /retro read — precisely the half of the two-document
+// contract (specs/dev-flow-v2.md "Neither proves the other") that had no
+// enforcement. Gated on ready-for-review for the same reason
+// checkDeferredFindingsSettledBeforePromotion is: a split adjudicated in the
+// round currently being worked may legitimately not have reached run.splits
+// yet, and only a promoted run must have every one of them recorded.
+function checkSplitAdjudicationsRecordedBeforePromotion(document, adjudications, errors) {
+  // Every TERMINAL outcome, not just ready-for-review (challenge round 2,
+  // confirmed): the contract files the mechanism AT THE MOMENT of the split,
+  // so a run that ends `capped`, `escalated`, or `abandoned` with a `split`
+  // adjudication and no splits[] entry has lost the mechanism and milestone
+  // from the durable projection just as completely as a promoted one. What
+  // the non-terminal case buys is only that a split adjudicated in the round
+  // being worked has not yet had to reach run.splits.
+  if (adjudications.length === 0 || document.outcome === null || document.outcome === undefined) return
+  const recorded = new Set()
+  for (const split of document.splits ?? []) {
+    for (const findingId of split.finding_ids ?? []) {
+      if (typeof findingId === 'string') recorded.add(findingId)
+    }
+  }
+  for (const { data } of adjudications) {
+    for (const entry of data.adjudications ?? []) {
+      if (entry.disposition !== 'split' || typeof entry.finding_id !== 'string') continue
+      if (!recorded.has(entry.finding_id)) {
+        errors.push(
+          `$run.splits: finding ${entry.finding_id} was adjudicated split but no splits[] entry records it, required once the run reaches a terminal outcome`
+        )
+      }
+    }
+  }
+}
+
 // checkAdjudicationEvidenceMarkers — harmon-devkit#685: "every adjudicated
 // round has a matching issue evidence marker (destination: issue, same
 // stage/round); a `pr`-destination marker does not substitute". The spec is
@@ -2337,6 +2534,7 @@ function main() {
     const errors = validateAgainst(schema, instance, '$run')
     if (errors.length === 0) {
       checkSettlements(instance, errors)
+      checkSplits(instance, errors)
       checkEvidenceMarkerRunId(instance, errors)
       checkEvidenceMarkerStageVisited(instance, errors)
       checkEvidenceMarkerPrDestinationRequiresPr(instance, errors)
@@ -2359,6 +2557,8 @@ function main() {
         checkAdjudicationsUnionUnique(options.adjudications, errors)
         checkAdjudicationStagesVisited(instance, options.adjudications, errors)
         checkSettlementsAgainstAdjudications(instance, options.adjudications, errors)
+        checkSplitsAgainstAdjudications(instance, options.adjudications, errors)
+        checkSplitAdjudicationsRecordedBeforePromotion(instance, options.adjudications, errors)
         checkDeferredFindingsSettledBeforePromotion(instance, options.adjudications, errors)
         checkAdjudicationEvidenceMarkers(instance, options.adjudications, errors)
       }

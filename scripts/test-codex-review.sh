@@ -73,6 +73,12 @@ git init -q -b develop "${test_tmp}/upstream"
     cd "${test_tmp}/upstream"
     mkdir scripts
     cp "${repo}/scripts/codex-review.sh" scripts/
+    # The mode and severity prose are shared assets the script reads at render
+    # time (scripts/lib/review-instructions/); a fake repo without them is not
+    # a runnable copy of the script.
+    mkdir -p scripts/lib
+    cp -R "${repo}/scripts/lib/review-instructions" scripts/lib/
+    cp "${repo}/scripts/lib/review-scope.sh" scripts/lib/
     git add -A
     git_t commit -q -m base
 )
@@ -424,6 +430,9 @@ echo "==> an unresolvable base refuses, on a dirty tree as much as a clean one"
 norem="${test_tmp}/norem"
 mkdir -p "${norem}/scripts"
 cp "${repo}/scripts/codex-review.sh" "${norem}/scripts/"
+mkdir -p "${norem}/scripts/lib"
+cp -R "${repo}/scripts/lib/review-instructions" "${norem}/scripts/lib/"
+cp "${repo}/scripts/lib/review-scope.sh" "${norem}/scripts/lib/"
 git init -q -b feature "$norem"
 (
     cd "$norem"
@@ -455,7 +464,11 @@ echo "==> a git failure in either half is refused, not read as an empty half"
 real_git="$(command -v git)"
 cat >"${test_tmp}/bin/git" <<GITSTUB
 #!/usr/bin/env bash
-if [ -n "\${FAIL_GIT_DIFF:-}" ] && [ "\${1:-}" = "diff" ] && [ "\${2:-}" = "--name-status" ]; then
+# Matched by SCANNING the arguments, not by position: the review path also
+# passes --no-ext-diff, and pinning --name-status to \$2 made this stub stop
+# intercepting the moment a flag was added ahead of it — the case would then
+# pass by never simulating the failure at all.
+if [ -n "\${FAIL_GIT_DIFF:-}" ] && [ "\${1:-}" = "diff" ] && grep -Fxq -- --name-status <<<"\$(printf '%s\n' "\$@")"; then
     echo "fatal: simulated missing object" >&2
     exit 128
 fi
