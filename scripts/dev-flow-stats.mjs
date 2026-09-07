@@ -1767,7 +1767,7 @@ function isStale(state, staleAfterDays, asOfEpoch) {
     ...state.evidence_registrations, ...state.pr_bindings, ...state.outcome_transitions,
   ];
   const lastActivity = allEntries.reduce((max, e) => {
-    const t = Date.parse(e.entered_at || e.at || e.settled_at || e.registered_at || e.bound_at);
+    const t = Date.parse(e.entered_at || e.at || e.settled_at || e.split_at || e.registered_at || e.bound_at);
     return t > max ? t : max;
   }, Date.parse(state.started_at));
   // >= , not > — shepherd round 4, Codex-confirmed (P2): specs/dev-flow-v2.md
