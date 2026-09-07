@@ -1399,7 +1399,7 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
       // No next_round: `diverging` is an escalating outcome exactly like
       // `capped`/`converged` (neither of which sets one either, both
       // inheriting base.next_round === null) — a session must choose
-      // delete/restructure/genuinely-in-scope before any further round is
+      // delete/restructure/split/genuinely-in-scope before any further round is
       // legitimate, per AGENTS.md's round-2 checkpoint discipline; which of
       // those a fix disposition actually satisfies is the session's
       // judgement to record (issue #636's own "Out of scope" section), not
@@ -1408,7 +1408,7 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
       // next_round here, alongside an action string that names "fix" as one
       // of three options, reads as authorizing an automated continue —
       // exactly the self-feeding loop `diverging` exists to interrupt.
-      return { ...base, outcome: "diverging", reason: hitName, action: "fix-delete-or-restructure" };
+      return { ...base, outcome: "diverging", reason: hitName, action: "fix-delete-restructure-or-split" };
     }
 
     // base.rounds_counted (COMPLETE rounds only), not retained.length (which

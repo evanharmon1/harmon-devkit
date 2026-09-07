@@ -2308,8 +2308,19 @@ function checkSplitsAgainstAdjudications(document, adjudications, errors) {
       }
       const referencedIssue = matches[0].reference?.value
       if (typeof referencedIssue === 'string' && referencedIssue !== split.issue) {
+        // Both `649` and `owner/repo#649` are legal for the same issue, and
+        // this validator cannot know which repository a bare number means —
+        // it holds no remote. So it does NOT silently equate the two (that
+        // would also equate a bare local number with ANOTHER repo's #649).
+        // What it can do is stop a pure notation difference from reading as
+        // "the two records name different issues", which is what a reviewer
+        // acts on. Cloud review on #852, confirmed.
+        const issueNumber = (value) => /^(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#?([1-9][0-9]*)$/.exec(value)?.[1]
+        const sameNumber = issueNumber(referencedIssue) && issueNumber(referencedIssue) === issueNumber(split.issue)
         errors.push(
-          `$run.splits[${index}]: finding ${findingId} was filed as issue ${referencedIssue} in ${matches[0].file}, but this split names ${split.issue}`
+          sameNumber
+            ? `$run.splits[${index}]: finding ${findingId} names issue ${referencedIssue} in ${matches[0].file} but ${split.issue} here — the same issue number in two notations. Record both in one form, since a bare number and a qualified reference cannot be proven equal without knowing the repository.`
+            : `$run.splits[${index}]: finding ${findingId} was filed as issue ${referencedIssue} in ${matches[0].file}, but this split names ${split.issue}`
         )
       }
     }

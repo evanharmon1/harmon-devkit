@@ -1279,6 +1279,7 @@ const CHAIN_FIELDS = {
   stage_transitions: ["stage", "entered_at", "exit"],
   interventions: ["kind", "at", "note"],
   settlements: ["finding_id", "disposition", "settled_at", "reference"],
+  splits: ["mechanism", "stage", "round", "issue", "milestone", "finding_ids", "split_at"],
   // The three chains below protect evidence_comments[]/pr/outcome — round 4
   // of #663, closing the gap ai/schemas/README.md documented as an open
   // design question after challenge round 3. Unlike the three above, these
@@ -1295,6 +1296,7 @@ const CHAIN_TIMESTAMP_FIELD = {
   stage_transitions: "entered_at",
   interventions: "at",
   settlements: "settled_at",
+  splits: "split_at",
   evidence_registrations: "registered_at",
   pr_bindings: "bound_at",
   outcome_transitions: "at",
@@ -1309,7 +1311,7 @@ const CHAIN_TIMESTAMP_FIELD = {
 // committed valid fixtures — this file's entire test suite masked the gap
 // because every fixture builds these arrays via the chain() helper, which
 // always adds the fields.
-const CHAINS_PENDING_SCHEMA = new Set(["stage_transitions", "interventions", "settlements"]);
+const CHAINS_PENDING_SCHEMA = new Set(["stage_transitions", "interventions", "settlements", "splits"]);
 
 // Validates all six append-only arrays in a run-record body. Throws
 // EvidenceError on any broken chain — the record is not trusted past the
@@ -1460,6 +1462,7 @@ function reconstructAsOf(body, cutoffIso, recordCreatedAt) {
     stage_transitions: filtered.stage_transitions,
     interventions: filtered.interventions,
     settlements: filtered.settlements,
+    splits: filtered.splits,
     // Raw, cutoff-filtered — carried through so isStale can treat these as
     // activity too (an actively-updated run posting new round evidence
     // within one stage, with no NEW stage_transitions entry yet, is not
@@ -1760,7 +1763,7 @@ function isStale(state, staleAfterDays, asOfEpoch) {
   // regardless of that activity, since these three arrays were not in
   // the union at all.
   const allEntries = [
-    ...state.stage_transitions, ...state.interventions, ...state.settlements,
+    ...state.stage_transitions, ...state.interventions, ...state.settlements, ...state.splits,
     ...state.evidence_registrations, ...state.pr_bindings, ...state.outcome_transitions,
   ];
   const lastActivity = allEntries.reduce((max, e) => {
@@ -2038,6 +2041,7 @@ function renderTrajectory(run) {
     stage_transitions: run.state.stage_transitions,
     interventions: run.state.interventions,
     settlements: run.state.settlements,
+    splits: run.state.splits,
     rounds: rounds.map((r) => ({
       stage: r.stage,
       round: r.round,
