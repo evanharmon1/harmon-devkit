@@ -999,7 +999,12 @@ function computeSplitCandidate(retainedRoundsAsc, currentIndex, ledger) {
     provenance_share: provenanceShare,
     introduced_by_rounds: introducedByRounds,
     finding_ids: findingIds,
-    consecutive_rounds: previousConcentratedHere ? [previousAdjacent.round, currentRound.round] : [currentRound.round],
+    // Only report the two-round sequence when the CURRENT round is itself
+    // unanimous (cloud review, confirmed): otherwise a result carrying
+    // `concentration: 2/3`, `detected: false` and reason `not_concentrated`
+    // also claimed a concentrated pair of rounds, contradicting itself.
+    consecutive_rounds:
+      previousConcentratedHere && current.concentration === 1 ? [previousAdjacent.round, currentRound.round] : [currentRound.round],
   };
 
   if (current.concentration !== 1) return { ...base, detected: false, reason: "not_concentrated" };
@@ -1145,8 +1150,15 @@ function computeVerdict({ stage, rounds, convergence, cap, minRounds, currentHea
   // must still be able to tell "no signal was computable" from "the signal is
   // negative".
   const trajectoryIsComplete = retained.every((r) => r.status === "complete");
+  // Also suppressed when the cap was reached but the round that reached it is
+  // not the retained current-head round (cloud review, confirmed): that
+  // verdict returns `capped`/`invalidated` precisely because the final
+  // permitted round cannot be trusted, and `latest` is then an EARLIER round.
+  // Attaching its candidate would let one verdict recommend splitting on
+  // round 2's evidence while declaring round 3 untrustworthy.
+  const capRoundIsTrusted = !capReached || (!!latest && isCurrentHeadRound && latest.round === maxRoundNumber);
   const splitCandidate =
-    trajectoryIsComplete && latest && latest.status === "complete"
+    trajectoryIsComplete && capRoundIsTrusted && latest && latest.status === "complete"
       ? computeSplitCandidate(retained, retained.indexOf(latest), ledger)
       : null;
 

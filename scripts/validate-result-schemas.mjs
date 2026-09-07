@@ -2185,6 +2185,14 @@ function checkSplits(document, errors) {
   const seenFindings = new Map()
   const seenMechanisms = new Set()
   for (const [index, entry] of document.splits.entries()) {
+    // minLength alone accepts " ", which preserves the milestone exactly as
+    // well as omitting it does (cloud review, confirmed). Same trimmed
+    // non-empty rule already applied to adjudication reason/evidence.
+    for (const field of ['mechanism', 'issue', 'milestone']) {
+      if (typeof entry[field] === 'string' && entry[field].trim() === '') {
+        errors.push(`$run.splits[${index}].${field}: required (non-empty after trimming whitespace)`)
+      }
+    }
     const mechanismKey = `${entry.stage}\u0000${entry.mechanism}`
     if (typeof entry.mechanism === 'string' && typeof entry.stage === 'string') {
       if (seenMechanisms.has(mechanismKey)) {
