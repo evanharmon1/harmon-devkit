@@ -902,8 +902,23 @@ if [[ "${SECTION}" == "setup" ]]; then
             # --json name fetches ONLY names, never secret/variable values.
             (run_timeout "${NETWORK_TIMEOUT}" gh secret list --json name \
                 >"${d}/secrets.json" 2>/dev/null || echo '[]' >"${d}/secrets.json") &
-            (run_timeout "${NETWORK_TIMEOUT}" gh variable list --json name \
-                >"${d}/vars.json" 2>/dev/null || echo '[]' >"${d}/vars.json") &
+            (if run_timeout "${NETWORK_TIMEOUT}" gh variable list --json name \
+                >"${d}/vars.json" 2>/dev/null; then
+                echo yes >"${d}/vars-probe"
+            else
+                echo '[]' >"${d}/vars.json"
+                echo no >"${d}/vars-probe"
+            fi) &
+            # CI_RUNS_ON is a non-secret Actions variable whose exact public
+            # value is a security boundary. Fetch only that value; never widen
+            # the general variable inventory from names to values.
+            (if run_timeout "${NETWORK_TIMEOUT}" gh variable get CI_RUNS_ON --json name,value \
+                >"${d}/ci-runs-on.json" 2>/dev/null; then
+                echo yes >"${d}/ci-runs-on-probe"
+            else
+                echo 'null' >"${d}/ci-runs-on.json"
+                echo no >"${d}/ci-runs-on-probe"
+            fi) &
             (run_timeout "${NETWORK_TIMEOUT}" gh release list --limit 1 >"${d}/release.txt" 2>/dev/null || :) &
             # shellcheck disable=SC2016 # $o/$r are GraphQL variables, not shell
             (run_timeout "${NETWORK_TIMEOUT}" gh api graphql \
@@ -1091,6 +1106,29 @@ if [[ "${SECTION}" == "setup" ]]; then
                     checkline ok "Private vuln reporting"
                 else
                     checkline no "Private vuln reporting" "Settings → Advanced Security"
+                fi
+                if [ "${VISIBILITY}" = "public" ]; then
+                    if jq -e 'type == "object"' "${d}/ci-runs-on.json" >/dev/null 2>&1; then
+                        current_ci_runs_on="$(jq -r '.value // empty' "${d}/ci-runs-on.json")"
+                        if [ "${current_ci_runs_on}" = '"ubuntu-latest"' ]; then
+                            checkline ok "Actions runner routing" "public CI_RUNS_ON is ubuntu-latest"
+                        else
+                            checkline no "Actions runner routing" \
+                                "public CI_RUNS_ON must be exact ubuntu-latest JSON — run task setup:github"
+                        fi
+                    elif [ "$(cat "${d}/ci-runs-on-probe" 2>/dev/null)" = yes ]; then
+                        checkline unknown "Actions runner routing" \
+                            "CI_RUNS_ON lookup returned an unexpected payload"
+                    elif [ "$(cat "${d}/vars-probe" 2>/dev/null)" != yes ]; then
+                        checkline unknown "Actions runner routing" \
+                            "could not determine whether public CI_RUNS_ON exists"
+                    elif has_cred "${d}/vars.json" "CI_RUNS_ON"; then
+                        checkline unknown "Actions runner routing" \
+                            "CI_RUNS_ON exists but its public safety value was unreadable"
+                    else
+                        checkline no "Actions runner routing" \
+                            "public CI_RUNS_ON is missing — run task setup:github"
+                    fi
                 fi
                 if [ -f renovate.json ] || [ -f .github/renovate.json ]; then
                     if grep -qi 'renovate' "${d}/apps.json" 2>/dev/null; then

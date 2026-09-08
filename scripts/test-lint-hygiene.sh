@@ -12,7 +12,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-script=./scripts/lint-hygiene.sh
+project_root=$(pwd)
+script="$project_root/scripts/lint-hygiene.sh"
 
 pass=0
 fail=0
@@ -37,6 +38,39 @@ expect() {
     fi
     return 0
 }
+
+expect_vendored_asset() {
+    name=$1
+    want=$2
+    path=$3
+    content=$4
+    got=0
+    (
+        cd "$vendored_fixture_root"
+        mkdir -p "$(dirname "$path")"
+        printf '%s' "$content" >"$path"
+        "$script" "$path" >/dev/null 2>&1
+    ) || got=$?
+    rm -f "$vendored_fixture_root/$path"
+    if [ "$got" -eq "$want" ]; then
+        pass=$((pass + 1))
+        echo "  ok: $name"
+    else
+        fail=$((fail + 1))
+        echo "  FAIL: $name (want exit $want, got $got)" >&2
+    fi
+    return 0
+}
+
+vendored_fixture="lint-hygiene-vendored-$$"
+vendored_fixture_root=$(mktemp -d)
+trap 'rm -rf "$vendored_fixture_root"' EXIT HUP INT TERM
+
+echo "==> installer-owned agent assets bypass content hygiene, not secret scanning"
+expect_vendored_asset "Claude skills asset" 0 ".claude/skills/$vendored_fixture.txt" "trailing space "
+expect_vendored_asset "portable skills asset" 0 ".agents/skills/$vendored_fixture.txt" "trailing space "
+expect_vendored_asset "BMad asset" 0 "_bmad/$vendored_fixture.csv" "trailing space "
+expect_vendored_asset "vendored agent private key still scanned" 1 ".agents/skills/$vendored_fixture.key" "-----BEGIN PRIVATE KEY-----"
 
 echo "==> adjacency forms that rendered copy reconstructs are flagged"
 expect "same-line adjacency" 1 'post an @claude plan comment'

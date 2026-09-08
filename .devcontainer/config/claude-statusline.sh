@@ -18,13 +18,14 @@
 # it survives the ~/.claude volume mount, and wired up via the `statusLine` key
 # in config/claude-user-defaults.json — a seed default the user can override.
 #
-# This runs on every keystroke-ish refresh, so it is built to stay cheap: it
-# executes exactly two external commands, `jq` and `date`. In particular there
-# is no `git` subprocess — the branch is read straight out of .git/HEAD — stdin
-# is drained by `read` rather than `cat`, and jq is fed by here-string rather
-# than a pipeline, so neither costs an extra process. No logging, and no
-# network. Everything else is bash builtins, and the helpers below
-# deliberately return through $REPLY rather than $(...) because a command
+# This runs on every keystroke-ish refresh, so the ordinary payload-backed path
+# stays cheap: it executes only `jq` and `date`. In particular there is no
+# `git` subprocess — the branch is read straight out of .git/HEAD — stdin is
+# drained by `read` rather than `cat`, and jq is fed by here-string rather than
+# a pipeline, so neither costs an extra process. When Claude omits its `.pr`
+# object, an explicit opt-in can perform one cache-miss `gh` lookup, hard-capped
+# at one second. Everything else is bash builtins, and the helpers
+# below deliberately return through $REPLY rather than $(...) because a command
 # substitution is a subshell fork; at ~20 segments a render that is the
 # difference between a couple of forks and two dozen.
 #
@@ -44,6 +45,23 @@ IFS= read -r -d '' input || true
 : "${STATUSLINE_CTX_WIDTH:=16}"
 : "${STATUSLINE_RL_WIDTH:=7}" # deliberately under half the context bar
 : "${STATUSLINE_RL_PCT:=0}"   # 1 also prints the exact limit percentage
+# The marker is generated only for the explicit Copier opt-in. An environment
+# value always wins, so an enabled image can still disable it at runtime. The
+# installed path is the normal production location; the sibling check keeps the
+# packaged script and marker together if an image moves that config directory.
+if [ -z "${STATUSLINE_PR_LOOKUP_ENABLED+x}" ]; then
+    statusline_script_dir=${BASH_SOURCE[0]%/*}
+    [ "$statusline_script_dir" = "${BASH_SOURCE[0]}" ] && statusline_script_dir=.
+    if [ -r /usr/local/share/devcontainer-config/statusline-pr-lookup.enabled ] ||
+        [ -r "$statusline_script_dir/statusline-pr-lookup.enabled" ]; then
+        STATUSLINE_PR_LOOKUP_ENABLED=1
+    else
+        STATUSLINE_PR_LOOKUP_ENABLED=0
+    fi
+fi
+: "${STATUSLINE_PR_CACHE_DIR:=${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/claude-statusline}"
+: "${STATUSLINE_PR_CACHE_TTL:=30}"          # seconds for a positive PR result
+: "${STATUSLINE_PR_NEGATIVE_CACHE_TTL:=10}" # seconds for no-PR or failed lookup
 
 [ -n "${NO_COLOR:-}" ] && STATUSLINE_COLOR=0
 
@@ -133,6 +151,7 @@ fields=$(jq -r '
   , ((if (.pr | type) == "object" then .pr.number else "" end) | s)
   , ((if (.pr | type) == "object" then .pr.url else "" end) | s)
   , ((if (.pr | type) == "object" then .pr.review_state else "" end) | s)
+  , (if (.pr | type) == "object" then "true" else "false" end)
   , ((if (.rate_limits | type) == "object" then .rate_limits.five_hour.used_percentage elif (.quota | type) == "object" then .quota.five_hour.used_percentage else null end) | o)
   , ((if (.rate_limits | type) == "object" then .rate_limits.five_hour.resets_at elif (.quota | type) == "object" then .quota.five_hour.resets_at else null end) | o)
   , ((if (.rate_limits | type) == "object" then .rate_limits.seven_day.used_percentage elif (.quota | type) == "object" then .quota.seven_day.used_percentage else null end) | o)
@@ -145,7 +164,7 @@ fields=$(jq -r '
 # a US can never occur inside one.
 IFS=$'\037' read -r cur_dir proj_dir model effort fast thinking cc_ver style \
     sid sname ctx_pct ctx_size cost lines_add lines_del dur_ms \
-    pr_num pr_url pr_state rl5_pct rl5_at rl7_pct rl7_at <<<"$fields"
+    pr_num pr_url pr_state pr_present rl5_pct rl5_at rl7_pct rl7_at <<<"$fields"
 
 [ -n "${model:-}" ] || model="Claude"
 # $PWD never passed through the jq filter, so it is stripped here instead.
@@ -183,6 +202,8 @@ sane() {
 sane "$STATUSLINE_CTX_WIDTH" 16 1 60 && STATUSLINE_CTX_WIDTH=$REPLY
 sane "$STATUSLINE_RL_WIDTH" 7 0 60 && STATUSLINE_RL_WIDTH=$REPLY
 sane "$STATUSLINE_RL_PCT" 0 0 1 && STATUSLINE_RL_PCT=$REPLY
+sane "$STATUSLINE_PR_CACHE_TTL" 30 1 3600 && STATUSLINE_PR_CACHE_TTL=$REPLY
+sane "$STATUSLINE_PR_NEGATIVE_CACHE_TTL" 10 1 3600 && STATUSLINE_PR_NEGATIVE_CACHE_TTL=$REPLY
 
 # bar <used-pct> <width> — the filled portion represents consumption.
 bar() {
@@ -252,7 +273,7 @@ seg() { printf '  %s %s%s%s' "$1" "$2" "$3" "$RST"; }
 # Walk up from the session directory to the first .git. In a linked worktree
 # .git is a FILE holding `gitdir: <path>`, and that path's HEAD is the one that
 # describes the checkout you are actually sitting in.
-branch='' gitdir='' d=$cur_dir
+branch='' gitdir='' pr_branch_ref='' d=$cur_dir
 while [ -n "$d" ] && [ "$d" != / ]; do
     if [ -d "$d/.git" ]; then
         gitdir="$d/.git"
@@ -271,10 +292,113 @@ done
 if [ -n "$gitdir" ] && [ -r "$gitdir/HEAD" ]; then
     read -r head <"$gitdir/HEAD" 2>/dev/null
     case "$head" in
-    "ref: refs/heads/"*) branch="${head#ref: refs/heads/}" ;;
+    "ref: refs/heads/"*)
+        branch="${head#ref: refs/heads/}"
+        pr_branch_ref=$head
+        ;;
     *) branch="${head:0:7}" ;;
     esac
     branch="${branch//[[:cntrl:]]/}"
+fi
+
+# ---- pull-request fallback cache ----
+# Claude's `.pr` object is authoritative whenever it is present. When it is
+# absent, synchronously cache the result of `gh pr view` in that checkout.
+# `gh` resolves its no-argument form to the pull request for the current branch,
+# including a fork head, without truncating or second-guessing its result. The
+# cache key is SHA-256 of the resolved gitdir and
+# branch, never a branch name used directly as a path; branches may contain
+# slashes, spaces, or strings that look like path traversal.
+pr_cache_key() {
+    local source=$1 digest
+    if command -v sha256sum >/dev/null 2>&1; then
+        digest=$(printf '%s' "$source" | sha256sum 2>/dev/null) || return 1
+    elif command -v shasum >/dev/null 2>&1; then
+        digest=$(printf '%s' "$source" | shasum -a 256 2>/dev/null) || return 1
+    else
+        return 1
+    fi
+    digest=${digest%%[[:space:]]*}
+    case "$digest" in
+    ????????*) REPLY=$digest ;;
+    *) return 1 ;;
+    esac
+}
+
+# Cache rows distinguish a positive result from no PR or a failed lookup, so
+# both kinds of negative answer get a short backoff without hiding a positive
+# result behind a missing `gh` executable on later renders.
+pr_cache_load() {
+    local cache_file=$1
+    PR_CACHE_AT='' PR_CACHE_KIND='' PR_CACHE_NUM='' PR_CACHE_URL='' PR_CACHE_STATE=''
+    [ -r "$cache_file" ] || return 1
+    IFS=$'\t' read -r PR_CACHE_AT PR_CACHE_KIND PR_CACHE_NUM PR_CACHE_URL PR_CACHE_STATE <"$cache_file" || return 1
+    num "$PR_CACHE_AT" || return 1
+    case "$PR_CACHE_KIND" in positive | negative | failure) ;; *) return 1 ;; esac
+    PR_CACHE_URL="${PR_CACHE_URL//[[:cntrl:]]/}"
+    PR_CACHE_STATE="${PR_CACHE_STATE//[[:cntrl:]]/}"
+}
+
+pr_cache_fresh() {
+    local ttl
+    case "$PR_CACHE_KIND" in
+    positive) ttl=$STATUSLINE_PR_CACHE_TTL ;;
+    negative | failure) ttl=$STATUSLINE_PR_NEGATIVE_CACHE_TTL ;;
+    *) return 1 ;;
+    esac
+    ((now >= PR_CACHE_AT && now - PR_CACHE_AT < ttl))
+}
+
+# A cache miss runs synchronously and is hard-capped at one second. Atomic
+# replacement keeps readers from observing a partial cache row; simultaneous
+# misses may duplicate one bounded lookup, rather than leaving persistent
+# single-flight state behind a short-lived status-line process.
+pr_cache_refresh() {
+    local cache_dir=$1 cache_file=$2 repo_dir=$3 cache_now=$4 git_dir=$5 expected_head=$6 current_head
+    (
+        umask 077
+        # gh otherwise treats an inherited GH_REPO as authoritative over the
+        # checkout it is resolving. This subshell makes the clear lookup-local.
+        unset GH_REPO
+        mkdir -p -- "$cache_dir" 2>/dev/null || exit 0
+        if result=$(cd "$repo_dir" && GH_PROMPT_DISABLED=1 timeout -s KILL 1 gh pr view --json number,url,isDraft,reviewDecision,state 2>/dev/null | jq -r '
+          def clean: (. // "") | tostring | explode
+                     | map(select(. > 31 and . != 127 and (. < 128 or . > 159))) | implode;
+          def review_state:
+            if .isDraft == true then "draft"
+            elif .reviewDecision == "APPROVED" then "approved"
+            elif .reviewDecision == "CHANGES_REQUESTED" then "changes_requested"
+            elif .reviewDecision == "REVIEW_REQUIRED" then "pending"
+            else "" end;
+          if type == "object" and .state == "OPEN" and (.number | type) == "number"
+          then [(.number | floor | tostring), (.url | clean), review_state] | @tsv
+          else "" end'); then
+            [ -n "$result" ] && kind=positive || kind=negative
+        else
+            kind=failure
+            result=''
+        fi
+        read -r current_head <"$git_dir/HEAD" 2>/dev/null || exit 0
+        [ "$current_head" = "$expected_head" ] || exit 0
+        printf '%s\t%s\t%s\n' "$cache_now" "$kind" "$result" >"$cache_file.tmp.$$" 2>/dev/null || exit 0
+        mv -f -- "$cache_file.tmp.$$" "$cache_file" 2>/dev/null || exit 0
+    ) >/dev/null 2>&1
+}
+
+if [ "$STATUSLINE_PR_LOOKUP_ENABLED" = 1 ] && [ "${pr_present:-false}" != true ] && ! num "${pr_num:-}" && [ -n "$gitdir" ] && [ -n "$pr_branch_ref" ]; then
+    if pr_cache_key "$gitdir"$'\037'"$branch"; then
+        pr_cache_file="$STATUSLINE_PR_CACHE_DIR/$REPLY"
+        pr_cache_load "$pr_cache_file" || true
+        if ! pr_cache_fresh && command -v gh >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+            pr_cache_refresh "$STATUSLINE_PR_CACHE_DIR" "$pr_cache_file" "$d" "$now" "$gitdir" "$pr_branch_ref"
+            pr_cache_load "$pr_cache_file" || true
+        fi
+        if pr_cache_fresh && [ "$PR_CACHE_KIND" = positive ] && num "$PR_CACHE_NUM"; then
+            pr_num=$PR_CACHE_NUM
+            pr_url=$PR_CACHE_URL
+            pr_state=$PR_CACHE_STATE
+        fi
+    fi
 fi
 
 # =====================================================================

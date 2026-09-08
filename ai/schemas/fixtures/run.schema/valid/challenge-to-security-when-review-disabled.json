@@ -1,0 +1,23 @@
+{
+  "schema": 2,
+  "run_id": "run-review-disabled-transition",
+  "initiated_by": "human",
+  "started_at": "2026-09-05T00:00:00Z",
+  "stage_transitions": [
+    { "stage": "kickoff", "entered_at": "2026-09-05T00:00:00Z", "exit": "claimed" },
+    { "stage": "claim", "entered_at": "2026-09-05T00:01:00Z", "exit": "implement" },
+    { "stage": "implement", "entered_at": "2026-09-05T00:02:00Z", "exit": "verified" },
+    { "stage": "verify", "entered_at": "2026-09-05T00:03:00Z", "exit": "challenged" },
+    { "stage": "challenge", "entered_at": "2026-09-05T00:04:00Z", "exit": "review-disabled" },
+    { "stage": "security", "entered_at": "2026-09-05T00:05:00Z" }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
+}

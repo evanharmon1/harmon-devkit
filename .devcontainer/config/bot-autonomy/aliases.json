@@ -1,0 +1,8 @@
+{
+  "claude-code-deepseek": "claude-code",
+  "claude-code-glm": "claude-code",
+  "claude-code-kimi": "claude-code",
+  "claude-code-minimax": "claude-code",
+  "claude-code-qwen": "claude-code",
+  "claude-code-qwen-local": "claude-code"
+}

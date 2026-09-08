@@ -1,0 +1,80 @@
+{
+  "schema_version": 2,
+  "kind": "harmon-init.devflow.conformance",
+  "description": "V2 policy corpus. Consumers must reject v1 input with a migration hint.",
+  "result_schema_version": 2,
+  "cases": [
+    {
+      "name": "defaults",
+      "basis": "branch",
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "selections": {
+            "rigor": { "value": "standard", "source": "default" },
+            "strategy": { "value": "plan", "source": "default" }
+          }
+        }
+      }
+    },
+    {
+      "name": "explicit-overrides-win",
+      "basis": "branch",
+      "overrides": ["rigor=deep", "strategy=council"],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "config_source": "operating",
+          "selections": {
+            "rigor": { "value": "deep", "source": "explicit" },
+            "strategy": { "value": "council", "source": "explicit" }
+          }
+        }
+      }
+    },
+    {
+      "name": "self-edit-reads-merge-base-policy",
+      "basis": "merge-base",
+      "merge_base_replacements": [
+        ["default_rigor    = \"standard\"", "default_rigor    = \"light\""]
+      ],
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "config_source": "merge-base",
+          "selections": {
+            "rigor": { "value": "light", "source": "default" },
+            "strategy": { "value": "plan", "source": "default" }
+          }
+        }
+      }
+    },
+    {
+      "name": "absent-policy-uses-built-in-fallback",
+      "basis": "absent",
+      "expect": {
+        "exit": 0,
+        "result": {
+          "config_schema_version": 2,
+          "config_source": "built-in-fallback",
+          "selections": {
+            "rigor": { "value": "standard", "source": "builtin" },
+            "strategy": { "value": "plan", "source": "builtin" }
+          }
+        }
+      }
+    },
+    {
+      "name": "legacy-version-is-refused",
+      "basis": "branch",
+      "config_replacements": [["schema_version = 2", "schema_version = 1"]],
+      "expect": {
+        "exit": 1,
+        "error_diagnostics": [{ "code": "migration_required", "subject": "schema_version" }]
+      }
+    }
+  ]
+}

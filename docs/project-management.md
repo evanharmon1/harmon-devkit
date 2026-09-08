@@ -7,7 +7,7 @@ How work is tracked for Harmon DevKit in **GitHub Projects**.
 The standard strategy is a single default GitHub **Project (V2)** per owner — one
 board for the organization, or (for personal-account repos) one for the user
 account — titled after the owner's GitHub login: `<owner> Project` (here:
-**evanharmon1 Project**; e.g. `harmonops Project`, `evanharmon1 Project`).
+**evanharmon1 Project**; e.g. `acme Project` for an organization, `octocat Project` for a personal account).
 Every repo the owner controls feeds that one board; an issue can belong to
 multiple projects, but this default board is its home. Reach for a second,
 focused project only when a body of work needs its own.
@@ -460,23 +460,36 @@ the taxonomy table below is generated from) and the starter set is created by
   exclusive axes, a generic bucket defers to the most specific matching value;
   write that single-owner boundary into the value's registry description
   rather than leaving it implicit
-- **Tier** — which model-routing stratum should work the issue — advisory,
-  human-written, and inert until a consumer resolves it under its own trust
-  model
-- **Method** (renamed **Strategy** once this repo's `.devflow.toml` migrates
-  to the harmon-init #1047 shape — see the generated table below, which
-  still carries `method:*`) — the execution topology to work the issue
-  under — advisory, like `tier:`
-- **Rigor** — which round-cap level in [`.devflow.toml`](../.devflow.toml) an
-  agent works the issue under (AGENTS.md, "Round caps are resolved, not stated
-  here"). An agent reads it and never self-applies one. It is advisory rather
-  than an authenticated gate: nothing verifies who applied it, and the
-  **triage** role can label an issue with no push access — so AGENTS.md
-  requires any cap or floor resolving below `default_rigor` to be stated in
-  the PR body, keeping a reduced budget visible to the reviewer — the
-  `min_rounds` floor included. Two present resolve per stage to the highest
-  cap, and the floor likewise to the highest present, so a conflict can only
-  ever buy more review.
+- **Rigor** — the primary depth/effort/budget axis: which `[rigor.*]` profile
+  in [`.devflow.toml`](../.devflow.toml) an agent works the issue under — a
+  rounds policy, five role tiers, and a breadth envelope together
+  ([docs/guides/devflow.md](guides/devflow.md); AGENTS.md, "Rigor and
+  strategy are resolved, not stated here"). An agent reads it and never
+  self-applies one. It is advisory rather than an authenticated gate: nothing
+  verifies who applied it, and the **triage** role can label an issue with no
+  push access — so AGENTS.md requires any off-default rigor, and any role
+  tier that ends up off its rigor's own built-in profile, to be disclosed in
+  the PR body. Two present resolve to the single strongest level (by
+  `.devflow.toml`'s `rigor_order`) — its whole profile, never a mix of
+  numbers assembled from both.
+- **Strategy** — the primary topology/workflow axis: how the work is
+  organized and performed — single agent, delegated to workers, independent
+  proposals judged by one, or human-directed
+  ([docs/guides/devflow.md](guides/devflow.md)) — advisory, like `rigor:`.
+  Two present are **ambiguous**, not resolved to either: unlike rigor's
+  more-or-less continuum, topologies have no rank between them, so a
+  conflict is a resolution error rather than a silent pick.
+- **Tier** — which model-routing stratum works a specific **role** —
+  orchestrator, implementer, reviewer, challenger, or integrator — advisory,
+  human-written, and inert
+  until a consumer resolves it under its own trust model. An unqualified
+  `tier:<value>` refines the **implementer** role only; a scoped
+  `tier:orchestrator:<value>` / `tier:implementer:<value>` /
+  `tier:reviewer:<value>` / `tier:challenger:<value>` /
+  `tier:integrator:<value>` targets exactly the role it names. Absent any
+  override, all five roles come from the resolved rigor level. All 25
+  scoped values (5 roles × 5 concrete tiers) are **provisioned** like every
+  other tier value, not created on demand.
 
 The prose above describes what each family *means*; the actual values — names,
 colors, writers, lifecycle — live in `label-registry.json` and appear in the
@@ -539,10 +552,102 @@ advice, never an arming signal.
 GitHub labels live per-repository (there's no shared org label pool).
 `setup-github-labels` seeds the set into one repo — run it in each, or set the
 org's **default labels** (org Settings → Repository, UI-only) to seed *new* repos
-(it won't change existing ones). It never deletes labels, so GitHub's defaults
-remain until you prune them — including a pre-`ui`/`logic`/`data`/`integration`
-repo's `layer:frontend`, `layer:backend`, and `layer:infra`, which you re-map and
-delete by hand.
+(it won't change existing ones). The default path is additive: it creates or
+updates only provisioned labels and never deletes a live label. To inspect live
+labels outside the registry inventory (including adopted, tool-owned, and
+recognized families), run `./scripts/setup-github-labels.sh --repo
+<owner/repo> --report-unregistered` with the same `--foreman` and
+`--release-please` profile flags used for setup when you want to mirror
+provisioning. Maintenance protection still includes every non-retired
+registered family, including gated tool labels, when those flags are omitted.
+The read-only report pages all labels, all-state issues and pull requests, and
+repository discussions, and prints separate association counts; an indeterminate read fails closed. For
+an intentional retirement, use the guarded maintenance flow below.
+`--prune` accepts one or more repeatable `--migrate OLD=NEW` flags. The write
+path requires a quiescent maintenance window: pause claim/release, Foreman,
+release-please, and other human/API label writers for the whole run.
+`--report-unregistered` is read-only, but its counts are a snapshot; obtain a
+fresh report immediately before pruning. The command validates live registry
+destinations, requires a TTY confirmation before writes (or the separate
+explicit `--yes` flag for automation), attempts to migrate associations for
+matching issues, PRs, and discussions returned by its current paginated snapshot, re-reads
+associations, and attempts to delete only reported labels that are unassociated
+in its latest snapshot; names with observed associations are refused. Retired
+labels are reportable, so use this flow instead of starting with a direct
+`gh label delete`.
+
+The guard is deliberately not an atomic API transaction. The command verifies
+each migration around source removal, then takes one complete, bounded
+post-migration association snapshot before the deletion batch. It fails closed
+on read or verification errors, but GitHub has no transaction or compare-and-swap that binds the final
+association read to the following edit/DELETE. A concurrent writer can still
+change labels after that read and before the request, and the command cannot
+undo a successful concurrent mutation. If the window was not quiescent or any
+verification drifts, treat the operation as incomplete, reconcile live
+associations, and rerun in a new quiet window; a successful exit alone is not a
+claim of association preservation.
+
+**Fixed legacy mappings are authoritative.** Use the association-migration path
+for these fixed sources: `agent:claude-code` → `claim:claude`,
+`agent:codex` → `claim:gpt`, `agent:gemini-cli` → `claim:gemini`, `agent:kimi-k2` → `claim:kimi`,
+`agent:qwen-code` → `claim:qwen`, `suggest:codex` → `suggest:gpt`, and
+`claim:codex` → `claim:gpt`. Pass one repeatable `--migrate OLD=NEW` per exact
+live source; `--migrate` does not match prefixes. The `OLD=NEW` form contains
+exactly one `=`; labels containing `=` must be relabeled per record instead of
+passed to bulk migration. For a model-level fixed
+source, move only the family segment and preserve the recorded suffix, for
+example `suggest:codex:sol` → `suggest:gpt:sol` and
+`claim:codex:sol` → `claim:gpt:sol`. Model-level labels refine rather than
+replace their family-level label, so the guarded command retains or adds both
+associations. When a recognized model-level destination is absent, the guarded
+command creates it only after confirmation by copying the live family label's
+color and description; if that family label is absent, setup must run first and
+maintenance stops. Enumerate model-level names explicitly with
+`gh label list --repo <owner/repo> --limit 1000 --json name --jq '.[].name' |
+grep -E '^(suggest|claim):(codex|copilot):'`; for each source, inspect all-state
+`gh issue list --label <old> --state all --limit 1000` and
+`gh pr list --label <old> --state all --limit 1000`. An exactly-full manual
+result is capped; increase the limit and rerun before writes. The maintenance
+path itself uses `gh api --paginate` and refuses an indeterminate read.
+
+For a fixed mapping, do not use `gh label edit` or a hand-written
+create-then-delete sequence. Use `--migrate`: it accepts a live registered
+destination or creates a recognized on-demand model destination as described
+above,
+mapping: it validates the live registry destination, attempts the association
+move for each matching issue, PR, and discussion found in the paginated snapshots, then
+permits guarded `--prune` only when a fresh snapshot shows the source has zero
+associations. For
+per-record broker handling, add and
+verify the destination on each record before removing the old association;
+after all records are handled, a fresh zero-association snapshot may permit
+guarded `--prune` to attempt retiring the old label.
+
+**Copilot labels need a per-record family decision, not a default-based rename.**
+`copilot-cli` is a broker, not a model family: its picker defaults to `mai`,
+but MAI is only that default and never evidence for a migration. Do not pass
+`agent:github-copilot*`, `suggest:copilot*`, or `claim:copilot*` to bulk
+`--migrate`; the command rejects broker-derived sources because one destination
+cannot represent mixed runtime records. `suggest:copilot` has no claim/session
+record: re-express each issue/PR's planning intent as
+`suggest:<actual-family>` or drop the old association, never mechanically
+rename it to `suggest:mai`. `claim:copilot` is different: inspect each
+issue/PR's claim/session record and handle that record individually as
+`claim:<actual-family>`; use `claim:mai` only when the record confirms MAI.
+Apply the same distinction to model-level
+`suggest:copilot:<model>`/`claim:copilot:<model>` labels and preserve a model
+suffix only after the actual family is known. Include Discussions in the
+per-record inventory: the read-only report gives their association count, and
+the Discussions UI or GraphQL API identifies the records to relabel. If a live
+claim's record is
+missing, settle it with its owner or leave the label untouched rather than
+guess.
+
+Before moving any in-flight `claim:*`/legacy `agent:*` marker, settle the claim
+or amend its durable record in the same sitting: its release path names the
+exact label it will remove, and moving only the issue/PR association strands
+the replacement marker. Interactive runs confirm on the TTY; automation must
+state destructive intent again with separate `--yes` (piped stdin is refused).
 
 ### Labels carry no permissions
 
@@ -571,7 +676,8 @@ labels, for exactly this reason: a `labeled` event carries an actor, but the
 label sitting on the issue afterwards does not, so half the paths a
 label-triggered workflow can start from have nobody to check. Label setup is
 additive, so a repository standardized before those labels were retired may
-still carry them live-but-inert — delete them by hand.
+still carry them live-but-inert — report them with `--report-unregistered`,
+then map and retire them with guarded `--migrate`/`--prune` maintenance.
 
 ### Label or field?
 
@@ -621,21 +727,24 @@ deliberately leaves it alone.
 | `bug`, `feature`, `task`, `research` | the issue forms on personal-account repos; humans or agents at triage | humans, saved views | provisioned; inert | durable classification — org repos use native issue Type and no work-type label |
 | `documentation` | GitHub ships it at repo creation; humans or agents apply it at triage | humans, saved views | not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary | durable classification — org repos use native issue Type and no work-type label |
 | `question` | GitHub ships it at repo creation; humans or agents apply it at triage | humans, saved views | not provisioned — a GitHub repo-creation default adopted into the work-type vocabulary | durable classification — org repos use native issue Type and no work-type label |
-| `enhancement` (**retired**) | nobody — replaced by `feature` | humans, saved views | retired — the GitHub repo-creation default this vocabulary replaces with `feature`; never provisioned | rename BEFORE provisioning creates `feature` (`gh label edit enhancement --name feature`, association-preserving); once `feature` exists the rename is refused — re-label the issues and delete `enhancement` |
-| `layer:{ui,logic,data,integration}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; the label family is the only surface — there is no paired project field |
+| `dependencies` | Renovate, when it manages dependency updates | humans, saved views | not provisioned — Renovate creates it on demand; never deleted by setup | tool-managed by Renovate |
+| `enhancement` (**retired**) | nobody — replaced by `feature` | humans, saved views | retired — the GitHub repo-creation default this vocabulary replaces with `feature`; never provisioned | use guarded `--prune` with `--migrate enhancement=feature` |
+| `layer:{ui,logic,data,integration,infra}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; the label family is the only surface — there is no paired project field |
 | `domain:{boilerplates,scripts,agent-workflow,standardization,design,project-tracking,delivery}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; the label family is the only surface — there is no paired project field |
 | `domain:auth` (**retired**) | nobody — retired | humans, `gh issue list --label` | retired — a generic starter value this repo never needed; no longer provisioned | no issues carry it — delete the live label |
 | `domain:billing` (**retired**) | nobody — retired | humans, `gh issue list --label` | retired — a generic starter value this repo never needed; no longer provisioned | no issues carry it — delete the live label |
 | `domain:platform` (**retired**) | nobody — retired | humans, `gh issue list --label` | retired — split across this repo's own domains; no longer provisioned | re-label its issues to the repo-specific domains, then delete the live label |
 | `area:{ci,docs,deps,build,tests,tasks,release,devcontainer,pm,skills,gauntlet,templates,agents,security,scripts,shepherd,triage,track-work,standardize-repo,design,session-flow,foreman}` | humans or agents, at triage | humans, `gh issue list --label` | provisioned; inert | durable classification; area = solution space, domain = problem space, layer = stack slice |
-| `rigor:{light,standard,deep}` | humans, at triage — **never an agent on itself** | agents, when entering the Dev Loop | provisioned; **read by agents** — selects a round-cap level, arms nothing | set when the default budget is wrong for the change; survives the work |
-| `tier:{local,economy,standard,frontier,apex,adaptive}` | humans, at triage or planning — never an agent on itself | humans and agents — resolved to a model via `.devflow.toml` `[tier]` (ADR 0006) | provisioned; **advisory** — resolved to a concrete value via `.devflow.toml`; arms nothing | set when the default tier would be wrong; strongest-wins resolution per ADR 0006 |
-| `method:{oneshot,plan,plan-approved,orchestrate,council,human-led}` | humans, at triage or planning — never an agent on itself | humans and agents — resolved to a topology via `.devflow.toml` `default_method`/`[method]` (ADR 0006) | provisioned; **advisory** — resolved to a concrete value via `.devflow.toml`; arms nothing | set when the default method would be wrong; config-backed rank resolution per ADR 0006 |
+| `rigor:{cursory,light,standard,thorough,deep,forensic}` | humans, at triage — **never an agent on itself** | agents, when entering the Dev Loop | provisioned; **read by agents** — selects a rounds policy, five role tiers, and a breadth envelope; arms nothing | set when the default rigor is wrong for the change; survives the work |
+| `tier:{local,economy,standard,frontier,apex,adaptive}` | humans, at triage or planning — never an agent on itself | humans and agents — overrides the implementer tier; models are classified in `agent-registry.json` (ADR 0006/0007) | provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing | set when the default tier would be wrong; strongest-wins resolution per ADR 0006 |
+| `tier:orchestrator:local`, `tier:orchestrator:economy`, `tier:orchestrator:standard`, `tier:orchestrator:frontier`, `tier:orchestrator:apex`, `tier:implementer:local`, `tier:implementer:economy`, `tier:implementer:standard`, `tier:implementer:frontier`, `tier:implementer:apex`, `tier:reviewer:local`, `tier:reviewer:economy`, `tier:reviewer:standard`, `tier:reviewer:frontier`, `tier:reviewer:apex`, `tier:challenger:local`, `tier:challenger:economy`, `tier:challenger:standard`, `tier:challenger:frontier`, `tier:challenger:apex`, `tier:integrator:local`, `tier:integrator:economy`, `tier:integrator:standard`, `tier:integrator:frontier`, `tier:integrator:apex` | humans, at triage or planning — never an agent on itself | humans and agents — targets exactly the role it names; models are classified in `agent-registry.json` (ADR 0006/0007), unlike the unqualified `tier:<value>` which targets the implementer only | provisioned; **advisory** — resolved against `.devflow.toml`'s `tier_order`; arms nothing | set when one role's tier should differ from the rigor's own profile; strongest-wins per role |
+| `method:{oneshot,plan,plan-approved,orchestrate,council,human-led}` (**retired**) | nobody — renamed to strategy:* | humans — retired, see `strategy:*` | retired — execution topology renamed to the `strategy` family; never provisioned | migrate each with guarded `--prune` and repeatable `--migrate method:<v>=strategy:<v>` |
+| `strategy:{oneshot,plan,plan-approved,orchestrate,council,human-led}` | humans, at triage or planning — never an agent on itself | agents, when entering the Dev Loop — Foreman does not consume it yet (out of scope here) | provisioned; **read by agents** — selects an execution topology, arms nothing | set when the default strategy is wrong for the change; survives the work |
 | `suggest:<family>` | humans or agents, at planning | humans, the Agent queue view | provisioned from the registry (family level only); advisory — arms nothing | set at planning; survives the work and is never rewritten by a claim |
 | `suggest:<family>:<model>` | humans or agents, at planning | humans | **tool-owned, created on demand** — seeding every model would be an unbounded roster | refines the family label; apply both |
 | `claim:<family>` | the agent itself — a vendored claim skill, or a Claude Actions run | humans; the Claude Actions claim gate; `claim-release.yml` where the repo ships it | provisioned from the registry; a **gate**, never a trigger | added at claim, removed at release — by the workflow's `always()` step, or by `claim-release.yml` on close where the repo ships it |
 | `claim:<family>:<model>` | the agent itself | humans; the Claude Actions claim gate; `claim-release.yml` where the repo ships it | **tool-owned, created on demand** | refines the family label; added at claim, removed at release |
-| `agent:<harness>` (**retired**) | nobody — never seeded into a new repo | claim skills (and `claim-release.yml` where present), which still recognize it | legacy; inert | delete once live claims are re-mapped to `claim:*` |
+| `agent:<harness>` (**retired**) | nobody — never seeded into a new repo | claim skills (and `claim-release.yml` where present), which still recognize it | legacy; inert | after choosing the actual claim family, use guarded `--prune` with repeatable `--migrate OLD=NEW` |
 | `foreman:<adapter>` | a trusted human, to arm an issue | Foreman | provisioned from the registry where the repo uses foreman (`--foreman`), for production-dispatchable adapters only; **actor-verified arming** | applied to arm; stays on the issue |
 | `foreman:approved` | a trusted human | Foreman | provisioned (`--foreman`); **actor-verified arming** with the repo default backend | applied to arm; stays on the issue |
 | `foreman:hold` | a human | Foreman | provisioned (`--foreman`); non-arming and always wins | applied to exclude, removed to re-include |
@@ -645,7 +754,7 @@ deliberately leaves it alone.
 | `foreman:ready-for-review` | Foreman, on passing its readiness gate | Foreman, humans | **tool-owned, auto-created** | added at promotion; the hand-off to human review |
 | `type:<commit-type>` | a human, optionally | Foreman, to pick the unit's conventional-commit type | **not provisioned** — an optional override of the native issue `Type` | applied when the native type is absent or wrong |
 | `autorelease: pending`, `autorelease: tagged` | release-please | release-please | **tool-owned, auto-created**; note the space after the colon — not part of the `family:value` convention | pending on the open release PR, tagged once the release is cut |
-| `duplicate`, `good first issue`, `help wanted`, `invalid`, `wontfix` | GitHub, at repo creation | humans | not provisioned, never deleted by setup | prune by hand if you do not want them |
+| `duplicate`, `good first issue`, `help wanted`, `invalid`, `wontfix` | GitHub, at repo creation | humans | not provisioned, never deleted by setup | adopted; leave in place — inventory reporting and guarded pruning exclude it |
 <!-- label-taxonomy:end -->
 
 One nuance the table compresses: `claim:claude` in a repo with **no label
@@ -728,6 +837,7 @@ with no adapter behind it is a false capability that can strand armed work.
 | `antigravity` | Google Antigravity | `gemini` | — | `harness-runtime` |
 | `opencode` | OpenCode | any (multi-provider) | — | `harness-runtime` |
 | `pi` | Pi | any (multi-provider) | — | `harness-runtime` |
+| `oh-my-pi` | Oh My Pi | any (multi-provider) | — | `harness-runtime` |
 | `goose` | Block Goose | any (multi-provider) | — | `harness-runtime` |
 | `cline` | Cline | any (multi-provider) | — | `harness-runtime` |
 <!-- registry-tables:end -->

@@ -18,13 +18,15 @@ mode="${1:-check}"
 if [ "$#" -gt 0 ]; then shift; fi
 
 # Canonical excludes: generated output (dist, .task, .terraform, .venv,
-# node_modules), vendored skills (.claude), scratch worktrees, spec fixtures,
-# and the template/ tree (jinja markdown — present only in the template repo
-# itself, an inert glob everywhere else).
+# node_modules), vendored agent assets (.claude/skills, .agents/skills, _bmad),
+# scratch worktrees, spec fixtures, and the template/ tree (jinja markdown —
+# present only in the template repo itself, an inert glob everywhere else).
 default_globs=(
     '**/*.md'
     '#template/**'
     '#.claude/**'
+    '#.agents/skills/**'
+    '#_bmad/**'
     '#specs/*/**'
     '#**/node_modules/**'
     '#dist/**'

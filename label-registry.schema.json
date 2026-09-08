@@ -108,8 +108,9 @@
           ]
         },
         "source": {
-          "description": "inline = values enumerated here; agent-registry = values rendered from agent-registry.json (values must be empty here); tool-owned = the consuming tool creates the labels on demand and provisioning leaves them alone.",
-          "enum": ["inline", "agent-registry", "tool-owned"]
+          "description": "inline = values enumerated here; agent-registry = values rendered from agent-registry.json (values must be empty here); tool-owned = the consuming tool creates the labels on demand and provisioning leaves them alone; devflow = values enumerated here (like inline) but .devflow.toml is the authoritative definition of the set and wording.",
+          "$comment": "devflow-sourced families (rigor, strategy) still enumerate values inline for provisioning — this schema has no way to express a cross-file equality constraint — but .devflow.toml owns the value set and description wording; scripts/test-devflow-config.sh is the drift gate that keeps label-registry.json and .devflow.toml from diverging.",
+          "enum": ["inline", "agent-registry", "tool-owned", "devflow"]
         },
         "registry_set": {
           "description": "Which agent-registry render feeds a source: agent-registry family.",
@@ -135,7 +136,7 @@
           "enum": ["foreman", "release-please"]
         },
         "retired": {
-          "description": "Legacy family: never provisioned, rendered as retired in docs. Provisioning is additive-only, so live labels survive until an operator re-maps and deletes them by hand (`gh label edit --name` preserves issue associations).",
+          "description": "Legacy family: never provisioned, rendered as retired in docs. Provisioning remains additive; use --report-unregistered to inspect live labels, --migrate OLD=NEW for guarded best-effort association migration, and --prune for prompted deletion of labels with zero associations in the latest snapshot. Maintenance requires a quiescent window, and GitHub's read/edit API boundary is non-atomic.",
           "type": "boolean"
         },
         "open_values": {

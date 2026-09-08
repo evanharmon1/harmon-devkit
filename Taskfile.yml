@@ -44,17 +44,20 @@ tasks:
           task "$task_name"
         fi
 
-  # ── CI / Verification Pipelines ────────────────────────────────
   ci:
-    # Full local mirror of the CI pipeline — run before (or instead of) opening
-    # a PR to catch everything CI would, on demand, without waiting on a PR run.
-    # Builds on `verify` and adds every OTHER check the build workflow runs, so
-    # the two cannot drift apart. The daemon-free devcontainer permission
-    # assertion is already inside `verify` for this repo, so it is covered here
-    # transitively rather than listed again.
-    desc: Full CI mirror (verify → security)
+    # Full local mirror of the CI pipeline — use on demand when CI is red and
+    # you want to iterate locally, without waiting on each PR push. The pre-PR
+    # gate is `task verify` + `task security`; this adds the rest.
+    # The PR-metadata closing guard stays outside offline `verify`, so run it
+    # explicitly before building on `verify` and adding every OTHER check the
+    # build workflow runs, so the two cannot drift apart.
+    # Note: verify:skills is intentionally omitted here because harmon-devkit
+    # is the skills source and its dogfood symlinks refuse self-vendoring.
+    desc: Full CI mirror (guard:closing-keywords → verify → test:devcontainer:permissions → security)
     cmds:
+      - task: guard:closing-keywords
       - task: verify
+      - task: test:devcontainer:permissions
       - task: security
 
   verify:
@@ -97,6 +100,7 @@ tasks:
       - task: test:lint-hygiene
       - task: test:release-title
       - task: test:notify-release
+      - task: test:claim-release-merged
       - task: test:setup-github
       - task: test:setup-github-project
       - task: test:sync-devkit-release
@@ -108,6 +112,8 @@ tasks:
       - task: test:link-claude-json
       - task: test:image-staleness
       - task: test:open-devcontainer
+      - task: test:bot-autonomy
+      - task: test:devcontainer-changed
       - task: test
 
   # ── Quality Checks ────────────────────────────────────────────
@@ -253,23 +259,56 @@ tasks:
       - ./scripts/require-release-title.sh {{.RELEASE_CONTENT_PATHS}}
 
   guard:closing-keywords:
-    # The CI counterpart of the track-work skill — enforced by tracking-guard.yml
-    # at PR time because the thing it checks (the PR body, which GitHub acts on at
-    # merge) does not exist locally. A `Closes #N` over an issue that still holds
-    # outstanding work deletes that work from the backlog the moment the PR merges.
-    # The check ships inside the skill so consumers vendor it; this target is what
-    # keeps devkit's own PRs honest. All three paths a closing keyword can take to
-    # main are checked — the body, the title (squash-merge makes it the commit
-    # subject), and the commit messages (they land on main under rebase/merge, and
-    # under squash too because squash_merge_commit_message is COMMIT_MESSAGES).
-    # PR_COMMITS_FILE is optional; empty means none supplied. Pre-flight before
-    # opening a PR:
-    #   PR_TITLE="<title>" PR_BODY="$(cat body.md)" task guard:closing-keywords
-    # (CI passes PR_TITLE/PR_BODY/PR_COMMITS_FILE + GH_REPO; unit-tested by
-    # `task test:track-work`.)
-    desc: "Guard: a PR must not auto-close an issue holding unfinished work"
+    # CI supplies PR metadata. Local runs fetch an open PR from the current
+    # branch when either value is absent; before a PR exists, a successful empty
+    # listing supplies empty title/body while API failures remain indeterminate.
+    # Commit messages are read as data, never executed.
+    desc: "Guard: same-repo closing keywords require a completed issue checklist"
     cmds:
-      - ./ai/skills/universal/track-work/assets/check-closing-keywords.sh --body-env PR_BODY --title-env PR_TITLE --commits-file "${PR_COMMITS_FILE:-}"
+      - |
+        commits_file=$(mktemp)
+        trap 'rm -f "$commits_file"' EXIT
+        base_sha="${BASE_SHA:-origin/main}"
+        head_sha="${HEAD_SHA:-HEAD}"
+        if ! merge_base="$(git merge-base "$base_sha" "$head_sha")" || [ -z "$merge_base" ]; then
+          echo "guard:closing-keywords: could not resolve merge-base for ${base_sha} and ${head_sha}; refusing to scan an indeterminate commit range" >&2
+          exit 2
+        fi
+        if ! commit_count="$(git rev-list --count "${merge_base}..${head_sha}")"; then
+          echo "guard:closing-keywords: could not count commits in ${merge_base}..${head_sha}; refusing an indeterminate range" >&2
+          exit 2
+        fi
+        if [ "$commit_count" -gt 250 ]; then
+          echo "guard:closing-keywords: PR range has ${commit_count} commits, exceeding the workflow's 250-commit API limit" >&2
+          exit 1
+        fi
+        git log --format=%B "${merge_base}..${head_sha}" > "$commits_file"
+        if [ -z "${PR_TITLE+x}" ] || [ -z "${PR_BODY+x}" ]; then
+          branch="$(git branch --show-current)"
+          if [ -z "$branch" ] || ! pr_json="$(gh pr list --head "$branch" --state open --limit 2 --json title,body)"; then
+            echo "guard:closing-keywords: could not list PR metadata for the current branch; supply both PR_TITLE and PR_BODY" >&2
+            exit 2
+          fi
+          pr_count="$(printf '%s' "$pr_json" | jq 'length')"
+          if [ "$pr_count" -gt 1 ]; then
+            echo "guard:closing-keywords: multiple open PRs match branch ${branch}; supply both PR_TITLE and PR_BODY" >&2
+            exit 2
+          elif [ "$pr_count" -eq 1 ]; then
+            PR_TITLE="$(printf '%s' "$pr_json" | jq -r '.[0].title')"
+            PR_BODY="$(printf '%s' "$pr_json" | jq -r '.[0].body // ""')"
+          else
+            echo "guard:closing-keywords: no open PR for ${branch}; checking commits with inert pre-PR metadata" >&2
+            PR_TITLE="Pre-PR local CI"
+            PR_BODY="No pull request body exists yet."
+          fi
+          export PR_TITLE PR_BODY
+        fi
+        repo="${GH_REPO:-}"
+        if [ -z "$repo" ]; then
+          repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+        fi
+        PR_TITLE="$PR_TITLE" PR_BODY="$PR_BODY" ./ai/skills/universal/track-work/assets/check-closing-keywords.sh --repo "$repo" \
+          --title-env PR_TITLE --body-env PR_BODY --commits-file "$commits_file"
 
   # Entry point for .github/workflows/sync-harmon-devkit.yml: resolves the
   # latest harmon-devkit release, bumps .skills-sync.yaml, vendors, verifies
@@ -295,6 +334,11 @@ tasks:
     cmds:
       - ./scripts/sync-skills.sh sync
       - ./scripts/link-agent-skills.sh sync
+
+  skills:status:
+    desc: "Report the vendoring state (network unless --offline)"
+    cmds:
+      - ./scripts/sync-skills.sh status {{.CLI_ARGS}}
 
   verify:skills:
     desc: "Skill drift check (network): fail if vendored skills differ from the pinned ref"
@@ -415,7 +459,6 @@ tasks:
     desc: 'Render a dev-flow-v2 projection or publish generated sections (task devflow:render -- <projection|publish> --record <dir> ...)'
     cmds:
       - ./scripts/render-dev-flow.sh {{.CLI_ARGS}}
-
   test:worktree:
     desc: Behavioral test for worktree:new / worktree:rm (create → verify hooks → remove, in a throwaway fixture repo)
     cmds:
@@ -470,9 +513,14 @@ tasks:
       - ./scripts/test-tasks.sh
 
   test:ci-results:
-    desc: Unit-test the fail-closed CI aggregate result helper
+    desc: Unit-test CI aggregate and closing-keyword fail-closed truth tables
     cmds:
       - ./scripts/test-ci-results.sh
+
+  audit:ruleset:
+    desc: Compare the checked-in branch ruleset with GitHub's live ruleset (read-only)
+    cmds:
+      - ./scripts/audit-ruleset.sh
 
   test:output:
     desc: Unit-test shared color/Unicode fallbacks and spinner cleanup
@@ -539,6 +587,11 @@ tasks:
     cmds:
       - ./scripts/test-notify-devkit-release.sh
 
+  test:claim-release-merged:
+    desc: Unit-test merged-PR claim release (offline, stubbed gh and release engine)
+    cmds:
+      - ./scripts/test-claim-release-merged.sh
+
   test:setup-github:
     desc: Unit-test repository-setting outcomes and failure propagation (stubbed gh, no network)
     cmds:
@@ -549,6 +602,7 @@ tasks:
     cmds:
       - ./scripts/test-track-work.sh
       - ./scripts/test-claim-transaction.sh
+      - ./scripts/test-release-claim.sh
 
   test:triage-skill:
     desc: "Unit-test the triage skill's contract scripts (offline, stubbed gh/claude)"
@@ -599,6 +653,21 @@ tasks:
     desc: Unit-test the client-side dev container launcher (no VS Code needed)
     cmds:
       - ./scripts/test-open-devcontainer.sh
+
+  test:bot-autonomy:
+    # No devcontainer paths: filter gates this in CI — it runs as part of the
+    # unconditionally-required `verify` job, so a registry change that adds an
+    # uncovered harness slug fails on its own, regardless of which paths a PR
+    # touches.
+    desc: Unit-test bot-autonomy.sh's registry coverage, Codex parity, and per-module fixtures (no container needed)
+    cmds:
+      - ./scripts/test-bot-autonomy.sh
+
+  test:devcontainer-changed:
+    desc: Unit-test the devcontainer-build.yml change detector (devcontainer-changed.sh)
+    cmds:
+      - ./scripts/test-devcontainer-changed.sh
+
 
   test:hooks:
     desc: Round-trip the Taskfile targets the Claude hooks delegate to
@@ -843,11 +912,12 @@ tasks:
   setup:github:
     desc: >-
       Apply idempotent GitHub repo settings via gh (Dependabot alerts, private
-      vulnerability reporting)
+      vulnerability reporting, Actions runner routing)
     vars:
       REPO: "evanharmon1/harmon-devkit"
     cmds:
-      - ./scripts/setup-github.sh --repo "{{.REPO}}"
+      - >-
+        ./scripts/setup-github.sh --repo "{{.REPO}}" --ci-runs-on '"ubuntu-latest"'
   setup:github-project:
     desc: >-
       Idempotently create/sync the owner's GitHub Project V2 board + Status

@@ -30,6 +30,7 @@
         "dismiss_stale_reviews_on_push": true,
         "required_reviewers": [],
         "require_code_owner_review": true,
+        "require_extra_approval_for_unattributed_changes": true,
         "require_last_push_approval": true,
         "required_review_thread_resolution": true,
         "allowed_merge_methods": ["squash", "rebase"]
@@ -47,6 +48,14 @@
           },
           {
             "context": "security",
+            "integration_id": 15368
+          },
+          {
+            "context": "closing-keywords",
+            "integration_id": 15368
+          },
+          {
+            "context": "devcontainer-verify",
             "integration_id": 15368
           }
         ]

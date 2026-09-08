@@ -10,6 +10,8 @@
 
 ## How Has This Been Tested?
 { Testing: please describe the tests that you ran to verify your changes. Provide instructions so that others can reproduce the behavior. List any relevant details for your test configuration. }
+- [ ] `task verify`
+- [ ] `task security`
 - [ ] { Test A }
 
 ## Checklist

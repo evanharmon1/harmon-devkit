@@ -49,7 +49,7 @@ for seg in segments:
         parsed_messages = []
         for m in messages:
             if m.startswith("$(cat <<"):
-                m = re.sub(r"^\$\(cat\s+<<['\"]?[A-Za-z0-9_]+['\"]?\s*\n", "", m)
+                m = re.sub(r"^\$\(cat\s+<<['"'"'\\\"]?[A-Za-z0-9_]+['"'"'\\\"]?\s*\n", "", m)
                 m = re.sub(r"\n[A-Za-z0-9_]+\s*\)$", "", m)
             parsed_messages.append(m)
         print("\n\n".join(parsed_messages))

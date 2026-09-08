@@ -76,10 +76,27 @@ SESSION_DATA_DIR="$(mktemp -d)"
 LOG_FILE="$(mktemp)"
 CONTAINER_ID=""
 
+# Both bot-autonomy's OpenCode and Antigravity modules gate their reversible
+# backup capture on "no backup exists yet" — correct for a real, long-lived
+# container, where only the very first apply after a fresh volume should
+# capture the pre-managed value. Reusing the SAME persistent named volumes
+# across repeated smoke runs would only exercise that first-run behavior
+# once, ever, silently defeating the absent->apply->restore and
+# option-toggle fixtures the moment they matter most. devcontainer.json's
+# gemini-config/opencode-config mount sources interpolate
+# ${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX}, empty (today's fixed
+# name) for every real devcontainer session — only this script's own runs set
+# it, so each one gets fresh, uniquely-named volumes, removed below.
+export HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX="-smoke-$(date +%s)-$$"
+
 cleanup() {
     if [ -n "${CONTAINER_ID}" ]; then
         "$TIMEOUT_BIN" -k 5 20 docker rm -f "${CONTAINER_ID}" >/dev/null 2>&1 || true
     fi
+    local smoke_volume
+    for smoke_volume in $(docker volume ls -q --filter "name=${HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX}" 2>/dev/null); do
+        docker volume rm -f "$smoke_volume" >/dev/null 2>&1 || true
+    done
     rm -rf "${USER_DATA_DIR}" "${SESSION_DATA_DIR}" "${LOG_FILE}"
 }
 trap cleanup EXIT
@@ -100,6 +117,17 @@ if [ -z "${CONTAINER_ID}" ]; then
     exit 1
 fi
 
+# `docker exec` has no workspace-folder-aware default cwd (no Dockerfile
+# WORKDIR sets one), so devcontainer-assert.sh's container-mode assertions
+# need the actual path `up` resolved — never guessed or re-derived from
+# ${WORKSPACE_ROOT}'s basename, which is exactly the kind of implicit
+# assumption that silently diverges from what the CLI decided.
+REMOTE_WORKSPACE_FOLDER="$(jq -r 'select(.outcome=="success") | .remoteWorkspaceFolder // empty' "${LOG_FILE}" | tail -n 1)"
+if [ -z "${REMOTE_WORKSPACE_FOLDER}" ]; then
+    echo "devcontainer smoke test failed: no remoteWorkspaceFolder found in CLI output." >&2
+    exit 1
+fi
+
 # Derive the profile from the config's parent-dir basename: the dev profile
 # lives in .devcontainer/dev/, everything else is the bot profile.
 if [ "$(basename "$(dirname "${CONFIG_PATH}")")" = "dev" ]; then
@@ -109,6 +137,6 @@ else
 fi
 
 echo "==> Asserting ${PROFILE} permission invariants in the running container..."
-bash "$(dirname "$0")/devcontainer-assert.sh" container "${CONFIG_PATH}" "${CONTAINER_ID}" "${PROFILE}"
+bash "$(dirname "$0")/devcontainer-assert.sh" container "${CONFIG_PATH}" "${CONTAINER_ID}" "${PROFILE}" "${REMOTE_WORKSPACE_FOLDER}"
 
 echo "==> Smoke test passed for ${CONFIG_PATH}."

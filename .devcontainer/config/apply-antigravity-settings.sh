@@ -7,7 +7,7 @@ workspace="${3:-$PWD}"
 settings_dir="$HOME/.gemini/antigravity-cli"
 settings_path="$settings_dir/settings.json"
 backup_path="$settings_dir/settings.json.harmon-init-autonomy-backup"
-managed_keys='["toolPermission","artifactReviewPolicy","allowNonWorkspaceAccess","enableTerminalSandbox","statusLine","permissions"]'
+managed_keys='["toolPermission","artifactReviewPolicy","allowNonWorkspaceAccess","enableTerminalSandbox","statusLine","permissions","showFeedbackSurvey"]'
 
 valid_object() {
     jq -s -e 'length == 1 and (.[0] | type == "object")' "$1" >/dev/null
@@ -26,10 +26,12 @@ case "$mode" in
 apply)
     if [ ! -f "$defaults_src" ]; then
         echo "Antigravity defaults not found at ${defaults_src}." >&2
+
         exit 1
     fi
     if ! valid_object "$defaults_src"; then
         echo "Cannot merge invalid Antigravity defaults from ${defaults_src}." >&2
+
         exit 1
     fi
 
@@ -50,7 +52,7 @@ apply)
             . as $settings |
             reduce $keys[] as $key (
                 {
-                    schemaVersion: 5,
+                    schemaVersion: 6,
                     present: [],
                     values: {},
                     introducedWorkspaces: (
@@ -68,28 +70,31 @@ apply)
             )
         ' "$settings_path" >"$backup_tmp"
         atomic_replace "$backup_tmp" "$backup_path"
-    elif jq -e '.schemaVersion < 5' "$backup_path" >/dev/null 2>&1; then
+    elif jq -e '.schemaVersion < 6' "$backup_path" >/dev/null 2>&1; then
         backup_tmp="$(mktemp "${settings_dir}/settings.backup.tmp.XXXXXX")"
         trap 'rm -f "${backup_tmp:-}" "${settings_tmp:-}"' EXIT
-        # Bring a legacy backup up to schemaVersion 5. Each version added a
+        # Bring a legacy backup up to schemaVersion 6. Each version added a
         # managed key the older backup never owned, so capture the user's
         # current value for that key before this run's policy overwrites it:
-        # statusLine arrived in v4, permissions in v5.
+        # statusLine arrived in v4, permissions in v5, showFeedbackSurvey in v6.
         jq --slurpfile settings "$settings_path" '
             (.schemaVersion // 3) as $from |
-            .schemaVersion = 5 |
+            .schemaVersion = 6 |
             (if $from < 4 and ($settings[0] | type == "object" and has("statusLine")) and (.present | index("statusLine") == null) then
                 .present += ["statusLine"] | .values.statusLine = $settings[0].statusLine
             else . end) |
             (if $from < 5 and ($settings[0] | type == "object" and has("permissions")) and (.present | index("permissions") == null) then
                 .present += ["permissions"] | .values.permissions = $settings[0].permissions
+            else . end) |
+            (if $from < 6 and ($settings[0] | type == "object" and has("showFeedbackSurvey")) and (.present | index("showFeedbackSurvey") == null) then
+                .present += ["showFeedbackSurvey"] | .values.showFeedbackSurvey = $settings[0].showFeedbackSurvey
             else . end)
         ' "$backup_path" >"$backup_tmp"
         atomic_replace "$backup_tmp" "$backup_path"
     fi
 
     if ! jq -e --argjson keys "$managed_keys" '
-        type == "object" and .schemaVersion == 5 and
+        type == "object" and .schemaVersion == 6 and
         (.present | type == "array") and (.values | type == "object") and
         (.introducedWorkspaces | type == "array") and
         ([.introducedWorkspaces[] | select(type != "string")] | length == 0) and
@@ -97,6 +102,7 @@ apply)
         ([.present[] as $key | select(($keys | index($key)) == null)] | length == 0)
     ' "$backup_path" >/dev/null; then
         echo "Cannot update Antigravity policy with invalid rollback state at ${backup_path}." >&2
+
         exit 1
     fi
 
@@ -119,9 +125,9 @@ apply)
 
     settings_tmp="$(mktemp "${settings_dir}/settings.json.tmp.XXXXXX")"
     trap 'rm -f "${backup_tmp:-}" "${settings_tmp:-}"' EXIT
-    if ! jq -s --arg workspace "$workspace" '
+    if ! jq -s --arg workspace "$workspace" --argjson keys "$managed_keys" '
         .[0] as $current | .[1] as $policy |
-        ($current * $policy) |
+        ($policy * $current * ($policy | with_entries(select(.key as $k | $keys | index($k) != null)))) |
         .trustedWorkspaces = (
             (if ($current.trustedWorkspaces | type) == "array"
              then $current.trustedWorkspaces else [] end) + [$workspace] |
@@ -129,6 +135,7 @@ apply)
         )
     ' "$settings_path" "$defaults_src" >"$settings_tmp"; then
         echo "Failed to merge Antigravity settings; leaving ${settings_path} unchanged." >&2
+
         exit 1
     fi
 
@@ -140,11 +147,11 @@ apply)
 restore)
     [ -f "$backup_path" ] || exit 0
     if [ ! -f "$settings_path" ] || ! valid_object "$settings_path"; then
-        echo "Cannot restore Antigravity policy into missing or invalid ${settings_path}." >&2
-        exit 0
+        echo "Cannot restore Antigravity policy into missing or invalid ${settings_path}; leaving ${backup_path} in place." >&2
+        exit 1
     fi
     if ! jq -e --argjson keys "$managed_keys" '
-        type == "object" and (.schemaVersion == 5 or .schemaVersion == 4 or .schemaVersion == 3) and
+        type == "object" and (.schemaVersion == 6 or .schemaVersion == 5 or .schemaVersion == 4 or .schemaVersion == 3) and
         (.present | type == "array") and (.values | type == "object") and
         (.introducedWorkspaces | type == "array") and
         ([.introducedWorkspaces[] | select(type != "string")] | length == 0) and
@@ -152,6 +159,7 @@ restore)
         ([.present[] as $key | select(($keys | index($key)) == null)] | length == 0)
     ' "$backup_path" >/dev/null; then
         echo "Cannot restore invalid Antigravity rollback state at ${backup_path}." >&2
+
         exit 1
     fi
 
@@ -163,6 +171,8 @@ restore)
             ["toolPermission","artifactReviewPolicy","allowNonWorkspaceAccess","enableTerminalSandbox"]
          elif $backup.schemaVersion == 4 then
             ["toolPermission","artifactReviewPolicy","allowNonWorkspaceAccess","enableTerminalSandbox","statusLine"]
+         elif $backup.schemaVersion == 5 then
+            ["toolPermission","artifactReviewPolicy","allowNonWorkspaceAccess","enableTerminalSandbox","statusLine","permissions"]
          else
             $keys
          end) as $active_keys |

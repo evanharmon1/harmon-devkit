@@ -39,7 +39,7 @@
 //     2  usage error, or a file could not be read or parsed
 //     3  resolved, but cross-validation was indeterminate
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -1882,7 +1882,15 @@ function main() {
   return 2;
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const isMain =
+  process.argv[1] &&
+  (() => {
+    try {
+      return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+    } catch {
+      return fileURLToPath(import.meta.url) === process.argv[1];
+    }
+  })();
 if (isMain) {
   process.exitCode = main();
 }

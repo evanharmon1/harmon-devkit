@@ -212,7 +212,7 @@ JSON
 # the execution-control prefix filter and not just an absent "agent" writer.
 write_migrated_label_registry() {
     local fixture="$1" area="$2"
-    jq '(.["$defs"].family.properties.source.enum) += ["devflow"]' \
+    jq '(.["$defs"].family.properties.source.enum) |= (if index("devflow") then . else . + ["devflow"] end)' \
         "$repo/label-registry.schema.json" >"$fixture/label-registry.schema.json"
     cat >"$fixture/label-registry.json" <<JSON
 {

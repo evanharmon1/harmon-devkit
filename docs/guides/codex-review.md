@@ -478,7 +478,7 @@ task challenge  # adversarial second model — adjudicate, fix, re-challenge
                 # resolved from .devflow.toml
 task review     # verification checkpoint — same convergence rule, under its
                 # own resolved review cap
-task ci         # full CI mirror
+task security   # Semgrep CE + gitleaks + dependency audit — pre-publication gate
 # → open a DRAFT PR, then integrate it: watch CI + reviews, settle the deferred
 #   P2s, adjudicate → fix → push, under the integration and remediation caps
 #   (independent of the loops above)
@@ -499,17 +499,18 @@ gate that ends them — is defined in AGENTS.md ("Dev Loop"). The PR is a
 is the one signal that the automated work is finished.
 
 The caps are not written down here, or in AGENTS.md. They live in
-[`.devflow.toml`](../../.devflow.toml) as `rigor` levels, and **AGENTS.md alone
-defines how a change resolves one** — restating that chain here would only give
-it a second place to drift from, and which inputs are even available depends on
-how the repository is set up. `challenge`, `review`, and the `min_rounds` floor vary by level. Whether
-the integration and remediation caps vary depends on the file's shape: under
-the **legacy** shape the single `shepherd` cap (decoded as both) is fixed at
-every level, because it bounds other people's findings rather than
-self-generated work; under a **migrated** shape `integration` and
-`remediation` come from the resolved rigor level's own `[rounds.*]` policy and
-vary with it. Announce the resolved caps — the floor included — when you
-enter the loop.
+[`.devflow.toml`](../../.devflow.toml): a `rigor` level resolves to a
+`[rounds.*]` policy that sets independent `challenge`, `review`,
+`integration`, and `remediation` ceilings plus `min_rounds` and the
+run's wall-clock ceiling, and **AGENTS.md alone defines how a change resolves
+one** — restating that chain here would only give it a second place to drift
+from, and which inputs are even available depends on how the repository is
+set up. Challenge and review bound confidence passes; `integration` bounds
+current-head Codex review cycles; `remediation` bounds integration-stage fix
+pushes. These numbers move together with the resolved policy, and a cap of 0
+disables only the work it names, never a deterministic gate, security scan,
+or the readiness gate obligations (watching CI, current-head clean signal).
+Announce the resolved profile — caps and floor included — when you enter the loop.
 
 If Codex cloud review is connected to the repo, PRs
 get a cloud pass too: inline comments only for high-priority findings, a
@@ -528,14 +529,25 @@ rounds may come back empty, all-P2 as labeled, or P1-labeled and adjudicated
 down to
 P2; what counts is the **adjudicated** column of your adjudication table, not
 the label Codex attached. The second such round *is* the confirmation, so no
-extra run is owed after it. Two cases exit faster still. A round with **no
+extra run is owed after it. A stage whose resolved cap is **0 never opens**:
+zero rounds run, and none of what follows applies to it — every deterministic
+gate and adjudication obligation elsewhere is unaffected. For any stage whose
+cap is 1 or more, two cases exit faster still than the two-consecutive rule.
+A round with **no
 findings at all** ends the stage on the spot **once the level's `min_rounds`
-floor is met** (1 wherever a level does not set it) — an empty round is exactly
+floor is met** (`0 <= min_rounds <= cap`; the built-in fallback of 1 applies
+only when `.devflow.toml` is entirely absent — a *present* config's review
+policy omitting `min_rounds` is a validation error, never a silent default)
+— an empty round is exactly
 the older "clean re-run" exit, so neither a trivial change nor a clean
-post-fix re-run pays for a confirmation pass, and a floor of 2 only delays
-that shortcut, never the other two exits, which run at least two rounds by
+post-fix re-run pays for a confirmation pass, and the floor only delays
+that one shortcut. The other two exits need no separate floor check: two
+consecutive clean rounds are two rounds regardless of the floor, and a capped
+final round runs exactly the cap, which is always at least `min_rounds` by
 construction. And a **capped
-final round** that adjudicates to zero P0/P1 ends the stage by itself: the
+final round** — including a cap of exactly 1, where that single round is
+both the first and the last — that adjudicates to zero P0/P1 ends the stage
+by itself: the
 confirmation it would otherwise owe is a run the cap forbids, and escalation
 at the cap is reserved for P0/P1 findings that persist — a clean last round
 is convergence, not disagreement.

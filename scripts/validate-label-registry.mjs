@@ -395,13 +395,13 @@ if (errors.length === 0) {
     }
 
     if (
-      family.source === 'inline' &&
+      (family.source === 'inline' || family.source === 'devflow') &&
       family.open_values !== true &&
       family.retired !== true &&
       family.values.length === 0
     ) {
       semanticError(
-        `${where}: a closed inline family needs values — with none it silently renders nothing (mark it open_values or retired instead)`
+        `${where}: a closed ${family.source} family needs values — with none it silently renders nothing (mark it open_values or retired instead)`
       )
     }
     if (family.open_values === true && !family.placeholder) {

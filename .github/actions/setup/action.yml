@@ -45,54 +45,68 @@ runs:
         # ship it, but a self-hosted CI_RUNS_ON runner may not. The helper
         # probes for a package manager rather than assuming apt-get.
         ./scripts/ensure-file.sh
-        # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
-        SHELLCHECK_VERSION=0.11.0
-        curl -fsSL --retry 3 -o /tmp/shellcheck.tar.xz \
-          "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-        tar -xJf /tmp/shellcheck.tar.xz -C /tmp
-        sudo install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
-        # renovate: datasource=github-releases depName=mvdan/sh extractVersion=^v?(?<version>.+)$
-        SHFMT_VERSION=3.13.1
-        # Raw-binary download: fail closed on a checksum mismatch (a version
-        # bump must update the pinned hash). Archive downloads (shellcheck,
-        # actionlint) already fail loudly at extract time on corruption; a
-        # hash-pinned toolchain image is the follow-on refactor.
-        SHFMT_SHA256=fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1
-        curl -fsSL --retry 3 -o /tmp/shfmt \
-          "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
-        echo "${SHFMT_SHA256}  /tmp/shfmt" | sha256sum -c -
-        sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
-        # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v?(?<version>.+)$
-        ACTIONLINT_VERSION=1.7.12
-        curl -fsSL --retry 3 "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
-          | tar -xz -C /tmp actionlint
-        sudo mv /tmp/actionlint /usr/local/bin/
+        if ! command -v shellcheck >/dev/null 2>&1; then
+          # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
+          SHELLCHECK_VERSION=0.11.0
+          curl -fsSL --retry 3 -o /tmp/shellcheck.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+        fi
+        if ! command -v shfmt >/dev/null 2>&1; then
+          # renovate: datasource=github-releases depName=mvdan/sh extractVersion=^v?(?<version>.+)$
+          SHFMT_VERSION=3.13.1
+          # Raw-binary download: fail closed on a checksum mismatch (a version
+          # bump must update the pinned hash). Archive downloads (shellcheck,
+          # actionlint) already fail loudly at extract time on corruption; a
+          # hash-pinned toolchain image is the follow-on refactor.
+          SHFMT_SHA256=fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1
+          curl -fsSL --retry 3 -o /tmp/shfmt \
+            "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
+          echo "${SHFMT_SHA256}  /tmp/shfmt" | sha256sum -c -
+          sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
+        fi
+        if ! command -v actionlint >/dev/null 2>&1; then
+          # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v?(?<version>.+)$
+          ACTIONLINT_VERSION=1.7.12
+          curl -fsSL --retry 3 "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /tmp actionlint
+          sudo mv /tmp/actionlint /usr/local/bin/
+        fi
         # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
         YQ_VERSION=4.53.6
-        # Raw-binary download: fail closed on a checksum mismatch (a version
-        # bump must update the pinned hash).
-        YQ_SHA256=c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385
-        curl -fsSL --retry 3 -o /tmp/yq \
-          "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
-        echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
-        sudo install -m 0755 /tmp/yq /usr/local/bin/yq
-        # renovate: datasource=pypi depName=yamllint
-        YAMLLINT_VERSION=1.38.0
-        python3 -m pip install "yamllint==${YAMLLINT_VERSION}"
+        if ! yq --version 2>/dev/null | grep -q "version v${YQ_VERSION}"; then
+          # Raw-binary download: fail closed on a checksum mismatch (a version
+          # bump must update the pinned hash).
+          YQ_SHA256=c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385
+          curl -fsSL --retry 3 -o /tmp/yq \
+            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+        fi
+        if ! command -v yamllint >/dev/null 2>&1; then
+          # renovate: datasource=pypi depName=yamllint
+          YAMLLINT_VERSION=1.38.0
+          python3 -m pip install "yamllint==${YAMLLINT_VERSION}"
+        fi
     - name: Install gitleaks
       if: inputs.gitleaks == 'true'
       shell: bash
       run: |
-        # renovate: datasource=github-releases depName=gitleaks/gitleaks extractVersion=^v?(?<version>.+)$
-        GITLEAKS_VERSION=8.30.1
-        curl -fsSL --retry 3 -o /tmp/gitleaks.tgz \
-          "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-        tar -xzf /tmp/gitleaks.tgz -C /tmp
-        sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+        if ! command -v gitleaks >/dev/null 2>&1; then
+          # renovate: datasource=github-releases depName=gitleaks/gitleaks extractVersion=^v?(?<version>.+)$
+          GITLEAKS_VERSION=8.30.1
+          curl -fsSL --retry 3 -o /tmp/gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tgz -C /tmp
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+        fi
     - name: Install Snyk CLI
       if: inputs.snyk == 'true'
       shell: bash
       run: |
-        # renovate: datasource=npm depName=snyk
-        SNYK_VERSION=1.1307.0
-        npm install --global "snyk@${SNYK_VERSION}"
+        if ! command -v snyk >/dev/null 2>&1; then
+          # renovate: datasource=npm depName=snyk
+          SNYK_VERSION=1.1307.0
+          npm install --global "snyk@${SNYK_VERSION}"
+        fi

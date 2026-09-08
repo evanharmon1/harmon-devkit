@@ -272,6 +272,18 @@ make_stub() {
             ;;
         esac
         echo 'fi'
+        echo 'if [ "$1" = "repo" ] && [ "$2" = "view" ] && [ -n "${GH_REPO_JSON:-}" ]; then'
+        echo '    printf "%s\n" "$GH_REPO_JSON"'
+        echo '    exit 0'
+        echo 'fi'
+        echo 'if [ "$1" = "variable" ] && [ "$2" = "list" ] && [ -n "${GH_VARIABLES_JSON:-}" ]; then'
+        echo '    printf "%s\n" "$GH_VARIABLES_JSON"'
+        echo '    exit 0'
+        echo 'fi'
+        echo 'if [ "$1" = "variable" ] && [ "$2" = "get" ] && [ -n "${GH_CI_RUNS_ON_JSON:-}" ]; then'
+        echo '    printf "%s\n" "$GH_CI_RUNS_ON_JSON"'
+        echo '    exit 0'
+        echo 'fi'
         echo 'case "$*" in'
         echo '*"pr list"* | *"run list"*) echo "[]" ;;'
         echo '*) echo "stub: unexpected gh call: $*" >&2; exit 1 ;;'
@@ -472,6 +484,43 @@ run_setup_isolated() {
 summary_field() {
     printf '%s\n' "$1" | sed -n -E "s#.*Summary:.*[^0-9]([0-9]+) $2.*#\1#p" | head -1
 }
+
+echo "==> public setup status audits the exact CI_RUNS_ON safety value"
+make_codex_stub in
+public_repo='{"nameWithOwner":"owner/public","visibility":"PUBLIC","isPrivate":false,"defaultBranchRef":{"name":"main"}}'
+out="$(GH_REPO_JSON="$public_repo" \
+    GH_VARIABLES_JSON='[{"name":"CI_RUNS_ON"}]' \
+    GH_CI_RUNS_ON_JSON='{"name":"CI_RUNS_ON","value":"\"ubuntu-latest\""}' \
+    run_setup_section project)"
+case "$out" in
+*"[x] Actions runner routing - public CI_RUNS_ON is ubuntu-latest"*) ;;
+*) fail "expected a safe public runner-routing status, got: ${out}" ;;
+esac
+
+out="$(GH_REPO_JSON="$public_repo" \
+    GH_VARIABLES_JSON='[{"name":"CI_RUNS_ON"}]' \
+    GH_CI_RUNS_ON_JSON='{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"linux\"]"}' \
+    run_setup_section project)"
+case "$out" in
+*"[ ] Actions runner routing"*"run task setup:github"*) ;;
+*) fail "expected an unsafe public runner-routing status, got: ${out}" ;;
+esac
+
+out="$(GH_REPO_JSON="$public_repo" run_setup_section project)"
+case "$out" in
+*"[?] Actions runner routing - could not determine whether public CI_RUNS_ON exists"*) ;;
+*) fail "failed public variable probes were reported as missing: ${out}" ;;
+esac
+
+internal_repo='{"nameWithOwner":"owner/internal","visibility":"INTERNAL","isPrivate":false,"defaultBranchRef":{"name":"main"}}'
+out="$(GH_REPO_JSON="$internal_repo" \
+    GH_VARIABLES_JSON='[{"name":"CI_RUNS_ON"}]' \
+    GH_CI_RUNS_ON_JSON='{"name":"CI_RUNS_ON","value":"[\"self-hosted\",\"linux\"]"}' \
+    run_setup_section project)"
+case "$out" in
+*"Actions runner routing"*) fail "internal repository routing was audited as public: ${out}" ;;
+*) ;;
+esac
 
 echo "==> a token with 'project' reports the board as writable"
 out="$(run_gh_section project)"

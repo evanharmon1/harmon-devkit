@@ -218,6 +218,70 @@ fi
 [ "$(cat "$home/.config/opencode/opencode.json")" = 'must-survive' ] ||
     fail "OpenCode migration changed the source after a failed copy"
 
+# ---- 6a. Agent-dir Coder migration loop: preserve, link, fail closed ----
+# This loop is not its own script like persist-opencode.sh, so it cannot be
+# invoked directly. Extract it VERBATIM from post-create-common.sh instead of
+# reimplementing it — a copy could drift from the real code and stop meaning
+# anything — and substitute only its hardcoded /home/vscode/.persistent
+# destination for a throwaway test path; the extracted control flow itself is
+# untouched.
+post_create=".devcontainer/scripts/post-create-common.sh"
+loop_snippet="$(sed -n '/for dir in \.claude \.codex \.gemini \.copilot \.pi \.omp \.agent-deck \.shell-history; do/,/^    done$/p' "$post_create")"
+[ -n "$loop_snippet" ] ||
+    fail "could not extract the agent-dir Coder migration loop from $post_create"
+
+write_loop_script() {
+    # write_loop_script <script-path> <persistent-root>
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -euo pipefail'
+        printf '%s\n' "$loop_snippet" | sed "s#/home/vscode/\\.persistent#${2}#g"
+    } >"$1"
+}
+
+echo "==> a successful agent-dir Coder migration links and is idempotent"
+home="${tmp_root}/home-coder-ok"
+persistent="${tmp_root}/persistent-coder-ok"
+mkdir -p "$home/.claude" "$persistent"
+printf '%s' 'account-state' >"$home/.claude/state.json"
+loop_script="${tmp_root}/coder-loop-ok.sh"
+write_loop_script "$loop_script" "$persistent"
+HOME="$home" bash "$loop_script"
+HOME="$home" bash "$loop_script" # idempotent re-run
+[ -L "$home/.claude" ] || fail "a successful Coder migration did not leave a symlink"
+[ "$(readlink "$home/.claude")" = "$persistent/.claude" ] ||
+    fail "the symlink does not point at the persistent copy"
+[ "$(cat "$persistent/.claude/state.json")" = 'account-state' ] ||
+    fail "the successful migration lost the source state"
+
+echo "==> a failed agent-dir Coder migration leaves the source untouched and warns"
+home="${tmp_root}/home-coder-fail"
+persistent="${tmp_root}/persistent-coder-fail"
+mkdir -p "$home/.claude" "$persistent"
+printf '%s' 'must-survive' >"$home/.claude/state.json"
+loop_script="${tmp_root}/coder-loop-fail.sh"
+write_loop_script "$loop_script" "$persistent"
+fail_bin="${tmp_root}/coder-fail-bin"
+mkdir -p "$fail_bin"
+for cmd in mkdir ln rm; do
+    ln -sf "$(command -v "$cmd")" "$fail_bin/$cmd"
+done
+cat >"$fail_bin/cp" <<'SH'
+#!/bin/sh
+exit 1
+SH
+chmod +x "$fail_bin/cp"
+warn_output="$(HOME="$home" PATH="$fail_bin" "$(command -v bash)" "$loop_script" 2>&1 >/dev/null)" ||
+    fail "the migration loop exited nonzero on a failed copy — it must warn and continue, not abort"
+[ -f "$home/.claude/state.json" ] ||
+    fail "a failed Coder migration deleted the source directory"
+[ "$(cat "$home/.claude/state.json")" = 'must-survive' ] ||
+    fail "a failed Coder migration altered the source directory"
+[ ! -L "$home/.claude" ] ||
+    fail "a failed Coder migration still replaced the source with a symlink"
+grep -q '\.claude' <<<"$warn_output" ||
+    fail "the failure warning does not name the directory that failed to migrate"
+
 # ---- 7. post-create ordering: Coder persistence before helper before seed ----
 # On Coder, persistence is wired by SYMLINK inside post-create itself, not by a
 # mount that predates it. If the helper or the onboarding seed runs before the

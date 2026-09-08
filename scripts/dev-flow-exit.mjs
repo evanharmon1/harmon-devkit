@@ -31,7 +31,7 @@
 // issue #747). It is a diagnostic: no outcome, exit code, or cap depends on
 // it, and it needs no policy knob.
 
-import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
@@ -2241,7 +2241,15 @@ async function main() {
   return EXIT_CODES[verdict.outcome];
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const isMain =
+  process.argv[1] &&
+  (() => {
+    try {
+      return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+    } catch {
+      return fileURLToPath(import.meta.url) === process.argv[1];
+    }
+  })();
 if (isMain) {
   main().then((code) => {
     process.exitCode = code;
