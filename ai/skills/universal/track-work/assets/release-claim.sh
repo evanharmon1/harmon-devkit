@@ -250,13 +250,14 @@ if [ "$require_closed" -eq 1 ] && [ "$issue_state" != "closed" ]; then
     exit 3
 fi
 # Trusted CLAIM authors: the repo owner plus every CURRENT assignee — and in
-# either case only with write-shaped author_association (OWNER, MEMBER, or
-# COLLABORATOR, checked per comment in fetch_claim): a maintainer can assign
-# an outside commenter without granting write access, and assignment alone
-# must not let that commenter steer a write-capable token. RELEASE comments
-# additionally trust github-actions[bot] — this script's own supersede
-# comments are authored by it under a workflow's GITHUB_TOKEN, and a re-run
-# that could not see them would release the same claim twice.
+# either case with write-shaped author_association (OWNER, MEMBER, or
+# COLLABORATOR, checked per comment in fetch_claim) OR a proven timeline
+# assignment (#477: only a write-capable actor can assign an issue in the
+# first place, so the `assigned` event is itself the write-access proof
+# author_association fails to surface for a private org member). RELEASE
+# comments additionally trust github-actions[bot] — this script's own
+# supersede comments are authored by it under a workflow's GITHUB_TOKEN, and
+# a re-run that could not see them would release the same claim twice.
 trusted_json="$(jq --arg owner "$owner" \
     '[$owner] + [.assignees[].login] | map(ascii_downcase) | unique' \
     <<<"$issue_json")"
