@@ -163,9 +163,18 @@ jobs:
           permission-contents: read
           permission-issues: write
           permission-pull-requests: write
+      # Exception to the repo-wide `persist-credentials: false` hardening:
+      # claude-code-action's tag mode `git fetch`es the PR head branch BEFORE it
+      # configures its own git auth (setupBranch runs ahead of configureGitAuth —
+      # anthropics/claude-code-action#1236), so on a private repo a
+      # credential-less checkout fails with "could not read Username" the first
+      # time the workflow is triggered on an open PR. Persist the short-lived,
+      # read-only CI App token minted above instead: the action strips this
+      # header and substitutes its own token right after the fetch, and this job
+      # uploads no artifacts (the leak vector the hardening guards against).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
+          token: ${{ steps.app-token.outputs.token }}
       - uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
         # Step-level cap. A JOB timeout kills the runner outright and the
         # always() release below never runs; a STEP timeout fails only this

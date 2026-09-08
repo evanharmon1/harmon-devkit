@@ -58,10 +58,13 @@
   "mounts": [
     "source=claude-code-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.claude,type=volume",
     "source=codex-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.codex,type=volume",
-    "source=gemini-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.gemini,type=volume",
+    "source=gemini-config-evanharmon1-harmon-devkit-dev${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX},target=/home/vscode/.gemini,type=volume",
+    "source=copilot-config-evanharmon1-harmon-devkit-dev${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX},target=/home/vscode/.copilot,type=volume",
+    "source=pi-config-evanharmon1-harmon-devkit-dev${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX},target=/home/vscode/.pi,type=volume",
+    "source=omp-config-evanharmon1-harmon-devkit-dev${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX},target=/home/vscode/.omp,type=volume",
     "source=agent-deck-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.agent-deck,type=volume",
     "source=herdr-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.config/herdr,type=volume",
-    "source=opencode-config-evanharmon1-harmon-devkit-dev,target=/home/vscode/.config/opencode,type=volume",
+    "source=opencode-config-evanharmon1-harmon-devkit-dev${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX},target=/home/vscode/.config/opencode,type=volume",
     "source=opencode-data-evanharmon1-harmon-devkit-dev,target=/home/vscode/.local/share/opencode,type=volume",
     "source=shell-history-evanharmon1-harmon-devkit-dev,target=/home/vscode/.shell-history,type=volume",
     "source=zoxide-data-evanharmon1-harmon-devkit-dev,target=/home/vscode/.local/share/zoxide,type=volume"
@@ -90,6 +93,13 @@
   //
   // GH_TOKEN itself needs no entry — init-env.sh knows that name and evicts it
   // from the env-file.
+  //
+  // HARMON_BOT_AUTONOMY_ANTIGRAVITY: same rendered marker as the bot
+  // profile, from the same use_antigravity_cli answer — ensure-
+  // antigravity-cli.sh (which this profile also runs) reads it too, to
+  // decide whether to download/reconcile the plain agy -> agy-real symlink.
+  // This profile never installs the flag-injecting wrapper regardless of the
+  // marker's value; only bot-autonomy/antigravity.sh (bot-only) does that.
   "containerEnv": {
     "CODER": "${localEnv:CODER}",
     "DEVCONTAINER_TAILSCALE": "true",
@@ -99,7 +109,8 @@
     "GH_BROWSER": "/usr/local/share/devcontainer-config/gh-browser.sh",
     "GITHUB_TOKEN": "",
     "GH_ENTERPRISE_TOKEN": "",
-    "GITHUB_ENTERPRISE_TOKEN": ""
+    "GITHUB_ENTERPRISE_TOKEN": "",
+    "HARMON_BOT_AUTONOMY_ANTIGRAVITY": "enabled"
   },
   "postCreateCommand": "bash .devcontainer/dev/post-create.sh",
   "postStartCommand": "bash .devcontainer/dev/post-start.sh",

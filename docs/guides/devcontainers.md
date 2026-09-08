@@ -6,7 +6,7 @@ which secrets and capabilities they allow.
 
 | Profile | Path | For | GitHub auth | Tailscale |
 |---|---|---|---|---|
-| **Bot** | `.devcontainer/devcontainer.json` | AI agents (Claude Code, Codex, Gemini, OpenCode) | the bot's PAT via `GH_TOKEN` | no |
+| **Bot** | `.devcontainer/devcontainer.json` | AI agents (Claude Code, Codex, OpenCode, Antigravity, Copilot CLI, pi, oh-my-pi) | the bot's PAT via `GH_TOKEN` | no |
 | **Dev** | `.devcontainer/dev/devcontainer.json` | humans | the operator's own `gh auth login` | yes (`TS_AUTHKEY`, `--device=/dev/net/tun`) |
 
 Each profile authenticates as the identity it commits as, and the omissions are
@@ -14,14 +14,6 @@ what make that true: the bot profile leaves `TS_AUTHKEY` off its allow-list so a
 tailnet key never reaches an agent container, and the dev profile leaves
 `GH_TOKEN` off so a bot credential never reaches a human one.
 
-**Claude permission mode differs by profile.** The **bot** defaults to
-`bypassPermissions` (Claude runs tools without per-action prompts — the container
-is the isolation boundary); the **dev** profile keeps the normal prompt-on-action
-default so a human stays in the loop. The shared managed settings
-(`config/claude-settings.json`) deliberately omit `defaultMode`; the bot opts in
-at create time via `scripts/enable-claude-bypass.sh`. `bypassPermissions` is only
-safe because it is container-scoped — it is never set on the host.
-
 **Codex follows the same split.** Both profiles default to `gpt-5.6-sol` with
 medium reasoning and a 64 KiB project-instruction budget. The **dev** profile
 uses `workspace-write`, `on-request`, and Auto-review: the sandbox defines the
@@ -31,14 +23,87 @@ there is no nested sandbox or interactive prompt inside Docker. Repository
 instructions, hooks, GitHub token scope, mounted volumes, and Docker itself
 remain the bot's boundaries.
 
-**Codex follows the same split.** Both profiles default to `gpt-5.6-sol` with
-medium reasoning and a 64 KiB project-instruction budget. The **dev** profile
-uses `workspace-write`, `on-request`, and Auto-review: the sandbox defines the
-writable boundary, while eligible exits from it are reviewed automatically.
-The **bot** changes the managed config to `danger-full-access` plus `never`, so
-there is no nested sandbox or interactive prompt inside Docker. Repository
-instructions, hooks, GitHub token scope, mounted volumes, and Docker itself
-remain the bot's boundaries.
+## Bot-only agent autonomy: `bot-autonomy.sh`
+
+Every harness installed in the **bot** image runs non-interactively — no
+per-action prompts, no interactive approval — because the container itself is
+the isolation boundary. That policy is applied and re-verified by a single
+entrypoint, `.devcontainer/scripts/bot-autonomy.sh apply|verify`, keyed by
+`agent-registry.json`'s harness slugs, rather than by four independent scripts
+that happened to be called from `post-create.sh` — the shape that let a real
+regression (Codex silently staying at its human-profile sandbox) ship
+unnoticed (harmon-init#1137). Bot `post-create.sh` runs `apply` after the
+shared setup and the Antigravity compatibility installer; bot `post-start.sh`
+runs `verify` again on every start, **before** the shared
+`post-start-common.sh` script's Agent-Deck conductor-start block — a drifted
+policy blocks the conductor from starting rather than letting it run for the
+rest of its lifetime against a bad config. `apply` failing makes
+`postCreateCommand` fail visibly; `verify` failing makes post-start fail; a
+misconfigured bot image also fails the `devcontainer-build.yml` CI job, which
+runs `verify` against the built container.
+
+Every one of `agent-registry.json`'s registered harness slugs resolves to
+exactly one of three buckets, checked by a unit test
+(`task test:bot-autonomy`, part of `task verify` unconditionally — no
+`.devcontainer/**` path filter, since a registry change is the failure mode
+this exists to catch):
+
+- **A module** — `.devcontainer/config/bot-autonomy/<slug>.sh` — for a harness
+  actually installed in the image today: `claude-code`, `codex-cli`,
+  `antigravity`, `opencode`, `copilot-cli`, `pi`, `oh-my-pi`.
+- **An alias** to another slug's module, for a slug that launches the same
+  executable under a different provider configuration: the six
+  `claude-code-*` provider-rewired variants (DeepSeek, GLM, Kimi, MiniMax,
+  Qwen, Qwen-local) all alias to `claude-code`.
+- **An `unsupported` entry**, naming a reason and the executable `verify`
+  checks for on `PATH` (or `null` for a slug with no installable binary at
+  all, like the `claude-code-action` GitHub Action). The reason is
+  documentation only — the instant a named executable turns up installed,
+  `verify` fails naming it, exactly like an uncovered slug, regardless of why
+  it was unsupported.
+
+Per-harness boundaries: **Claude Code** sets `permissions.defaultMode` to
+`bypassPermissions` in the managed settings (this also covers every
+`claude-code-*` alias). **Codex** installs a complete, checksum-verified
+`config/codex-managed-config.bot.toml` over the managed config, kept
+structurally in sync with the shared human/bot baseline
+(`config/codex-managed-config.toml`) by a parity test that fails if the two
+files diverge on any key other than `sandbox_mode`/`approval_policy`.
+**OpenCode** forces `permission.* = "allow"` in
+`~/.config/opencode/opencode.json` on every `apply`, verified against
+OpenCode's own *resolved* config (`opencode debug config`, run from the
+workspace) rather than the global file alone, since a workspace-level
+`opencode.json` can override the global default. **Antigravity** and **Copilot CLI**
+are described below — they are the two harnesses whose autonomy is
+Copier-gated, and their modules are still always present; only their policy
+is conditional. **Copilot CLI** is
+Copier-gated like Antigravity and described below. **pi** is the one module
+whose `apply` deliberately writes *nothing*: pi's only prompt-avoidance knob
+is project trust, and pi's own docs state that its non-interactive modes
+(`-p`, `--mode json`, `--mode rpc`) never show a trust prompt at all — so the
+bot already reaches the no-prompt state with pi exactly as it ships. What
+trust would additionally buy is loading a repository's own `.pi/` resources,
+which per pi's docs also means installing project packages and *executing
+project extensions*; pi keys those decisions by canonical directory path with
+no content or commit authentication, so both a global `defaultProjectTrust:
+"always"` and a workspace-scoped `~/.pi/agent/trust.json` entry were reviewed
+and rejected as unsafe defaults (the first trusts every repository this
+installation is ever pointed at; the second survives an untrusted branch
+checked out into the same path and extends to anything nested underneath it).
+The bot therefore matches the dev profile exactly, accepting that headless pi
+sessions silently skip project `.pi/` resources — and `verify` still fails
+closed on *either* surface, whatever wrote it, including a trusted decision
+that does not apply to the current workspace (the `~/.pi` volume outlives the
+check, so an inapplicable decision becomes applicable the moment pi is pointed
+at a matching path). **oh-my-pi** sets `tools.approvalMode: yolo` in
+`~/.omp/agent/config.yml`, written explicitly rather than left to oh-my-pi's
+own schema default, and verified against its *resolved* value (`omp config
+get tools.approvalMode --json`, run from the workspace) because a
+project-level `<cwd>/.omp/config.yml` overrides the global file the same way
+OpenCode's workspace config does. Antigravity's,
+OpenCode's and oh-my-pi's settings live on named volumes that outlive a container rebuild,
+so each records the pre-`apply` value and offers a `restore` mode, the same
+reversibility pattern.
 
 **Antigravity autonomy is enabled.** Two profiles, two policies:
 
@@ -47,10 +112,17 @@ remain the bot's boundaries.
   terminal sandbox, configures the devcontainer status line renderer, and trusts
   the current container workspace — the container is the isolation boundary.
   Interactive `agy` honors that policy directly; **headless `agy -p …` ignores
-  settings allow-rules and auto-denies**, so a bot-only shell wrapper
-  (`config/agy-autonomy.sh`, active when `FOREMAN_DEVCONTAINER=bot`) injects
-  `--dangerously-skip-permissions` for agent runs. A programmatic launcher that
-  never sources a login shell must pass that flag itself.
+  settings allow-rules and auto-denies**, so bot `apply` installs a real
+  executable at `~/.local/bin/agy` (`bot-autonomy/antigravity.sh`, replacing an
+  earlier shell-function wrapper that only covered a login shell) that injects
+  `--dangerously-skip-permissions` for agent runs. The `Dockerfile`'s
+  `ENV PATH` puts `~/.local/bin` ahead of the system binary container-wide,
+  so the wrapper's precedence holds for a `docker exec` or any other
+  programmatic launcher too — not only interactive shells (a
+  `devcontainer.json` `containerEnv.PATH` self-reference cannot work here:
+  Docker passes `${containerEnv:PATH}` through unresolved when creating the
+  container). A launcher that resolves `agy` some other way must still pass
+  that flag itself.
 - **Dev (human) profile — balanced.** It auto-accepts edits/artifacts and an
   allowlist of common commands (`task`, `git`, `gh`, linters, test runners, …)
   so routine work is prompt-free, but still asks before anything unlisted and
@@ -62,10 +134,41 @@ API-key environment variable, so even a disposable container needs that one
 human login; the pinned CLI falls back to file-backed credentials when the
 headless container has no D-Bus keyring, and the `~/.gemini` named volume
 persists the login across rebuilds. A checksum-verified compatibility installer
-covers the interval before the shared-image pin advances, then becomes a
-network-free no-op. The settings helper backs up the six policy keys it owns and
-tracks its workspace-trust entry, so turning the Copier option off restores them
-while preserving unrelated settings.
+(`config/ensure-antigravity-cli.sh`) covers the interval before the shared-image
+pin advances: `agy` is repointed to `~/.local/bin/agy-real` as a plain
+symlink whenever an executable local copy exists — already at the
+pinned version, or replaced from a matching system binary when it
+wasn't. Once the image ships the pinned version directly, with no local
+copy needed, it becomes a network-free no-op, leaving both files absent
+on a fresh volume so `agy` resolves straight to the system binary; if
+something already occupies `agy` at that exact point instead, it is left
+exactly as found unless it would break a later replacement — a dangling
+symlink (its target already gone) or a symlink to an existing directory
+(which the bot's later wrapper install — an unguarded `mv -f` — cannot
+cleanly replace, landing inside the directory instead) — either of which
+this installer removes instead, in both profiles. Either way, the
+bot's `apply` still installs its flag-injecting wrapper
+over whatever this installer
+leaves. It is gated on the rendered
+`containerEnv.HARMON_BOT_AUTONOMY_ANTIGRAVITY` marker — turning the Copier
+answer off leaves both files absent rather than downloading anything. The
+settings helper backs up the six policy keys it owns and tracks its
+workspace-trust entry, so turning the Copier option off restores them while
+preserving unrelated settings.
+
+**Copilot CLI autonomy is off by default.** The CLI is available in the shared
+image, but this template neither authenticates it nor weakens its permission
+policy unless `use_copilot_cli` is explicitly enabled — its bot-autonomy
+module still exists (a prompt-enabled Copilot CLI is the verified-correct
+state at this answer, not an uncovered gap), it just installs no wrapper.
+`COPILOT_ALLOW_ALL` is still rendered into the bot `containerEnv`, as the
+explicit literal `"false"`: the bot profile also loads `devcontainer.env` via
+`--env-file` and `init-env.sh` does not manage that variable, so an omitted
+key — rather than an explicit one — would let a stale out-of-band
+`COPILOT_ALLOW_ALL=true` in that file survive undisturbed. The dev profile
+receives neither that variable nor the marker in either state. If an earlier
+template update enabled the option, post-create removes the wrapper it
+installed.
 
 ## Run it locally
 
@@ -93,12 +196,13 @@ status line:
 
 Two rows for hooks, because they are not installed the same way. A **mandatory**
 hook is listed in the image installer's `required_files`, so every image is
-guaranteed to place it under `/etc/claude-code/hooks/`. An **optional** hook —
-currently `session-end-archive.sh` — is installed only when the repository
-ships it, so a settings entry naming the `/etc` copy would break the moment the
-image pin were rolled back past the release that added it. Those are registered
-at their **staged** path instead, where the repository's own
-`COPY .devcontainer/config/` puts them regardless of which image is pinned.
+guaranteed to place it under `/etc/claude-code/hooks/`. **Optional** hooks —
+currently `session-end-archive.sh` — are installed
+only when the repository ships them, so a settings entry naming the `/etc` copy
+would break the moment the image pin were rolled back past the release that
+added one. Those are registered at their **staged** path instead, where the
+repository's own `COPY .devcontainer/config/` puts them regardless of which
+image is pinned.
 
 The practical consequence when troubleshooting: for an optional hook, the copy
 under `/etc/claude-code/hooks/` is **not** the one that runs. Inspect or replace
@@ -137,12 +241,23 @@ honored, and `STATUSLINE_CTX_WIDTH`, `STATUSLINE_RL_WIDTH`, `STATUSLINE_RL_PCT`
 (exact limit percentages) and `STATUSLINE_HYPERLINK` (the OSC-8 link behind the
 PR number) tune the rest.
 
-It is built to be cheap, because it re-renders constantly: two forks per render
-(`jq` and `date`), no `git` subprocess — the branch is read from `.git/HEAD`
-directly, worktrees included — and nothing written to disk.
+It is built to be cheap: ordinary renders use `jq` and `date`, no `git`
+subprocess — the branch is read from `.git/HEAD` directly, worktrees included.
+
+Claude Code's `pr.*` fields are absent until it discovers the open PR. The
+optional **STATUSLINE PR LOOKUP** Copier answer (off by default) lets the
+renderer fill that gap with a read-only `gh pr view` lookup when it was enabled
+at scaffold time. Results are cached by git directory and branch: positive
+results live for 30 seconds and negative/failure results for 10.
+On a cache miss or expiry, the current render can wait for one read-only,
+`GH_PROMPT_DISABLED=1` lookup, hard-capped at one second; ordinary cached renders
+stay local. Payload PR data always wins. Missing `gh`/`timeout`, failed GitHub
+discovery, or absent repository access simply leave the segment empty; the
+lookup cannot manufacture PR data.
+Set `STATUSLINE_PR_LOOKUP_ENABLED=0` to disable an enabled fallback at runtime.
 
 To use your own instead, point `statusLine.command` in `~/.claude/settings.json`
-at it — the seed merge will not overwrite it.
+at it — the seed merge will not overwrite it or add `refreshInterval`.
 
 ### Fable 5 is unselectable in `/model`
 
@@ -315,6 +430,12 @@ profile-specific named volumes; Coder maps the same paths into
 provider logins, and sessions. The image disables OpenCode's self-updater so the
 pinned, tested version remains stable until the shared image is rebuilt.
 
+The **bot** profile forces `permission.* = "allow"` in `opencode.json`
+(`bot-autonomy/opencode.sh`, part of the [bot-only agent
+autonomy](#bot-only-agent-autonomy-bot-autonomysh) bootstrap above) so OpenCode
+never prompts; the **dev** profile leaves OpenCode at its own out-of-the-box
+defaults.
+
 ## Persistent agent sessions (Herdr)
 
 **Herdr** is the agent-session runtime in both profiles: it owns the panes your
@@ -328,27 +449,25 @@ The server **auto-starts on the first `herdr` invocation**. There is no `herdr
 server start` subcommand to run first; to check whether a server is already
 live, run `herdr status`.
 
-To attach from another machine, SSH in and run `herdr` — with the caveat that
-the SSH endpoint must execute **inside the devcontainer**, where this image
-installed Herdr and configured its socket. An SSH server that terminates on the
-Docker host attaches you to a host-side Herdr (or nothing at all). On Coder the
-agent runs inside the workspace container, so `coder ssh <workspace>` lands in
-the right place:
+To attach from a laptop, either SSH in and run it there:
 
 ```bash
-ssh <container-ssh-host>
+coder ssh <workspace>.devcontainer
 herdr
 ```
 
-or let Herdr do the SSH itself — it wraps `ssh`, so it uses whatever host alias
-your SSH config defines (on Coder, `coder config-ssh` writes the
-`coder.<workspace>` aliases). This form runs a local Herdr thin client, so
-install Herdr on the machine you attach from first (`brew install herdr` on
-macOS, or the installer at [herdr.dev](https://herdr.dev/)):
+or let Herdr do the SSH itself — this form runs a **local** Herdr thin client,
+so install Herdr on the laptop first (`brew install herdr`, or the installer
+at [herdr.dev](https://herdr.dev/)):
 
 ```bash
-herdr --remote <container-ssh-host>
+herdr --remote coder.<workspace>.devcontainer
 ```
+
+`coder config-ssh` is what writes the `Host coder.*` ProxyCommand aliases into
+your SSH config, so run it once before the `--remote` form. Both forms target
+the Coder `devcontainer` agent; the topology, transport, security rationale,
+and rebuild caveats are in [Bot-profile access from Coder](#bot-profile-access-from-coder).
 
 `~/.config/herdr` is a **named volume** (`herdr-config-…`, one per profile; on
 Coder it is symlinked into the `~/.persistent` volume instead), so Herdr's own
@@ -357,11 +476,13 @@ tabs, panes, cwds, layout — as fresh shells. Whether an agent *conversation*
 resumes inside its restored pane is a separate mechanism:
 `resume_agents_on_restore` only works for agents whose Herdr integration has
 recorded a native session reference. post-create installs the Claude Code,
-Codex, and OpenCode integrations automatically (`herdr integration install`,
-idempotent) — Gemini has no resume integration in v0.8. The
-conversations themselves persist regardless, in the `~/.claude`, `~/.codex`,
-`~/.gemini`, and `~/.local/share/opencode` volumes, so a pane that restores as a
-plain shell can still resume its agent by hand (e.g. `claude --resume`).
+Codex, OpenCode, Copilot CLI, pi, and oh-my-pi integrations automatically
+(`herdr integration install`, idempotent). The conversations themselves
+persist regardless, in the `~/.claude`, `~/.codex`, `~/.local/share/opencode`,
+`~/.copilot`, `~/.pi`, and `~/.omp` volumes (`~/.gemini` holds Antigravity's
+own OAuth/session state, not a CLI conversation, so it's not one of these),
+so a pane that restores as a plain shell can still resume its agent by hand
+(e.g. `claude --resume`).
 
 The default session's server socket deliberately does **not** live in that
 volume. The image sets `HERDR_SOCKET_PATH=/tmp/herdr.sock` container-wide, so a
@@ -617,6 +738,96 @@ repo** (one template serves every repo). To stand this repo up in Coder:
 > immutable `tag@digest`), so no registry credential is needed for the base —
 > only the repo's own `-devcontainer` cache image matters.
 
+### Bot-profile access from Coder
+
+The Coder `devcontainer` template exposes **two agents per workspace**:
+
+- **`host`** — the outer workspace container, running as `coder`, with Docker
+  and the repo checkout at `~/<repo>`, but no toolchain.
+- **`devcontainer`** — the inner devcontainer, running as `vscode`, with the
+  repo at `/workspaces/<repo>`, all tools, and Herdr.
+
+These two profiles both name their inner Coder agent `devcontainer`; the
+`.devcontainer` suffix selects the inner agent, not the security profile. These
+commands assume the workspace was created from the **Bot** profile
+(`.devcontainer/devcontainer.json`), not the human **Dev** profile
+(`.devcontainer/dev/devcontainer.json`). Verify the selected config before
+allowing a bot to run; if it is the Dev profile, use the human workflow and do
+not treat this target as a bot boundary. `coder ssh <workspace>` fails with
+`multiple agents found, please specify the agent name, available agents:
+[devcontainer host]`. The working forms are:
+
+```bash
+coder ssh <workspace>.devcontainer
+
+# After `coder config-ssh` has written the Host coder.* ProxyCommand alias:
+ssh coder.<workspace>.devcontainer
+
+# Herdr wraps that SSH transport as a local thin client:
+herdr --remote coder.<workspace>.devcontainer
+```
+
+In a Coder-hosted bot workspace, the devcontainer has no `sshd`, no
+`tailscale`/`tailscaled`, and no inbound listener. The Coder remote-access
+process is `/.coder-agent/coder agent`, which holds an **outbound** connection
+to the Coder server. Every SSH session is carried down that tunnel: the local
+`coder ssh --stdio` ProxyCommand authenticates to the Coder control plane with
+the operator's CLI session, and the agent terminates the SSH protocol
+in-process. Other ordinary processes may make outbound network requests, but
+they do not create an inbound SSH or tailnet path. Access is gated by Coder
+login and RBAC and appears in Coder's audit log. Coder's transport embeds its
+own WireGuard/DERP mesh internally; that is inside the `coder` binaries and is
+unrelated to the operator's Tailscale tailnet.
+
+This is the deliberate access model for an AI-agent container because the bot
+is the **untrusted** party: Claude runs `bypassPermissions`, Codex runs
+`danger-full-access`, and the container holds the bot PAT plus whatever the
+env-file carries. Adding Tailscale would not "open a port" — Tailscale is also
+outbound-only WireGuard, and Tailscale SSH is deny-by-default until an ACL
+grants it. The risk is the other direction: the container would gain a tailnet
+identity and outbound reach to every node that ACL allows, a second credential
+class (`TS_AUTHKEY`) would live beside the agent, and a second access path
+would exist outside Coder's RBAC and audit trail. That is why the bot profile
+strips `TS_AUTHKEY` and omits the Tailscale feature. The tailnet is reserved for
+the **dev/operator** profile: humans using their own identity, including the
+case that needs Coder-independent access such as a phone SSH client that
+cannot run the `coder` CLI.
+
+The trade-off is explicit: the Coder control plane is the **single trust
+root**. It is an internet-exposed web app, and a compromised Coder session or
+server yields a shell in every workspace. Put the controls there: SSO/MFA on
+the Coder account, short session lifetimes, and timely patching of the Coder
+server and agents.
+
+#### Herdr over Coder
+
+`herdr --remote` needs only working OpenSSH, so it works against the bot
+container exactly as it does against a dev container — the ProxyCommand is the
+transport; no Tailscale is needed. Herdr stays a thin client on the laptop,
+providing local keybindings and clipboard/image-paste bridging, while the
+server and agents run in the container. Detach with `ctrl+b q` and reattach
+with the same `herdr --remote coder.<workspace>.devcontainer` command.
+
+`herdr --remote` prefers a remote binary matching the local client version.
+The image pins `HERDR_VERSION` (0.8.2 today), while a laptop may already have
+a newer patch release installed. On a mismatch, an interactive run prompts to
+install a matching binary into `~/.local/bin` on the remote. That directory is
+first on the container `PATH` but is **not** a persisted volume, so the prompt
+recurs after every container rebuild until the image's `HERDR_VERSION` catches
+up; Renovate tracks that pin.
+
+#### Rebuild before attaching to a changed image
+
+A Coder workspace **restart** reuses the cached `vsc-<repo>-<hash>` devcontainer
+image. A repo bump to `.devcontainer/Dockerfile`'s base therefore does not
+reach a running workspace until the devcontainer is explicitly **rebuilt**.
+The symptom is `herdr` missing and `HERDR_SOCKET_PATH` unset inside the
+container, even though the pinned base image ships both. Do not work around it
+by letting `--remote` install into `~/.local/bin` on a pre-Herdr image: with
+`HERDR_SOCKET_PATH` unset, the socket lands in the volume-persisted
+`~/.config/herdr`, which is exactly the stale-socket hazard described above.
+Rebuild first, then attach.
+
 ## Attach paths and container managers
 
 **Two different managers can attach VS Code to the same dev container**, and
@@ -625,7 +836,7 @@ they are not interchangeable:
 | Manager | How you start it | `REMOTE_CONTAINERS` | `devcontainer.json` `customizations.vscode` |
 |---|---|---|---|
 | **Dev Containers extension** | "Dev Containers: Reopen in Container" | `true` | applied |
-| **Coder devcontainer integration** | the Coder UI **VS Code** button, or the `coder` CLI | unset | **not** applied |
+| **Coder devcontainer integration** | the Coder UI **VS Code** button, or a Coder-direct connection to the `devcontainer` agent | unset | **not** applied |
 
 That second row is the one that surprises people. A Coder-attached window is a
 perfectly good shell in the right container, but nothing in
@@ -633,6 +844,9 @@ perfectly good shell in the right container, but nothing in
 whatever your Coder-side configuration provides. `post-create-common.sh` already
 branches on `REMOTE_CONTAINERS` for the git-credential handling, so the two
 paths differ in mechanism even where they agree on identity.
+
+For a direct bot shell or Herdr session, use the `devcontainer` agent and the
+explicit target forms in [Bot-profile access from Coder](#bot-profile-access-from-coder).
 
 **Standardize on the Dev Containers extension path.** It builds from the current
 checkout and applies `customizations.vscode`, so what you attach to matches what
@@ -650,13 +864,16 @@ and silent when clean, so seeing it at all means rebuild rather than debug.
 
 ### The standard flow, step by step
 
-Coder is still how you reach the workspace **host** — the split above is only
-about which layer makes the *container* hop. The extension path, concretely:
+Coder is still how you reach the workspace **host** — the outer agent described
+in [Bot-profile access from Coder](#bot-profile-access-from-coder). The split
+below is only about which layer makes the *container* hop. The extension path,
+concretely:
 
 1. **Connect to the workspace itself** (Coder UI button or "Coder: Open
    Workspace"). If the picker offers both the workspace and a
-   `devcontainer` sub-agent target, choose the **workspace** — the sub-agent
-   target is exactly the Coder-direct hop the table above warns about.
+   `devcontainer` sub-agent target, choose the **workspace** (the host agent)
+   for this nested extension path — the sub-agent target is the Coder-direct
+   hop described above.
 2. In that host window: **File → Open Folder** → the repo checkout on the
    host.
 3. VS Code detects `.devcontainer/` and offers **"Reopen in Container"** —
@@ -766,11 +983,11 @@ Recognizing a recreation after the fact:
   trade;
 - anything under `~/` that is not on a named volume reverted to image defaults.
 
-Nothing here is data loss by design: agent state, shell history, and zoxide data
-all sit on named volumes precisely so a recreation is survivable, and
-`~/.claude.json` is symlinked onto one for the same reason (below). What is lost
-is container-local scratch — and, in `dev/`, the `gh` login, which is on no
-volume by decision rather than by omission (see
+Nothing here is data loss by design: agent state, shell history, and zoxide
+data all sit on named volumes precisely so a recreation is survivable, and
+`~/.claude.json` is symlinked onto one for the same reason (below). What is
+lost is container-local scratch — and, in `dev/`, the `gh` login, which is on
+no volume by decision rather than by omission (see
 [architecture/security.md](../architecture/security.md)). That makes the login a
 useful **canary**: a re-auth prompt you did not expect is the cheapest signal
 that a recreation happened. The fix for re-authenticating too often is to stop

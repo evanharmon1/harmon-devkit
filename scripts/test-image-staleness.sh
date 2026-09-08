@@ -154,11 +154,12 @@ grep -qF 'settings and hooks.json' <<<"$out" ||
     fail "the ' and '-bearing filename was truncated: ${out}"
 
 # ---- 2c. a broken comparison is indeterminate, never fresh ----
-# A dangling symlink (or any unreadable entry) makes diff exit 2 with only
-# stderr diagnostics. Discarding that used to leave count=0 and report a
-# possibly-stale image as clean — the helper's one forbidden answer. It must
-# say something (indeterminate), and still exit 0 (Codex cloud-review finding
-# on the PR that added this helper; same class as the deferred symlink P2).
+# A dangling symlink (or any unreadable entry) can make diff exit 2 with only
+# stderr diagnostics. BSD diff can instead emit that diagnostic with exit 0.
+# Discarding stderr in either case leaves count=0 and reports a possibly-stale
+# image as clean — the helper's one forbidden answer. It must say something
+# (indeterminate), and still exit 0 (Codex cloud-review finding on the PR that
+# added this helper; same class as the deferred symlink P2).
 
 echo "==> a dangling symlink makes the check speak, not report fresh"
 root="$(fixture dangling)"
@@ -172,6 +173,46 @@ run_helper "$root/baked" "$root/checkout"
 [ -n "$out" ] || fail "a broken comparison was reported as a clean tree"
 grep -qi 'indeterminate' <<<"$out" ||
     fail "a broken comparison did not announce itself as indeterminate: ${out}"
+
+echo "==> BSD diff stderr with exit 0 makes the check speak too"
+root="$(fixture bsd-diff)"
+mkdir "$root/bin"
+cat >"$root/bin/diff" <<'EOF'
+#!/usr/bin/env bash
+echo "diff: simulated BSD dangling-symlink diagnostic" >&2
+exit 0
+EOF
+chmod +x "$root/bin/diff"
+set +e
+out="$(PATH="$root/bin:$PATH" DEVCONTAINER_BAKED_CONFIG_DIR="$root/baked" \
+    DEVCONTAINER_REPO_CONFIG_DIR="$root/checkout" bash "$helper" 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "BSD diff diagnostic exited ${rc}, not 0"
+grep -qi 'indeterminate' <<<"$out" ||
+    fail "BSD diff diagnostic was reported as a clean tree: ${out}"
+
+# ---- 2d. diagnostic setup failure is still warn-only ----
+# The helper runs from set -e lifecycle callers.  It therefore cannot let an
+# unwritable temporary directory turn its informational warning into a failed
+# container startup.
+
+echo "==> a failed diagnostic tempfile remains warn-only"
+root="$(fixture mktemp-failure)"
+mkdir "$root/bin"
+cat >"$root/bin/mktemp" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$root/bin/mktemp"
+set +e
+out="$(PATH="$root/bin:$PATH" DEVCONTAINER_BAKED_CONFIG_DIR="$root/baked" \
+    DEVCONTAINER_REPO_CONFIG_DIR="$root/checkout" bash "$helper" 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "a failed diagnostic tempfile exited ${rc}, not 0"
+grep -qi 'indeterminate' <<<"$out" ||
+    fail "a failed diagnostic tempfile did not announce itself as indeterminate: ${out}"
 
 # ---- 3. no baked directory: absence is not staleness ----
 # True outside the container and in an image built without this convention.

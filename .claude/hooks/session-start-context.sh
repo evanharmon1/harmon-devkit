@@ -44,7 +44,7 @@ owner="${host_owner#* }"
 
 if [ "$host" = "github.com" ]; then
     case "$owner" in
-    "evanharmon1" | "evanharmon1" | "harmonops" | "ponderousdev")
+    "evanharmon1" | "harmonops" | "ponderousdev")
         git_out="$(mktemp)"
         gh_out="$(mktemp)"
         creds_out="$(mktemp)"

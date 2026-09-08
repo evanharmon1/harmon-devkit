@@ -26,15 +26,28 @@ fi
 
 # agy invokes hook commands from a cwd that is not the tool call's, so the
 # relative hook path we were handed (./.claude/hooks/*.sh) would resolve
-# against the wrong tree in a linked worktree. Anchor on the worktree ROOT
-# containing the call's Cwd — not the Cwd itself, which may be a
-# subdirectory where the same relative path is meaningless.
+# against the wrong tree in a linked worktree. Anchor PWD/CLAUDE_PROJECT_DIR
+# on the worktree ROOT containing the call's Cwd — not the Cwd itself, which
+# may be a subdirectory where the same relative path is meaningless.
+#
+# The hook EXECUTABLE itself is resolved separately, against this adapter's
+# own worktree, never the target root: block-no-verify.sh is a safety
+# boundary (docs/conventions.md), and the target root's Cwd names whichever
+# worktree the tool call under supervision claims — a worktree on another
+# branch can ship a neutered copy of that same relative path. Following it
+# for the executable too would let that branch disable its own safety hook.
+self_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+case "$script_path" in
+/*) ;;
+*) script_path="$self_root/$script_path" ;;
+esac
+
 cwd="$(echo "$input" | jq -r '.toolCall.args.Cwd // ""')"
 if [ -n "$cwd" ] && [ "$cwd" != "null" ] && [ -d "$cwd" ]; then
     root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
     # Only follow a root that is a worktree of THIS repository: a Cwd inside
     # some other checkout must not make its .claude/hooks/*.sh the hook we run.
-    self_repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    self_repo="$(git -C "$self_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
     cwd_repo="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
     if [ -n "$root" ] && [ -n "$self_repo" ] && [ "$cwd_repo" = "$self_repo" ]; then
         export CLAUDE_PROJECT_DIR="$root"
@@ -51,7 +64,12 @@ set -e
 stderr_out="$(cat "$stderr_log")"
 
 if [ "$event_type" = "PreToolUse" ]; then
-    if [ $exit_code -ne 0 ]; then
+    claude_decision="$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)"
+    claude_reason="$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || true)"
+    if [ "$claude_decision" = "ask" ]; then
+        jq -n --arg r "$claude_reason" '{decision: "ask", reason: $r}'
+    elif [ $exit_code -ne 0 ] || [ "$claude_decision" = "deny" ]; then
+        [ -n "$claude_reason" ] && stderr_out="$claude_reason"
         jq -n --arg r "$stderr_out" '{decision: "deny", reason: $r}'
     else
         echo '{"decision": "allow"}'

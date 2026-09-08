@@ -54,13 +54,14 @@ assert.equal(doc.convergence.diverging.any.length, 2);
 assert.equal(doc.convergence.diverging.any[1].min, 0.5);
 assert.deepEqual(doc.convergence.diverging.any[1].exclude_classes, ["design"]);
 
-// This repository'"'"'s own live legacy .devflow.toml must still parse
+// This repository'"'"'s own live .devflow.toml must still parse
 // structurally (shape REFUSAL is devflow-policy.mjs'"'"'s job, not the
 // parser'"'"'s — the parser has no opinion on shape).
 import { readFileSync } from "node:fs";
-const legacy = parseToml(readFileSync(".devflow.toml", "utf8"));
-assert.equal(legacy.default_rigor, "standard");
-assert.equal(legacy.rigor.standard.shepherd, 4);
+const live = parseToml(readFileSync(".devflow.toml", "utf8"));
+assert.equal(live.schema_version, 2);
+assert.equal(live.default_rigor, "standard");
+assert.equal(live.rounds.standard.integration, 4);
 
 // array-of-tables and triple-quoted strings are explicitly unsupported —
 // rejected loudly, never silently mis-parsed.
@@ -228,10 +229,10 @@ assert.equal(originals.reason, "no_round_provenance");
 console.log("split-candidate boundary checks OK");
 '
 
-echo "== devflow-policy.mjs never operates under this repo'\''s live legacy .devflow.toml =="
-if node scripts/devflow-policy.mjs resolve --policy .devflow.toml >"${scratch}/dfp-live-$$.out" 2>"${scratch}/dfp-live-$$.err"; then
+echo "== devflow-policy.mjs never operates under a legacy .devflow.toml =="
+if node scripts/devflow-policy.mjs resolve --policy ai/schemas/fixtures/exit/shape-refusal-legacy/policy.toml >"${scratch}/dfp-live-$$.out" 2>"${scratch}/dfp-live-$$.err"; then
     rm -f "${scratch}/dfp-live-$$.out" "${scratch}/dfp-live-$$.err"
-    fail "resolve against the live .devflow.toml unexpectedly succeeded — it must refuse the legacy shape"
+    fail "resolve against the legacy .devflow.toml unexpectedly succeeded — it must refuse the legacy shape"
 fi
 grep -q "legacy" "${scratch}/dfp-live-$$.err" || {
     cat "${scratch}/dfp-live-$$.err" >&2
@@ -239,7 +240,7 @@ grep -q "legacy" "${scratch}/dfp-live-$$.err" || {
     fail "refusal message did not name the legacy shape"
 }
 rm -f "${scratch}/dfp-live-$$.out" "${scratch}/dfp-live-$$.err"
-echo "OK: live .devflow.toml (legacy shape) is refused as the operating policy"
+echo "OK: legacy .devflow.toml is refused as the operating policy"
 
 echo "== --closure refuses a merge base with no reader (never falls back to the branch copy) =="
 empty_closure="$(mktemp -d)"
@@ -343,22 +344,35 @@ grep -q "shape: v2" "${scratch}/dfp-detect-v2-$$.out" || {
 rm -f "${scratch}/dfp-detect-v2-$$.out" "${scratch}/dfp-detect-v2-$$.err"
 echo "OK: task devflow:policy -- detect reports v2 through the Taskfile wrapper"
 
-echo "== task devflow:policy -- detect reports legacy for this repo's own .devflow.toml =="
-if task devflow:policy -- detect --policy .devflow.toml \
+echo "== task devflow:policy -- detect reports v2 for this repo's own .devflow.toml =="
+if ! task devflow:policy -- detect --policy .devflow.toml \
+    >"${scratch}/dfp-detect-v2-$$.out" 2>"${scratch}/dfp-detect-v2-$$.err"; then
+    cat "${scratch}/dfp-detect-v2-$$.out" "${scratch}/dfp-detect-v2-$$.err" >&2
+    rm -f "${scratch}/dfp-detect-v2-$$.out" "${scratch}/dfp-detect-v2-$$.err"
+    fail "task devflow:policy -- detect on this repo's own .devflow.toml unexpectedly failed (exit 0 means v2)"
+fi
+grep -q "shape: v2" "${scratch}/dfp-detect-v2-$$.out" || {
+    cat "${scratch}/dfp-detect-v2-$$.out" >&2
+    rm -f "${scratch}/dfp-detect-v2-$$.out" "${scratch}/dfp-detect-v2-$$.err"
+    fail "detect did not report shape: v2 for this repo's own .devflow.toml"
+}
+rm -f "${scratch}/dfp-detect-v2-$$.out" "${scratch}/dfp-detect-v2-$$.err"
+echo "OK: task devflow:policy -- detect reports v2 for this repo's own .devflow.toml"
+
+echo "== task devflow:policy -- detect reports legacy for a legacy policy =="
+if task devflow:policy -- detect --policy ai/schemas/fixtures/exit/shape-refusal-legacy/policy.toml \
     >"${scratch}/dfp-detect-legacy-$$.out" 2>"${scratch}/dfp-detect-legacy-$$.err"; then
     cat "${scratch}/dfp-detect-legacy-$$.out" "${scratch}/dfp-detect-legacy-$$.err" >&2
     rm -f "${scratch}/dfp-detect-legacy-$$.out" "${scratch}/dfp-detect-legacy-$$.err"
-    fail "task devflow:policy -- detect on this repo's own legacy policy unexpectedly reported v2 (exit 0)"
+    fail "task devflow:policy -- detect on a legacy policy unexpectedly reported v2 (exit 0)"
 fi
 grep -q "shape: legacy" "${scratch}/dfp-detect-legacy-$$.out" || {
     cat "${scratch}/dfp-detect-legacy-$$.out" >&2
     rm -f "${scratch}/dfp-detect-legacy-$$.out" "${scratch}/dfp-detect-legacy-$$.err"
-    fail "detect did not report shape: legacy for this repo's own .devflow.toml"
+    fail "detect did not report shape: legacy for legacy policy"
 }
 rm -f "${scratch}/dfp-detect-legacy-$$.out" "${scratch}/dfp-detect-legacy-$$.err"
 echo "OK: task devflow:policy -- detect reports legacy through the Taskfile wrapper"
-echo "   (detect only classifies shape — it never resolves — so reading the live"
-echo "   .devflow.toml here is the same sanctioned exception as the refusal check above)"
 
 echo "== task devflow:policy -- resolve works through the Taskfile wrapper, not just the bare script =="
 if ! task devflow:policy -- resolve --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \

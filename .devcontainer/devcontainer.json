@@ -1,5 +1,6 @@
 {
-  // Primary profile for AI agents (Claude Code, Codex, Gemini, OpenCode).
+  // Primary profile for AI agents (Claude Code, Codex, OpenCode, Antigravity,
+  // Copilot CLI, pi, oh-my-pi).
   // Secrets (GH_TOKEN) come from the --env-file, not containerEnv.
   // Tailscale is not installed in this profile — see dev/ for the human profile.
   "name": "BOT - devcontainer-harmon-devkit",
@@ -51,10 +52,13 @@
   "mounts": [
     "source=claude-code-config-evanharmon1-harmon-devkit,target=/home/vscode/.claude,type=volume",
     "source=codex-config-evanharmon1-harmon-devkit,target=/home/vscode/.codex,type=volume",
-    "source=gemini-config-evanharmon1-harmon-devkit,target=/home/vscode/.gemini,type=volume",
+    "source=gemini-config-evanharmon1-harmon-devkit${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX},target=/home/vscode/.gemini,type=volume",
+    "source=copilot-config-evanharmon1-harmon-devkit${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX},target=/home/vscode/.copilot,type=volume",
+    "source=pi-config-evanharmon1-harmon-devkit${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX},target=/home/vscode/.pi,type=volume",
+    "source=omp-config-evanharmon1-harmon-devkit${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX},target=/home/vscode/.omp,type=volume",
     "source=agent-deck-config-evanharmon1-harmon-devkit,target=/home/vscode/.agent-deck,type=volume",
     "source=herdr-config-evanharmon1-harmon-devkit,target=/home/vscode/.config/herdr,type=volume",
-    "source=opencode-config-evanharmon1-harmon-devkit,target=/home/vscode/.config/opencode,type=volume",
+    "source=opencode-config-evanharmon1-harmon-devkit${localEnv:HARMON_DEVCONTAINER_SMOKE_VOLUME_SUFFIX},target=/home/vscode/.config/opencode,type=volume",
     "source=opencode-data-evanharmon1-harmon-devkit,target=/home/vscode/.local/share/opencode,type=volume",
     "source=shell-history-evanharmon1-harmon-devkit,target=/home/vscode/.shell-history,type=volume",
     "source=zoxide-data-evanharmon1-harmon-devkit,target=/home/vscode/.local/share/zoxide,type=volume"
@@ -67,10 +71,39 @@
   //
   // FOREMAN_DEVCONTAINER: foreman's D2 startup tripwire — it refuses to run
   // anywhere this marker is not "bot" (only the bot profile sets it).
+  //
+  // HARMON_BOT_AUTONOMY_ANTIGRAVITY: rendered from use_antigravity_cli — the
+  // ONLY channel the verbatim, template-twinned ensure-antigravity-cli.sh
+  // and bot-autonomy/antigravity.sh may read to learn that per-repo Copier
+  // answer. See https://github.com/evanharmon1/harmon-init/blob/main/openspec/changes/archive/2026-09-05-bot-autonomy-bootstrap/design.md - Decisions.
+  //
+  // HARMON_BOT_AUTONOMY_COPILOT / COPILOT_ALLOW_ALL: rendered from
+  // use_copilot_cli — BOT PROFILE ONLY, unlike the Antigravity marker above
+  // which both twins carry. Nothing in the dev profile reads either one, and
+  // COPILOT_ALLOW_ALL is a plain environment variable Copilot CLI honors in
+  // whichever profile sets it: rendering it into dev too would silently hand
+  // a human's own interactive Copilot session full allow-all permissions.
+  // COPILOT_ALLOW_ALL is rendered explicitly in BOTH states ("true"/"false"),
+  // never omitted — the bot profile also loads devcontainer.env via
+  // --env-file, init-env.sh does not manage or evict this variable, and
+  // containerEnv only outranks --env-file for a key it actually specifies.
+  //
+  // PATH (~/.local/bin ahead of /usr/local/bin, so the Antigravity autonomy
+  // wrapper's precedence over the system agy binary holds for a `docker
+  // exec` or a programmatic launcher too, not just interactive shells) is
+  // set in the Dockerfile, not here: containerEnv's ${containerEnv:PATH}
+  // cannot self-expand while Docker is creating the container — it is
+  // passed to `docker run -e` literally, unresolved. A Dockerfile ENV
+  // directive is Docker's own, working self-reference and applies
+  // identically to any docker exec, so it belongs in the image build, not
+  // this runtime layer.
   "containerEnv": {
     "CODER": "${localEnv:CODER}",
     "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
-    "FOREMAN_DEVCONTAINER": "bot"
+    "FOREMAN_DEVCONTAINER": "bot",
+    "HARMON_BOT_AUTONOMY_ANTIGRAVITY": "enabled",
+    "HARMON_BOT_AUTONOMY_COPILOT": "disabled",
+    "COPILOT_ALLOW_ALL": "false"
   },
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "postStartCommand": "bash .devcontainer/post-start.sh",

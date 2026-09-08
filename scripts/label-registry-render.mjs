@@ -16,10 +16,14 @@
 // cannot document one color while provisioning ships another.
 //
 // A family's `gate` names the opt-in it exists behind (foreman /
-// release-please). Both modes honor it: `labels` emits a gated family only
-// under the matching flag, and `docs-table` includes its rows only under the
-// same flag — so a repo without the opt-in neither provisions nor documents
-// the family. `--jinja` renders the docs table for the TEMPLATE twin instead:
+// release-please). Provisioning and documentation honor it: `labels` emits a
+// gated family only under the matching flag, and `docs-table` includes its rows
+// only under the same flag — so a repo without the opt-in neither provisions
+// nor documents the family. `inventory` is intentionally different: it
+// protects every non-retired registered family, including gated tool labels,
+// even when a maintenance caller omits a profile flag. A profile flag controls
+// what this repo provisions, not whether a known label is safe to recognize.
+// `--jinja` renders the docs table for the TEMPLATE twin instead:
 // every family appears, with consecutive gated families wrapped in the copier
 // conditional their gate maps to, so the generated document drops the same
 // rows the flags would.
@@ -29,6 +33,12 @@
 //                       one `name|hex-color|description` record per
 //                       provisioned label (the format setup-github-labels.sh
 //                       consumes).
+//   inventory [--foreman] [--release-please]
+//                       one `exact|name` or `prefix|prefix:` record per
+//                       currently recognized label. Retired values are omitted;
+//                       all other registered, adopted, and tool-owned families
+//                       remain protected; profile flags are not required for
+//                       gated-family protection.
 //   docs-table [--foreman] [--release-please] [--jinja]
 //                       the complete-label-taxonomy markdown table for
 //                       docs/project-management.md (between the
@@ -44,7 +54,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
-const MODES = new Set(['labels', 'docs-table'])
+const MODES = new Set(['labels', 'inventory', 'docs-table'])
 
 const args = process.argv.slice(2)
 const mode = args.shift()
@@ -235,6 +245,64 @@ if (mode === 'labels') {
     }
     seen.add(name)
   }
+}
+
+if (mode === 'inventory') {
+  const exact = new Set()
+  const prefixes = new Set()
+  const exactByPrefix = new Map()
+  const addExact = (name, where) => exact.add(field(name, where))
+  const addPrefix = (prefix, where) => prefixes.add(field(prefix, where))
+
+  // Resolve the agent-registry bases before consuming any open-value family.
+  // Manifest order is documentation order, not an authorization boundary: an
+  // open family must never fall back to a broad `suggest:`/`claim:` prefix just
+  // because its agent-registry family appears later in the file.
+  for (const family of manifest.families ?? []) {
+    if (family.retired === true || family.source !== 'agent-registry' || family.prefix === null)
+      continue
+    const found = exactByPrefix.get(family.prefix) ?? []
+    found.push(...registryFamilyRecords(family).map((line) => line.split('|')[0]))
+    exactByPrefix.set(family.prefix, found)
+  }
+
+  // The inventory is intentionally broader than `labels`: provisioned labels,
+  // adopted labels, and labels created by tools are all recognized. Do not
+  // apply `gateOpen` here. A missing profile flag must not turn a registered
+  // gated tool label into a deletion candidate; only retired families/values
+  // are omitted so a live legacy label becomes reportable instead of being
+  // hidden by its history row.
+  for (const family of manifest.families ?? []) {
+    if (family.retired === true) continue
+
+    if (family.source === 'agent-registry') {
+      const names = registryFamilyRecords(family).map((line) => line.split('|')[0])
+      for (const name of names) {
+        addExact(name, `family ${family.family} inventory`)
+      }
+      continue
+    }
+
+    for (const value of family.values ?? []) {
+      if (value.retired === true) continue
+      const name = family.prefix === null ? value.value : `${family.prefix}:${value.value}`
+      addExact(name, `family ${family.family} inventory`)
+    }
+
+    if (family.open_values === true) {
+      const bases = exactByPrefix.get(family.prefix) ?? []
+      if (bases.length > 0) {
+        for (const base of bases) {
+          addPrefix(`${base}:`, `family ${family.family} inventory`)
+        }
+      } else if (family.prefix !== null) {
+        addPrefix(`${family.prefix}:`, `family ${family.family} inventory`)
+      }
+    }
+  }
+
+  for (const name of [...exact].sort()) lines.push(`exact|${name}`)
+  for (const prefix of [...prefixes].sort()) lines.push(`prefix|${prefix}`)
 }
 
 if (mode === 'docs-table') {

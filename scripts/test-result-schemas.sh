@@ -32,6 +32,8 @@ fail() {
 command -v node >/dev/null 2>&1 || fail "node is required to validate the result schemas"
 [ -f "$validator" ] || fail "missing required asset: $validator"
 
+node scripts/test-result-schema-composition.mjs
+
 # is_context_only_fixture PATH — true for a fixture the generic per-directory
 # valid/invalid loops below must not validate directly (checked in BOTH —
 # a sidecar or a flag-dependent document can live under either, e.g. a

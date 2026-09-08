@@ -285,6 +285,19 @@
       "can_restrict_writes": false
     },
     {
+      "slug": "oh-my-pi",
+      "display_name": "Oh My Pi",
+      "product": "Oh My Pi",
+      "family_constraint": { "kind": "broker" },
+      "model_resolution": {
+        "owner": "harness-runtime",
+        "details": "The multi-provider harness selects both provider family and model at runtime."
+      },
+      "provider_rewired": false,
+      "roles": ["implementer"],
+      "can_restrict_writes": false
+    },
+    {
       "slug": "goose",
       "display_name": "Goose",
       "product": "Block Goose",

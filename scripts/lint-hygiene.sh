@@ -82,6 +82,13 @@ is_ignored() {
     return 1
 }
 
+is_vendored_agent_asset() {
+    case "$1" in
+    .claude/skills/* | .agents/skills/* | _bmad/*) return 0 ;;
+    esac
+    return 1
+}
+
 for f in "${files[@]}"; do
     [ -f "$f" ] || continue
     [ -L "$f" ] && continue # skip symlinks (AGENTS.md aliases etc.)
@@ -105,6 +112,23 @@ for f in "${files[@]}"; do
     *.cmd | *.bat) continue ;;
     esac
 
+    # --- Private key detection ---
+    # Keep secret scanning active for installer-owned assets: the exclusion
+    # below is for content hygiene, not a security bypass.
+    # Skip self (any copy of this script) to avoid matching the pattern string.
+    case "$f" in
+    *lint-hygiene.sh) ;;
+    *)
+        if grep -l 'BEGIN.*PRIVATE KEY' "$f" >/dev/null 2>&1; then
+            warn "$f: private key detected"
+        fi
+        ;;
+    esac
+
+    # Vendored agent assets are installer-owned and may be overwritten on
+    # reinstall, so upstream formatting and content are outside this hygiene
+    # contract. Private-key detection above intentionally remains active.
+    if is_vendored_agent_asset "$f"; then continue; fi
     # --- Trailing whitespace (exclude markdown/mdx where it's intentional) ---
     case "$f" in
     *.md | *.mdx) ;;
@@ -175,17 +199,6 @@ for f in "${files[@]}"; do
         if grep -qiE '@claude[[:space:][:punct:]`$+<=>^|~]{1,20}(plan|implement|review)' \
             < <(tr -s '[:space:]' ' ' <"$f" | sed -E 's/\]\([^)]*\)//g'); then
             warn "$f: Claude trigger phrase reconstructable from rendered copy (mention + subcommand across markup/whitespace, any case) — quoted into a comment this starts a workflow; put prose words between the tokens"
-        fi
-        ;;
-    esac
-
-    # --- Private key detection ---
-    # Skip self (any copy of this script) to avoid matching the pattern string.
-    case "$f" in
-    *lint-hygiene.sh) ;;
-    *)
-        if grep -l 'BEGIN.*PRIVATE KEY' "$f" >/dev/null 2>&1; then
-            warn "$f: private key detected"
         fi
         ;;
     esac

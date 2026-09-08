@@ -1,11 +1,12 @@
 # Changes here will be overwritten by Copier
-_commit: 0d859e21932a3fc4b29534a44a1fa72afd388cda
+_commit: b7c520f0f86d42189ab79a7a3834b7ab2818db11
 _src_path: https://github.com/evanharmon1/harmon-init
 bunch_add: false
 ci_runner: ubuntu-latest
 claude_authorized_members: evanharmon1
 code_owner: evanharmon1
 codeql_languages: []
+decisions_seed_date: '2026-06-28'
 devcontainer: true
 devcontainer_coder_folder_uri: ''
 foreman_additional_trusted_actors: ''
@@ -17,7 +18,8 @@ include_ansible: false
 include_terraform: false
 license: mit
 obsidian_project_add: false
-project_description: 'My personal developer kit: reusable templates and boilerplates, standalone scripts, and AI assets (skills, prompts, agents).'
+project_description: 'My personal developer kit: reusable templates and boilerplates,
+    standalone scripts, and AI assets (skills, prompts, agents).'
 project_management: github
 project_name: Harmon DevKit
 project_slug: harmon-devkit
@@ -25,8 +27,8 @@ project_type: general
 release_content_paths: ai/skills ai/agents templates scripts
 run_task_install: false
 skill_categories:
-  - universal
-  - repo
+- universal
+- repo
 snyk_scan_schedule: weekly
 use_alternative_claude_providers: true
 use_antigravity_cli: true
@@ -34,7 +36,9 @@ use_codeql: false
 use_coderabbit: false
 use_codex_cloud_review: true
 use_codex_review: true
+use_copilot_cli: false
 use_foreman: true
 use_release_please: true
 use_shared_agents: true
 use_skills_sync: true
+use_statusline_pr_lookup: false

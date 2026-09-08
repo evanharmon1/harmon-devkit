@@ -31,8 +31,10 @@ brew "gitleaks"
 brew "node"
 # Python tool runner (Semgrep CE use uv/uvx)
 brew "uv"
-
-# Universal scripts parse JSON/TOML and require Python 3.11+
+# Repository scripts (status, secret helpers) parse JSON with bare `python3`.
+# lint-hygiene.sh also parses .foreman.toml with bare `python3` + tomllib (>= 3.11).
+# Stock macOS ships 3.9 and uv provides no `python3` shim, so the interpreter
+# itself is still a dependency.
 brew "python"
 
 # Devcontainer
