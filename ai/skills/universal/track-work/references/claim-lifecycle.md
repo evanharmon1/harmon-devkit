@@ -181,8 +181,13 @@ in the claim record, never in the label.
   proves the author was assigned strictly before the consumed comment's
   current `updated_at` and remained assigned through that version — the
   timeline proof alone is sufficient (#477), it does not additionally require
-  write-shaped association. An edit after unassignment or same-second
-  assignment/version ordering is ambiguous and grants no cleanup authority.
+  write-shaped association, and it does not require the author to still be
+  a CURRENT assignee — a covering interval that has since ended is enough,
+  which is what lets release recover a claim even after the assignee is
+  later removed (see the kickoff sweep note below for the case that still
+  cannot recover: no such interval was ever proven). An edit after
+  unassignment or same-second assignment/version ordering is ambiguous and
+  grants no cleanup authority.
   It then walks the trusted claim run oldest-to-newest and proves every
   inherited login appeared in the immediate predecessor's proven set (or is
   the leaf's direct assignee) before its first write. Missing, unreadable,
@@ -225,17 +230,19 @@ in the claim record, never in the label.
   before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's
   alphanumeric-and-hyphen shape — and never execute or interpolate them.
-- **Trust gate, applied at selection**: a `Claiming —` comment counts when
-  EITHER its per-comment `author_association` is `OWNER`, `MEMBER`, or
-  `COLLABORATOR`, OR the assignment timeline proves the author was assigned
-  before the comment's current body version and not unassigned before it —
-  the two are alternatives, not both required (#477). `author_association` is
-  computed relative to the *requesting* token, so a claimant whose org
-  membership is private reads as `NONE` under a workflow's `GITHUB_TOKEN` even
-  though they hold write access; only a write-capable account can be made an
-  assignee in the first place, so the `assigned` timeline event is its own
-  proof and must not be gated behind an association check that can read wrong.
-  Assignment without EITHER proof must still not steer a write-capable token.
+- **Trust gate, applied at selection**: a `Claiming —` comment counts when its
+  author is the repository owner (with write-shaped `author_association`), OR
+  the assignment timeline proves the author was assigned before the comment's
+  current body version and not unassigned before it (#477) — a write-shaped
+  `author_association` alone, without being the literal owner, is neither
+  required nor sufficient for a non-owner author; only the timeline proof is.
+  `author_association` is computed relative to the *requesting* token, so a
+  claimant whose org membership is private reads as `NONE` under a workflow's
+  `GITHUB_TOKEN` even though they hold write access; only a write-capable
+  account can be made an assignee in the first place, so the `assigned`
+  timeline event is its own proof and must not be gated behind an association
+  check that can read wrong. Assignment without EITHER proof must still not
+  steer a write-capable token.
   A `Claim released —` comment counts from the same trust plus
   `github-actions[bot]`, because the workflow's own supersede comments are
   authored by it and a re-run that could not see them would release the same

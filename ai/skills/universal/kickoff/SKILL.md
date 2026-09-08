@@ -62,9 +62,11 @@ gh issue list --repo <owner/repo> --assignee @me --state all --limit 200 \
 # list ...)` runs zero iterations and falsely reports a clean sweep on an
 # expired token or rate limit, hiding the marker-only claim this exists to find
 # (gh-verification.md). On an org repo the event-driven release cannot recover
-# such a claim once its assignee is gone (its trust gate needs the owner or a
-# current assignee), so this sweep is the only backstop — do not skip it on a
-# failed enumeration, surface it:
+# such a claim once its assignee is gone UNLESS the timeline still proves a
+# covering assignment interval for the claim comment (its trust gate needs
+# the owner, or that proof — see claim-lifecycle.md's trust-gate note); a
+# claim with no such interval ever recorded is exactly the gap this sweep
+# backstops — do not skip it on a failed enumeration, surface it:
 if ! claim_labels="$(gh label list --repo <owner/repo> --limit 1000 --json name -q \
     '.[].name | select(startswith("claim:") or startswith("agent:"))')"; then
   echo "warning: could not list claim labels — the marker-only sweep is INCOMPLETE; retry or check auth" >&2

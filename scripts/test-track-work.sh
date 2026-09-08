@@ -3920,6 +3920,15 @@ rc_scenario "$(rc_page "$(rc_comment outsider "$body_v1" 1 '2026-01-01T00:00:00Z
 [ "$(run_release --reason r)" = 0 ] || fail "an association-degraded but provably-assigned claimant must be trusted"
 grep -q -- '--remove-assignee outsider' "$rc_log" || fail "the trusted-by-assignment claim must still be released"
 
+echo "==> #477 AC1: the association-evidence log line reports the values actually seen"
+rc_scenario "$(rc_page "$(rc_comment outsider "$body_v1" 1 '2026-01-01T00:00:00Z' NONE)" \
+    "$(rc_comment evanharmon1 'unrelated comment' 2 '2026-01-01T00:00:01Z' OWNER)" \
+    "$(rc_comment outsider 'another unrelated comment' 3 '2026-01-01T00:00:02Z' NONE)")" \
+    '{"state":"closed","labels":[],"assignees":[{"login":"outsider"}]}'
+run_release --reason r >/dev/null
+grep -Fq 'author_association values seen: ["NONE","OWNER"]' "$tmp/release.err" ||
+    fail "the AC1 diagnostic must report every distinct association seen, deduplicated: $(cat "$tmp/release.err")"
+
 echo "==> #477: author_association NONE with NO assignment event is untrusted (AC2)"
 rc_scenario "$(rc_page "$(rc_comment outsider "$body_v1" 1 '2026-01-01T00:00:00Z' NONE)")" \
     '{"state":"closed","labels":[],"assignees":[]}'
