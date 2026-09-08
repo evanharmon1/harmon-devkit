@@ -164,6 +164,7 @@ done
 
 lineage_tmp="$(mktemp -d)"
 trap 'rm -rf "$lineage_tmp"' EXIT
+any_claiming_file="$lineage_tmp/any-claiming"
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
@@ -288,6 +289,14 @@ fetch_claim() {
     echo "$repo#$issue: comment author_association values seen: $(
         jq -c '[.[][] | .author_association // "(missing)"] | unique' <<<"$comments_pages"
     )" >&2
+    # Recorded to a file, not a variable: fetch_claim runs inside a $(...)
+    # command substitution (a subshell), so a plain assignment here would
+    # never reach the caller. Whether ANY comment (trusted or not) is
+    # Claiming-—-shaped tells exit 5 apart from a manually assigned,
+    # never-claimed issue (#477 challenge round 2) — an assignee with no such
+    # comment ever posted is plain GitHub triage, not a claim-protocol marker.
+    jq '[.[][] | select(.body != null) | select(.body | startswith("Claiming —"))] | length > 0' \
+        <<<"$comments_pages" >"$any_claiming_file"
     jq --argjson trusted "$trusted_json" \
         --argjson timeline "$lineage_timeline" \
         --arg owner "$owner" \
@@ -387,15 +396,19 @@ fi
 if [ "$(jq -r '.found' <<<"$claim_json")" != "true" ]; then
     # A genuinely unclaimed issue and a claim the trust gate could not prove
     # are indistinguishable from exit 3 alone — the failure mode #477 exists
-    # for. Live markers (an assignee, or a claim:*/agent:* label) surviving
-    # with no trusted claim found is the org-repo trust-gap shape, not the
-    # benign case: exit distinctly so the workflow goes red instead of
-    # reporting a green "nothing to release".
-    if jq -e '
-            (.assignees | length) > 0
-            or any(.labels[]?; .name | (startswith("claim:") or startswith("agent:")))
+    # for. A live claim:*/agent:* label is unambiguous claim-protocol
+    # evidence on its own; a bare assignee is not (ordinary GitHub triage
+    # assigns issues constantly with no /claim involved — challenge round 2
+    # caught this: an assignee only counts as a marker alongside proof a
+    # Claiming — comment was actually posted here, trusted or not). Either
+    # shape surviving with no trusted claim found is the org-repo trust-gap
+    # shape, not the benign case: exit distinctly so the workflow goes red
+    # instead of reporting a green "nothing to release".
+    if jq -e --argjson any_claiming "$(cat "$any_claiming_file")" '
+            any(.labels[]?; .name | (startswith("claim:") or startswith("agent:")))
+            or (($any_claiming) and (.assignees | length) > 0)
         ' <<<"$issue_json" >/dev/null; then
-        echo "$repo#$issue: live claim markers (an assignee or a claim:*/agent:* label) survive but no trusted claim comment was found — this may be an untrusted author_association rather than a genuinely unclaimed issue; needs investigation" >&2
+        echo "$repo#$issue: live claim markers survive (a claim:*/agent:* label, or an assignee alongside a Claiming — comment) but no trusted claim was found — this may be an untrusted author_association rather than a genuinely unclaimed issue; needs investigation" >&2
         exit 5
     fi
     echo "$repo#$issue has no trusted claim comment — nothing to release" >&2

@@ -3661,6 +3661,16 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 'just a normal comment')")" \
 echo "==> no trusted claim comment, but live claim markers survive, is exit 5 (#477 shape) not 3"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 'just a normal comment')")" "$issue_closed_full"
 [ "$(run_release --reason r)" = 5 ] || fail "surviving markers with no trusted claim should exit 5, not 3"
+
+# Challenge round 2: an assignee alone is not claim-protocol evidence —
+# ordinary GitHub triage assigns issues constantly with no /claim involved.
+# Without a Claiming — comment ever posted (trusted or not) and no
+# claim:*/agent:* label, closing a manually assigned issue must stay the
+# benign exit 3, not the #477 investigation exit.
+echo "==> a manually assigned, never-claimed issue is still exit 3, not 5"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 'just a normal comment')")" \
+    '{"state":"closed","labels":[{"name":"bug"}],"assignees":[{"login":"evanharmon1"}]}'
+[ "$(run_release --reason r)" = 3 ] || fail "a bare assignee with no Claiming comment must not trip exit 5"
 [ ! -s "$rc_log" ] || fail "exit 5 must trigger zero writes"
 
 echo "==> claim -> release -> re-claim acts on the latest claim's record only"
