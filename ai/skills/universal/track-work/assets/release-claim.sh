@@ -150,6 +150,14 @@ done
 lineage_tmp="$(mktemp -d)"
 trap 'rm -rf "$lineage_tmp"' EXIT
 
+# fetch_claim() hands the trusted-author set and the full event timeline to
+# jq. Both come from API output and can exceed a Linux runner's per-argument
+# MAX_ARG_STRLEN (128 KB) on an issue with a long history — `--argjson` would
+# fail the whole invocation with "Argument list too long". Route them through
+# files instead so input size can never fail the jq call.
+trusted_json_file="$lineage_tmp/trusted.json"
+lineage_timeline_file="$lineage_tmp/timeline.json"
+
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # Accepts both the legacy harness-named family (`agent:*`) and the
@@ -261,14 +269,35 @@ fi
 # kickoff/retro/implement read). With a cutoff, a claim newer than the
 # triggering event refuses (too_new) rather than releasing work the event
 # does not cover.
+#
+# $trusted_json and $lineage_timeline are written to files (never argv — see
+# the MAX_ARG_STRLEN note above) and read back with --rawfile + fromjson, so a
+# large timeline cannot fail the jq invocation. The caller captures fetch_claim's
+# stdout via command substitution, which runs this function in a subshell — a
+# plain variable assignment on failure would not survive back to the caller —
+# so the failure reason is written to $fetch_claim_error_file instead: "gh"
+# (the comments fetch failed — the caller reports "could not fetch comments")
+# or jq's own stderr (the jq program failed — the caller must report that
+# verbatim, never as a fetch failure).
 # shellcheck disable=SC2016 # single quotes hold a jq program, not shell
+fetch_claim_error_file="$lineage_tmp/fetch-claim-error"
 fetch_claim() {
-    gh api --paginate --slurp "repos/$repo/issues/$issue/comments" |
-        jq --argjson trusted "$trusted_json" \
-            --argjson timeline "$lineage_timeline" \
-            --arg owner "$owner" \
-            --arg cutoff "$not_after" '
-            def dl: (.user.login | ascii_downcase);
+    : >"$fetch_claim_error_file"
+    local comments_raw jq_stderr_file out
+    if ! comments_raw="$(gh api --paginate --slurp "repos/$repo/issues/$issue/comments")"; then
+        printf 'gh' >"$fetch_claim_error_file"
+        return 1
+    fi
+    printf '%s' "$trusted_json" >"$trusted_json_file"
+    printf '%s' "$lineage_timeline" >"$lineage_timeline_file"
+    jq_stderr_file="$lineage_tmp/fetch-claim-jq-stderr"
+    if ! out="$(jq --rawfile trusted_raw "$trusted_json_file" \
+        --rawfile timeline_raw "$lineage_timeline_file" \
+        --arg owner "$owner" \
+        --arg cutoff "$not_after" '
+            ($trusted_raw | fromjson) as $trusted
+            | ($timeline_raw | fromjson) as $timeline
+            | def dl: (.user.login | ascii_downcase);
             def writeauth:
                 (.author_association // "") as $a
                 | (["OWNER", "MEMBER", "COLLABORATOR"] | index($a)) != null;
@@ -343,11 +372,20 @@ fetch_claim() {
                                   | select(.body
                                            | startswith("Claim released —"))]
                                  | length > 0)}
-              end'
+              end' <<<"$comments_raw" 2>"$jq_stderr_file")"; then
+        printf 'jq failed while evaluating the claim of record: %s' "$(cat "$jq_stderr_file")" >"$fetch_claim_error_file"
+        return 1
+    fi
+    printf '%s' "$out"
 }
 
 if ! claim_json="$(fetch_claim)"; then
-    echo "could not fetch comments for $repo#$issue — cannot verify, treat as unsafe" >&2
+    fetch_claim_error="$(cat "$fetch_claim_error_file")"
+    if [ "$fetch_claim_error" = gh ]; then
+        echo "could not fetch comments for $repo#$issue — cannot verify, treat as unsafe" >&2
+    else
+        echo "$repo#$issue: $fetch_claim_error" >&2
+    fi
     exit 2
 fi
 
@@ -1079,7 +1117,12 @@ if ! timeline_well_formed "$lineage_timeline"; then
     exit 2
 fi
 if ! recheck_json="$(fetch_claim)"; then
-    echo "$repo#$issue: pre-write re-read failed — cannot verify, treat as unsafe" >&2
+    fetch_claim_error="$(cat "$fetch_claim_error_file")"
+    if [ "$fetch_claim_error" = gh ]; then
+        echo "$repo#$issue: pre-write re-read failed — cannot verify, treat as unsafe" >&2
+    else
+        echo "$repo#$issue: pre-write $fetch_claim_error" >&2
+    fi
     exit 2
 fi
 recheck_id="$(jq -r 'if .found then (.id | tostring) else "" end' <<<"$recheck_json")"
