@@ -500,18 +500,17 @@ is the one signal that the automated work is finished.
 
 The caps are not written down here, or in AGENTS.md. They live in
 [`.devflow.toml`](../../.devflow.toml): a `rigor` level resolves to a
-`[review.*]` policy that sets `challenge`, `review`, `shepherd`, and
-`min_rounds` together, and **AGENTS.md alone defines how a change resolves
+`[rounds.*]` policy that sets independent `challenge`, `review`,
+`integration`, and `remediation` ceilings plus `min_rounds` and the
+run's wall-clock ceiling, and **AGENTS.md alone defines how a change resolves
 one** — restating that chain here would only give it a second place to drift
 from, and which inputs are even available depends on how the repository is
-set up. All four numbers now move together with the resolved policy —
-`shepherd` is no longer a fixed, repo-wide number regardless of depth — but
-`shepherd` still bounds a different kind of thing than the other two: other
-people's findings (CI, human review, Codex) rather than work the agent
-generated itself, and a cap of 0 there means the very first thing that needs
-an answer is already at the cap, not that the shepherd stage's other
-obligations (watching CI, the readiness gate) go away. Announce the resolved
-profile — caps and floor included — when you enter the loop.
+set up. Challenge and review bound confidence passes; `integration` bounds
+current-head Codex review cycles; `remediation` bounds integration-stage fix
+pushes. These numbers move together with the resolved policy, and a cap of 0
+disables only the work it names, never a deterministic gate, security scan,
+or the readiness gate obligations (watching CI, current-head clean signal).
+Announce the resolved profile — caps and floor included — when you enter the loop.
 
 If Codex cloud review is connected to the repo, PRs
 get a cloud pass too: inline comments only for high-priority findings, a

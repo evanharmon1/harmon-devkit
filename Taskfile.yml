@@ -58,6 +58,8 @@ tasks:
     cmds:
       - task: guard:closing-keywords
       - task: verify
+      - task: verify:skills
+      - task: test:devcontainer:permissions
       - task: security
 
   verify:
