@@ -10,7 +10,15 @@ description: >-
 # Orchestrator
 
 Resolve and announce policy with `scripts/devflow-policy.mjs`; record resolved
-rigor, rounds, breadth, roles, strategy, and disclosures in the run. Dispatch
+rigor, rounds, breadth, roles, strategy, and disclosures in the run. That
+reader operates under `schema_version = 2` and under nothing else: a legacy,
+v1, mixed, or unknown `.devflow.toml` is refused with one actionable message
+(`copier update` against the harmon-init release shipping the version-2
+template, and hold `.skills-sync.yaml` at the last pre-v2 skills release until
+it has migrated). Report that message as a blocker and start no run; never
+hand-decode an older shape, invent caps, or advance the pin to get past it
+(harmon-devkit#604). `scripts/consumer-pin-audit.sh` is the standing check
+that a repository's vendored-skill pin and its policy shape agree. Dispatch
 only roles whose harness can enforce their registry write boundary: a judgment
 role receives a result-only channel with no ambient workspace, shell, git, gh,
 or write credential, otherwise the run blocks. Use one worktree and branch per
