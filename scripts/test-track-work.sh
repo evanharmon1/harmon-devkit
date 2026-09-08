@@ -3586,10 +3586,15 @@ rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1)" \
     '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"evanharmon1"}]}'
 [ "$(run_release --reason r)" = 0 ] || fail "retry must accept already-removed proven inherited owner"
 
-echo "==> a non-write-associated predecessor cannot prove inherited ownership"
+echo "==> a predecessor with neither write association nor an assignment event cannot prove inherited ownership"
 rc_scenario "$(rc_page "$(rc_comment collaborator "$body_v1" 1 '2026-01-01T00:00:00Z' NONE)" \
     "$(rc_comment evanharmon1 "$body_chain_plural_second" 2)")" \
     '{"state":"closed","labels":[{"name":"agent:claude-code"}],"assignees":[{"login":"collaborator"},{"login":"evanharmon1"}]}'
+# Override rc_scenario's default (every Claiming author modeled as assigned):
+# this predecessor must prove genuinely untrusted — no write-shaped
+# author_association AND no assigned event either (#477's alternative-proof
+# rule would otherwise trust it via the auto-generated assignment).
+printf '%s' '[[]]' >"$rc_timeline"
 [ "$(run_release --reason r)" = 2 ] || fail "an untrusted predecessor must not prove inherited ownership"
 [ ! -s "$rc_log" ] || fail "an untrusted predecessor must trigger zero writes"
 
@@ -3648,9 +3653,15 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")" \
 [ "$(run_release --reason r)" = 3 ] || fail "superseded claim should exit 3"
 [ ! -s "$rc_log" ] || fail "superseded claim must write nothing"
 
-echo "==> no claim comment at all is exit 3"
+echo "==> no claim comment at all, and no live markers, is exit 3 (genuinely unclaimed)"
+rc_scenario "$(rc_page "$(rc_comment evanharmon1 'just a normal comment')")" \
+    '{"state":"closed","labels":[{"name":"bug"}],"assignees":[]}'
+[ "$(run_release --reason r)" = 3 ] || fail "no claim and no markers should exit 3"
+
+echo "==> no trusted claim comment, but live claim markers survive, is exit 5 (#477 shape) not 3"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 'just a normal comment')")" "$issue_closed_full"
-[ "$(run_release --reason r)" = 3 ] || fail "no claim should exit 3"
+[ "$(run_release --reason r)" = 5 ] || fail "surviving markers with no trusted claim should exit 5, not 3"
+[ ! -s "$rc_log" ] || fail "exit 5 must trigger zero writes"
 
 echo "==> claim -> release -> re-claim acts on the latest claim's record only"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")" \
@@ -3677,7 +3688,7 @@ grep -q 'skipped restoring' "$rc_body" || fail "the skip must be recorded in the
 
 echo "==> a claim authored by neither the owner nor an assignee is ignored"
 rc_scenario "$(rc_page "$(rc_comment mallory "$body_v1")")" \
-    '{"state":"closed","labels":[],"assignees":[{"login":"evanharmon1"}]}'
+    '{"state":"closed","labels":[],"assignees":[]}'
 printf '%s' '[[]]' >"$rc_timeline"
 [ "$(run_release --reason r)" = 3 ] || fail "an untrusted claim should exit 3"
 [ ! -s "$rc_log" ] || fail "an untrusted claim must trigger zero writes"
@@ -3872,11 +3883,36 @@ rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" \
     fail "a reopened issue means the close event is stale — exit 3"
 [ ! -s "$rc_log" ] || fail "a stale close event must trigger zero writes"
 
-echo "==> an assignee WITHOUT write association is not trusted"
+# #477: author_association is computed relative to the requesting token, so
+# an org member with private membership reads NONE even holding write access.
+# Only a write-capable account can be made an assignee in the first place, so
+# a timeline `assigned` event naming this claimant is an equally sufficient
+# trust proof — an alternative to write-shaped author_association, not an
+# additional requirement layered on it.
+echo "==> #477: author_association NONE with a matching assigned event IS trusted (AC1)"
 rc_scenario "$(rc_page "$(rc_comment outsider "$body_v1" 1 '2026-01-01T00:00:00Z' NONE)")" \
     '{"state":"closed","labels":[],"assignees":[{"login":"outsider"}]}'
-[ "$(run_release --reason r)" = 3 ] || fail "assignment without write access must not be trusted"
+# rc_scenario's default already models every Claiming author as assigned
+# before their comment's version time — this is exactly that default.
+[ "$(run_release --reason r)" = 0 ] || fail "an association-degraded but provably-assigned claimant must be trusted"
+grep -q -- '--remove-assignee outsider' "$rc_log" || fail "the trusted-by-assignment claim must still be released"
+
+echo "==> #477: author_association NONE with NO assignment event is untrusted (AC2)"
+rc_scenario "$(rc_page "$(rc_comment outsider "$body_v1" 1 '2026-01-01T00:00:00Z' NONE)")" \
+    '{"state":"closed","labels":[],"assignees":[]}'
+printf '%s' '[[]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 3 ] || fail "no write association and no assignment event must not be trusted"
 [ ! -s "$rc_log" ] || fail "an unauthorized claim must trigger zero writes"
+
+echo "==> #477: live markers survive an unprovable claim — exit 5, not 3 (AC3)"
+rc_scenario "$(rc_page "$(rc_comment outsider "$body_v1" 1 '2026-01-01T00:00:00Z' NONE)")" \
+    '{"state":"closed","labels":[],"assignees":[{"login":"outsider"}]}'
+# outsider is a live assignee (a marker) but has no proof of write access —
+# no writeauth, and no assigned event either — so this is the #477 shape
+# distinct from a genuinely unclaimed issue.
+printf '%s' '[[]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 5 ] || fail "surviving markers with an unprovable claim should exit 5"
+[ ! -s "$rc_log" ] || fail "exit 5 must trigger zero writes"
 
 echo "==> --branch releases only the claim the closing PR owns"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 "$body_v1")")" "$issue_closed_full"

@@ -224,18 +224,30 @@ in the claim record, never in the label.
   before acting: labels against
   the `agent:`/`claim:` prefixes + `[a-zA-Z0-9:._-]`, logins against GitHub's
   alphanumeric-and-hyphen shape — and never execute or interpolate them.
-- **Trust gate, applied at selection**: a `Claiming —` comment counts only
-  from the repo owner or a **current** assignee **whose per-comment
-  `author_association` is `OWNER`, `MEMBER`, or `COLLABORATOR`** — assignment
-  without write access must not steer a write-capable token. A
-  `Claim released —` comment counts from those plus `github-actions[bot]`,
-  because the workflow's own supersede comments are authored by it and a
-  re-run that could not see them would release the same claim twice. Anyone
-  can post either shape on a public repo; a forged claim must not shadow the
-  real one, and a forged release must not suppress its cleanup. Untrusted
-  comments are invisible to the parser (exit 3 when nothing trusted
-  remains). v1 assumption: single-writer repos — App-authored claims would
-  need this gate widened, and until then such claims strand as before.
+- **Trust gate, applied at selection**: a `Claiming —` comment counts when
+  EITHER its per-comment `author_association` is `OWNER`, `MEMBER`, or
+  `COLLABORATOR`, OR the assignment timeline proves the author was assigned
+  before the comment's current body version and not unassigned before it —
+  the two are alternatives, not both required (#477). `author_association` is
+  computed relative to the *requesting* token, so a claimant whose org
+  membership is private reads as `NONE` under a workflow's `GITHUB_TOKEN` even
+  though they hold write access; only a write-capable account can be made an
+  assignee in the first place, so the `assigned` timeline event is its own
+  proof and must not be gated behind an association check that can read wrong.
+  Assignment without EITHER proof must still not steer a write-capable token.
+  A `Claim released —` comment counts from the same trust plus
+  `github-actions[bot]`, because the workflow's own supersede comments are
+  authored by it and a re-run that could not see them would release the same
+  claim twice. Anyone can post either shape on a public repo; a forged claim
+  must not shadow the real one, and a forged release must not suppress its
+  cleanup. Untrusted comments are invisible to the parser: exit 3 when nothing
+  trusted remains AND no live claim marker (an assignee, or a
+  `claim:*`/`agent:*` label) survives either — a genuinely unclaimed issue —
+  but **exit 5** when a live marker survives with no trusted claim found,
+  because that is the org-repo trust-gap shape rather than the benign case,
+  and the workflow must go red rather than read a stranded claim as green. v1
+  assumption: single-writer repos — App-authored claims would need this gate
+  widened, and until then such claims strand as before.
 - **The claim's first line is parsed too**: `Claiming — starting
   implementation on branch <branch> (session <name>).` On the unmerged-PR
   path the workflow passes the PR's head branch as `--branch`, and a claim

@@ -20,17 +20,26 @@
 # legacy `yes` fallback sweeps every live `agent:*` AND `claim:*` label.
 #
 #   1. Reads the issue (state, labels, assignees) and the assignment timeline.
-#      A non-owner comment counts only when its current body version was
-#      published during a provable assignment interval; owner comments remain
-#      trusted directly. Release comments use the automation identity rules.
-#      Comments are attacker-writable on a public repo; a forged `Claiming —`
-#      must not shadow the real claim, and a forged `Claim released —` must
-#      not suppress its cleanup.
-#   2. Finds the latest trusted `Claiming —` comment. None, or a later
-#      trusted `Claim released —` already superseding it — exit 3. With
-#      --not-after, a claim NEWER than the triggering event also exits 3:
-#      replacement work that reclaimed the issue after the event is not this
-#      event's to release.
+#      A comment is trusted when EITHER its author_association reads
+#      write-shaped (OWNER/MEMBER/COLLABORATOR) OR the timeline proves the
+#      author was assigned before this comment's current body version and
+#      not unassigned before it — the two are alternatives, not both
+#      required: only a write-capable account can be assigned in the first
+#      place, so the assignment event is its own proof of write access, and
+#      it is what keeps a private-org-membership claimant (whose
+#      author_association reads NONE under a degraded token, #477) from
+#      being wrongly distrusted. Release comments use the automation
+#      identity rules. Comments are attacker-writable on a public repo; a
+#      forged `Claiming —` must not shadow the real claim, and a forged
+#      `Claim released —` must not suppress its cleanup.
+#   2. Finds the latest trusted `Claiming —` comment. None found while live
+#      claim markers (an assignee, or a claim:*/agent:* label) survive is the
+#      #477 shape — exit 5 so the workflow goes red instead of reading
+#      green. None found and no markers survive either, or a later trusted
+#      `Claim released —` already superseding it — exit 3 (genuinely
+#      unclaimed). With --not-after, a claim NEWER than the triggering event
+#      also exits 3: replacement work that reclaimed the issue after the
+#      event is not this event's to release.
 #   3. Parses the comment's "Claim record" and undoes ONLY what it says the
 #      claim added: the claim label (v1 records name it — `agent:*` or
 #      `claim:*`; a legacy `yes` falls back to every live `agent:*`/`claim:*`
@@ -66,11 +75,17 @@
 #           release is NOT recorded; safe to re-run,
 #       2 = usage/environment error, or a trusted claim whose record is
 #           present but unreadable — could not verify, fail closed,
-#       3 = nothing to do: no trusted claim, already superseded, newer than
-#           --not-after, or the ground shifted mid-run (stderr says which),
+#       3 = nothing to do: no trusted claim on a genuinely unclaimed issue,
+#           already superseded, newer than --not-after, or the ground shifted
+#           mid-run (stderr says which),
 #       4 = partial: a marker write failed; the supersede comment is
 #           deliberately NOT posted, so a re-run retries the release instead
-#           of reading it as already settled.
+#           of reading it as already settled,
+#       5 = no trusted claim found, but live claim markers (an assignee, or a
+#           claim:*/agent:* label) survive — the #477 shape: an untrusted
+#           author_association rather than a genuinely unclaimed issue.
+#           Distinct from exit 3 so the workflow goes red instead of green;
+#           needs investigation rather than a re-run.
 set -euo pipefail
 
 usage() {
@@ -263,17 +278,23 @@ fi
 # does not cover.
 # shellcheck disable=SC2016 # single quotes hold a jq program, not shell
 fetch_claim() {
-    gh api --paginate --slurp "repos/$repo/issues/$issue/comments" |
-        jq --argjson trusted "$trusted_json" \
-            --argjson timeline "$lineage_timeline" \
-            --arg owner "$owner" \
-            --arg cutoff "$not_after" '
+    comments_pages="$(gh api --paginate --slurp "repos/$repo/issues/$issue/comments")" || return 1
+    # AC 1 of #477: author_association is what the trust gate used to depend
+    # on exclusively, and it is exactly the field that reads wrong under a
+    # degraded token (a private org member looks like NONE). Logging every
+    # value this run actually saw is the evidence the next diagnosis starts
+    # from, whichever way the predicate below resolves trust.
+    echo "$repo#$issue: comment author_association values seen: $(
+        jq -c '[.[][] | .author_association // "(missing)"] | unique' <<<"$comments_pages"
+    )" >&2
+    jq --argjson trusted "$trusted_json" \
+        --argjson timeline "$lineage_timeline" \
+        --arg owner "$owner" \
+        --arg cutoff "$not_after" '
             def dl: (.user.login | ascii_downcase);
             def writeauth:
                 (.author_association // "") as $a
                 | (["OWNER", "MEMBER", "COLLABORATOR"] | index($a)) != null;
-            def trusted_claimant:
-                (dl as $l | $trusted | index($l) != null) and writeauth;
             def assigned_through_claim_version:
                 dl as $login
                 | .updated_at as $version_time
@@ -289,10 +310,21 @@ fetch_claim() {
                                 and .created_at >= $assignment.created_at
                                 and .created_at <= $version_time) ]
                      | length == 0);
+            # author_association is computed relative to the requesting
+            # token: a claimant whose org membership is private reads as
+            # NONE under secrets.GITHUB_TOKEN even though they hold write
+            # access. Only a write-capable account can be made an assignee,
+            # so an assigned timeline event naming the comment author (undone
+            # by no later unassigned event before the comment body version)
+            # is an equally sufficient proof of that access — an alternative
+            # to writeauth, not an additional requirement on it.
+            def trusted_authorship: writeauth or assigned_through_claim_version;
+            def trusted_claimant:
+                (dl as $l | $trusted | index($l) != null) and trusted_authorship;
             def historical_claimant:
-                writeauth
-                and dl != "github-actions[bot]"
-                and (dl == ($owner | ascii_downcase) or assigned_through_claim_version);
+                dl != "github-actions[bot]"
+                and ((writeauth and dl == ($owner | ascii_downcase))
+                     or assigned_through_claim_version);
             def trusted_release:
                 (.body | startswith("Claim released —"))
                 and (trusted_claimant or dl == "github-actions[bot]");
@@ -343,7 +375,7 @@ fetch_claim() {
                                   | select(.body
                                            | startswith("Claim released —"))]
                                  | length > 0)}
-              end'
+              end' <<<"$comments_pages"
 }
 
 if ! claim_json="$(fetch_claim)"; then
@@ -352,6 +384,19 @@ if ! claim_json="$(fetch_claim)"; then
 fi
 
 if [ "$(jq -r '.found' <<<"$claim_json")" != "true" ]; then
+    # A genuinely unclaimed issue and a claim the trust gate could not prove
+    # are indistinguishable from exit 3 alone — the failure mode #477 exists
+    # for. Live markers (an assignee, or a claim:*/agent:* label) surviving
+    # with no trusted claim found is the org-repo trust-gap shape, not the
+    # benign case: exit distinctly so the workflow goes red instead of
+    # reporting a green "nothing to release".
+    if jq -e '
+            (.assignees | length) > 0
+            or any(.labels[]?; .name | (startswith("claim:") or startswith("agent:")))
+        ' <<<"$issue_json" >/dev/null; then
+        echo "$repo#$issue: live claim markers (an assignee or a claim:*/agent:* label) survive but no trusted claim comment was found — this may be an untrusted author_association rather than a genuinely unclaimed issue; needs investigation" >&2
+        exit 5
+    fi
     echo "$repo#$issue has no trusted claim comment — nothing to release" >&2
     exit 3
 fi
