@@ -148,7 +148,13 @@ make_timeline_file 4000
 [ "$(wc -c <"$timeline_file" | tr -d ' ')" -gt 262144 ] || fail "timeline fixture must exceed 256 KB"
 [ "$(wc -c <"$comments_file" | tr -d ' ')" -gt 131072 ] || fail "comments fixture must exceed 128 KB"
 [ "$(run_release)" = 0 ] || fail "large fixture should release cleanly, not fail on argument size: $(cat "$tmp/err")"
-diff "$tmp/err.small" "$tmp/err" >/dev/null || fail "large fixture reached a different verdict than the small fixture"
+# The #477 author_association diagnostic reports every value it actually saw,
+# so it necessarily differs between fixtures once padding comments (NONE) join
+# the single real comment (COLLABORATOR) — that line is excluded from the
+# verdict comparison; everything else must still match exactly.
+grep -v 'author_association values seen' "$tmp/err.small" >"$tmp/err.small.filtered"
+grep -v 'author_association values seen' "$tmp/err" >"$tmp/err.filtered"
+diff "$tmp/err.small.filtered" "$tmp/err.filtered" >/dev/null || fail "large fixture reached a different verdict than the small fixture"
 
 echo "==> 2. static: the script never passes trusted/timeline through jq argv again"
 if grep -q -- '--argjson trusted' "$script" || grep -q -- '--argjson timeline' "$script"; then
