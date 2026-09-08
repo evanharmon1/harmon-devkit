@@ -17,7 +17,7 @@ one's status.
   exception is the seed record below: the project template maintains it,
   so a template update re-titles a numbered seed to the date form.
 - Start with
-  [2026-06-19-record-architecture-decisions.md](2026-06-19-record-architecture-decisions.md)
+  [2026-06-28-record-architecture-decisions.md](2026-06-28-record-architecture-decisions.md)
   — the meta-ADR for the process. The project template maintains it: its
   name and `Date:` come from the `decisions_seed_date` answer recorded when
   the repository was scaffolded (or when an update first introduced the

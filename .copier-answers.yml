@@ -6,7 +6,7 @@ ci_runner: ubuntu-latest
 claude_authorized_members: evanharmon1
 code_owner: evanharmon1
 codeql_languages: []
-decisions_seed_date: '2026-06-19'
+decisions_seed_date: '2026-06-28'
 devcontainer: true
 devcontainer_coder_folder_uri: ''
 foreman_additional_trusted_actors: ''
