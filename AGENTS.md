@@ -152,10 +152,11 @@ is **user-invoked** — the user typing it authorizes its issue writes — and
 the loop; retired names map on (`gauntlet` → `review`, `shepherd` →
 `integrate`), and a pin still shipping a predecessor runs it under this policy.
 The skills carry the procedure — round mechanics, adjudication records, review
-polling, the PR-open ritual — entered by reading their `SKILL.md`, since every
-one is `disable-model-invocation: true`. Where none is vendored, this section is
-the whole contract and its invariants are owed anyway; where a **vendored**
-skill states a different cap, floor, or exit condition, **this file wins**.
+polling, the PR-open ritual — entered by reading their `SKILL.md`. In this
+repository, active stage skills omit `disable-model-invocation: true` and
+are model-invocable as described in `ai/skills/README.md`. Where none is vendored,
+this section is the whole contract and its invariants are owed anyway; where a
+**vendored** skill states a different cap, floor, or exit condition, **this file wins**.
 
 ```text
 /claim (user) → /implement [ code → task verify → challenge → review → task security → DRAFT PR ]
@@ -513,7 +514,9 @@ comment ID returned for that trigger, and give each attempt a full 10–15 minut
 window, re-triggering once after an incomplete first attempt. If both attempts
 are incomplete, stop and escalate without reporting green.
 **Where the pinned checker is vendored**
-(`.claude/skills/shepherd/assets/check-codex-cloud-review.sh`), it is the
+(`.claude/skills/integrate/assets/check-codex-cloud-review.sh`, with
+`.claude/skills/shepherd/assets/check-codex-cloud-review.sh` as legacy
+fallback), it is the
 required implementation — never hand-roll the polling: `reserve` the cycle
 against the captured head *before* posting the trigger (the durable state must
 exist before the GitHub write), then post `@codex review`, `attach` the comment

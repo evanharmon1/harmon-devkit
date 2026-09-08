@@ -301,7 +301,7 @@ tasks:
         if [ -z "$repo" ]; then
           repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
         fi
-        PR_TITLE="$PR_TITLE" PR_BODY="$PR_BODY" ./scripts/check-closing-keywords.sh --repo "$repo" \
+        PR_TITLE="$PR_TITLE" PR_BODY="$PR_BODY" ./ai/skills/universal/track-work/assets/check-closing-keywords.sh --repo "$repo" \
           --title-env PR_TITLE --body-env PR_BODY --commits-file "$commits_file"
 
   # Entry point for .github/workflows/sync-harmon-devkit.yml: resolves the

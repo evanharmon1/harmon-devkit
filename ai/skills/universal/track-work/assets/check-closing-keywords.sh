@@ -103,6 +103,8 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+default_repo="$(printf '%s' "$default_repo" | tr '[:upper:]' '[:lower:]')"
+
 if [ -n "$body_file" ]; then
     [ -f "$body_file" ] || {
         echo "check-closing-keywords: no such file: $body_file" >&2
@@ -225,20 +227,21 @@ while IFS= read -r match; do
     esac
 
     # Resolve the reference to owner/repo + number.
-    case "$text" in
+    normalized_text="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
+    case "$normalized_text" in
     *github.com/*/issues/*)
-        num="${text##*/issues/}"
-        rest="${text%/issues/*}"
+        num="${normalized_text##*/issues/}"
+        rest="${normalized_text%/issues/*}"
         name="${rest##*/}"
         rest="${rest%/*}"
         owner="${rest##*/}"
         target="${owner}/${name}"
         ;;
     *#*)
-        num="${text##*#}"
-        prefix="${text%#*}"
+        num="${normalized_text##*#}"
+        prefix="${normalized_text%#*}"
         # Everything after the keyword and separators is an explicit owner/repo.
-        explicit="$(printf '%s' "$prefix" | grep -oE '[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' || true)"
+        explicit="$(printf '%s' "$prefix" | grep -oE '[a-z0-9._-]+/[a-z0-9._-]+$' || true)"
         target="${explicit:-$default_repo}"
         ;;
     *) continue ;;

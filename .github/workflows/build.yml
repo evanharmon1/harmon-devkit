@@ -131,6 +131,8 @@ jobs:
       # own target here rather than auditing the whole list.
       - run: task test:render-dev-flow
       - run: task test:devcontainer-changed
+      - run: task test:bot-autonomy
+      - run: task test:claim-release-merged
 
   # Metadata-only by design: this executes the trusted default-branch script,
   # queries PR/issue data through read-only APIs, and never checks out a PR.
