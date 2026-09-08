@@ -12,7 +12,12 @@ description: >-
 
 `/review` owns both confidence stages, not the security or integration stages.
 Its input names `challenge` or `review`, the base and head, policy, registry,
-run directory, and the active run identity. Create the record directory before
+run directory, and the active run identity. The policy is a
+`schema_version = 2` `.devflow.toml` resolved through
+`scripts/devflow-policy.mjs`; this skill carries no interpreter for the legacy
+or v1 shape, and a reader refusal is a blocker carrying the reader's own
+migration message, never grounds to hand-decode the file or guess a cap
+(harmon-devkit#604). Create the record directory before
 the first dispatch and retain `run.json`, `policy.json`, `passes/`,
 `adjudications/`, and `verdict.json` there; `/integrate` consumes that exact
 directory. Capture and refresh base and canonical head before every logical
