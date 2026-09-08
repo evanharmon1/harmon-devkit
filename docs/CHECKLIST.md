@@ -22,6 +22,23 @@ environment — against the items below
 
 - [ ] `task install` — Brewfile deps, and lefthook git hooks
 - [ ] `task verify` passes locally
+- [ ] Verify `harmon-devkit.code-workspace` opens the repo's folder in VS Code and has a unique VS Code Workspace color. Then add any other related repos (e.g. other org repos) to the `folders` list in the workspace file so you have quick access to those repos
+- [ ] Extend `.gitignore` for your stack — the template ships a base; add stack-specific entries via [gitignore.io](https://www.toptal.com/developers/gitignore)
+- [ ] macOS: add a Raycast quicklink/alias that opens the `harmon-devkit.code-workspace`
+- [ ] macOS (Bunch): scaffold the launcher with `task util:bunch-add` (if not generated at copier time), then `task util:bunch-install` to move it to iCloud and leave a `.meta/*.bunch` symlink (re-run install if missing)
+
+## 2. GitHub repo settings
+
+- [ ] **Confirm draft pull requests are available on this repo** — every agent
+      PR opens as a draft and is promoted only by the readiness gate (AGENTS.md,
+      "Dev Loop"). GitHub restricts draft PRs on **private** repositories to its
+      paid plans, so on a private free-plan repo `gh pr create --draft` fails
+      outright and the whole lifecycle stops at its first step. Check the current
+      plan matrix in [GitHub's draft-PR
+      docs](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/changing-the-stage-of-a-pull-request);
+      if drafts are unavailable, make the repo public, upgrade the plan, or
+      decide deliberately not to run agent workflows here — do not "fix" it by
+      dropping `--draft` and letting automations surprise human reviewers.
 - [ ] Import the branch ruleset (see [architecture/branch-protection.md](architecture/branch-protection.md)) — do this once `build.yml`, `devcontainer-build.yml` are on `main` so the required `verify`/`security`/`devcontainer-verify` checks resolve. **Use the UI import:** Settings → Rules → Rulesets → **New ruleset ▸ Import a ruleset** → select `.github/Branch Protection Ruleset - Protect Main.json`. (Prefer the UI over `gh api … rulesets`: the API `POST` is not idempotent — re-running creates a duplicate ruleset — and currently rejects the `merge_queue` rule. To later change the ruleset, edit the existing one in the UI rather than re-importing.)
 - [ ] **[human-only] Add `closing-keywords` to the live branch ruleset** — after
       the `closing-keywords` build job has reported once, edit the existing

@@ -51,14 +51,12 @@ tasks:
     # The PR-metadata closing guard stays outside offline `verify`, so run it
     # explicitly before building on `verify` and adding every OTHER check the
     # build workflow runs, so the two cannot drift apart.
-    # verify:skills is the NETWORK drift check (the CI job runs the same one).
-    # It is deliberately not in `verify`, which stays offline — the pre-push hook
-    # uses verify:skills:offline for that reason.
-    desc: Full CI mirror (guard:closing-keywords → verify → verify:skills → test:devcontainer:permissions → security)
+    # Note: verify:skills is intentionally omitted here because harmon-devkit
+    # is the skills source and its dogfood symlinks refuse self-vendoring.
+    desc: Full CI mirror (guard:closing-keywords → verify → test:devcontainer:permissions → security)
     cmds:
       - task: guard:closing-keywords
       - task: verify
-      - task: verify:skills
       - task: test:devcontainer:permissions
       - task: security
 
