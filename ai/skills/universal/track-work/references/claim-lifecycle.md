@@ -177,11 +177,12 @@ in the claim record, never in the label.
   is live, so carry it when the predecessor proves it displaced the label.
   The current record is sufficient for release only after independent lineage proof. The
   releaser admits a historical record to that run only when its author was the
-  repository owner or the issue timeline proves the author was assigned
-  strictly before the consumed comment's current `updated_at` and remained
-  assigned through that version (with write-shaped association in either
-  case). An edit after unassignment or same-second assignment/version ordering
-  is ambiguous and grants no cleanup authority.
+  repository owner (with write-shaped association) OR the issue timeline
+  proves the author was assigned strictly before the consumed comment's
+  current `updated_at` and remained assigned through that version — the
+  timeline proof alone is sufficient (#477), it does not additionally require
+  write-shaped association. An edit after unassignment or same-second
+  assignment/version ordering is ambiguous and grants no cleanup authority.
   It then walks the trusted claim run oldest-to-newest and proves every
   inherited login appeared in the immediate predecessor's proven set (or is
   the leaf's direct assignee) before its first write. Missing, unreadable,
@@ -241,13 +242,20 @@ in the claim record, never in the label.
   claim twice. Anyone can post either shape on a public repo; a forged claim
   must not shadow the real one, and a forged release must not suppress its
   cleanup. Untrusted comments are invisible to the parser: exit 3 when nothing
-  trusted remains AND no live claim marker (an assignee, or a
-  `claim:*`/`agent:*` label) survives either — a genuinely unclaimed issue —
-  but **exit 5** when a live marker survives with no trusted claim found,
-  because that is the org-repo trust-gap shape rather than the benign case,
-  and the workflow must go red rather than read a stranded claim as green. v1
-  assumption: single-writer repos — App-authored claims would need this gate
-  widened, and until then such claims strand as before.
+  trusted remains AND no live claim marker survives either — a genuinely
+  unclaimed issue — but **exit 5** when a live marker survives with no
+  trusted claim found, because that is the org-repo trust-gap shape rather
+  than the benign case, and the workflow must go red rather than read a
+  stranded claim as green. A `claim:*`/`agent:*` label is unambiguous
+  claim-protocol evidence on its own; a bare assignee is not — ordinary
+  GitHub triage assigns issues with no `/claim` involved — so an assignee
+  only counts as a live marker alongside a `Claiming —` comment posted by one
+  of the issue's current assignees (challenge round 2: a bare assignee false-
+  positived every manually assigned issue; review round 1: restricting the
+  comment to a current assignee's own closes an unrelated public commenter
+  forging one to fail someone else's ordinary close). v1 assumption:
+  single-writer repos — App-authored claims would need this gate widened, and
+  until then such claims strand as before.
 - **The claim's first line is parsed too**: `Claiming — starting
   implementation on branch <branch> (session <name>).` On the unmerged-PR
   path the workflow passes the PR's head branch as `--branch`, and a claim

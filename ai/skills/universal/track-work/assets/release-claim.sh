@@ -291,12 +291,20 @@ fetch_claim() {
     )" >&2
     # Recorded to a file, not a variable: fetch_claim runs inside a $(...)
     # command substitution (a subshell), so a plain assignment here would
-    # never reach the caller. Whether ANY comment (trusted or not) is
-    # Claiming-—-shaped tells exit 5 apart from a manually assigned,
-    # never-claimed issue (#477 challenge round 2) — an assignee with no such
-    # comment ever posted is plain GitHub triage, not a claim-protocol marker.
-    jq '[.[][] | select(.body != null) | select(.body | startswith("Claiming —"))] | length > 0' \
-        <<<"$comments_pages" >"$any_claiming_file"
+    # never reach the caller. Whether a CURRENT assignee (trusted or not) has
+    # posted a Claiming-—-shaped comment tells exit 5 apart from a manually
+    # assigned, never-claimed issue (#477 challenge round 2) — a bare
+    # assignee with no such comment is plain GitHub triage, not a
+    # claim-protocol marker. Scoped to the assignee's own comment, not any
+    # comment issue-wide (review round 1): an unrelated public commenter
+    # forging a "Claiming —" line on someone else's ordinarily assigned issue
+    # must not fail that issue's close.
+    jq --argjson issue "$issue_json" '
+            ($issue.assignees // [] | map(.login | ascii_downcase)) as $current
+            | [.[][] | select(.body != null) | select(.body | startswith("Claiming —"))
+               | select((.user.login | ascii_downcase) as $l | $current | index($l) != null)]
+            | length > 0
+        ' <<<"$comments_pages" >"$any_claiming_file"
     jq --argjson trusted "$trusted_json" \
         --argjson timeline "$lineage_timeline" \
         --arg owner "$owner" \

@@ -3671,6 +3671,19 @@ echo "==> a manually assigned, never-claimed issue is still exit 3, not 5"
 rc_scenario "$(rc_page "$(rc_comment evanharmon1 'just a normal comment')")" \
     '{"state":"closed","labels":[{"name":"bug"}],"assignees":[{"login":"evanharmon1"}]}'
 [ "$(run_release --reason r)" = 3 ] || fail "a bare assignee with no Claiming comment must not trip exit 5"
+
+# Review round 1: any_claiming must be scoped to the surviving assignee's OWN
+# comment, not any Claiming-—-shaped comment issue-wide — otherwise an
+# unrelated public commenter could forge one on someone else's ordinarily
+# assigned issue and fail that issue's close.
+echo "==> an unrelated commenter's forged Claiming comment does not trip exit 5 for another assignee"
+rc_scenario "$(rc_page "$(rc_comment mallory 'Claiming — this is mine now (session x).')")" \
+    '{"state":"closed","labels":[{"name":"bug"}],"assignees":[{"login":"evanharmon1"}]}'
+# Override rc_scenario's default (every Claiming author modeled as assigned):
+# mallory must be neither trusted (so the run reaches the found=false path)
+# nor the source of exit-5 evidence for evanharmon1's unrelated assignment.
+printf '%s' '[[]]' >"$rc_timeline"
+[ "$(run_release --reason r)" = 3 ] || fail "an unrelated forged Claiming comment must not trip exit 5 for a different assignee"
 [ ! -s "$rc_log" ] || fail "exit 5 must trigger zero writes"
 
 echo "==> claim -> release -> re-claim acts on the latest claim's record only"
