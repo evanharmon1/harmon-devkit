@@ -166,13 +166,15 @@ lineage_tmp="$(mktemp -d)"
 trap 'rm -rf "$lineage_tmp"' EXIT
 any_claiming_file="$lineage_tmp/any-claiming"
 
-# fetch_claim() hands the trusted-author set and the full event timeline to
-# jq. Both come from API output and can exceed a Linux runner's per-argument
-# MAX_ARG_STRLEN (128 KB) on an issue with a long history — `--argjson` would
-# fail the whole invocation with "Argument list too long". Route them through
-# files instead so input size can never fail the jq call.
+# fetch_claim() hands the trusted-author set, the full event timeline, and the
+# issue object to jq. All three come from API output and can exceed a Linux
+# runner's per-argument MAX_ARG_STRLEN (128 KB) — an issue body alone can be
+# large enough — and `--argjson` would fail the whole invocation with
+# "Argument list too long". Route them through files instead so input size
+# can never fail the jq call.
 trusted_json_file="$lineage_tmp/trusted.json"
 lineage_timeline_file="$lineage_tmp/timeline.json"
+issue_json_file="$lineage_tmp/issue.json"
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
@@ -322,13 +324,24 @@ fetch_claim() {
     # claim-protocol marker. Scoped to the assignee's own comment, not any
     # comment issue-wide (review round 1): an unrelated public commenter
     # forging a "Claiming —" line on someone else's ordinarily assigned issue
-    # must not fail that issue's close.
-    jq --argjson issue "$issue_json" '
-            ($issue.assignees // [] | map(.login | ascii_downcase)) as $current
+    # must not fail that issue's close. Fed through a file, like the other
+    # large inputs above (not `--argjson`, which can exceed MAX_ARG_STRLEN on
+    # a large issue body), and fail closed on error: silently leaving
+    # $any_claiming_file empty here would make the exit-5 check below fail to
+    # parse it and fall through to a benign exit 3 despite surviving claim
+    # markers (Codex cloud review, round 1).
+    printf '%s' "$issue_json" >"$issue_json_file"
+    if ! jq --rawfile issue_raw "$issue_json_file" '
+            ($issue_raw | fromjson) as $issue
+            | ($issue.assignees // [] | map(.login | ascii_downcase)) as $current
             | [.[][] | select(.body != null) | select(.body | startswith("Claiming —"))
                | select((.user.login | ascii_downcase) as $l | $current | index($l) != null)]
             | length > 0
-        ' <<<"$comments_raw" >"$any_claiming_file"
+        ' <<<"$comments_raw" >"$any_claiming_file" 2>"$lineage_tmp/any-claiming-jq-stderr"; then
+        printf 'jq failed while evaluating claim-protocol evidence: %s' \
+            "$(cat "$lineage_tmp/any-claiming-jq-stderr")" >"$fetch_claim_error_file"
+        return 1
+    fi
     printf '%s' "$trusted_json" >"$trusted_json_file"
     printf '%s' "$lineage_timeline" >"$lineage_timeline_file"
     jq_stderr_file="$lineage_tmp/fetch-claim-jq-stderr"

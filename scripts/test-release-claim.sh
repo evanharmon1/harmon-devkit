@@ -169,7 +169,35 @@ rc="$(RUN_COMMENTS_MALFORMED=1 run_release)"
 grep -q "could not fetch comments" "$tmp/err" && fail "a jq failure must not masquerade as a fetch failure: $(cat "$tmp/err")"
 grep -qi "jq" "$tmp/err" || fail "a jq failure must name jq: $(cat "$tmp/err")"
 
-echo "==> 4. an unreachable gh api still reports the original fetch-failure message"
+echo "==> 4. an oversized issue body (>128KB) reaches the same verdict as a small one"
+# The #477 any-claiming check feeds $issue_json to jq — a second large input
+# alongside the timeline/comments pages above. A long issue body must not
+# reintroduce the class of bug #868 just removed for the other two.
+jq -n '{state: "OPEN", assignees: [{login: "workerbot"}], labels: [{name: "claim:gpt"}],
+        body: ("padding issue body " * 10000)}' >"$issue_file"
+[ "$(wc -c <"$issue_file" | tr -d ' ')" -gt 131072 ] || fail "issue fixture must exceed 128 KB"
+make_comments_file 0
+make_timeline_file 0
+[ "$(run_release)" = 0 ] || fail "an oversized issue body must not fail on argument size: $(cat "$tmp/err")"
+make_issue
+
+echo "==> 5. a forced failure evaluating claim-protocol evidence fails closed, never falls through to exit 3"
+# #477 exit 5 depends on $any_claiming_file being populated; before this test
+# was added, an unguarded jq failure there left the file empty and exit-5's
+# consumer silently fell through to the benign exit 3 with markers still
+# surviving (Codex cloud review, round 1) — the exact bug class #868 removed
+# elsewhere in this same function, reintroduced here. Malformed comments
+# break this step (it parses the same comments page) before the later
+# trusted/timeline step ever runs, so the message below proves it is this
+# step's own guard that caught it, not a coincidence of ordering.
+make_comments_file 0
+make_timeline_file 0
+rc="$(RUN_COMMENTS_MALFORMED=1 run_release)"
+[ "$rc" = 2 ] || fail "a claim-protocol-evidence jq failure must fail closed with exit 2, got $rc: $(cat "$tmp/err")"
+[ "$rc" != 3 ] || fail "a claim-protocol-evidence jq failure must never fall through to the benign exit 3"
+grep -qi "claim-protocol evidence" "$tmp/err" || fail "the failure must name what step broke: $(cat "$tmp/err")"
+
+echo "==> 6. an unreachable gh api still reports the original fetch-failure message"
 : >"$tmp/comments.fail"
 rc="$(RUN_COMMENTS_FAIL_FLAG="$tmp/comments.fail" run_release)"
 [ "$rc" = 2 ] || fail "a gh api failure must fail closed with exit 2, got $rc: $(cat "$tmp/err")"
