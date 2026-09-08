@@ -130,7 +130,8 @@ AI agents can run it on every change without getting bogged down. `verify` is
 the definition-of-done gate — check + validate + test plus the quick
 Taskfile/hook guards (the Foreman v2 vocabulary: verify = check + build +
 test). `ci` mirrors the CI pipeline locally (`verify`, `security`, the
-network skills-drift check, the devcontainer permission assert) — use it on demand when
+devcontainer permission assert; `verify:skills` is omitted because harmon-devkit
+is the skills source and its dogfood links refuse self-vendoring) — use it on demand when
 CI is red and you want to iterate locally instead of waiting on each PR push.
 Keep it that way: a check the build workflow **gates on** and that can run
 locally belongs in `ci` too, or the "mirror" quietly stops being one. The one
