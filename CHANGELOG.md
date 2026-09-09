@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.41.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.41.0...v0.41.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **skills:** close Chromium in measure-rendered-contrast on throw ([#337](https://github.com/evanharmon1/harmon-devkit/issues/337)) ([f80b5c5](https://github.com/evanharmon1/harmon-devkit/commit/f80b5c5aa1376693f3f1ead7370443d209e1e27d))
+
 ## [0.41.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.40.0...v0.41.0) (2026-09-09)
 
 
