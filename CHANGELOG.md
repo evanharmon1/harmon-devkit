@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.41.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.40.0...v0.41.0) (2026-09-09)
+
+
+### Features
+
+* **devflow:** ship the stage skills as v2-only with a consumer pin audit ([#818](https://github.com/evanharmon1/harmon-devkit/issues/818)) ([2c03038](https://github.com/evanharmon1/harmon-devkit/commit/2c03038e398b626bdd8bf62a2b11b624fd755b20)), closes [#604](https://github.com/evanharmon1/harmon-devkit/issues/604)
+
+
+### Bug Fixes
+
+* **template:** update harmon-init to v4.43.0 ([#862](https://github.com/evanharmon1/harmon-devkit/issues/862)) ([34cea5a](https://github.com/evanharmon1/harmon-devkit/commit/34cea5afc28ebaaa4ebf03422ffdf9c86835dd12))
+* **track-work:** keep release-claim.sh jq inputs off argv ([#868](https://github.com/evanharmon1/harmon-devkit/issues/868)) ([48396cd](https://github.com/evanharmon1/harmon-devkit/commit/48396cd970e95dd2bfd364b271bce07cbcb951b1))
+* **track-work:** trust a self-assigned claimant in release-claim.sh ([#869](https://github.com/evanharmon1/harmon-devkit/issues/869)) ([7431cb3](https://github.com/evanharmon1/harmon-devkit/commit/7431cb3868a55c487962b43a72ca10b12b0cd2a6))
+
 ## [0.40.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.39.0...v0.40.0) (2026-09-07)
 
 
