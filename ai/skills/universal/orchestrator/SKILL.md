@@ -21,8 +21,13 @@ hand-decode an older shape, invent caps, or advance the pin to get past it
 that a repository's vendored-skill pin and its policy shape agree. Dispatch
 only roles whose harness can enforce their registry write boundary: a judgment
 role receives a result-only channel with no ambient workspace, shell, git, gh,
-or write credential, otherwise the run blocks. Use one worktree and branch per
-lane, record ownership, scope, dependencies, and the complete file overlap.
+or write credential, otherwise the run blocks.
+For `codex-cli` challenger and reviewer roles, the supported boundary is
+`assets/codex-judgment-dispatch.mjs`; require its version-pinned app-server
+configuration and refusal checks at the actual dispatch. Other Codex roles and
+versions remain unsupported until an equally enforceable projection exists.
+Use one worktree and branch per lane, record ownership, scope, dependencies,
+and the complete file overlap.
 Before dispatching overlapping scopes, either serialize them or record the
 explicit merge dependency in both lane briefs. Select implementers only from
 the resolved `[stage.implement].pool`, registry role eligibility, and resolved

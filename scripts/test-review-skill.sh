@@ -22,6 +22,7 @@ fixture="ai/schemas/fixtures/exit/single-round-clean-converge"
 render_record="ai/schemas/fixtures/render/record"
 monitor="scripts/dev-flow-monitor.sh"
 role_projection="ai/skills/universal/orchestrator/assets/role-capability-projection.mjs"
+codex_judgment="ai/skills/universal/orchestrator/assets/codex-judgment-dispatch.mjs"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -106,7 +107,63 @@ grep -Fq 'must not be reported as observed runtime enforcement' \
     templates/skills-sync/README.md ||
     fail "skills-sync documentation does not disclose missing runtime evidence"
 
+echo "==> Codex judgment dispatch binds a result-only request"
+codex_capture="$tmp/codex-capture"
+mkdir -p "$codex_capture"
+printf '%s\n' '#!/bin/sh' \
+    'printf "%s\n" "$@" >"$CODEX_CAPTURE/argv"' \
+    'sed -n "1,200p" >"$CODEX_CAPTURE/stdin"' \
+    'exit 0' >"$fake_bin/codex"
+chmod +x "$fake_bin/codex"
+printf '%s\n' 'Review only the supplied snapshot.' >"$tmp/judgment-prompt"
+printf '%s\n' 'positive-read-sentinel' >"$tmp/judgment-snapshot"
+config_json="$(node -e "import('./$codex_judgment').then(m => console.log(JSON.stringify(m.judgmentConfig(['fixture-mcp']))))")"
+jq -e '.["features.shell_tool"] == false and
+    .["features.unified_exec"] == false and .web_search == "disabled" and
+    .["features.apps"] == false and .["features.multi_agent"] == false and
+    .mcp_servers["fixture-mcp"].enabled == false' <<<"$config_json" >/dev/null ||
+    fail "Codex judgment config does not remove every forbidden tool family"
+if node -e "import('./$codex_judgment').then(m => { const c=m.judgmentConfig(); c['features.shell_tool']=true; m.assertEffectiveJudgmentConfig(c) })" \
+    >"$tmp/effective-config" 2>&1; then
+    fail "Codex effective-config check accepted a re-enabled shell tool"
+fi
+grep -Fq 'did not preserve features.shell_tool=false' "$tmp/effective-config" ||
+    fail "Codex effective-config refusal did not identify the leaked tool"
+if command -v codex >/dev/null 2>&1 && [ "$(codex --version 2>/dev/null)" = 'codex-cli 0.154.0' ]; then
+    node scripts/test-codex-judgment-runtime.mjs ||
+        fail "real Codex request-inventory probe failed"
+fi
+
+expect_codex_refusal() {
+    local label="$1"
+    shift
+    set +e
+    PATH="$fake_bin:$PATH" node "$codex_judgment" "$@" >"$tmp/codex-refusal" 2>&1
+    local status=$?
+    set -e
+    [ "$status" -eq 20 ] ||
+        fail "$label exited $status instead of refusal status 20: $(cat "$tmp/codex-refusal")"
+}
+expect_codex_refusal "Codex integrator dispatch" --role integrator --model gpt-5.6-sol \
+    --reasoning medium --prompt "$tmp/judgment-prompt" --snapshot "$tmp/judgment-snapshot"
+ln -s "$tmp/judgment-snapshot" "$tmp/snapshot-link"
+expect_codex_refusal "Codex symlink snapshot" --role reviewer --model gpt-5.6-sol \
+    --reasoning medium --prompt "$tmp/judgment-prompt" --snapshot "$tmp/snapshot-link"
+printf '%s\n' '#!/bin/sh' \
+    'if [ "$1" = "--version" ]; then echo "codex-cli 0.154.0"; exit 0; fi' \
+    'echo not-json' \
+    'exit 0' >"$fake_bin/codex"
+expect_codex_refusal "Codex malformed app-server probe" --role reviewer \
+    --model gpt-5.6-sol --reasoning medium --prompt "$tmp/judgment-prompt" \
+    --snapshot "$tmp/judgment-snapshot"
+grep -Eq 'non-JSON|exited before completion|input failed' "$tmp/codex-refusal" ||
+    fail "malformed app-server probe did not report a bounded protocol failure"
+
 echo "==> review skill names both role dispatches and record authority"
+grep -Fq 'codex-judgment-dispatch.mjs' "$skill" ||
+    fail "review skill does not bind codex-cli judgment dispatch to the result-only launcher"
+grep -Fq 'codex-judgment-dispatch.mjs' ai/skills/universal/orchestrator/SKILL.md ||
+    fail "orchestrator skill does not bind codex-cli judgment dispatch"
 for text in '[stage.challenge].finders' '[stage.review].finders' challenger reviewer \
     'scripts/dev-flow-exit.sh' 'scripts/render-dev-flow.sh' 'scripts/round-push.sh' \
     'run.json.evidence_comments' 'fenced JSON' 'git remote get-url origin' \

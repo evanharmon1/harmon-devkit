@@ -121,6 +121,23 @@ validated finding records from every earlier round of this same stage, not
 merely their IDs, so the role can compare evidence before asserting
 `repeat-of` or `supersedes`; an empty list is explicit in round 1.
 
+For a `codex-cli` finder, materialize that complete input as a regular snapshot
+file and dispatch only through
+`../orchestrator/assets/codex-judgment-dispatch.mjs`. Pass the resolved model
+and reasoning tier explicitly. This version-pinned app-server invocation creates
+an ephemeral thread with no runtime workspace or capability roots, disables
+shell/unified-exec, web, browser, app/connector, image, skill/plugin, and
+multi-agent tools, discovers and disables every effective MCP server, requests
+no approvals, never services an app-server approval request, verifies the
+returned runtime configuration, and refuses any unexpected tool event. Subject stdout to the existing result envelope and
+receipt validation; a role payload schema is not an OpenAI output envelope. It
+deliberately does not use Codex
+permission profiles: those do not compose with a `sandbox_mode` present in any
+loaded configuration layer. The caller supplies snapshot bytes rather than a
+workspace path, and must refuse a nonzero or capability-refusal exit before
+recording a pass. In-process Codex subagents are not a substitute because they
+inherit their parent's capability surface.
+
 For `challenge`, dispatch every primary finder in `[stage.challenge].finders`
 to the `challenger` role. For `review`, do the same for
 `[stage.review].finders` using the `reviewer` role. Retry an unavailable primary
