@@ -56,14 +56,20 @@ and the run blocks.
 
 ## Role capability gate
 
-`assets/role-capability-boundary.mjs` is the executable dispatch gate for the
-write-restricted role agents. Portable `ai/agents/*.md` files remain
-harness-neutral. A consumer vendors those sources to a neutral directory, then
-uses the asset's `project` command to materialize a separate harness-local
-agent file. For Claude Code, the supported challenger and reviewer projections
-contain the exact exclusive allowlist `tools: Read, Grep, Glob`; shell, Git,
-GitHub, edit/write, MCP, skill, and network tools are absent rather than merely
-discouraged. Never project in place over the portable source.
+`assets/role-capability-boundary.mjs` separates configuration evidence from
+runtime evidence for write-restricted role agents. Portable `ai/agents/*.md`
+files remain harness-neutral. A consumer vendors those sources to a neutral
+directory, then uses `project` to materialize a separate harness-local agent
+file. For Claude Code, challenger and reviewer candidate projections contain
+the exact exclusive allowlist `tools: Read, Grep, Glob`. Never project in place
+over the portable source.
+
+`validate-projection` proves only that this candidate is a regular local copy,
+is byte-exact for its portable source and declared tool list, and passes the
+installed Claude Code parser. It does **not** prove which agent definition an
+actual dispatch resolves, which live permission overrides the harness applies,
+or that forbidden operations fail. It is preparation, never dispatch
+authorization.
 
 Immediately before every challenger, reviewer, or integrator dispatch, run the
 same asset's `verify` command with the resolved harness, role, portable source,
@@ -75,21 +81,35 @@ node <orchestrator-skill-dir>/assets/role-capability-boundary.mjs verify \
   --source <portable-agent.md> --projected <harness-local-agent.md>
 ```
 
-Verification requires a regular local copy, reconstructs the expected file
-from the portable source, compares it byte-for-byte, and asks the installed
-Claude Code parser to validate the projected frontmatter. Exit `20`, a missing
-projection, a symlink, drift, an unavailable parser, or any other nonzero exit
-is a hard dispatch refusal and a recorded blocker. Neither
-`agent-registry.json`'s `can_restrict_writes` value nor successful projection
-at an earlier time substitutes for this dispatch-time check.
+The dispatch verifier requires both the prepared configuration and a launcher
+that atomically binds it to the runtime it starts. Exit `20`, a missing
+projection, a symlink, drift, an unavailable parser, absent runtime attestation,
+or any other nonzero exit is a hard dispatch refusal and a recorded blocker.
+Neither `agent-registry.json`'s `can_restrict_writes` value nor successful
+projection validation substitutes for this dispatch-time check.
 
-The implemented profile is deliberately narrow: only Claude Code challenger
-and reviewer dispatches are supported. Claude Code integrator dispatch is
-refused because that role needs shell and GitHub calls and a `tools:` allowlist
-cannot restrict Bash to the broker commands. Other harnesses are refused until
-they have their own executable projection and verification profile. Run those
-roles inline in the owning session where policy permits; never widen the agent
-to make the check pass.
+No delegated harness path is currently supported. Claude Code frontmatter has
+no runtime-resolution attestation here. Codex in-process subagents reapply the
+parent turn's live sandbox and approval overrides, so their custom-agent files
+cannot be the trust boundary either. The verifier therefore refuses every
+dispatch, including integrator, after any configuration checks pass. Run a role
+inline in the owning session only where policy permits; never widen an agent or
+treat an approval prompt as isolation.
+
+A supported one-shot launcher must live outside the candidate's writable root
+and perform one indivisible probe-and-exec operation. For an implementer it must
+deny root reads by default, grant minimal tool/runtime reads and writes only to
+that lane's worktree, deny shared Git metadata and other worktrees, disable
+command network, web, apps, MCP, browser, and computer-use surfaces, scrub
+credential-bearing environment variables, set approvals to `never`, and keep
+session state ephemeral. Its positive probe must write inside the lane; its
+negative probes must fail to read a sibling or parent checkout and shared
+Git/run state, fail to write outside the lane, and fail network access. The
+model must then start with the exact probed profile, root, and disabled
+capability set. Judgment roles use the same pattern with an immutable reviewed
+snapshot as the only readable root, no writable root, and stdout as the result
+channel. Until a supported harness exposes that binding and the probes pass
+outside any enclosing sandbox, parallel dispatch remains unavailable.
 
 ## Persistent supervision
 

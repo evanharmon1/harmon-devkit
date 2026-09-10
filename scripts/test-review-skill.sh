@@ -53,9 +53,9 @@ for forbidden in Bash Edit Write WebFetch WebSearch Skill Agent mcp__; do
     *"$forbidden"*) fail "reviewer projection grants forbidden tool $forbidden" ;;
     esac
 done
-PATH="$fake_bin:$PATH" node "$role_boundary" verify --harness claude-code \
+PATH="$fake_bin:$PATH" node "$role_boundary" validate-projection --harness claude-code \
     --role reviewer --source "$reviewer_source" --projected "$reviewer_projected" \
-    >/dev/null || fail "byte-exact reviewer projection did not verify"
+    >/dev/null || fail "byte-exact reviewer projection did not validate"
 
 expect_boundary_refusal() {
     local label="$1"
@@ -87,14 +87,25 @@ expect_boundary_refusal "unsupported integrator profile" project \
 expect_boundary_refusal "unsupported harness" project --harness codex-cli \
     --role reviewer --source "$reviewer_source" \
     --projected "$projected_dir/codex-reviewer.md"
+rm "$reviewer_projected"
+node "$role_boundary" project --harness claude-code --role reviewer \
+    --source "$reviewer_source" --projected "$reviewer_projected" >/dev/null ||
+    fail "could not restore a valid reviewer projection"
+expect_boundary_refusal "parser-valid projection without runtime binding" verify \
+    --harness claude-code --role reviewer --source "$reviewer_source" \
+    --projected "$reviewer_projected"
 
 for workflow_skill in ai/skills/universal/orchestrator/SKILL.md "$skill" \
     ai/skills/universal/integrate/SKILL.md; do
     grep -Fq 'role-capability-boundary.mjs verify' "$workflow_skill" ||
         fail "$workflow_skill does not require the executable dispatch-time capability gate"
 done
-grep -Fq 'Claude Code integrator dispatch is' ai/skills/universal/orchestrator/SKILL.md ||
-    fail "orchestrator does not document the unsupported integrator path"
+grep -Fq 'No delegated harness path is currently supported' \
+    ai/skills/universal/orchestrator/SKILL.md ||
+    fail "orchestrator represents configuration validation as runtime support"
+grep -Fq 'one indivisible probe-and-exec operation' \
+    ai/skills/universal/orchestrator/SKILL.md ||
+    fail "orchestrator does not state the runtime binding invariant"
 
 echo "==> review skill names both role dispatches and record authority"
 for text in '[stage.challenge].finders' '[stage.review].finders' challenger reviewer \

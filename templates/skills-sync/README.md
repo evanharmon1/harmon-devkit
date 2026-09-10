@@ -76,18 +76,19 @@ done
 ```
 
 The portable files and their `.AGENTS_PROVENANCE` remain byte-identical to the
-pin, while the files Claude Code loads carry its own exclusive `tools:`
-allowlist. Immediately before dispatch, `/orchestrator` runs the asset's
-`verify` command against the portable source and exact projected file. That
-check refuses a missing, symlinked, drifted, or parser-invalid copy; the
-registry's `can_restrict_writes` flag alone never passes it.
+pin, while the projected files carry Claude Code's exclusive `tools:`
+allowlist. `validate-projection` can check a projected file's bytes and parser
+shape. That result is configuration evidence only: it does not prove a live
+dispatch resolved that file or denied the parent session's ambient
+capabilities. Immediately before dispatch, `/orchestrator` runs `verify`; the
+registry's `can_restrict_writes` flag and a valid projection alone never pass
+it.
 
-The current executable profile supports only Claude Code challenger and
-reviewer projections (`Read`, `Grep`, and `Glob`). It refuses Claude Code
-integrator and all other harnesses. The integrator needs shell and GitHub
-operations, and granting Bash without an independently enforced command-level
-boundary would restore ambient credentials. Treat that refusal as an honest
-unsupported path, not a reason to add Bash locally.
+The current helper can prepare Claude Code challenger and reviewer projections
+(`Read`, `Grep`, and `Glob`), but no delegated harness has a runtime-bound
+launcher at this pin. `verify` therefore refuses every role and harness,
+including integrator. Treat that refusal as an honest unsupported path, not a
+reason to add Bash, approvals, or another ambient capability locally.
 
 ### Stopping
 

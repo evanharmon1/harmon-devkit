@@ -126,7 +126,10 @@ Immediately before each role invocation, run the orchestrator skill's
 role, portable source, and exact harness-local agent file. A missing asset or
 projection and every nonzero result are a dispatch refusal, not an inline
 allowlist assertion. Record the blocker and do not try another invocation path
-that restores ambient capabilities.
+that restores ambient capabilities. Projection/parser validation is not a
+successful verification. At this pin the verifier has no runtime-bound launcher
+and refuses every delegated invocation; it must not be described as a completed
+confidence pass.
 
 For `challenge`, dispatch every primary finder in `[stage.challenge].finders`
 to the `challenger` role. For `review`, do the same for

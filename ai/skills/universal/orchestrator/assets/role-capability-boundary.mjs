@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// Materialize and verify harness-local projections of portable role agents.
+// Materialize and inspect harness-local projections of portable role agents.
 //
 // The portable ai/agents sources deliberately carry no harness-specific tool
 // policy. A projection adds the policy only to a local copy. Verification is
 // deliberately byte-exact: a registry capability boolean, an instruction in
 // the prompt, or a tools key with the wrong value is not runtime evidence.
+// `verify` fails closed until a launcher can bind this exact configuration to
+// the runtime it starts and attest the resulting denials.
 
 import { execFileSync } from 'node:child_process'
 import {
@@ -33,14 +35,14 @@ function fail(message, status = 2) {
 
 function usage() {
   fail(
-    'usage: role-capability-boundary.mjs <project|verify> --harness <slug> ' +
+    'usage: role-capability-boundary.mjs <project|validate-projection|verify> --harness <slug> ' +
       '--role <role> --source <portable-agent.md> --projected <local-agent.md>'
   )
 }
 
 function parseArgs(argv) {
   const command = argv.shift()
-  if (command !== 'project' && command !== 'verify') usage()
+  if (!['project', 'validate-projection', 'verify'].includes(command)) usage()
   const values = { command }
   while (argv.length > 0) {
     const key = argv.shift()
@@ -182,10 +184,17 @@ if (args.command === 'project') {
   writeFileSync(temporary, expected, { flag: 'wx' })
   renameSync(temporary, projected)
   console.log(`projected ${args.role} for ${args.harness} -> ${projected}`)
-} else {
+} else if (args.command === 'validate-projection') {
   assertProjectedFile(projected, expected)
   validateWithClaude(projected)
   console.log(
-    `verified ${args.harness}/${args.role}: tools=${tools.join(',')} and no shell, edit, write, MCP, or network tool`
+    `validated projection ${args.harness}/${args.role}: tools=${tools.join(',')}; runtime binding not attested`
+  )
+} else {
+  assertProjectedFile(projected, expected)
+  validateWithClaude(projected)
+  fail(
+    `refusing ${args.role} dispatch on ${args.harness}: the projection is parser-valid, but no supported launcher binds this exact file to a runtime capability attestation`,
+    REFUSED
   )
 }

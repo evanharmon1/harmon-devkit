@@ -96,17 +96,16 @@ Safe with the repo's gates — `lint-hygiene.sh` skips symlinks, `.claude/**` is
 excluded from markdownlint, and this guard only walks `ai/agents/`, so nothing
 is linted or counted twice.
 
-Those dogfood symlinks intentionally prove no capability boundary. Before a
-Dev-flow role dispatch, `/orchestrator` requires a regular projected copy and
-runs
-`ai/skills/universal/orchestrator/assets/role-capability-boundary.mjs verify`
-against the exact file the harness will load. The same asset's `project`
-command creates the local copy after portable agents have been vendored to a
-neutral source directory. Today it supports Claude Code's challenger and
-reviewer with only `Read`, `Grep`, and `Glob`; it refuses integrator and every
-other unimplemented harness. The refusal is intentional: granting Bash to the
-integrator would restore the ambient shell and GitHub credentials the boundary
-exists to remove.
+Those dogfood symlinks intentionally prove no capability boundary. A consumer
+may create a regular projected copy and run the orchestrator asset's
+`validate-projection` command against it. The same asset's `project` command
+creates the local copy after portable agents have been vendored to a neutral
+source directory, and `validate-projection` checks its bytes and parser shape.
+Those steps do not
+prove that a live dispatch resolved that file or retained its restrictions.
+No delegated harness is currently runtime-attested, so `verify` refuses every
+role. This is intentional: a prompt, manifest, parser, or approval request is
+not the capability boundary the role contract requires.
 
 ## Add an agent
 
