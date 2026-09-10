@@ -178,6 +178,10 @@ if (args.command === 'project') {
   if (existing !== null && existing !== expected) {
     fail(`refusing to overwrite a divergent local agent projection: ${projected}`, REFUSED)
   }
+  if (existing === expected) {
+    console.log(`projection already current: ${args.harness}/${args.role} -> ${projected}`)
+    process.exit(0)
+  }
   mkdirSync(dirname(projected), { recursive: true })
   const temporary = `${projected}.tmp-${process.pid}`
   writeFileSync(temporary, expected, { flag: 'wx' })

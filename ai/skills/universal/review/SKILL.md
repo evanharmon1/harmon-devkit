@@ -121,14 +121,23 @@ validated finding records from every earlier round of this same stage, not
 merely their IDs, so the role can compare evidence before asserting
 `repeat-of` or `supersedes`; an empty list is explicit in round 1.
 
-For a `codex-cli` finder, materialize the trusted role contract as a regular
-prompt file and the complete reviewed input as a separate regular snapshot
-file. Invoke the registry's task target only in its restricted role mode:
-`task <challenge:codex|review:codex> -- --judgment --model <model>
---reasoning <tier> --prompt <file> --snapshot <file>
---turn-timeout-seconds <remaining-budget>`. The task target bridges directly to
-`../orchestrator/assets/codex-judgment-dispatch.mjs`; ordinary interactive task
-invocations are not schema-bound role dispatches. This version-pinned
+For a `codex-cli` finder, the trusted caller must verify and freeze a separately
+pinned tooling root, including every resolved symlink target in the executed
+closure; absent provenance or any candidate-owned executable code refuses.
+Never run the role task from the candidate checkout. Materialize
+trusted role context as a regular prompt file and the complete reviewed input
+as a separate regular snapshot file, then invoke the registry task exactly as
+`task --dir <trusted-root> <challenge:codex|review:codex> -- --judgment
+--trusted-tooling-root <trusted-root> --model <model> --reasoning <tier>
+--prompt <trusted-file> --snapshot <candidate-bytes-file>
+--turn-timeout-seconds <remaining-budget>`. The trusted task target combines
+its pinned mode and severity text with the caller's trusted context into the
+sole developer instruction, and resolves only its pinned
+`.agents/skills/orchestrator/assets/codex-judgment-dispatch.mjs`. A missing pin
+refuses; it never falls back to candidate tooling. Ordinary interactive task
+invocations are not schema-bound role dispatches. The script's explicit-root
+equality and required-file checks do not authenticate that pin; they enforce
+the root the already-trusted caller selected. This version-pinned
 app-server invocation creates
 an ephemeral thread with no runtime workspace or capability roots, disables
 shell/unified-exec, web, browser, app/connector, image, skill/plugin, and

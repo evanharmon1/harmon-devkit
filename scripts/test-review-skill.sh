@@ -59,6 +59,11 @@ done
 PATH="$fake_bin:$PATH" node "$role_projection" validate-projection --harness claude-code \
     --role reviewer --source "$reviewer_source" --projected "$reviewer_projected" \
     >/dev/null || fail "byte-exact reviewer projection did not validate"
+chmod 555 "$projected_dir"
+node "$role_projection" project --harness claude-code --role reviewer \
+    --source "$reviewer_source" --projected "$reviewer_projected" >/dev/null ||
+    fail "byte-identical projection should be a write-free no-op"
+chmod 755 "$projected_dir"
 
 expect_boundary_refusal() {
     local label="$1"
@@ -169,6 +174,16 @@ expect_codex_refusal "Codex malformed app-server probe" --role reviewer \
     --mode-instruction "$mode_instruction" --severity-instruction "$severity_instruction"
 grep -Eq 'non-JSON|exited before completion|input failed' "$tmp/codex-refusal" ||
     fail "malformed app-server probe did not report a bounded protocol failure"
+printf '%s\n' '#!/bin/sh' 'sed -n "1,200p" >/dev/null' >"$fake_bin/codex"
+started_at="$(date +%s)"
+expect_codex_refusal "Codex stalled initialize" --role reviewer \
+    --model gpt-5.6-sol --reasoning medium --prompt "$tmp/judgment-prompt" \
+    --snapshot "$tmp/judgment-snapshot" --turn-timeout-seconds 1 \
+    --mode-instruction "$mode_instruction" --severity-instruction "$severity_instruction"
+elapsed="$(($(date +%s) - started_at))"
+[ "$elapsed" -le 3 ] || fail "caller deadline took ${elapsed}s to refuse a stalled setup"
+grep -Eq 'caller-supplied deadline|timed out' "$tmp/codex-refusal" ||
+    fail "stalled setup did not report its bounded deadline"
 
 echo "==> review skill names both role dispatches and record authority"
 grep -Fq 'codex-judgment-dispatch.mjs' "$skill" ||
@@ -177,6 +192,8 @@ grep -Fq 'codex-judgment-dispatch.mjs' ai/skills/universal/orchestrator/SKILL.md
     fail "orchestrator skill does not bind codex-cli judgment dispatch"
 grep -Fq -- '--judgment' "$skill" ||
     fail "review skill does not require the registry task target's restricted mode"
+grep -Fq 'task --dir <trusted-root>' "$skill" ||
+    fail "review skill does not require a separately pinned tooling root"
 for text in '[stage.challenge].finders' '[stage.review].finders' challenger reviewer \
     'scripts/dev-flow-exit.sh' 'scripts/render-dev-flow.sh' 'scripts/round-push.sh' \
     'run.json.evidence_comments' 'fenced JSON' 'git remote get-url origin' \

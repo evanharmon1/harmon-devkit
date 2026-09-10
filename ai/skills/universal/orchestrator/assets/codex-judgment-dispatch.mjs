@@ -93,6 +93,8 @@ function send(child, message) {
 }
 
 async function run(args) {
+  const remainingMs = () => args.deadlineMs - Date.now()
+  if (remainingMs() <= 0) refuse('judgment dispatch exhausted its caller-supplied deadline')
   const serverArgs = [
     'app-server', '--strict-config', '--listen', 'stdio://',
     '-c', 'approval_policy="never"',
@@ -142,13 +144,15 @@ async function run(args) {
   })
   let id = 0
   const request = (method, params) => {
+    const timeoutMs = Math.min(RPC_TIMEOUT_MS, remainingMs())
+    if (timeoutMs <= 0) return Promise.reject(new Error(`${method} exceeded the caller-supplied deadline`))
     id += 1
     const requestId = String(id)
     const promise = new Promise((resolvePromise, reject) => {
       const timer = setTimeout(() => {
         pending.delete(requestId)
         reject(new Error(`${method} timed out`))
-      }, RPC_TIMEOUT_MS)
+      }, timeoutMs)
       pending.set(requestId, {
         resolve: (value) => {
           clearTimeout(timer)
@@ -163,8 +167,10 @@ async function run(args) {
     send(child, { id: requestId, method, params })
     return promise
   }
-  const nextNotification = async (timeoutMs = RPC_TIMEOUT_MS) => {
+  const nextNotification = async () => {
     while (!notifications.length && !failure) {
+      const timeoutMs = remainingMs()
+      if (timeoutMs <= 0) throw new Error('judgment turn exceeded its caller-supplied deadline')
       await new Promise((resolvePromise, reject) => {
         const timer = setTimeout(() => {
           wake = null
@@ -211,7 +217,6 @@ async function run(args) {
     if (started?.model !== args.model) refuse(`runtime changed the requested model to ${started?.model || 'unknown'}`)
     if (started?.thread?.ephemeral !== true || started.thread.path !== null) refuse('runtime did not preserve ephemeral execution')
     if ((started?.instructionSources ?? []).length) refuse('runtime loaded ambient instruction sources')
-    const turnDeadline = Date.now() + args.turnTimeoutSeconds * 1000
     const turn = await request('turn/start', {
       threadId: started.thread.id,
       input: [{ type: 'text', text: args.snapshot, textElements: [] }],
@@ -219,9 +224,8 @@ async function run(args) {
     })
     let response
     for (;;) {
-      const remaining = turnDeadline - Date.now()
-      if (remaining <= 0) refuse('judgment turn exceeded its caller-supplied deadline')
-      const event = await nextNotification(remaining)
+      if (remainingMs() <= 0) refuse('judgment turn exceeded its caller-supplied deadline')
+      const event = await nextNotification()
       const item = event?.params?.item
       // Defense in depth only: request-inventory tests prove prevention before dispatch.
       if (item?.type && !SAFE_ITEMS.has(item.type)) refuse(`runtime exposed unexpected capability: ${item.type}`)
@@ -235,9 +239,10 @@ async function run(args) {
     }
   } finally {
     child.stdin.end()
+    const shutdownWait = Math.max(0, Math.min(SHUTDOWN_TIMEOUT_MS, remainingMs()))
     await Promise.race([
       closed,
-      new Promise((resolveTimeout) => setTimeout(resolveTimeout, SHUTDOWN_TIMEOUT_MS))
+      new Promise((resolveTimeout) => setTimeout(resolveTimeout, shutdownWait))
     ])
     child.unref()
     child.stdout.destroy()
@@ -254,6 +259,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
       refuse('turn-timeout-seconds must be an integer from 1 through 43200', 2)
     }
     args.turnTimeoutSeconds = Number(args['turn-timeout-seconds'])
+    args.deadlineMs = Date.now() + args.turnTimeoutSeconds * 1000
     const prompt = regularFile(args.prompt, 'prompt')
     const snapshot = regularFile(args.snapshot, 'snapshot')
     const modeInstruction = regularFile(args['mode-instruction'], 'mode instruction')

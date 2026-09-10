@@ -58,28 +58,36 @@ esac
 # wall-clock budget explicitly. The launcher owns the native capability check.
 if [ "${1:-}" = "--judgment" ]; then
     shift
+    if [ "${1:-}" != "--trusted-tooling-root" ] || [ -z "${2:-}" ]; then
+        echo "restricted Codex judgment requires --trusted-tooling-root from the pinned caller" >&2
+        exit 20
+    fi
+    trusted_root_arg="$2"
+    shift 2
+    if ! trusted_root="$(CDPATH= cd -- "$trusted_root_arg" 2>/dev/null && pwd -P)"; then
+        echo "trusted Codex tooling root is unavailable; refusing role dispatch" >&2
+        exit 20
+    fi
+    tooling_root="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
+    if [ "$trusted_root" != "$tooling_root" ]; then
+        echo "task is not running from the caller-pinned tooling root; refusing role dispatch" >&2
+        exit 20
+    fi
     case "$MODE" in
     challenge) role=challenger ;;
     review) role=reviewer ;;
     esac
-    dispatcher=''
-    for candidate in \
-        "$script_dir/../.agents/skills/orchestrator/assets/codex-judgment-dispatch.mjs" \
-        "$script_dir/../.claude/skills/orchestrator/assets/codex-judgment-dispatch.mjs" \
-        "$script_dir/../ai/skills/universal/orchestrator/assets/codex-judgment-dispatch.mjs"; do
-        if [ -f "$candidate" ]; then
-            dispatcher="$candidate"
-            break
-        fi
-    done
-    if [ -z "$dispatcher" ]; then
-        echo "restricted Codex judgment dispatcher is not vendored; refusing role dispatch" >&2
+    dispatcher="$trusted_root/.agents/skills/orchestrator/assets/codex-judgment-dispatch.mjs"
+    mode_instruction="$trusted_root/scripts/lib/review-instructions/$MODE.txt"
+    severity_instruction="$trusted_root/scripts/lib/review-instructions/severity.txt"
+    if [ ! -f "$dispatcher" ] || [ ! -f "$mode_instruction" ] || [ ! -f "$severity_instruction" ]; then
+        echo "pinned Codex judgment closure is incomplete; refusing role dispatch" >&2
         exit 20
     fi
     exec node "$dispatcher" \
         --role "$role" \
-        --mode-instruction "$script_dir/lib/review-instructions/$MODE.txt" \
-        --severity-instruction "$script_dir/lib/review-instructions/severity.txt" \
+        --mode-instruction "$mode_instruction" \
+        --severity-instruction "$severity_instruction" \
         "$@"
 fi
 

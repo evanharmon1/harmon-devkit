@@ -23,10 +23,16 @@ only roles whose harness can enforce their registry write boundary: a judgment
 role receives a result-only channel with no ambient workspace, shell, git, gh,
 or write credential, otherwise the run blocks.
 For `codex-cli` challenger and reviewer roles, the supported boundary is
-the registry task target with `--judgment`, which bridges to
-`assets/codex-judgment-dispatch.mjs`; require its version-pinned app-server
-configuration, caller-budget timeout, and refusal checks at the actual
-dispatch. For roles that require this result-only boundary, other Codex
+the registry task target invoked with `task --dir <trusted-root>` and
+`--judgment --trusted-tooling-root <trusted-root>`. The separately pinned root,
+never the candidate checkout, supplies the task, mode/severity instructions,
+and `assets/codex-judgment-dispatch.mjs`; require its version-pinned app-server
+configuration, single caller-budget deadline, and refusal checks at the actual
+dispatch. Before invocation, the trusted caller verifies the provenance of the
+complete executed closure, including resolved symlink targets, and refuses an
+absent pin or candidate-owned code. The script's matching-root check enforces
+that selection but does not authenticate it. For roles that require this
+result-only boundary, other Codex
 versions remain unsupported and the integrator remains unsupported until an
 equally enforceable projection exists. This does not change ordinary
 write-capable implementer eligibility.
