@@ -52,6 +52,37 @@ review | challenge) shift ;;
     ;;
 esac
 
+# The schema-bound confidence-stage path is deliberately separate from the
+# ordinary interactive review above. Its caller has already materialized the
+# trusted role instruction and untrusted snapshot, and supplies the remaining
+# wall-clock budget explicitly. The launcher owns the native capability check.
+if [ "${1:-}" = "--judgment" ]; then
+    shift
+    case "$MODE" in
+    challenge) role=challenger ;;
+    review) role=reviewer ;;
+    esac
+    dispatcher=''
+    for candidate in \
+        "$script_dir/../.agents/skills/orchestrator/assets/codex-judgment-dispatch.mjs" \
+        "$script_dir/../.claude/skills/orchestrator/assets/codex-judgment-dispatch.mjs" \
+        "$script_dir/../ai/skills/universal/orchestrator/assets/codex-judgment-dispatch.mjs"; do
+        if [ -f "$candidate" ]; then
+            dispatcher="$candidate"
+            break
+        fi
+    done
+    if [ -z "$dispatcher" ]; then
+        echo "restricted Codex judgment dispatcher is not vendored; refusing role dispatch" >&2
+        exit 20
+    fi
+    exec node "$dispatcher" \
+        --role "$role" \
+        --mode-instruction "$script_dir/lib/review-instructions/$MODE.txt" \
+        --severity-instruction "$script_dir/lib/review-instructions/severity.txt" \
+        "$@"
+fi
+
 if ! command -v codex >/dev/null 2>&1; then
     echo "codex CLI not found. Install it (brew install --cask codex, or npm install -g @openai/codex)," >&2
     echo "authenticate with 'codex login', then re-run. See docs/guides/codex-review.md." >&2

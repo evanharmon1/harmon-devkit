@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 // Dispatch a Codex challenger/reviewer through a tool-free ephemeral app-server thread.
 
-import { spawn, spawnSync } from 'node:child_process'
-import { lstatSync, readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createInterface } from 'node:readline'
+import { pathToFileURL } from 'node:url'
 
 const REFUSED = 20
 const SUPPORTED_VERSION = '0.154.0'
 const SAFE_ITEMS = new Set(['userMessage', 'agentMessage', 'reasoning'])
 const RPC_TIMEOUT_MS = 30_000
+const SHUTDOWN_TIMEOUT_MS = 5_000
 
 export function judgmentConfig(mcpNames = []) {
   return {
@@ -65,12 +67,12 @@ function parseArgs(argv) {
     const key = argv.shift()
     const value = argv.shift()
     const name = key?.startsWith('--') ? key.slice(2) : ''
-    if (!['role', 'model', 'reasoning', 'prompt', 'snapshot'].includes(name) || !value || values[name]) {
-      refuse('usage: --role <challenger|reviewer> --model <model> --reasoning <level> --prompt <file> --snapshot <file>', 2)
+    if (!['role', 'model', 'reasoning', 'prompt', 'snapshot', 'turn-timeout-seconds', 'mode-instruction', 'severity-instruction'].includes(name) || !value || values[name]) {
+      refuse('usage: --role <challenger|reviewer> --model <model> --reasoning <level> --prompt <file> --snapshot <file> --turn-timeout-seconds <seconds>', 2)
     }
     values[name] = value
   }
-  if (Object.keys(values).length !== 5) refuse('all dispatch arguments are required', 2)
+  if (Object.keys(values).length !== 8) refuse('all dispatch arguments are required', 2)
   return values
 }
 
@@ -91,11 +93,6 @@ function send(child, message) {
 }
 
 async function run(args) {
-  const version = spawnSync('codex', ['--version'], { encoding: 'utf8' })
-  if (version.error || version.status !== 0) refuse('Codex CLI version could not be verified')
-  if (version.stdout.trim() !== `codex-cli ${SUPPORTED_VERSION}`) {
-    refuse(`unsupported Codex CLI version: ${version.stdout.trim() || 'unknown'}`)
-  }
   const serverArgs = [
     'app-server', '--strict-config', '--listen', 'stdio://',
     '-c', 'approval_policy="never"',
@@ -107,6 +104,7 @@ async function run(args) {
   const child = spawn('codex', serverArgs, {
     stdio: ['pipe', 'pipe', 'inherit']
   })
+  const closed = new Promise((resolveClosed) => child.once('close', resolveClosed))
   const pending = new Map()
   const notifications = []
   let wake = null
@@ -165,13 +163,13 @@ async function run(args) {
     send(child, { id: requestId, method, params })
     return promise
   }
-  const nextNotification = async () => {
+  const nextNotification = async (timeoutMs = RPC_TIMEOUT_MS) => {
     while (!notifications.length && !failure) {
       await new Promise((resolvePromise, reject) => {
         const timer = setTimeout(() => {
           wake = null
           reject(new Error('turn notification timed out'))
-        }, RPC_TIMEOUT_MS)
+        }, timeoutMs)
         wake = () => {
           clearTimeout(timer)
           resolvePromise()
@@ -183,10 +181,14 @@ async function run(args) {
     return notifications.shift()
   }
   try {
-    await request('initialize', {
+    const initialized = await request('initialize', {
       clientInfo: { name: 'harmon-devkit-judgment', version: '1' },
       capabilities: { experimentalApi: true }
     })
+    const runtimeVersion = /^harmon-devkit-judgment\/([^ ]+) /.exec(initialized?.userAgent ?? '')?.[1]
+    if (runtimeVersion !== SUPPORTED_VERSION) {
+      refuse(`unsupported Codex CLI version: ${runtimeVersion || 'unknown'}`)
+    }
     send(child, { method: 'initialized' })
     const effective = await request('config/read', { cwd: tmpdir(), includeLayers: false })
     assertEffectiveJudgmentConfig(effective?.config)
@@ -202,21 +204,24 @@ async function run(args) {
       environments: [],
       dynamicTools: [],
       selectedCapabilityRoots: [],
+      developerInstructions: `${args.prompt.trimEnd()}\n\n${args.modeInstruction.trimEnd()}\n\n${args.severityInstruction.trimEnd()}\n`,
       config: judgmentConfig(Object.keys(servers))
     })
     if (!['never', 'on-request'].includes(started?.approvalPolicy)) refuse('runtime returned an unknown approval policy')
     if (started?.model !== args.model) refuse(`runtime changed the requested model to ${started?.model || 'unknown'}`)
     if (started?.thread?.ephemeral !== true || started.thread.path !== null) refuse('runtime did not preserve ephemeral execution')
     if ((started?.instructionSources ?? []).length) refuse('runtime loaded ambient instruction sources')
-    const text = `${args.prompt.trimEnd()}\n\n<reviewed-snapshot>\n${args.snapshot}\n</reviewed-snapshot>\n`
+    const turnDeadline = Date.now() + args.turnTimeoutSeconds * 1000
     const turn = await request('turn/start', {
       threadId: started.thread.id,
-      input: [{ type: 'text', text, textElements: [] }],
+      input: [{ type: 'text', text: args.snapshot, textElements: [] }],
       effort: args.reasoning
     })
     let response
     for (;;) {
-      const event = await nextNotification()
+      const remaining = turnDeadline - Date.now()
+      if (remaining <= 0) refuse('judgment turn exceeded its caller-supplied deadline')
+      const event = await nextNotification(remaining)
       const item = event?.params?.item
       // Defense in depth only: request-inventory tests prove prevention before dispatch.
       if (item?.type && !SAFE_ITEMS.has(item.type)) refuse(`runtime exposed unexpected capability: ${item.type}`)
@@ -230,21 +235,37 @@ async function run(args) {
     }
   } finally {
     child.stdin.end()
+    await Promise.race([
+      closed,
+      new Promise((resolveTimeout) => setTimeout(resolveTimeout, SHUTDOWN_TIMEOUT_MS))
+    ])
+    child.unref()
+    child.stdout.destroy()
   }
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${resolve(process.argv[1])}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   try {
     const args = parseArgs(process.argv.slice(2))
     if (!['challenger', 'reviewer'].includes(args.role)) refuse(`role ${args.role} has no result-only Codex profile`)
     if (!['low', 'medium', 'high', 'xhigh'].includes(args.reasoning)) refuse(`unsupported reasoning level: ${args.reasoning}`)
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(args.model)) refuse(`invalid model name: ${args.model}`)
+    if (!/^[1-9][0-9]*$/.test(args['turn-timeout-seconds']) || Number(args['turn-timeout-seconds']) > 43_200) {
+      refuse('turn-timeout-seconds must be an integer from 1 through 43200', 2)
+    }
+    args.turnTimeoutSeconds = Number(args['turn-timeout-seconds'])
     const prompt = regularFile(args.prompt, 'prompt')
     const snapshot = regularFile(args.snapshot, 'snapshot')
+    const modeInstruction = regularFile(args['mode-instruction'], 'mode instruction')
+    const severityInstruction = regularFile(args['severity-instruction'], 'severity instruction')
     if (basename(snapshot) === 'auth.json') refuse('credential files cannot be judgment snapshots')
     args.prompt = readFileSync(prompt, 'utf8')
     args.snapshot = readFileSync(snapshot, 'utf8')
-    if (!args.prompt.trim() || !args.snapshot.trim()) refuse('prompt and snapshot must be nonempty')
+    args.modeInstruction = readFileSync(modeInstruction, 'utf8')
+    args.severityInstruction = readFileSync(severityInstruction, 'utf8')
+    if (!args.prompt.trim() || !args.snapshot.trim() || !args.modeInstruction.trim() || !args.severityInstruction.trim()) {
+      refuse('prompt, snapshot, and instructions must be nonempty')
+    }
     await run(args)
   } catch (error) {
     console.error(`codex-judgment-dispatch: refusing dispatch: ${error.message}`)

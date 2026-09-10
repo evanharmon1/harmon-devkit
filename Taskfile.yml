@@ -751,12 +751,12 @@ tasks:
       - ./scripts/triage.sh {{.CLI_ARGS}}
 
   review:codex:
-    desc: "Codex verification review (usage: task review:codex -- [--base <ref>|--uncommitted] [focus text])"
+    desc: "Codex verification review (interactive scope, or --judgment restricted role dispatch)"
     cmds:
       - ./scripts/codex-review.sh review {{.CLI_ARGS}}
 
   challenge:codex:
-    desc: "Codex adversarial review (usage: task challenge:codex -- [--base <ref>|--uncommitted] [focus text])"
+    desc: "Codex adversarial review (interactive scope, or --judgment restricted role dispatch)"
     cmds:
       - ./scripts/codex-review.sh challenge {{.CLI_ARGS}}
 

@@ -121,10 +121,15 @@ validated finding records from every earlier round of this same stage, not
 merely their IDs, so the role can compare evidence before asserting
 `repeat-of` or `supersedes`; an empty list is explicit in round 1.
 
-For a `codex-cli` finder, materialize that complete input as a regular snapshot
-file and dispatch only through
-`../orchestrator/assets/codex-judgment-dispatch.mjs`. Pass the resolved model
-and reasoning tier explicitly. This version-pinned app-server invocation creates
+For a `codex-cli` finder, materialize the trusted role contract as a regular
+prompt file and the complete reviewed input as a separate regular snapshot
+file. Invoke the registry's task target only in its restricted role mode:
+`task <challenge:codex|review:codex> -- --judgment --model <model>
+--reasoning <tier> --prompt <file> --snapshot <file>
+--turn-timeout-seconds <remaining-budget>`. The task target bridges directly to
+`../orchestrator/assets/codex-judgment-dispatch.mjs`; ordinary interactive task
+invocations are not schema-bound role dispatches. This version-pinned
+app-server invocation creates
 an ephemeral thread with no runtime workspace or capability roots, disables
 shell/unified-exec, web, browser, app/connector, image, skill/plugin, and
 multi-agent tools, discovers and disables every effective MCP server, requests

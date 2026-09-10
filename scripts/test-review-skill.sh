@@ -23,6 +23,8 @@ render_record="ai/schemas/fixtures/render/record"
 monitor="scripts/dev-flow-monitor.sh"
 role_projection="ai/skills/universal/orchestrator/assets/role-capability-projection.mjs"
 codex_judgment="ai/skills/universal/orchestrator/assets/codex-judgment-dispatch.mjs"
+mode_instruction="scripts/lib/review-instructions/review.txt"
+severity_instruction="scripts/lib/review-instructions/severity.txt"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -76,6 +78,10 @@ expect_boundary_refusal "absent projection" validate-projection --harness claude
     --projected "$projected_dir/missing.md"
 printf '\n# tampered\n' >>"$reviewer_projected"
 expect_boundary_refusal "tampered projection" validate-projection --harness claude-code \
+    --role reviewer --source "$reviewer_source" --projected "$reviewer_projected"
+printf '%s\n' '<!-- managed role projection: claude-code/reviewer/read-only-v1 -->' \
+    >>"$reviewer_projected"
+expect_boundary_refusal "marker substring overwrite" project --harness claude-code \
     --role reviewer --source "$reviewer_source" --projected "$reviewer_projected"
 rm "$reviewer_projected"
 ln -s "$(realpath "$reviewer_source")" "$reviewer_projected"
@@ -145,17 +151,22 @@ expect_codex_refusal() {
         fail "$label exited $status instead of refusal status 20: $(cat "$tmp/codex-refusal")"
 }
 expect_codex_refusal "Codex integrator dispatch" --role integrator --model gpt-5.6-sol \
-    --reasoning medium --prompt "$tmp/judgment-prompt" --snapshot "$tmp/judgment-snapshot"
+    --reasoning medium --prompt "$tmp/judgment-prompt" --snapshot "$tmp/judgment-snapshot" \
+    --turn-timeout-seconds 60 --mode-instruction "$mode_instruction" \
+    --severity-instruction "$severity_instruction"
 ln -s "$tmp/judgment-snapshot" "$tmp/snapshot-link"
 expect_codex_refusal "Codex symlink snapshot" --role reviewer --model gpt-5.6-sol \
-    --reasoning medium --prompt "$tmp/judgment-prompt" --snapshot "$tmp/snapshot-link"
+    --reasoning medium --prompt "$tmp/judgment-prompt" --snapshot "$tmp/snapshot-link" \
+    --turn-timeout-seconds 60 --mode-instruction "$mode_instruction" \
+    --severity-instruction "$severity_instruction"
 printf '%s\n' '#!/bin/sh' \
     'if [ "$1" = "--version" ]; then echo "codex-cli 0.154.0"; exit 0; fi' \
     'echo not-json' \
     'exit 0' >"$fake_bin/codex"
 expect_codex_refusal "Codex malformed app-server probe" --role reviewer \
     --model gpt-5.6-sol --reasoning medium --prompt "$tmp/judgment-prompt" \
-    --snapshot "$tmp/judgment-snapshot"
+    --snapshot "$tmp/judgment-snapshot" --turn-timeout-seconds 60 \
+    --mode-instruction "$mode_instruction" --severity-instruction "$severity_instruction"
 grep -Eq 'non-JSON|exited before completion|input failed' "$tmp/codex-refusal" ||
     fail "malformed app-server probe did not report a bounded protocol failure"
 
@@ -164,6 +175,8 @@ grep -Fq 'codex-judgment-dispatch.mjs' "$skill" ||
     fail "review skill does not bind codex-cli judgment dispatch to the result-only launcher"
 grep -Fq 'codex-judgment-dispatch.mjs' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not bind codex-cli judgment dispatch"
+grep -Fq -- '--judgment' "$skill" ||
+    fail "review skill does not require the registry task target's restricted mode"
 for text in '[stage.challenge].finders' '[stage.review].finders' challenger reviewer \
     'scripts/dev-flow-exit.sh' 'scripts/render-dev-flow.sh' 'scripts/round-push.sh' \
     'run.json.evidence_comments' 'fenced JSON' 'git remote get-url origin' \

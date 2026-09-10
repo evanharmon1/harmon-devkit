@@ -175,8 +175,8 @@ if (args.command === 'project') {
   } catch (error) {
     if (error.code !== 'ENOENT') fail(`cannot inspect projection target ${projected}: ${error.message}`)
   }
-  if (existing !== null && existing !== expected && !existing.includes('<!-- managed role projection:')) {
-    fail(`refusing to overwrite an unmanaged local agent: ${projected}`, REFUSED)
+  if (existing !== null && existing !== expected) {
+    fail(`refusing to overwrite a divergent local agent projection: ${projected}`, REFUSED)
   }
   mkdirSync(dirname(projected), { recursive: true })
   const temporary = `${projected}.tmp-${process.pid}`

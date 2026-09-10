@@ -23,9 +23,13 @@ only roles whose harness can enforce their registry write boundary: a judgment
 role receives a result-only channel with no ambient workspace, shell, git, gh,
 or write credential, otherwise the run blocks.
 For `codex-cli` challenger and reviewer roles, the supported boundary is
+the registry task target with `--judgment`, which bridges to
 `assets/codex-judgment-dispatch.mjs`; require its version-pinned app-server
-configuration and refusal checks at the actual dispatch. Other Codex roles and
-versions remain unsupported until an equally enforceable projection exists.
+configuration, caller-budget timeout, and refusal checks at the actual
+dispatch. For roles that require this result-only boundary, other Codex
+versions remain unsupported and the integrator remains unsupported until an
+equally enforceable projection exists. This does not change ordinary
+write-capable implementer eligibility.
 Use one worktree and branch per lane, record ownership, scope, dependencies,
 and the complete file overlap.
 Before dispatching overlapping scopes, either serialize them or record the
