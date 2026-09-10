@@ -67,9 +67,9 @@ agents:
 
 ```sh
 task sync:skills
-boundary=.claude/skills/orchestrator/assets/role-capability-boundary.mjs
+projection=.claude/skills/orchestrator/assets/role-capability-projection.mjs
 for role in challenger reviewer; do
-  node "$boundary" project --harness claude-code --role "$role" \
+  node "$projection" project --harness claude-code --role "$role" \
     --source ".agents/role-sources/$role.md" \
     --projected ".claude/agents/$role.md"
 done
@@ -78,17 +78,19 @@ done
 The portable files and their `.AGENTS_PROVENANCE` remain byte-identical to the
 pin, while the projected files carry Claude Code's exclusive `tools:`
 allowlist. `validate-projection` can check a projected file's bytes and parser
-shape. That result is configuration evidence only: it does not prove a live
-dispatch resolved that file or denied the parent session's ambient
-capabilities. Immediately before dispatch, `/orchestrator` runs `verify`; the
-registry's `can_restrict_writes` flag and a valid projection alone never pass
-it.
+shape. This is preparatory tooling only. It does not prove a live dispatch
+resolved that file or demonstrate a denied tool call, and `/orchestrator` does
+not treat it as a runtime gate.
 
 The current helper can prepare Claude Code challenger and reviewer projections
-(`Read`, `Grep`, and `Glob`), but no delegated harness has a runtime-bound
-launcher at this pin. `verify` therefore refuses every role and harness,
-including integrator. Treat that refusal as an honest unsupported path, not a
-reason to add Bash, approvals, or another ambient capability locally.
+with only `Read`, `Grep`, and `Glob`. Claude Code documents `tools` as an
+exclusive allowlist, so these roles have no configured shell, edit, web, skill,
+subagent, or MCP tool. The helper refuses roles and harnesses for which it has
+no projection; it does not project an integrator.
+
+No model was invoked to observe the resulting runtime tool inventory, a
+permitted read, or harness rejections of forbidden tool calls. The projection
+must not be reported as observed runtime enforcement.
 
 ### Stopping
 

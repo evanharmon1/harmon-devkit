@@ -699,19 +699,7 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   interruption, the one bounded retry on a timed-out attempt, the
   four-surface classification that makes `check-codex-cloud-review.sh`
   trustworthy, the `reap` cleanup sweep); this skill's job is to give it
-  the right inputs and act correctly on what it returns.
-
-  Immediately before that invocation, run the orchestrator skill's
-  `assets/role-capability-boundary.mjs verify` command for the resolved
-  harness, the integrator role, its portable source, and the exact local agent
-  file. A missing asset/projection or any nonzero result refuses the dispatch
-  and blocks this stage. Parser-valid frontmatter is configuration evidence,
-  not runtime isolation. At this pin there is no runtime-bound delegated
-  integrator path, so this check refuses it; do not add Bash, use approval
-  escalation, or hand-roll a pass around that refusal. This wiring is a stop
-  gate, not completed integration support.
-
-  Hand the brief —
+  the right inputs and act correctly on what it returns. Hand the brief —
   every item its §1 names, since it stops rather than guesses on a missing
   one:
 

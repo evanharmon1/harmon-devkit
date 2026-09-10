@@ -101,11 +101,10 @@ may create a regular projected copy and run the orchestrator asset's
 `validate-projection` command against it. The same asset's `project` command
 creates the local copy after portable agents have been vendored to a neutral
 source directory, and `validate-projection` checks its bytes and parser shape.
-Those steps do not
-prove that a live dispatch resolved that file or retained its restrictions.
-No delegated harness is currently runtime-attested, so `verify` refuses every
-role. This is intentional: a prompt, manifest, parser, or approval request is
-not the capability boundary the role contract requires.
+Claude Code documents the projected `tools` field as an exclusive tool
+allowlist, but these preparatory steps do not prove that a live dispatch
+resolved that file or demonstrate a denied tool call. Dispatch policy remains
+the calling orchestrator's responsibility; this helper is not a runtime gate.
 
 ## Add an agent
 
