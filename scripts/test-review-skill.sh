@@ -21,8 +21,80 @@ skill="ai/skills/universal/review/SKILL.md"
 fixture="ai/schemas/fixtures/exit/single-round-clean-converge"
 render_record="ai/schemas/fixtures/render/record"
 monitor="scripts/dev-flow-monitor.sh"
+role_boundary="ai/skills/universal/orchestrator/assets/role-capability-boundary.mjs"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+
+echo "==> role capability projections enforce dispatch-time denial"
+fake_bin="$tmp/bin"
+projected_dir="$tmp/projected"
+mkdir -p "$fake_bin" "$projected_dir"
+printf '%s\n' '#!/bin/sh' \
+    'if [ "$1 $2" = "plugin validate" ]; then' \
+    '  echo "Validation passed"' \
+    '  exit 0' \
+    'fi' \
+    'exit 1' >"$fake_bin/claude"
+chmod +x "$fake_bin/claude"
+
+reviewer_source="ai/agents/reviewer.md"
+reviewer_projected="$projected_dir/reviewer.md"
+source_before="$(sha256_stream <"$reviewer_source")"
+node "$role_boundary" project --harness claude-code --role reviewer \
+    --source "$reviewer_source" --projected "$reviewer_projected" >/dev/null ||
+    fail "Claude Code reviewer projection failed"
+[ "$(sha256_stream <"$reviewer_source")" = "$source_before" ] ||
+    fail "projection modified the portable reviewer source"
+grep -Fxq 'tools: Read, Grep, Glob' "$reviewer_projected" ||
+    fail "reviewer projection lacks the exact read-only tools allowlist"
+tools_line="$(grep '^tools:' "$reviewer_projected")"
+for forbidden in Bash Edit Write WebFetch WebSearch Skill Agent mcp__; do
+    case "$tools_line" in
+    *"$forbidden"*) fail "reviewer projection grants forbidden tool $forbidden" ;;
+    esac
+done
+PATH="$fake_bin:$PATH" node "$role_boundary" verify --harness claude-code \
+    --role reviewer --source "$reviewer_source" --projected "$reviewer_projected" \
+    >/dev/null || fail "byte-exact reviewer projection did not verify"
+
+expect_boundary_refusal() {
+    local label="$1"
+    shift
+    set +e
+    PATH="$fake_bin:$PATH" node "$role_boundary" "$@" >"$tmp/refusal.out" 2>&1
+    local status=$?
+    set -e
+    [ "$status" -eq 20 ] ||
+        fail "$label exited $status instead of refusal status 20: $(cat "$tmp/refusal.out")"
+    grep -Fq 'refusing' "$tmp/refusal.out" ||
+        fail "$label did not explain its refusal: $(cat "$tmp/refusal.out")"
+}
+
+expect_boundary_refusal "absent projection" verify --harness claude-code \
+    --role challenger --source ai/agents/challenger.md \
+    --projected "$projected_dir/missing.md"
+printf '\n# tampered\n' >>"$reviewer_projected"
+expect_boundary_refusal "tampered projection" verify --harness claude-code \
+    --role reviewer --source "$reviewer_source" --projected "$reviewer_projected"
+rm "$reviewer_projected"
+ln -s "$(realpath "$reviewer_source")" "$reviewer_projected"
+expect_boundary_refusal "portable symlink masquerading as a projection" verify \
+    --harness claude-code --role reviewer --source "$reviewer_source" \
+    --projected "$reviewer_projected"
+expect_boundary_refusal "unsupported integrator profile" project \
+    --harness claude-code --role integrator --source ai/agents/integrator.md \
+    --projected "$projected_dir/integrator.md"
+expect_boundary_refusal "unsupported harness" project --harness codex-cli \
+    --role reviewer --source "$reviewer_source" \
+    --projected "$projected_dir/codex-reviewer.md"
+
+for workflow_skill in ai/skills/universal/orchestrator/SKILL.md "$skill" \
+    ai/skills/universal/integrate/SKILL.md; do
+    grep -Fq 'role-capability-boundary.mjs verify' "$workflow_skill" ||
+        fail "$workflow_skill does not require the executable dispatch-time capability gate"
+done
+grep -Fq 'Claude Code integrator dispatch is' ai/skills/universal/orchestrator/SKILL.md ||
+    fail "orchestrator does not document the unsupported integrator path"
 
 echo "==> review skill names both role dispatches and record authority"
 for text in '[stage.challenge].finders' '[stage.review].finders' challenger reviewer \

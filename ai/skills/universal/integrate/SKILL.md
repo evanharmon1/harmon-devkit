@@ -699,7 +699,18 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   interruption, the one bounded retry on a timed-out attempt, the
   four-surface classification that makes `check-codex-cloud-review.sh`
   trustworthy, the `reap` cleanup sweep); this skill's job is to give it
-  the right inputs and act correctly on what it returns. Hand the brief —
+  the right inputs and act correctly on what it returns.
+
+  Immediately before that invocation, run the orchestrator skill's
+  `assets/role-capability-boundary.mjs verify` command for the resolved
+  harness, the integrator role, its portable source, and the exact local agent
+  file. A missing asset/projection or any nonzero result refuses the dispatch
+  and blocks this stage. In particular, the current Claude Code projection
+  refuses integrator because an exclusive `tools:` list cannot narrow Bash to
+  the broker calls this role needs; do not add Bash or hand-roll the pass to
+  get around the refusal.
+
+  Hand the brief —
   every item its §1 names, since it stops rather than guesses on a missing
   one:
 

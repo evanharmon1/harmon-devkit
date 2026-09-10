@@ -45,7 +45,8 @@ ignores the frontmatter.
   and `effort` are Claude-specific, drift as the harness changes, and each one
   is a decision better made by the calling session than baked into a shared
   file. Restrict scope in the body instead; a consumer that wants a hard
-  capability limit can add `tools:` to its own vendored copy.
+  capability limit projects a separate harness-local copy; it never edits this
+  portable source in place.
 - **`name` matches the filename** (kebab-case, no extension), and must not
   collide with a skill name — `task validate:agents` enforces all three. The
   kebab-case rule is not cosmetic: the name becomes a path on both sides of the
@@ -94,6 +95,18 @@ ln -s ../../ai/agents/<name>.md .claude/agents/<name>.md
 Safe with the repo's gates — `lint-hygiene.sh` skips symlinks, `.claude/**` is
 excluded from markdownlint, and this guard only walks `ai/agents/`, so nothing
 is linted or counted twice.
+
+Those dogfood symlinks intentionally prove no capability boundary. Before a
+Dev-flow role dispatch, `/orchestrator` requires a regular projected copy and
+runs
+`ai/skills/universal/orchestrator/assets/role-capability-boundary.mjs verify`
+against the exact file the harness will load. The same asset's `project`
+command creates the local copy after portable agents have been vendored to a
+neutral source directory. Today it supports Claude Code's challenger and
+reviewer with only `Read`, `Grep`, and `Glob`; it refuses integrator and every
+other unimplemented harness. The refusal is intentional: granting Bash to the
+integrator would restore the ambient shell and GitHub credentials the boundary
+exists to remove.
 
 ## Add an agent
 

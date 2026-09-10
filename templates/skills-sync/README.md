@@ -53,6 +53,42 @@ Three things are specific to agents:
 
 `README.md` in the source agents directory documents that directory and is never vendored as an agent.
 
+### Harness-local capability projections
+
+Do not vendor a write-restricted role directly into the directory from which a
+harness loads agents. Keep the pinned portable files in a neutral source
+directory, then project a separate local copy after the sync:
+
+```yaml
+agents:
+  names: [challenger, reviewer]
+  dest: .agents/role-sources
+```
+
+```sh
+task sync:skills
+boundary=.claude/skills/orchestrator/assets/role-capability-boundary.mjs
+for role in challenger reviewer; do
+  node "$boundary" project --harness claude-code --role "$role" \
+    --source ".agents/role-sources/$role.md" \
+    --projected ".claude/agents/$role.md"
+done
+```
+
+The portable files and their `.AGENTS_PROVENANCE` remain byte-identical to the
+pin, while the files Claude Code loads carry its own exclusive `tools:`
+allowlist. Immediately before dispatch, `/orchestrator` runs the asset's
+`verify` command against the portable source and exact projected file. That
+check refuses a missing, symlinked, drifted, or parser-invalid copy; the
+registry's `can_restrict_writes` flag alone never passes it.
+
+The current executable profile supports only Claude Code challenger and
+reviewer projections (`Read`, `Grep`, and `Glob`). It refuses Claude Code
+integrator and all other harnesses. The integrator needs shell and GitHub
+operations, and granting Bash without an independently enforced command-level
+boundary would restore ambient credentials. Treat that refusal as an honest
+unsupported path, not a reason to add Bash locally.
+
 ### Stopping
 
 Delete the `agents:` block and re-run `task sync:skills`. The vendored agents and their stamp are removed; your local agents in the same directory are not. Until you run that sync, `verify` reports the leftovers rather than ignoring them.

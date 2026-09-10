@@ -121,6 +121,13 @@ validated finding records from every earlier round of this same stage, not
 merely their IDs, so the role can compare evidence before asserting
 `repeat-of` or `supersedes`; an empty list is explicit in round 1.
 
+Immediately before each role invocation, run the orchestrator skill's
+`assets/role-capability-boundary.mjs verify` command for that resolved harness,
+role, portable source, and exact harness-local agent file. A missing asset or
+projection and every nonzero result are a dispatch refusal, not an inline
+allowlist assertion. Record the blocker and do not try another invocation path
+that restores ambient capabilities.
+
 For `challenge`, dispatch every primary finder in `[stage.challenge].finders`
 to the `challenger` role. For `review`, do the same for
 `[stage.review].finders` using the `reviewer` role. Retry an unavailable primary

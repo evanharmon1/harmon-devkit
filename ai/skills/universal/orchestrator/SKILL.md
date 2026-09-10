@@ -54,6 +54,43 @@ supply. If the harness cannot prevent a lane from invoking feature-owner
 assembly, reservation, or push capabilities, parallel dispatch is unavailable
 and the run blocks.
 
+## Role capability gate
+
+`assets/role-capability-boundary.mjs` is the executable dispatch gate for the
+write-restricted role agents. Portable `ai/agents/*.md` files remain
+harness-neutral. A consumer vendors those sources to a neutral directory, then
+uses the asset's `project` command to materialize a separate harness-local
+agent file. For Claude Code, the supported challenger and reviewer projections
+contain the exact exclusive allowlist `tools: Read, Grep, Glob`; shell, Git,
+GitHub, edit/write, MCP, skill, and network tools are absent rather than merely
+discouraged. Never project in place over the portable source.
+
+Immediately before every challenger, reviewer, or integrator dispatch, run the
+same asset's `verify` command with the resolved harness, role, portable source,
+and exact local file that the harness will load:
+
+```sh
+node <orchestrator-skill-dir>/assets/role-capability-boundary.mjs verify \
+  --harness <resolved-harness> --role <role> \
+  --source <portable-agent.md> --projected <harness-local-agent.md>
+```
+
+Verification requires a regular local copy, reconstructs the expected file
+from the portable source, compares it byte-for-byte, and asks the installed
+Claude Code parser to validate the projected frontmatter. Exit `20`, a missing
+projection, a symlink, drift, an unavailable parser, or any other nonzero exit
+is a hard dispatch refusal and a recorded blocker. Neither
+`agent-registry.json`'s `can_restrict_writes` value nor successful projection
+at an earlier time substitutes for this dispatch-time check.
+
+The implemented profile is deliberately narrow: only Claude Code challenger
+and reviewer dispatches are supported. Claude Code integrator dispatch is
+refused because that role needs shell and GitHub calls and a `tools:` allowlist
+cannot restrict Bash to the broker commands. Other harnesses are refused until
+they have their own executable projection and verification profile. Run those
+roles inline in the owning session where policy permits; never widen the agent
+to make the check pass.
+
 ## Persistent supervision
 
 Watching is the standing mode, not a one-shot step. Use the harness's
