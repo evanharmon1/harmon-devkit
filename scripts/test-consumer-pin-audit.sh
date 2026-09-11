@@ -669,12 +669,29 @@ c="$(make_consumer malformed-json "$V2_POLICY" v0.41.0 review:v2)"
 run_audit "$c" --reader "$bad_reader"
 expect_status "a reader emitting invalid JSON is indeterminate" 2
 expect_says "it names the reader" "$bad_reader"
-expect_says "it says the output is not valid JSON" "not valid JSON"
+expect_says "it says the output is not a JSON object" "not a JSON object"
 # The exit must stay within the 0–3 contract: 2, not 5.
 if [ "$status" -le 3 ]; then
     ok "exit code stays within the 0-3 contract"
 else
     bad "exit code $status is outside the 0-3 contract"
+fi
+
+# Challenge round 1 P1: valid JSON that is NOT an object (e.g. a string or
+# array) passed the jq -e . check but then made jq exit 5 on .shape lookup.
+nonobj_reader="$TMPROOT/nonobj-reader.mjs"
+cat >"$nonobj_reader" <<'READER'
+process.stdout.write('"just a string"');
+process.exit(0);
+READER
+c="$(make_consumer nonobj-json "$V2_POLICY" v0.41.0 review:v2)"
+run_audit "$c" --reader "$nonobj_reader"
+expect_status "a reader emitting non-object JSON is indeterminate" 2
+expect_says "it says the output is not a JSON object" "not a JSON object"
+if [ "$status" -le 3 ]; then
+    ok "exit code stays within the 0-3 contract (non-object)"
+else
+    bad "exit code $status is outside the 0-3 contract (non-object)"
 fi
 
 echo

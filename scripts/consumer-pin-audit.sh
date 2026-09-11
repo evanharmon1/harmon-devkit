@@ -506,8 +506,8 @@ if [ -f "$policy" ]; then
     # into jq. A reader that exits 0 or 1 but emits truncated or invalid JSON
     # would otherwise propagate jq's status under set -e and terminate with
     # exit 5 — outside the documented 0–3 contract.
-    if ! printf '%s' "$detect_out" | jq -e . >/dev/null 2>&1; then
-        die "policy reader '$reader' exited $detect_status but its output is not valid JSON — the policy shape cannot be determined"
+    if ! printf '%s' "$detect_out" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        die "policy reader '$reader' exited $detect_status but its output is not a JSON object — the policy shape cannot be determined"
     fi
     shape="$(printf '%s' "$detect_out" | jq -r '.shape // "unknown"')"
     migration="$(printf '%s' "$detect_out" | jq -r '.migration // ""')"
