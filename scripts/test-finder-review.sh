@@ -284,6 +284,49 @@ out="$( (cd "$work" && PATH="$nvm_prefix/bin:$PATH" ./scripts/finder-review.sh c
 grep -Fq 'DEP=sibling-dependency' <<<"$out" ||
     fail "a launcher symlinked into an npm package tree could not execute in the sandbox: $out"
 
+echo "==> a launcher whose shebang names an interpreter outside /usr still executes"
+# An NVM-installed node lives under ~/.nvm/versions/.../bin/node, which is
+# outside the base allowlist. Without the interpreter bind the sandbox has the
+# script but not the interpreter it names.
+if (cd "$work" && . ./scripts/lib/readonly-sandbox.sh && sandbox_resolve_bwrap) >/dev/null 2>&1; then
+    interp_prefix="$tmp/custom-interp"
+    mkdir -p "$interp_prefix/runtime/bin" "$interp_prefix/pkg/lib/node_modules/@github/copilot"
+    cat >"$interp_prefix/runtime/bin/mynode" <<'EOF'
+#!/usr/bin/env bash
+# A stand-in for an NVM-installed node outside /usr. The real interpreter is
+# irrelevant — what matters is that the sandbox binds this executable so the
+# shebang resolves.
+shift  # skip the script path
+echo "INTERP_EXECUTED=yes"
+echo "P1 src/app.txt:1 — a finding"
+EOF
+    chmod +x "$interp_prefix/runtime/bin/mynode"
+    cat >"$interp_prefix/pkg/lib/node_modules/@github/copilot/cli.sh" <<EOF
+#!$interp_prefix/runtime/bin/mynode
+echo "should not reach here without the interpreter"
+EOF
+    chmod +x "$interp_prefix/pkg/lib/node_modules/@github/copilot/cli.sh"
+    mkdir -p "$interp_prefix/pkg/bin"
+    ln -s "../lib/node_modules/@github/copilot/cli.sh" "$interp_prefix/pkg/bin/copilot"
+    out="$( (cd "$work" && PATH="$interp_prefix/pkg/bin:$PATH" \
+        ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    grep -Fq 'INTERP_EXECUTED=yes' <<<"$out" ||
+        fail "a launcher whose interpreter is outside /usr could not execute in the sandbox: $out"
+
+    echo "==> the interpreter binding uses env resolution for #!/usr/bin/env shebangs"
+    cat >"$interp_prefix/pkg/lib/node_modules/@github/copilot/cli.sh" <<'EOF'
+#!/usr/bin/env mynode
+echo "should not reach here without the interpreter"
+EOF
+    chmod +x "$interp_prefix/pkg/lib/node_modules/@github/copilot/cli.sh"
+    out="$( (cd "$work" && PATH="$interp_prefix/runtime/bin:$interp_prefix/pkg/bin:$PATH" \
+        ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    grep -Fq 'INTERP_EXECUTED=yes' <<<"$out" ||
+        fail "a launcher with #!/usr/bin/env <interp> outside /usr could not execute in the sandbox: $out"
+else
+    echo "==> SKIPPED (no bubblewrap on this host): interpreter-binding cases"
+fi
+
 echo "==> a same-length rewrite of an untracked file fails the pass"
 # The tamper check is what the whole boundary rests on, and comparing type,
 # mode, size and path let a same-length rewrite with the mode restored through
@@ -624,6 +667,35 @@ echo "==> an untracked path beginning with a dash is copied, not read as an opti
     exit "$status"
 ) || fail "an untracked path beginning with a dash was not reproduced in the scratch checkout"
 rm -f "$work/-new"
+
+echo "==> a failing git ls-files during sandbox_create refuses the sandbox"
+# The process substitution that formerly fed the untracked-file loop hid the
+# producer's exit status: a failing git ls-files silently produced no paths,
+# so sandbox_create returned success with untracked files missing.
+printf 'should-be-copied\n' >"$work/src/present.txt"
+lsfail_bin="$tmp/lsfail-bin"
+mkdir -p "$lsfail_bin"
+real_git="$(command -v git)"
+cat >"$lsfail_bin/git" <<LSFAILEOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "ls-files" ]; then
+    echo "fatal: simulated ls-files failure" >&2
+    exit 128
+fi
+exec "$real_git" "\$@"
+LSFAILEOF
+chmod +x "$lsfail_bin/git"
+(
+    cd "$work" || exit 1
+    # shellcheck source=/dev/null
+    . ./scripts/lib/readonly-sandbox.sh
+    if PATH="$lsfail_bin:$PATH" sandbox_create HEAD 1 >/dev/null 2>&1; then
+        sandbox_cleanup
+        exit 1
+    fi
+    sandbox_cleanup 2>/dev/null
+) || fail "a failing git ls-files was accepted by sandbox_create"
+rm -f "$work/src/present.txt"
 
 echo "==> the launcher's directory is NOT bound, only the launcher itself"
 # A launcher commonly sits in a personal ~/bin or a shared prefix beside

@@ -59,17 +59,27 @@ readonly_sandbox_symlinks=()
 # Resolve bwrap from PATH, else the copy Codex bundles. A lookup failure is
 # reported to the caller, which decides whether to refuse or use its degraded
 # fallback; it does not by itself mean a confidence pass cannot run.
+#
+# Finding the binary is necessary but not sufficient: a container with user
+# namespaces disabled has bwrap on PATH but every invocation fails with
+# "Operation not permitted". The probe below runs a trivial command inside a
+# namespace and treats failure as UNAVAILABLE, so the caller takes the
+# disclosed degraded path instead of selecting the kernel path and then
+# aborting mid-pass.
+readonly_sandbox_bwrap_probed=
 sandbox_resolve_bwrap() {
     # An explicit path wins, so a caller can pin a known-good build — and so a
     # test can point it at nothing and prove the refusal below is real.
     if [ -n "${READONLY_SANDBOX_BWRAP:-}" ]; then
         [ -x "$READONLY_SANDBOX_BWRAP" ] || return 1
         readonly_sandbox_bwrap="$READONLY_SANDBOX_BWRAP"
-        return 0
+        sandbox_probe_bwrap
+        return $?
     fi
     if command -v bwrap >/dev/null 2>&1; then
         readonly_sandbox_bwrap="$(command -v bwrap)"
-        return 0
+        sandbox_probe_bwrap
+        return $?
     fi
     local candidate
     for candidate in \
@@ -78,9 +88,30 @@ sandbox_resolve_bwrap() {
         /opt/homebrew/bin/bwrap; do
         if [ -x "$candidate" ]; then
             readonly_sandbox_bwrap="$candidate"
-            return 0
+            sandbox_probe_bwrap
+            return $?
         fi
     done
+    return 1
+}
+
+# Probe that the resolved bwrap can actually create a user namespace. Runs
+# once per process; subsequent calls return the cached result.
+sandbox_probe_bwrap() {
+    if [ -n "$readonly_sandbox_bwrap_probed" ]; then
+        [ "$readonly_sandbox_bwrap_probed" = 0 ]
+        return $?
+    fi
+    if "$readonly_sandbox_bwrap" --unshare-pid --unshare-ipc --unshare-uts --dev /dev --proc /proc \
+        --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
+        --symlink usr/bin /bin --symlink usr/sbin /sbin \
+        -- true >/dev/null 2>&1; then
+        readonly_sandbox_bwrap_probed=0
+        return 0
+    fi
+    echo "readonly-sandbox: bwrap exists but cannot create a namespace on this host" >&2
+    readonly_sandbox_bwrap_probed=1
+    readonly_sandbox_bwrap=
     return 1
 }
 
@@ -338,12 +369,21 @@ sandbox_create() {
         # and send it out over the deliberately-open network, defeating the
         # tmpfs HOME the rest of this boundary rests on. `-P` copies the link
         # itself, which is also what the scope actually contains.
+        local untracked_listing
+        untracked_listing="$(mktemp)" || sandbox_create_failed || return 1
+        if ! git ls-files -z --others --exclude-standard >"$untracked_listing"; then
+            rm -f "$untracked_listing"
+            echo "readonly-sandbox: could not enumerate untracked files for the scratch checkout" >&2
+            sandbox_create_failed
+            return 1
+        fi
         while IFS= read -r -d '' untracked; do
             [ -n "$untracked" ] || continue
             # Special files are refused rather than copied: a FIFO blocks the
             # copy forever waiting for a writer, and a device or socket is not
             # reviewable content in any case.
             if [ ! -L "./$untracked" ] && [ ! -f "./$untracked" ]; then
+                rm -f "$untracked_listing"
                 echo "readonly-sandbox: untracked path is not a regular file or symlink, refusing the scope: $untracked" >&2
                 sandbox_create_failed
                 return 1
@@ -354,16 +394,19 @@ sandbox_create() {
             # `dirname` report an invalid option and refused every non-dry-run
             # review outright, which is a valid tree this pass must handle.
             mkdir -p "$readonly_sandbox_dir/$(dirname "./$untracked")" || {
+                rm -f "$untracked_listing"
                 echo "readonly-sandbox: could not create the scratch directory for $untracked" >&2
                 sandbox_create_failed
                 return 1
             }
             cp -Pp "./$untracked" "$readonly_sandbox_dir/./$untracked" || {
+                rm -f "$untracked_listing"
                 echo "readonly-sandbox: could not reproduce the untracked path $untracked in the scratch checkout" >&2
                 sandbox_create_failed
                 return 1
             }
-        done < <(git ls-files -z --others --exclude-standard)
+        done <"$untracked_listing"
+        rm -f "$untracked_listing"
     fi
     # `a-w` covers the owner too, which is the point: this process runs as the
     # same user the CLI will.
