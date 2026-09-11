@@ -466,6 +466,8 @@ contract-versions-disagree|V2|review:v2 integrate:v3|none
 stamp-has-no-ref-line|LEGACY|review:v2|strip_ref
 managed-name-has-no-directory|LEGACY|review:v2|drop_dir
 managed-name-has-no-payload|LEGACY|review:v2|drop_skill_md
+managed-name-path-traversal|LEGACY|review:v2|traversal_name
+managed-entry-is-symlink|V2|review:v2|symlink_entry
 vendored-skills-with-no-stamp|LEGACY|review:v2 integrate:v2|drop_stamp
 "
 
@@ -478,6 +480,12 @@ apply_mutation() {
     strip_ref) grep -v '^# ref:' "$d/.SKILLS_PROVENANCE" >"$root/p.tmp" && mv "$root/p.tmp" "$d/.SKILLS_PROVENANCE" ;;
     drop_dir) rm -rf "$d/review" ;;
     drop_skill_md) rm -f "$d/review/SKILL.md" ;;
+    traversal_name) sed -i 's/^# managed:.*$/# managed: ..\/evil/' "$d/.SKILLS_PROVENANCE" ;;
+    symlink_entry)
+        local _t="$root/real-review"
+        mv "$d/review" "$_t"
+        ln -s "$_t" "$d/review"
+        ;;
     drop_stamp) rm -f "$d/.SKILLS_PROVENANCE" ;;
     *)
         echo "test bug: unknown mutation '$how'" >&2
@@ -605,6 +613,118 @@ ln -s ../../ai/skills/universal/review "$c/.claude/skills/review"
 run_audit "$c"
 expect_status "a source-linked tree with real local skills is not interrupted-sync residue" 0
 expect_says "it is still reported as never vendored" "no skills are vendored here"
+
+echo
+echo "== consumer-pin-audit: #847 — path traversal in managed provenance names =="
+# A managed token containing a path separator or `..` would dereference a path
+# outside the configured destination. The audit must reject it the same way
+# sync-skills.sh's assert_sane_name does.
+c="$(make_consumer traversal-dotdot "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
+# Inject a path-traversal name into the provenance stamp.
+sed -i 's/^# managed: gauntlet$/# managed: gauntlet, ..\/foo/' "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "a managed name with '..' is indeterminate" 2
+expect_says "it names the offending token" "../foo"
+
+c="$(make_consumer traversal-slash "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
+sed -i 's/^# managed: gauntlet$/# managed: gauntlet, sub\/dir/' "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "a managed name with a path separator is indeterminate" 2
+expect_says "it names the offending token" "sub/dir"
+
+# Ordinary names continue to resolve unchanged.
+c="$(make_consumer traversal-clean "$LEGACY_POLICY" v0.34.1 gauntlet:pre shepherd:pre)"
+run_audit "$c"
+expect_status "ordinary managed names still resolve" 0
+
+echo
+echo "== consumer-pin-audit: #849 — symlinked managed skill directory =="
+# sync-skills.sh creates real directories, so a symlinked managed entry is a
+# stamp/tree mismatch even when the target contains a valid SKILL.md and
+# contract.
+c="$(make_consumer symlink-managed "$V2_POLICY" v0.41.0 review:v2)"
+# Replace the real directory with a symlink to a valid target.
+target_dir="$c/real-review"
+mv "$c/.claude/skills/review" "$target_dir"
+ln -s "$target_dir" "$c/.claude/skills/review"
+run_audit "$c"
+expect_status "a symlinked managed entry is indeterminate" 2
+expect_says "it names the symlinked entry" "review"
+expect_says "it says sync-skills creates real directories" "real directories"
+
+# Unstamped symlinked directories remain unaffected (already tested above in
+# the source-linked-migrated case).
+
+echo
+echo "== consumer-pin-audit: #844 — malformed reader JSON =="
+# A reader that exits 0 but emits invalid JSON must produce exit 2 with a
+# message naming the reader, not a raw jq status (exit 5).
+# The reader is invoked via `node`, so the fake must be JavaScript.
+bad_reader="$TMPROOT/bad-reader.mjs"
+cat >"$bad_reader" <<'READER'
+process.stdout.write('{bad json');
+process.exit(0);
+READER
+c="$(make_consumer malformed-json "$V2_POLICY" v0.41.0 review:v2)"
+run_audit "$c" --reader "$bad_reader"
+expect_status "a reader emitting invalid JSON is indeterminate" 2
+expect_says "it names the reader" "$bad_reader"
+expect_says "it says the output is not a JSON object" "not a JSON object"
+# The exit must stay within the 0–3 contract: 2, not 5.
+if [ "$status" -le 3 ]; then
+    ok "exit code stays within the 0-3 contract"
+else
+    bad "exit code $status is outside the 0-3 contract"
+fi
+
+# Challenge round 1 P1: valid JSON that is NOT an object (e.g. a string or
+# array) passed the jq -e . check but then made jq exit 5 on .shape lookup.
+nonobj_reader="$TMPROOT/nonobj-reader.mjs"
+cat >"$nonobj_reader" <<'READER'
+process.stdout.write('"just a string"');
+process.exit(0);
+READER
+c="$(make_consumer nonobj-json "$V2_POLICY" v0.41.0 review:v2)"
+run_audit "$c" --reader "$nonobj_reader"
+expect_status "a reader emitting non-object JSON is indeterminate" 2
+expect_says "it says the output is not a JSON object" "not a JSON object"
+if [ "$status" -le 3 ]; then
+    ok "exit code stays within the 0-3 contract (non-object)"
+else
+    bad "exit code $status is outside the 0-3 contract (non-object)"
+fi
+
+echo
+echo "== consumer-pin-audit: #850 — reader exit status vs shape cross-check =="
+# A reader that exits 1 but emits v2-shaped JSON is a contradiction: the
+# reader refused the policy but reported it as v2. The audit must not yield
+# `compatible`. The reader is invoked via `node`.
+v2_refuse_reader="$TMPROOT/v2-refuse-reader.mjs"
+cat >"$v2_refuse_reader" <<'READER'
+process.stdout.write(JSON.stringify({shape:"v2",policy_schema_version:2,migration:null}));
+process.exit(1);
+READER
+c="$(make_consumer reader-v2-exit1 "$V2_POLICY" v0.41.0 review:v2)"
+run_audit "$c" --reader "$v2_refuse_reader"
+expect_status "a reader that exits 1 with v2 shape is indeterminate" 2
+expect_says "it says the exit status and shape contradict" "contradict"
+expect_not_says "it does not report compatibility" "compatible"
+
+# A reader that exits 1 with a legacy shape is still accepted — that is the
+# normal signal for an older shape. (Already covered by the main test cases
+# above, but assert explicitly for the cross-check.)
+legacy_reader="$TMPROOT/legacy-reader.mjs"
+cat >"$legacy_reader" <<'READER'
+process.stdout.write(JSON.stringify({shape:"legacy",policy_schema_version:0,migration:"run copier update"}));
+process.exit(1);
+READER
+c="$(make_consumer reader-legacy-exit1 "$LEGACY_POLICY" v0.41.0 review:v2)"
+run_audit "$c" --reader "$legacy_reader"
+expect_status "a reader that exits 1 with legacy shape is still accepted" 1
+expect_not_says "it does not flag the legacy shape as a contradiction" "contradict"
+
+# A reader that exits 0 is required for a v2-compatible verdict — already
+# exercised by the v2-over-v2 case above.
 
 echo
 echo "== devflow-policy: a policy ahead of this reader is not sent backwards =="

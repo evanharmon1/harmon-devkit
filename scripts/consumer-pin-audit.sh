@@ -142,6 +142,14 @@ die() {
     exit 2
 }
 
+# assert_sane_name NAME — refuse path-traversal-shaped skill names before they
+# reach a path join. Matches sync-skills.sh's guard exactly.
+assert_sane_name() {
+    case "$1" in
+    "" | "." | ".." | */* | .*) die "refusing unsafe managed skill name '$1'" ;;
+    esac
+}
+
 # ── THE COHERENCE INVARIANT ─────────────────────────────────────────────────
 #
 #   An input the shared reader refuses, or a stamp inconsistent with the tree,
@@ -424,6 +432,18 @@ declared_versions=""
 requiring_skills=""
 while IFS= read -r skill_name; do
     [ -n "$skill_name" ] || continue
+    # #847: a managed token containing a path separator or `..` would join to a
+    # path OUTSIDE $dest. sync-skills.sh has assert_sane_name for the same
+    # reason; the audit reads rather than writes, so the blast radius is a wrong
+    # verdict rather than data loss, but the same validation belongs here.
+    assert_sane_name "$skill_name"
+    # #849: sync-skills.sh creates REAL directories; a symlinked managed entry
+    # is a stamp/tree mismatch even when the target contains a valid SKILL.md
+    # and contract. Unstamped symlinks (the no-stamp loop above) are correctly
+    # skipped as entries, per entry and never tree-wide.
+    if [ -L "$dest/$skill_name" ]; then
+        indeterminate "provenance '$prov' lists managed skill '$skill_name' but '$dest/$skill_name' is a symlink — sync-skills.sh creates real directories, so a symlinked managed entry is a stamp/tree mismatch; re-run 'task sync:skills'"
+    fi
     # The stamp is authoritative for WHICH skills are vendored, so a managed
     # name the tree does not actually hold is the stamp disagreeing with the
     # tree — the coherence invariant, not "a pre-v2 skill with no contract".
@@ -482,8 +502,23 @@ if [ -f "$policy" ]; then
     if [ "$detect_status" -ge 2 ] || [ -z "$detect_out" ]; then
         die "policy '$policy' could not be read or parsed (reader exit $detect_status)"
     fi
+    # #844: validate that the reader's output is parseable JSON before piping
+    # into jq. A reader that exits 0 or 1 but emits truncated or invalid JSON
+    # would otherwise propagate jq's status under set -e and terminate with
+    # exit 5 — outside the documented 0–3 contract.
+    if ! printf '%s' "$detect_out" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        die "policy reader '$reader' exited $detect_status but its output is not a JSON object — the policy shape cannot be determined"
+    fi
     shape="$(printf '%s' "$detect_out" | jq -r '.shape // "unknown"')"
     migration="$(printf '%s' "$detect_out" | jq -r '.migration // ""')"
+    # #850: cross-check the reader's exit status against the reported shape.
+    # Exit 1 is the reader's "I refuse this policy" signal, used for older and
+    # mixed shapes. A reader that exits 1 but reports shape 'v2' is a
+    # contradiction: the status says refused, the shape says compatible. Exit 0
+    # remains the only accepted signal for a v2-compatible verdict.
+    if [ "$detect_status" -eq 1 ] && [ "$shape" = v2 ]; then
+        indeterminate "policy reader exited 1 (refusing the policy) but reported shape 'v2' — the exit status and the reported shape contradict; the reader's refusal is authoritative"
+    fi
     # The reader reports the POLICY's own declared schema version, and null
     # for a shape that declares none.
     policy_version="$(printf '%s' "$detect_out" | jq -r '.policy_schema_version // 0')"

@@ -71,7 +71,7 @@ table, so no list of release numbers has to be kept current here.
 | 0 | `not-vendored` | No `.SKILLS_PROVENANCE` under `dest` and no unstamped **contract-carrying** skill beside it: nothing was vendored. Run `task sync:skills` first. See the limitation below. |
 | 0 | `no-policy-consumer` | The policy has migrated and the pin is already at or past the first release shipping the version-2 stage skills, yet nothing vendored declares a contract — this consumer vendors no policy-consuming skill. Advancing the pin would not add one; nothing needs to change. |
 | 1 | `incompatible` | The vendored skills declare a policy schema version the repository's policy does not have. Run `copier update`; **do not** advance the pin. |
-| 2 | — | Usage error, or **indeterminate under the coherence invariant**. Never reported as a pass. Covers a missing manifest (including one that is not parseable YAML), an unreadable policy, a missing reader, a damaged provenance stamp (no `# ref:` or no `# managed:` line), vendored skills declaring two different schema versions, a contract declaring a non-positive version (`0` is indistinguishable from "no contract"), a **mixed policy** carrying markers from more than one shape at once, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. |
+| 2 | — | Usage error, or **indeterminate under the coherence invariant**. Never reported as a pass. Covers a missing manifest (including one that is not parseable YAML), an unreadable policy, a missing reader, a policy reader that exits successfully but emits output that is not a valid JSON object, a reader whose exit status contradicts its reported shape (exit 1 with `v2`), a damaged **modern** provenance stamp (no `# ref:` line, or a legacy-format stamp recording a post-boundary ref — see below), a managed name containing a path separator or `..` (path traversal), a managed entry that is a symlink (sync-skills.sh creates real directories), vendored skills declaring two different schema versions, a contract declaring a non-positive version (`0` is indistinguishable from "no contract"), a **mixed policy** carrying markers from more than one shape at once, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. A **legacy** stamp (no `# managed:` line, pre-boundary ref) is **not** damage — it is the older stamp generation that `sync-skills.sh`'s own `managed_names` still honours; the audit reads it from its recorded `# ref:` and the release boundary decides the verdict. |
 | 3 | `pin-lag` | The policy migrated while the pin still predates the first release shipping the version-2 stage skills. Advance `source.ref` to a release whose stage skills declare the version the policy declares, then re-run `task sync:skills`. Where the policy has moved ahead of this toolchain entirely (a version the shipped reader does not support), the audit says so rather than sending you after a pin that cannot exist yet. |
 
 A schema version names an **incompatible shape**, not a minimum capability
@@ -159,16 +159,34 @@ The audit states one rule rather than a list of special cases:
 
 A pin verdict is only meaningful on inputs that are internally coherent, so
 anything else has no verdict to give and guessing one is the fail-open the
-script exists to prevent. It covers a policy that is not exactly one shape the
-reader recognizes (`mixed`, or `unknown` declaring no version at all), a
-contract whose version is not a positive integer, managed contracts that
-disagree on a version, and a provenance stamp that disagrees with the tree
-(missing `# ref:`/`# managed:` lines, a managed name with no directory or no
-`SKILL.md`, or vendored contract-carrying skills with no stamp at all).
-`legacy` and `v1` are **not** incoherent — they are coherent older shapes, and
-reporting on them is the audit's whole job. Neither is a policy declaring a
-positive version this reader cannot operate: that is a policy ahead of the
-toolchain, reported as such.
+script exists to prevent. It covers:
+
+- a policy that is not exactly one shape the reader recognizes (`mixed`, or
+  `unknown` declaring no version at all);
+- a policy reader that exits successfully but emits output that is not a valid
+  JSON object (exit 2, not the raw `jq` status that would be exit 5);
+- a reader whose exit status contradicts its reported shape — exit 1 (refused)
+  with shape `v2` is a contradiction, since exit 0 is required for a
+  v2-compatible verdict;
+- a contract whose version is not a positive integer;
+- managed contracts that disagree on a version;
+- a managed name containing a path separator or `..` (path traversal —
+  matching `sync-skills.sh`'s `assert_sane_name` guard);
+- a managed entry that is a symlink (`sync-skills.sh` creates real
+  directories, so a symlinked managed entry is a stamp/tree mismatch);
+- a provenance stamp that disagrees with the tree (missing `# ref:` line, a
+  managed name with no directory or no `SKILL.md`, or vendored
+  contract-carrying skills with no stamp at all).
+
+A **legacy** stamp (no `# managed:` line) is **not** damage — it is the older
+stamp generation that `sync-skills.sh`'s own `managed_names` still honours.
+The audit reads it from its recorded `# ref:` and the release boundary decides
+the verdict. A legacy stamp recording a post-boundary ref *is* indeterminate,
+because the vendored skill set cannot be enumerated offline and cannot be
+assumed pre-v2. `legacy` and `v1` are **not** incoherent — they are coherent
+older shapes, and reporting on them is the audit's whole job. Neither is a
+policy declaring a positive version this reader cannot operate: that is a
+policy ahead of the toolchain, reported as such.
 
 `scripts/test-consumer-pin-audit.sh` tests this as a **property** over every
 incoherent input, so a newly discovered one is a new row in that table rather
