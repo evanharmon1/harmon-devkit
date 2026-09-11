@@ -458,10 +458,12 @@ if (errors.length === 0) {
       }
       seenMatches.add(key)
     }
-    // Beyond exact duplicates, a shorter match that is a word-bounded
-    // substring of a longer one shadows it under the token-bounded comparison
-    // includesAsToken uses: "potential issue" matches inside
-    // "potential issue high", so the P1 rule never fires.
+    // Beyond exact duplicates, a shorter match that is a word-bounded PREFIX
+    // of a longer one shadows it: priorityOf checks leadingHit for all rules
+    // in order, and a prefix always has a leading hit whenever the longer
+    // match does. A non-prefix substring (e.g., "issue" inside "high issue")
+    // does NOT shadow because leadingHit only fires at line-start positions —
+    // the longer rule can win when its match starts earlier in the text.
     const anywhereRules = (finder.severity_map?.rules ?? []).filter(
       (rule) => rule.anchor === 'anywhere'
     )
@@ -470,20 +472,13 @@ if (errors.length === 0) {
       for (let i = 0; i < j; i++) {
         const earlier = String(anywhereRules[i].match).toLowerCase()
         if (earlier === later) continue
-        let at = later.indexOf(earlier)
-        while (at !== -1) {
-          const before = at > 0 ? later[at - 1] : undefined
-          const after =
-            at + earlier.length < later.length ? later[at + earlier.length] : undefined
-          const boundedBefore = before === undefined || !/[a-z0-9]/.test(before)
-          const boundedAfter = after === undefined || !/[a-z0-9]/.test(after)
-          if (boundedBefore && boundedAfter) {
-            semanticError(
-              `finder ${finder.slug} severity_map rule "${anywhereRules[i].match}" (${anywhereRules[i].priority}) at anchor anywhere shadows later rule "${anywhereRules[j].match}" (${anywhereRules[j].priority}) — the earlier match is a word-bounded substring, so the later rule can never fire`
-            )
-            break
-          }
-          at = later.indexOf(earlier, at + 1)
+        if (
+          later.startsWith(earlier) &&
+          (earlier.length === later.length || !/[a-z0-9]/.test(later[earlier.length]))
+        ) {
+          semanticError(
+            `finder ${finder.slug} severity_map rule "${anywhereRules[i].match}" (${anywhereRules[i].priority}) at anchor anywhere shadows later rule "${anywhereRules[j].match}" (${anywhereRules[j].priority}) — the earlier match is a word-bounded prefix, so the later rule can never fire`
+          )
         }
       }
     }

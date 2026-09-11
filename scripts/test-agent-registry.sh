@@ -216,8 +216,8 @@ switch (mutation) {
       { match: 'potential issue high', priority: 'P0', anchor: 'anywhere' }
     )
     break
-  case 'finder-severity-map-substring-shadow':
-    // "P1" shadows "P1 critical" — same word-bounded substring logic.
+  case 'finder-severity-map-prefix-shadow-short':
+    // "P1" shadows "P1 critical" — same word-bounded prefix logic.
     finder('codex-cloud').severity_map.rules.push(
       { match: 'P1 critical', priority: 'P0', anchor: 'anywhere' }
     )
@@ -383,6 +383,14 @@ switch (mutation) {
     // so the word boundary fails.
     finder('codex-cloud').severity_map.rules.push(
       { match: 'P1X', priority: 'P0', anchor: 'anywhere' }
+    )
+    break
+  case 'severity-map-no-shadow-non-prefix-substring':
+    // "P1" does NOT shadow "high P1" — the earlier match appears at
+    // position 5, not at position 0. leadingHit fires at line-start
+    // positions, so the later rule wins when its match starts first.
+    finder('codex-cloud').severity_map.rules.push(
+      { match: 'high P1', priority: 'P0', anchor: 'anywhere' }
     )
     break
   default:
@@ -651,13 +659,15 @@ accepts "a review role on a harness without write restriction" \
 rejects "a severity_map where an earlier anywhere rule shadows a later one by prefix" \
     'finder-severity-map-prefix-shadow' \
     'shadows later rule'
-rejects "a severity_map where an earlier anywhere rule shadows a later one by substring" \
-    'finder-severity-map-substring-shadow' \
+rejects "a severity_map where an earlier anywhere rule shadows a later one by short prefix" \
+    'finder-severity-map-prefix-shadow-short' \
     'shadows later rule'
 accepts "a leading-token rule that is a prefix of another leading-token rule (exact matching, not substring)" \
     'severity-map-no-shadow-leading-token'
 accepts "an anywhere rule that is NOT a word-bounded substring of another (word boundary fails)" \
     'severity-map-no-shadow-word-boundary'
+accepts "an anywhere rule where the earlier match is a non-prefix substring (leadingHit positional)" \
+    'severity-map-no-shadow-non-prefix-substring'
 
 # ── regex terminal signal compilation (#833) ───────────────────────────────
 rejects "an invalid regex in terminal_signals.actionable_pattern" \
