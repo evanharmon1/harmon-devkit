@@ -69,7 +69,7 @@ table, so no list of release numbers has to be kept current here.
 |---|---|---|
 | 0 | `compatible` | The vendored skills' declared version and the policy's agree (including "neither has migrated"). |
 | 0 | `not-vendored` | No `.SKILLS_PROVENANCE` under `dest` and no unstamped **contract-carrying** skill beside it: nothing was vendored. Run `task sync:skills` first. See the limitation below. |
-| 0 | `no-policy-consumer` | The policy has migrated and the pin is already at or past the first release shipping the version-2 stage skills, yet nothing vendored declares a contract — this consumer vendors no policy-consuming skill. Advancing the pin would not add one; nothing needs to change. |
+| 0 | `no-policy-consumer` | The policy has migrated, yet nothing vendored declares a policy contract — this consumer vendors no policy-consuming skill. This can happen in two ways: the pin is already at or past the first release shipping the version-2 stage skills and no managed skill declares a contract, **or** the pin is pre-boundary but the provenance stamp's categories exclude `universal` (the policy-consuming category), so advancing the pin would not add one either. Nothing needs to change. |
 | 1 | `incompatible` | The vendored skills declare a policy schema version the repository's policy does not have. Run `copier update`; **do not** advance the pin. |
 | 2 | — | Usage error, or **indeterminate under the coherence invariant**. Never reported as a pass. Covers a missing manifest (including one that is not parseable YAML), an unreadable policy, a missing reader, a policy reader that exits successfully but emits output that is not a valid JSON object, a reader whose exit status contradicts its reported shape (exit 1 with `v2`), a damaged **modern** provenance stamp (no `# ref:` line, or a legacy-format stamp recording a post-boundary ref — see below), a managed name containing a path separator or `..` (path traversal), a managed entry that is a symlink (sync-skills.sh creates real directories), vendored skills declaring two different schema versions, a contract declaring a non-positive version (`0` is indistinguishable from "no contract"), a **mixed policy** carrying markers from more than one shape at once, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. A **legacy** stamp (no `# managed:` line, pre-boundary ref) is **not** damage — it is the older stamp generation that `sync-skills.sh`'s own `managed_names` still honours; the audit reads it from its recorded `# ref:` and the release boundary decides the verdict. |
 | 3 | `pin-lag` | The policy migrated while the pin still predates the first release shipping the version-2 stage skills. Advance `source.ref` to a release whose stage skills declare the version the policy declares, then re-run `task sync:skills`. Where the policy has moved ahead of this toolchain entirely (a version the shipped reader does not support), the audit says so rather than sending you after a pin that cannot exist yet. |
@@ -88,7 +88,10 @@ ships the version-2 stage skills — and never by a list of skill names. Every
 release from that boundary onward ships stage skills that declare a contract,
 so a pin older than it necessarily predates them *whatever those skills were
 called*, and a pin at or after it that still declares nothing is a consumer
-that genuinely vendors no policy-consuming skill.
+that genuinely vendors no policy-consuming skill. Additionally, a
+pre-boundary pin whose provenance stamp excludes the `universal` category
+is also `no-policy-consumer` — advancing the pin would not add a policy
+contract because the consumer never selected the policy-consuming category.
 
 That matters because the retired `gauntlet` and `shepherd` stages are replaced
 by `review` and `integrate` and are not supported: a name table would encode
