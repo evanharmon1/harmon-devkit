@@ -441,6 +441,48 @@ out="$(run review --base "$submod_base")" || fail "submodule-only diff refused a
 grep -q "vendored" <<<"$out" || fail "submodule gitlink missing from manifest: $out"
 git_t config --unset diff.ignoreSubmodules
 
+echo "==> a differing-submodule-commit refuses the uncommitted diff"
+# Two initialized submodules, the first at a differing commit and the second
+# clean. The production fix (refuse_dirty_submodules) captures the complete
+# `git submodule status --recursive` output and tests it with a here-string,
+# so a SIGPIPE from an early-exiting consumer under pipefail cannot silently
+# accept a partial match. Tested by calling collect_review_diff directly:
+# refuse_dirty_submodules lives in review-scope.sh and is reached through
+# collect_review_diff, not through resolve_review_scope.
+git checkout -q -b submod-refusal-test feature
+git init -q "${test_tmp}/submod-a"
+(cd "${test_tmp}/submod-a" && git_t commit -q --allow-empty -m a1 && git_t commit -q --allow-empty -m a2)
+git init -q "${test_tmp}/submod-b"
+(cd "${test_tmp}/submod-b" && git_t commit -q --allow-empty -m b1)
+git -c protocol.file.allow=always submodule add -q "${test_tmp}/submod-a" sub-a
+git -c protocol.file.allow=always submodule add -q "${test_tmp}/submod-b" sub-b
+git_t commit -q -m "add two submodules"
+(cd sub-a && git checkout -q HEAD~1)
+# sub-a now differs from the index; sub-b is clean.
+# Source the shared scope library and call collect_review_diff with the
+# worktree diff spec that the --uncommitted path would set.
+if (
+    set -euo pipefail
+    # shellcheck source=scripts/lib/review-scope.sh
+    . ./scripts/lib/review-scope.sh
+    review_diff_spec="worktree"
+    collect_review_diff >/dev/null 2>&1
+); then
+    fail "a differing-submodule-commit was reviewed (SIGPIPE regression)"
+fi
+
+echo "==> a clean submodule tree is accepted by refuse_dirty_submodules"
+(cd sub-a && git checkout -q -)
+if ! (
+    set -euo pipefail
+    # shellcheck source=scripts/lib/review-scope.sh
+    . ./scripts/lib/review-scope.sh
+    refuse_dirty_submodules
+); then
+    fail "a clean submodule tree was refused by refuse_dirty_submodules"
+fi
+git checkout -q feature
+
 echo "==> an unresolvable base refuses, on a dirty tree as much as a clean one"
 # Degrading to the worktree half would be the original bug in a new place: a
 # fraction of the change reviewed, exit 0, and a stage that reads the status

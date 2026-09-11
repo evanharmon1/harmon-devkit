@@ -356,6 +356,53 @@ if [ "$sandbox_bound_package" -eq 0 ] &&
     [ "$(dirname "$bin_target")" != "$(dirname "$bin_path")" ]; then
     readonly_sandbox_extra_ro+=("$(dirname "$bin_target")")
 fi
+# The launcher's shebang interpreter. An NVM-installed tool's launcher carries
+# `#!/usr/bin/env node`, and that `node` lives in the NVM bin directory beside
+# the launcher — outside the base allowlist. Without this bind the sandbox
+# has the script but not the interpreter it names, so the exec fails. Only the
+# interpreter EXECUTABLE is bound, never its containing directory: exposing
+# sibling files in a personal bin directory is the defect #814 removed.
+sandbox_interp=
+if [ -f "$bin_target" ] && [ -r "$bin_target" ]; then
+    sandbox_shebang="$(head -1 "$bin_target" 2>/dev/null)" || sandbox_shebang=
+    case "$sandbox_shebang" in
+    '#!'*)
+        sandbox_shebang="${sandbox_shebang#'#!'}"
+        # Strip leading whitespace portably (no bash-4 extglob).
+        while [ "${sandbox_shebang#[[:space:]]}" != "$sandbox_shebang" ]; do
+            sandbox_shebang="${sandbox_shebang#[[:space:]]}"
+        done
+        sandbox_interp_name=
+        case "$sandbox_shebang" in
+        /usr/bin/env\ *)
+            sandbox_interp_name="${sandbox_shebang#/usr/bin/env }"
+            ;;
+        /usr/bin/env*)
+            sandbox_interp_name="${sandbox_shebang#/usr/bin/env}"
+            ;;
+        /*)
+            sandbox_interp="${sandbox_shebang%% *}"
+            ;;
+        esac
+        if [ -n "$sandbox_interp_name" ]; then
+            # Strip leading whitespace and trailing arguments.
+            while [ "${sandbox_interp_name#[[:space:]]}" != "$sandbox_interp_name" ]; do
+                sandbox_interp_name="${sandbox_interp_name#[[:space:]]}"
+            done
+            sandbox_interp_name="${sandbox_interp_name%% *}"
+            if [ -n "$sandbox_interp_name" ]; then
+                sandbox_interp="$(command -v "$sandbox_interp_name" 2>/dev/null)" || sandbox_interp=
+            fi
+        fi
+        ;;
+    esac
+fi
+if [ -n "$sandbox_interp" ] && [ -x "$sandbox_interp" ]; then
+    sandbox_interp_real="$(sandbox_realpath "$sandbox_interp")"
+    readonly_sandbox_extra_ro+=("$sandbox_interp_real")
+    [ "$sandbox_interp_real" = "$sandbox_interp" ] ||
+        readonly_sandbox_extra_ro+=("$sandbox_interp")
+fi
 # The snapshot the resolved scope describes — the finder reads the tree it
 # sits in, so that tree has to be the one its diff is about.
 read -r snapshot_committish snapshot_worktree <<<"$(review_scope_snapshot)"
