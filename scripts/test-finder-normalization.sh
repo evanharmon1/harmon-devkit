@@ -432,4 +432,109 @@ status=$?
 set -e
 [ "$status" -eq 3 ] || fail "a stray reaction from another actor was accepted as terminal (exit $status)"
 
+# ── #819: abbreviated SHA in a top-level comment stamp ──────────────────────
+echo "==> an abbreviated SHA stamp that prefix-matches the head is refused"
+jq -n --arg head "$head40" '{
+    top_level_comments: [ { id: 8190, user: { id: 199175422 },
+        body: "**P1** Something wrong.\n\n**Reviewed commit:** `'"${head40:0:7}"'`" } ]
+}' >"$tmp/abbrev-stamp.json"
+set +e
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/abbrev-stamp.json" \
+    >/dev/null 2>"$tmp/abbrev-stamp.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "an abbreviated stamp that prefix-matches the head was accepted (exit $status)"
+grep -Fq 'abbreviated SHA' "$tmp/abbrev-stamp.err" ||
+    fail "the abbreviated-stamp refusal did not name its reason: $(cat "$tmp/abbrev-stamp.err")"
+
+echo "==> an abbreviated SHA stamp for a DIFFERENT head is skipped, not refused"
+# The stamp is short but does not prefix-match the reviewed head, so it is
+# clearly about a different commit — skip it rather than dying.
+jq -n --arg head "$head40" '{
+    review: { id: 819, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
+              body: "Codex Review: didn'"'"'t find any major issues." },
+    top_level_comments: [ { id: 8191, user: { id: 199175422 },
+        body: "**P1** Old finding.\n\n**Reviewed commit:** `abcdef0`" } ]
+}' >"$tmp/abbrev-other.json"
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/abbrev-other.json" \
+    >"$tmp/abbrev-other.out" 2>&1 ||
+    fail "an abbreviated stamp for a different head caused a hard failure"
+jq -e '(.findings | length) == 0' "$tmp/abbrev-other.out" >/dev/null ||
+    fail "a non-matching abbreviated stamp produced findings"
+
+# ── #829: narration after a clean verdict ───────────────────────────────────
+echo "==> narration appended after a declared clean verdict is not terminal"
+jq -n --arg head "$head40" '{
+    review: { id: 829, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
+              body: "Codex Review: didn'"'"'t find any major issues. Review is still pending; no verdict has been issued." }
+}' >"$tmp/narration.json"
+set +e
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/narration.json" \
+    >/dev/null 2>"$tmp/narration.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "a clean verdict with trailing narration was accepted as terminal (exit $status)"
+
+echo "==> a clean verdict followed by declared metadata IS terminal"
+jq -n --arg head "$head40" '{
+    review: { id: 8291, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
+              body: "Codex Review: didn'"'"'t find any major issues.\n\n**Reviewed commit:** `'"$head40"'`" }
+}' >"$tmp/clean-meta.json"
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/clean-meta.json" >/dev/null ||
+    fail "a clean verdict with only declared metadata was not accepted as terminal"
+
+# ── #837: review-body findings counted before actionable check ──────────────
+echo "==> a zero-count review whose body carries a severity phrase does not pass and emit"
+coderabbit_head="$(jq -r '."reviewed-head"' "$fixtures/coderabbit-cloud/args.json")"
+coderabbit_actor="$(jq -r '.finders[] | select(.slug == "coderabbit-cloud") | .trusted_actor_id' "$registry")"
+jq -n --arg head "$coderabbit_head" --argjson actor "$coderabbit_actor" '{
+    review: { id: 837, state: "COMMENTED", commit_id: $head,
+              user: { id: $actor },
+              body: "Actionable comments posted: 0\n\nPotential issue in scripts/foo.sh:1 — risk" },
+    comments: []
+}' >"$tmp/zero-count-body.json"
+set +e
+node "$normalizer" --finder coderabbit-cloud --stage integration --round 1 \
+    --reviewed-head "$coderabbit_head" <"$tmp/zero-count-body.json" \
+    >/dev/null 2>"$tmp/zero-count-body.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "a zero-count review with a body finding passed the count check (exit $status)"
+
+# ── #840: inline comment from a dismissed review ────────────────────────────
+echo "==> a dismissed review's inline comment is not terminal and not emitted"
+copilot_actor="$(jq -r '.finders[] | select(.slug == "copilot-cloud") | .trusted_actor_id' "$registry")"
+jq -n --arg head "$head40" --argjson actor "$copilot_actor" '{
+    review: { id: 840, state: "DISMISSED", user: { id: $actor }, commit_id: $head, body: "" },
+    comments: [ { id: 8401, pull_request_review_id: 840, user: { id: $actor },
+                  original_commit_id: $head, commit_id: $head,
+                  path: "a.js", line: 1, body: "something wrong here" } ]
+}' >"$tmp/dismissed-inline.json"
+set +e
+node "$normalizer" --finder copilot-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/dismissed-inline.json" \
+    >/dev/null 2>"$tmp/dismissed-inline.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "a dismissed review's inline comment was accepted as terminal (exit $status)"
+
+echo "==> a PENDING review's inline comment is not terminal and not emitted"
+jq -n --arg head "$head40" --argjson actor "$copilot_actor" '{
+    review: { id: 8402, state: "PENDING", user: { id: $actor }, commit_id: $head, body: "" },
+    comments: [ { id: 8403, pull_request_review_id: 8402, user: { id: $actor },
+                  original_commit_id: $head, commit_id: $head,
+                  path: "b.js", line: 5, body: "also wrong" } ]
+}' >"$tmp/pending-inline.json"
+set +e
+node "$normalizer" --finder copilot-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/pending-inline.json" \
+    >/dev/null 2>"$tmp/pending-inline.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "a pending review's inline comment was accepted as terminal (exit $status)"
+
 echo "finder normalization OK ($cases fixture(s))"
