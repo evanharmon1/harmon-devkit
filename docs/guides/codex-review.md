@@ -179,8 +179,9 @@ blocks promotion rather than passing it.
    Confirm with `codex login status`.
 3. **Trust the repo in Codex** when prompted on first run. The committed
    `.codex/config.toml` raises the project-instruction budget to 64 KiB. Review
-   tasks explicitly select `gpt-5.6-sol` with high reasoning, independently of
-   the interactive default.
+   tasks default to `gpt-5.6-sol` with high reasoning for ordinary manual
+   invocation. Orchestrated calls pass their resolved values as leading
+   `--model <model>` and `--reasoning <level>` arguments.
 4. **For the automatic stop-gate only — the Claude Code codex plugin.** This
    repo's `.claude/settings.json` declares the `openai-codex` marketplace and
    enables `codex@openai-codex`, so Claude Code installs/offers the plugin
@@ -247,10 +248,9 @@ a partial review that exits 0 reads as a clean one. The bound is on the whole
 prompt — diff, manifest, prose and focus text together — because they all ride
 in one argv element.
 
-**The tool boundary is enforced around the CLI, not asked of it.** `/review`
-requires a confidence pass to run with shell, git, network write and
-credentials denied, or the dispatch refused — and no third-party CLI will
-install that for us. So `scripts/lib/readonly-sandbox.sh` builds it:
+**The finder runner adds protections around the CLI, not inside it.** These
+finder-specific protections are optional to the review workflow and do not
+determine role eligibility. `scripts/lib/readonly-sandbox.sh` builds them:
 
 - **bubblewrap where available**, resolved from `PATH` and then from Codex's
   bundled `codex-resources/bwrap`. Where it is not, the pass **degrades rather
