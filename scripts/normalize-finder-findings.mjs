@@ -642,7 +642,7 @@ if (finder.raw_shape === 'labelled-text') {
   // severity_map has no rules) therefore never produces a body finding, which
   // is correct: its body is a summary, not a finding.
   const review = payload.review
-  if (review && byThisFinder(review) && atThisHead(review)) {
+  if (review && byThisFinder(review) && atThisHead(review) && reviewIsSubmitted(review)) {
     const body = String(review.body ?? '')
     if (isLabelled(body)) {
       for (const segment of splitLabelledSegments(body)) {
