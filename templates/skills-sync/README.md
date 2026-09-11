@@ -53,9 +53,55 @@ Three things are specific to agents:
 
 `README.md` in the source agents directory documents that directory and is never vendored as an agent.
 
+### Harness-local capability projections
+
+Do not vendor a write-restricted role directly into the directory from which a
+harness loads agents. Keep the pinned portable files in a neutral source
+directory, then project a separate local copy after the sync:
+
+```yaml
+agents:
+  names: [challenger, reviewer]
+  dest: .agents/role-sources
+```
+
+```sh
+task sync:skills
+projection=.claude/skills/orchestrator/assets/role-capability-projection.mjs
+for role in challenger reviewer; do
+  node "$projection" project --harness claude-code --role "$role" \
+    --source ".agents/role-sources/$role.md" \
+    --projected ".claude/agents/$role.md"
+done
+```
+
+The portable files and their `.AGENTS_PROVENANCE` remain byte-identical to the
+pin, while the projected files carry Claude Code's exclusive `tools:`
+allowlist. `validate-projection` can check a projected file's bytes and parser
+shape. This is preparatory tooling only. It does not prove a live dispatch
+resolved that file or demonstrate a denied tool call, and `/orchestrator` does
+not treat it as a runtime gate.
+
+The current helper can prepare Claude Code challenger and reviewer projections
+with only `Read`, `Grep`, and `Glob`. Claude Code documents `tools` as an
+exclusive allowlist, so these roles have no configured shell, edit, web, skill,
+subagent, or MCP tool. The helper refuses roles and harnesses for which it has
+no projection; it does not project an integrator.
+
+No model was invoked to observe the resulting runtime tool inventory, a
+permitted read, or harness rejections of forbidden tool calls. The projection
+must not be reported as observed runtime enforcement.
+
 ### Stopping
 
 Delete the `agents:` block and re-run `task sync:skills`. The vendored agents and their stamp are removed; your local agents in the same directory are not. Until you run that sync, `verify` reports the leftovers rather than ignoring them.
+
+Harness-local projections created manually by the example above are local
+files outside `.AGENTS_PROVENANCE`; `task sync:skills` neither owns nor removes
+them. After stopping the agents sync, inspect `.claude/agents/challenger.md` and
+`.claude/agents/reviewer.md` and remove the copies you generated. Do not remove
+a divergent file as though it were generated: the projection helper accepts an
+existing target only when it is byte-identical to the expected projection.
 
 That works because the skills stamp records `# agents-dest:`. It has to: `agents.dest` lives _inside_ the block you just deleted, so without the breadcrumb nothing would know where the agents had been put — they would sit there indefinitely, still stamped do-not-edit, pinned to a ref nothing will bump, invisible to both drift checks.
 

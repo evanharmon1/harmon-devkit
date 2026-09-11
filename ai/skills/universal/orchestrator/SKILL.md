@@ -21,8 +21,27 @@ hand-decode an older shape, invent caps, or advance the pin to get past it
 that a repository's vendored-skill pin and its policy shape agree. Dispatch
 only roles whose harness can enforce their registry write boundary: a judgment
 role receives a result-only channel with no ambient workspace, shell, git, gh,
-or write credential, otherwise the run blocks. Use one worktree and branch per
-lane, record ownership, scope, dependencies, and the complete file overlap.
+or write credential, otherwise the run blocks.
+For `codex-cli` challenger and reviewer roles, the supported boundary is
+the registry task target invoked with `task --dir <trusted-root>` and
+`--judgment --trusted-tooling-root <trusted-root>`. The separately pinned root,
+never the candidate checkout, supplies the task, mode/severity instructions,
+and `assets/codex-judgment-dispatch.mjs`; require its version-pinned app-server
+configuration, single caller-budget deadline, and refusal checks at the actual
+dispatch. That configuration requires executable lifecycle hooks to be
+effectively disabled and disables legacy executable turn-completion
+notifications before starting a thread. A Codex host that forces hooks on is
+unsupported and refuses before the thread starts. Before invocation, the
+trusted caller verifies the provenance of the
+complete executed closure, including resolved symlink targets, and refuses an
+absent pin or candidate-owned code. The script's matching-root check enforces
+that selection but does not authenticate it. For roles that require this
+result-only boundary, other Codex
+versions remain unsupported and the integrator remains unsupported until an
+equally enforceable projection exists. This does not change ordinary
+write-capable implementer eligibility.
+Use one worktree and branch per lane, record ownership, scope, dependencies,
+and the complete file overlap.
 Before dispatching overlapping scopes, either serialize them or record the
 explicit merge dependency in both lane briefs. Select implementers only from
 the resolved `[stage.implement].pool`, registry role eligibility, and resolved

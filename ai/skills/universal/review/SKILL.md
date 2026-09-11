@@ -121,6 +121,40 @@ validated finding records from every earlier round of this same stage, not
 merely their IDs, so the role can compare evidence before asserting
 `repeat-of` or `supersedes`; an empty list is explicit in round 1.
 
+For a `codex-cli` finder, the trusted caller must verify and freeze a separately
+pinned tooling root, including every resolved symlink target in the executed
+closure; absent provenance or any candidate-owned executable code refuses.
+Never run the role task from the candidate checkout. Materialize
+trusted role context as a regular prompt file and the complete reviewed input
+as a separate regular snapshot file, then invoke the registry task exactly as
+`task --dir <trusted-root> <challenge:codex|review:codex> -- --judgment
+--trusted-tooling-root <trusted-root> --model <model> --reasoning <tier>
+--prompt <trusted-file> --snapshot <candidate-bytes-file>
+--turn-timeout-seconds <remaining-budget>`. The trusted task target combines
+its pinned mode and severity text with the caller's trusted context into the
+sole developer instruction, and resolves only its pinned
+`.agents/skills/orchestrator/assets/codex-judgment-dispatch.mjs`. A missing pin
+refuses; it never falls back to candidate tooling. Ordinary interactive task
+invocations are not schema-bound role dispatches. The script's explicit-root
+equality and required-file checks do not authenticate that pin; they enforce
+the root the already-trusted caller selected. This version-pinned
+app-server invocation creates
+an ephemeral thread with no runtime workspace or capability roots, disables
+shell/unified-exec, web, browser, app/connector, image, skill/plugin, and
+multi-agent tools, requires executable lifecycle hooks to be effectively off,
+and disables legacy executable completion notifications;
+discovers and disables every effective MCP server; requests
+no approvals, never services an app-server approval request, verifies the
+returned runtime configuration, and refuses any unexpected tool event. Subject stdout to the existing result envelope and
+receipt validation; a role payload schema is not an OpenAI output envelope. It
+refuses before `thread/start` on a Codex host that forces hooks on.
+deliberately does not use Codex
+permission profiles: those do not compose with a `sandbox_mode` present in any
+loaded configuration layer. The caller supplies snapshot bytes rather than a
+workspace path, and must refuse a nonzero or capability-refusal exit before
+recording a pass. In-process Codex subagents are not a substitute because they
+inherit their parent's capability surface.
+
 For `challenge`, dispatch every primary finder in `[stage.challenge].finders`
 to the `challenger` role. For `review`, do the same for
 `[stage.review].finders` using the `reviewer` role. Retry an unavailable primary
