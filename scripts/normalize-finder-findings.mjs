@@ -515,7 +515,13 @@ if (finder.raw_shape === 'labelled-text') {
     const substrings = []
     const exactLines = []
     for (const key of ['metadata_line', 'heading']) {
-      if (ts[key]) patterns.push(new RegExp(String(ts[key]).replace(/\[\[:space:\]\]/g, '\\s'), 'i'))
+      if (ts[key]) {
+        try {
+          patterns.push(new RegExp(String(ts[key]).replace(/\[\[:space:\]\]/g, '\\s'), 'i'))
+        } catch (e) {
+          die(`${finder.slug} terminal_signals.${key} is not a valid regex: ${e.message}`, 3)
+        }
+      }
     }
     if (ts.about_summary) substrings.push(String(ts.about_summary).toLowerCase())
     if (ts.carrier_sentence) exactLines.push(String(ts.carrier_sentence).toLowerCase())
@@ -550,16 +556,22 @@ if (finder.raw_shape === 'labelled-text') {
           }
           const recognized =
             cleanVerdictMetadata.patterns.some((p) => p.test(trimmed)) ||
-            cleanVerdictMetadata.exactLines.some((s) => trimmed.toLowerCase() === s) ||
-            cleanVerdictMetadata.substrings.some((s) => trimmed.toLowerCase().includes(s))
+            cleanVerdictMetadata.exactLines.some((s) => trimmed.toLowerCase() === s)
           if (!recognized) return false
         }
         if (inRecognizedBlock) return false
         return true
       }
-      case 'actionable-count':
-        // The finder states how many findings it posted; zero is a verdict.
-        return Boolean(declaredCount) && new RegExp(String(declaredCount).replace(/\[\[:space:\]\]/g, '\\s'), 'i').test(text)
+      case 'actionable-count': {
+        if (!declaredCount) return false
+        let countRe
+        try {
+          countRe = new RegExp(String(declaredCount).replace(/\[\[:space:\]\]/g, '\\s'), 'i')
+        } catch (e) {
+          die(`${finder.slug} terminal_signals.actionable_pattern is not a valid regex: ${e.message}`, 3)
+        }
+        return countRe.test(text)
+      }
       case 'inline-comment-count':
         // The inline comments ARE the result and a review carrying none is
         // the clean verdict, so a SUBMITTED review's existence at this head is
@@ -652,9 +664,13 @@ if (finder.raw_shape === 'labelled-text') {
         3
       )
     }
-    const declared = new RegExp(actionablePattern.replace(/\[\[:space:\]\]/g, '\\s'), 'i').exec(
-      String(review.body ?? '')
-    )
+    let reconcileRe
+    try {
+      reconcileRe = new RegExp(actionablePattern.replace(/\[\[:space:\]\]/g, '\\s'), 'i')
+    } catch (e) {
+      die(`${finder.slug} terminal_signals.actionable_pattern is not a valid regex: ${e.message}`, 3)
+    }
+    const declared = reconcileRe.exec(String(review.body ?? ''))
     if (!declared || declared[1] === undefined) {
       die(
         `${finder.slug}'s current-head review does not state a parseable finding count (${actionablePattern}), so the supplied evidence cannot be checked for completeness`,

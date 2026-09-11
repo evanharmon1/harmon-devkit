@@ -563,4 +563,23 @@ status=$?
 set -e
 [ "$status" -eq 3 ] || fail "a pending review's inline comment was accepted as terminal (exit $status)"
 
+echo "==> an invalid regex in terminal_signals emits a diagnostic instead of an uncaught throw"
+# #833 criterion: the normalizer must surface a structured diagnostic (die)
+# when a registry-sourced regex pattern fails to compile.
+jq '.finders |= map(if .slug == "codex-cloud" then .collection.terminal_signals.metadata_line = "^(**broken[" else . end)' \
+    "$registry" >"$tmp/bad-regex-registry.json"
+jq -n --arg head "$head40" '{
+    review: { id: 99, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
+              body: "Codex Review: didn'"'"'t find any major issues." }
+}' >"$tmp/bad-regex-input.json"
+set +e
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$tmp/bad-regex-registry.json" --reviewed-head "$head40" \
+    <"$tmp/bad-regex-input.json" >/dev/null 2>"$tmp/bad-regex.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "invalid regex exited $status, expected 3"
+grep -q 'not a valid regex' "$tmp/bad-regex.err" ||
+    fail "invalid regex diagnostic missing 'not a valid regex': $(cat "$tmp/bad-regex.err")"
+
 echo "finder normalization OK ($cases fixture(s))"
