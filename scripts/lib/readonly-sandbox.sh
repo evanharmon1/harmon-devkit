@@ -102,7 +102,7 @@ sandbox_probe_bwrap() {
         [ "$readonly_sandbox_bwrap_probed" = 0 ]
         return $?
     fi
-    if "$readonly_sandbox_bwrap" --unshare-user --unshare-pid --dev /dev --proc /proc \
+    if "$readonly_sandbox_bwrap" --unshare-pid --unshare-ipc --unshare-uts --dev /dev --proc /proc \
         --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
         --symlink usr/bin /bin --symlink usr/sbin /sbin \
         -- true >/dev/null 2>&1; then
