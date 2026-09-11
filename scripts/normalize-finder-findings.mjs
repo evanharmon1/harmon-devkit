@@ -392,6 +392,13 @@ if (finder.raw_shape === 'labelled-text') {
       ? atThisHead(node)
       : String(node.original_commit_id) === opts.reviewedHead
 
+  const SUBMITTED_REVIEW_STATES = new Set(['approved', 'changes_requested', 'commented'])
+  const reviewIsSubmitted = (review) => {
+    const state = review?.state
+    if (state === undefined || state === null) return false
+    return SUBMITTED_REVIEW_STATES.has(String(state).toLowerCase())
+  }
+
   // Inline comments must belong to the REVIEW being decoded, not merely to the
   // same actor at the same head. A re-trigger without a head change leaves the
   // previous review's comments in place, so a clean review plus a stale P1
@@ -410,27 +417,30 @@ if (finder.raw_shape === 'labelled-text') {
         3
       )
     }
-    for (const comment of inlineForThisFinder) {
-      const owner = comment.pull_request_review_id
-      if (owner === undefined || owner === null) {
-        die(
-          `${finder.slug} inline comment ${comment.id ?? '?'} carries no \`pull_request_review_id\`, so it cannot be attributed to review ` +
-            `${selectedReviewId} — refusing rather than banking a comment that may belong to an earlier review`,
-          3
-        )
-      }
-      if (String(owner) !== String(selectedReviewId)) {
-        die(
-          `${finder.slug} inline comment ${comment.id ?? '?'} belongs to review ${owner}, not the supplied review ${selectedReviewId} — ` +
-            `it is an earlier review's finding at the same head and must not be decoded as this round's`,
-          3
-        )
+    if (reviewIsSubmitted(payload.review)) {
+      for (const comment of inlineForThisFinder) {
+        const owner = comment.pull_request_review_id
+        if (owner === undefined || owner === null) {
+          die(
+            `${finder.slug} inline comment ${comment.id ?? '?'} carries no \`pull_request_review_id\`, so it cannot be attributed to review ` +
+              `${selectedReviewId} — refusing rather than banking a comment that may belong to an earlier review`,
+            3
+          )
+        }
+        if (String(owner) !== String(selectedReviewId)) {
+          die(
+            `${finder.slug} inline comment ${comment.id ?? '?'} belongs to review ${owner}, not the supplied review ${selectedReviewId} — ` +
+              `it is an earlier review's finding at the same head and must not be decoded as this round's`,
+            3
+          )
+        }
       }
     }
   }
 
   for (const comment of payload.comments ?? []) {
     if (!byThisFinder(comment) || !inlineAtThisHead(comment)) continue
+    if (!reviewIsSubmitted(payload.review)) continue
     const body = String(comment.body ?? '')
     const location = comment.path
       ? { path: comment.path, line: comment.line === null || comment.line === undefined ? null : Number(comment.line) }
@@ -451,11 +461,21 @@ if (finder.raw_shape === 'labelled-text') {
       if (!byThisFinder(comment)) continue
       const body = String(comment.body ?? '')
       const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(body)
-      // No stamp is not this head's evidence: the binding is the only thing
-      // tying a top-level comment to a commit, so an unstamped one is
-      // unattributable rather than current.
       if (!stamp) continue
-      if (!opts.reviewedHead.startsWith(stamp[1].toLowerCase())) continue
+      const stampSha = stamp[1].toLowerCase()
+      if (stampSha.length < 40) {
+        if (opts.reviewedHead.startsWith(stampSha) && isLabelled(body)) {
+          die(
+            `${finder.slug} top-level comment ${comment.id ?? '?'} stamps an abbreviated SHA ` +
+              `(${stampSha.length} chars) that prefix-matches the reviewed head and carries ` +
+              `labelled findings — this decoder has no git access to prove the abbreviation ` +
+              `is unique, so the findings cannot be safely skipped`,
+            3
+          )
+        }
+        continue
+      }
+      if (stampSha !== opts.reviewedHead) continue
       if (!isLabelled(body)) continue
       for (const segment of splitLabelledSegments(body)) {
         pushFinding(segment, `comment ${comment.id ?? '?'}`, null, String(comment.id ?? 'comment'))
@@ -489,26 +509,69 @@ if (finder.raw_shape === 'labelled-text') {
   const verdictMode = finder.collection?.terminal_signals?.verdict_mode
   const declaredClean = finder.collection?.terminal_signals?.clean_verdict
   const declaredCount = finder.collection?.terminal_signals?.actionable_pattern
+  const cleanVerdictMetadata = (() => {
+    const ts = finder.collection?.terminal_signals ?? {}
+    const patterns = []
+    const substrings = []
+    const exactLines = []
+    for (const key of ['metadata_line', 'heading']) {
+      if (ts[key]) {
+        try {
+          patterns.push(new RegExp(String(ts[key]).replace(/\[\[:space:\]\]/g, '\\s'), 'i'))
+        } catch (e) {
+          die(`${finder.slug} terminal_signals.${key} is not a valid regex: ${e.message}`, 3)
+        }
+      }
+    }
+    if (ts.about_summary) substrings.push(String(ts.about_summary).toLowerCase())
+    if (ts.carrier_sentence) exactLines.push(String(ts.carrier_sentence).toLowerCase())
+    return { patterns, substrings, exactLines }
+  })()
   const bodyIsTerminal = (body) => {
     const text = String(body ?? '')
-    // Decodable findings are terminal by construction: they are the result.
     if (isLabelled(text)) return true
     switch (verdictMode) {
       case 'clean-sentence': {
-        // The declared sentence must OPEN the body, not merely appear in it.
-        // `includes` accepted a body that QUOTED the sentence while saying the
-        // review was still pending — the registry contract is that the verdict
-        // leads and only declared metadata follows it, so a quote buried in
-        // narration is not a verdict.
         if (!declaredClean) return false
         const want = String(declaredClean).toLowerCase()
-        // Leading markup a verdict is commonly wrapped in, then the sentence.
         const head = text.replace(/^[\s*_`>#-]+/, '').toLowerCase()
-        return head.startsWith(want)
+        if (!head.startsWith(want)) return false
+        const strippedLen = text.length - head.length
+        const afterVerdict = text.slice(strippedLen + want.length)
+        const firstNl = afterVerdict.indexOf('\n')
+        const remainder = firstNl === -1 ? '' : afterVerdict.slice(firstNl + 1)
+        let inRecognizedBlock = false
+        for (const line of remainder.split('\n')) {
+          const trimmed = line.trim()
+          if (trimmed.length === 0) continue
+          if (!inRecognizedBlock && /<details\b/i.test(trimmed)) {
+            if (cleanVerdictMetadata.substrings.some((s) => trimmed.toLowerCase().includes(s))) {
+              inRecognizedBlock = true
+              continue
+            }
+          }
+          if (inRecognizedBlock) {
+            if (/<\/details>/i.test(trimmed)) inRecognizedBlock = false
+            continue
+          }
+          const recognized =
+            cleanVerdictMetadata.patterns.some((p) => p.test(trimmed)) ||
+            cleanVerdictMetadata.exactLines.some((s) => trimmed.toLowerCase() === s)
+          if (!recognized) return false
+        }
+        if (inRecognizedBlock) return false
+        return true
       }
-      case 'actionable-count':
-        // The finder states how many findings it posted; zero is a verdict.
-        return Boolean(declaredCount) && new RegExp(String(declaredCount).replace(/\[\[:space:\]\]/g, '\\s'), 'i').test(text)
+      case 'actionable-count': {
+        if (!declaredCount) return false
+        let countRe
+        try {
+          countRe = new RegExp(String(declaredCount).replace(/\[\[:space:\]\]/g, '\\s'), 'i')
+        } catch (e) {
+          die(`${finder.slug} terminal_signals.actionable_pattern is not a valid regex: ${e.message}`, 3)
+        }
+        return countRe.test(text)
+      }
       case 'inline-comment-count':
         // The inline comments ARE the result and a review carrying none is
         // the clean verdict, so a SUBMITTED review's existence at this head is
@@ -518,18 +581,6 @@ if (finder.raw_shape === 'labelled-text') {
       default:
         return false
     }
-  }
-  // A review's STATE says whether it is a verdict at all. `DISMISSED` and
-  // `PENDING` are explicitly not: under `inline-comment-count`, where the
-  // review's existence is the whole signal, a dismissed review carrying no
-  // comments was being banked as a clean result. Missing or unrecognized is
-  // refused for the same reason a missing verdict is — this decoder does not
-  // get to assume a state it was not told.
-  const SUBMITTED_REVIEW_STATES = new Set(['approved', 'changes_requested', 'commented'])
-  const reviewIsSubmitted = (review) => {
-    const state = review?.state
-    if (state === undefined || state === null) return false
-    return SUBMITTED_REVIEW_STATES.has(String(state).toLowerCase())
   }
   // The `reaction` surface, where the finder declares one. A fresh success
   // reaction on the exact trigger comment is a complete clean verdict for
@@ -554,13 +605,27 @@ if (finder.raw_shape === 'labelled-text') {
       atThisHead(payload.review) &&
       reviewIsSubmitted(payload.review) &&
       bodyIsTerminal(payload.review.body)) ||
-    // An inline comment at this head is a finding, and a finding is terminal.
-    (surfaces.has('inline') && (payload.comments ?? []).some((c) => byThisFinder(c) && inlineAtThisHead(c))) ||
+    (surfaces.has('inline') && reviewIsSubmitted(payload.review) &&
+      (payload.comments ?? []).some((c) => byThisFinder(c) && inlineAtThisHead(c))) ||
     (surfaces.has('comment') &&
       (payload.top_level_comments ?? []).some((c) => {
         if (!byThisFinder(c)) return false
         const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(String(c.body ?? ''))
-        if (!stamp || !opts.reviewedHead.startsWith(stamp[1].toLowerCase())) return false
+        if (!stamp) return false
+        const cStampSha = stamp[1].toLowerCase()
+        if (cStampSha.length < 40) {
+          if (opts.reviewedHead.startsWith(cStampSha) && isLabelled(String(c.body ?? ''))) {
+            die(
+              `${finder.slug} top-level comment ${c.id ?? '?'} stamps an abbreviated SHA ` +
+                `(${cStampSha.length} chars) that prefix-matches the reviewed head and carries ` +
+                `labelled findings — this decoder has no git access to prove the abbreviation ` +
+                `is unique, so the findings cannot be safely skipped`,
+              3
+            )
+          }
+          return false
+        }
+        if (cStampSha !== opts.reviewedHead) return false
         return bodyIsTerminal(c.body)
       }))
   if (!sawCurrentHeadArtifact) {
@@ -572,6 +637,20 @@ if (finder.raw_shape === 'labelled-text') {
     )
   }
 
+  // A review BODY becomes a finding only when it states one in this finder's
+  // own vocabulary. A finder whose verdict is the inline-comment count (its
+  // severity_map has no rules) therefore never produces a body finding, which
+  // is correct: its body is a summary, not a finding.
+  const review = payload.review
+  if (review && byThisFinder(review) && atThisHead(review) && reviewIsSubmitted(review)) {
+    const body = String(review.body ?? '')
+    if (isLabelled(body)) {
+      for (const segment of splitLabelledSegments(body)) {
+        pushFinding(segment, `review ${review.id ?? '?'}`, null, String(review.id ?? 'review'))
+      }
+    }
+  }
+
   // The finder's own declared finding count, where its registry entry states
   // one. A review saying "Actionable comments posted: 2" whose supplied
   // comments array holds one — a partial fetch, an unpaginated read — would
@@ -579,24 +658,19 @@ if (finder.raw_shape === 'labelled-text') {
   // complete. The pattern is the registry's; the reconciliation is here.
   const actionablePattern = finder.collection?.terminal_signals?.actionable_pattern
   if (actionablePattern) {
-    // The count only means anything if it comes from a review that is THIS
-    // finder's and about THIS head. An earlier revision read whatever
-    // `payload.review` held and skipped the check entirely when it was
-    // absent, so a payload of one current comment and no review — a partial
-    // fetch — normalized to one finding and exited 0. Missing, foreign, stale
-    // or unparseable are all indeterminate: this finder states its own
-    // completeness, so evidence that does not carry that statement is
-    // evidence this decoder cannot vouch for.
-    const review = payload.review
     if (!review || !byThisFinder(review) || !atThisHead(review)) {
       die(
         `${finder.slug} states its own finding count, so its current-head review is required evidence — the supplied payload carries none for this finder at ${opts.reviewedHead}, and a partial fetch would otherwise normalize a short comments array into a complete-looking round`,
         3
       )
     }
-    const declared = new RegExp(actionablePattern.replace(/\[\[:space:\]\]/g, '\\s'), 'i').exec(
-      String(review.body ?? '')
-    )
+    let reconcileRe
+    try {
+      reconcileRe = new RegExp(actionablePattern.replace(/\[\[:space:\]\]/g, '\\s'), 'i')
+    } catch (e) {
+      die(`${finder.slug} terminal_signals.actionable_pattern is not a valid regex: ${e.message}`, 3)
+    }
+    const declared = reconcileRe.exec(String(review.body ?? ''))
     if (!declared || declared[1] === undefined) {
       die(
         `${finder.slug}'s current-head review does not state a parseable finding count (${actionablePattern}), so the supplied evidence cannot be checked for completeness`,
@@ -617,19 +691,6 @@ if (finder.raw_shape === 'labelled-text') {
     }
   }
 
-  // A review BODY becomes a finding only when it states one in this finder's
-  // own vocabulary. A finder whose verdict is the inline-comment count (its
-  // severity_map has no rules) therefore never produces a body finding, which
-  // is correct: its body is a summary, not a finding.
-  const review = payload.review
-  if (review && byThisFinder(review) && atThisHead(review)) {
-    const body = String(review.body ?? '')
-    if (isLabelled(body)) {
-      for (const segment of splitLabelledSegments(body)) {
-        pushFinding(segment, `review ${review.id ?? '?'}`, null, String(review.id ?? 'review'))
-      }
-    }
-  }
 } else {
   die(`finder '${opts.finder}' declares an unsupported raw_shape ${finder.raw_shape}`)
 }
