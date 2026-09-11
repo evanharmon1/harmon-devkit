@@ -1,3 +1,3 @@
 {
-  "cross_validation_error_contains": "cannot cover"
+  "cross_validation_error_contains": "has no finders configured"
 }

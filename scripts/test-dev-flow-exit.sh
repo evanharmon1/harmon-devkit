@@ -319,12 +319,12 @@ if node scripts/dev-flow-exit.mjs --run "${empty_run}" --stage review \
     --policy ai/schemas/fixtures/exit/breadth-insufficient-for-fallback-chain/policy.toml \
     --current-head deadbeef --json >/dev/null 2>"${scratch}/dfe-crossval-$$.err"; then
     rm -rf "${empty_run}" "${scratch}/dfe-crossval-$$.err"
-    fail "dev-flow-exit against a breadth-insufficient policy unexpectedly succeeded"
+    fail "dev-flow-exit against a cross-validation-failing policy unexpectedly succeeded"
 fi
-grep -q "cannot cover" "${scratch}/dfe-crossval-$$.err" || {
+grep -q "has no finders configured" "${scratch}/dfe-crossval-$$.err" || {
     cat "${scratch}/dfe-crossval-$$.err" >&2
     rm -rf "${empty_run}" "${scratch}/dfe-crossval-$$.err"
-    fail "refusal message did not explain the breadth shortfall"
+    fail "refusal message did not explain the cross-validation failure"
 }
 rm -rf "${empty_run}" "${scratch}/dfe-crossval-$$.err"
 echo "OK: dev-flow-exit refuses a policy that fails cross-validation before ever reading --run"

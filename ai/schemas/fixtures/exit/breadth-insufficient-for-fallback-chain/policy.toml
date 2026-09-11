@@ -64,12 +64,10 @@ tier = "economy"
 families = ["claude"]
 
 [stage.challenge]
-finders = ["codex-cli"]
-finder_fallbacks = ["gemini-cli"]
+finders = []
 
 [stage.review]
-finders = ["codex-cli"]
-finder_fallbacks = ["gemini-cli"]
+finders = []
 
 [stage.integration]
 finders = ["codex-cli"]
