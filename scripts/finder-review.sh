@@ -360,9 +360,7 @@ fi
 # sits in, so that tree has to be the one its diff is about.
 read -r snapshot_committish snapshot_worktree <<<"$(review_scope_snapshot)"
 sandbox_create "$snapshot_committish" "$snapshot_worktree" >/dev/null || {
-    echo "Refusing to run $slug: the read-only scratch checkout could not be built, and" >&2
-    echo "/review requires the capability split to be installed and verified or the" >&2
-    echo "dispatch refused." >&2
+    echo "Refusing to run $slug: its finder-specific scratch checkout could not be built; no review ran." >&2
     exit 1
 }
 trap 'sandbox_cleanup' EXIT

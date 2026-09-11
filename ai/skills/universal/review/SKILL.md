@@ -111,8 +111,14 @@ stage—it is not permission to manufacture a clean round.
 
 Runtime isolation is optional; its absence alone is not a dispatch blocker.
 The challenger or reviewer still stays within its declared role scope and gets
-the captured base/head plus access to the source and diff it must review. Give
-every pass the run identity, policy, and finder slot. Include the complete
+the captured base/head plus access to the source and diff it must review. For a
+committed round, require every source and diff read to resolve from those
+captured Git revisions, never mutable worktree bytes. Pass each dispatch the
+remaining whole-run wall-clock budget and bound the caller's supervision and
+wait by that deadline. On expiry, stop waiting, follow the orchestrator's
+capped-run handling, and reject any late result; this grants no authority to
+terminate a process. Give every pass the run identity, policy, and finder slot.
+Include the complete
 validated finding records from every earlier round of this same stage, not
 merely their IDs, so the role can compare evidence before asserting
 `repeat-of` or `supersedes`; an empty list is explicit in round 1.
