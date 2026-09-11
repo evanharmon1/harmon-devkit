@@ -25,24 +25,6 @@ session free to do the work only it can do — adjudicate findings, compose
 reply text, settle dispositions, evaluate readiness — instead of burning its
 own turn on a wait loop.
 
-**A note for whoever dispatches you, not for you to act on mid-run.**
-specs/dev-flow-v2.md's role-write contract says this role "must not run with
-ambient write credentials" and that a harness unable to restrict a
-dispatched subagent's tools "may not dispatch" it. This file carries no
-`tools:`/`allowed-tools:` frontmatter and cannot — shared agents under
-`ai/agents/` carry `name`+`description` only (`ai/agents/README.md`'s
-portability contract, enforced by `scripts/verify-agents.sh`), because a
-harness-specific tool restriction baked into the portable file would ship to
-every consumer as a decision only the dispatching session can actually make.
-The two writes below (§4's trigger, §6's replies) go through
-`gh-write-broker.sh`, which validates that what leaves is exactly the
-trigger string or exactly the file content you were handed — real,
-mechanical narrowing regardless of what tools you nominally have — but it is
-not the same guarantee as a harness that structurally cannot call `gh api`
-raw at all. Closing that gap for good is the dispatching mechanism's job
-(`/orchestrator`, `/integrate`, Foreman, or whatever invokes this file), not
-something this file can resolve by itself.
-
 ## 1. Read the brief before touching anything
 
 A workable brief names:

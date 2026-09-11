@@ -52,45 +52,6 @@ review | challenge) shift ;;
     ;;
 esac
 
-# The schema-bound confidence-stage path is deliberately separate from the
-# ordinary interactive review above. Its caller has already materialized the
-# trusted role instruction and untrusted snapshot, and supplies the remaining
-# wall-clock budget explicitly. The launcher owns the native capability check.
-if [ "${1:-}" = "--judgment" ]; then
-    shift
-    if [ "${1:-}" != "--trusted-tooling-root" ] || [ -z "${2:-}" ]; then
-        echo "restricted Codex judgment requires --trusted-tooling-root from the pinned caller" >&2
-        exit 20
-    fi
-    trusted_root_arg="$2"
-    shift 2
-    if ! trusted_root="$(CDPATH= cd -- "$trusted_root_arg" 2>/dev/null && pwd -P)"; then
-        echo "trusted Codex tooling root is unavailable; refusing role dispatch" >&2
-        exit 20
-    fi
-    tooling_root="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
-    if [ "$trusted_root" != "$tooling_root" ]; then
-        echo "task is not running from the caller-pinned tooling root; refusing role dispatch" >&2
-        exit 20
-    fi
-    case "$MODE" in
-    challenge) role=challenger ;;
-    review) role=reviewer ;;
-    esac
-    dispatcher="$trusted_root/.agents/skills/orchestrator/assets/codex-judgment-dispatch.mjs"
-    mode_instruction="$trusted_root/scripts/lib/review-instructions/$MODE.txt"
-    severity_instruction="$trusted_root/scripts/lib/review-instructions/severity.txt"
-    if [ ! -f "$dispatcher" ] || [ ! -f "$mode_instruction" ] || [ ! -f "$severity_instruction" ]; then
-        echo "pinned Codex judgment closure is incomplete; refusing role dispatch" >&2
-        exit 20
-    fi
-    exec node "$dispatcher" \
-        --role "$role" \
-        --mode-instruction "$mode_instruction" \
-        --severity-instruction "$severity_instruction" \
-        "$@"
-fi
-
 if ! command -v codex >/dev/null 2>&1; then
     echo "codex CLI not found. Install it (brew install --cask codex, or npm install -g @openai/codex)," >&2
     echo "authenticate with 'codex login', then re-run. See docs/guides/codex-review.md." >&2

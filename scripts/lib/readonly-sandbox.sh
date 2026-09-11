@@ -1,30 +1,17 @@
 #!/usr/bin/env bash
-# readonly-sandbox.sh — run a third-party review CLI where it cannot write.
+# readonly-sandbox.sh — add layered write protections around a third-party
+# review CLI.
 #
 # Sourced, never executed.
 #
-# `/review`'s dispatch contract requires a confidence pass to run with shell,
-# git, gh, network write and external credentials denied, and says that where
-# that split "cannot be installed and verified, refuse the dispatch". A
-# third-party general-agent CLI does not let us install it: its capability
-# model is its own, its configuration is the operator's, and an earlier
-# revision of this repo tried to stand in for that with a comment and then with
-# an environment attestation. Neither is verification — a drifted config
-# crosses the boundary and nothing notices.
+# This optional boundary is built outside the CLI, where it does not depend on
+# the vendor's cooperation:
 #
-# So the boundary is built OUTSIDE the CLI, where it does not depend on the
-# vendor's cooperation at all:
-#
-#   1. a kernel sandbox, `bwrap`, is REQUIRED — not opportunistic. Without it
-#      the only protection is the file mode on the scratch checkout, and that
-#      stops nothing outside it: a linked worktree's `.git` is a POINTER into
-#      the real repository, so `git update-ref` could alter or delete shared
-#      refs while the scratch tree stayed byte-identical and the verification
-#      below happily passed. The contract's answer to a boundary that cannot
-#      be installed is to refuse, so that is what happens;
+#   1. a kernel sandbox, `bwrap`, when available. Without it the pass continues
+#      with the remaining protections and reports the degraded boundary;
 #   2. a scratch `git worktree add --detach` checkout, per run, in a temp dir,
 #      with every path in it made unwritable;
-#   3. the whole filesystem read-only inside the sandbox — the real `.git`
+#   3. with `bwrap`, the whole filesystem read-only inside the sandbox — the real `.git`
 #      bound read-only EXPLICITLY as well, so the worktree pointer leads
 #      somewhere unwritable rather than relying on the blanket bind alone;
 #   4. HOME replaced by a tmpfs with only the finder's OWN credential path

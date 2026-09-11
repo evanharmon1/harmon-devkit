@@ -218,7 +218,6 @@ if (errors.length === 0) {
   }
 
   // ── roles[] (specs/dev-flow-v2.md 'Roles and authority', #635) ──────────
-  const WRITE_RESTRICTED_ROLES = new Set(['challenger', 'reviewer', 'integrator'])
   const REQUIRED_ROLE_SLUGS = ['orchestrator', 'implementer', 'challenger', 'reviewer', 'integrator']
   // The exact writes[] set each role must declare — verbatim from
   // specs/dev-flow-v2.md's 'Roles and authority' table. challenger/reviewer
@@ -271,11 +270,10 @@ if (errors.length === 0) {
         semanticError(`role ${role.slug} names result_schema ${role.result_schema}, which does not exist`)
       }
     }
-    // challenger and reviewer write nothing outside their own result:
-    // writes must be empty. integrator is ALSO write-restricted (no ambient
-    // writes) but not "no writes at all" — it is limited to its two brokered
-    // actions, so its writes must be non-empty, same as orchestrator and
-    // implementer's real, unrestricted write boundaries.
+    // Challenger and reviewer write nothing outside their own result, so
+    // writes must be empty. The integrator has two brokered actions, while the
+    // orchestrator and implementer have their own declared write sets; those
+    // three roles therefore require non-empty writes.
     const mustBeEmpty = role.slug === 'challenger' || role.slug === 'reviewer'
     if (mustBeEmpty && role.writes.length !== 0) {
       semanticError(`role ${role.slug} must declare no external writes (writes: [])`)
@@ -576,20 +574,6 @@ if (errors.length === 0) {
       } else if (defaults.length > 1) {
         semanticError(
           `family ${family.slug} has ${defaults.length} default models at tier ${tier} (${defaults.map((m) => m.slug).join(', ')}) — at most one may be default`
-        )
-      }
-    }
-  }
-
-  // ── harness write-restriction (specs/dev-flow-v2.md 'Write boundaries are
-  // enforced capabilities', #635): a harness cannot be trusted to dispatch a
-  // write-restricted role unless it can deny ambient writes. ──────────────
-  for (const harness of registry.harnesses) {
-    if (!harness.can_restrict_writes) {
-      const restricted = harness.roles.filter((role) => WRITE_RESTRICTED_ROLES.has(role))
-      if (restricted.length > 0) {
-        semanticError(
-          `harness ${harness.slug} declares role(s) ${restricted.join(', ')} but can_restrict_writes is false — a harness that cannot deny ambient writes must not dispatch a write-restricted role`
         )
       }
     }

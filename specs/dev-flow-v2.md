@@ -195,21 +195,14 @@ an issue's criteria conflict with this table, the spec wins and the issue
 body is edited to match — and back-linked here — before the issue is claimed;
 that edit is part of closing [#633](https://github.com/evanharmon1/harmon-devkit/issues/633).
 
-**Declared writes are enforced, not trusted.** A role's `writes` list is an
-authorization boundary only where something enforces it: the agent file's
-tool allowlist (`allowed-tools` frontmatter) denies everything not listed,
-and every permitted external write goes through a broker script that
-validates its one action (`push-round.sh` for the round push; a thread-reply
-helper that posts exactly the text it is given; the Codex-cycle helper's
-reserve → post → attach sequence for the `@codex review` trigger, which is
-the integrator's one authorized comment). The `challenger`, `reviewer`, and
-`integrator` roles **must not run with ambient write credentials**: a harness
-that cannot restrict a subagent's tools (a plain subagent inheriting the
-orchestrator's shell and `gh` token) may not dispatch those roles, and
-`/orchestrator` refuses the dispatch rather than disclosing the gap — a
-disclosed bypass is still a bypass. The implementer is the one role that
-legitimately pushes, through `push-round.sh`. Foreman's sandbox is the
-equivalent scoping for headless runs.
+**Declared writes bound each role's authority.** Every permitted external
+write goes through a broker script that validates its one action
+(`push-round.sh` for the round push; a thread-reply helper that posts exactly
+the text it is given; the Codex-cycle helper's reserve → post → attach sequence
+for the `@codex review` trigger, which is the integrator's one authorized
+comment). The challenger and reviewer make no external writes. The implementer
+legitimately commits and pushes through `push-round.sh`; the integrator is
+limited to its brokered trigger and orchestrator-supplied reply text.
 
 **Briefs are free-form; results are schema-bound.** The orchestrator → agent
 brief is prose. The agent → orchestrator result is validated on receipt

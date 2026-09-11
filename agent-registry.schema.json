@@ -182,7 +182,7 @@
           "items": { "enum": ["implementer", "challenger", "reviewer", "integrator"] }
         },
         "can_restrict_writes": {
-          "description": "Whether this harness can deny ambient writes for a dispatched subagent (a tool/credential allowlist, e.g. Claude Code's `allowed-tools` frontmatter). specs/dev-flow-v2.md 'Roles and authority': a harness that cannot deny ambient writes must not dispatch a write-restricted role (challenger, reviewer, integrator) — cross-file validation rejects `roles` containing one of those without this set true.",
+          "description": "Whether this harness can deny ambient writes for a dispatched subagent (for example, with a tool or credential allowlist). This is descriptive capability metadata, not a role-eligibility requirement.",
           "type": "boolean"
         }
       }

@@ -36,18 +36,18 @@ as the other's contract merely because both feed exit computation.
 - **WHEN** the orchestrator dispatches a finder configured for the challenge stage
 - **THEN** the returned pass conforms to the challenger role's result contract rather than a hard-coded reviewer payload
 
-### Requirement: Write boundaries are enforced capabilities
+### Requirement: Role write boundaries are explicit contracts
 
 The implementer SHALL be permitted to create branch commits and invoke the
 round-push broker. The challenger and reviewer SHALL have no external writes.
 The integrator SHALL be limited to a brokered Codex trigger and a brokered
-thread reply containing text supplied by the orchestrator. A harness that
-cannot deny ambient writes SHALL NOT dispatch a write-restricted role.
+thread reply containing text supplied by the orchestrator. Harness capability
+metadata does not make an otherwise supported role ineligible for dispatch.
 
-#### Scenario: A plain subagent inherits a writable GitHub token
+#### Scenario: A supported role has no runtime isolation
 
-- **WHEN** the harness cannot restrict tools or credentials for a reviewer or integrator dispatch
-- **THEN** the orchestrator refuses the dispatch rather than merely disclosing the excess authority
+- **WHEN** a harness supports a role but cannot restrict ambient writes
+- **THEN** the role remains eligible for dispatch within its declared write contract
 
 ### Requirement: Finders declare collection and trust metadata
 

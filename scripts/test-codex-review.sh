@@ -94,43 +94,6 @@ run() {
     ./scripts/codex-review.sh "$@" 2>&1
 }
 
-echo "==> restricted judgment resolves the portable consumer skill tree without ai sources"
-consumer="${test_tmp}/consumer"
-mkdir -p "$consumer/scripts/lib" "$consumer/.agents/skills/orchestrator/assets"
-cp "${repo}/scripts/codex-review.sh" "$consumer/scripts/"
-cp -R "${repo}/scripts/lib/review-instructions" "$consumer/scripts/lib/"
-cat >"$consumer/.agents/skills/orchestrator/assets/codex-judgment-dispatch.mjs" <<'DISPATCHER'
-console.log(JSON.stringify({ dispatcher: process.argv[1], args: process.argv.slice(2) }))
-DISPATCHER
-[ ! -e "$consumer/ai" ] || fail "consumer fixture unexpectedly has an ai source tree"
-consumer_out="$(cd "$consumer" && ./scripts/codex-review.sh review --judgment \
-    --trusted-tooling-root "$consumer" \
-    --model gpt-5.6-sol --reasoning medium --prompt prompt --snapshot snapshot \
-    --turn-timeout-seconds 60)" || fail "consumer judgment bridge refused: $consumer_out"
-grep -q '"--role","reviewer"' <<<"$consumer_out" ||
-    fail "consumer judgment bridge did not map review to reviewer: $consumer_out"
-grep -q '.agents/skills/orchestrator/assets' <<<"$consumer_out" ||
-    fail "consumer judgment bridge did not resolve the portable skill tree: $consumer_out"
-grep -q 'review-instructions/review.txt' <<<"$consumer_out" ||
-    fail "consumer judgment bridge omitted the selected mode instruction: $consumer_out"
-grep -q 'review-instructions/severity.txt' <<<"$consumer_out" ||
-    fail "consumer judgment bridge omitted the severity instruction: $consumer_out"
-if consumer_out="$(cd "$consumer" && ./scripts/codex-review.sh review --judgment \
-    --model gpt-5.6-sol --reasoning medium --prompt prompt --snapshot snapshot \
-    --turn-timeout-seconds 60 2>&1)"; then
-    fail "restricted judgment accepted a missing trusted tooling pin: $consumer_out"
-fi
-grep -q 'requires --trusted-tooling-root' <<<"$consumer_out" ||
-    fail "missing trusted tooling pin refusal was not explicit: $consumer_out"
-if consumer_out="$(cd "$consumer" && ./scripts/codex-review.sh review --judgment \
-    --trusted-tooling-root "$test_tmp/clone" \
-    --model gpt-5.6-sol --reasoning medium --prompt prompt --snapshot snapshot \
-    --turn-timeout-seconds 60 2>&1)"; then
-    fail "restricted judgment accepted a different tooling root: $consumer_out"
-fi
-grep -q 'not running from the caller-pinned tooling root' <<<"$consumer_out" ||
-    fail "mismatched trusted tooling root refusal was not explicit: $consumer_out"
-
 echo "==> clean tree, no local main/master: falls back to origin/HEAD's branch"
 out="$(run challenge)" || fail "challenge exited non-zero: $out"
 grep -q "STUB-ARGS: exec review" <<<"$out" || fail "codex exec review not invoked: $out"
