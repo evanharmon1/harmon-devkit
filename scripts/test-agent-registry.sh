@@ -208,6 +208,48 @@ switch (mutation) {
   case 'finder-severity-map-duplicate-match':
     finder('codex-cloud').severity_map.rules.push({ match: 'p1', priority: 'P3', anchor: 'anywhere' })
     break
+  // ── severity_map prefix shadowing (#832) ──────────────────────────────
+  case 'finder-severity-map-prefix-shadow':
+    // "potential issue" shadows "potential issue high" — the shorter match
+    // fires first under includesAsToken's word-bounded substring check.
+    finder('coderabbit-cloud').severity_map.rules.push(
+      { match: 'potential issue high', priority: 'P0', anchor: 'anywhere' }
+    )
+    break
+  case 'finder-severity-map-prefix-shadow-short':
+    // "P1" shadows "P1 critical" — same word-bounded prefix logic.
+    finder('codex-cloud').severity_map.rules.push(
+      { match: 'P1 critical', priority: 'P0', anchor: 'anywhere' }
+    )
+    break
+  case 'finder-severity-map-no-shadow-leading-token':
+    // leading-token uses exact first-token matching, not substring — no
+    // shadowing possible.
+    finder('codex-adversarial').severity_map.rules.push(
+      { match: 'P1X', priority: 'P0', anchor: 'leading-token' }
+    )
+    break
+  case 'finder-severity-map-no-shadow-word-boundary':
+    // "P1" does NOT shadow "P1X" at anywhere — the "X" immediately after
+    // is alphanumeric, so the word boundary fails and both rules fire
+    // independently.
+    finder('codex-cloud').severity_map.rules.push(
+      { match: 'P1X', priority: 'P0', anchor: 'anywhere' }
+    )
+    break
+  // ── regex terminal signal compilation (#833) ──────────────────────────
+  case 'finder-invalid-regex-actionable-pattern':
+    finder('coderabbit-cloud').collection.terminal_signals.actionable_pattern = '[invalid('
+    break
+  case 'finder-invalid-regex-severity-marker':
+    finder('codex-cloud').collection.terminal_signals.severity_marker = '*bad'
+    break
+  case 'finder-invalid-regex-metadata-line':
+    finder('codex-cloud').collection.terminal_signals.metadata_line = '(unclosed'
+    break
+  case 'finder-invalid-regex-heading':
+    finder('codex-cloud').collection.terminal_signals.heading = '[['
+    break
   case 'finder-severity-map-p3-default':
     finder('codex-cloud').severity_map.default = 'P3'
     break
@@ -319,6 +361,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 const [inputPath, outputPath, mutation] = process.argv.slice(2)
 const registry = JSON.parse(await readFile(inputPath, 'utf8'))
 const harness = (slug) => registry.harnesses.find((entry) => entry.slug === slug)
+const finder = (slug) => registry.finders.find((entry) => entry.slug === slug)
 
 switch (mutation) {
   case 'allowlist-missing':
@@ -326,6 +369,29 @@ switch (mutation) {
     break
   case 'review-role-without-write-restriction':
     harness('codex-cli').can_restrict_writes = false
+    break
+  // ── severity_map non-shadow cases (#832) ─────────────────────────────
+  case 'severity-map-no-shadow-leading-token':
+    // leading-token uses exact first-token matching — "P1" and "P1X" are
+    // distinct tokens, not a shadow.
+    finder('codex-adversarial').severity_map.rules.push(
+      { match: 'P1X', priority: 'P0', anchor: 'leading-token' }
+    )
+    break
+  case 'severity-map-no-shadow-word-boundary':
+    // "P1" does NOT shadow "P1X" at anywhere because "X" is alphanumeric,
+    // so the word boundary fails.
+    finder('codex-cloud').severity_map.rules.push(
+      { match: 'P1X', priority: 'P0', anchor: 'anywhere' }
+    )
+    break
+  case 'severity-map-no-shadow-non-prefix-substring':
+    // "P1" does NOT shadow "high P1" — the earlier match appears at
+    // position 5, not at position 0. leadingHit fires at line-start
+    // positions, so the later rule wins when its match starts first.
+    finder('codex-cloud').severity_map.rules.push(
+      { match: 'high P1', priority: 'P0', anchor: 'anywhere' }
+    )
     break
   default:
     throw new Error(`unknown accepted mutation: ${mutation}`)
@@ -588,6 +654,34 @@ rejects "a multi-model family-tier rung with two defaults" \
     'at most one may be default'
 accepts "a review role on a harness without write restriction" \
     'review-role-without-write-restriction'
+
+# ── severity_map prefix shadowing (#832) ───────────────────────────────────
+rejects "a severity_map where an earlier anywhere rule shadows a later one by prefix" \
+    'finder-severity-map-prefix-shadow' \
+    'shadows later rule'
+rejects "a severity_map where an earlier anywhere rule shadows a later one by short prefix" \
+    'finder-severity-map-prefix-shadow-short' \
+    'shadows later rule'
+accepts "a leading-token rule that is a prefix of another leading-token rule (exact matching, not substring)" \
+    'severity-map-no-shadow-leading-token'
+accepts "an anywhere rule that is NOT a word-bounded substring of another (word boundary fails)" \
+    'severity-map-no-shadow-word-boundary'
+accepts "an anywhere rule where the earlier match is a non-prefix substring (leadingHit positional)" \
+    'severity-map-no-shadow-non-prefix-substring'
+
+# ── regex terminal signal compilation (#833) ───────────────────────────────
+rejects "an invalid regex in terminal_signals.actionable_pattern" \
+    'finder-invalid-regex-actionable-pattern' \
+    'is not a valid regex'
+rejects "an invalid regex in terminal_signals.severity_marker" \
+    'finder-invalid-regex-severity-marker' \
+    'is not a valid regex'
+rejects "an invalid regex in terminal_signals.metadata_line" \
+    'finder-invalid-regex-metadata-line' \
+    'is not a valid regex'
+rejects "an invalid regex in terminal_signals.heading" \
+    'finder-invalid-regex-heading' \
+    'is not a valid regex'
 
 # ── trusted_orchestrator_actor_ids (#741) ───────────────────────────────────
 # The registry's own copy must carry the maintainer's live actor id (looked
