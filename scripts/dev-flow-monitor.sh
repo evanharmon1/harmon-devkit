@@ -32,8 +32,8 @@ external action.  The observed file must be JSON with status landed, absent, or
 indeterminate; landed also requires matching event, action, and expected_head.
 Assembly reservations require a JSON plan naming integrated_lanes and
 discarded_lanes; a landed observation must reproduce both lists exactly.
-Comment reservations authenticate the actor against the run-pinned registry
-revision. Comment observations provide a complete comments[] candidate set;
+Comment reservations authenticate the actor against the governing registry
+revision (the newest revision on the default branch, resolved per write). Comment observations provide a complete comments[] candidate set;
 the monitor filters and hashes it, then adopts the lowest matching comment ID.
 Agent-run reservations durably enforce the run-wide max_agent_runs ceiling;
 an exact event re-arm adopts the already-spent slot without consuming another.

@@ -9,12 +9,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MONITOR="$SCRIPT_DIR/dev-flow-monitor.sh"
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }
 
 pass() {
     echo "  PASS: $1"
+    return 0
 }
 
 [ -x "$MONITOR" ] || fail "monitor script not found or not executable"
@@ -58,6 +60,7 @@ setup_fixture() {
 
     FIXTURE_REPO="$base/work"
     FIXTURE_REV="$(git -C "$FIXTURE_REPO" log -1 --format='%H' origin/main -- agent-registry.json)"
+    return 0
 }
 
 # Helper: activate a run and return the generation
@@ -109,7 +112,7 @@ setup_fixture '{"trusted_orchestrator_actor_ids": [12345, 67890]}'
 activate_run "$FIXTURE_REPO" "run-int-accept" "test-branch" "$FIXTURE_REV" >/dev/null
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-int-accept" "test-branch" "12345" "evt-accept")"
-echo "$output" | grep -q "reserved evt-accept" ||
+grep -q "reserved evt-accept" <<<"$output" ||
     fail "integer actor id 12345 should be accepted; got: $output"
 pass "actor id 12345 (integer) accepted from integer allowlist"
 
@@ -120,7 +123,7 @@ setup_fixture '{"trusted_orchestrator_actor_ids": [12345, 67890]}'
 activate_run "$FIXTURE_REPO" "run-reject" "test-branch" "$FIXTURE_REV" >/dev/null
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-reject" "test-branch" "99999" "evt-reject" || true)"
-echo "$output" | grep -q "not trusted" ||
+grep -q "not trusted" <<<"$output" ||
     fail "actor id 99999 should be rejected; got: $output"
 pass "actor id 99999 (not in allowlist) correctly rejected"
 
@@ -131,7 +134,7 @@ setup_fixture '{"trusted_orchestrator_actor_ids": ["12345", "67890"]}'
 activate_run "$FIXTURE_REPO" "run-string-reject" "test-branch" "$FIXTURE_REV" >/dev/null
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-string-reject" "test-branch" "12345" "evt-string" || true)"
-echo "$output" | grep -q "not trusted" ||
+grep -q "not trusted" <<<"$output" ||
     fail "string allowlist should be treated as malformed; got: $output"
 pass "allowlist with string elements correctly rejected as malformed"
 
@@ -142,7 +145,7 @@ setup_fixture '{"trusted_orchestrator_actor_ids": []}'
 activate_run "$FIXTURE_REPO" "run-empty" "test-branch" "$FIXTURE_REV" >/dev/null
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-empty" "test-branch" "12345" "evt-empty" || true)"
-echo "$output" | grep -q "not trusted" ||
+grep -q "not trusted" <<<"$output" ||
     fail "empty allowlist should fail closed; got: $output"
 pass "empty allowlist correctly fails closed"
 
@@ -153,7 +156,7 @@ setup_fixture '{}'
 activate_run "$FIXTURE_REPO" "run-absent" "test-branch" "$FIXTURE_REV" >/dev/null
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-absent" "test-branch" "12345" "evt-absent" || true)"
-echo "$output" | grep -q "not trusted" ||
+grep -q "not trusted" <<<"$output" ||
     fail "absent allowlist should fail closed; got: $output"
 pass "absent trusted_orchestrator_actor_ids correctly fails closed"
 
@@ -165,7 +168,7 @@ activate_run "$FIXTURE_REPO" "run-rev-change" "test-branch" "$FIXTURE_REV" >/dev
 rev_before="$FIXTURE_REV"
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-rev-change" "test-branch" "12345" "evt-rev1")"
-echo "$output" | grep -q "reserved evt-rev1" ||
+grep -q "reserved evt-rev1" <<<"$output" ||
     fail "first reservation should succeed; got: $output"
 pass "reservation 1 accepted with governing revision $rev_before"
 
@@ -175,12 +178,12 @@ rev_after="$(git -C "$FIXTURE_REPO" log -1 --format='%H' origin/main -- agent-re
     fail "registry revision should have changed after update"
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-rev-change" "test-branch" "12345" "evt-rev2" || true)"
-echo "$output" | grep -q "not trusted" ||
+grep -q "not trusted" <<<"$output" ||
     fail "actor 12345 should be rejected after registry update removed it; got: $output"
 pass "reservation 2 correctly uses updated governing revision (actor removed)"
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-rev-change" "test-branch" "67890" "evt-rev3")"
-echo "$output" | grep -q "reserved evt-rev3" ||
+grep -q "reserved evt-rev3" <<<"$output" ||
     fail "actor 67890 should be accepted after registry update added it; got: $output"
 pass "reservation 3 accepted with new governing revision (actor added)"
 
@@ -213,12 +216,13 @@ kickoff_rev="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
 # activate command will accept by putting a registry file in the local repo only
 printf '{"trusted_orchestrator_actor_ids": [12345]}' >"$FIXTURE_REPO/agent-registry.json"
 git -C "$FIXTURE_REPO" add agent-registry.json
-git -C "$FIXTURE_REPO" commit -q -m "local-only registry"
+git -C "$FIXTURE_REPO" -c user.name='test' -c user.email='test@test.com' \
+    commit -q -m "local-only registry"
 local_rev="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
 activate_run "$FIXTURE_REPO" "run-no-origin-reg" "test-branch" "$local_rev" >/dev/null
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-no-origin-reg" "test-branch" "12345" "evt-no-reg" || true)"
-echo "$output" | grep -q "no agent-registry.json revision found" ||
+grep -q "no agent-registry.json revision found" <<<"$output" ||
     fail "should fail when no registry on default branch; got: $output"
 pass "correctly fails closed when no agent-registry.json exists on origin/main"
 
@@ -229,7 +233,7 @@ setup_fixture '{"trusted_orchestrator_actor_ids": [12345.5, 67890]}'
 activate_run "$FIXTURE_REPO" "run-float" "test-branch" "$FIXTURE_REV" >/dev/null
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-float" "test-branch" "67890" "evt-float" || true)"
-echo "$output" | grep -q "not trusted" ||
+grep -q "not trusted" <<<"$output" ||
     fail "float in allowlist should be malformed; got: $output"
 pass "allowlist containing a float correctly rejected as malformed"
 
@@ -240,7 +244,7 @@ setup_fixture '{"trusted_orchestrator_actor_ids": [0, 67890]}'
 activate_run "$FIXTURE_REPO" "run-zero" "test-branch" "$FIXTURE_REV" >/dev/null
 
 output="$(try_comment_reservation "$FIXTURE_REPO" "run-zero" "test-branch" "67890" "evt-zero" || true)"
-echo "$output" | grep -q "not trusted" ||
+grep -q "not trusted" <<<"$output" ||
     fail "zero in allowlist should be malformed; got: $output"
 pass "allowlist containing zero correctly rejected as malformed"
 
