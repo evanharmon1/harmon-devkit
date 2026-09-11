@@ -28,7 +28,11 @@ the registry task target invoked with `task --dir <trusted-root>` and
 never the candidate checkout, supplies the task, mode/severity instructions,
 and `assets/codex-judgment-dispatch.mjs`; require its version-pinned app-server
 configuration, single caller-budget deadline, and refusal checks at the actual
-dispatch. Before invocation, the trusted caller verifies the provenance of the
+dispatch. That configuration requires executable lifecycle hooks to be
+effectively disabled and disables legacy executable turn-completion
+notifications before starting a thread. A Codex host that forces hooks on is
+unsupported and refuses before the thread starts. Before invocation, the
+trusted caller verifies the provenance of the
 complete executed closure, including resolved symlink targets, and refuses an
 absent pin or candidate-owned code. The script's matching-root check enforces
 that selection but does not authenticate it. For roles that require this

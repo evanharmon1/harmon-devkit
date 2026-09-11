@@ -131,6 +131,7 @@ printf '%s\n' 'positive-read-sentinel' >"$tmp/judgment-snapshot"
 config_json="$(node -e "import('./$codex_judgment').then(m => console.log(JSON.stringify(m.judgmentConfig(['fixture-mcp']))))")"
 jq -e '.["features.shell_tool"] == false and
     .["features.unified_exec"] == false and .web_search == "disabled" and
+    .["features.hooks"] == false and .notify == [] and
     .["features.apps"] == false and .["features.multi_agent"] == false and
     .mcp_servers["fixture-mcp"].enabled == false' <<<"$config_json" >/dev/null ||
     fail "Codex judgment config does not remove every forbidden tool family"
@@ -140,6 +141,20 @@ if node -e "import('./$codex_judgment').then(m => { const c=m.judgmentConfig(); 
 fi
 grep -Fq 'did not preserve features.shell_tool=false' "$tmp/effective-config" ||
     fail "Codex effective-config refusal did not identify the leaked tool"
+if node -e "import('./$codex_judgment').then(m => { const c=m.judgmentConfig(); c.notify=['/tmp/callback']; m.assertEffectiveJudgmentConfig(c) })" \
+    >"$tmp/effective-config" 2>&1; then
+    fail "Codex effective-config check accepted an inherited notify callback"
+fi
+grep -Fq 'did not preserve notify=[]' "$tmp/effective-config" ||
+    fail "Codex effective-config refusal did not identify the inherited callback"
+node -e "import('./$codex_judgment').then(m => m.assertEffectiveJudgmentConfig(m.judgmentConfig()))" ||
+    fail "Codex effective-config check rejected disabled hooks"
+if node -e "import('./$codex_judgment').then(m => { const c=m.judgmentConfig(); c['features.hooks']=true; m.assertEffectiveJudgmentConfig(c) })" \
+    >"$tmp/effective-config" 2>&1; then
+    fail "Codex effective-config check accepted enabled executable hooks"
+fi
+grep -Fq 'did not preserve features.hooks=false' "$tmp/effective-config" ||
+    fail "Codex effective-config refusal did not identify enabled hooks"
 if command -v codex >/dev/null 2>&1 && [ "$(codex --version 2>/dev/null)" = 'codex-cli 0.154.0' ]; then
     node scripts/test-codex-judgment-runtime.mjs ||
         fail "real Codex request-inventory probe failed"

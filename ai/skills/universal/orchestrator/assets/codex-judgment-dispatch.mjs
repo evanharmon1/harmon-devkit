@@ -20,6 +20,7 @@ export function judgmentConfig(mcpNames = []) {
     'features.code_mode': false,
     'features.code_mode_only': false,
     'features.goals': false,
+    'features.hooks': false,
     'features.image_generation': false,
     'features.memories': false,
     'features.multi_agent': false,
@@ -32,6 +33,7 @@ export function judgmentConfig(mcpNames = []) {
     'features.tool_suggest': false,
     'features.unified_exec': false,
     'features.view_image': false,
+    notify: [],
     web_search: 'disabled',
     mcp_servers: Object.fromEntries(mcpNames.map((name) => [name, { enabled: false }]))
   }
@@ -49,7 +51,7 @@ export function assertEffectiveJudgmentConfig(config) {
   for (const [key, expected] of Object.entries(judgmentConfig())) {
     if (key === 'mcp_servers') continue
     const actual = configValue(config, key)
-    if (actual !== expected) {
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
       throw new Error(`effective Codex config did not preserve ${key}=${JSON.stringify(expected)}`)
     }
   }

@@ -141,10 +141,13 @@ the root the already-trusted caller selected. This version-pinned
 app-server invocation creates
 an ephemeral thread with no runtime workspace or capability roots, disables
 shell/unified-exec, web, browser, app/connector, image, skill/plugin, and
-multi-agent tools, discovers and disables every effective MCP server, requests
+multi-agent tools, requires executable lifecycle hooks to be effectively off,
+and disables legacy executable completion notifications;
+discovers and disables every effective MCP server; requests
 no approvals, never services an app-server approval request, verifies the
 returned runtime configuration, and refuses any unexpected tool event. Subject stdout to the existing result envelope and
 receipt validation; a role payload schema is not an OpenAI output envelope. It
+refuses before `thread/start` on a Codex host that forces hooks on.
 deliberately does not use Codex
 permission profiles: those do not compose with a `sandbox_mode` present in any
 loaded configuration layer. The caller supplies snapshot bytes rather than a
