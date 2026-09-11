@@ -463,17 +463,7 @@ if (finder.raw_shape === 'labelled-text') {
       const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(body)
       if (!stamp) continue
       const stampSha = stamp[1].toLowerCase()
-      if (stampSha.length < 40) {
-        if (opts.reviewedHead.startsWith(stampSha)) {
-          die(
-            `${finder.slug} top-level comment ${comment.id ?? '?'} stamps an abbreviated SHA ` +
-              `(${stampSha.length} chars) that prefix-matches the reviewed head — ` +
-              `this decoder has no git access to prove the abbreviation is unique`,
-            3
-          )
-        }
-        continue
-      }
+      if (stampSha.length < 40) continue
       if (stampSha !== opts.reviewedHead) continue
       if (!isLabelled(body)) continue
       for (const segment of splitLabelledSegments(body)) {
@@ -530,10 +520,23 @@ if (finder.raw_shape === 'labelled-text') {
         const head = text.replace(/^[\s*_`>#-]+/, '').toLowerCase()
         if (!head.startsWith(want)) return false
         const strippedLen = text.length - head.length
-        const remainder = text.slice(strippedLen + want.length)
+        const afterVerdict = text.slice(strippedLen + want.length)
+        const firstNl = afterVerdict.indexOf('\n')
+        const remainder = firstNl === -1 ? '' : afterVerdict.slice(firstNl + 1)
+        let inRecognizedBlock = false
         for (const line of remainder.split('\n')) {
           const trimmed = line.trim()
           if (trimmed.length === 0) continue
+          if (!inRecognizedBlock && /<details\b/i.test(trimmed)) {
+            if (cleanVerdictMetadata.strings.some((s) => trimmed.toLowerCase().includes(s))) {
+              inRecognizedBlock = true
+              continue
+            }
+          }
+          if (inRecognizedBlock) {
+            if (/<\/details>/i.test(trimmed)) inRecognizedBlock = false
+            continue
+          }
           const recognized =
             cleanVerdictMetadata.patterns.some((p) => p.test(trimmed)) ||
             cleanVerdictMetadata.strings.some((s) => trimmed.toLowerCase().includes(s))
@@ -585,17 +588,7 @@ if (finder.raw_shape === 'labelled-text') {
         const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(String(c.body ?? ''))
         if (!stamp) return false
         const cStampSha = stamp[1].toLowerCase()
-        if (cStampSha.length < 40) {
-          if (opts.reviewedHead.startsWith(cStampSha)) {
-            die(
-              `${finder.slug} top-level comment ${c.id ?? '?'} stamps an abbreviated SHA ` +
-                `(${cStampSha.length} chars) that prefix-matches the reviewed head — ` +
-                `this decoder has no git access to prove the abbreviation is unique`,
-              3
-            )
-          }
-          return false
-        }
+        if (cStampSha.length < 40) return false
         if (cStampSha !== opts.reviewedHead) return false
         return bodyIsTerminal(c.body)
       }))

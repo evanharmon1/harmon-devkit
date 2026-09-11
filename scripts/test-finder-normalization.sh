@@ -433,7 +433,7 @@ set -e
 [ "$status" -eq 3 ] || fail "a stray reaction from another actor was accepted as terminal (exit $status)"
 
 # ── #819: abbreviated SHA in a top-level comment stamp ──────────────────────
-echo "==> an abbreviated SHA stamp that prefix-matches the head is refused"
+echo "==> an abbreviated SHA stamp that prefix-matches the head is skipped"
 jq -n --arg head "$head40" '{
     top_level_comments: [ { id: 8190, user: { id: 199175422 },
         body: "**P1** Something wrong.\n\n**Reviewed commit:** `'"${head40:0:7}"'`" } ]
@@ -444,9 +444,21 @@ node "$normalizer" --finder codex-cloud --stage integration --round 1 \
     >/dev/null 2>"$tmp/abbrev-stamp.err"
 status=$?
 set -e
-[ "$status" -eq 3 ] || fail "an abbreviated stamp that prefix-matches the head was accepted (exit $status)"
-grep -Fq 'abbreviated SHA' "$tmp/abbrev-stamp.err" ||
-    fail "the abbreviated-stamp refusal did not name its reason: $(cat "$tmp/abbrev-stamp.err")"
+[ "$status" -eq 3 ] || fail "an abbreviated stamp as sole evidence was accepted (exit $status)"
+
+echo "==> an abbreviated SHA stamp is skipped when other evidence exists"
+jq -n --arg head "$head40" '{
+    review: { id: 819, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
+              body: "Codex Review: didn'"'"'t find any major issues." },
+    top_level_comments: [ { id: 8192, user: { id: 199175422 },
+        body: "**P1** Something wrong.\n\n**Reviewed commit:** `'"${head40:0:10}"'`" } ]
+}' >"$tmp/abbrev-with-review.json"
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/abbrev-with-review.json" \
+    >"$tmp/abbrev-with-review.out" 2>&1 ||
+    fail "an abbreviated stamp alongside a clean review killed the decoder"
+jq -e '(.findings | length) == 0' "$tmp/abbrev-with-review.out" >/dev/null ||
+    fail "the abbreviated comment was decoded as a finding instead of being skipped"
 
 echo "==> an abbreviated SHA stamp for a DIFFERENT head is skipped, not refused"
 # The stamp is short but does not prefix-match the reviewed head, so it is
@@ -465,10 +477,10 @@ jq -e '(.findings | length) == 0' "$tmp/abbrev-other.out" >/dev/null ||
     fail "a non-matching abbreviated stamp produced findings"
 
 # ── #829: narration after a clean verdict ───────────────────────────────────
-echo "==> narration appended after a declared clean verdict is not terminal"
+echo "==> narration on a subsequent line after a clean verdict is not terminal"
 jq -n --arg head "$head40" '{
     review: { id: 829, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
-              body: "Codex Review: didn'"'"'t find any major issues. Review is still pending; no verdict has been issued." }
+              body: "Codex Review: didn'"'"'t find any major issues.\n\nHowever, you might want to reconsider the approach." }
 }' >"$tmp/narration.json"
 set +e
 node "$normalizer" --finder codex-cloud --stage integration --round 1 \
@@ -486,6 +498,18 @@ jq -n --arg head "$head40" '{
 node "$normalizer" --finder codex-cloud --stage integration --round 1 \
     --registry "$registry" --reviewed-head "$head40" <"$tmp/clean-meta.json" >/dev/null ||
     fail "a clean verdict with only declared metadata was not accepted as terminal"
+
+echo "==> the real Codex clean layout — verdict, praise, metadata, About block — IS terminal"
+jq -n --arg head "$head40" '{
+    review: { id: 8292, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
+              body: ("Codex Review: didn'"'"'t find any major issues. Keep it up!\n\n" +
+                     "**Reviewed commit:** `" + $head + "`\n\n" +
+                     "<details> <summary>About Codex in GitHub</summary>\n" +
+                     "Reviews are triggered when you open a pull request.\n</details>") }
+}' >"$tmp/real-layout.json"
+node "$normalizer" --finder codex-cloud --stage integration --round 1 \
+    --registry "$registry" --reviewed-head "$head40" <"$tmp/real-layout.json" >/dev/null ||
+    fail "the real Codex clean layout was not accepted as terminal"
 
 # ── #837: review-body findings counted before actionable check ──────────────
 echo "==> a zero-count review whose body carries a severity phrase does not pass and emit"
