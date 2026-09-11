@@ -410,19 +410,21 @@ for unsafe_run_id in . ..; do
         fail "unsafe run id rejection was not reported"
 done
 trusted_actor_id="199175422"
+trust_source="$tmp/trust-source"
 trust_repo="$tmp/trust-repo"
-git init -q "$trust_repo"
-jq -n '{}' >"$trust_repo/agent-registry.json"
-git -C "$trust_repo" add agent-registry.json
-git -C "$trust_repo" -c user.name='Fixture Author' -c user.email='fixture@example.invalid' \
+git init -q -b main "$trust_source"
+jq -n '{}' >"$trust_source/agent-registry.json"
+git -C "$trust_source" add agent-registry.json
+git -C "$trust_source" -c user.name='Fixture Author' -c user.email='fixture@example.invalid' \
     commit -qm 'test: registry without orchestrator trust'
-untrusted_registry_revision="$(git -C "$trust_repo" rev-parse HEAD)"
-jq -n --arg actor "$trusted_actor_id" '{trusted_orchestrator_actor_ids: [$actor]}' \
-    >"$trust_repo/agent-registry.json"
-git -C "$trust_repo" add agent-registry.json
-git -C "$trust_repo" -c user.name='Fixture Author' -c user.email='fixture@example.invalid' \
+jq -n --argjson actor "$trusted_actor_id" '{trusted_orchestrator_actor_ids: [$actor]}' \
+    >"$trust_source/agent-registry.json"
+git -C "$trust_source" add agent-registry.json
+git -C "$trust_source" -c user.name='Fixture Author' -c user.email='fixture@example.invalid' \
     commit -qm 'test: registry with orchestrator trust'
-registry_revision="$(git -C "$trust_repo" rev-parse HEAD)"
+registry_revision="$(git -C "$trust_source" rev-parse HEAD)"
+git clone -q "$trust_source" "$trust_repo"
+git -C "$trust_repo" remote set-head origin main
 echo "==> monitor reclaims a lock whose recorded owner is dead"
 stale_branch="feat/stale-lock-run"
 stale_active_state="$("$monitor" active-path --branch "$stale_branch" --repo-root "$trust_repo")"
@@ -456,25 +458,14 @@ comment_digest="$(printf '%s' "$comment_body" | sha256_stream)"
 comment_binding_args=(--evidence-role challenger --evidence-finder codex-cli)
 jq -n '{integrated_lanes: ["lane-a"], discarded_lanes: []}' >"$tmp/assembly-plan.json"
 set +e
-monitor_reserve --state "$state" --event forged-revision --action comment \
-    --expected-head "$head" --writer feature-owner --trusted-actor-id "$trusted_actor_id" \
-    --registry-revision "$untrusted_registry_revision" \
-    "${comment_binding_args[@]}" --marker "$comment_marker" \
-    --payload-digest "$comment_digest" >"$tmp/forged-revision.out" 2>&1
-status=$?
-set -e
-[ "$status" -eq 2 ] || fail "caller-selected registry revision bypassed the active run"
-grep -Fq 'registry revision does not match the active run' "$tmp/forged-revision.out" ||
-    fail "active-run registry-revision rejection was not reported"
-set +e
 monitor_reserve --state "$state" --event forged-trust --action comment \
     --expected-head "$head" --writer feature-owner --trusted-actor-id 1 \
-    --registry-revision "$registry_revision" "${comment_binding_args[@]}" \
+    "${comment_binding_args[@]}" \
     --marker "$comment_marker" --payload-digest "$comment_digest" >"$tmp/forged-trust.out" 2>&1
 status=$?
 set -e
-[ "$status" -eq 2 ] || fail "caller-declared actor bypassed the run-pinned registry trust root"
-grep -Fq 'not trusted by the run-pinned registry revision' "$tmp/forged-trust.out" ||
+[ "$status" -eq 2 ] || fail "caller-declared actor bypassed the governing registry trust root"
+grep -Fq 'not trusted by the governing registry revision' "$tmp/forged-trust.out" ||
     fail "registry-rooted actor rejection was not reported"
 set +e
 monitor_reserve --state "$tmp/noncanonical-monitor.json" --event split-ledger --action assembly \

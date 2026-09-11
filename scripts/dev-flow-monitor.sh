@@ -20,7 +20,7 @@ Usage:
     --expected-head SHA --writer feature-owner --active-state FILE --run-id ID \
     --branch BRANCH --generation N [--repo-root DIR] \
     [--assembly-plan FILE] \
-    [--trusted-actor-id ID --registry-revision SHA --repo-root DIR \
+    [--trusted-actor-id ID --repo-root DIR \
      --evidence-role ROLE --evidence-finder FINDER \
      --marker TEXT --payload-digest SHA256]
   dev-flow-monitor.sh reconcile --state FILE --event ID --observed FILE \
@@ -345,6 +345,18 @@ if [ "$command_name" = "active-path" ]; then
     exit 0
 fi
 
+resolve_governing_registry_revision() {
+    local default_ref default_branch gov_rev
+    default_ref="$(git -C "$repo_root" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null)" ||
+        die "could not determine default branch (refs/remotes/origin/HEAD is unset)"
+    default_branch="${default_ref#refs/remotes/}"
+    gov_rev="$(git -C "$repo_root" log -1 --format='%H' "$default_branch" -- agent-registry.json 2>/dev/null)" ||
+        die "could not resolve governing registry revision on ${default_branch}"
+    [ -n "$gov_rev" ] ||
+        die "no agent-registry.json revision found on ${default_branch}"
+    printf '%s\n' "$gov_rev"
+}
+
 if [ "$command_name" = "activate" ]; then
     validate_run_id
     [ -n "$branch" ] && [ -n "$active_state" ] && [ "$writer" = "feature-owner" ] || usage
@@ -489,29 +501,22 @@ reserve)
     fi
     if [ "$action" = "comment" ]; then
         [[ "$trusted_actor_id" =~ ^[1-9][0-9]*$ ]] || die "comment reservation requires a trusted actor id"
-        [[ "$registry_revision" =~ ^[0-9a-f]{40}$ ]] ||
-            die "comment reservation requires a full run-pinned registry revision"
-        active_registry_revision="$(jq -r '.registry_revision' "$active_state")"
-        [ "$registry_revision" = "$active_registry_revision" ] ||
-            die "registry revision does not match the active run"
         [ -n "$marker" ] || die "comment reservation requires a deterministic marker"
         [[ "$payload_digest" =~ ^[0-9a-f]{64}$ ]] || die "comment reservation requires a SHA-256 payload digest"
         [[ "$evidence_role" =~ ^[a-z][a-z0-9-]*$ ]] ||
             die "comment reservation requires an evidence role"
         [[ "$evidence_finder" =~ ^[a-z0-9][a-z0-9-]*$ ]] ||
             die "comment reservation requires an evidence finder"
-        # The actor ID is evidence, not authority. Resolve authority from the
-        # immutable registry snapshot captured for this run; accepting the ID
-        # merely because the caller repeated it would let a forged record
-        # vouch for its own comments. #741 owns adding this top-level allowlist
-        # to the live registry/schema. Until it lands, the absent list remains
-        # empty and comment evidence correctly fails closed.
-        registry_json="$(git -C "$repo_root" show "${registry_revision}:agent-registry.json" 2>/dev/null)" ||
-            die "could not read agent-registry.json at the run-pinned revision"
-        jq -e --arg actor "$trusted_actor_id" '
-            (.trusted_orchestrator_actor_ids // []) | index($actor) != null
+        governing_revision="$(resolve_governing_registry_revision)"
+        registry_json="$(git -C "$repo_root" show "${governing_revision}:agent-registry.json" 2>/dev/null)" ||
+            die "could not read agent-registry.json at governing revision ${governing_revision}"
+        jq -e --argjson actor "$trusted_actor_id" '
+            (.trusted_orchestrator_actor_ids // []) as $ids |
+            ($ids | type == "array" and length > 0) and
+            all($ids[]; type == "number" and floor == . and . > 0) and
+            ($ids | index($actor) != null)
         ' <<<"$registry_json" >/dev/null ||
-            die "comment actor id is not trusted by the run-pinned registry revision"
+            die "comment actor id is not trusted by the governing registry revision"
     fi
     if [ ! -e "$state" ]; then
         init_tmp="${state}.tmp.init.$$"
@@ -533,7 +538,7 @@ reserve)
         ' "$state" >/dev/null || die "invalid state, duplicate event, or invalid reservation"
     tmp="${state}.tmp.$$"
     jq --arg event "$event" --arg action "$action" --arg head "$expected_head" \
-        --arg actor "$trusted_actor_id" --arg registry_revision "$registry_revision" \
+        --arg actor "$trusted_actor_id" --arg registry_revision "${governing_revision:-}" \
         --arg marker "$marker" --arg digest "$payload_digest" \
         --arg run "$run_id" --arg role "$evidence_role" --arg finder "$evidence_finder" \
         --argjson assembly_plan "$assembly_plan_json" '
