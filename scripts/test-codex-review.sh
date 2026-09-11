@@ -97,8 +97,8 @@ run() {
 echo "==> clean tree, no local main/master: falls back to origin/HEAD's branch"
 out="$(run challenge)" || fail "challenge exited non-zero: $out"
 grep -q "STUB-ARGS: exec review" <<<"$out" || fail "codex exec review not invoked: $out"
-grep -q -- "--model gpt-5.6-sol" <<<"$out" || fail "review model is not pinned to gpt-5.6-sol: $out"
-grep -q -- "--config model_reasoning_effort=high" <<<"$out" || fail "review reasoning is not pinned high: $out"
+grep -q -- "--model gpt-5.6-sol" <<<"$out" || fail "default review model is not gpt-5.6-sol: $out"
+grep -q -- "--config model_reasoning_effort=high" <<<"$out" || fail "default review reasoning is not high: $out"
 grep -q "base branch 'origin/develop'" <<<"$out" || fail "remote-qualified fallback base missing: $out"
 grep -q "ADVERSARIAL" <<<"$out" || fail "challenge mode instructions missing: $out"
 grep -q "feature.txt" <<<"$out" || fail "changed-file manifest missing from branch-scope prompt: $out"
@@ -129,6 +129,26 @@ grep -q "hypothesis the" <<<"$out" ||
     fail "challenge prompt missing the label-is-a-hypothesis rule — an under-labelled P3 could be dropped without adjudication (harmon-init#923 shepherd r2): $out"
 ! grep -q "not carried into the pull request description" <<<"$out" ||
     fail "challenge prompt still claims a P3 is never deferred — deferral is decided by adjudication, not by the badge: $out"
+
+echo "==> explicit model and reasoning selection preserves target and focus parsing"
+out="$(run challenge --model gpt-5.6-terra --reasoning medium --base origin/develop inspect dispatch)" ||
+    fail "explicit model/reasoning run exited non-zero: $out"
+grep -q -- "--model gpt-5.6-terra" <<<"$out" || fail "explicit review model did not reach Codex: $out"
+grep -q -- "--config model_reasoning_effort=medium" <<<"$out" || fail "explicit review reasoning did not reach Codex: $out"
+grep -q "base branch 'origin/develop'" <<<"$out" || fail "explicit model/reasoning consumed the target: $out"
+grep -q "inspect dispatch" <<<"$out" || fail "explicit model/reasoning consumed the focus text: $out"
+
+echo "==> invalid explicit model and reasoning arguments fail before Codex"
+if out="$(run review --model 2>&1)"; then
+    fail "--model without a value was accepted: $out"
+fi
+grep -q -- "--model requires a value" <<<"$out" || fail "missing-value model error absent: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "Codex invoked despite missing model value: $out"
+if out="$(run review --reasoning extreme 2>&1)"; then
+    fail "unsupported reasoning level was accepted: $out"
+fi
+grep -q "unsupported reasoning level" <<<"$out" || fail "unsupported-reasoning error absent: $out"
+grep -q "STUB-ARGS" <<<"$out" && fail "Codex invoked despite unsupported reasoning: $out"
 
 echo "==> origin/HEAD outranks a stray local main"
 git branch -q main "$(git rev-list --max-parents=0 HEAD)"

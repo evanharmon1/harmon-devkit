@@ -8,7 +8,7 @@
 #               (architecture, authz, data loss, rollback, races, hidden
 #               coupling, operational failure modes, overdesign).
 #
-# Usage: codex-review.sh <review|challenge> [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
+# Usage: codex-review.sh <review|challenge> [--model <model>] [--reasoning <level>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
 #
 # Target selection when no explicit flag is given: whatever exists is in
 # scope. Commits beyond the default base AND a dirty working tree are reviewed
@@ -40,7 +40,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> [--model <model>] [--reasoning <low|medium|high|xhigh>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
 
 MODE="${1:-}"
@@ -51,6 +51,52 @@ review | challenge) shift ;;
     exit 2
     ;;
 esac
+
+review_model="gpt-5.6-sol"
+review_reasoning="high"
+model_set=false
+reasoning_set=false
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --model)
+        [ $# -ge 2 ] || {
+            echo "--model requires a value" >&2
+            exit 2
+        }
+        [ "$model_set" = false ] || {
+            echo "--model may be specified only once" >&2
+            exit 2
+        }
+        [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+            echo "invalid model name: $2" >&2
+            exit 2
+        }
+        review_model="$2"
+        model_set=true
+        shift 2
+        ;;
+    --reasoning)
+        [ $# -ge 2 ] || {
+            echo "--reasoning requires a value" >&2
+            exit 2
+        }
+        [ "$reasoning_set" = false ] || {
+            echo "--reasoning may be specified only once" >&2
+            exit 2
+        }
+        case "$2" in
+        low | medium | high | xhigh) review_reasoning="$2" ;;
+        *)
+            echo "unsupported reasoning level: $2" >&2
+            exit 2
+            ;;
+        esac
+        reasoning_set=true
+        shift 2
+        ;;
+    *) break ;;
+    esac
+done
 
 if ! command -v codex >/dev/null 2>&1; then
     echo "codex CLI not found. Install it (brew install --cask codex, or npm install -g @openai/codex)," >&2
@@ -186,6 +232,6 @@ bound_stderr_lines() {
 # first. Under pipefail the filter exits 0, leaving codex's own status as the
 # rightmost non-zero, so a failed review still fails the task.
 { printf '%s\n' "$instructions" | codex exec review \
-    --model gpt-5.6-sol \
-    --config model_reasoning_effort=high \
+    --model "$review_model" \
+    --config "model_reasoning_effort=$review_reasoning" \
     - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>&1

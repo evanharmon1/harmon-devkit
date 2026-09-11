@@ -56,8 +56,9 @@ readonly_sandbox_extra_ro=()
 # without binding the directory the link happens to sit in.
 readonly_sandbox_symlinks=()
 
-# bwrap from PATH, else the copy Codex bundles — a host without either cannot
-# host a confidence pass, and saying so is the contract's own instruction.
+# Resolve bwrap from PATH, else the copy Codex bundles. A lookup failure is
+# reported to the caller, which decides whether to refuse or use its degraded
+# fallback; it does not by itself mean a confidence pass cannot run.
 sandbox_resolve_bwrap() {
     # An explicit path wins, so a caller can pin a known-good build — and so a
     # test can point it at nothing and prove the refusal below is real.
