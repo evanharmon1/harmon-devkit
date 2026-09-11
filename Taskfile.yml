@@ -77,6 +77,7 @@ tasks:
       - task: test:result-schemas
       - task: test:dev-flow-stats
       - task: test:dev-flow-exit
+      - task: test:dev-flow-monitor
       - task: test:render-dev-flow
       - task: test:retro-run-report
       - task: test:review-skill
@@ -399,6 +400,7 @@ tasks:
       - test:result-schemas
       - test:dev-flow-stats
       - test:dev-flow-exit
+      - test:dev-flow-monitor
       - test:render-dev-flow
       - test:retro-run-report
       - test:finder-normalization
@@ -424,6 +426,11 @@ tasks:
     desc: Behavioral test for the Dev flow v2 policy reader and exit-computation engine against fixture policies
     cmds:
       - ./scripts/test-dev-flow-exit.sh
+
+  test:dev-flow-monitor:
+    desc: Trust contract regression tests for dev-flow-monitor.sh (integer actor IDs, per-write governing revision, fail-closed)
+    cmds:
+      - ./scripts/test-dev-flow-monitor.sh
 
   test:render-dev-flow:
     desc: Golden-fixture + fake-gh regression tests for the dev-flow-v2 renderer/publisher
