@@ -463,7 +463,18 @@ if (finder.raw_shape === 'labelled-text') {
       const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(body)
       if (!stamp) continue
       const stampSha = stamp[1].toLowerCase()
-      if (stampSha.length < 40) continue
+      if (stampSha.length < 40) {
+        if (opts.reviewedHead.startsWith(stampSha) && isLabelled(body)) {
+          die(
+            `${finder.slug} top-level comment ${comment.id ?? '?'} stamps an abbreviated SHA ` +
+              `(${stampSha.length} chars) that prefix-matches the reviewed head and carries ` +
+              `labelled findings — this decoder has no git access to prove the abbreviation ` +
+              `is unique, so the findings cannot be safely skipped`,
+            3
+          )
+        }
+        continue
+      }
       if (stampSha !== opts.reviewedHead) continue
       if (!isLabelled(body)) continue
       for (const segment of splitLabelledSegments(body)) {
@@ -501,14 +512,14 @@ if (finder.raw_shape === 'labelled-text') {
   const cleanVerdictMetadata = (() => {
     const ts = finder.collection?.terminal_signals ?? {}
     const patterns = []
-    const strings = []
+    const substrings = []
+    const exactLines = []
     for (const key of ['metadata_line', 'heading']) {
       if (ts[key]) patterns.push(new RegExp(String(ts[key]).replace(/\[\[:space:\]\]/g, '\\s'), 'i'))
     }
-    for (const key of ['about_summary', 'carrier_sentence']) {
-      if (ts[key]) strings.push(String(ts[key]).toLowerCase())
-    }
-    return { patterns, strings }
+    if (ts.about_summary) substrings.push(String(ts.about_summary).toLowerCase())
+    if (ts.carrier_sentence) exactLines.push(String(ts.carrier_sentence).toLowerCase())
+    return { patterns, substrings, exactLines }
   })()
   const bodyIsTerminal = (body) => {
     const text = String(body ?? '')
@@ -528,7 +539,7 @@ if (finder.raw_shape === 'labelled-text') {
           const trimmed = line.trim()
           if (trimmed.length === 0) continue
           if (!inRecognizedBlock && /<details\b/i.test(trimmed)) {
-            if (cleanVerdictMetadata.strings.some((s) => trimmed.toLowerCase().includes(s))) {
+            if (cleanVerdictMetadata.substrings.some((s) => trimmed.toLowerCase().includes(s))) {
               inRecognizedBlock = true
               continue
             }
@@ -539,9 +550,11 @@ if (finder.raw_shape === 'labelled-text') {
           }
           const recognized =
             cleanVerdictMetadata.patterns.some((p) => p.test(trimmed)) ||
-            cleanVerdictMetadata.strings.some((s) => trimmed.toLowerCase().includes(s))
+            cleanVerdictMetadata.exactLines.some((s) => trimmed.toLowerCase() === s) ||
+            cleanVerdictMetadata.substrings.some((s) => trimmed.toLowerCase().includes(s))
           if (!recognized) return false
         }
+        if (inRecognizedBlock) return false
         return true
       }
       case 'actionable-count':
@@ -588,7 +601,18 @@ if (finder.raw_shape === 'labelled-text') {
         const stamp = /Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})/i.exec(String(c.body ?? ''))
         if (!stamp) return false
         const cStampSha = stamp[1].toLowerCase()
-        if (cStampSha.length < 40) return false
+        if (cStampSha.length < 40) {
+          if (opts.reviewedHead.startsWith(cStampSha) && isLabelled(String(c.body ?? ''))) {
+            die(
+              `${finder.slug} top-level comment ${c.id ?? '?'} stamps an abbreviated SHA ` +
+                `(${cStampSha.length} chars) that prefix-matches the reviewed head and carries ` +
+                `labelled findings — this decoder has no git access to prove the abbreviation ` +
+                `is unique, so the findings cannot be safely skipped`,
+              3
+            )
+          }
+          return false
+        }
         if (cStampSha !== opts.reviewedHead) return false
         return bodyIsTerminal(c.body)
       }))

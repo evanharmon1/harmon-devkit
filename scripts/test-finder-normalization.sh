@@ -433,7 +433,7 @@ set -e
 [ "$status" -eq 3 ] || fail "a stray reaction from another actor was accepted as terminal (exit $status)"
 
 # ── #819: abbreviated SHA in a top-level comment stamp ──────────────────────
-echo "==> an abbreviated SHA stamp that prefix-matches the head is skipped"
+echo "==> an abbreviated SHA stamp with findings that prefix-matches the head is refused"
 jq -n --arg head "$head40" '{
     top_level_comments: [ { id: 8190, user: { id: 199175422 },
         body: "**P1** Something wrong.\n\n**Reviewed commit:** `'"${head40:0:7}"'`" } ]
@@ -444,21 +444,23 @@ node "$normalizer" --finder codex-cloud --stage integration --round 1 \
     >/dev/null 2>"$tmp/abbrev-stamp.err"
 status=$?
 set -e
-[ "$status" -eq 3 ] || fail "an abbreviated stamp as sole evidence was accepted (exit $status)"
+[ "$status" -eq 3 ] || fail "an abbreviated stamp with findings was accepted (exit $status)"
+grep -Fq 'abbreviated SHA' "$tmp/abbrev-stamp.err" ||
+    fail "the abbreviated-stamp refusal did not name its reason: $(cat "$tmp/abbrev-stamp.err")"
 
-echo "==> an abbreviated SHA stamp is skipped when other evidence exists"
+echo "==> an abbreviated SHA stamp without findings is skipped when other evidence exists"
 jq -n --arg head "$head40" '{
     review: { id: 819, state: "COMMENTED", user: { id: 199175422 }, commit_id: $head,
               body: "Codex Review: didn'"'"'t find any major issues." },
     top_level_comments: [ { id: 8192, user: { id: 199175422 },
-        body: "**P1** Something wrong.\n\n**Reviewed commit:** `'"${head40:0:10}"'`" } ]
+        body: "Nothing to report.\n\n**Reviewed commit:** `'"${head40:0:10}"'`" } ]
 }' >"$tmp/abbrev-with-review.json"
 node "$normalizer" --finder codex-cloud --stage integration --round 1 \
     --registry "$registry" --reviewed-head "$head40" <"$tmp/abbrev-with-review.json" \
     >"$tmp/abbrev-with-review.out" 2>&1 ||
     fail "an abbreviated stamp alongside a clean review killed the decoder"
 jq -e '(.findings | length) == 0' "$tmp/abbrev-with-review.out" >/dev/null ||
-    fail "the abbreviated comment was decoded as a finding instead of being skipped"
+    fail "the abbreviated unlabelled comment produced findings"
 
 echo "==> an abbreviated SHA stamp for a DIFFERENT head is skipped, not refused"
 # The stamp is short but does not prefix-match the reviewed head, so it is
