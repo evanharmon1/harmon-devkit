@@ -458,6 +458,35 @@ if (errors.length === 0) {
       }
       seenMatches.add(key)
     }
+    // Beyond exact duplicates, a shorter match that is a word-bounded
+    // substring of a longer one shadows it under the token-bounded comparison
+    // includesAsToken uses: "potential issue" matches inside
+    // "potential issue high", so the P1 rule never fires.
+    const anywhereRules = (finder.severity_map?.rules ?? []).filter(
+      (rule) => rule.anchor === 'anywhere'
+    )
+    for (let j = 1; j < anywhereRules.length; j++) {
+      const later = String(anywhereRules[j].match).toLowerCase()
+      for (let i = 0; i < j; i++) {
+        const earlier = String(anywhereRules[i].match).toLowerCase()
+        if (earlier === later) continue
+        let at = later.indexOf(earlier)
+        while (at !== -1) {
+          const before = at > 0 ? later[at - 1] : undefined
+          const after =
+            at + earlier.length < later.length ? later[at + earlier.length] : undefined
+          const boundedBefore = before === undefined || !/[a-z0-9]/.test(before)
+          const boundedAfter = after === undefined || !/[a-z0-9]/.test(after)
+          if (boundedBefore && boundedAfter) {
+            semanticError(
+              `finder ${finder.slug} severity_map rule "${anywhereRules[i].match}" (${anywhereRules[i].priority}) at anchor anywhere shadows later rule "${anywhereRules[j].match}" (${anywhereRules[j].priority}) — the earlier match is a word-bounded substring, so the later rule can never fire`
+            )
+            break
+          }
+          at = later.indexOf(earlier, at + 1)
+        }
+      }
+    }
     const collection = finder.collection
     if (collection === null || collection === undefined) continue
 
@@ -493,6 +522,22 @@ if (errors.length === 0) {
             `finder ${finder.slug} verdict_mode ${signals.verdict_mode} does not consume terminal_signals.${field}, which must be null`
           )
         }
+      }
+    }
+    // Regex-valued fields are stored as strings and compiled at runtime. A
+    // malformed pattern passes the structural schema but throws SyntaxError
+    // when the normalizer constructs the RegExp. Compile each now so a broken
+    // pattern fails validation instead of crashing at runtime (#833).
+    const REGEX_SIGNAL_FIELDS = ['actionable_pattern', 'severity_marker', 'metadata_line', 'heading']
+    for (const field of REGEX_SIGNAL_FIELDS) {
+      const pattern = signals[field]
+      if (typeof pattern !== 'string') continue
+      try {
+        new RegExp(pattern.replace(/\[\[:space:\]\]/g, '\\s'), 'i')
+      } catch (error) {
+        semanticError(
+          `finder ${finder.slug} terminal_signals.${field} is not a valid regex: ${pattern} — ${error.message}`
+        )
       }
     }
     const surfaces = new Set(signals.surfaces ?? [])
