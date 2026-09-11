@@ -8,7 +8,7 @@
 #               (architecture, authz, data loss, rollback, races, hidden
 #               coupling, operational failure modes, overdesign).
 #
-# Usage: codex-review.sh <review|challenge> [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
+# Usage: codex-review.sh <review|challenge> [--model <model>] [--reasoning <level>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
 #
 # Target selection when no explicit flag is given: whatever exists is in
 # scope. Commits beyond the default base AND a dirty working tree are reviewed
@@ -40,7 +40,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> [--model <model>] [--reasoning <low|medium|high|xhigh>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
 
 MODE="${1:-}"
@@ -52,44 +52,51 @@ review | challenge) shift ;;
     ;;
 esac
 
-# The schema-bound confidence-stage path is deliberately separate from the
-# ordinary interactive review above. Its caller has already materialized the
-# trusted role instruction and untrusted snapshot, and supplies the remaining
-# wall-clock budget explicitly. The launcher owns the native capability check.
-if [ "${1:-}" = "--judgment" ]; then
-    shift
-    if [ "${1:-}" != "--trusted-tooling-root" ] || [ -z "${2:-}" ]; then
-        echo "restricted Codex judgment requires --trusted-tooling-root from the pinned caller" >&2
-        exit 20
-    fi
-    trusted_root_arg="$2"
-    shift 2
-    if ! trusted_root="$(CDPATH= cd -- "$trusted_root_arg" 2>/dev/null && pwd -P)"; then
-        echo "trusted Codex tooling root is unavailable; refusing role dispatch" >&2
-        exit 20
-    fi
-    tooling_root="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
-    if [ "$trusted_root" != "$tooling_root" ]; then
-        echo "task is not running from the caller-pinned tooling root; refusing role dispatch" >&2
-        exit 20
-    fi
-    case "$MODE" in
-    challenge) role=challenger ;;
-    review) role=reviewer ;;
+review_model="gpt-5.6-sol"
+review_reasoning="high"
+model_set=false
+reasoning_set=false
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --model)
+        [ $# -ge 2 ] || {
+            echo "--model requires a value" >&2
+            exit 2
+        }
+        [ "$model_set" = false ] || {
+            echo "--model may be specified only once" >&2
+            exit 2
+        }
+        [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+            echo "invalid model name: $2" >&2
+            exit 2
+        }
+        review_model="$2"
+        model_set=true
+        shift 2
+        ;;
+    --reasoning)
+        [ $# -ge 2 ] || {
+            echo "--reasoning requires a value" >&2
+            exit 2
+        }
+        [ "$reasoning_set" = false ] || {
+            echo "--reasoning may be specified only once" >&2
+            exit 2
+        }
+        case "$2" in
+        low | medium | high | xhigh) review_reasoning="$2" ;;
+        *)
+            echo "unsupported reasoning level: $2" >&2
+            exit 2
+            ;;
+        esac
+        reasoning_set=true
+        shift 2
+        ;;
+    *) break ;;
     esac
-    dispatcher="$trusted_root/.agents/skills/orchestrator/assets/codex-judgment-dispatch.mjs"
-    mode_instruction="$trusted_root/scripts/lib/review-instructions/$MODE.txt"
-    severity_instruction="$trusted_root/scripts/lib/review-instructions/severity.txt"
-    if [ ! -f "$dispatcher" ] || [ ! -f "$mode_instruction" ] || [ ! -f "$severity_instruction" ]; then
-        echo "pinned Codex judgment closure is incomplete; refusing role dispatch" >&2
-        exit 20
-    fi
-    exec node "$dispatcher" \
-        --role "$role" \
-        --mode-instruction "$mode_instruction" \
-        --severity-instruction "$severity_instruction" \
-        "$@"
-fi
+done
 
 if ! command -v codex >/dev/null 2>&1; then
     echo "codex CLI not found. Install it (brew install --cask codex, or npm install -g @openai/codex)," >&2
@@ -225,6 +232,6 @@ bound_stderr_lines() {
 # first. Under pipefail the filter exits 0, leaving codex's own status as the
 # rightmost non-zero, so a failed review still fails the task.
 { printf '%s\n' "$instructions" | codex exec review \
-    --model gpt-5.6-sol \
-    --config model_reasoning_effort=high \
+    --model "$review_model" \
+    --config "model_reasoning_effort=$review_reasoning" \
     - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>&1

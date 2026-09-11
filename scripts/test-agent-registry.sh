@@ -290,10 +290,6 @@ switch (mutation) {
   case 'tier-rung-multi-default':
     modelOf('qwen', 'coder-next').default = true
     break
-  // ── harness write-restriction (#635) ────────────────────────────────────
-  case 'harness-write-restricted-without-capability':
-    harness('codex-cli').can_restrict_writes = false
-    break
   default:
     throw new Error(`unknown mutation: ${mutation}`)
 }
@@ -322,10 +318,14 @@ import { readFile, writeFile } from 'node:fs/promises'
 
 const [inputPath, outputPath, mutation] = process.argv.slice(2)
 const registry = JSON.parse(await readFile(inputPath, 'utf8'))
+const harness = (slug) => registry.harnesses.find((entry) => entry.slug === slug)
 
 switch (mutation) {
   case 'allowlist-missing':
     delete registry.trusted_orchestrator_actor_ids
+    break
+  case 'review-role-without-write-restriction':
+    harness('codex-cli').can_restrict_writes = false
     break
   default:
     throw new Error(`unknown accepted mutation: ${mutation}`)
@@ -496,7 +496,7 @@ rejects "a role naming a different role's own result_schema" \
 rejects "challenger declaring external writes" \
     'challenger-with-writes' \
     'role challenger must declare no external writes'
-rejects "a non-write-restricted role with empty writes" \
+rejects "a role with declared writes using an empty writes list" \
     'role-empty-writes' \
     'role implementer must declare its permitted external writes'
 rejects "a role's writes narrowed to a subset of its own expected set" \
@@ -586,9 +586,8 @@ rejects "a multi-model family-tier rung with no default" \
 rejects "a multi-model family-tier rung with two defaults" \
     'tier-rung-multi-default' \
     'at most one may be default'
-rejects "a write-restricted role on a harness that cannot restrict writes" \
-    'harness-write-restricted-without-capability' \
-    'must not dispatch a write-restricted role'
+accepts "a review role on a harness without write restriction" \
+    'review-role-without-write-restriction'
 
 # ── trusted_orchestrator_actor_ids (#741) ───────────────────────────────────
 # The registry's own copy must carry the maintainer's live actor id (looked

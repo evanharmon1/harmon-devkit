@@ -45,8 +45,7 @@ ignores the frontmatter.
   and `effort` are Claude-specific, drift as the harness changes, and each one
   is a decision better made by the calling session than baked into a shared
   file. Restrict scope in the body instead; a consumer that wants a hard
-  capability limit projects a separate harness-local copy; it never edits this
-  portable source in place.
+  capability limit can add `tools:` to its own vendored copy.
 - **`name` matches the filename** (kebab-case, no extension), and must not
   collide with a skill name — `task validate:agents` enforces all three. The
   kebab-case rule is not cosmetic: the name becomes a path on both sides of the
@@ -95,16 +94,6 @@ ln -s ../../ai/agents/<name>.md .claude/agents/<name>.md
 Safe with the repo's gates — `lint-hygiene.sh` skips symlinks, `.claude/**` is
 excluded from markdownlint, and this guard only walks `ai/agents/`, so nothing
 is linted or counted twice.
-
-Those dogfood symlinks intentionally prove no capability boundary. A consumer
-may create a regular projected copy and run the orchestrator asset's
-`validate-projection` command against it. The same asset's `project` command
-creates the local copy after portable agents have been vendored to a neutral
-source directory, and `validate-projection` checks its bytes and parser shape.
-Claude Code documents the projected `tools` field as an exclusive tool
-allowlist, but these preparatory steps do not prove that a live dispatch
-resolved that file or demonstrate a denied tool call. Dispatch policy remains
-the calling orchestrator's responsibility; this helper is not a runtime gate.
 
 ## Add an agent
 

@@ -18,30 +18,10 @@ template, and hold `.skills-sync.yaml` at the last pre-v2 skills release until
 it has migrated). Report that message as a blocker and start no run; never
 hand-decode an older shape, invent caps, or advance the pin to get past it
 (harmon-devkit#604). `scripts/consumer-pin-audit.sh` is the standing check
-that a repository's vendored-skill pin and its policy shape agree. Dispatch
-only roles whose harness can enforce their registry write boundary: a judgment
-role receives a result-only channel with no ambient workspace, shell, git, gh,
-or write credential, otherwise the run blocks.
-For `codex-cli` challenger and reviewer roles, the supported boundary is
-the registry task target invoked with `task --dir <trusted-root>` and
-`--judgment --trusted-tooling-root <trusted-root>`. The separately pinned root,
-never the candidate checkout, supplies the task, mode/severity instructions,
-and `assets/codex-judgment-dispatch.mjs`; require its version-pinned app-server
-configuration, single caller-budget deadline, and refusal checks at the actual
-dispatch. That configuration requires executable lifecycle hooks to be
-effectively disabled and disables legacy executable turn-completion
-notifications before starting a thread. A Codex host that forces hooks on is
-unsupported and refuses before the thread starts. Before invocation, the
-trusted caller verifies the provenance of the
-complete executed closure, including resolved symlink targets, and refuses an
-absent pin or candidate-owned code. The script's matching-root check enforces
-that selection but does not authenticate it. For roles that require this
-result-only boundary, other Codex
-versions remain unsupported and the integrator remains unsupported until an
-equally enforceable projection exists. This does not change ordinary
-write-capable implementer eligibility.
-Use one worktree and branch per lane, record ownership, scope, dependencies,
-and the complete file overlap.
+that a repository's vendored-skill pin and its policy shape agree. Runtime
+isolation is optional; its absence alone is not a dispatch blocker. Every role
+still stays within its declared scope. Use one worktree and branch per lane,
+record ownership, scope, dependencies, and the complete file overlap.
 Before dispatching overlapping scopes, either serialize them or record the
 explicit merge dependency in both lane briefs. Select implementers only from
 the resolved `[stage.implement].pool`, registry role eligibility, and resolved
@@ -65,13 +45,6 @@ budget. The monitor pins the total implementer ceiling on the first reservation
 and durably accounts every slot under the active-run lock. A crash after
 reservation spends the slot; an exact event re-arm adopts it without spending
 twice. A changed or exhausted budget blocks before dispatch.
-
-Feature-owner authority comes from an orchestrator-installed capability
-boundary that is never exposed to lane agents; the monitor's `--writer` value
-is only a checked assertion inside that boundary, not a credential a lane may
-supply. If the harness cannot prevent a lane from invoking feature-owner
-assembly, reservation, or push capabilities, parallel dispatch is unavailable
-and the run blocks.
 
 ## Persistent supervision
 
