@@ -632,16 +632,17 @@ elif [ "$required" -eq 0 ]; then
         detail="the policy declares schema_version $policy_version and provenance '$prov' declares an empty managed set, so this consumer vendors no skills at all — there is no pin contract to satisfy and advancing the pin would not create one"
     elif [ "$policy_version" -gt 0 ] && ref_predates_v2_skills "$vendored_ref"; then
         # #842: the release boundary proves what the release SHIPPED, not
-        # what this consumer SELECTED. When managed_declared=yes and
-        # categories are known, check whether the consumer vendors a
-        # policy-consuming category (universal). Without it, advancing
-        # the pin gains no policy contract, so the work is pointless.
+        # what this consumer SELECTED. Categories (from `# categories:`
+        # in the stamp) are authoritative for both modern and legacy
+        # stamps — sync-skills.sh:419-428 reconstructs the legacy managed
+        # set from exactly these categories. If they exclude `universal`,
+        # advancing the pin gains no policy contract.
         _has_universal=no
         # shellcheck disable=SC2086 # deliberate word-splitting on categories
         for _cat in $vendored_categories; do
             [ "$_cat" = universal ] && _has_universal=yes
         done
-        if [ "$managed_declared" = yes ] && [ -n "$vendored_categories" ] && [ "$_has_universal" = no ]; then
+        if [ -n "$vendored_categories" ] && [ "$_has_universal" = no ]; then
             status=no-policy-consumer
             code=0
             detail="the policy declares schema_version $policy_version and the pin $vendored_ref predates $V2_SKILLS_FIRST_RELEASE, but the vendored categories do not include 'universal' (the policy-consuming category), so advancing the pin would not add a policy contract — this consumer vendors no policy-consuming skill"

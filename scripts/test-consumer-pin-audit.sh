@@ -367,6 +367,16 @@ expect_status "#842: a pre-boundary pin vendoring only non-policy categories is 
 expect_says "#842: it says the categories do not include universal" "do not include"
 expect_not_says "#842: it does not tell anyone to advance a useless pin" "advance source.ref"
 
+# #842: A LEGACY stamp (no # managed: line) with # categories: repo should also
+# classify as no-policy-consumer. sync-skills.sh:419-428 reconstructs the
+# managed set from categories, so they are authoritative for legacy stamps too.
+c="$(make_consumer legacy-repo-only "$V2_POLICY" v0.39.0 repo-tool:pre)"
+sed -i 's/^# categories: universal$/# categories: repo/' "$c/.claude/skills/.SKILLS_PROVENANCE"
+sed -i '/^# managed:/d' "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "#842: a legacy stamp with only repo categories is not pin-lag" 0
+expect_says "#842: legacy stamp says categories do not include universal" "do not include"
+
 # The genuine pre-boundary pin-lag case: a universal-selecting consumer SHOULD
 # still report exit 3, because advancing the pin WOULD give them policy-
 # consuming skills (review, integrate) in place of the old gauntlet/shepherd.
