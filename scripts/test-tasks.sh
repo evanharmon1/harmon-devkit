@@ -511,7 +511,7 @@ fi
 
 echo "==> verify × test dedupe guard (no target in both verify cmds and test deps)"
 verify_cmds="$(yq -r '.tasks.verify.cmds[] | select(.task) | .task' Taskfile.yml | sort)"
-test_deps="$(yq -r '.tasks.test.deps[]' Taskfile.yml | sort)"
+test_deps="$(yq -r '.tasks.test.deps[] | (.task // .)' Taskfile.yml | sort)"
 [ -n "$verify_cmds" ] || fail "verify has no task-type cmds — did the task get renamed?"
 [ -n "$test_deps" ] || fail "test has no deps — did the task get renamed?"
 dupes="$(comm -12 <(printf '%s\n' "$verify_cmds") <(printf '%s\n' "$test_deps"))"
@@ -530,7 +530,8 @@ tasks:
       - task: test
   test:
     deps:
-      - test:alpha
+      - task: test:alpha
+        vars: { SCOPE: unit }
       - test:beta
   check:
     cmds:
@@ -543,7 +544,7 @@ tasks:
       - echo beta
 YAML
 fixture_verify="$(yq -r '.tasks.verify.cmds[] | select(.task) | .task' "$dedupe_fixture" | sort)"
-fixture_deps="$(yq -r '.tasks.test.deps[]' "$dedupe_fixture" | sort)"
+fixture_deps="$(yq -r '.tasks.test.deps[] | (.task // .)' "$dedupe_fixture" | sort)"
 fixture_dupes="$(comm -12 <(printf '%s\n' "$fixture_verify") <(printf '%s\n' "$fixture_deps"))"
 [ -n "$fixture_dupes" ] || fail "dedupe fixture did not detect the planted duplicate (test:alpha)"
 case "$fixture_dupes" in
