@@ -12,7 +12,7 @@ command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 [[ -n "$command" ]] || exit 0
 
 # Only police `git commit` invocations.
-printf '%s' "$command" | grep -qE 'git[[:space:]]+commit\b' || exit 0 # shell-robustness: ok — pre-existing; the fail-open risk is tracked in #822 and deliberately not fixed in a test-robustness PR
+grep -qE 'git[[:space:]]+commit\b' <<<"$command" || exit 0
 
 # Extract the -m / --message argument. Supports single and double quotes,
 # and the heredoc form `git commit -m "$(cat <<'EOF' ... EOF)"`.
@@ -20,7 +20,7 @@ printf '%s' "$command" | grep -qE 'git[[:space:]]+commit\b' || exit 0 # shell-ro
 msg=""
 
 # Heredoc form: capture first line after the heredoc opener.
-if printf '%s' "$command" | grep -q "<<'EOF'"; then # shell-robustness: ok — pre-existing; the fail-open risk is tracked in #822 and deliberately not fixed in a test-robustness PR
+if grep -q "<<'EOF'" <<<"$command"; then
     msg="$(printf '%s' "$command" | awk "/<<'EOF'/{flag=1; next} /^EOF\$/{flag=0} flag" | head -n1)"
 fi
 

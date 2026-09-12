@@ -190,3 +190,71 @@ decision_b="$(printf '%s' "$result_b" | jq -r '.decision')"
 [ -f "$agy_foreign_log" ] && fail "agy-adapter ran the foreign checkout's hook"
 
 echo "==> agy adapter worktree-root Cwd resolution OK"
+
+# ---------------------------------------------------------------------------
+# block-no-verify: SIGPIPE fail-open regression (#822)
+# ---------------------------------------------------------------------------
+# The hooks read JSON on stdin and exit 0 (allow) or 2 (block). A SIGPIPE
+# defect in the old `printf | grep -q` pipeline could make a MATCH report as a
+# FAILURE, which the hooks' `|| exit 0` / `if` treated as "allow". The
+# herestring fix eliminates the pipeline. These cases verify the hooks block
+# what they must and allow what they should, covering both the .claude/hooks
+# and .devcontainer/config/claude-hooks copies.
+
+hook_payload() {
+    jq -n --arg cmd "$1" '{"tool_input":{"command":$cmd}}'
+}
+
+run_hook() {
+    local hook="$1" cmd="$2"
+    hook_payload "$cmd" | bash "$repo/$hook" 2>/dev/null
+    return $?
+}
+
+# --- .devcontainer/config/claude-hooks/block-no-verify.sh ---
+devc_bnv=".devcontainer/config/claude-hooks/block-no-verify.sh"
+
+echo "==> block-no-verify (devcontainer) blocks --no-verify"
+if run_hook "$devc_bnv" "git commit --no-verify -m 'test'"; then
+    fail "devcontainer block-no-verify allowed --no-verify"
+fi
+
+echo "==> block-no-verify (devcontainer) blocks --no-gpg-sign"
+if run_hook "$devc_bnv" "git commit --no-gpg-sign -m 'test'"; then
+    fail "devcontainer block-no-verify allowed --no-gpg-sign"
+fi
+
+echo "==> block-no-verify (devcontainer) blocks git commit -n"
+if run_hook "$devc_bnv" "git commit -n -m 'test'"; then
+    fail "devcontainer block-no-verify allowed git commit -n"
+fi
+
+echo "==> block-no-verify (devcontainer) allows clean git commit"
+if ! run_hook "$devc_bnv" "git commit -m 'feat: valid'"; then
+    fail "devcontainer block-no-verify blocked a clean commit"
+fi
+
+echo "==> block-no-verify (devcontainer) allows non-git command"
+if ! run_hook "$devc_bnv" "echo hello"; then
+    fail "devcontainer block-no-verify blocked a non-git command"
+fi
+
+# --- .claude/hooks/block-no-verify.sh ---
+claude_bnv=".claude/hooks/block-no-verify.sh"
+
+echo "==> block-no-verify (claude) blocks --no-verify"
+if run_hook "$claude_bnv" "git commit --no-verify -m 'test'"; then
+    fail "claude block-no-verify allowed --no-verify"
+fi
+
+echo "==> block-no-verify (claude) allows clean git commit"
+if ! run_hook "$claude_bnv" "git commit -m 'feat: valid'"; then
+    fail "claude block-no-verify blocked a clean commit"
+fi
+
+echo "==> block-no-verify (claude) allows non-git command"
+if ! run_hook "$claude_bnv" "echo hello"; then
+    fail "claude block-no-verify blocked a non-git command"
+fi
+
+echo "==> block-no-verify SIGPIPE regression tests OK"
