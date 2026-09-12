@@ -459,9 +459,16 @@ else
     # contract. Collecting into a variable avoids the pipe entirely.
     stale_prov=""
     if [ -d "$repo_root" ]; then
-        _all_prov="$(find "$repo_root" -name .SKILLS_PROVENANCE -type f \
+        # Challenge round 1 P1, confirmed: the exclusion must be rooted at
+        # $repo_root, not a bare glob. If --repo-root is itself inside
+        # `.worktrees/<name>` (the normal worktree layout), `*/.worktrees/*`
+        # matches every path find emits and suppresses the entire scan.
+        # Also include `-type l` so a symlinked stale stamp is caught too —
+        # the same consistency the `-L "$prov"` check enforces at the current
+        # destination.
+        _all_prov="$(find "$repo_root" -name .SKILLS_PROVENANCE \( -type f -o -type l \) \
             -not -path '*/.git/*' -not -path '*/node_modules/*' \
-            -not -path '*/.worktrees/*' 2>/dev/null || true)"
+            -not -path "$repo_root/.worktrees/*" 2>/dev/null || true)"
         _count=0
         while IFS= read -r _prov_line; do
             [ -n "$_prov_line" ] || continue

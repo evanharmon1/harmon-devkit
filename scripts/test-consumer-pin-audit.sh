@@ -1234,6 +1234,36 @@ printf '# ref: v0.41.0 (deadbeef)\n# managed: review\n' \
 run_audit "$c"
 expect_status "#859: a stamp outside .worktrees still triggers stale-provenance" 2
 
+# Challenge round 1 P1: when --repo-root is itself inside .worktrees/<name>,
+# the glob `*/.worktrees/*` matches every path find emits and suppresses
+# the entire stale scan. The exclusion must be rooted at $repo_root.
+c="$(make_consumer worktree-reporoot "$V2_POLICY" v0.41.0 review:v2)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+rm -rf "$c/.claude/skills/review/assets"
+# Create a parent repo with .worktrees containing our consumer.
+parent="$TMPROOT/parent-repo"
+mkdir -p "$parent/.worktrees"
+mv "$c" "$parent/.worktrees/my-wt"
+c="$parent/.worktrees/my-wt"
+# Place a stale stamp in a different location inside the worktree checkout.
+mkdir -p "$c/old-dest/.claude/skills"
+printf '# ref: v0.41.0 (deadbeef)\n# managed: review\n' \
+    >"$c/old-dest/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "#859: stale scan works when repo-root is inside .worktrees" 2
+expect_says "#859: it finds the stale stamp despite the worktree path" ".SKILLS_PROVENANCE"
+
+# A symlinked stale stamp elsewhere must also be found.
+c2="$(make_consumer symlink-stale "$V2_POLICY" v0.41.0 review:v2)"
+rm -f "$c2/.claude/skills/.SKILLS_PROVENANCE"
+rm -rf "$c2/.claude/skills/review/assets"
+_real_stale="$TMPROOT/real-stale-stamp"
+printf '# ref: v0.41.0 (deadbeef)\n# managed: review\n' >"$_real_stale"
+mkdir -p "$c2/other/.claude/skills"
+ln -s "$_real_stale" "$c2/other/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c2"
+expect_status "#859: a symlinked stale stamp is still found" 2
+
 echo
 echo "== consumer-pin-audit: #859 — find|head SIGPIPE under pipefail =="
 # A fixture with many stale stamps must not crash the audit with exit 141
