@@ -813,7 +813,7 @@ The v2 shape is:
   depends on the family's ability to serve at the resolved or current tier.
   Local binding is the registry's `-local` harnesses under ADR 0005. This
   config never names a concrete model. `tier:<role>:*` label values are
-  generated from the agent registry's `roles[]` and `tier_order` vocabulary
+  generated from the registry's `roles[]` and the policy's `tier_order`
   into `label-registry.json` via the same single-source path as the existing
   labels ([#909](https://github.com/evanharmon1/harmon-devkit/issues/909)).
 - **Self-modified policy is read from the merge base.** When the change edits
