@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.42.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.41.1...v0.42.0) (2026-09-12)
+
+
+### Features
+
+* **devflow:** persist effective finder set as run evidence ([#906](https://github.com/evanharmon1/harmon-devkit/issues/906)) ([98cf6c4](https://github.com/evanharmon1/harmon-devkit/commit/98cf6c4e53710420fcc62adf26e9a39e9a91f560))
+
+
+### Bug Fixes
+
+* **devflow:** align monitor trust checks with registry contract ([#896](https://github.com/evanharmon1/harmon-devkit/issues/896)) ([54a9f86](https://github.com/evanharmon1/harmon-devkit/commit/54a9f86d7aae4d0e33bb9c1db3a3b2fcfb5bd68a))
+* **devflow:** correct three wrong-verdict bugs in consumer-pin-audit ([#897](https://github.com/evanharmon1/harmon-devkit/issues/897)) ([51f4666](https://github.com/evanharmon1/harmon-devkit/commit/51f4666f508943f47033f260567ecbef24d20905))
+* **devflow:** harden consumer-pin-audit against seven open defects ([#905](https://github.com/evanharmon1/harmon-devkit/issues/905)) ([de7c0d4](https://github.com/evanharmon1/harmon-devkit/commit/de7c0d4f33d6e02400318ac7e9a5e5d046991e34))
+* **devflow:** harden consumer-pin-audit input validation ([#889](https://github.com/evanharmon1/harmon-devkit/issues/889)) ([ecc24d9](https://github.com/evanharmon1/harmon-devkit/commit/ecc24d92a86f9904ad18e3b31dc0bfac473bce3c))
+* **devflow:** stop counting confidence finders against breadth envelope ([#900](https://github.com/evanharmon1/harmon-devkit/issues/900)) ([3d5060c](https://github.com/evanharmon1/harmon-devkit/commit/3d5060c04d062bf9f6f728876f480a82030fcb33)), closes [#807](https://github.com/evanharmon1/harmon-devkit/issues/807)
+* **hooks:** replace SIGPIPE-vulnerable pipelines with herestrings ([#895](https://github.com/evanharmon1/harmon-devkit/issues/895)) ([f159c6b](https://github.com/evanharmon1/harmon-devkit/commit/f159c6b7377541aa5cdfd7dfcb4b96768a048ada)), closes [#822](https://github.com/evanharmon1/harmon-devkit/issues/822) [#689](https://github.com/evanharmon1/harmon-devkit/issues/689)
+* make agent isolation optional ([#886](https://github.com/evanharmon1/harmon-devkit/issues/886)) ([9d5948e](https://github.com/evanharmon1/harmon-devkit/commit/9d5948e1586f70c9e7c4a666445a719788ea5032))
+* **registry:** reject shadowed severity rules and invalid regex signals ([#891](https://github.com/evanharmon1/harmon-devkit/issues/891)) ([ac260f7](https://github.com/evanharmon1/harmon-devkit/commit/ac260f707c93965e3c975be1f9e14723c7773738))
+* restrict Codex judgment-role capabilities ([#884](https://github.com/evanharmon1/harmon-devkit/issues/884)) ([1d2123d](https://github.com/evanharmon1/harmon-devkit/commit/1d2123d67c4c63bebc205587271b9667a3631b53))
+* **review:** harden finder-normalization decoder evidence binding ([#894](https://github.com/evanharmon1/harmon-devkit/issues/894)) ([b32b733](https://github.com/evanharmon1/harmon-devkit/commit/b32b733e368ec65b652e1a844d342c4a5770cd34))
+* **review:** harden sandbox scope binding and submodule checks ([#890](https://github.com/evanharmon1/harmon-devkit/issues/890)) ([9edad16](https://github.com/evanharmon1/harmon-devkit/commit/9edad1637731d2b62ff30b7f854e22bdd9db8d87))
+* **tasks:** de-duplicate test suites that task verify runs twice ([#903](https://github.com/evanharmon1/harmon-devkit/issues/903)) ([19c0966](https://github.com/evanharmon1/harmon-devkit/commit/19c09664fcef7b417e204176d5f2f15de468e978)), closes [#823](https://github.com/evanharmon1/harmon-devkit/issues/823)
+
 ## [0.41.1](https://github.com/evanharmon1/harmon-devkit/compare/v0.41.0...v0.41.1) (2026-09-09)
 
 
