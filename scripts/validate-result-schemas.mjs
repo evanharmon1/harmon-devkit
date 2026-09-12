@@ -2202,7 +2202,11 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
 // is a document about an event the log never recorded. Without --receipts,
 // this check does not run and adjudications are trusted as-is.
 function checkAdjudicationsAgainstReceipts(document, receiptsRecord, adjudications, errors) {
-  if (typeof receiptsRecord.run_id === 'string' && receiptsRecord.run_id !== document.run_id) {
+  if (typeof receiptsRecord.run_id !== 'string' || receiptsRecord.run_id === '') {
+    errors.push('$run: --receipts record has no valid run_id (must be a non-empty string)')
+    return
+  }
+  if (receiptsRecord.run_id !== document.run_id) {
     errors.push(
       `$run: --receipts record has run_id ${receiptsRecord.run_id}, not this run's own run_id ${document.run_id}`
     )
