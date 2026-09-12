@@ -624,7 +624,10 @@ SENTINEL_SCRIPT
     mkdir -p "${agy_disabled_home}/.local/bin"
     : >"${agy_disabled_home}/.local/bin/agy-real"
     : >"${agy_disabled_home}/.local/bin/agy"
-    HOME="$agy_disabled_home" bash "$agy_ensure" >/dev/null
+    # env -u: the outer shell (or containerEnv) may export
+    # HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled; clear it so the script sees
+    # the disabled path.
+    env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$agy_disabled_home" bash "$agy_ensure" >/dev/null
     [ ! -e "${agy_disabled_home}/.local/bin/agy-real" ] ||
         fail "ensure-antigravity-cli.sh left agy-real behind with the marker disabled"
     [ ! -e "${agy_disabled_home}/.local/bin/agy" ] ||
@@ -654,7 +657,8 @@ SENTINEL_SCRIPT
 
     # Toggling back to disabled fully removes both — not merely skips the
     # download — reaching absence rather than a dangling link.
-    HOME="$agy_roll_home" bash "$agy_ensure" >/dev/null
+    # env -u: same containerEnv leak as the disabled-marker case above.
+    env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$agy_roll_home" bash "$agy_ensure" >/dev/null
     [ ! -e "${agy_roll_home}/.local/bin/agy-real" ] && [ ! -e "${agy_roll_home}/.local/bin/agy" ] ||
         fail "toggling the marker off did not fully remove agy-real/agy"
 

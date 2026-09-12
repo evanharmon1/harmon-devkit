@@ -267,7 +267,7 @@ echo "==> 10. Antigravity: dangling symlink fails verify regardless of marker"
 dangling_home="${work_dir}/agy-dangling-home"
 mkdir -p "${dangling_home}/.local/bin"
 ln -s "${dangling_home}/.local/bin/agy-real" "${dangling_home}/.local/bin/agy"
-if HOME="$dangling_home" bash "$agy_module" verify >/dev/null 2>&1; then
+if env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$dangling_home" bash "$agy_module" verify >/dev/null 2>&1; then
     fail "verify did not fail on a dangling agy symlink (marker disabled)"
 fi
 if HOME="$dangling_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled bash "$agy_module" verify >/dev/null 2>&1; then
@@ -332,8 +332,11 @@ fi
 echo "==> 11. Antigravity: disabled state is verified as absence, not defaulted"
 disabled_home="${work_dir}/agy-disabled-home"
 mkdir -p "$disabled_home"
-HOME="$disabled_home" bash "$agy_module" apply >/dev/null
-HOME="$disabled_home" bash "$agy_module" verify >/dev/null ||
+# env -u: the outer shell (or containerEnv) may export
+# HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled; clear it so the script sees the
+# disabled path.
+env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$disabled_home" bash "$agy_module" apply >/dev/null
+env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$disabled_home" bash "$agy_module" verify >/dev/null ||
     fail "verify failed against the correct disabled-by-option state"
 [ ! -e "${disabled_home}/.local/bin/agy" ] || fail "apply created ~/.local/bin/agy while disabled-by-option"
 
@@ -353,7 +356,7 @@ restore_fail_backup="${restore_fail_settings}.harmon-init-autonomy-backup"
 # than reporting success while discarding evidence of the unfinished
 # restore.
 rm -f "$restore_fail_settings"
-if HOME="$restore_fail_home" bash "$agy_module" apply >/dev/null 2>&1; then
+if env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$restore_fail_home" bash "$agy_module" apply >/dev/null 2>&1; then
     fail "antigravity apply (disabled branch) reported success while restoring into a missing settings.json"
 fi
 [ -f "$restore_fail_backup" ] ||
@@ -361,7 +364,7 @@ fi
 
 # Invalid (non-object) target.
 printf 'not valid json' >"$restore_fail_settings"
-if HOME="$restore_fail_home" bash "$agy_module" apply >/dev/null 2>&1; then
+if env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$restore_fail_home" bash "$agy_module" apply >/dev/null 2>&1; then
     fail "antigravity apply (disabled branch) reported success while restoring into an invalid settings.json"
 fi
 [ -f "$restore_fail_backup" ] ||
@@ -1362,5 +1365,24 @@ fi
     fail "a settings-apply failure left agy as a symlink instead of the prior wrapper"
 [ "$(cat "${agy22_home}/.local/bin/agy")" = "$agy22_before" ] ||
     fail "a settings-apply failure modified the prior valid wrapper's content before aborting"
+
+echo "==> 23. ensure-antigravity-cli.sh: an inherited HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled does not leak into the disabled path (#888)"
+# When containerEnv sets HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled (as the
+# devcontainer does), the disabled-marker test cases in devcontainer-assert.sh
+# must clear it before invoking ensure-antigravity-cli.sh — otherwise the
+# script sees the outer env's "enabled" and keeps agy-real/agy in place.
+agy23_home="${work_dir}/agy23-env-leak-home"
+mkdir -p "${agy23_home}/.local/bin"
+: >"${agy23_home}/.local/bin/agy-real"
+: >"${agy23_home}/.local/bin/agy"
+# Export the var in the outer shell, exactly as containerEnv does.
+export HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled
+env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$agy23_home" bash "$ensure_script" >/dev/null
+[ ! -e "${agy23_home}/.local/bin/agy-real" ] ||
+    fail "ensure-antigravity-cli.sh left agy-real when env -u should have cleared the inherited enabled marker"
+[ ! -e "${agy23_home}/.local/bin/agy" ] ||
+    fail "ensure-antigravity-cli.sh left agy when env -u should have cleared the inherited enabled marker"
+# Restore the var for the rest of the test suite (it is already set in the
+# real devcontainer, so leaving it exported is the honest ambient state).
 
 echo "All bot-autonomy unit tests passed."
