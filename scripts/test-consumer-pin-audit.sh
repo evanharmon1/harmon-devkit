@@ -518,6 +518,9 @@ managed-name-path-traversal|LEGACY|review:v2|traversal_name
 managed-entry-is-symlink|V2|review:v2|symlink_entry
 vendored-skills-with-no-stamp|LEGACY|review:v2 integrate:v2|drop_stamp
 malformed-older-policy|LEGACY|review:v2|malformed_older_policy
+duplicate-ref-lines|V2|review:v2|duplicate_ref
+duplicate-managed-lines|V2|review:v2|duplicate_managed
+symlinked-provenance-stamp|V2|review:v2|symlink_stamp
 "
 
 apply_mutation() {
@@ -537,6 +540,17 @@ apply_mutation() {
         ;;
     drop_stamp) rm -f "$d/.SKILLS_PROVENANCE" ;;
     malformed_older_policy) printf 'schema_version = 1\n' >"$root/.devflow.toml" ;;
+    duplicate_ref)
+        sed -i '/^# ref:/a # ref: v0.1.0 (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)' "$d/.SKILLS_PROVENANCE"
+        ;;
+    duplicate_managed)
+        sed -i '/^# managed:/a # managed:' "$d/.SKILLS_PROVENANCE"
+        ;;
+    symlink_stamp)
+        local _real="$root/real-provenance"
+        mv "$d/.SKILLS_PROVENANCE" "$_real"
+        ln -s "$_real" "$d/.SKILLS_PROVENANCE"
+        ;;
     *)
         echo "test bug: unknown mutation '$how'" >&2
         exit 1
@@ -1161,6 +1175,144 @@ agent-registry.json --taskfile-dir . --json' "$INTEGRATE_MD"; then
 else
     bad "the ordinary invocation does not document both flags"
 fi
+
+echo
+echo "== consumer-pin-audit: #859 — destination-escape validation =="
+# An absolute destination dereferences another checkout's tree; a `..`
+# component escapes the repository root. sync-skills.sh rejects both.
+c="$(make_consumer dest-absolute "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
+sed -i 's|^dest: .claude/skills$|dest: /tmp/evil/skills|' "$c/.skills-sync.yaml"
+run_audit "$c"
+expect_status "#859: an absolute destination is indeterminate" 2
+expect_says "#859: absolute dest names the manifest" "manifest"
+expect_says "#859: absolute dest says it would dereference another tree" "another checkout"
+expect_not_says "#859: absolute dest is never compatible" "compatible"
+
+c="$(make_consumer dest-dotdot "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
+sed -i 's|^dest: .claude/skills$|dest: ../other/.claude/skills|' "$c/.skills-sync.yaml"
+run_audit "$c"
+expect_status "#859: a ../  destination is indeterminate" 2
+expect_says "#859: dotdot dest names the manifest" "manifest"
+expect_says "#859: dotdot dest says it would escape the repo root" "escape the repository root"
+expect_not_says "#859: dotdot dest is never compatible" "compatible"
+
+# A destination containing '..' as part of a DIRECTORY NAME (not a path
+# component) must still work — e.g. `my..dir` is fine, `../foo` is not.
+c="$(make_consumer dest-dotdot-in-name "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
+mkdir -p "$c/my..dir"
+sed -i 's|^dest: .claude/skills$|dest: my..dir|' "$c/.skills-sync.yaml"
+# Move the skills and stamp to the new dest for the audit to find them.
+mv "$c/.claude/skills/.SKILLS_PROVENANCE" "$c/my..dir/"
+mv "$c/.claude/skills/gauntlet" "$c/my..dir/"
+run_audit "$c"
+expect_status "#859: a dest with '..' in a name (not a component) is not rejected" 0
+
+echo
+echo "== consumer-pin-audit: #859 — .worktrees excluded from stale-provenance scan =="
+# A sibling worktree's stamp under `.worktrees/<name>` must not trigger the
+# stale-provenance alarm — it is a separate checkout, not evidence that this
+# manifest moved its destination.
+c="$(make_consumer worktree-sibling "$V2_POLICY" v0.41.0 review:v2)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+rm -rf "$c/.claude/skills/review/assets"
+# Create a sibling worktree's stamp.
+mkdir -p "$c/.worktrees/other-branch/.claude/skills"
+printf '# ref: v0.41.0 (deadbeef)\n# managed: review\n' \
+    >"$c/.worktrees/other-branch/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "#859: a .worktrees stamp does not trigger stale-provenance" 0
+expect_says "#859: it is still reported as never vendored" "no skills are vendored here"
+expect_not_says "#859: it does not mention the worktree stamp" ".worktrees"
+
+# A stamp NOT under .worktrees still triggers the alarm.
+c="$(make_consumer non-worktree-stale "$V2_POLICY" v0.41.0 review:v2)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+rm -rf "$c/.claude/skills/review/assets"
+mkdir -p "$c/other-dest/.claude/skills"
+printf '# ref: v0.41.0 (deadbeef)\n# managed: review\n' \
+    >"$c/other-dest/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "#859: a stamp outside .worktrees still triggers stale-provenance" 2
+
+echo
+echo "== consumer-pin-audit: #859 — find|head SIGPIPE under pipefail =="
+# A fixture with many stale stamps must not crash the audit with exit 141
+# (SIGPIPE). The old `find | head -n 5` pipe hit this under `set -o pipefail`
+# when `head` closed the pipe first.
+c="$(make_consumer many-stale-stamps "$V2_POLICY" v0.41.0 review:v2)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+rm -rf "$c/.claude/skills/review/assets"
+for i in $(seq 1 200); do
+    mkdir -p "$c/dir-$i/.claude/skills"
+    printf '# ref: v0.41.0 (deadbeef)\n# managed: review\n' \
+        >"$c/dir-$i/.claude/skills/.SKILLS_PROVENANCE"
+done
+run_audit "$c"
+expect_status "#859: 200 stale stamps exit 2 (indeterminate), not 141 (SIGPIPE)" 2
+expect_says "#859: it still names the stale stamp" ".SKILLS_PROVENANCE"
+# The exit code must stay within the documented 0–3 contract.
+if [ "$status" -le 3 ]; then
+    ok "#859: exit code stays within the 0-3 contract under many stamps"
+else
+    bad "#859: exit code $status is outside the 0-3 contract (SIGPIPE?)"
+fi
+
+echo
+echo "== consumer-pin-audit: #859 — resolve guards every detected-v2 policy =="
+# A stamped post-boundary set with only contract-free skills plus a policy
+# containing only `schema_version = 2` must NOT return exit 0
+# `no-policy-consumer` — the reader's `resolve` exits 1 on that file.
+c="$(make_consumer resolve-all-v2 none v0.41.0 some-skill:pre)"
+printf 'schema_version = 2\n' >"$c/.devflow.toml"
+run_audit "$c"
+expect_status "#859: an incomplete v2 policy is caught even with no policy-consuming skill" 2
+expect_says "#859: it names the reader's refusal" "the shared reader refuses to resolve it"
+expect_not_says "#859: it does not return no-policy-consumer" "no-policy-consumer"
+
+# The complete v2 policy path still works for no-policy-consumer.
+c="$(make_consumer resolve-all-v2-ok "$V2_POLICY" v0.41.0 some-skill:pre)"
+run_audit "$c"
+expect_status "#859: a complete v2 policy with no policy-consuming skill is still exit 0" 0
+
+echo
+echo "== consumer-pin-audit: #859 — duplicate # ref: fields =="
+# A stamp with two `# ref:` lines silently uses the first, and reversing them
+# changes the verdict from `no-policy-consumer` to `pin-lag`.
+c="$(make_consumer dup-ref "$V2_POLICY" v0.41.0 review:v2)"
+printf '# ref: v0.41.0 (deadbeef)\n# ref: v0.39.0 (aabbccdd)\n# managed: review\n' \
+    >"$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "#859: duplicate # ref: lines are indeterminate" 2
+expect_says "#859: it names the duplicate field" "2"
+expect_says "#859: it says the ordering matters" "different ordering would change the verdict"
+expect_not_says "#859: it is never compatible" "compatible"
+
+echo
+echo "== consumer-pin-audit: #859 — duplicate # managed: fields =="
+# A stamp with `# managed:` then `# managed: review` silently uses the first
+# empty line, inspects no contract, and returns exit 0 over a v2 policy.
+c="$(make_consumer dup-managed "$V2_POLICY" v0.41.0 review:v2)"
+printf '# ref: v0.41.0 (deadbeef)\n# managed:\n# managed: review\n' \
+    >"$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "#859: duplicate # managed: lines are indeterminate" 2
+expect_says "#859: it names the duplicate field" "2"
+expect_says "#859: it says an empty first line is the fail-open" "empty managed set"
+expect_not_says "#859: it is never compatible" "compatible"
+
+echo
+echo "== consumer-pin-audit: #859 — symlinked provenance stamp =="
+# A stamp replaced by a symlink to an external file lets it supply
+# authoritative provenance. sync-skills.sh writes a real file.
+c="$(make_consumer symlink-stamp "$V2_POLICY" v0.41.0 review:v2)"
+_real="$TMPROOT/external-stamp"
+mv "$c/.claude/skills/.SKILLS_PROVENANCE" "$_real"
+ln -s "$_real" "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "#859: a symlinked stamp is indeterminate" 2
+expect_says "#859: it says sync-skills writes a real file" "real file"
+expect_says "#859: it says the stamp is a symlink" "symlink"
+expect_not_says "#859: it is never compatible" "compatible"
 
 echo
 echo "consumer-pin-audit tests: $pass passed, $fail failed"
