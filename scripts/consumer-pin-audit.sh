@@ -42,9 +42,10 @@
 #      repository's policy shape agree (including "neither has migrated"), or
 #      the vendored set contains no policy-consuming skill at all
 #      (`no-policy-consumer`), so there is no pin contract to satisfy.
-#   1  incompatible — the vendored skills require a newer policy shape than
-#      the repository has. Migrate with `copier update`; do NOT advance the
-#      pin to get past it.
+#   1  incompatible — the vendored skills require a policy shape the
+#      repository's does not have. When the required version is within the
+#      toolchain's supported range, migrate with `copier update`; when it
+#      exceeds it, upgrade the policy tooling. Do NOT advance the pin.
 #   2  usage error, or the audit is indeterminate (no manifest, unreadable
 #      policy, missing reader). Never reported as a pass.
 #   3  pin lag — the policy has migrated but the vendored skills predate it.
@@ -317,6 +318,10 @@ if [ -f "$prov" ]; then
     vendored_ref="$(sed -n 's/^# ref:[[:space:]]*//p' "$prov" | head -n 1 | sed 's/[[:space:]]*(.*)$//')"
     [ -n "$vendored_ref" ] ||
         indeterminate "provenance '$prov' has an empty '# ref:' line, so the vendored pin is unknown; re-run 'task sync:skills'"
+    vendored_categories=""
+    if grep -q '^# categories:' "$prov"; then
+        vendored_categories="$(sed -n 's/^# categories:[[:space:]]*//p' "$prov" | head -n 1 | tr ',' '\n' | tr -d ' ')"
+    fi
     if [ "$legacy_stamp" = no ]; then
         managed="$(sed -n 's/^# managed:[[:space:]]*//p' "$prov" | head -n 1 | tr ',' '\n' | tr -d ' ')"
         managed_declared=yes
@@ -544,11 +549,18 @@ policy_is_coherent=no
 case " $COHERENT_POLICY_SHAPES " in
 *" $shape "*) policy_is_coherent=yes ;;
 esac
-if [ "$shape" = unknown ] && [ "$policy_version" -gt 0 ]; then
+if [ "$shape" = unknown ] && [ "$policy_version" -gt "$POLICY_SCHEMA_VERSION_SUPPORTED" ]; then
+    # #851: only a version ABOVE the supported one is coherent-but-unsupported
+    # (a policy ahead of the toolchain). A version at or below the supported
+    # one with shape=unknown is an incomplete marker set — malformed, not ahead.
     policy_is_coherent=yes
 fi
 if [ "$policy_is_coherent" = no ]; then
-    indeterminate "policy '$policy' has shape '$shape' and declares no usable schema version — the reader cannot classify it as exactly one recognized shape, and the delta spec requires such a marker set be rejected rather than guessed into one. ${migration:-}"
+    if [ "$shape" = unknown ] && [ "$policy_version" -gt 0 ] && [ "$policy_version" -le "$POLICY_SCHEMA_VERSION_SUPPORTED" ]; then
+        indeterminate "policy '$policy' has shape '$shape' but declares schema_version $policy_version (at or below the supported $POLICY_SCHEMA_VERSION_SUPPORTED) — an incomplete marker set for a version this reader should recognize is malformed, not ahead of the toolchain; the delta spec requires it be rejected rather than guessed into either shape"
+    else
+        indeterminate "policy '$policy' has shape '$shape' and declares no usable schema version — the reader cannot classify it as exactly one recognized shape, and the delta spec requires such a marker set be rejected rather than guessed into one. ${migration:-}"
+    fi
 fi
 
 # Satisfaction needs BOTH a successful detection and an equal version.
@@ -620,16 +632,28 @@ elif [ "$required" -eq 0 ]; then
         code=0
         detail="the policy declares schema_version $policy_version and provenance '$prov' declares an empty managed set, so this consumer vendors no skills at all — there is no pin contract to satisfy and advancing the pin would not create one"
     elif [ "$policy_version" -gt 0 ] && ref_predates_v2_skills "$vendored_ref"; then
-        status=pin-lag
-        code=3
-        # Name the version the policy ACTUALLY declares, not "version-2".
-        # Review round 2, confirmed by reproduction: a version-3 policy was
-        # told to install version-2 stage skills, which exact-equality
-        # comparison can never satisfy — the remedy would leave the repository
-        # incompatible no matter how faithfully it was followed.
-        detail="the policy has migrated to schema_version $policy_version but the pin $vendored_ref predates $V2_SKILLS_FIRST_RELEASE, the first release shipping the version-2 stage skills, so nothing vendored declares a policy contract — advance source.ref in $manifest to a release whose stage skills declare policy_schema_version $policy_version, then re-run 'task sync:skills'"
-        if [ "$policy_version" -ne "$POLICY_SCHEMA_VERSION_SUPPORTED" ]; then
-            detail="$detail. Note that this reader supports schema_version $POLICY_SCHEMA_VERSION_SUPPORTED, so no released skill set is known to declare $policy_version yet — treat this as a policy ahead of the toolchain rather than a pin you can simply advance"
+        # #842: the release boundary proves what the release SHIPPED, not
+        # what this consumer SELECTED. Categories (from `# categories:`
+        # in the stamp) are authoritative for both modern and legacy
+        # stamps — sync-skills.sh:419-428 reconstructs the legacy managed
+        # set from exactly these categories. If they exclude `universal`,
+        # advancing the pin gains no policy contract.
+        _has_universal=no
+        # shellcheck disable=SC2086 # deliberate word-splitting on categories
+        for _cat in $vendored_categories; do
+            [ "$_cat" = universal ] && _has_universal=yes
+        done
+        if [ -n "$vendored_categories" ] && [ "$_has_universal" = no ]; then
+            status=no-policy-consumer
+            code=0
+            detail="the policy declares schema_version $policy_version and the pin $vendored_ref predates $V2_SKILLS_FIRST_RELEASE, but the vendored categories do not include 'universal' (the policy-consuming category), so advancing the pin would not add a policy contract — this consumer vendors no policy-consuming skill"
+        else
+            status=pin-lag
+            code=3
+            detail="the policy has migrated to schema_version $policy_version but the pin $vendored_ref predates $V2_SKILLS_FIRST_RELEASE, the first release shipping the version-2 stage skills, so nothing vendored declares a policy contract — advance source.ref in $manifest to a release whose stage skills declare policy_schema_version $policy_version, then re-run 'task sync:skills'"
+            if [ "$policy_version" -ne "$POLICY_SCHEMA_VERSION_SUPPORTED" ]; then
+                detail="$detail. Note that this reader supports schema_version $POLICY_SCHEMA_VERSION_SUPPORTED, so no released skill set is known to declare $policy_version yet — treat this as a policy ahead of the toolchain rather than a pin you can simply advance"
+            fi
         fi
     elif [ "$policy_version" -gt 0 ]; then
         status=no-policy-consumer
@@ -657,6 +681,12 @@ else
             # confirmed. Point at newer skills instead, as the contract-free
             # branch already does.
             detail="the policy declares schema_version $policy_version but the skills vendored at $vendored_ref declare schema_version $required (requiring skills: $requiring_skills) — the policy is ahead of these skills, so advance source.ref in $manifest to a release whose stage skills declare schema_version $policy_version rather than migrating the policy backwards"
+        elif [ "$required" -gt "$POLICY_SCHEMA_VERSION_SUPPORTED" ]; then
+            # #846: the reader's migration message says "migrate to
+            # schema_version 2", but these skills need a version ABOVE
+            # what this reader supports — copier update to the schema-2
+            # template can never satisfy them.
+            detail="the skills vendored at $vendored_ref require schema_version $required (requiring skills: $requiring_skills) but the policy is '$shape', declaring schema_version $policy_version — upgrade the policy tooling to one that supports schema_version $required rather than running 'copier update' to the schema-$POLICY_SCHEMA_VERSION_SUPPORTED template, which cannot satisfy these skills"
         else
             detail="the skills vendored at $vendored_ref require schema_version $required (requiring skills: $requiring_skills) but the policy is '$shape', declaring schema_version $policy_version — $migration"
         fi

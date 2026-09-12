@@ -356,6 +356,36 @@ run_audit "$c"
 expect_status "a pre-boundary pin is pin lag whatever its skills were named" 3
 expect_says "real pin lag still says to advance source.ref" "advance source.ref"
 
+# #842: A pre-boundary pin vendoring only non-policy categories (e.g. `repo`)
+# should NOT report pin-lag — advancing the pin while keeping those categories
+# gains no policy contract, so the work is pointless. The signal is the
+# provenance stamp's `# categories:` line, not a table of skill names.
+c="$(make_consumer repo-only-pre-boundary "$V2_POLICY" v0.39.0 repo-tool:pre)"
+sed -i 's/^# categories: universal$/# categories: repo/' "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "#842: a pre-boundary pin vendoring only non-policy categories is not pin-lag" 0
+expect_says "#842: it says the categories do not include universal" "do not include"
+expect_not_says "#842: it does not tell anyone to advance a useless pin" "advance source.ref"
+
+# #842: A LEGACY stamp (no # managed: line) with # categories: repo should also
+# classify as no-policy-consumer. sync-skills.sh:419-428 reconstructs the
+# managed set from categories, so they are authoritative for legacy stamps too.
+c="$(make_consumer legacy-repo-only "$V2_POLICY" v0.39.0 repo-tool:pre)"
+sed -i 's/^# categories: universal$/# categories: repo/' "$c/.claude/skills/.SKILLS_PROVENANCE"
+sed -i '/^# managed:/d' "$c/.claude/skills/.SKILLS_PROVENANCE"
+run_audit "$c"
+expect_status "#842: a legacy stamp with only repo categories is not pin-lag" 0
+expect_says "#842: legacy stamp says categories do not include universal" "do not include"
+
+# The genuine pre-boundary pin-lag case: a universal-selecting consumer SHOULD
+# still report exit 3, because advancing the pin WOULD give them policy-
+# consuming skills (review, integrate) in place of the old gauntlet/shepherd.
+# (Already asserted at line 354, but confirm the categories are the signal.)
+c="$(make_consumer universal-pin-lag "$V2_POLICY" v0.39.0 gauntlet:pre shepherd:pre)"
+run_audit "$c"
+expect_status "#842: a universal-selecting pre-boundary consumer is still pin-lag" 3
+expect_says "#842: it still says to advance source.ref" "advance source.ref"
+
 # A pin that cannot be ordered against the boundary is indeterminate, not a
 # guess in either direction.
 c="$(make_consumer unorderable-pin "$V2_POLICY" main gauntlet:pre)"
@@ -413,6 +443,24 @@ c="$(make_consumer v2-skills-future-policy "$future_policy" v0.41.0 review:v2)"
 run_audit "$c"
 expect_status "version-2 skills under a version-3 policy are incompatible" 1
 
+# #846: skills requiring a version ABOVE what this reader supports, over an
+# older policy, must NOT get the schema-2 copier-update advice — that template
+# can never satisfy them.
+c="$(make_consumer v3-skills-over-legacy "$LEGACY_POLICY" v0.41.0 review:v3)"
+run_audit "$c"
+expect_status "#846: v3 skills over a legacy policy are incompatible" 1
+expect_says "#846: the advice says to upgrade the policy tooling" "upgrade the policy tooling"
+expect_says "#846: it says copier update cannot satisfy these skills" "which cannot satisfy these skills"
+expect_says "#846: the advice names the version the skills require" "schema_version 3"
+
+# The ordinary case (v2 skills, at the supported version) keeps its copier
+# update remedy — already tested above by the v2-over-legacy cases, but assert
+# the specific direction here for the regression.
+c="$(make_consumer v2-skills-over-legacy-846 "$LEGACY_POLICY" v0.41.0 review:v2)"
+run_audit "$c"
+expect_status "#846: v2 skills over a legacy policy still get copier update" 1
+expect_says "#846: the ordinary case keeps the copier update remedy" "copier update"
+
 # stdout only: the refusal also goes to stderr, and folding the two together
 # would hand jq a JSON document with a prose line appended.
 set +e
@@ -469,6 +517,7 @@ managed-name-has-no-payload|LEGACY|review:v2|drop_skill_md
 managed-name-path-traversal|LEGACY|review:v2|traversal_name
 managed-entry-is-symlink|V2|review:v2|symlink_entry
 vendored-skills-with-no-stamp|LEGACY|review:v2 integrate:v2|drop_stamp
+malformed-older-policy|LEGACY|review:v2|malformed_older_policy
 "
 
 apply_mutation() {
@@ -487,6 +536,7 @@ apply_mutation() {
         ln -s "$_t" "$d/review"
         ;;
     drop_stamp) rm -f "$d/.SKILLS_PROVENANCE" ;;
+    malformed_older_policy) printf 'schema_version = 1\n' >"$root/.devflow.toml" ;;
     *)
         echo "test bug: unknown mutation '$how'" >&2
         exit 1
@@ -523,6 +573,26 @@ expect_status "invariant: a coherent v1 policy still gets a verdict, not exit 2"
 c="$(make_consumer inv-empty-managed "$LEGACY_POLICY" v0.34.1)"
 run_audit "$c"
 expect_status "invariant: an empty '# managed:' line is coherent, not damage" 0
+
+# #851: a policy declaring a version AT OR BELOW the supported one whose shape
+# is `unknown` is a malformed older policy — an incomplete marker set, not a
+# policy ahead of the toolchain. Only versions ABOVE the supported one keep
+# the coherent-but-unsupported treatment.
+malformed_older="$TMPROOT/malformed-older.toml"
+printf 'schema_version = 1\n' >"$malformed_older"
+c="$(make_consumer inv-malformed-older "$malformed_older" v0.41.0 review:v2)"
+run_audit "$c"
+expect_status "#851: schema_version 1 with unknown shape is indeterminate" 2
+expect_says "#851: it says the marker set is incomplete" "incomplete marker set"
+expect_not_says "#851: it is never reported compatible" "compatible"
+
+# A version ABOVE the supported one keeps the coherent-but-unsupported
+# treatment — already tested by the future-policy cases above, but assert
+# the coherence check explicitly.
+c="$(make_consumer inv-future-coherent "$future_policy" v0.41.0 review:v2)"
+run_audit "$c"
+expect_status "#851: schema_version 3 with unknown shape is still coherent" 1
+expect_not_says "#851: the future policy is not called indeterminate" "indeterminate"
 
 echo
 echo "== consumer-pin-audit: Codex cloud review round 1 regressions =="
