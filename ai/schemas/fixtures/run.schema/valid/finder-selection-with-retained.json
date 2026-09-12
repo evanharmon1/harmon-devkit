@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "run_id": "run-6101-finder-selection-retained",
+  "initiated_by": "foreman",
+  "started_at": "2026-09-12T10:00:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-09-12T10:00:00Z"
+    }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": [],
+  "finder_selection": [
+    {
+      "stage": "challenge",
+      "configured": ["codex-cli", "copilot-verification"],
+      "requested": ["codex-cli"],
+      "effective": ["codex-cli", "copilot-verification"],
+      "retained_despite_selection": ["copilot-verification"]
+    },
+    {
+      "stage": "review",
+      "configured": ["codex-cli"],
+      "requested": ["codex-cloud"],
+      "effective": ["codex-cli", "codex-cloud"]
+    }
+  ]
+}

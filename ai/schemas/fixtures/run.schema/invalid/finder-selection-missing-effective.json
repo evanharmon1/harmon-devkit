@@ -1,0 +1,28 @@
+{
+  "schema": 2,
+  "run_id": "run-6108-finder-selection-missing-effective",
+  "initiated_by": "human",
+  "started_at": "2026-09-12T09:00:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-09-12T09:00:00Z"
+    }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": [],
+  "finder_selection": [
+    {
+      "stage": "review",
+      "configured": ["codex-cli"],
+      "requested": ["codex-cloud"]
+    }
+  ]
+}

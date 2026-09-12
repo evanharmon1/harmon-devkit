@@ -648,6 +648,25 @@ node -e '
 rm -rf "${skip_dir}" "${scratch}/dfe-skip-sec-$$.out"
 echo "OK: verify -> security is refused under a nonzero review cap"
 
+echo "== #810: persisted finder_selection + conflicting --add-finder flag is a blocker =="
+disagree_fixture="ai/schemas/fixtures/exit/finder-selection-persisted-readback"
+disagree_dir="$(mktemp -d)"
+cp -r "${disagree_fixture}/." "${disagree_dir}/"
+node scripts/dev-flow-exit.mjs --run "${disagree_dir}/run" --stage review \
+    --policy "${disagree_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
+    --heads "${disagree_dir}/heads.json" --add-finder review:copilot-cli --json \
+    >"${scratch}/dfe-disagree-$$.out" 2>"${scratch}/dfe-disagree-$$.err" && {
+    rm -rf "${disagree_dir}"
+    fail "#810: persisted finder_selection + conflicting --add-finder should exit non-zero"
+}
+grep -q "disagrees with the flags" "${scratch}/dfe-disagree-$$.err" || {
+    cat "${scratch}/dfe-disagree-$$.err" >&2
+    rm -rf "${disagree_dir}"
+    fail "#810: disagreement error message not found on stderr"
+}
+rm -rf "${disagree_dir}"
+echo "OK: persisted finder_selection + conflicting --add-finder is blocked"
+
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="
 [ -d ai/schemas/fixtures/exit ] || fail "missing ai/schemas/fixtures/exit/"
 node scripts/lib/run-exit-fixtures.mjs

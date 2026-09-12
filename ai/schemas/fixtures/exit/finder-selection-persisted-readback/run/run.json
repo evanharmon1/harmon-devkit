@@ -1,0 +1,28 @@
+{
+  "run_id": "run-finder-selection-readback",
+  "initiated_by": "human",
+  "started_at": "2026-09-12T08:00:00Z",
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "review"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cli"
+    },
+    {
+      "kind": "pass",
+      "file": "review-r1-codex-cloud"
+    }
+  ],
+  "finder_selection": [
+    {
+      "stage": "review",
+      "configured": ["codex-cli"],
+      "requested": ["codex-cloud"],
+      "effective": ["codex-cli", "codex-cloud"],
+      "retained_despite_selection": []
+    }
+  ]
+}
