@@ -38,16 +38,25 @@ procedure, which produces no run record and no adjudication evidence. See
 
 ## PR-open confirmation
 
-At PR-open for each lane, confirm that confidence-stage evidence
-(challenge/review round adjudication records, not merely a kickoff marker)
-exists for **the lane's active run ID**. A kickoff marker alone proves the
-run was activated, not that it routed through `/review`; an existence-only
-check or one matching any marker type would accept a lane that incorrectly
-used the inline fallback. `retro-run-report.mjs` exit 10 (`no-run-record`)
-is the diagnostic for absence; a marker that does not carry confidence-stage
-evidence for the active run is treated as absent for routing purposes. If
-the condition fails, the routing failed and the lane must be re-run through
-the skill path before the PR is promoted.
+Before promoting a lane's PR, confirm the lane produced v2 evidence
+appropriate to its topology and resolved policy:
+
+- **Normal topology** (origin is the target repo, `/review` vendored and
+  compatible): confidence-stage evidence (adjudication records from
+  `/review`, not merely a kickoff marker) must exist for the lane's active
+  run ID. A kickoff marker alone proves activation, not routing.
+- **Zero-cap policy** (challenge and/or review caps are 0): `/review`
+  produces an authenticated disabled-stage verdict, not adjudication
+  records; accept that verdict as valid evidence for the run.
+- **Fork topology or unvendored skill**: the inline fallback is the
+  documented procedure and produces no v2 evidence by design; the
+  orchestrator accepts the limitation or does not dispatch fork-topology
+  lanes with a v2 routing expectation.
+
+`retro-run-report.mjs` exit 10 (`no-run-record`) is the diagnostic for
+a lane that was expected to produce evidence and did not. When the
+condition fails and the skill path is available for the lane's topology,
+the routing failed and the lane must be re-run before the PR is promoted.
 
 ## Implementer selection
 
