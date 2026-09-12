@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.43.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.42.0...v0.43.0) (2026-09-12)
+
+
+### Features
+
+* **schemas:** add --receipts strict mode to validate-result-schemas ([#914](https://github.com/evanharmon1/harmon-devkit/issues/914)) ([560cd83](https://github.com/evanharmon1/harmon-devkit/commit/560cd834c352746f4460d7685449cfffb3ae8bf5))
+* **skills:** add official herdr skill category ([#915](https://github.com/evanharmon1/harmon-devkit/issues/915)) ([c5e4c56](https://github.com/evanharmon1/harmon-devkit/commit/c5e4c56127850c593de5630db239dcab57a8be30))
+
 ## [0.42.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.41.1...v0.42.0) (2026-09-12)
 
 
