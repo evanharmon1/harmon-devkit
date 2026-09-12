@@ -1583,14 +1583,15 @@ function tryDelegateToClosure(argv) {
       return 1;
     }
   }
-  // #810: a persisted finder_selection in run.json is the flag-free equivalent
-  // of --add-finder — it widens the slot set the same way, but without CLI
-  // flags the guard above never fires. An older merge-base reader that
-  // predates persisted selection would silently ignore the field and compute
-  // exit over the configured finders alone, dropping the recorded finder's
-  // pass and potentially reporting false convergence. Check the run record
-  // before delegation so the guard covers both paths.
-  if (!wantsSelection) {
+  // #810: a persisted finder_selection in run.json widens the slot set the
+  // same way --add-finder does. An older merge-base reader that predates
+  // persisted selection would silently ignore the field and compute exit over
+  // the configured finders alone, dropping the recorded finder's pass and
+  // potentially reporting false convergence. This check is unconditional:
+  // when flags coexist with a persisted selection, the flag-support guard
+  // above covers the flags but not the persisted field, and main()'s
+  // disagreement check never runs because delegation exits first.
+  {
     const runIdx = passthrough.indexOf("--run");
     if (runIdx !== -1 && passthrough[runIdx + 1]) {
       const runJsonPath = path.join(passthrough[runIdx + 1], "run.json");
