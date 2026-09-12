@@ -39,24 +39,19 @@ procedure, which produces no run record and no adjudication evidence. See
 ## PR-open confirmation
 
 Before promoting a lane's PR, confirm the lane produced v2 evidence
-appropriate to its topology and resolved policy:
-
-- **Normal topology** (origin is the target repo, `/review` vendored and
-  compatible): confidence-stage evidence (adjudication records from
-  `/review`, not merely a kickoff marker) must exist for the lane's active
-  run ID. A kickoff marker alone proves activation, not routing.
-- **Zero-cap policy** (challenge and/or review caps are 0): `/review`
-  produces an authenticated disabled-stage verdict, not adjudication
-  records; accept that verdict as valid evidence for the run.
-- **Fork topology or unvendored skill**: the inline fallback is the
-  documented procedure and produces no v2 evidence by design; the
-  orchestrator accepts the limitation or does not dispatch fork-topology
-  lanes with a v2 routing expectation.
-
-`retro-run-report.mjs` exit 10 (`no-run-record`) is the diagnostic for
-a lane that was expected to produce evidence and did not. When the
-condition fails and the skill path is available for the lane's topology,
-the routing failed and the lane must be re-run before the PR is promoted.
+appropriate to its topology and resolved policy for the lane's active
+run ID. Each enabled confidence stage (resolved cap ≥ 1) must have its
+own evidence — adjudication records from `/review`, not merely a kickoff
+marker — and a disabled stage (cap 0) must have its authenticated
+disabled-stage verdict; a single verdict never covers an enabled stage.
+A lane dispatched under the fork topology or without a vendored
+`/review` skill uses the inline fallback by design and produces no v2
+evidence; the orchestrator accepts that limitation and does not require
+evidence the procedure cannot produce. `retro-run-report.mjs` exit 10
+(`no-run-record`) is the diagnostic for a lane that was expected to
+produce evidence and did not; when the condition fails and the skill
+path is available for the lane's topology, the routing failed and the
+lane must be re-run before the PR is promoted.
 
 ## Implementer selection
 
