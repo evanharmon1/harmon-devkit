@@ -1562,19 +1562,57 @@ function tryDelegateToClosure(argv) {
       a.startsWith("--add-finder=") ||
       a.startsWith("--select-finder="),
   );
-  if (wantsSelection) {
-    let trustedSource = "";
+  let trustedSource = "";
+  const readTrustedSource = () => {
+    if (trustedSource) return trustedSource;
     try {
       trustedSource = readFileSync(trustedScript, "utf8");
     } catch (err) {
       console.error(`dev-flow-exit: could not read the --closure reader to check its flag support: ${err.message}`);
-      return 1;
+      return null;
     }
-    if (!trustedSource.includes("--add-finder") || !trustedSource.includes("--select-finder")) {
+    return trustedSource;
+  };
+  if (wantsSelection) {
+    const src = readTrustedSource();
+    if (!src) return 1;
+    if (!src.includes("--add-finder") || !src.includes("--select-finder")) {
       console.error(
         `dev-flow-exit: the --closure reader (${trustedScript}) predates --add-finder/--select-finder and would silently drop the requested finder(s) — refusing rather than computing an exit over a narrower set with no disclosure`,
       );
       return 1;
+    }
+  }
+  // #810: a persisted finder_selection in run.json widens the slot set the
+  // same way --add-finder does. An older merge-base reader that predates
+  // persisted selection would silently ignore the field and compute exit over
+  // the configured finders alone, dropping the recorded finder's pass and
+  // potentially reporting false convergence. This check is unconditional:
+  // when flags coexist with a persisted selection, the flag-support guard
+  // above covers the flags but not the persisted field, and main()'s
+  // disagreement check never runs because delegation exits first.
+  {
+    const runIdx = passthrough.indexOf("--run");
+    if (runIdx !== -1 && passthrough[runIdx + 1]) {
+      const runJsonPath = path.join(passthrough[runIdx + 1], "run.json");
+      try {
+        if (existsSync(runJsonPath)) {
+          const runDoc = JSON.parse(readFileSync(runJsonPath, "utf8"));
+          if (Array.isArray(runDoc.finder_selection) && runDoc.finder_selection.length > 0) {
+            const src = readTrustedSource();
+            if (!src) return 1;
+            if (!src.includes("finder_selection")) {
+              console.error(
+                `dev-flow-exit: the run record carries a persisted finder_selection but the --closure reader (${trustedScript}) predates that feature — refusing rather than computing an exit that silently drops the recorded finder set`,
+              );
+              return 1;
+            }
+          }
+        }
+      } catch {
+        // run.json parse failures are handled properly in main() after
+        // delegation — don't duplicate the error path here.
+      }
     }
   }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
@@ -1650,6 +1688,17 @@ async function main() {
     return 1;
   }
 
+  let runDir;
+  try {
+    runDir = loadRunDir(args.run);
+  } catch (err) {
+    if (err instanceof ExitIndeterminate) {
+      return indeterminate(args, err.message);
+    }
+    console.error(`dev-flow-exit: could not read --run: ${err.message}`);
+    return 1;
+  }
+
   // A per-run finder selection has to reach THIS resolution too (#796
   // challenge round 3): devflow-policy.mjs applies --add-finder to its own
   // in-memory result, and this script re-resolves the same file
@@ -1662,21 +1711,75 @@ async function main() {
   // breadth arithmetic, so a tight policy the RESOLVER accepts was rejected
   // here — the same rule disagreeing with itself across two files, and the
   // skill says confidence finders never consume [breadth].max_agent_runs.
-  const selection = applyFinderSelection(resolved, addFinders.values, selectFinders.values);
-  if (selection.error) {
-    console.error(`dev-flow-exit: ${selection.error}`);
-    return 1;
-  }
+  //
+  // #810: when the run record carries a persisted finder_selection, use it
+  // instead of requiring the caller to repeat the flags. A recorded
+  // selection and a repeated flag that disagree is a blocker — the run
+  // cannot have been two different shapes. A run with no recorded selection
+  // behaves exactly as before.
+  const hasPersistedSelection = Array.isArray(runDir.runRecord.finder_selection) && runDir.runRecord.finder_selection.length > 0;
+  const hasFlagSelection = addFinders.values.length > 0 || selectFinders.values.length > 0;
 
-  let runDir;
-  try {
-    runDir = loadRunDir(args.run);
-  } catch (err) {
-    if (err instanceof ExitIndeterminate) {
-      return indeterminate(args, err.message);
+  if (hasPersistedSelection && hasFlagSelection) {
+    // Both a persisted selection and CLI flags are present — they must agree
+    // or the run cannot be trusted: a recorded selection says "this is what
+    // the run used", and a flag saying something different means someone is
+    // re-running with a different shape, which the issue spec says is a
+    // blocker, not a silent preference for either.
+    const persistedSelection = applyFinderSelection(resolved, addFinders.values, selectFinders.values);
+    if (persistedSelection.error) {
+      console.error(`dev-flow-exit: ${persistedSelection.error}`);
+      return 1;
     }
-    console.error(`dev-flow-exit: could not read --run: ${err.message}`);
-    return 1;
+    const persistedStages = new Set(runDir.runRecord.finder_selection.map((e) => e.stage));
+    for (const d of persistedSelection.disclosures || []) {
+      if (!persistedStages.has(d.stage)) {
+        console.error(
+          `dev-flow-exit: flags add a finder selection for stage "${d.stage}" which has no entry ` +
+            `in the run record's persisted finder_selection — a recorded selection and a repeated ` +
+            `flag that disagree is a blocker, not a silent preference for either`,
+        );
+        return 1;
+      }
+    }
+    for (const recorded of runDir.runRecord.finder_selection) {
+      const fromFlags = (persistedSelection.disclosures || []).find((d) => d.stage === recorded.stage);
+      const flagEffective = fromFlags ? fromFlags.effective : (resolved.stages[recorded.stage]?.finders ?? []);
+      const recordedEffective = recorded.effective;
+      if (
+        flagEffective.length !== recordedEffective.length ||
+        flagEffective.some((f, i) => f !== recordedEffective[i])
+      ) {
+        console.error(
+          `dev-flow-exit: the run record's persisted finder_selection for stage "${recorded.stage}" ` +
+            `(effective: [${recordedEffective.join(", ")}]) disagrees with the flags passed to this ` +
+            `invocation (effective: [${flagEffective.join(", ")}]) — a recorded selection and a repeated ` +
+            `flag that disagree is a blocker, not a silent preference for either`,
+        );
+        return 1;
+      }
+    }
+  } else if (hasPersistedSelection) {
+    // The run record has a persisted selection but no flags were passed —
+    // replay the recorded effective set directly rather than re-resolving
+    // from requested against the current policy. The persisted effective
+    // array is the authoritative record of what the run used; re-resolving
+    // would silently gain or lose slots if the policy's configured finders
+    // changed after the selection was made (#810 challenge round 1,
+    // confirmed).
+    for (const entry of runDir.runRecord.finder_selection) {
+      if (resolved.stages?.[entry.stage]) {
+        resolved.stages[entry.stage].finders = [...entry.effective];
+      }
+    }
+    resolved.finder_selection = runDir.runRecord.finder_selection;
+  } else {
+    // No persisted selection — apply flags as before (backward compat).
+    const selection = applyFinderSelection(resolved, addFinders.values, selectFinders.values);
+    if (selection.error) {
+      console.error(`dev-flow-exit: ${selection.error}`);
+      return 1;
+    }
   }
 
   // Stage-skipping (computing REVIEW's exit while challenge is the trusted

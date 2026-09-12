@@ -345,6 +345,42 @@
           "minLength": 1
         }
       }
+    },
+    "finder_selection": {
+      "description": "The effective per-stage finder set when a per-run selection was made. Persisted as run evidence so a later invocation of dev-flow-exit.mjs that omits the --add-finder/--select-finder flags computes the same slots as the one that made the selection. Absent when no per-run selection was requested (the configured finders are the effective set). Each entry corresponds to one stage whose finder set was modified by a per-run request.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "configured", "requested", "effective"],
+        "properties": {
+          "stage": {
+            "enum": ["implement", "challenge", "review", "integration"]
+          },
+          "configured": {
+            "description": "The finders the policy's [stage.*] table configured for this stage, before any per-run selection.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "requested": {
+            "description": "The finders this run requested via --add-finder/--select-finder for this stage.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "effective": {
+            "description": "The union of configured and requested finders — the set that actually governs this stage's slot assembly.",
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "retained_despite_selection": {
+            "description": "Configured finders that a --select-finder request did not name but that were kept because the configured set is never reduced. Empty when --add-finder was the only mechanism, or when --select-finder named every configured finder.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
     }
   }
 }
