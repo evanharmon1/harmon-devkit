@@ -1562,19 +1562,56 @@ function tryDelegateToClosure(argv) {
       a.startsWith("--add-finder=") ||
       a.startsWith("--select-finder="),
   );
-  if (wantsSelection) {
-    let trustedSource = "";
+  let trustedSource = "";
+  const readTrustedSource = () => {
+    if (trustedSource) return trustedSource;
     try {
       trustedSource = readFileSync(trustedScript, "utf8");
     } catch (err) {
       console.error(`dev-flow-exit: could not read the --closure reader to check its flag support: ${err.message}`);
-      return 1;
+      return null;
     }
-    if (!trustedSource.includes("--add-finder") || !trustedSource.includes("--select-finder")) {
+    return trustedSource;
+  };
+  if (wantsSelection) {
+    const src = readTrustedSource();
+    if (!src) return 1;
+    if (!src.includes("--add-finder") || !src.includes("--select-finder")) {
       console.error(
         `dev-flow-exit: the --closure reader (${trustedScript}) predates --add-finder/--select-finder and would silently drop the requested finder(s) — refusing rather than computing an exit over a narrower set with no disclosure`,
       );
       return 1;
+    }
+  }
+  // #810: a persisted finder_selection in run.json is the flag-free equivalent
+  // of --add-finder — it widens the slot set the same way, but without CLI
+  // flags the guard above never fires. An older merge-base reader that
+  // predates persisted selection would silently ignore the field and compute
+  // exit over the configured finders alone, dropping the recorded finder's
+  // pass and potentially reporting false convergence. Check the run record
+  // before delegation so the guard covers both paths.
+  if (!wantsSelection) {
+    const runIdx = passthrough.indexOf("--run");
+    if (runIdx !== -1 && passthrough[runIdx + 1]) {
+      const runJsonPath = path.join(passthrough[runIdx + 1], "run.json");
+      try {
+        if (existsSync(runJsonPath)) {
+          const runDoc = JSON.parse(readFileSync(runJsonPath, "utf8"));
+          if (Array.isArray(runDoc.finder_selection) && runDoc.finder_selection.length > 0) {
+            const src = readTrustedSource();
+            if (!src) return 1;
+            if (!src.includes("finder_selection")) {
+              console.error(
+                `dev-flow-exit: the run record carries a persisted finder_selection but the --closure reader (${trustedScript}) predates that feature — refusing rather than computing an exit that silently drops the recorded finder set`,
+              );
+              return 1;
+            }
+          }
+        }
+      } catch {
+        // run.json parse failures are handled properly in main() after
+        // delegation — don't duplicate the error path here.
+      }
     }
   }
   const result = spawnSync(process.execPath, [trustedScript, ...passthrough], { stdio: "inherit" });
@@ -1712,20 +1749,18 @@ async function main() {
     }
   } else if (hasPersistedSelection) {
     // The run record has a persisted selection but no flags were passed —
-    // apply the persisted set so the exit computation uses the same slots as
-    // the invocation that made the selection (#810 acceptance criterion 2).
-    const addFromRecord = [];
-    const selectFromRecord = [];
+    // replay the recorded effective set directly rather than re-resolving
+    // from requested against the current policy. The persisted effective
+    // array is the authoritative record of what the run used; re-resolving
+    // would silently gain or lose slots if the policy's configured finders
+    // changed after the selection was made (#810 challenge round 1,
+    // confirmed).
     for (const entry of runDir.runRecord.finder_selection) {
-      for (const slug of entry.requested) {
-        addFromRecord.push(`${entry.stage}:${slug}`);
+      if (resolved.stages?.[entry.stage]) {
+        resolved.stages[entry.stage].finders = [...entry.effective];
       }
     }
-    const selection = applyFinderSelection(resolved, addFromRecord, selectFromRecord);
-    if (selection.error) {
-      console.error(`dev-flow-exit: persisted finder_selection could not be applied: ${selection.error}`);
-      return 1;
-    }
+    resolved.finder_selection = runDir.runRecord.finder_selection;
   } else {
     // No persisted selection — apply flags as before (backward compat).
     const selection = applyFinderSelection(resolved, addFinders.values, selectFinders.values);
