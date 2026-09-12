@@ -55,7 +55,7 @@ node scripts/test-result-schema-composition.mjs
 #     one needs.
 is_context_only_fixture() {
     case "$1" in
-    *.known-ids.json | *.pass.json | *.known-adjudicated.json | *.adjudication.json) return 0 ;;
+    *.known-ids.json | *.pass.json | *.known-adjudicated.json | *.adjudication.json | *.receipts.json) return 0 ;;
     */result.envelope.schema/invalid/run-mismatch.json) return 0 ;;
     */result.reviewer.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
     */result.challenger.schema/invalid/duplicate-id-across-passes.json) return 0 ;;
@@ -79,6 +79,7 @@ is_context_only_fixture() {
     */run.schema/invalid/split-issue-disagrees-with-adjudication.json) return 0 ;;
     */run.schema/invalid/split-adjudication-not-recorded.json) return 0 ;;
     */run.schema/invalid/split-omitted-on-capped-run.json) return 0 ;;
+    */run.schema/invalid/adjudication-not-in-receipts.json) return 0 ;;
     *) return 1 ;;
     esac
 }
@@ -984,6 +985,26 @@ accept_context_case \
     run \
     "$fixtures_dir/run.schema/valid/ready-with-settled-deferral.json" \
     --adjudication "$settlement_cross_check_adjudication"
+
+# harmon-devkit#821: --receipts strict mode — an adjudication whose stage has
+# no transition receipt in the --receipts record is rejected; without the flag,
+# the same fixture is accepted (the adjudication's stage IS in stage_transitions).
+receipts_strict_adjudication="$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.adjudication.json"
+receipts_strict_receipts="$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.receipts.json"
+
+run_context_case \
+    "an --adjudication whose stage has no transition receipt is rejected in --receipts strict mode (#821)" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    "has no transition receipt in the --receipts record" \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$receipts_strict_receipts"
+
+accept_context_case \
+    "the same adjudication is accepted without --receipts (default mode, stage is in stage_transitions) (#821)" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    --adjudication "$receipts_strict_adjudication"
 
 # harmon-devkit#685 (de-scoped receipt invariant, acceptance criterion 7):
 # "every adjudicated round has a matching issue evidence marker

@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "run_id": "run-0821-receipts-strict",
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "0821a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+  "adjudications": [
+    {
+      "finding_id": "challenge-r1-codex-cli-1",
+      "reviewer_priority": "P2",
+      "adjudicated_priority": "P2",
+      "disposition": "fix",
+      "reason": "Internally valid adjudication for receipts-strict-mode test.",
+      "evidence": "n/a",
+      "override": null
+    }
+  ]
+}
