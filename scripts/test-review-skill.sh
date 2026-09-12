@@ -192,12 +192,7 @@ jq -e '.stages.review.finders == ["codex-verification", "copilot-verification"] 
     (.finder_selection[0].retained_despite_selection == ["copilot-verification"])' \
     <<<"$narrowed" >/dev/null ||
     fail "a narrower per-run selection removed a config-required finder: $narrowed"
-echo "==> a per-run addition is registry-checked but never charged to breadth"
-# crossValidate sizes a stage's worst-case finder attempts against
-# [breadth].max_agent_runs, and the skill says in terms that confidence
-# finders never consume that budget. Applying the selection before that
-# arithmetic made an otherwise valid tight policy fail for adding a finder —
-# the one thing per-run selection is for.
+echo "==> a per-run addition is registry-checked"
 tight_policy="$tmp/tight-breadth.toml"
 sed 's/^max_agent_runs = 8$/max_agent_runs = 2/; s/^max_parallel_agents = 3$/max_parallel_agents = 2/' \
     "$solo_fixture/policy.toml" >"$tight_policy"
@@ -220,10 +215,6 @@ grep -Fq 'per-run selection adds unknown finder' <<<"$unknown_add" ||
     fail "an added finder is no longer registry-checked: $unknown_add"
 
 echo "==> the resolver and the exit computation agree about a per-run addition"
-# The same rule lives in two files, and they disagreed: the exit script applied
-# the selection BEFORE cross-validation, so a tight policy the resolver accepts
-# was rejected there on breadth grounds — for a finder that, by the skill's own
-# rule, consumes no breadth at all.
 node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
     --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
     --add-finder review:codex-verification --json >/dev/null ||
@@ -255,6 +246,29 @@ set -e
 jq -e '.outcome == "indeterminate" and (.reason | contains("codex-verification"))' \
     <<<"$added_slot_out" >/dev/null ||
     fail "the exit computation did not demand the added finder's own slot: $added_slot_out"
+
+echo "==> confidence finders never consume [breadth].max_agent_runs (#807)"
+# specs/dev-flow-v2.md and SKILL.md both say confidence finders spend the
+# rounds envelope, not breadth. A configured multi-finder stage must resolve
+# cleanly even when max_agent_runs is too small to cover a worst-case
+# primary+retry+fallback chain — and the result must be identical whether the
+# finders were configured or added per-run.
+tight_multi_policy="$tmp/tight-multi-breadth.toml"
+sed 's/^max_agent_runs = 8$/max_agent_runs = 2/; s/^max_parallel_agents = 3$/max_parallel_agents = 2/' \
+    "$multi_fixture/policy.toml" >"$tight_multi_policy"
+configured_out="$(node scripts/devflow-policy.mjs resolve --policy "$tight_multi_policy" \
+    --registry "$multi_fixture/registry.json" --task-targets "$multi_fixture/task-targets.json" \
+    --json)" ||
+    fail "a tight policy with two configured review finders was rejected on breadth (#807)"
+jq -e '.cross_validation.errors == []' <<<"$configured_out" >/dev/null ||
+    fail "crossValidate raised errors for configured confidence finders: $(jq -r '.cross_validation.errors[]' <<<"$configured_out")"
+# The same effective set reached via --add-finder must resolve identically.
+added_out="$(node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+    --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
+    --add-finder review:codex-verification --json)" ||
+    fail "a tight policy with a per-run-added review finder was rejected on breadth"
+jq -e '.cross_validation.errors == []' <<<"$added_out" >/dev/null ||
+    fail "crossValidate raised errors for a per-run confidence finder: $(jq -r '.cross_validation.errors[]' <<<"$added_out")"
 
 echo "==> the effective finder set renders as a disclosure under the rigor line"
 disclosure_record="$tmp/finder-disclosure"

@@ -834,39 +834,18 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
     errors.push("indeterminate: no Taskfile target list was supplied — gate slugs could not be checked");
   }
 
-  // Breadth-sufficiency and stage-has-no-finders use only the
-  // already-resolved policy shape (rounds, breadth, stages) — no registry
-  // needed — so they run UNCONDITIONALLY, independent of whether a
-  // registry was supplied. Review round 1 (confirmed): nesting these under
-  // `if (registryDoc)` meant a caller that never supplies a registry
-  // (dev-flow-exit.mjs, invoked without ever running `devflow-policy.mjs
-  // resolve` first) got no breadth validation at all, letting a policy
-  // whose breadth cannot cover its own configured fallback chain — which
-  // `devflow-policy.mjs resolve` itself would refuse — silently compute
-  // exits anyway (exit-computation spec.md's "Scenario: Breadth cannot
-  // cover a configured fallback chain" requires this rejected "before any
-  // finder is dispatched", not only when a registry happens to be present).
+  // Stage-has-no-finders uses only the already-resolved policy shape
+  // (rounds, stages) — no registry needed — so it runs UNCONDITIONALLY,
+  // independent of whether a registry was supplied.
+  //
+  // Confidence finders (challenge, review) spend the independent rounds
+  // envelope ([rounds.<policy>]) and never consume [breadth].max_agent_runs
+  // (specs/dev-flow-v2.md § breadth, ai/skills/universal/review/SKILL.md).
+  // max_agent_runs is reserved for implementer lanes, synthesis, and
+  // remediation. No breadth-sufficiency check is owed here.
   for (const stage of CONFIDENCE_STAGES) {
     const s = resolved.stages[stage];
     const cap = resolved.rounds[stage];
-    if (cap > 0 && s.finders.length > 0) {
-      // "for every finder slot" (exit-computation spec) is a per-slot
-      // requirement, not an aggregate one: prove the ceiling covers EACH
-      // slot independently attempting its own full primary+retry+fallback
-      // chain, not just one slot's chain plus a fallback list shared
-      // across every slot — the fallback list is preference-ordered per
-      // slot, so the true worst case is every slot separately exhausting
-      // it (finders.length primary+retry pairs, each also paying the
-      // full fallback chain), never the fallback chain amortized once.
-      const worstCase = s.finders.length * (2 + s.finder_fallbacks.length);
-      if (resolved.breadth.max_agent_runs < worstCase) {
-        errors.push(
-          `[breadth.${resolved.breadth.policy}].max_agent_runs (${resolved.breadth.max_agent_runs}) cannot cover ` +
-            `stage "${stage}"'s worst-case primary+retry+fallback chain (${worstCase} attempts across ${s.finders.length} finder slot(s), ` +
-            `${s.finder_fallbacks.length} fallback(s) each)`,
-        );
-      }
-    }
     // A merge-base HISTORICAL DECODE (decodeHistoricalPolicy, the only
     // source that sets `decodedFrom`) always reports built-in-default empty
     // stage finders by construction — addendum 6 (registry-sourced finders/
@@ -1509,8 +1488,7 @@ export function applyFinderSelection(resolved, addRequests, selectRequests) {
   return { disclosures };
 }
 
-// Registry checks for finders a per-run selection ADDED, without the breadth
-// arithmetic crossValidate applies to the configured set. Mirrors the same
+// Registry checks for finders a per-run selection ADDED. Mirrors the same
 // three rules crossValidate uses for a configured finder: it must exist, it
 // must not be pr-cloud on a pre-PR stage, and its own registry entry must
 // permit the stage it was added to.
@@ -1686,23 +1664,19 @@ function cliResolve(args) {
   }
   const taskTargets = readTaskTargets(args["task-targets"], args["taskfile-dir"]);
   // Cross-validate the CONFIGURED policy first, then apply the per-run
-  // selection (#796 deletion round). Doing it the other way round put added
-  // finders inside crossValidate's breadth arithmetic, which sizes a stage's
-  // worst-case finder attempts against [breadth].max_agent_runs — and
-  // ai/skills/universal/review/SKILL.md says in terms that confidence finders
-  // spend the rounds envelope and NEVER consume that budget. An otherwise
-  // valid policy would then be rejected for adding a finder, which is the one
-  // thing per-run selection is for.
+  // selection. Confidence finders never consume [breadth].max_agent_runs
+  // (specs/dev-flow-v2.md, SKILL.md), so crossValidate does not size their
+  // attempts against that envelope — configured and per-run finders resolve
+  // identically.
   const crossErrors = crossValidate(resolved, registryDoc, taskTargets);
   const selectionResult = applyFinderSelection(resolved, args.addFinders ?? [], args.selectFinders ?? []);
   if (selectionResult.error) {
     console.error(`devflow-policy: ${selectionResult.error}`);
     return 2;
   }
-  // The added finders are still checked against the registry — existence,
-  // surface and stage affinity — because an added slug the registry does not
-  // know is exactly as unrunnable as a configured one. Only the breadth
-  // arithmetic is skipped.
+  // Added finders are checked against the registry — existence, surface,
+  // and stage affinity — because an added slug the registry does not know
+  // is exactly as unrunnable as a configured one.
   crossErrors.push(...validateSelectedFinders(resolved, registryDoc, selectionResult.disclosures ?? []));
 
   const indeterminate = crossErrors.filter((e) => e.startsWith("indeterminate:"));
