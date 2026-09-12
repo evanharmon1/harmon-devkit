@@ -484,7 +484,9 @@
       "prefix": null,
       "purpose": "Role-scoped tier override: pins one role to a tier, refining (never replacing) the rigor profile for that role alone.",
       "axis": "strategy",
-      "source": "inline",
+      "source": "agent-registry",
+      "registry_set": "tier-roles",
+      "placeholder": "tier:<role>:<tier>",
       "writers": ["human"],
       "writer_note": "humans, at triage or planning — never an agent on itself",
       "readers": "humans and agents — targets exactly the role it names; models are classified in `agent-registry.json` (ADR 0006/0007), unlike the unqualified `tier:<value>` which targets the implementer only",
@@ -494,108 +496,7 @@
       "exclusive": false,
       "provision": true,
       "color": "7057FF",
-      "values": [
-        {
-          "value": "tier:orchestrator:local",
-          "description": "Tier override: pin the orchestrator to local — self-hosted endpoint first"
-        },
-        {
-          "value": "tier:orchestrator:economy",
-          "description": "Tier override: pin the orchestrator to economy — cheapest qualified hosted model"
-        },
-        {
-          "value": "tier:orchestrator:standard",
-          "description": "Tier override: pin the orchestrator to standard — reliable general-purpose coding model"
-        },
-        {
-          "value": "tier:orchestrator:frontier",
-          "description": "Tier override: pin the orchestrator to frontier — opus-class heavyweight, no warm-up"
-        },
-        {
-          "value": "tier:orchestrator:apex",
-          "description": "Tier override: pin the orchestrator to apex — mythos-class leading edge"
-        },
-        {
-          "value": "tier:implementer:local",
-          "description": "Tier override: pin the implementer to local — self-hosted endpoint first"
-        },
-        {
-          "value": "tier:implementer:economy",
-          "description": "Tier override: pin the implementer to economy — cheapest qualified hosted model"
-        },
-        {
-          "value": "tier:implementer:standard",
-          "description": "Tier override: pin the implementer to standard — reliable general-purpose coding model"
-        },
-        {
-          "value": "tier:implementer:frontier",
-          "description": "Tier override: pin the implementer to frontier — opus-class heavyweight, no warm-up"
-        },
-        {
-          "value": "tier:implementer:apex",
-          "description": "Tier override: pin the implementer to apex — mythos-class leading edge"
-        },
-        {
-          "value": "tier:reviewer:local",
-          "description": "Tier override: pin the reviewer to local — self-hosted endpoint first"
-        },
-        {
-          "value": "tier:reviewer:economy",
-          "description": "Tier override: pin the reviewer to economy — cheapest qualified hosted model"
-        },
-        {
-          "value": "tier:reviewer:standard",
-          "description": "Tier override: pin the reviewer to standard — reliable general-purpose coding model"
-        },
-        {
-          "value": "tier:reviewer:frontier",
-          "description": "Tier override: pin the reviewer to frontier — opus-class heavyweight, no warm-up"
-        },
-        {
-          "value": "tier:reviewer:apex",
-          "description": "Tier override: pin the reviewer to apex — mythos-class leading edge"
-        },
-        {
-          "value": "tier:challenger:local",
-          "description": "Tier override: pin the challenger to local — self-hosted endpoint first"
-        },
-        {
-          "value": "tier:challenger:economy",
-          "description": "Tier override: pin the challenger to economy — cheapest qualified hosted model"
-        },
-        {
-          "value": "tier:challenger:standard",
-          "description": "Tier override: pin the challenger to standard — reliable general-purpose coding model"
-        },
-        {
-          "value": "tier:challenger:frontier",
-          "description": "Tier override: pin the challenger to frontier — opus-class heavyweight, no warm-up"
-        },
-        {
-          "value": "tier:challenger:apex",
-          "description": "Tier override: pin the challenger to apex — mythos-class leading edge"
-        },
-        {
-          "value": "tier:integrator:local",
-          "description": "Tier override: pin the integrator to local — self-hosted endpoint first"
-        },
-        {
-          "value": "tier:integrator:economy",
-          "description": "Tier override: pin the integrator to economy — cheapest qualified hosted model"
-        },
-        {
-          "value": "tier:integrator:standard",
-          "description": "Tier override: pin the integrator to standard — reliable general-purpose coding model"
-        },
-        {
-          "value": "tier:integrator:frontier",
-          "description": "Tier override: pin the integrator to frontier — opus-class heavyweight, no warm-up"
-        },
-        {
-          "value": "tier:integrator:apex",
-          "description": "Tier override: pin the integrator to apex — mythos-class leading edge"
-        }
-      ]
+      "values": []
     },
     {
       "family": "method",

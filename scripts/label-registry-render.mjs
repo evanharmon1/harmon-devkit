@@ -183,9 +183,18 @@ function agentRecords(rendererMode) {
 }
 
 function registryFamilyRecords(family) {
-  const rendererMode =
-    family.registry_set === 'foreman-adapters' ? 'foreman-adapters' : 'suggest-claim'
-  const lines = agentRecords(rendererMode).filter((line) => line.startsWith(`${family.prefix}:`))
+  const REGISTRY_SET_MODES = {
+    'foreman-adapters': 'foreman-adapters',
+    'tier-roles': 'tier-roles',
+    suggest: 'suggest-claim',
+    claim: 'suggest-claim',
+  }
+  const rendererMode = REGISTRY_SET_MODES[family.registry_set] ?? 'suggest-claim'
+  const allLines = agentRecords(rendererMode)
+  const lines =
+    family.prefix != null
+      ? allLines.filter((line) => line.startsWith(`${family.prefix}:`))
+      : allLines
   for (const line of lines) {
     const color = line.split('|')[1]
     if (family.color && color !== family.color) {

@@ -100,6 +100,22 @@ if [ "$want_foreman" != "$got_foreman" ]; then
     fail "provisioned foreman:<adapter> selectors [$(echo "$got_foreman" | tr '\n' ' ')] != registry provision_label adapters [$(echo "$want_foreman" | tr '\n' ' ')] — a selector without a production adapter can strand armed work (ADR 0005 D11)"
 fi
 
+# 2e. tier:<role>:<tier> labels are EXACTLY roles[] × TIER_ORDER from
+# registry-roles.mjs. The renderer imports TIER_ORDER and iterates roles[],
+# so the expected set is the Cartesian product of both.
+want_tier="$(node -e '
+  import { TIER_ORDER } from "./scripts/lib/registry-roles.mjs";
+  import { readFileSync } from "node:fs";
+  const reg = JSON.parse(readFileSync(process.argv[1], "utf8"));
+  for (const role of reg.roles ?? [])
+    for (const tier of TIER_ORDER)
+      console.log("tier:" + role.slug + ":" + tier);
+' "$registry" | sort)"
+got_tier="$(printf '%s\n' "$names" | grep -E '^tier:[a-z0-9-]+:[a-z0-9-]+$' | sort || true)"
+if [ "$want_tier" != "$got_tier" ]; then
+    fail "rendered tier:<role>:<tier> labels [$(echo "$got_tier" | tr '\n' ' ')] != roles[]×TIER_ORDER expected [$(echo "$want_tier" | tr '\n' ' ')] — regenerate from agent-registry.json"
+fi
+
 # ── 3. provisioning script ─────────────────────────────────────────────────
 if [ -f "$labels_script" ]; then
     # It must delegate to a renderer, not carry a forkable hand-list. The
@@ -147,15 +163,24 @@ STUB
     # ...and the REVERSE direction: the script must not emit a registry-namespace
     # label the registry does not define. suggest:/claim: are wholly registry-owned;
     # in foreman:, only the <adapter> selectors are — the four protocol labels are
-    # foreman's own workflow state and are legitimately static. Without this, a
-    # re-added hardcoded phantom selector (e.g. `foreman:codex` with no adapter)
-    # would sail through, which is the exact failure this gate exists to stop.
+    # foreman's own workflow state and are legitimately static; tier:<role>:<tier>
+    # (three-segment) are wholly registry-owned while unqualified tier:<value>
+    # (two-segment) are inline. Without this, a re-added hardcoded phantom
+    # selector (e.g. `foreman:codex` with no adapter, or a `tier:foo:bar` with
+    # no role) would sail through, which is the exact failure this gate exists
+    # to stop.
     # `extra` = emitted registry-namespace labels minus {protocol} minus {registry}.
-    extra="$(printf '%s\n' "$emitted" | grep -E '^(suggest|claim|foreman):' |
+    # tier:<role>:<tier> (three-segment) labels are registry-owned while
+    # unqualified tier:<value> (two-segment) are inline — grep the three-segment
+    # form separately to avoid catching the inline ones.
+    extra="$( (
+        printf '%s\n' "$emitted" | grep -E '^(suggest|claim|foreman):'
+        printf '%s\n' "$emitted" | grep -E '^tier:[a-z0-9-]+:[a-z0-9-]+$'
+    ) |
         grep -vxF -e foreman:approved -e foreman:hold -e foreman:satisfied -e foreman:external |
         grep -vxF -f <(printf '%s\n' "$names") || true)"
     if [ -n "$extra" ]; then
-        fail "$labels_script provisions registry-namespace label(s) [$(echo "$extra" | tr '\n' ' ')] the registry does not define — a hardcoded selector (e.g. a re-added phantom foreman:<adapter>) bypasses the registry (ADR 0005 D11)"
+        fail "$labels_script provisions registry-namespace label(s) [$(echo "$extra" | tr '\n' ' ')] the registry does not define — a hardcoded selector (e.g. a re-added phantom foreman:<adapter> or tier:<role>:<tier>) bypasses the registry"
     fi
 else
     echo "note: $labels_script not present in this profile — skipping the provisioning-script binding" >&2
