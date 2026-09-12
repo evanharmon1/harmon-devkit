@@ -1288,6 +1288,23 @@ else
 fi
 
 echo
+echo "== consumer-pin-audit: #905 — find traversal failure is indeterminate =="
+# If `find` cannot fully traverse the repo root (unreadable directory), the
+# stale-stamp search is incomplete. The audit must return exit 2
+# (indeterminate), not silently pass as though no stale stamp exists.
+c="$(make_consumer traversal-fail "$V2_POLICY" v0.41.0 review:v2)"
+rm -f "$c/.claude/skills/.SKILLS_PROVENANCE"
+rm -rf "$c/.claude/skills/review/assets"
+mkdir -p "$c/sealed-dir/.claude/skills"
+printf '# ref: v0.41.0 (deadbeef)\n# managed: review\n' \
+    >"$c/sealed-dir/.claude/skills/.SKILLS_PROVENANCE"
+chmod 000 "$c/sealed-dir"
+run_audit "$c"
+chmod 700 "$c/sealed-dir"
+expect_status "#905: find traversal failure exits 2 (indeterminate)" 2
+expect_says "#905: it names the traversal failure" "traversal failed"
+
+echo
 echo "== consumer-pin-audit: #859 — resolve guards every detected-v2 policy =="
 # A stamped post-boundary set with only contract-free skills plus a policy
 # containing only `schema_version = 2` must NOT return exit 0

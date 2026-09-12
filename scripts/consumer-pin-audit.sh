@@ -466,9 +466,13 @@ else
         # Also include `-type l` so a symlinked stale stamp is caught too —
         # the same consistency the `-L "$prov"` check enforces at the current
         # destination.
+        _find_rc=0
         _all_prov="$(find "$repo_root" -name .SKILLS_PROVENANCE \( -type f -o -type l \) \
             -not -path '*/.git/*' -not -path '*/node_modules/*' \
-            -not -path "$repo_root/.worktrees/*" 2>/dev/null || true)"
+            -not -path "$repo_root/.worktrees/*" 2>/dev/null)" || _find_rc=$?
+        if [ "$_find_rc" -ne 0 ]; then
+            indeterminate "provenance traversal failed (find exited $_find_rc) — cannot confirm whether vendored skills exist elsewhere in the repository"
+        fi
         _count=0
         while IFS= read -r _prov_line; do
             [ -n "$_prov_line" ] || continue
