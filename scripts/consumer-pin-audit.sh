@@ -255,10 +255,31 @@ manifest_ref="$(yq -r '.source.ref // ""' "$manifest" 2>/dev/null)" ||
 dest_rel="$(yq -r '.dest // ".claude/skills"' "$manifest" 2>/dev/null)" ||
     die "manifest '$manifest' could not be parsed as YAML — the vendored skill destination is unknown; fix the file before auditing"
 [ -n "$manifest_ref" ] || die "manifest '$manifest' declares no source.ref"
+# #859: dest is taken from the mutable manifest; an absolute path or one
+# containing `..` dereferences another checkout's tree and can return
+# `compatible` from its stamp and contracts. sync-skills.sh rejects both as
+# unsyncable, so the audit must refuse them before reading provenance.
 case "$dest_rel" in
-/*) dest="$dest_rel" ;;
-*) dest="$repo_root/$dest_rel" ;;
+/*) indeterminate "manifest '$manifest' declares an absolute destination '$dest_rel' — the audit would dereference another checkout's tree; sync-skills.sh rejects absolute destinations too, so fix the manifest" ;;
 esac
+case "$dest_rel" in
+*..*)
+    # Reject any component that is literally `..`, not just a name containing
+    # two dots (e.g. `my..dir` is fine; `../foo` or `foo/..` is not).
+    _dest_check="$dest_rel"
+    while [ -n "$_dest_check" ]; do
+        _dest_seg="${_dest_check%%/*}"
+        if [ "$_dest_seg" = ".." ]; then
+            indeterminate "manifest '$manifest' declares a destination '$dest_rel' containing '..' — the audit would escape the repository root; sync-skills.sh rejects path-traversal destinations too, so fix the manifest"
+        fi
+        case "$_dest_check" in
+        */*) _dest_check="${_dest_check#*/}" ;;
+        *) break ;;
+        esac
+    done
+    ;;
+esac
+dest="$repo_root/$dest_rel"
 
 # The provenance stamp is the only proof that anything was actually vendored,
 # and it is authoritative twice over. Its `# ref:` records the ref the skills
@@ -277,6 +298,12 @@ managed=""
 managed_declared=no
 legacy_stamp=no
 pin_source=manifest
+# #859: a symlinked stamp is a tree/stamp mismatch — sync-skills.sh writes
+# a real file, so a symlink to an external file would let it supply
+# authoritative provenance. Same shape as #849 (symlinked managed directory).
+if [ -L "$prov" ]; then
+    indeterminate "provenance '$prov' is a symlink — sync-skills.sh writes a real file, so a symlinked stamp is a tree/stamp mismatch; re-run 'task sync:skills'"
+fi
 if [ -f "$prov" ]; then
     vendored=yes
     pin_source=provenance
@@ -293,6 +320,21 @@ if [ -f "$prov" ]; then
     # manages nothing, and must stay a valid zero-skill answer.
     grep -q '^# ref:' "$prov" ||
         indeterminate "provenance '$prov' has no '# ref:' line, so the vendored pin is unknown; re-run 'task sync:skills'"
+    # #859: THE EXACTLY-ONE INVARIANT for critical stamp fields. A stamp
+    # carrying two `# ref:` lines silently trusts the first — and reversing
+    # the two changes the verdict. Same for `# managed:`. Require exactly one
+    # of each field that is present, as the rest of the stamp handling already
+    # treats damage as indeterminate. This is one rule rather than two separate
+    # checks: every critical stamp field the audit reads through `head -n 1`
+    # must appear exactly once when present.
+    _ref_count="$(grep -c '^# ref:' "$prov" || true)"
+    if [ "$_ref_count" -gt 1 ]; then
+        indeterminate "provenance '$prov' has $_ref_count '# ref:' lines — the audit would silently use the first and a different ordering would change the verdict; a valid stamp has exactly one; re-run 'task sync:skills'"
+    fi
+    _managed_count="$(grep -c '^# managed:' "$prov" || true)"
+    if [ "$_managed_count" -gt 1 ]; then
+        indeterminate "provenance '$prov' has $_managed_count '# managed:' lines — the audit would silently use the first, and an empty first line ahead of a real one yields an empty managed set, inspects no contract, and returns exit 0 over a v2 policy; a valid stamp has exactly one; re-run 'task sync:skills'"
+    fi
     # A stamp with NO `# managed:` line is the LEGACY generation, not damage:
     # scripts/sync-skills.sh's own `managed_names` recognizes it and
     # reconstructs the set from the recorded ref and categories. Codex cloud
@@ -404,11 +446,42 @@ else
     # disagree about where the skills live, which this audit cannot resolve
     # offline and must not paper over. `.git` and `node_modules` are excluded
     # because neither can hold a live vendored tree.
+    # #859: exclude `.worktrees` — a sibling checkout's stamp under
+    # `.worktrees/<name>` is a legitimately-separate checkout, not evidence
+    # that this manifest moved its destination. Without the exclusion, a
+    # multi-worktree repository with an unvendored checkout exits 2 on every
+    # sibling's stamp (fails closed — a false alarm, never a false pass).
+    #
+    # #859: replace the `find | head -n 5` pipe with a counted collection.
+    # Under `set -o pipefail`, when `head` closes the pipe first SIGPIPE kills
+    # `find` and pipefail returns 141, which `set -e` treats as a script
+    # failure with no diagnostic — exit 141, outside the documented 0–3
+    # contract. Collecting into a variable avoids the pipe entirely.
     stale_prov=""
     if [ -d "$repo_root" ]; then
-        stale_prov="$(find "$repo_root" -name .SKILLS_PROVENANCE -type f \
-            -not -path '*/.git/*' -not -path '*/node_modules/*' 2>/dev/null |
-            head -n 5)"
+        # Challenge round 1 P1, confirmed: the exclusion must be rooted at
+        # $repo_root, not a bare glob. If --repo-root is itself inside
+        # `.worktrees/<name>` (the normal worktree layout), `*/.worktrees/*`
+        # matches every path find emits and suppresses the entire scan.
+        # Also include `-type l` so a symlinked stale stamp is caught too —
+        # the same consistency the `-L "$prov"` check enforces at the current
+        # destination.
+        _find_rc=0
+        _all_prov="$(find "$repo_root" -name .SKILLS_PROVENANCE \( -type f -o -type l \) \
+            -not -path '*/.git/*' -not -path '*/node_modules/*' \
+            -not -path "$repo_root/.worktrees/*" 2>/dev/null)" || _find_rc=$?
+        if [ "$_find_rc" -ne 0 ]; then
+            indeterminate "provenance traversal failed (find exited $_find_rc) — cannot confirm whether vendored skills exist elsewhere in the repository"
+        fi
+        _count=0
+        while IFS= read -r _prov_line; do
+            [ -n "$_prov_line" ] || continue
+            _count=$((_count + 1))
+            [ "$_count" -le 5 ] && stale_prov="${stale_prov:+$stale_prov
+}$_prov_line"
+        done <<FINDEOF
+$_all_prov
+FINDEOF
     fi
     if [ -n "$stale_prov" ]; then
         indeterminate "no '.SKILLS_PROVENANCE' under the manifest's dest '$dest', but the repository holds one elsewhere ($(printf '%s' "$stale_prov" | paste -sd, -)) — '.skills-sync.yaml' declares a destination the vendored tree is not at, so the manifest is not evidence that nothing is vendored; re-run 'task sync:skills' so the tree and the manifest agree, or point --manifest at the tree you mean to audit"
@@ -578,14 +651,13 @@ fi
 satisfied=no
 [ "$required" -gt 0 ] && [ "$shape" = v2 ] && [ "$policy_version" -eq "$required" ] && satisfied=yes
 
-# `detect` answers "what shape is this", not "can the stages run against it".
-# A file containing only `schema_version = 2` detects as v2 and exits 0, while
-# `resolve` on the same file exits 1 ("policy has no rigor_order ranking") —
-# so the audit reported `compatible` for a policy every stage refuses, which
-# is precisely the incomplete `copier update` it exists to catch and a direct
-# violation of the invariant in this file's own banner (Codex cloud review,
-# confirmed by execution). Satisfaction therefore asks the reader the question
-# the consumer will actually ask it.
+# #859: `detect` answers "what shape is this", not "can the stages run against
+# it". Resolve every detected-v2 policy BEFORE selecting any verdict — not only
+# on the `satisfied=yes` path. A stamped post-boundary set holding only a
+# contract-free skill plus a policy containing only `schema_version = 2` would
+# otherwise skip the probe entirely and return exit 0 `no-policy-consumer`,
+# though the reader's `resolve` exits 1. That is an incomplete `copier update`
+# this audit exists to catch.
 #
 # The accepted statuses are the reader's documented resolve contract: 0
 # resolved clean, 3 resolved with an INDETERMINATE cross-validation — which is
@@ -595,7 +667,7 @@ satisfied=no
 # rather than a verdict, because "the reader says no" is never a pass and is
 # also not the `incompatible` the exit-1 code means (that one names a SHAPE
 # mismatch the pin can describe).
-if [ "$satisfied" = yes ]; then
+if [ "$shape" = v2 ]; then
     resolve_err=""
     set +e
     resolve_err="$(node "$reader" resolve --policy "$policy" --json 2>&1 >/dev/null)"
