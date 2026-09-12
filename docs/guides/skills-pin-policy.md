@@ -71,7 +71,7 @@ table, so no list of release numbers has to be kept current here.
 | 0 | `not-vendored` | No `.SKILLS_PROVENANCE` under `dest` and no unstamped **contract-carrying** skill beside it: nothing was vendored. Run `task sync:skills` first. See the limitation below. |
 | 0 | `no-policy-consumer` | The policy has migrated, yet nothing vendored declares a policy contract — this consumer vendors no policy-consuming skill. This can happen in two ways: the pin is already at or past the first release shipping the version-2 stage skills and no managed skill declares a contract, **or** the pin is pre-boundary but the provenance stamp's categories exclude `universal` (the policy-consuming category), so advancing the pin would not add one either. Nothing needs to change. |
 | 1 | `incompatible` | The vendored skills declare a policy schema version the repository's policy does not have. When the required version is within the toolchain's supported range, run `copier update`; when it exceeds it, upgrade the policy tooling. **Do not** advance the pin. |
-| 2 | — | Usage error, or **indeterminate under the coherence invariant**. Never reported as a pass. Covers a missing manifest (including one that is not parseable YAML), an unreadable policy, a missing reader, a policy reader that exits successfully but emits output that is not a valid JSON object, a reader whose exit status contradicts its reported shape (exit 1 with `v2`), a damaged **modern** provenance stamp (no `# ref:` line, or a legacy-format stamp recording a post-boundary ref — see below), a managed name containing a path separator or `..` (path traversal), a managed entry that is a symlink (sync-skills.sh creates real directories), vendored skills declaring two different schema versions, a contract declaring a non-positive version (`0` is indistinguishable from "no contract"), a **mixed policy** carrying markers from more than one shape at once, and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. A **legacy** stamp (no `# managed:` line, pre-boundary ref) is **not** damage — it is the older stamp generation that `sync-skills.sh`'s own `managed_names` still honours; the audit reads it from its recorded `# ref:` and the release boundary decides the verdict. |
+| 2 | — | Usage error, or **indeterminate under the coherence invariant**. Never reported as a pass. Covers a missing manifest (including one that is not parseable YAML), a manifest declaring an **absolute or path-traversal destination** (the audit would escape the repository root; `sync-skills.sh` rejects both), an unreadable policy, a missing reader, a policy reader that exits successfully but emits output that is not a valid JSON object, a reader whose exit status contradicts its reported shape (exit 1 with `v2`), a **symlinked provenance stamp** (`sync-skills.sh` writes a real file, so a symlink is a tree/stamp mismatch), a damaged **modern** provenance stamp (no `# ref:` line, **duplicate `# ref:` or `# managed:` lines**, or a legacy-format stamp recording a post-boundary ref — see below), a managed name containing a path separator or `..` (path traversal), a managed entry that is a symlink (sync-skills.sh creates real directories), vendored skills declaring two different schema versions, a contract declaring a non-positive version (`0` is indistinguishable from "no contract"), a **mixed policy** carrying markers from more than one shape at once, a detected-v2 policy the shared reader **refuses to resolve** (an incomplete migration — `detect` answers "what shape is this", while `resolve` answers "can stages run against it"), and an **interrupted sync** — policy-consuming skills on disk with no stamp, which `sync-skills.sh` produces because it removes the stamp before copying and rewrites it last. A **legacy** stamp (no `# managed:` line, pre-boundary ref) is **not** damage — it is the older stamp generation that `sync-skills.sh`'s own `managed_names` still honours; the audit reads it from its recorded `# ref:` and the release boundary decides the verdict. |
 | 3 | `pin-lag` | The policy migrated while the pin still predates the first release shipping the version-2 stage skills. Advance `source.ref` to a release whose stage skills declare the version the policy declares, then re-run `task sync:skills`. Where the policy has moved ahead of this toolchain entirely (a version the shipped reader does not support), the audit says so rather than sending you after a pin that cannot exist yet. |
 
 A schema version names an **incompatible shape**, not a minimum capability
@@ -171,15 +171,26 @@ script exists to prevent. It covers:
 - a reader whose exit status contradicts its reported shape — exit 1 (refused)
   with shape `v2` is a contradiction, since exit 0 is required for a
   v2-compatible verdict;
+- a manifest declaring an absolute or path-traversal destination (the audit
+  would escape the repository root; `sync-skills.sh` rejects both);
 - a contract whose version is not a positive integer;
 - managed contracts that disagree on a version;
 - a managed name containing a path separator or `..` (path traversal —
   matching `sync-skills.sh`'s `assert_sane_name` guard);
 - a managed entry that is a symlink (`sync-skills.sh` creates real
   directories, so a symlinked managed entry is a stamp/tree mismatch);
+- a symlinked provenance stamp (`sync-skills.sh` writes a real file, so a
+  symlink to an external file is a tree/stamp mismatch);
+- a provenance stamp with duplicate `# ref:` or `# managed:` lines (the audit
+  reads through `head -n 1`, so a duplicate silently uses the first and a
+  different ordering changes the verdict — the exactly-one invariant);
 - a provenance stamp that disagrees with the tree (missing `# ref:` line, a
   managed name with no directory or no `SKILL.md`, or vendored
-  contract-carrying skills with no stamp at all).
+  contract-carrying skills with no stamp at all);
+- a detected-v2 policy the shared reader refuses to resolve (an incomplete
+  migration — `detect` answers "what shape", `resolve` answers "can stages run
+  against it"; checked for every v2 policy, not only when a vendored skill
+  requires it).
 
 A **legacy** stamp (no `# managed:` line) is **not** damage — it is the older
 stamp generation that `sync-skills.sh`'s own `managed_names` still honours.
