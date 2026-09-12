@@ -206,6 +206,16 @@ function isLabelled(text) {
 
 // A finding matching no rule takes `default`, which the schema forbids from
 // being P3: AGENTS.md adjudicates an unlabelled finding as AT LEAST a P2.
+//
+// Cross-anchor shadow semantics (#893): the leadingHit loop below visits
+// every rule in declaration order. For an anywhere rule, leadingHit scans
+// for the match at any line-start position; for a leading-token rule, it
+// delegates to matchesRule (exact first-token equality) and returns 0 or -1.
+// An earlier anywhere rule therefore fires before a later leading-token rule
+// whenever the match appears at a line start — the validator rejects that
+// configuration. The reverse (earlier leading-token, later anywhere) is not
+// a shadow because leading-token's exact equality leaves the anywhere rule
+// independent for non-leading occurrences.
 function priorityOf(text) {
   // A LABEL first — a rule whose match opens a line. Scanning the whole body
   // for any occurrence let a finding that merely discusses "the P0/P1 gate"
