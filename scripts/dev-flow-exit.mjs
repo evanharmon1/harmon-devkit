@@ -1730,6 +1730,17 @@ async function main() {
       console.error(`dev-flow-exit: ${persistedSelection.error}`);
       return 1;
     }
+    const persistedStages = new Set(runDir.runRecord.finder_selection.map((e) => e.stage));
+    for (const d of persistedSelection.disclosures || []) {
+      if (!persistedStages.has(d.stage)) {
+        console.error(
+          `dev-flow-exit: flags add a finder selection for stage "${d.stage}" which has no entry ` +
+            `in the run record's persisted finder_selection — a recorded selection and a repeated ` +
+            `flag that disagree is a blocker, not a silent preference for either`,
+        );
+        return 1;
+      }
+    }
     for (const recorded of runDir.runRecord.finder_selection) {
       const fromFlags = (persistedSelection.disclosures || []).find((d) => d.stage === recorded.stage);
       const flagEffective = fromFlags ? fromFlags.effective : (resolved.stages[recorded.stage]?.finders ?? []);
