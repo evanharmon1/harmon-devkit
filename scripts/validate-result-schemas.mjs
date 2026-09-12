@@ -113,6 +113,23 @@
 //                                 uses --receipt; a bare invocation is for
 //                                 one-off schema/fixture work where the run
 //                                 context genuinely is not available.
+//   --receipts <run.json>         (run only) Strict mode: load the run
+//                                 record from this file and use its
+//                                 `receipts` array as the trusted event
+//                                 sequence. When supplied, every
+//                                 --adjudication document must correspond
+//                                 to entries in the receipt sequence — its
+//                                 stage must appear as a transition receipt
+//                                 — mirroring how dev-flow-exit.mjs
+//                                 validates passes against
+//                                 run.json.receipts. Without it, supplied
+//                                 context documents are trusted as-is (the
+//                                 default for authoring/fixture work where
+//                                 the receipt sequence is not available).
+//                                 Opt-in and independent of --receipt:
+//                                 --receipt requires applicable context
+//                                 FLAGS; --receipts binds the supplied
+//                                 documents to the trusted event log.
 //
 // The success message always names any applicable context flag that was
 // NOT given, e.g. "reviewer result OK (role=reviewer, status=completed,
@@ -147,7 +164,7 @@ function usage() {
     'usage: validate-result-schemas.mjs <envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
-      '[--no-adjudications] [--schemas-dir <dir>] [--receipt]'
+      '[--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>]'
   )
 }
 
@@ -246,7 +263,8 @@ function parseArgs(argv) {
     knownAdjudicated: null,
     adjudications: [],
     receipt: false,
-    noAdjudications: false
+    noAdjudications: false,
+    receiptsRecord: null
   }
   for (let i = 0; i < rest.length; i += 1) {
     switch (rest[i]) {
@@ -333,6 +351,25 @@ function parseArgs(argv) {
       case '--no-adjudications':
         options.noAdjudications = true
         break
+      case '--receipts': {
+        const receiptsFile = rest[(i += 1)]
+        if (!receiptsFile) {
+          console.error('validate-result-schemas: --receipts requires a file argument')
+          usage()
+          process.exit(2)
+        }
+        const record = loadJson(receiptsFile)
+        if (record === null || typeof record !== 'object' || Array.isArray(record)) {
+          console.error(`validate-result-schemas: --receipts file ${receiptsFile} must contain a JSON object`)
+          process.exit(1)
+        }
+        if (record.receipts !== undefined && !Array.isArray(record.receipts)) {
+          console.error(`validate-result-schemas: --receipts file ${receiptsFile} has a non-array receipts field`)
+          process.exit(1)
+        }
+        options.receiptsRecord = record
+        break
+      }
       default:
         console.error(`validate-result-schemas: unknown option ${rest[i]}`)
         usage()
@@ -2157,6 +2194,38 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
   }
 }
 
+// checkAdjudicationsAgainstReceipts — strict mode (--receipts): every supplied
+// --adjudication document's stage must have a corresponding transition receipt
+// in the run record's receipts array. This mirrors how dev-flow-exit.mjs
+// validates passes against run.json.receipts: the receipt sequence is the
+// trusted event log, and a document naming a stage with no transition receipt
+// is a document about an event the log never recorded. Without --receipts,
+// this check does not run and adjudications are trusted as-is.
+function checkAdjudicationsAgainstReceipts(document, receiptsRecord, adjudications, errors) {
+  if (typeof receiptsRecord.run_id !== 'string' || receiptsRecord.run_id === '') {
+    errors.push('$run: --receipts record has no valid run_id (must be a non-empty string)')
+    return
+  }
+  if (receiptsRecord.run_id !== document.run_id) {
+    errors.push(
+      `$run: --receipts record has run_id ${receiptsRecord.run_id}, not this run's own run_id ${document.run_id}`
+    )
+  }
+  const receipts = Array.isArray(receiptsRecord.receipts) ? receiptsRecord.receipts : []
+  const transitionStages = new Set(
+    receipts
+      .filter((r) => r !== null && typeof r === 'object' && r.kind === 'transition')
+      .map((r) => r.stage)
+  )
+  for (const { file, data } of adjudications) {
+    if (typeof data.stage === 'string' && !transitionStages.has(data.stage)) {
+      errors.push(
+        `$run: --adjudication ${file} has stage ${data.stage}, which has no transition receipt in the --receipts record`
+      )
+    }
+  }
+}
+
 // checkSettlementsAgainstAdjudications — every settlement's finding must be
 // adjudicated exactly once across the union of the supplied --adjudication
 // documents, with disposition defer (settlements only ever terminalize a
@@ -2553,6 +2622,9 @@ function main() {
       // existing settlement (none of them can be adjudicated by nothing),
       // exactly the "any settlement -> error" contract this flag promises.
       if (options.adjudications.length > 0 || options.noAdjudications) {
+        if (options.receiptsRecord) {
+          checkAdjudicationsAgainstReceipts(instance, options.receiptsRecord, options.adjudications, errors)
+        }
         checkAdjudicationRunIdMatchesRun(instance, options.adjudications, errors)
         checkAdjudicationsUnionUnique(options.adjudications, errors)
         checkAdjudicationStagesVisited(instance, options.adjudications, errors)

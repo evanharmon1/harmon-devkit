@@ -325,6 +325,20 @@ keyword, for every one of these:
   same document supplied twice by mistake) but never settled would
   otherwise go unnoticed. Runs alongside the settlement checks, under the
   same `--adjudication`/`--no-adjudications` gating.
+- **Adjudication ↔ receipt binding (`--receipts <run.json>`, run only)** —
+  opt-in strict mode: when supplied, every `--adjudication` document's stage
+  must have a corresponding transition receipt (`kind: "transition"`) in the
+  run record's `receipts` array. This mirrors how `dev-flow-exit.mjs`
+  validates passes against `run.json.receipts`: the receipt sequence is the
+  trusted event log, and an adjudication naming a stage with no transition
+  receipt is a document about an event the log never recorded. Without
+  `--receipts`, supplied adjudication documents are trusted as-is — the
+  default for authoring and fixture work where the receipt sequence is not
+  available. A passing `run` validation **with** `--receipts` proves that
+  every adjudication document belongs to a stage the receipt log confirms
+  actually ran; **without** it, the validation proves internal consistency and
+  cross-document agreement but does not bind documents to the trusted event
+  sequence.
 - **Evidence marker `run_id` agreement** — `run.schema.json`'s
   `evidence_comments[].marker.run_id` must equal the run record's own
   `run_id`. Unlike the checks above this one needs no external context (both

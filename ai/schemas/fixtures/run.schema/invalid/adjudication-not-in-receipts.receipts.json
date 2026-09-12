@@ -1,0 +1,10 @@
+{
+  "run_id": "run-0821-receipts-strict",
+  "receipts": [
+    { "kind": "transition", "stage": "kickoff" },
+    { "kind": "transition", "stage": "claim" },
+    { "kind": "transition", "stage": "plan" },
+    { "kind": "transition", "stage": "implement" },
+    { "kind": "transition", "stage": "verify" }
+  ]
+}
