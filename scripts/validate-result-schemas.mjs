@@ -2201,10 +2201,17 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
 // trusted event log, and a document naming a stage with no transition receipt
 // is a document about an event the log never recorded. Without --receipts,
 // this check does not run and adjudications are trusted as-is.
-function checkAdjudicationsAgainstReceipts(receiptsRecord, adjudications, errors) {
+function checkAdjudicationsAgainstReceipts(document, receiptsRecord, adjudications, errors) {
+  if (typeof receiptsRecord.run_id === 'string' && receiptsRecord.run_id !== document.run_id) {
+    errors.push(
+      `$run: --receipts record has run_id ${receiptsRecord.run_id}, not this run's own run_id ${document.run_id}`
+    )
+  }
   const receipts = Array.isArray(receiptsRecord.receipts) ? receiptsRecord.receipts : []
   const transitionStages = new Set(
-    receipts.filter((r) => r.kind === 'transition').map((r) => r.stage)
+    receipts
+      .filter((r) => r !== null && typeof r === 'object' && r.kind === 'transition')
+      .map((r) => r.stage)
   )
   for (const { file, data } of adjudications) {
     if (typeof data.stage === 'string' && !transitionStages.has(data.stage)) {
@@ -2612,7 +2619,7 @@ function main() {
       // exactly the "any settlement -> error" contract this flag promises.
       if (options.adjudications.length > 0 || options.noAdjudications) {
         if (options.receiptsRecord) {
-          checkAdjudicationsAgainstReceipts(options.receiptsRecord, options.adjudications, errors)
+          checkAdjudicationsAgainstReceipts(instance, options.receiptsRecord, options.adjudications, errors)
         }
         checkAdjudicationRunIdMatchesRun(instance, options.adjudications, errors)
         checkAdjudicationsUnionUnique(options.adjudications, errors)
