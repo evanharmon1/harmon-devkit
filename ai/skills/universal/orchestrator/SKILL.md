@@ -23,7 +23,30 @@ isolation is optional; its absence alone is not a dispatch blocker. Every role
 still stays within its declared scope. Use one worktree and branch per lane,
 record ownership, scope, dependencies, and the complete file overlap.
 Before dispatching overlapping scopes, either serialize them or record the
-explicit merge dependency in both lane briefs. Select implementers only from
+explicit merge dependency in both lane briefs.
+
+## Lane briefs
+
+Every lane brief MUST carry the active run identity so the lane worker can
+route confidence stages through `/review` and integration through `/integrate`,
+producing the v2 evidence (`retro-run-report.mjs` exit 10 `no-run-record` is
+the failure this routing prevents). The required fields are: run id, branch,
+generation, active-state path, record directory, and policy projection. Without
+them the lane worker falls back to the inline `task challenge` / `task review`
+procedure, which produces no run record and no adjudication evidence. See
+`assets/lane-brief.md` for the template skeleton.
+
+## PR-open confirmation
+
+At PR-open for each lane, confirm that a run record with a trusted evidence
+marker exists on the issue or PR. `retro-run-report.mjs` exit 10
+(`no-run-record`) is the diagnostic — if a lane's PR would trigger that exit,
+the routing failed and the lane must be re-run through the skill path before
+the PR is promoted.
+
+## Implementer selection
+
+Select implementers only from
 the resolved `[stage.implement].pool`, registry role eligibility, and resolved
 family/harness preferences; council dispatches also enforce its
 `distinct_families` requirement. Enforce one

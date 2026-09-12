@@ -2050,7 +2050,7 @@ LEDGER_TABLE_EXPECTED='| 📍 Ledger | |
 | **Round** | 🔴 1 P1 open · 🟡 2 P2 deferred · ⚪ 1 P3 noted · ✅ verify green |
 | **Next** | fix P1 → `task verify` → ⚔️ challenge round 3 |'
 LEDGER_LEGEND_EXPECTED='Stage glyphs: 🔨 implement · 🧪 verify · ⚔️ challenge · 🔍 review · 🛡️ security ·
-🏗️ ci · 🚢 shepherd. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
+🏗️ ci · 🚢 integrate. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
 ⚪ P3 noted · ⏳ waiting on CI or a reviewer · ⛔ blocked/escalating · 🏁 stage
 converged.'
 LEDGER_TRIGGER_EXPECTED=$'Post it at every
@@ -2064,7 +2064,7 @@ default sequence is forbidden. An override is an attributable human decision
 and is followed, but it redirects the loop rather than erasing findings: any
 P0/P1 still open in the stage it ends is carried, **unchecked**, into the PR
 body\x27s `## Deferred findings` with the override recorded as the reason it was
-carried — not as a disposition, so the shepherd stage still owes it a normal
+carried — not as a disposition, so the integration stage still owes it a normal
 fix / decline-with-evidence / file-as-follow-up — and the ledger records the
 override as the reason for the transition. Before leaving a stage under an
 override before the PR exists, append every still-open P0/P1 to the
@@ -2126,7 +2126,7 @@ assert_ledger_contract() {
     [ "$table" = "$LEDGER_TABLE_EXPECTED" ] || return 1
     [ "$legend" = "$LEDGER_LEGEND_EXPECTED" ] || return 1
     [ "$trigger" = "$LEDGER_TRIGGER_EXPECTED" ] || return 1
-    grep -qF "distinct from the gauntlet's private adjudication ledger" "$file" || return 1
+    grep -qF "distinct from the review skill's private adjudication ledger" "$file" || return 1
     grep -qF 'append every still-open P0/P1' "$file" || return 1
     grep -qF 'write `skipped (cap 0)` in `Stage`' "$file" || return 1
     grep -qF 'instead of inventing' "$file" || return 1

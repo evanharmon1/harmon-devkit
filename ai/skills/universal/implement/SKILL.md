@@ -296,12 +296,21 @@ accounting. It returns to this skill for security and draft publication; it
 does not open a PR or run integration. In the fork topology this
 skill supports where `origin` is the writable fork rather than the target,
 review's entry gate would stop by design, so the steps below remain the
-procedure there — as they do wherever the skill is not vendored. The hand-off
-also requires an already active dev-flow-v2 run: the orchestrator must supply
-its target repository, schema-valid record directory and policy projection,
-active run identity, branch, and generation. An ordinary `/implement` session
-with no such run uses the inline procedure below; it never invokes `/review`
-and expects that skill to invent authenticated run state.
+procedure there — as they do wherever the skill is not vendored.
+
+**Routing rule: active run identity determines the procedure.** When the
+session was handed an already active dev-flow-v2 run identity — run id, branch,
+generation, active-state path, record directory, and policy projection — the
+`/review` skill path above is the procedure and the orchestrator's lane brief
+carries these fields. An ordinary `/implement` session with no active run
+uses the inline procedure below; it never invokes `/review` and expects that
+skill to invent authenticated run state. The lane brief is the routing
+surface: when it supplies the run identity, `/review` emits the run record,
+adjudication comments, and PR stage projection that `/retro` harvests
+(`retro-run-report.mjs` exit 10 `no-run-record` is the failure this routing
+prevents); when no brief or no run identity is present, the inline `task
+challenge` / `task review` fallback remains correct — it simply produces no
+v2 evidence.
 
 Where the repo runs one (harmon-init and harmon-devkit: `task challenge`, then
 `task review`), it belongs here — after `verify` is green, before the security

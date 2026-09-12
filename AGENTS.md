@@ -41,7 +41,7 @@ One of four repos in **harmon-platform** (Evan's developer & DevOps platform + h
   `SKILL.md` with `name`/`description` frontmatter); the standouts are `repo/standardize-repo`
   (applies harmon-init's conventions to a repo), the `design/` suite, and the
   `universal/` dev-workflow session suite (`/kickoff`, `/breakdown`,
-  `/claim`, `/implement`, `/gauntlet`, `/shepherd`, `/retro`, `/wrap`). `agents/` holds shared
+  `/claim`, `/implement`, `/review`, `/integrate`, `/retro`, `/wrap`). `agents/` holds shared
   subagents — one flat `<name>.md` each, thin by design and deferring to the
   skills above; see [ai/agents/README.md](ai/agents/README.md) for the layout
   and the portability contract. `schemas/` holds shared JSON Schemas for
@@ -495,13 +495,18 @@ Setup and mechanics: [docs/guides/codex-review.md](docs/guides/codex-review.md).
   past a BLOCK** — adjudicate the finding or escalate to the maintainer instead.
 
 These tasks slot into the **Dev Loop** above: after `task verify` goes green,
-before `task security` and the draft PR. The confidence-stage skill (`/review`,
-or the retired `/gauntlet` at an older pin) is the procedure for running them to
-convergence where it is vendored **and its supported topology holds (`origin` is
-the repository the PR will target) and its config-shape section passes the
-compatibility check in § "Rigor and Strategy"**; otherwise this section plus the
-Dev Loop's invariants are the procedure. What follows here is the policy it runs
-under; where the two disagree, this file wins.
+before `task security` and the draft PR. For an **orchestrated lane** whose
+brief carries an active run identity (run id, branch, generation, active-state
+path, record directory, policy projection), the confidence-stage skill
+(`/review`) is the procedure — it emits the run record and adjudication
+evidence that `/retro` harvests. For a **non-orchestrated session**, or where
+the `review` skill is not vendored or its supported topology does not hold
+(`origin` is not the repository the PR will target) or its config-shape section
+fails the compatibility check in § "Rigor and Strategy", this section plus the
+Dev Loop's invariants are the procedure (the inline `task challenge` / `task
+review` fallback). A consumer at a retired pin (`/gauntlet`) still has the
+single-stage skill at that pin. What follows here is the policy the confidence
+stages run under; where this file and a skill disagree, this file wins.
 Codex cloud review is also connected to the repo; it reviews PRs too and posts
 inline comments only for high-priority findings.
 During the integration stage, accept its clean comments, reviews, or reactions only under
