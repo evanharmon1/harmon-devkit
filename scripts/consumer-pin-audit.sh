@@ -42,9 +42,10 @@
 #      repository's policy shape agree (including "neither has migrated"), or
 #      the vendored set contains no policy-consuming skill at all
 #      (`no-policy-consumer`), so there is no pin contract to satisfy.
-#   1  incompatible — the vendored skills require a newer policy shape than
-#      the repository has. Migrate with `copier update`; do NOT advance the
-#      pin to get past it.
+#   1  incompatible — the vendored skills require a policy shape the
+#      repository's does not have. When the required version is within the
+#      toolchain's supported range, migrate with `copier update`; when it
+#      exceeds it, upgrade the policy tooling. Do NOT advance the pin.
 #   2  usage error, or the audit is indeterminate (no manifest, unreadable
 #      policy, missing reader). Never reported as a pass.
 #   3  pin lag — the policy has migrated but the vendored skills predate it.
@@ -555,7 +556,7 @@ if [ "$shape" = unknown ] && [ "$policy_version" -gt "$POLICY_SCHEMA_VERSION_SUP
     policy_is_coherent=yes
 fi
 if [ "$policy_is_coherent" = no ]; then
-    if [ "$policy_version" -gt 0 ] && [ "$policy_version" -le "$POLICY_SCHEMA_VERSION_SUPPORTED" ]; then
+    if [ "$shape" = unknown ] && [ "$policy_version" -gt 0 ] && [ "$policy_version" -le "$POLICY_SCHEMA_VERSION_SUPPORTED" ]; then
         indeterminate "policy '$policy' has shape '$shape' but declares schema_version $policy_version (at or below the supported $POLICY_SCHEMA_VERSION_SUPPORTED) — an incomplete marker set for a version this reader should recognize is malformed, not ahead of the toolchain; the delta spec requires it be rejected rather than guessed into either shape"
     else
         indeterminate "policy '$policy' has shape '$shape' and declares no usable schema version — the reader cannot classify it as exactly one recognized shape, and the delta spec requires such a marker set be rejected rather than guessed into one. ${migration:-}"
