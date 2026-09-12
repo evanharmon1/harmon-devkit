@@ -38,14 +38,16 @@ procedure, which produces no run record and no adjudication evidence. See
 
 ## PR-open confirmation
 
-At PR-open for each lane, confirm that a run record with a trusted evidence
-marker exists on the issue or PR **and that the marker's run ID matches the
-lane's active run ID**. An existence-only check would accept a stale marker
-from a prior run on the same issue without proving this lane produced v2
-evidence. `retro-run-report.mjs` exit 10 (`no-run-record`) is the diagnostic
-for absence; a marker whose run ID does not match the active run is treated
-as absent for routing purposes. If either condition fails, the routing failed
-and the lane must be re-run through the skill path before the PR is promoted.
+At PR-open for each lane, confirm that confidence-stage evidence
+(challenge/review round adjudication records, not merely a kickoff marker)
+exists for **the lane's active run ID**. A kickoff marker alone proves the
+run was activated, not that it routed through `/review`; an existence-only
+check or one matching any marker type would accept a lane that incorrectly
+used the inline fallback. `retro-run-report.mjs` exit 10 (`no-run-record`)
+is the diagnostic for absence; a marker that does not carry confidence-stage
+evidence for the active run is treated as absent for routing purposes. If
+the condition fails, the routing failed and the lane must be re-run through
+the skill path before the PR is promoted.
 
 ## Implementer selection
 

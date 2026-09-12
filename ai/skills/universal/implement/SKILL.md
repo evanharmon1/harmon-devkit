@@ -298,11 +298,18 @@ skill supports where `origin` is the writable fork rather than the target,
 review's entry gate would stop by design, so the steps below remain the
 procedure there — as they do wherever the skill is not vendored.
 
-**Routing rule: active run identity determines the procedure.** When the
-session was handed an already active dev-flow-v2 run identity — run id, branch,
-generation, active-state path, record directory, and policy projection — the
-`/review` skill path above is the procedure and the orchestrator's lane brief
-carries these fields. An ordinary `/implement` session with no active run
+**Routing rule: active run identity determines the procedure, subject to
+topology and vendor compatibility.** When the session was handed an
+already active dev-flow-v2 run identity — run id, branch, generation,
+active-state path, record directory, and policy projection — **and** the topology and
+vendor checks above pass (the `review` skill is vendored, `origin` is the
+repository the PR will target, the config-shape compatibility check passes),
+the `/review` skill path above is the procedure and the orchestrator's lane
+brief carries these fields. If the run identity is present but topology or
+vendor compatibility fails (the fork topology, an unvendored skill, a
+config-shape mismatch), the inline procedure below remains the fallback — it
+simply produces no v2 evidence, which the orchestrator's PR-open
+confirmation will flag. An ordinary `/implement` session with no active run
 uses the inline procedure below; it never invokes `/review` and expects that
 skill to invent authenticated run state. The lane brief is the routing
 surface: when it supplies the run identity, `/review` emits the run record,
