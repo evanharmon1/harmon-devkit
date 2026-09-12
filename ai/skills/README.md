@@ -26,6 +26,8 @@ ai/skills/
 │   └── label-registry-support/SKILL.md  # shared runtime, not a workflow
 ├── backend/     # server / data / Convex
 ├── frontend/    # React / TanStack / shadcn / design
+├── herdr/       # Herdr terminal multiplexer and agent coordination
+│   └── herdr/SKILL.md
 ├── infra/       # Terraform / Cloudflare / CI
 ├── matt-pocock/ # attributed third-party skills by Matt Pocock
 ├── mobile/      # Expo / React Native (future)
@@ -91,6 +93,7 @@ nothing is linted or counted twice.
 | `universal` | Skills every consumer repo should have |
 | `backend` | Server, data, and Convex work |
 | `frontend` | React / TanStack / shadcn UI and design skills |
+| `herdr` | Herdr terminal multiplexer and agent coordination |
 | `infra` | Terraform, Cloudflare, CI/CD |
 | `matt-pocock` | Opt-in, attributed skills originally written by Matt Pocock |
 | `mobile` | Expo / React Native (reserved for future use) |
