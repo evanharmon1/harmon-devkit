@@ -2066,6 +2066,7 @@ function checkPlanRevisionChain(document, errors) {
   revisions.sort((a, b) => a.seq - b.seq)
 
   let prevDigest = 'genesis'
+  let previousAt = null
   for (let index = 0; index < revisions.length; index += 1) {
     const entry = revisions[index]
     if (entry.seq !== index) {
@@ -2086,6 +2087,10 @@ function checkPlanRevisionChain(document, errors) {
       errors.push(`$plan.revisions[${entry.seq}].digest: does not match its own content — tampered`)
       return null
     }
+    if (previousAt !== null && Date.parse(entry.at) < Date.parse(previousAt)) {
+      errors.push(`$plan.revisions[${entry.seq}].at: must not precede revision ${entry.seq - 1}`)
+    }
+    previousAt = entry.at
     prevDigest = entry.digest
   }
   return revisions
@@ -2284,11 +2289,24 @@ function checkPlanCoherence(document, errors) {
       const fenceA = effectiveFenceByLane.get(laneA.lane) || new Set()
       const fenceB = effectiveFenceByLane.get(laneB.lane) || new Set()
       const sharedFence = [...fenceA].filter((path) => fenceB.has(path)).sort()
-      if (sharedFence.length === 0) continue
       const key = [laneA.issue, laneB.issue].sort((a, b) => a - b).join(':')
-      if (overlapByPair.get(key)?.resolution !== 'serialize') {
+      const overlap = overlapByPair.get(key)
+      const splitPaths = new Set(overlap?.resolution === 'split' ? overlap.paths || [] : [])
+      if (overlap?.resolution === 'split') {
+        const overlapIndex = overlaps.indexOf(overlap)
+        for (const path of splitPaths) {
+          const ownerCount = Number(fenceA.has(path)) + Number(fenceB.has(path))
+          if (ownerCount !== 1) {
+            errors.push(`$plan.overlaps[${overlapIndex}].paths: split path ${JSON.stringify(path)} must have exactly one effective-fence owner, got ${ownerCount}`)
+          }
+        }
+      }
+      const forbiddenShared = overlap?.resolution === 'serialize'
+        ? []
+        : sharedFence.filter((path) => !splitPaths.has(path))
+      if (forbiddenShared.length > 0) {
         errors.push(
-          `$plan.lanes: effective fences for ${JSON.stringify(laneA.lane)} and ${JSON.stringify(laneB.lane)} overlap on ${JSON.stringify(sharedFence)} without a serialized issue pair`,
+          `$plan.lanes: effective fences for ${JSON.stringify(laneA.lane)} and ${JSON.stringify(laneB.lane)} overlap on ${JSON.stringify(forbiddenShared)} without a serialized issue pair`,
         )
       }
     }
@@ -2301,6 +2319,17 @@ function checkPlanCoherence(document, errors) {
   }
   if (latest && latest.projection_digest !== planProjectionDigest(document)) {
     errors.push('$plan.revisions: latest projection_digest does not match the canonical current plan projection — tampered')
+  }
+  const first = revisions?.[0]
+  if (first && latest) {
+    const firstTime = Date.parse(first.at)
+    const latestTime = Date.parse(latest.at)
+    for (const [index, expansion] of expansions.entries()) {
+      const expansionTime = Date.parse(expansion.at)
+      if (expansionTime < firstTime || expansionTime > latestTime) {
+        errors.push(`$plan.fence_expansions[${index}].at: must fall within the plan revision interval`)
+      }
+    }
   }
 }
 

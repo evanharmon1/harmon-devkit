@@ -215,6 +215,9 @@ expect_ok "only Foreman intersects its configured parallel cap" \
 expect_ok "orchestrator planning validates the emitted plan" \
     grep -qF 'validate-result-schemas.mjs plan <plan.json>' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning rechecks target-head freshness before dispatch" \
+    grep -qF 'compare the live target head with the plan' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
 expect_ok "orchestrator planning appends recomputations after external merges" \
     grep -qF '**Recompute after every external merge.**' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"

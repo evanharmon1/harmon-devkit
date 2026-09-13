@@ -79,9 +79,15 @@
           "title": { "type": "string", "minLength": 1 },
           "url": { "type": "string", "minLength": 1 },
           "verdict": { "enum": ["valid", "partial", "done"] },
-          "candidate_files": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "candidate_files": { "type": "array", "items": { "$ref": "#/$defs/canonicalPath" } },
           "blocked_by": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
-        }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "verdict": { "enum": ["valid", "partial"] } } },
+            "then": { "properties": { "candidate_files": { "minItems": 1 } } }
+          }
+        ]
       }
     },
     "overlaps": {
@@ -93,7 +99,7 @@
         "properties": {
           "issue_a": { "type": "integer", "minimum": 1 },
           "issue_b": { "type": "integer", "minimum": 1 },
-          "paths": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "paths": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/canonicalPath" } },
           "resolution": { "enum": ["serialize", "split"] },
           "merge_dependency": {
             "type": "object",
@@ -143,7 +149,7 @@
         "required": ["lane", "path", "at", "reason"],
         "properties": {
           "lane": { "type": "string", "minLength": 1 },
-          "path": { "type": "string", "minLength": 1 },
+          "path": { "$ref": "#/$defs/canonicalPath" },
           "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
           "reason": { "type": "string", "minLength": 1 }
         }
@@ -168,13 +174,19 @@
     }
   },
   "$defs": {
+    "canonicalPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!\\./)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\/$).+$"
+    },
     "fenceItem": {
       "type": ["string", "object"],
       "minLength": 1,
+      "pattern": "^(?!/)(?!\\./)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\/$).+$",
       "additionalProperties": false,
       "required": ["path"],
       "properties": {
-        "path": { "type": "string", "minLength": 1 },
+        "path": { "$ref": "#/$defs/canonicalPath" },
         "note": { "type": "string", "minLength": 1 }
       }
     }

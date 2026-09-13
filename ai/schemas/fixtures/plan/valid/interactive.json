@@ -31,9 +31,9 @@
     { "lane": "fences", "issue": 936, "wave": 2, "branch": "936-fences", "run_id": "run-936-fences", "fence": ["lane-brief.md"] }
   ],
   "fence_expansions": [
-    { "lane": "planning", "path": "scripts/test-skills.sh", "at": "2026-09-13T16:59:00Z", "reason": "prose validator rejected the new contract" }
+    { "lane": "planning", "path": "scripts/test-skills.sh", "at": "2026-09-13T17:00:00Z", "reason": "prose validator rejected the new contract" }
   ],
   "revisions": [
-    { "seq": 0, "prev_digest": "genesis", "digest": "6ac55150c2a07573c4e2d56f33265892bbb7718042e4fd2c4e20694d862992da", "projection_digest": "15eb7edce314905a6b433e937899953e6f760cc3b64e1c117b78a13538ce287a", "at": "2026-09-13T17:00:00Z", "reason": "initial slate plan" }
+    { "seq": 0, "prev_digest": "genesis", "digest": "aac720192f39cd0d419b2b0695e36a3fcb0232888ead4e2dd3e6fc80995d00c3", "projection_digest": "4d84932ef1cb2fefde3c7110de9cf428d855a5989b4d7ae578b4114923054f02", "at": "2026-09-13T17:00:00Z", "reason": "initial slate plan" }
   ]
 }

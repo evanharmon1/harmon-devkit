@@ -67,7 +67,9 @@ Build and publish the plan in this order:
 6. **Emit and validate.** Write the closed record and validate it with
    `node scripts/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
    on a structural error, a broken revision digest, an incomplete overlap set,
-   a graph/projection mismatch, or a cap violation.
+   a graph/projection mismatch, or a cap violation. Immediately before each
+   lane dispatch, compare the live target head with the plan's `base_sha`; when
+   they differ, recompute and validate the plan before dispatching.
 7. **Recompute after every external merge.** Re-read the new default-branch
    head, release newly unblocked dependents, rebuild waves, and repeat live
    re-verification and pairwise overlap checks. Update the current projection
