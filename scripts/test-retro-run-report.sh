@@ -118,6 +118,23 @@ api)
         file="${GH_COMMENTS_DIR:-/nonexistent}/$n.json"
         if [ -f "$file" ]; then cat "$file"; else echo '[[]]'; fi
         ;;
+    */issues/*)
+        n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\).*$|\1|p')"
+        if [ "${GH_FAIL_ISSUE:-}" = "$n" ]; then
+            status="${GH_FAIL_ISSUE_STATUS:-404}"
+            if [ "$status" = "timeout" ]; then
+                echo "gh stub: request timed out reading issue $n" >&2
+            else
+                echo "gh stub: HTTP $status reading issue $n" >&2
+            fi
+            exit 1
+        fi
+        if [ "${GH_PULL_REQUEST_ISSUE:-}" = "$n" ]; then
+            printf '{"number":%s,"pull_request":{}}\n' "$n"
+        else
+            printf '{"number":%s}\n' "$n"
+        fi
+        ;;
     *user*)
         if [ -z "${GH_USER_ID:-}" ]; then
             echo "gh stub: no GH_USER_ID configured" >&2
@@ -488,7 +505,7 @@ mkdir -p "$d"
 make_gh "$d"
 ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
 make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
-write_file "$d/body" "Refs #$ISSUE"
+write_file "$d/body" "- Refs #$ISSUE"
 write_file "$d/c1" "no marker"
 make_pr_json "$d/pr.json" "$d/body"
 set_comments "$d/comments" "$PR" "$d/c1"
@@ -576,16 +593,15 @@ contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
 contains "$ERR" "cross-repository reference does not belong to o/r" &&
     ok "the ignored cross-repository hint is disclosed" || bad "the cross-repository hint was dropped silently"
 
-echo "==> reference and run-token syntax in examples is ignored"
-for example in 'inline code' 'fenced code' 'blockquote'; do
-    d="$TMPROOT/example-${example// /-}"
+echo "==> only line-anchored declarations create reference hints"
+for example in 'quoted line' 'mid-line prose'; do
+    d="$TMPROOT/declaration-${example// /-}"
     mkdir -p "$d"
     make_gh "$d"
     make_stats "$d/stats.mjs" 0
     case "$example" in
-    'inline code') write_file "$d/body" '`Refs #664` and `run-6001-further-along`' ;;
-    'fenced code') write_file "$d/body" $'```md\nRefs #664\nrun-6001-further-along\n```' ;;
-    blockquote) write_file "$d/body" $'> Refs #664\n> run-6001-further-along' ;;
+    'quoted line') write_file "$d/body" '> Refs #664' ;;
+    'mid-line prose') write_file "$d/body" 'Historical example: Refs #664' ;;
     esac
     write_file "$d/c1" "no marker"
     make_pr_json "$d/pr.json" "$d/body"
@@ -599,6 +615,24 @@ for example in 'inline code' 'fenced code' 'blockquote'; do
     contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
         bad "$example caused an issue lookup" || ok "$example issue was not queried"
 done
+
+echo "==> a referenced pull request is disclosed and never read as issue evidence"
+d="$TMPROOT/nonclosing-pr-number"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "Refs #$ISSUE"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" evidence run-other-pr challenge pr -
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_PULL_REQUEST_ISSUE="$ISSUE" GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "is a pull request, not an issue" &&
+    ok "the PR-number hint is disclosed and ignored" || bad "PR evidence selected a run, got $RC: $ERR"
+contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
+    bad "the referenced PR's comments were read" || ok "the referenced PR's comments were not read"
 
 echo "==> body discovery accepts 10 unique hints and refuses 11 without truncating"
 for count in 10 11; do
@@ -683,7 +717,7 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 
 echo "==> a valid PR marker does not query a nonexistent lower-tier token hint"
 d="$TMPROOT/pr-marker-skips-body-hint"
-scaffold "$d" further-along "Run example: run-999999-example"
+scaffold "$d" further-along "Run: run-999999-example"
 GH_FAIL_ISSUE=999999 GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && contains "$OUT" "evidence marker on PR #$PR" &&

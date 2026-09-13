@@ -382,38 +382,20 @@ function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
   return found
 }
 
-function stripBodyExamples(body) {
-  const kept = []
-  let fence = null
-  for (const line of body.split('\n')) {
-    const delimiter = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line)
-    if (fence) {
-      if (delimiter && delimiter[1][0] === fence.char && delimiter[1].length >= fence.length) fence = null
-      continue
-    }
-    if (delimiter) {
-      fence = { char: delimiter[1][0], length: delimiter[1].length }
-      continue
-    }
-    if (/^[ \t]{0,3}>/.test(line)) continue
-    kept.push(line.replace(/`+[^`\n]*`+/g, ''))
-  }
-  return kept.join('\n')
-}
-
 function parseBodyDiscovery(body, repo) {
   const issueNumbers = new Set()
   const runTokens = new Map()
   const ignoredHints = []
   if (typeof body !== 'string') return { issueNumbers, runTokens, ignoredHints }
 
-  const discoveryText = stripBodyExamples(body)
-
   // These are the non-closing reference forms the track-work contract emits.
-  // An explicit owner/repo prefix is accepted only for this repository: a PR
-  // cannot authenticate a run by reaching sideways into another tracker.
-  const referenceRe = /\b(?:refs|addresses|part[ \t]+of)[ \t]+(?:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)(?<number>[1-9][0-9]*)\b/gi
-  for (const match of discoveryText.matchAll(referenceRe)) {
+  // The declaration must own the line (with an optional list marker), so prose,
+  // quotations, and lazy blockquote continuations cannot become lookup inputs.
+  // An explicit owner/repo prefix is accepted only for this repository.
+  const referenceRe = /^[ \t]*(?:[-*][ \t]+)?(?:refs|addresses|part[ \t]+of)[ \t]+(?:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)(?<number>[1-9][0-9]*)\b[^\r\n]*$/gim
+  const declarationLines = []
+  for (const match of body.matchAll(referenceRe)) {
+    declarationLines.push(match[0])
     if (!match.groups.repo || match.groups.repo.toLowerCase() === repo.toLowerCase()) {
       issueNumbers.add(Number(match.groups.number))
     } else {
@@ -429,9 +411,12 @@ function parseBodyDiscovery(body, repo) {
   // number says where the trusted marker must live; the exact run id still
   // has to be named by that marker before this tier can select it.
   const runIdRe = /\brun-(?<number>[1-9][0-9]*)-(?<slug>[a-z0-9][a-z0-9-]*)\b/g
-  for (const match of discoveryText.matchAll(runIdRe)) {
-    const runId = match[0]
-    runTokens.set(runId, Number(match.groups.number))
+  const policyRunLines = body.match(/^[ \t]*(?:[-*][ \t]+)?run(?:[ \t]+(?:id|identity))?[ \t]*:[^\r\n]*$/gim) || []
+  for (const line of [...declarationLines, ...policyRunLines]) {
+    for (const match of line.matchAll(runIdRe)) {
+      const runId = match[0]
+      runTokens.set(runId, Number(match.groups.number))
+    }
   }
   return { issueNumbers, runTokens, ignoredHints }
 }
@@ -458,6 +443,15 @@ function selectIssueTier(prNumber, tier, runs, sourceSuffix) {
 
 function fetchHintRunIds(args, issueNumber, tier, trustedActorIds, untrusted, malformed, ignoredHints) {
   try {
+    const item = ghJson(['api', `repos/${args.repo}/issues/${issueNumber}`])
+    if (item && item.pull_request) {
+      ignoredHints.push({
+        hint: `issue #${issueNumber}`,
+        tier,
+        reason: `#${issueNumber} is a pull request, not an issue`
+      })
+      return new Set()
+    }
     return collectRunIds(
       fetchComments(args.repo, issueNumber, args.asOf || null),
       trustedActorIds,
