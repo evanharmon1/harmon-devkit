@@ -323,6 +323,28 @@ EOF
         ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
     grep -Fq 'INTERP_EXECUTED=yes' <<<"$out" ||
         fail "a launcher with #!/usr/bin/env <interp> outside /usr could not execute in the sandbox: $out"
+
+    echo "==> #!/usr/bin/env -S mynode --flag strips the -S option"
+    cat >"$interp_prefix/pkg/lib/node_modules/@github/copilot/cli.sh" <<'EOF'
+#!/usr/bin/env -S mynode --flag
+echo "should not reach here without the interpreter"
+EOF
+    chmod +x "$interp_prefix/pkg/lib/node_modules/@github/copilot/cli.sh"
+    out="$( (cd "$work" && PATH="$interp_prefix/runtime/bin:$interp_prefix/pkg/bin:$PATH" \
+        ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    grep -Fq 'INTERP_EXECUTED=yes' <<<"$out" ||
+        fail "a launcher with #!/usr/bin/env -S <interp> could not execute in the sandbox: $out"
+
+    echo "==> #!/usr/bin/env -S VAR=x mynode strips the -S and assignment"
+    cat >"$interp_prefix/pkg/lib/node_modules/@github/copilot/cli.sh" <<'EOF'
+#!/usr/bin/env -S VAR=x mynode
+echo "should not reach here without the interpreter"
+EOF
+    chmod +x "$interp_prefix/pkg/lib/node_modules/@github/copilot/cli.sh"
+    out="$( (cd "$work" && PATH="$interp_prefix/runtime/bin:$interp_prefix/pkg/bin:$PATH" \
+        ./scripts/finder-review.sh challenge copilot --uncommitted) 2>&1)"
+    grep -Fq 'INTERP_EXECUTED=yes' <<<"$out" ||
+        fail "a launcher with #!/usr/bin/env -S VAR=x <interp> could not execute in the sandbox: $out"
 else
     echo "==> SKIPPED (no bubblewrap on this host): interpreter-binding cases"
 fi

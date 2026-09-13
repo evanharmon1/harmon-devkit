@@ -385,9 +385,61 @@ if [ -f "$bin_target" ] && [ -r "$bin_target" ]; then
             ;;
         esac
         if [ -n "$sandbox_interp_name" ]; then
-            # Strip leading whitespace and trailing arguments.
-            while [ "${sandbox_interp_name#[[:space:]]}" != "$sandbox_interp_name" ]; do
-                sandbox_interp_name="${sandbox_interp_name#[[:space:]]}"
+            # Strip env(1) options and variable assignments to find
+            # the command name.  Handles -S/--split-string (rest of
+            # line is the split command), -u/--unset and -C/--chdir
+            # (take a following argument), other dash options, and
+            # NAME=VALUE assignments.
+            while [ -n "$sandbox_interp_name" ]; do
+                while [ "${sandbox_interp_name#[[:space:]]}" != "$sandbox_interp_name" ]; do
+                    sandbox_interp_name="${sandbox_interp_name#[[:space:]]}"
+                done
+                [ -n "$sandbox_interp_name" ] || break
+                case "$sandbox_interp_name" in
+                -S\ * | --split-string\ *)
+                    sandbox_interp_name="${sandbox_interp_name#* }"
+                    ;;
+                -S | --split-string)
+                    sandbox_interp_name=
+                    break
+                    ;;
+                --split-string=*)
+                    sandbox_interp_name="${sandbox_interp_name#--split-string=}"
+                    ;;
+                -[uC]\ * | --unset\ * | --chdir\ *)
+                    sandbox_interp_name="${sandbox_interp_name#* }"
+                    while [ "${sandbox_interp_name#[[:space:]]}" != "$sandbox_interp_name" ]; do
+                        sandbox_interp_name="${sandbox_interp_name#[[:space:]]}"
+                    done
+                    case "$sandbox_interp_name" in
+                    *\ *) sandbox_interp_name="${sandbox_interp_name#* }" ;;
+                    *) sandbox_interp_name= ;;
+                    esac
+                    ;;
+                -[uC] | --unset | --chdir)
+                    sandbox_interp_name=
+                    break
+                    ;;
+                --unset=* | --chdir=*)
+                    case "$sandbox_interp_name" in
+                    *\ *) sandbox_interp_name="${sandbox_interp_name#* }" ;;
+                    *) sandbox_interp_name= ;;
+                    esac
+                    ;;
+                -*)
+                    case "$sandbox_interp_name" in
+                    *\ *) sandbox_interp_name="${sandbox_interp_name#* }" ;;
+                    *) sandbox_interp_name= ;;
+                    esac
+                    ;;
+                [A-Za-z_]*=*)
+                    case "$sandbox_interp_name" in
+                    *\ *) sandbox_interp_name="${sandbox_interp_name#* }" ;;
+                    *) sandbox_interp_name= ;;
+                    esac
+                    ;;
+                *) break ;;
+                esac
             done
             sandbox_interp_name="${sandbox_interp_name%% *}"
             if [ -n "$sandbox_interp_name" ]; then
