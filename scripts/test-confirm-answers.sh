@@ -74,7 +74,7 @@ expect_row() {
 
 # ── fixture ───────────────────────────────────────────────────────────
 FIX="$TMPROOT/fixture"
-mkdir -p "$FIX/state"
+mkdir -p "$FIX/state" && chmod 0700 "$FIX/state"
 cat >"$FIX/copier.yml" <<'YAML'
 project_name:
   type: str

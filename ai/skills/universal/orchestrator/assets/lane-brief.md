@@ -8,6 +8,12 @@ inject into a Markdown catalog cell.
 
 <!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->
 
+```json
+{{brief-envelope-json}}
+```
+
+<!-- END SCHEMA-BOUND ENVELOPE FACTS -->
+
 ## Identity and boundaries
 
 You are the **implementer lane worker** for an orchestrated dev-flow v2 run,
@@ -70,8 +76,6 @@ Do not infer, repair, or fabricate a missing value.
 
 Active `run.json.started_at` plus `wall_clock_min` is the only deadline source;
 do not restart the clock at dispatch or resume.
-
-<!-- END SCHEMA-BOUND ENVELOPE FACTS -->
 
 ## Scope — one issue, one PR
 

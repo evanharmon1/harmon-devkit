@@ -46,7 +46,7 @@ toml_root_scalar() {
 }
 
 # renovate: datasource=npm depName=@devcontainers/cli
-DEVCONTAINER_CLI_VERSION=0.88.0
+DEVCONTAINER_CLI_VERSION=0.89.0
 
 devcontainer_cli() {
     if command -v devcontainer >/dev/null 2>&1; then
@@ -166,7 +166,7 @@ assert_unit() {
     [ -f "$dev_config" ] || fail "dev devcontainer.json not found at ${dev_config}"
     [ -f "$shell_aliases" ] || fail "shell-aliases.sh not found at ${shell_aliases}"
     [ -x "$gh_browser" ] || fail "GitHub browser bridge is missing or not executable at ${gh_browser}"
-    grep -q '^unset BROWSER$' "$shell_aliases" ||
+    grep '^unset BROWSER$' "$shell_aliases" >/dev/null ||
         fail "shell-aliases.sh no longer removes generic BROWSER from interactive shells"
 
     # `task` and the rest of the shared toolchain come from the pinned public
@@ -181,7 +181,7 @@ assert_unit() {
     dockerfile="${repo_root}/.devcontainer/Dockerfile"
     [ -f "$dockerfile" ] || fail "devcontainer Dockerfile not found at ${dockerfile}"
     for cfg in "$bot_config" "$dev_config"; do
-        if grep -q 'features/go-task' "$cfg"; then
+        if grep 'features/go-task' "$cfg" >/dev/null; then
             fail "${cfg} installs task via a devcontainer Feature — the pinned shared image ships it (harmon-init#427)"
         fi
     done
@@ -203,7 +203,7 @@ assert_unit() {
         fail "human Codex baseline does not enable workspace-write"
     [ "$(toml_root_scalar approval_policy "$codex_config")" = "on-request" ] ||
         fail "human Codex baseline does not use on-request approvals"
-    if grep -Eq 'session-start-context|post-edit-format|enforce-conventional-commits' "$codex_config"; then
+    if grep -E 'session-start-context|post-edit-format|enforce-conventional-commits' "$codex_config" >/dev/null; then
         fail "system-managed Codex hooks delegate into checkout-controlled tasks"
     fi
     # Codex and Claude Code bot policy now come from bot-autonomy modules,
@@ -230,10 +230,10 @@ assert_unit() {
     # post-create-common.sh legitimately still SAYS "agent-deck conductor
     # setup" (explaining why link-claude-json.sh must run early) without the
     # block itself having come back.
-    if grep -q 'agent-deck conductor setup "\$REPO_NAME"' "${repo_root}/.devcontainer/scripts/post-create-common.sh"; then
+    if grep 'agent-deck conductor setup "\$REPO_NAME"' "${repo_root}/.devcontainer/scripts/post-create-common.sh" >/dev/null; then
         fail "the Agent-Deck conductor-setup block was not extracted out of post-create-common.sh"
     fi
-    grep -q 'agent-deck conductor setup "\$REPO_NAME"' "$conductor_script" ||
+    grep 'agent-deck conductor setup "\$REPO_NAME"' "$conductor_script" >/dev/null ||
         fail "post-create-conductor.sh does not contain the extracted conductor-setup block"
 
     # Each profile's step order matches the corrected ordering: shared setup
@@ -276,10 +276,12 @@ assert_unit() {
     # Strip comments first: dev/post-create.sh's own explanatory comment names
     # bot-autonomy.sh to say it does NOT call it, which a bare grep would
     # misread as a real invocation.
-    if grep -q 'bot-autonomy.sh' < <(grep -Ev '^[[:space:]]*#' "${repo_root}/.devcontainer/dev/post-create.sh"); then
+    if grep 'bot-autonomy.sh' \
+        < <(grep -Ev '^[[:space:]]*#' "${repo_root}/.devcontainer/dev/post-create.sh") >/dev/null; then
+
         fail "human post-create calls bot-autonomy.sh (bot-only)"
     fi
-    grep -q 'bot-autonomy.sh verify' "${repo_root}/.devcontainer/post-start.sh" ||
+    grep 'bot-autonomy.sh verify' "${repo_root}/.devcontainer/post-start.sh" >/dev/null ||
         fail "bot post-start does not call bot-autonomy.sh verify"
     # verify must run BEFORE post-start-common.sh (whose conductor-start block
     # must never launch against a drifted policy) and NODE_OPTIONS must be
@@ -496,7 +498,7 @@ SENTINEL_SCRIPT
         bash "$init_env" "$env_file" "${dev_allow[@]}" 2>&1 >/dev/null)" || warn_rc=$?
     [ "$warn_rc" -eq 0 ] || fail "init-env.sh exited ${warn_rc} with every allow-listed var already in the env-file"
     [ -z "$warn_out" ] || fail "init-env.sh warned about vars already present in the env-file: ${warn_out}"
-    grep -q '^TS_AUTHKEY=fromop$' "$env_file" ||
+    grep '^TS_AUTHKEY=fromop$' "$env_file" >/dev/null ||
         fail "init-env.sh did not preserve the out-of-band TS_AUTHKEY value in the env-file"
 
     #    A bare "VAR=" env-file line leaves the container with no usable value,
@@ -560,7 +562,7 @@ SENTINEL_SCRIPT
     env_file="${work_dir}/env-idempotent-change"
     printf 'TS_AUTHKEY=old\n' >"$env_file"
     TS_AUTHKEY=new bash "$init_env" "$env_file" "${dev_allow[@]}" 2>/dev/null
-    grep -q '^TS_AUTHKEY=new$' "$env_file" ||
+    grep '^TS_AUTHKEY=new$' "$env_file" >/dev/null ||
         fail "init-env.sh skipped a write it needed to make — the changed TS_AUTHKEY never reached the env-file"
 
     # 6c. Permissions are enforced even when the CONTENT needs no write. A
@@ -617,21 +619,31 @@ SENTINEL_SCRIPT
     printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "1.0.0"' >"${agy_roll_home}/.local/bin/agy-real"
     chmod 0755 "$agy_system_binary" "${agy_roll_home}/.local/bin/agy-real"
 
-    # Disabled marker (including entirely absent): no download; agy-real and
-    # agy are removed even if a prior enabled run (or a stale image) left them.
-    local agy_disabled_home
+    # Disabled marker (including entirely absent): no download. This models a
+    # rolling update from a pre-ownership-metadata release: neither the natural
+    # agy -> agy-real shape nor the markerless executable proves ownership, so
+    # both paths must be preserved byte-for-byte.
+    local agy_disabled_home agy_disabled_real_before
     agy_disabled_home="${work_dir}/agy-disabled-home"
+    agy_disabled_real_before="${work_dir}/agy-disabled-real-before"
     mkdir -p "${agy_disabled_home}/.local/bin"
-    : >"${agy_disabled_home}/.local/bin/agy-real"
-    : >"${agy_disabled_home}/.local/bin/agy"
+    printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "1.0.0"' >"${agy_disabled_home}/.local/bin/agy-real"
+    chmod 0755 "${agy_disabled_home}/.local/bin/agy-real"
+    cp "${agy_disabled_home}/.local/bin/agy-real" "$agy_disabled_real_before"
+    ln -s "${agy_disabled_home}/.local/bin/agy-real" "${agy_disabled_home}/.local/bin/agy"
     # env -u: the outer shell (or containerEnv) may export
     # HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled; clear it so the script sees
     # the disabled path.
     env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$agy_disabled_home" bash "$agy_ensure" >/dev/null
-    [ ! -e "${agy_disabled_home}/.local/bin/agy-real" ] ||
-        fail "ensure-antigravity-cli.sh left agy-real behind with the marker disabled"
-    [ ! -e "${agy_disabled_home}/.local/bin/agy" ] ||
-        fail "ensure-antigravity-cli.sh left agy behind with the marker disabled"
+    cmp -s "$agy_disabled_real_before" "${agy_disabled_home}/.local/bin/agy-real" ||
+        fail "disabled cleanup changed a markerless pre-metadata agy-real"
+    [ -L "${agy_disabled_home}/.local/bin/agy" ] &&
+        [ "$(readlink "${agy_disabled_home}/.local/bin/agy")" = "${agy_disabled_home}/.local/bin/agy-real" ] ||
+        fail "disabled cleanup changed a markerless pre-metadata agy symlink"
+    [ ! -e "${agy_disabled_home}/.local/bin/.agy-real.harmon-init-owned" ] ||
+        fail "disabled cleanup claimed a markerless pre-metadata agy-real"
+    [ ! -e "${agy_disabled_home}/.local/bin/.agy.harmon-init-owned" ] ||
+        fail "disabled cleanup claimed a markerless pre-metadata agy launcher"
 
     # Enabled marker, current shared-image binary already sufficient, no
     # pre-existing local shadow: no shadow copy is created, and agy stays
@@ -654,12 +666,18 @@ SENTINEL_SCRIPT
         fail "stale user-local Antigravity binary still shadows the shared-image pin"
     [ "$(readlink -f "${agy_roll_home}/.local/bin/agy")" = "$(readlink -f "${agy_roll_home}/.local/bin/agy-real")" ] ||
         fail "ensure-antigravity-cli.sh did not point agy at agy-real as a plain symlink"
+    [ -f "${agy_roll_home}/.local/bin/.agy-real.harmon-init-owned" ] &&
+        [ -f "${agy_roll_home}/.local/bin/.agy.harmon-init-owned" ] ||
+        fail "ensure-antigravity-cli.sh did not publish independent path ownership proofs"
 
     # Toggling back to disabled fully removes both — not merely skips the
     # download — reaching absence rather than a dangling link.
     # env -u: same containerEnv leak as the disabled-marker case above.
     env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$agy_roll_home" bash "$agy_ensure" >/dev/null
-    [ ! -e "${agy_roll_home}/.local/bin/agy-real" ] && [ ! -e "${agy_roll_home}/.local/bin/agy" ] ||
+    [ ! -e "${agy_roll_home}/.local/bin/agy-real" ] &&
+        [ ! -e "${agy_roll_home}/.local/bin/agy" ] &&
+        [ ! -e "${agy_roll_home}/.local/bin/.agy-real.harmon-init-owned" ] &&
+        [ ! -e "${agy_roll_home}/.local/bin/.agy.harmon-init-owned" ] ||
         fail "toggling the marker off did not fully remove agy-real/agy"
 
     agy_home="${work_dir}/agy-home"
@@ -668,11 +686,11 @@ SENTINEL_SCRIPT
     agy_workspace="${work_dir}/trusted-workspace"
     agy_workspace_moved="${work_dir}/trusted-workspace-renamed"
     mkdir -p "$(dirname "$agy_settings")"
-    printf '%s\n' '{"model":"Gemini test","toolPermission":"request-review","permissions":{"allow":["command(task)"]}}' >"$agy_settings"
+    printf '%s\n' '{"model":"Gemini test","toolPermission":"request-review","permissions":{"allow":["command(task)"],"bash":"deny"}}' >"$agy_settings"
     HOME="$agy_home" bash "$agy_apply" apply "$agy_defaults" "$agy_workspace" >/dev/null
     jq -e '
         .model == "Gemini test" and
-        .permissions.allow == ["command(task)"] and
+        .permissions == {} and
         .toolPermission == "always-proceed" and
         .artifactReviewPolicy == "always-proceed" and
         .allowNonWorkspaceAccess == true and
@@ -689,7 +707,7 @@ SENTINEL_SCRIPT
         .schemaVersion == 6 and
         .present == ["toolPermission","permissions"] and
         .values.toolPermission == "request-review" and
-        .values.permissions == {"allow":["command(task)"]} and
+        .values.permissions == {"allow":["command(task)"],"bash":"deny"} and
         .introducedWorkspaces == [$workspace] and
         .trustedWorkspacesKeyWasPresent == false
     ' --arg workspace "$agy_workspace" "$agy_backup" >/dev/null ||
@@ -778,20 +796,20 @@ SENTINEL_SCRIPT
     # dev/post-create.sh (no bot-autonomy module exists for the dev profile)
     # and, internally, by the bot-autonomy antigravity module — never by bot
     # post-create.sh.
-    grep -q 'ensure-antigravity-cli.sh' "${repo_root}/.devcontainer/post-create.sh" ||
+    grep 'ensure-antigravity-cli.sh' "${repo_root}/.devcontainer/post-create.sh" >/dev/null ||
         fail "bot post-create does not run ensure-antigravity-cli.sh"
-    if grep -q 'apply-antigravity-settings.sh' "${repo_root}/.devcontainer/post-create.sh"; then
+    if grep 'apply-antigravity-settings.sh' "${repo_root}/.devcontainer/post-create.sh" >/dev/null; then
         fail "bot post-create calls apply-antigravity-settings.sh directly — that belongs to the bot-autonomy antigravity module now"
     fi
-    grep -q '"HARMON_BOT_AUTONOMY_ANTIGRAVITY"' "${repo_root}/.devcontainer/devcontainer.json" ||
+    grep '"HARMON_BOT_AUTONOMY_ANTIGRAVITY"' "${repo_root}/.devcontainer/devcontainer.json" >/dev/null ||
         fail "bot devcontainer.json does not set the HARMON_BOT_AUTONOMY_ANTIGRAVITY marker"
-    grep -q '"HARMON_BOT_AUTONOMY_ANTIGRAVITY"' "${repo_root}/.devcontainer/dev/devcontainer.json" ||
+    grep '"HARMON_BOT_AUTONOMY_ANTIGRAVITY"' "${repo_root}/.devcontainer/dev/devcontainer.json" >/dev/null ||
         fail "dev devcontainer.json does not set the HARMON_BOT_AUTONOMY_ANTIGRAVITY marker"
-    grep -q '"AGY_CLI_DISABLE_AUTO_UPDATE": *"true"' "${repo_root}/.devcontainer/devcontainer.json" ||
+    grep '"AGY_CLI_DISABLE_AUTO_UPDATE": *"true"' "${repo_root}/.devcontainer/devcontainer.json" >/dev/null ||
         fail "bot profile permits the compatibility Antigravity binary to auto-update"
-    grep -q 'HARMON_BOT_AUTONOMY_ANTIGRAVITY' "${repo_root}/.devcontainer/dev/post-create.sh" ||
+    grep 'HARMON_BOT_AUTONOMY_ANTIGRAVITY' "${repo_root}/.devcontainer/dev/post-create.sh" >/dev/null ||
         fail "dev post-create does not branch on the HARMON_BOT_AUTONOMY_ANTIGRAVITY marker"
-    grep -q 'apply-antigravity-settings.sh restore' "${repo_root}/.devcontainer/dev/post-create.sh" ||
+    grep 'apply-antigravity-settings.sh restore' "${repo_root}/.devcontainer/dev/post-create.sh" >/dev/null ||
         fail "dev post-create has no restore path for a disabled Antigravity option"
     # ── Balanced dev-profile policy (antigravity-settings-dev.json) ──
     # The human profile auto-accepts edits and an allowlist of common commands
@@ -852,7 +870,7 @@ SENTINEL_SCRIPT
     # always-proceed policy (antigravity-settings.json). Strip comment lines
     # first so an explanatory comment naming the bot file is not a false match;
     # the regex then matches the bot defaults filename but not the "-dev.json".
-    if grep -Eq 'antigravity-settings\.json' < <(grep -Ev '^[[:space:]]*#' "${repo_root}/.devcontainer/dev/post-create.sh"); then
+    if grep -E 'antigravity-settings\.json' < <(grep -Ev '^[[:space:]]*#' "${repo_root}/.devcontainer/dev/post-create.sh") >/dev/null; then
         fail "human dev profile applies the bot-only always-proceed Antigravity policy"
     fi
 
@@ -977,7 +995,7 @@ SENTINEL_SCRIPT
     # run this here" warning; a substring test would read that warning as the
     # very thing it warns against, and the check would be worse than useless.
     offers_login() {
-        grep -qE '^[[:space:]]*gh[[:space:]]+auth[[:space:]]+login' <<<"$1"
+        grep -E '^[[:space:]]*gh[[:space:]]+auth[[:space:]]+login' <<<"$1" >/dev/null
     }
 
     help_out="$(unset DEVCONTAINER_GH_AUTH && "$bash_bin" -c '. "$2"; . "$1"; gh_auth_help "gh auth setup-git"' _ "$helper_src" "$scopes_lib")"
@@ -1141,7 +1159,7 @@ assert_container() {
     # `task --version` prints a bare "3.52.0"; older builds printed
     # "Task version: v3.52.0" — reduce both shapes to the bare version first.
     local actual_version
-    actual_version="$(printf '%s' "$actual_task" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    actual_version="$(grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+' <<<"$actual_task")"
     [ -n "$actual_version" ] ||
         fail "could not parse a version out of 'task --version' output '${actual_task}' in the ${profile} container"
     [ "$actual_version" = "$pinned_task" ] ||

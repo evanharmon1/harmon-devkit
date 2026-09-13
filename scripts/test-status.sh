@@ -482,7 +482,7 @@ run_setup_isolated() {
 # (`2 ok · 3 missing · 0 unknown · 4 n/a`). Empty when there is no such line,
 # which is how a case detects that the gh gate stopped the run short.
 summary_field() {
-    printf '%s\n' "$1" | sed -n -E "s#.*Summary:.*[^0-9]([0-9]+) $2.*#\1#p" | head -1
+    sed -n -E "s#.*Summary:.*[^0-9]([0-9]+) $2.*#\1#p" <<<"$1" | sed -n '1p'
 }
 
 echo "==> public setup status audits the exact CI_RUNS_ON safety value"
@@ -745,7 +745,7 @@ STATUS_HOOKS=".devcontainer/config/claude-hooks/session-start-context.sh .claude
 # pattern keyed to one of them silently reads nothing from the other — which is
 # not a failure, just an assertion that stops asserting.
 hook_deadline() {
-    sed -n -E "s/.*[[:space:]]([0-9]+) task status:$2([[:space:]].*)?\$/\1/p" "$1" | head -1
+    sed -n -E "s/.*[[:space:]]([0-9]+) task status:$2([[:space:]].*)?\$/\1/p" "$1" | sed -n '1p'
 }
 
 # The seconds run_timeout waits between SIGTERM and SIGKILL. A probe that
@@ -754,7 +754,7 @@ hook_deadline() {
 # alone. Read out of status.sh rather than restated, because a grace changed
 # in one place and remembered in the other is exactly how these budgets rot.
 # Absent (no `-k` in run_timeout) it is zero and the sums are unchanged.
-kill_grace="$(sed -n -E 's/.*"\$\{TIMEOUT_BIN\}" -k ([0-9]+) "\$\{secs\}".*/\1/p' "${status}" | head -1)"
+kill_grace="$(sed -n -E 's/.*"\$\{TIMEOUT_BIN\}" -k ([0-9]+) "\$\{secs\}".*/\1/p' "${status}" | sed -n '1p')"
 : "${kill_grace:=0}"
 
 probe="$(sed -n -E 's/^NETWORK_TIMEOUT="\$\{NETWORK_TIMEOUT:-([0-9]+)\}"$/\1/p' "${status}")"

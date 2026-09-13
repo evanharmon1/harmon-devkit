@@ -45,49 +45,106 @@ runs:
         # ship it, but a self-hosted CI_RUNS_ON runner may not. The helper
         # probes for a package manager rather than assuming apt-get.
         ./scripts/ensure-file.sh
-        if ! command -v shellcheck >/dev/null 2>&1; then
-          # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
-          SHELLCHECK_VERSION=0.11.0
-          curl -fsSL --retry 3 -o /tmp/shellcheck.tar.xz \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
-          sudo install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+        # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
+        SHELLCHECK_VERSION=0.10.0
+        # renovate: datasource=github-releases depName=mvdan/sh extractVersion=^v?(?<version>.+)$
+        SHFMT_VERSION=3.13.1
+        # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v?(?<version>.+)$
+        ACTIONLINT_VERSION=1.7.12
+        # renovate: datasource=pypi depName=yamllint
+        YAMLLINT_VERSION=1.38.0
+        # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
+        YQ_VERSION=4.44.3
+
+        runner_arch="${RUNNER_ARCH:-$(uname -m)}"
+        case "$runner_arch" in
+          X64|x86_64)
+            shellcheck_arch=x86_64
+            shfmt_arch=amd64
+            shfmt_sha256=fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1
+            actionlint_arch=amd64
+            yq_arch=amd64
+            yq_sha256=a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7
+            ;;
+          ARM64|arm64|aarch64)
+            shellcheck_arch=aarch64
+            shfmt_arch=arm64
+            shfmt_sha256=32d92acaa5cd8abb29fc49dac123dc412442d5713967819d8af2c29f1b3857c7
+            actionlint_arch=arm64
+            yq_arch=arm64
+            yq_sha256=0e7e1524f68d91b3ff9b089872d185940ab0fa020a5a9052046ef10547023156
+            ;;
+          *)
+            echo "::error::Unsupported runner architecture for pinned lint tools: ${runner_arch}" >&2
+            exit 1
+            ;;
+        esac
+
+        : "${RUNNER_TEMP:?RUNNER_TEMP is required for job-private lint tools}"
+        : "${GITHUB_PATH:?GITHUB_PATH is required to publish pinned lint tools}"
+        lint_tools_bin="${RUNNER_TEMP}/harmon-init-lint-tools/${SHELLCHECK_VERSION}-${SHFMT_VERSION}-${ACTIONLINT_VERSION}-${YAMLLINT_VERSION}/${runner_arch}"
+        mkdir -p "$lint_tools_bin"
+        printf '%s\n' "$lint_tools_bin" >> "$GITHUB_PATH"
+        export PATH="${lint_tools_bin}:${PATH}"
+        lint_tools_tmp="$(mktemp -d "${RUNNER_TEMP}/harmon-init-lint-tools-download.XXXXXX")"
+        trap 'rm -rf "$lint_tools_tmp"' EXIT
+
+        installed_shellcheck_version=
+        while IFS= read -r line; do
+          case "$line" in
+            "version: "*) installed_shellcheck_version="${line#version: }"; break ;;
+          esac
+        done <<<"$(shellcheck --version 2>/dev/null || true)"
+        if [ "$installed_shellcheck_version" != "$SHELLCHECK_VERSION" ]; then
+          curl -fsSL --retry 3 -o "${lint_tools_tmp}/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${shellcheck_arch}.tar.xz"
+          tar -xJf "${lint_tools_tmp}/shellcheck.tar.xz" -C "$lint_tools_tmp"
+          install -m 0755 "${lint_tools_tmp}/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" "${lint_tools_bin}/shellcheck"
+
         fi
-        if ! command -v shfmt >/dev/null 2>&1; then
-          # renovate: datasource=github-releases depName=mvdan/sh extractVersion=^v?(?<version>.+)$
-          SHFMT_VERSION=3.13.1
+        installed_shfmt_version=
+        IFS= read -r installed_shfmt_version <<<"$(shfmt --version 2>/dev/null || true)"
+        installed_shfmt_version="${installed_shfmt_version#v}"
+        if [ "$installed_shfmt_version" != "$SHFMT_VERSION" ]; then
           # Raw-binary download: fail closed on a checksum mismatch (a version
           # bump must update the pinned hash). Archive downloads (shellcheck,
           # actionlint) already fail loudly at extract time on corruption; a
           # hash-pinned toolchain image is the follow-on refactor.
-          SHFMT_SHA256=fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1
-          curl -fsSL --retry 3 -o /tmp/shfmt \
-            "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64"
-          echo "${SHFMT_SHA256}  /tmp/shfmt" | sha256sum -c -
-          sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
+          curl -fsSL --retry 3 -o "${lint_tools_tmp}/shfmt" \
+            "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_${shfmt_arch}"
+          echo "${shfmt_sha256}  ${lint_tools_tmp}/shfmt" | sha256sum -c -
+          install -m 0755 "${lint_tools_tmp}/shfmt" "${lint_tools_bin}/shfmt"
         fi
-        if ! command -v actionlint >/dev/null 2>&1; then
-          # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v?(?<version>.+)$
-          ACTIONLINT_VERSION=1.7.12
-          curl -fsSL --retry 3 "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
-            | tar -xz -C /tmp actionlint
-          sudo mv /tmp/actionlint /usr/local/bin/
+        installed_actionlint_version=
+        IFS= read -r installed_actionlint_version <<<"$(actionlint --version 2>/dev/null || true)"
+        installed_actionlint_version="${installed_actionlint_version#v}"
+        if [ "$installed_actionlint_version" != "$ACTIONLINT_VERSION" ]; then
+          curl -fsSL --retry 3 -o "${lint_tools_tmp}/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${actionlint_arch}.tar.gz"
+          tar -xzf "${lint_tools_tmp}/actionlint.tar.gz" -C "$lint_tools_tmp" actionlint
+          install -m 0755 "${lint_tools_tmp}/actionlint" "${lint_tools_bin}/actionlint"
         fi
-        # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
-        YQ_VERSION=4.53.6
-        if ! yq --version 2>/dev/null | grep -q "version v${YQ_VERSION}"; then
+        installed_yq_version=
+        IFS= read -r installed_yq_version <<<"$(yq --version 2>/dev/null || true)"
+        installed_yq_version="${installed_yq_version##* version v}"
+        if [ "$installed_yq_version" != "$YQ_VERSION" ]; then
           # Raw-binary download: fail closed on a checksum mismatch (a version
           # bump must update the pinned hash).
-          YQ_SHA256=c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385
-          curl -fsSL --retry 3 -o /tmp/yq \
-            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
-          echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
-          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          curl -fsSL --retry 3 -o "${lint_tools_tmp}/yq" \
+            "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_${yq_arch}"
+          echo "${yq_sha256}  ${lint_tools_tmp}/yq" | sha256sum -c -
+          install -m 0755 "${lint_tools_tmp}/yq" "${lint_tools_bin}/yq"
         fi
-        if ! command -v yamllint >/dev/null 2>&1; then
-          # renovate: datasource=pypi depName=yamllint
-          YAMLLINT_VERSION=1.38.0
-          python3 -m pip install "yamllint==${YAMLLINT_VERSION}"
+
+        installed_yamllint_version=
+        IFS= read -r installed_yamllint_version <<<"$(yamllint --version 2>/dev/null || true)"
+        installed_yamllint_version="${installed_yamllint_version#yamllint }"
+        if [ "$installed_yamllint_version" != "$YAMLLINT_VERSION" ]; then
+          yamllint_venv="${RUNNER_TEMP}/harmon-init-lint-tools/yamllint-${YAMLLINT_VERSION}"
+          python3 -m venv "$yamllint_venv"
+          "${yamllint_venv}/bin/python" -m pip install --disable-pip-version-check \
+            "yamllint==${YAMLLINT_VERSION}"
+          ln -sfn "${yamllint_venv}/bin/yamllint" "${lint_tools_bin}/yamllint"
         fi
     - name: Install gitleaks
       if: inputs.gitleaks == 'true'
