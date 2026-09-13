@@ -2360,6 +2360,30 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
   }
 }
 
+// checkReceiptsRecord — an independent --receipts file is a run-directory
+// subset, not necessarily a complete persisted run record. Validate the two
+// fields strict mode trusts with the canonical run schema definitions before
+// using that file to authorize any adjudication stage.
+function checkReceiptsRecord(document, receiptsRecord, runSchema, errors) {
+  const contextSchema = {
+    type: 'object',
+    required: ['run_id', 'receipts'],
+    properties: {
+      run_id: runSchema.properties.run_id,
+      receipts: runSchema.properties.receipts
+    }
+  }
+  errors.push(...validateAgainst(contextSchema, receiptsRecord, '$receipts'))
+  if (
+    typeof receiptsRecord.run_id === 'string' &&
+    receiptsRecord.run_id !== document.run_id
+  ) {
+    errors.push(
+      `$run: --receipts record has run_id ${receiptsRecord.run_id}, not this run's own run_id ${document.run_id}`
+    )
+  }
+}
+
 // checkAdjudicationsAgainstReceipts — strict mode (--receipts): every supplied
 // --adjudication document's stage must have a corresponding transition receipt
 // in the run record's receipts array. This mirrors how dev-flow-exit.mjs
@@ -2368,15 +2392,6 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
 // is a document about an event the log never recorded. Without --receipts,
 // this check does not run and adjudications are trusted as-is.
 function checkAdjudicationsAgainstReceipts(document, receiptsRecord, adjudications, errors) {
-  if (typeof receiptsRecord.run_id !== 'string' || receiptsRecord.run_id === '') {
-    errors.push('$run: --receipts record has no valid run_id (must be a non-empty string)')
-    return
-  }
-  if (receiptsRecord.run_id !== document.run_id) {
-    errors.push(
-      `$run: --receipts record has run_id ${receiptsRecord.run_id}, not this run's own run_id ${document.run_id}`
-    )
-  }
   const receipts = Array.isArray(receiptsRecord.receipts) ? receiptsRecord.receipts : []
   const transitionStages = new Set(
     receipts
@@ -2780,6 +2795,9 @@ function main() {
     const schema = loadSchema('run.schema.json')
     const errors = validateAgainst(schema, instance, '$run')
     if (errors.length === 0) {
+      if (options.receiptsRecord) {
+        checkReceiptsRecord(instance, options.receiptsRecord, schema, errors)
+      }
       checkSettlements(instance, errors)
       checkSplits(instance, errors)
       checkEvidenceMarkerRunId(instance, errors)

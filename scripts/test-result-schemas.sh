@@ -1267,6 +1267,29 @@ run_context_case \
 # the same fixture is accepted (the adjudication's stage IS in stage_transitions).
 receipts_strict_adjudication="$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.adjudication.json"
 receipts_strict_receipts="$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.receipts.json"
+receipts_split_valid="$test_tmp/receipts-split-valid.json"
+receipts_split_malformed="$test_tmp/receipts-split-malformed.json"
+
+jq -n \
+    --arg run_id "run-0821-receipts-strict" \
+    '{run_id: $run_id, receipts: [{kind: "transition", stage: "challenge", entered_at: "2026-09-01T00:30:00Z"}]}' \
+    >"$receipts_split_valid"
+jq 'del(.receipts[0].entered_at)' "$receipts_split_valid" >"$receipts_split_malformed"
+
+run_context_case \
+    "a malformed independent --receipts entry is rejected with its index" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    '$receipts.receipts[0]' \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$receipts_split_malformed"
+
+accept_context_case \
+    "valid independent --receipts entries authorize their adjudication stage" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$receipts_split_valid"
 
 run_context_case \
     "an --adjudication whose stage has no transition receipt is rejected in --receipts strict mode (#821)" \
