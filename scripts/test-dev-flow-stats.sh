@@ -2989,6 +2989,10 @@ function parseArgs(argv) {
   return a;
 }
 const args = parseArgs(process.argv.slice(2));
+const replayRun = JSON.parse(readFileSync(path.join(args.run, "run.json"), "utf8"));
+if (process.env.FAKE_EXIT_RECEIPTS_LOG) {
+  writeFileSync(process.env.FAKE_EXIT_RECEIPTS_LOG, JSON.stringify(replayRun.receipts));
+}
 // Records every --current-head this fake was invoked with, keyed by
 // stage, so the bash test can assert on it afterward — proving
 // dev-flow-stats.mjs derives a real head for a non-promoted (capped) run
@@ -3033,9 +3037,26 @@ review_cap = 3
 TOML
 export DFSTATS_DB="$tmp/scenarios/omator-397.json"
 export FAKE_EXIT_HEAD_LOG="$tmp/fake-exit-heads.json"
+export FAKE_EXIT_RECEIPTS_LOG="$tmp/fake-exit-receipts.json"
 rm -f "$FAKE_EXIT_HEAD_LOG"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.[0].diffs | length == 0' >/dev/null || fail "replay (matching policy): expected no diffs, got: $out"
+
+echo "== replay emits canonical transition and pass receipt shapes =="
+jq -e '
+  length > 0 and
+  all(.[];
+    if .kind == "transition" then
+      (keys | sort) == ["entered_at", "kind", "stage"] and
+      (.entered_at | type == "string")
+    elif .kind == "pass" then
+      (keys | sort) == ["file", "kind"]
+    else
+      false
+    end
+  )
+' "$FAKE_EXIT_RECEIPTS_LOG" >/dev/null || fail "replay receipts do not match the canonical closed variants"
+unset FAKE_EXIT_RECEIPTS_LOG
 
 echo "== replay derives a real current-head for a capped (never-promoted) run, not an all-zero placeholder =="
 [ -f "$FAKE_EXIT_HEAD_LOG" ] || fail "replay head log was never written — the fake exit script was never invoked"

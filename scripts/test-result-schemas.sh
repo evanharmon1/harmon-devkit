@@ -821,9 +821,28 @@ function expect(description, condition) {
   )
 }
 
+// oneOf — exclusive composition. Two matching children must fail, which is
+// the semantic difference from anyOf and the path the disjoint receipt
+// variants cannot exercise themselves.
+{
+  const schema = {
+    oneOf: [
+      { type: 'object', required: ['shared'] },
+      { type: 'object', properties: { shared: { type: 'number' } } }
+    ]
+  }
+  const engine = createSchemaValidator(schema)
+  expect(
+    'oneOf: rejects a value matching two members',
+    engine
+      .validate({ shared: 1 }, schema, '$x')
+      .some((e) => e.includes('must match exactly one schema in oneOf (matched 2)'))
+  )
+}
+
 process.exit(failures === 0 ? 0 : 1)
 NODE
-echo "PASS: engine-level minimum/maximum and if/then/else keyword tests"
+echo "PASS: engine-level minimum/maximum, condition, and composition keyword tests"
 
 # --- Receipt-validation regression tests requiring run context -------------
 # These need an argument no single fixture file can carry on its own (a set
