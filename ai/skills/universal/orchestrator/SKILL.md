@@ -36,9 +36,8 @@ files, and the consumers reported by
 registry in that surface. The scan is a read-only, grep-based inventory of
 consumers under `scripts/`, `ai/skills/**/assets`, `taskfiles/`, and
 `Taskfile.yml`; inspect its candidates and add the validators and tests that
-would reject the lane's change. Files owned by repository tooling, including
-release-please's `CHANGELOG.md` and lockfiles, are never lane-owned and never
-belong in a fence.
+would reject the lane's change. Release-please's `CHANGELOG.md` is never
+lane-owned and never belongs in a fence; lockfiles are ordinary fence entries.
 
 Across live lanes, enforce one writer per file. When an overlap is unavoidable,
 name the shared file and disjoint sections in both lane briefs' overlap lists

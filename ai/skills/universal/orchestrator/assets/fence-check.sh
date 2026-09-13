@@ -85,7 +85,7 @@ jq -r '.fence[] | if type == "string" then . else .path end' "$envelope" >"$allo
 is_tooling_owned() {
     candidate="$1"
     case "$candidate" in
-    CHANGELOG.md | */CHANGELOG.md | package-lock.json | */package-lock.json | npm-shrinkwrap.json | */npm-shrinkwrap.json | pnpm-lock.yaml | */pnpm-lock.yaml | yarn.lock | */yarn.lock | bun.lock | */bun.lock | bun.lockb | */bun.lockb | uv.lock | */uv.lock | poetry.lock | */poetry.lock | Pipfile.lock | */Pipfile.lock | Cargo.lock | */Cargo.lock | composer.lock | */composer.lock | Gemfile.lock | */Gemfile.lock)
+    CHANGELOG.md)
         return 0
         ;;
     esac
@@ -97,14 +97,10 @@ while IFS= read -r entry; do
         echo "fence-check: fence contains an empty path" >&2
         exit 1
     }
-    for owned in CHANGELOG.md package-lock.json pnpm-lock.yaml yarn.lock uv.lock Cargo.lock; do
-        case "$owned" in
-        $entry)
-            echo "fence-check: tooling-owned path must not be listed in a lane fence: $entry" >&2
-            exit 1
-            ;;
-        esac
-    done
+    [ "$entry" != CHANGELOG.md ] || {
+        echo "fence-check: release-owned path must not be listed in a lane fence: $entry" >&2
+        exit 1
+    }
 done <"$allowed"
 
 : >"$expanded"

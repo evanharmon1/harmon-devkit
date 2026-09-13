@@ -15,6 +15,7 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/lane-fences-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
 fixture="$tmp/repo"
+brief_source="$repo/ai/schemas/fixtures/brief.envelope/valid/codex.md"
 git init -q "$fixture"
 git -C "$fixture" config user.name "Lane Fence Test"
 git -C "$fixture" config user.email "lane-fence@example.invalid"
@@ -38,13 +39,13 @@ make_brief() {
       inside && /^```json$/ { fenced=1; next }
       inside && fenced && /^```$/ { fenced=0; next }
       inside && fenced { print }
-    ' .lane-brief.md | jq --argjson fence "$fence_json" --arg base "$brief_base" \
+    ' "$brief_source" | jq --argjson fence "$fence_json" --arg base "$brief_base" \
         '.fence = $fence | .base_sha = $base | .default_branch = "main"' >"$tmp/envelope.json"
-    sed -n '1,/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/p' .lane-brief.md >"$destination"
+    sed -n '1,/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/p' "$brief_source" >"$destination"
     printf '\n```json\n' >>"$destination"
     cat "$tmp/envelope.json" >>"$destination"
     printf '```\n\n' >>"$destination"
-    sed -n '/^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/,$p' .lane-brief.md >>"$destination"
+    sed -n '/^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/,$p' "$brief_source" >>"$destination"
 }
 
 fence_check="$repo/ai/skills/universal/orchestrator/assets/fence-check.sh"
@@ -111,11 +112,41 @@ if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/tooling.md" 2>&1)"; then
     fail "a tooling-owned path was accepted in the fence"
 fi
 case "$out" in
-*tooling-owned*CHANGELOG.md*) ;;
-*) fail "tooling-owned refusal was not actionable: $out" ;;
+*release-owned*CHANGELOG.md*) ;;
+*) fail "release-owned refusal was not actionable: $out" ;;
 esac
 
+make_brief "$tmp/lockfile.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/*.txt"},{"path":"package-lock.json"}]'
+(
+    cd "$fixture"
+    "$fence_check" --brief "$tmp/lockfile.md"
+) >/dev/null || fail "an ordinary lockfile fence entry was rejected"
+
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
+scan_fixture="$tmp/scan-repo"
+git init -q "$scan_fixture"
+mkdir -p \
+    "$scan_fixture/ai/skills/universal/breakdown/assets" \
+    "$scan_fixture/ai/skills/universal/label-registry-support/assets" \
+    "$scan_fixture/scripts"
+printf '%s\n' '{"registry_set": []}' >"$scan_fixture/agent-registry.json"
+for consumer in \
+    ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs \
+    ai/skills/universal/label-registry-support/assets/label-registry.sh \
+    scripts/label-registry-render.mjs \
+    scripts/validate-label-registry.mjs; do
+    printf '%s\n' 'registry_set' >"$scan_fixture/$consumer"
+done
+isolated_scan_out="$(cd "$scan_fixture" && "$scanner" agent-registry.json)" ||
+    fail "isolated dependency scan failed"
+for consumer in \
+    ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs \
+    ai/skills/universal/label-registry-support/assets/label-registry.sh \
+    scripts/label-registry-render.mjs \
+    scripts/validate-label-registry.mjs; do
+    grep -Fxq "$consumer" <<<"$isolated_scan_out" || fail "isolated scan missed $consumer"
+done
+
 scan_out="$("$scanner" agent-registry.json)" || fail "real-tree dependency scan failed"
 for consumer in \
     ai/skills/universal/breakdown/assets/discover-label-vocabulary.mjs \
