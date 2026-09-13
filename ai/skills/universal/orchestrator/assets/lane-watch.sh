@@ -100,6 +100,11 @@ deadline_iso=$1
 shift
 specs=("$@")
 
+if [ -n "$state_file" ] && [ "$(basename "$state_file")" = monitor.json ]; then
+    echo "lane-watch: refusing canonical run monitor as watcher state: $state_file" >&2
+    exit 2
+fi
+
 case "$interval_seconds:$post_promotion_seconds:$timeout_seconds:$iterations" in
 *[!0-9:]* | *::* | :* | *:)
     echo "lane-watch: interval, window, and iterations must be non-negative integers" >&2

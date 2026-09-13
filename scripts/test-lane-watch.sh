@@ -380,6 +380,28 @@ if bash "$watcher" --iterations 1 --state-file "$state_parent/watcher.state" \
 fi
 assert_line "$state_failure_err" "lane-watch: could not persist state to $state_parent/watcher.state"
 
+# The watcher's private line-oriented state must never accept or overwrite the
+# canonical JSON run monitor. The documented invocation uses a distinct path.
+canonical_monitor="$test_tmp/monitor.json"
+printf '%s\n' '{"generation":7,"reservations":["preserve-me"]}' >"$canonical_monitor"
+cp "$canonical_monitor" "$test_tmp/monitor.before.json"
+canonical_monitor_err="$test_tmp/canonical-monitor.err"
+if bash "$watcher" --iterations 1 --state-file "$canonical_monitor" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
+    >/dev/null 2>"$canonical_monitor_err"; then
+    fail 'watcher accepted the canonical run monitor as private state'
+fi
+assert_line "$canonical_monitor_err" \
+    "lane-watch: refusing canonical run monitor as watcher state: $canonical_monitor"
+cmp -s "$canonical_monitor" "$test_tmp/monitor.before.json" ||
+    fail 'watcher modified the canonical run monitor'
+assert_count "$repo_root/ai/skills/universal/orchestrator/SKILL.md" 1 \
+    'state-file <run-dir>/lane-watch.state'
+assert_count "$repo_root/ai/skills/universal/orchestrator/SKILL.md" 0 \
+    'state-file <run-state>'
+
 # The watcher state implementation stays compatible with macOS Bash 3.2.
 assert_count "$watcher" 0 'declare -A'
 assert_count "$watcher" 0 '\$\{#state_'
