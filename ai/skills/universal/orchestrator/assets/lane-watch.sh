@@ -310,8 +310,14 @@ sentinel_from_report() {
 sentinel_from_pane() {
     lane=$1
     nonce=$2
+    agent_state=$3
+    case "$agent_state" in
+    idle | done | blocked) ;;
+    *) return 0 ;;
+    esac
     pane="$(bounded "$timeout_seconds" herdr agent read "$lane" --source recent-unwrapped --lines 80 || true)"
-    grep -E "^LANE-[A-Z0-9-]+-(READY|BLOCKED)-${nonce}$" <<<"$pane" 2>/dev/null | tail -1
+    awk 'NF { last = $0 } END { print last }' <<<"$pane" |
+        grep -E "^LANE-[A-Z0-9-]+-(READY|BLOCKED)-${nonce}$" 2>/dev/null
 }
 
 activity_rows() {
@@ -470,6 +476,7 @@ while true; do
 
     for spec in "${specs[@]}"; do
         IFS=: read -r lane branch nonce repo extra <<<"$spec"
+        agent_state=unknown
         if [ "$agents_available" -eq 1 ]; then
             agent_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
             agent_state=${agent_state:-absent}
@@ -489,7 +496,7 @@ while true; do
         sentinel="$(sentinel_from_report "$report" "$nonce")"
         pane_only=0
         if [ -z "$sentinel" ]; then
-            sentinel="$(sentinel_from_pane "$lane" "$nonce")"
+            sentinel="$(sentinel_from_pane "$lane" "$nonce" "$agent_state")"
             [ -z "$sentinel" ] || pane_only=1
         fi
         sentinel_key="$lane:$sentinel"

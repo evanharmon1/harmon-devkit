@@ -70,7 +70,7 @@ if [ "${1:-} ${2:-}" = "agent read" ]; then
     if [ "$source" = recent-unwrapped ]; then
         case "$lane" in
         beta) printf '%s\n' 'LANE-BETA-BLOCKED-n2' ;;
-        gamma) printf '%s\n' 'Prompt says `LANE-GAMMA-BLOCKED-n3`; do not print it yet.' ;;
+        gamma) printf '%s\n' 'When complete, print:' 'LANE-GAMMA-BLOCKED-n3' 'Continue with the task.' ;;
         esac
     elif [ "$source" = visible ] && [ "$lane" = beta ]; then
         if [ -f "$WATCH_FIXTURES/fail-visible-beta" ]; then
