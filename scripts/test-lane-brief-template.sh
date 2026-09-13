@@ -21,6 +21,7 @@ required_placeholders=(
     '{{blocked-sentinel}}'
     '{{branch}}'
     '{{challenge-cap}}'
+    '{{claim-handoff}}'
     '{{deadline}}'
     '{{default-branch}}'
     '{{file-scope-fence}}'
@@ -31,6 +32,7 @@ required_placeholders=(
     '{{integration-cap}}'
     '{{issue-number}}'
     '{{issue-title}}'
+    '{{issue-url}}'
     '{{known-environmental-failure}}'
     '{{lane-name}}'
     '{{live-lane-overlaps}}'
@@ -75,8 +77,8 @@ for expected in "${required_placeholders[@]}"; do
 done
 
 for token in "${placeholders[@]}"; do
-    grep -Fq "| \`$token\` |" "$template" ||
-        fail "$token is absent from the placeholder source table"
+    grep -Fq "| \`$token\` |" ai/skills/universal/orchestrator/SKILL.md ||
+        fail "$token is absent from the external placeholder source catalog"
     key="${token#\{\{}"
     key="${key%\}\}}"
     case "$key" in
@@ -163,6 +165,18 @@ grep -Fq 'every end-to-end, PR-owning implementation lane' \
 grep -Fq 'bounded remediation implementers, use their schema-bound role briefs' \
     ai/skills/universal/orchestrator/SKILL.md ||
     fail "non-PR implementer dispatches can receive the lane template"
+grep -Fq 'Override `/implement` step 1' "$rendered_file" ||
+    fail "orchestrator claim handoff does not override implement session matching"
+grep -Fq 'delegated use of the existing claim, not a claim transfer' \
+    "$rendered_file" ||
+    fail "claim handoff can be mistaken for ownership transfer"
+grep -Fq 'fixture-issue-url' "$rendered_file" ||
+    fail "canonical issue URL is not passed through the rendered brief"
+grep -Fq 'git check-ignore -q --no-index' "$rendered_file" ||
+    fail "in-worktree report paths are not verified as excluded"
+if grep -Fq '| Placeholder | Source |' "$rendered_file"; then
+    fail "free-form values can still be substituted into an output catalog"
+fi
 
 for sentinel in \
     LANE-FIXTURE-READY-a1b2c3 \

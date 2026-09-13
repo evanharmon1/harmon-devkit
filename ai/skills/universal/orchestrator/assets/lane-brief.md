@@ -1,49 +1,10 @@
 # Lane brief — {{lane-name}} ({{run-id}})
 
-Render every input in this table before dispatch. The table is the complete
-placeholder catalog; a rendered brief with any double-brace token left is invalid.
-
-| Placeholder | Source |
-| --- | --- |
-| `{{lane-name}}` | Orchestrator lane plan |
-| `{{run-id}}` | Active run's `run.json` |
-| `{{branch}}` | Lane plan and `git branch --show-current` |
-| `{{default-branch}}` | Target repository default branch |
-| `{{base-sha}}` | Lane creation record |
-| `{{worktree-path}}` | `git rev-parse --show-toplevel` in the lane |
-| `{{harness}}` | Selected implementer's registry harness |
-| `{{report-path}}` | Orchestrator's nonce-scoped dispatch report path |
-| `{{generation}}` | Active pointer generation |
-| `{{active-state-path}}` | `scripts/dev-flow-monitor.sh active-path` |
-| `{{record-directory}}` | Active run record directory |
-| `{{policy-projection}}` | Resolved policy projection recorded at kickoff |
-| `{{file-scope-fence}}` | Orchestrator's lane ownership plan |
-| `{{live-lane-overlaps}}` | Orchestrator's complete live-lane overlap map |
-| `{{issue-number}}` | Claimed GitHub issue |
-| `{{issue-title}}` | Fresh `gh issue view` result |
-| `{{verified-facts-and-rulings}}` | Orchestrator verification and attributed decisions |
-| `{{git-sandbox-note}}` | Harness-specific sandbox policy, or `Not applicable.` |
-| `{{known-environmental-failure}}` | Verified run exception, or `None.` |
-| `{{rigor}}` | Trusted policy resolution |
-| `{{rigor-source}}` | Policy resolver disclosure |
-| `{{challenge-cap}}` | Selected rounds policy |
-| `{{review-cap}}` | Selected rounds policy |
-| `{{integration-cap}}` | Selected rounds policy |
-| `{{remediation-cap}}` | Selected rounds policy |
-| `{{min-rounds}}` | Selected rounds policy |
-| `{{wall-clock-min}}` | Selected rounds policy |
-| `{{deadline}}` | Active `run.json.started_at` plus `wall_clock_min` |
-| `{{max-agent-runs}}` | Selected breadth envelope |
-| `{{max-parallel-agents}}` | Selected breadth envelope |
-| `{{strategy}}` | Trusted policy resolution |
-| `{{strategy-source}}` | Policy resolver disclosure |
-| `{{role-tiers}}` | Resolved five-role tier projection |
-| `{{operator-pins}}` | Attributed operator pins, or `None.` |
-| `{{pr-title}}` | Orchestrator's release-title-compliant proposal |
-| `{{ready-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |
-| `{{handoff-sentinel}}` | Orchestrator-generated draft-handoff sentinel prefix |
-| `{{blocked-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |
-| `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
+The supervising orchestrator must render every input from the source catalog in
+`orchestrator/SKILL.md` before dispatch. A rendered brief with any double-brace
+token left is invalid. The catalog stays outside this rendered artifact so a
+free-form value is substituted exactly at its intended use sites and cannot
+inject into a Markdown catalog cell.
 
 <!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->
 
@@ -63,6 +24,11 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
   terminate a process.
 - Stay inside this worktree for project files. The lane brief and
   `{{report-path}}` are git-excluded control files: never commit or rename them.
+- Before writing the report, resolve the worktree root and common Git directory.
+  If `{{report-path}}` is inside the worktree, require
+  `git check-ignore -q --no-index -- "{{report-path}}"`; otherwise require it to
+  resolve inside the common Git directory. Report BLOCKED if neither proof
+  holds. An assertion in this brief is not exclusion evidence.
 - Git/sandbox rule: {{git-sandbox-note}}
 
 ## File-scope fence
@@ -102,12 +68,17 @@ Do not infer, repair, or fabricate a missing value.
 - Role tiers: {{role-tiers}}.
 - Operator pins: {{operator-pins}}
 
+Active `run.json.started_at` plus `wall_clock_min` is the only deadline source;
+do not restart the clock at dispatch or resume.
+
 <!-- END SCHEMA-BOUND ENVELOPE FACTS -->
 
 ## Scope — one issue, one PR
 
-- **#{{issue-number}} — {{issue-title}}.** Read the issue body and every comment
-  in full at implementation time.
+- **[#{{issue-number}} — {{issue-title}}]({{issue-url}}).** Use this canonical URL
+  as `/implement`'s target so the target repository remains pinned under fork
+  topology. Read the issue body and every comment in full at implementation
+  time.
 
 Verified facts and numbered, attributable orchestrator rulings:
 
@@ -123,6 +94,20 @@ Select the subsection matching `{{harness}}`; the variants are procedures, not
 different brief formats. Read `AGENTS.md` first. It is the policy and the
 vendored stage skills are procedures beneath it.
 
+The issue was claimed by the supervising orchestrator before this lane was
+dispatched. Override `/implement` step 1's session/agent ownership comparison
+and its matching pre-publication claim comparison only: fetch the canonical
+issue from `{{issue-url}}` and require this authenticated handoff snapshot to
+still match exactly:
+
+{{claim-handoff}}
+
+The snapshot must identify the trusted claim comment by immutable ID, author
+ID, and `updated_at`, plus the expected assignees and claim labels. This is
+delegated use of the existing claim, not a claim transfer. Keep every other
+step-1 and pre-publication refusal, including closed/implemented state and any
+live drift; report BLOCKED rather than claiming, refreshing, or guessing.
+
 This lane's branch and worktree were provisioned before dispatch. Override
 `/implement` step 3: do not fetch-and-switch or create a branch. Verify that
 `git branch --show-current` is exactly `{{branch}}`, that the worktree root is
@@ -131,7 +116,7 @@ BLOCKED on any mismatch. Continue with the provisioned branch and worktree.
 
 ### Claude Code (Skill tool)
 
-Invoke `/implement {{issue-number}}` with the Skill tool through draft-PR
+Invoke `/implement {{issue-url}}` with the Skill tool through draft-PR
 publication. For a lane worker, repository policy overrides `/implement` step
 9: record the confirmed draft handoff in `{{report-path}}` and return control to
 the supervising orchestrator. That one orchestrator invokes integration and
@@ -142,7 +127,7 @@ prompt; refer to the reporting contract indirectly.
 ### Codex CLI (read the skill)
 
 Read `.agents/skills/implement/SKILL.md` completely and follow it for
-issue #{{issue-number}} through draft-PR publication. For a lane worker,
+`{{issue-url}}` through draft-PR publication. For a lane worker,
 repository policy overrides `/implement` step 9: record the confirmed draft
 handoff in `{{report-path}}` and return control to the supervising orchestrator.
 Only that orchestrator may enter the vendored integrate procedure and own its
@@ -154,8 +139,9 @@ indirectly.
 ### Other supported harness (read the skill)
 
 For a selected harness without a Skill tool, read the portable vendored
-`implement` skill completely and follow it through draft-PR publication. Apply
-the same lane-worker override: record the confirmed draft handoff in
+`implement` skill completely and follow it for `{{issue-url}}` through draft-PR
+publication. Apply the same lane-worker override: record the confirmed draft
+handoff in
 `{{report-path}}` and return control to the supervising orchestrator. If the
 harness cannot read the policy, skill, or report path named by this brief,
 report BLOCKED instead of inventing a procedure.
