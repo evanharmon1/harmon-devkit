@@ -127,6 +127,7 @@ state_keys=()
 state_values=()
 state_extras=()
 state_details=()
+state_count=0
 warned=0
 
 state_get() {
@@ -134,7 +135,7 @@ state_get() {
     wanted_key=$2
     wanted_field=${3:-value}
     index=0
-    while [ "$index" -lt "${#state_kinds[@]}" ]; do
+    while [ "$index" -lt "$state_count" ]; do
         if [ "${state_kinds[$index]}" = "$wanted_kind" ] && [ "${state_keys[$index]}" = "$wanted_key" ]; then
             case "$wanted_field" in
             value) printf '%s' "${state_values[$index]}" ;;
@@ -155,7 +156,7 @@ state_set() {
     wanted_extra=${4:-}
     wanted_detail=${5:-}
     index=0
-    while [ "$index" -lt "${#state_kinds[@]}" ]; do
+    while [ "$index" -lt "$state_count" ]; do
         if [ "${state_kinds[$index]}" = "$wanted_kind" ] && [ "${state_keys[$index]}" = "$wanted_key" ]; then
             state_values[$index]=$wanted_value
             state_extras[$index]=$wanted_extra
@@ -164,26 +165,33 @@ state_set() {
         fi
         index=$((index + 1))
     done
-    state_kinds[${#state_kinds[@]}]=$wanted_kind
-    state_keys[${#state_keys[@]}]=$wanted_key
-    state_values[${#state_values[@]}]=$wanted_value
-    state_extras[${#state_extras[@]}]=$wanted_extra
-    state_details[${#state_details[@]}]=$wanted_detail
+    state_kinds[$state_count]=$wanted_kind
+    state_keys[$state_count]=$wanted_key
+    state_values[$state_count]=$wanted_value
+    state_extras[$state_count]=$wanted_extra
+    state_details[$state_count]=$wanted_detail
+    state_count=$((state_count + 1))
 }
 
 state_delete() {
     wanted_kind=$1
     wanted_key=$2
     index=0
-    while [ "$index" -lt "${#state_kinds[@]}" ]; do
+    while [ "$index" -lt "$state_count" ]; do
         if [ "${state_kinds[$index]}" = "$wanted_kind" ] && [ "${state_keys[$index]}" = "$wanted_key" ]; then
-            unset 'state_kinds[index]' 'state_keys[index]' 'state_values[index]' \
-                'state_extras[index]' 'state_details[index]'
-            state_kinds=("${state_kinds[@]}")
-            state_keys=("${state_keys[@]}")
-            state_values=("${state_values[@]}")
-            state_extras=("${state_extras[@]}")
-            state_details=("${state_details[@]}")
+            last=$((state_count - 1))
+            while [ "$index" -lt "$last" ]; do
+                next=$((index + 1))
+                state_kinds[$index]=${state_kinds[$next]}
+                state_keys[$index]=${state_keys[$next]}
+                state_values[$index]=${state_values[$next]}
+                state_extras[$index]=${state_extras[$next]}
+                state_details[$index]=${state_details[$next]}
+                index=$next
+            done
+            unset 'state_kinds[last]' 'state_keys[last]' 'state_values[last]' \
+                'state_extras[last]' 'state_details[last]'
+            state_count=$last
             return 0
         fi
         index=$((index + 1))
@@ -211,7 +219,7 @@ save_state() {
     state_tmp="${state_file}.tmp.$$"
     {
         index=0
-        while [ "$index" -lt "${#state_kinds[@]}" ]; do
+        while [ "$index" -lt "$state_count" ]; do
             kind=${state_kinds[$index]}
             key=${state_keys[$index]}
             value=${state_values[$index]}
@@ -435,7 +443,7 @@ observe_pr() {
     old_pr="$(state_get PR "$lane" || true)"
     [ "$old_pr" != "$pr" ] || return 0
     state_set PR "$lane" "$pr"
-    if [[ "$pr" =~ ^#([0-9]+)\ draft=false\ OPEN$ ]]; then
+    if [[ "$pr" =~ ^#([0-9]+)\ draft=false\ (OPEN|CLOSED|MERGED)$ ]]; then
         promoted_pr=${BASH_REMATCH[1]}
         if [ -z "$old_pr" ] || [[ "$old_pr" =~ draft=true\ OPEN$ ]]; then
             state_set WINDOW "$lane" "$promoted_pr" "$((now + post_promotion_seconds))" ""

@@ -115,7 +115,12 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
     printf '%s\n' "$count" >"$WATCH_FIXTURES/phase"
     case "$count" in
     1) printf '%s\n' '[{"number":77,"isDraft":true,"state":"OPEN"}]' ;;
-    2 | 3) printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN"}]' ;;
+    2) if [ -f "$WATCH_FIXTURES/skip-ready" ]; then
+        printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED"}]'
+    else
+        printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN"}]'
+    fi ;;
+    3) printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN"}]' ;;
     *) printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED"}]' ;;
     esac
     exit 0
@@ -128,7 +133,9 @@ if [ "${1:-}" = api ]; then
     if [ -f "$WATCH_FIXTURES/fail-api" ] && [ "$phase" -eq 2 ]; then
         exit 92
     fi
-    if [ "$phase" -lt 3 ]; then
+    activity_phase=3
+    [ ! -f "$WATCH_FIXTURES/skip-ready" ] || activity_phase=2
+    if [ "$phase" -lt "$activity_phase" ]; then
         printf '%s\n' '[]'
         exit 0
     fi
@@ -191,6 +198,22 @@ assert_line "$primary_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 
 assert_line "$primary_out" 'POST-PROMOTION-ACTIVITY alpha: maintainer comment 601'
 assert_count "$primary_out" 0 'untrusted-bot'
 assert_count "$primary_out" 1 '^USAGE-PAUSED beta$'
+
+# A promotion and merge entirely between polls still opens the authoritative
+# ready-for-review activity window before the merged transition is emitted.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+touch "$fixture_dir/skip-ready"
+skipped_ready_out="$test_tmp/skipped-ready.out"
+bash "$watcher" --iterations 2 \
+    --state-file "$test_tmp/skipped-ready.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$skipped_ready_out"
+rm "$fixture_dir/skip-ready"
+assert_line "$skipped_ready_out" 'PR alpha: #77 draft=true OPEN'
+assert_line "$skipped_ready_out" 'PR alpha: #77 draft=false MERGED'
+assert_line "$skipped_ready_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
 
 # A fresh process adopts state and does not re-emit either sentinel.
 restart_out="$test_tmp/restart.out"
@@ -358,6 +381,7 @@ assert_line "$state_failure_err" "lane-watch: could not persist state to $state_
 
 # The watcher state implementation stays compatible with macOS Bash 3.2.
 assert_count "$watcher" 0 'declare -A'
+assert_count "$watcher" 0 '\$\{#state_'
 
 # The warning uses the documented WALLCLOCK shape.
 wallclock_out="$test_tmp/wallclock.out"
@@ -387,7 +411,7 @@ assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED)|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
-    "$primary_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
+    "$primary_out" "$skipped_ready_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
     "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
