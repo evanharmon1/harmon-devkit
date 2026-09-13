@@ -2065,7 +2065,21 @@ from timestamps): an ordered list of `{kind: "transition", stage}` and
 naming a `run_id`/`initiated_by` other than `run.json`'s own, or one with no
 preceding `"transition"` receipt into its own `payload.stage`, is rejected
 and contributes no pass or finding — logged in the verdict's `diagnostics[]`,
-never silently. `run.json` may also carry `slot_failures: [{stage, round,
+never silently.
+
+For local finder envelope publication, the receipt is the commit point. The
+runner first writes and validates a temporary pass inside `passes/`, then
+renames it to its final pass name. It next writes a temporary `run.json` with
+the corresponding receipt and atomically renames that file over the old run
+record. An interruption between those renames can leave an unreceipted pass
+file, but never accepted evidence: receipt-aware consumers and strict receipt
+validation ignore it. Before its next envelope dispatch, the runner logs and
+deletes every pass file with no matching receipt, allowing the same slot to be
+retried. An interruption during the second rename leaves the old `run.json`
+intact. This is deliberately crash-consistent rather than cross-file atomic;
+the filesystem cannot atomically rename two independent directory entries.
+
+`run.json` may also carry `slot_failures: [{stage, round,
 slot, reason: "finder_unavailable"|"breadth_exhausted", head?}]`, recording a
 primary slot that never got filled after its retry and configured
 `finder_fallbacks` chain (`finder_unavailable`) or because the fallback chain

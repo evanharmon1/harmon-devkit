@@ -193,8 +193,7 @@ Invoke the configured finder task in `--envelope` mode with the captured run,
 base, head, stage, round, slot, policy, registry, record directory, and the
 script-derived producer identity expected by the caller, plus the resolved
 model and tier for a non-Codex local finder. The runner derives the producer
-again, loads complete earlier same-stage finding records from the accepted
-passes, binds the structured finder result to those inputs,
+again, binds the structured finder result to the captured scope,
 validates it with `scripts/validate-result-schemas.mjs envelope --receipt`,
 and atomically persists the immutable accepted result in `passes/`. Any
 harness that can run the task therefore gets the same binding; a Claude role

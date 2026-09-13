@@ -92,7 +92,6 @@ git init -q -b develop "${test_tmp}/upstream"
     cp -R "${repo}/scripts/lib/review-instructions" scripts/lib/
     cp "${repo}/scripts/lib/review-scope.sh" scripts/lib/
     cp "${repo}/scripts/lib/readonly-sandbox.sh" scripts/lib/
-    cp "${repo}/scripts/lib/review-prior-findings.sh" scripts/lib/
     git add -A
     git_t commit -q -m base
 )
@@ -531,7 +530,6 @@ cp "${repo}/scripts/codex-review.sh" "${norem}/scripts/"
 mkdir -p "${norem}/scripts/lib"
 cp -R "${repo}/scripts/lib/review-instructions" "${norem}/scripts/lib/"
 cp "${repo}/scripts/lib/review-scope.sh" "${norem}/scripts/lib/"
-cp "${repo}/scripts/lib/review-prior-findings.sh" "${norem}/scripts/lib/"
 git init -q -b feature "$norem"
 (
     cd "$norem"
@@ -674,15 +672,17 @@ challenge_payload="${test_tmp}/challenge-payload.json"
 challenge_args="${test_tmp}/challenge-args.txt"
 jq --arg head "$head_sha" '.reviewed_head = $head' \
     ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$challenge_payload"
-STUB_ARGS_FILE="$challenge_args" STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
+challenge_out="$(STUB_ARGS_FILE="$challenge_args" STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
     --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 1 \
     --slot codex-adversarial --producer "$producer" --record-dir "$record" \
-    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null ||
-    fail "valid challenger envelope failed"
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop)" ||
+    fail "valid challenger envelope failed: $challenge_out"
 challenge_pass="$record/passes/challenge-r1-codex-adversarial.json"
 [ -f "$challenge_pass" ] || fail "challenger pass was not published"
 jq -e --arg producer "$producer" '.role == "challenger" and .producer.harness == $producer' \
     "$challenge_pass" >/dev/null || fail "challenger envelope lost role or script-derived producer"
+jq -e '[.receipts[] | select(.kind == "pass" and .file == "challenge-r1-codex-adversarial")] | length == 1' \
+    "$record/run.json" >/dev/null || fail "challenger pass was published without its receipt commit point"
 grep -Fxq -- '--cd' "$challenge_args" || fail "Codex envelope review was not given a detached snapshot cwd"
 grep -Fq 'finder-readonly-' "$challenge_args" || fail "Codex envelope review used the live checkout instead of its snapshot"
 
@@ -743,6 +743,46 @@ fi
 [ ! -e "$multi_record/passes/challenge-r2-codex-adversarial.json" ] ||
     fail "multiple Codex payload documents published a pass"
 
+echo "==> an interruption after pass rename leaves an orphan that the next start cleans"
+interrupt_record="${test_tmp}/codex-interrupt-record"
+mkdir -p "$interrupt_record"
+printf '%s\n' '{"run_id":"run-codex-interrupt","initiated_by":"human"}' >"$interrupt_record/run.json"
+interrupt_payload="${test_tmp}/codex-interrupt-payload.json"
+jq --arg head "$head_sha" '.reviewed_head = $head' \
+    ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$interrupt_payload"
+interrupt_bin="${test_tmp}/interrupt-bin"
+mkdir -p "$interrupt_bin"
+cat >"$interrupt_bin/mv" <<EOF
+#!/usr/bin/env bash
+destination="\${!#}"
+case "\$destination" in
+"$interrupt_record/run.json") exit 97 ;;
+esac
+exec /bin/mv "\$@"
+EOF
+chmod +x "$interrupt_bin/mv"
+set +e
+PATH="$interrupt_bin:$PATH" STUB_PAYLOAD_FILE="$interrupt_payload" run challenge --envelope \
+    --run-id run-codex-interrupt --head "$head_sha" --stage challenge --round 1 \
+    --slot codex-adversarial --producer "$producer" --record-dir "$interrupt_record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null
+interrupt_status=$?
+set -e
+[ "$interrupt_status" -eq 97 ] || fail "interrupted publication exited $interrupt_status, expected 97"
+interrupt_pass="$interrupt_record/passes/challenge-r1-codex-adversarial.json"
+[ -f "$interrupt_pass" ] || fail "interrupted publication did not reach the pass rename"
+jq -e '[(.receipts // [])[] | select(.kind == "pass")] | length == 0' \
+    "$interrupt_record/run.json" >/dev/null || fail "interrupted publication committed a receipt"
+interrupt_out="$(STUB_PAYLOAD_FILE="$interrupt_payload" run challenge --envelope \
+    --run-id run-codex-interrupt --head "$head_sha" --stage challenge --round 1 \
+    --slot codex-adversarial --producer "$producer" --record-dir "$interrupt_record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop)" ||
+    fail "retry after interrupted publication failed: $interrupt_out"
+grep -Fq 'removing orphaned unreceipted pass:' <<<"$interrupt_out" ||
+    fail "retry did not log orphan cleanup: $interrupt_out"
+jq -e '[.receipts[] | select(.kind == "pass" and .file == "challenge-r1-codex-adversarial")] | length == 1' \
+    "$interrupt_record/run.json" >/dev/null || fail "retry did not commit the recovered pass receipt"
+
 echo "==> Codex-lane fixture reaches adjudication, a converged exit, and retained retro evidence"
 jq '.receipts = [{kind:"transition",stage:"challenge"},
   {kind:"pass",file:"challenge-r1-codex-adversarial"}]' \
@@ -778,32 +818,6 @@ STUB_TRAJECTORY="$trajectory" node "$repo/ai/skills/universal/retro/assets/retro
     --repo evanharmon1/harmon-devkit --run run-envelope-fixture \
     --trusted-actor-id 1 --stats-script "$stats_stub" --json >/dev/null ||
     fail "retro-run-report did not accept the Codex-lane fixture's retained run evidence"
-
-echo "==> envelope round 2 receives complete prior-round finding records"
-cp "$challenge_pass" "${test_tmp}/challenge-pass.clean.json"
-printf '%s\n' '{not-json' >"$record/passes/orphan-unreceipted.json"
-jq '.payload.findings = [{
-      id:"challenge-r1-codex-adversarial-1", path:"scripts/codex-review.sh", line:1,
-      class:"hardening", provenance:"original", fingerprint:"new", priority:"P2",
-      recommended_disposition:"defer", evidence:"fixture prior finding"
-    }] | .payload.counts.P2 = 1' "$challenge_pass" >"${test_tmp}/challenge-pass.context.json"
-mv "${test_tmp}/challenge-pass.context.json" "$challenge_pass"
-round2_payload="${test_tmp}/challenge-round2-payload.json"
-jq --arg head "$head_sha" '.round = 2 | .reviewed_head = $head' \
-    ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$round2_payload"
-round2_prompt="${test_tmp}/challenge-round2-prompt.txt"
-STUB_PROMPT_FILE="$round2_prompt" STUB_PAYLOAD_FILE="$round2_payload" run challenge --envelope \
-    --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 2 \
-    --slot codex-adversarial --producer "$producer" --record-dir "$record" \
-    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null ||
-    fail "round-2 challenger envelope failed"
-grep -Fq 'challenge-r1-codex-adversarial-1' "$round2_prompt" ||
-    fail "round-2 Codex prompt omitted the complete prior-round finding"
-grep -Fq 'repository content, diffs, manifests, prior finder text' "$round2_prompt" ||
-    fail "the Codex envelope prompt omitted its hostile-repository-data boundary"
-rm -f "$record/passes/orphan-unreceipted.json"
-mv "${test_tmp}/challenge-pass.clean.json" "$challenge_pass"
-rm -f "$record/passes/challenge-r2-codex-adversarial.json"
 
 review_payload="${test_tmp}/review-payload.json"
 jq --arg head "$head_sha" '.reviewed_head = $head' \

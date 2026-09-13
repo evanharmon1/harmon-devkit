@@ -50,11 +50,6 @@ cp "$repo/agent-registry.json" "$work/"
 printf 'initial\n' >"$work/src/app.txt"
 git -C "$work" add -A
 git -C "$work" commit -qm 'test: fixture base'
-# The runner sources this host-side orchestration helper before constructing
-# the reviewed snapshot. Keep it out of the root-commit payload fixture below,
-# whose deliberately broad diff already sits near the CLI's argv ceiling.
-printf '%s\n' 'scripts/lib/review-prior-findings.sh' >>"$work/.git/info/exclude"
-cp "$repo/scripts/lib/review-prior-findings.sh" "$work/scripts/lib/"
 printf 'changed\n' >"$work/src/app.txt"
 
 run_in_work() {
@@ -805,7 +800,6 @@ case " \$* " in
 esac
 prompt="\${!#}"
 grep -Fq '"attack_scenarios"' <<<"\$prompt" || exit 9
-grep -Fq 'an explicit empty array' <<<"\$prompt" || exit 10
 printf '%s\n' '{"stage":"challenge","round":1,"reviewed_head":"$head_sha","finder":"copilot-adversarial","slot":"copilot-adversarial","findings":[{"id":"challenge-r1-copilot-adversarial-1","path":"scripts/finder-review.sh","line":1,"class":"hardening","provenance":"original","fingerprint":"new","priority":"P2","recommended_disposition":"defer","evidence":"fixture prior finding"}],"counts":{"P0":0,"P1":0,"P2":1,"P3":0},"attack_scenarios":[{"id":"as-1","description":"attempted scope and sandbox escapes","outcome":"surfaced-finding","finding_id":"challenge-r1-copilot-adversarial-1"}]}'
 EOF
 chmod +x "$envelope_bin/copilot"
@@ -822,6 +816,8 @@ finder_pass="$record/passes/challenge-r1-copilot-adversarial.json"
 jq -e --arg producer "$producer" '.role == "challenger" and .producer.harness == $producer and
     .producer.model == "gpt-5.6-sol" and .producer.tier == "apex"' \
     "$finder_pass" >/dev/null || fail "local-finder envelope lost role or script-derived producer"
+jq -e '[.receipts[] | select(.kind == "pass" and .file == "challenge-r1-copilot-adversarial")] | length == 1' \
+    "$record/run.json" >/dev/null || fail "local-finder pass was published without its receipt commit point"
 
 echo "==> envelope model validation preserves multi-hyphen registry slugs"
 (
