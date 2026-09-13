@@ -396,6 +396,7 @@ tasks:
       - test:finder-normalization
       - test:finder-review
       - test:lint-shell-robustness
+      - test:lane-watch
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -421,6 +422,11 @@ tasks:
     desc: Trust contract regression tests for dev-flow-monitor.sh (integer actor IDs, per-write governing revision, fail-closed)
     cmds:
       - ./scripts/test-dev-flow-monitor.sh
+
+  test:lane-watch:
+    desc: Fixture-driven regression tests for the orchestrator lane watcher
+    cmds:
+      - ./scripts/test-lane-watch.sh
 
   test:render-dev-flow:
     desc: Golden-fixture + fake-gh regression tests for the dev-flow-v2 renderer/publisher

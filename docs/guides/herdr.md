@@ -216,8 +216,13 @@ belongs in a separate user, container, or VM, not a sibling pane.
    detection stays `unknown` or whose harness hangs would otherwise block
    the orchestrator forever. On timeout, `agent get` / `agent read` /
    `agent explain` it and decide — nudge, take over, or retire — rather than
-   waiting again blind. `done`/`idle` means *stopped*, not *succeeded*: the
-   sentinel and the report file are the success signals.
+   waiting again blind. For multi-lane Dev Loop runs, invoke the orchestrator's
+   `assets/lane-watch.sh` as a Bash script in the persistent monitor primitive;
+   its state file deduplicates report-first sentinels across re-arms and it
+   continues watching review activity briefly after promotion. Never paste the
+   loop inline, because the primitive may execute it under a non-Bash login
+   shell. `done`/`idle` means *stopped*, not *succeeded*: the sentinel and the
+   report file are the success signals.
 5. **Harvest and verify** — `agent read` / read the report files, then
    **verify ground truth yourself** (the diff, the labels on GitHub, the test
    run). Never trust a transcript's claim of success.

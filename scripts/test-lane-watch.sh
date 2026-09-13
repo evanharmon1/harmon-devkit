@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Fixture-driven regression tests for the orchestrator lane watcher.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+watcher="$repo_root/ai/skills/universal/orchestrator/assets/lane-watch.sh"
+test_tmp="$(mktemp -d -t lane-watch-test-XXXXXX)"
+trap 'rm -rf "$test_tmp"' EXIT
+
+bin_dir="$test_tmp/bin"
+fixture_dir="$test_tmp/fixtures"
+workspace_root="$test_tmp/workspaces"
+state_file="$test_tmp/watcher.state"
+registry="$test_tmp/agent-registry.json"
+mkdir -p "$bin_dir" "$fixture_dir" \
+    "$workspace_root/harmon-devkit/.worktrees/alpha" \
+    "$workspace_root/harmon-devkit/.worktrees/beta" \
+    "$workspace_root/harmon-devkit/.worktrees/gamma"
+
+fail() {
+    echo "FAIL: $*" >&2
+    exit 1
+}
+
+assert_line() {
+    file=$1
+    expected=$2
+    grep -Fxq "$expected" "$file" || fail "missing line: $expected"
+}
+
+assert_count() {
+    file=$1
+    expected=$2
+    pattern=$3
+    actual="$(grep -Ec "$pattern" "$file" || true)"
+    [ "$actual" -eq "$expected" ] || fail "expected $expected matches for $pattern, got $actual"
+}
+
+cat >"$registry" <<'JSON'
+{"finders":[
+  {"slug":"local","trusted_actor_id":null},
+  {"slug":"codex-cloud","trusted_actor_id":"999"}
+]}
+JSON
+
+cat >"$workspace_root/harmon-devkit/.worktrees/alpha/.lane-report.md" <<'EOF'
+Implementation complete.
+LANE-ALPHA-READY-n1
+EOF
+
+cat >"$bin_dir/herdr" <<'STUB'
+#!/usr/bin/env bash
+set -u
+if [ -f "$WATCH_FIXTURES/hang-list" ] && [ "${1:-} ${2:-}" = "agent list" ]; then
+    sleep 5
+fi
+if [ "${1:-} ${2:-}" = "agent list" ]; then
+    printf '%s\n' '{"result":{"agents":[{"name":"alpha","agent_status":"working"},{"name":"beta","agent_status":"idle"},{"name":"gamma","agent_status":"blocked"}]}}'
+    exit 0
+fi
+if [ "${1:-} ${2:-}" = "agent read" ]; then
+    lane=${3:-}
+    source=${5:-}
+    if [ "$source" = recent-unwrapped ]; then
+        case "$lane" in
+        beta) printf '%s\n' 'LANE-BETA-BLOCKED-n2' ;;
+        gamma) printf '%s\n' 'Prompt says `LANE-GAMMA-BLOCKED-n3`; do not print it yet.' ;;
+        esac
+    elif [ "$source" = visible ] && [ "$lane" = beta ]; then
+        printf '%s\n' 'Usage limit reached'
+    fi
+    exit 0
+fi
+exit 90
+STUB
+
+cat >"$bin_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-} ${2:-}" = "pr list" ]; then
+    branch=
+    previous=
+    for arg in "$@"; do
+        if [ "$previous" = --head ]; then branch=$arg; fi
+        previous=$arg
+    done
+    if [ "$branch" != branch-alpha ]; then
+        exit 0
+    fi
+    count_file="$WATCH_FIXTURES/pr-count"
+    count=0
+    [ ! -f "$count_file" ] || count="$(<"$count_file")"
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$count_file"
+    printf '%s\n' "$count" >"$WATCH_FIXTURES/phase"
+    case "$count" in
+    1) printf '%s\n' '#77 draft=true OPEN' ;;
+    2 | 3) printf '%s\n' '#77 draft=false OPEN' ;;
+    *) printf '%s\n' '#77 draft=false MERGED' ;;
+    esac
+    exit 0
+fi
+
+if [ "${1:-}" = api ]; then
+    endpoint=${*: -1}
+    phase=0
+    [ ! -f "$WATCH_FIXTURES/phase" ] || phase="$(<"$WATCH_FIXTURES/phase")"
+    if [ "$phase" -lt 3 ]; then
+        printf '%s\n' '[]'
+        exit 0
+    fi
+    case "$endpoint" in
+    */reviews?per_page=100)
+        printf '%s\n' '[{"id":501,"user":{"id":999,"login":"trusted-codex","type":"Bot"}}]'
+        ;;
+    */issues/*/comments?per_page=100)
+        printf '%s\n' '[{"id":601,"user":{"id":111,"login":"maintainer","type":"User"}}]'
+        ;;
+    */pulls/*/comments?per_page=100)
+        printf '%s\n' '[{"id":701,"user":{"id":222,"login":"untrusted-bot","type":"Bot"}}]'
+        ;;
+    *) exit 91 ;;
+    esac
+    exit 0
+fi
+exit 90
+STUB
+chmod +x "$bin_dir/herdr" "$bin_dir/gh"
+
+export PATH="$bin_dir:$PATH"
+export WATCH_FIXTURES="$fixture_dir"
+
+common_args=(
+    --state-file "$state_file"
+    --registry "$registry"
+    --workspace-root "$workspace_root"
+    --interval-seconds 0
+    --post-promotion-seconds 900
+    --timeout-seconds 1
+    2099-01-01T00:00:00Z
+    alpha:branch-alpha:n1:evanharmon1/harmon-devkit
+    beta:branch-beta:n2:evanharmon1/harmon-devkit
+    gamma:branch-gamma:n3:evanharmon1/harmon-devkit
+)
+
+primary_out="$test_tmp/primary.out"
+bash "$watcher" --iterations 4 "${common_args[@]}" >"$primary_out"
+
+# Three independently quoted specs pin the zsh word-splitting regression.
+assert_line "$primary_out" 'AGENT alpha: init -> working'
+assert_line "$primary_out" 'AGENT beta: init -> idle'
+assert_line "$primary_out" 'AGENT gamma: init -> blocked'
+
+# Report-file results win; pane-only results are tagged and prompt prose cannot match.
+assert_line "$primary_out" 'SENTINEL alpha: LANE-ALPHA-READY-n1'
+assert_line "$primary_out" 'SENTINEL beta: LANE-BETA-BLOCKED-n2 (pane only)'
+assert_count "$primary_out" 0 '^SENTINEL gamma:'
+assert_count "$primary_out" 1 '^SENTINEL alpha:'
+assert_count "$primary_out" 1 '^SENTINEL beta:'
+
+assert_line "$primary_out" 'PR alpha: #77 draft=true OPEN'
+assert_line "$primary_out" 'PR alpha: #77 draft=false OPEN'
+assert_line "$primary_out" 'PR alpha: #77 draft=false MERGED'
+assert_line "$primary_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
+assert_line "$primary_out" 'POST-PROMOTION-ACTIVITY alpha: maintainer comment 601'
+assert_count "$primary_out" 0 'untrusted-bot'
+assert_count "$primary_out" 1 '^USAGE-PAUSED beta$'
+
+# A fresh process adopts state and does not re-emit either sentinel.
+restart_out="$test_tmp/restart.out"
+bash "$watcher" --iterations 1 "${common_args[@]}" >"$restart_out"
+assert_count "$restart_out" 0 '^SENTINEL '
+assert_count "$restart_out" 0 '^POST-PROMOTION-ACTIVITY '
+
+# A hanging external call times out, degrades to absent, and does not hang/crash.
+touch "$fixture_dir/hang-list"
+hang_out="$test_tmp/hang.out"
+timeout 8 bash "$watcher" --iterations 1 \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
+    >"$hang_out" || fail 'watcher did not degrade a hanging herdr call'
+assert_line "$hang_out" 'AGENT delta: init -> absent'
+rm "$fixture_dir/hang-list"
+
+# The warning uses the documented WALLCLOCK shape.
+wallclock_out="$test_tmp/wallclock.out"
+near_deadline="$(date -u -d '10 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+bash "$watcher" --iterations 1 --registry "$registry" \
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
+    "$near_deadline" epsilon:branch-epsilon:n5:evanharmon1/harmon-devkit \
+    >"$wallclock_out"
+assert_line "$wallclock_out" "WALLCLOCK run: 30 min to $near_deadline cap"
+
+# Every emitted line belongs to one of the stable event grammars.
+if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED)|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
+    "$primary_out" "$restart_out" "$hang_out" "$wallclock_out"; then
+    fail 'watcher emitted a line outside the documented event grammar'
+fi
+
+echo 'lane-watch tests passed'

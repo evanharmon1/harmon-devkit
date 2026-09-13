@@ -794,3 +794,4 @@ automatically on merge).
 ### Added
 
 - Initial repository scaffolding generated from [harmon-init](https://github.com/evanharmon1/harmon-init) on 2026-06-27.
+- A persistent orchestrator lane watcher with restart-safe sentinel and post-promotion activity reporting.

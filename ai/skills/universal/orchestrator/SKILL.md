@@ -89,6 +89,16 @@ never interpret monitor termination as human cancellation. If no persistent
 primitive is available, block instead of silently falling back to occasional
 manual polling.
 
+Use `assets/lane-watch.sh` for that polling. Harness monitor primitives may run
+their command under a non-Bash shell, so always invoke the file as
+`bash <skill-dir>/assets/lane-watch.sh --state-file <run-state> <deadline> <lane:branch:nonce[:owner/repo]>...`;
+never paste its loop inline. Keep the state file across re-arms so reported
+sentinels and post-promotion activity remain deduplicated. The watcher bounds
+every `herdr` and `gh` read, prefers each lane's `.lane-report.md` sentinel,
+tags pane-only fallback results, and watches reviews plus top-level and inline
+comments for 15 minutes after a draft becomes ready. It only reports events;
+the orchestrator remains responsible for every action.
+
 Every emitted transition terminates in a recorded action: idle reads and
 adjudicates the lane status (including any unsupported claim that the user was
 asked); done validates and assembles or records a blocker; blocked/unknown
