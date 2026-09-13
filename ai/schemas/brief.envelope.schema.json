@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/brief.envelope.schema.json",
+  "title": "Dev flow v2 lane brief envelope",
+  "$comment": "The rendered Markdown wire format carries every property except body in a fenced JSON object between the schema-bound-envelope delimiters. scripts/validate-result-schemas.mjs derives body from all Markdown outside those delimiters before validating this closed composite instance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "branch", "generation", "active_state_path", "record_directory", "policy_projection", "default_branch", "base_sha", "worktree_path", "report_path", "harness", "fence", "live_lane_overlaps", "rigor", "rigor_source", "caps", "deadline", "breadth", "strategy", "strategy_source", "role_tiers", "operator_pins", "issue", "claim_handoff", "sentinels", "body"],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "branch": { "type": "string", "minLength": 1 },
+    "generation": { "type": "integer", "minimum": 1 },
+    "active_state_path": { "type": "string", "minLength": 1 },
+    "record_directory": { "type": "string", "minLength": 1 },
+    "policy_projection": { "type": "string", "minLength": 1 },
+    "default_branch": { "type": "string", "minLength": 1 },
+    "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "worktree_path": { "type": "string", "minLength": 1 },
+    "report_path": { "type": "string", "minLength": 1 },
+    "harness": { "type": "string", "minLength": 1 },
+    "fence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": ["string", "object"],
+        "minLength": 1,
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "note": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "live_lane_overlaps": { "type": ["string", "array"], "minLength": 1, "items": { "type": "string", "minLength": 1 } },
+    "rigor": { "type": "string", "minLength": 1 },
+    "rigor_source": { "type": "string", "minLength": 1 },
+    "caps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["challenge", "review", "integration", "remediation", "min_rounds", "wall_clock_min"],
+      "properties": {
+        "challenge": { "type": "integer", "minimum": 0 },
+        "review": { "type": "integer", "minimum": 0 },
+        "integration": { "type": "integer", "minimum": 0 },
+        "remediation": { "type": "integer", "minimum": 0 },
+        "min_rounds": { "type": "integer", "minimum": 0 },
+        "wall_clock_min": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "deadline": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+    "breadth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_agent_runs", "max_parallel_agents"],
+      "properties": {
+        "max_agent_runs": { "type": "integer", "minimum": 1 },
+        "max_parallel_agents": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "strategy": { "type": "string", "minLength": 1 },
+    "strategy_source": { "type": "string", "minLength": 1 },
+    "role_tiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orchestrator", "implementer", "challenger", "reviewer", "integrator"],
+      "properties": {
+        "orchestrator": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+        "implementer": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+        "challenger": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+        "reviewer": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+        "integrator": { "enum": ["local", "economy", "standard", "frontier", "apex"] }
+      }
+    },
+    "operator_pins": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "title", "url"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "minLength": 1 }
+      }
+    },
+    "claim_handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["comment_id", "author_id", "updated_at", "assignees", "labels", "branch"],
+      "properties": {
+        "comment_id": { "type": "integer", "minimum": 1 },
+        "author_id": { "type": "integer", "minimum": 1 },
+        "updated_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+        "assignees": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "labels": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "branch": { "type": "string", "minLength": 1 }
+      }
+    },
+    "sentinels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ready", "handoff", "blocked", "attempt_nonce"],
+      "properties": {
+        "ready": { "type": "string", "minLength": 1 },
+        "handoff": { "type": "string", "minLength": 1 },
+        "blocked": { "type": "string", "minLength": 1 },
+        "attempt_nonce": { "type": "string", "minLength": 1 }
+      }
+    },
+    "body": { "type": "string" }
+  }
+}

@@ -34,6 +34,7 @@ table before their intended sections.
 
 | Placeholder | Source |
 | --- | --- |
+| `{{brief-envelope-json}}` | JSON serialization of the exact `brief.envelope.schema.json` fact fields; `body` is omitted from the block because the validator derives it from all Markdown outside the delimiters |
 | `{{lane-name}}` | Orchestrator lane plan |
 | `{{run-id}}` | Active run's `run.json` |
 | `{{branch}}` | Lane plan and `git branch --show-current` |
@@ -102,10 +103,16 @@ and bounded remediation implementers, use their schema-bound role briefs and
 return the artifact or fix their dispatch requested; they do not receive this
 draft-publication contract. For a PR-owning lane, the source catalog above is
 the complete input contract: source every value, select the harness procedure
-named by the rendered brief, and refuse dispatch if any `{{name}}` placeholder
-remains. Provision the lane branch/worktree, transactionally refresh the existing
-claim so its record names that exact branch, then authenticate the refreshed
-claim into the handoff snapshot without transferring its ownership.
+named by the rendered brief. Provision the lane branch/worktree, then
+transactionally refresh the existing claim so its record names that exact branch.
+Authenticate the refreshed claim into the handoff snapshot without transferring
+its ownership.
+As a render-time completeness check, scan the entire rendered file and refuse
+dispatch if any unreplaced `{{name}}` token remains. This is the renderer's
+check, not content validation of the opaque body; the `brief` validator checks
+double-brace tokens only inside the envelope block.
+Validate the rendered brief before dispatch and refuse dispatch on any failure:
+`node scripts/validate-result-schemas.mjs brief "$brief_path"`.
 Place the per-attempt report under the common Git directory, or install and
 verify its worktree exclusion before dispatch; an assertion that it is excluded
 is not evidence. Preserve its nonce-scoped sentinels. Prompts sent after dispatch

@@ -299,25 +299,21 @@ review's entry gate would stop by design, so the steps below remain the
 procedure there — as they do wherever the skill is not vendored.
 
 **Routing rule: active run identity determines the procedure, subject to
-topology and vendor compatibility.** When the session was handed an
-already active dev-flow-v2 run identity — run id, branch, generation,
-active-state path, record directory, and policy projection — **and** the topology and
-vendor checks above pass (the `review` skill is vendored, `origin` is the
-repository the PR will target, the config-shape compatibility check passes),
-the `/review` skill path above is the procedure and the orchestrator's lane
-brief carries these fields. If the run identity is present but topology or
-vendor compatibility fails (the fork topology, an unvendored skill, a
-config-shape mismatch), the inline procedure below remains the fallback — it
-simply produces no v2 evidence, which the orchestrator's PR-open
-confirmation will flag. An ordinary `/implement` session with no active run
-uses the inline procedure below; it never invokes `/review` and expects that
-skill to invent authenticated run state. The lane brief is the routing
-surface: when it supplies the run identity, `/review` emits the run record,
-adjudication comments, and PR stage projection that `/retro` harvests
+topology and vendor compatibility.** Read run id, branch, generation,
+active-state path, record directory, and policy projection only from the
+validated `brief.envelope.schema.json` envelope; never scrape or infer them
+from the opaque Markdown body. When an already active dev-flow-v2 run supplies
+all six fields **and** the topology and vendor checks above pass (the `review`
+skill is vendored, `origin`
+is the repository the PR will target, and the config-shape compatibility check
+passes), `/review` is the procedure and emits the run record, adjudication
+comments, and PR stage projection that `/retro` harvests
 (`retro-run-report.mjs` exit 10 `no-run-record` is the failure this routing
-prevents); when no brief or no run identity is present, the inline `task
-challenge` / `task review` fallback remains correct — it simply produces no
-v2 evidence.
+prevents). If the identity is present but topology or compatibility fails, the
+inline procedure remains the fallback and the orchestrator flags the absence
+of v2 evidence at PR-open confirmation. An ordinary session with no validated
+brief envelope also uses the inline procedure and never asks `/review` to
+invent authenticated run state.
 
 Where the repo runs one (harmon-init and harmon-devkit: `task challenge`, then
 `task review`), it belongs here — after `verify` is green, before the security
