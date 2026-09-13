@@ -26,13 +26,13 @@ scan_root() {
     recursive="$2"
     [ -e "$root" ] || return 0
     if [ "$recursive" = true ]; then
-        if grep -rFl -f "$terms" "$root"; then
+        if grep -rFwl -f "$terms" "$root"; then
             return 0
         else
             status="$?"
         fi
     else
-        if grep -Fl -f "$terms" "$root"; then
+        if grep -Fwl -f "$terms" "$root"; then
             return 0
         else
             status="$?"
@@ -65,12 +65,11 @@ for supplied in "$@"; do
             jq -r '
               .. | objects | keys[]
               | select(length <= 80)
-              | select(contains("_") or contains("-") or length >= 12)
               | select(test("^[A-Za-z][A-Za-z0-9_.:-]*$"))
             ' "$target"
             jq -r '
               .. | objects | .enum? | select(type == "array")[] | strings
-              | select(length >= 4 and length <= 80)
+              | select(length <= 80)
               | select(test("^[A-Za-z][A-Za-z0-9_.:-]*$"))
             ' "$target"
             ;;

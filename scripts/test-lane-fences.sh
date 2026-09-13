@@ -121,6 +121,23 @@ git -C "$fixture" commit -qm "test: change glob path"
     "$fence_check" --brief "$tmp/glob.md" --report "$tmp/report.md"
 ) >/dev/null || fail "a matching glob entry was rejected"
 
+mkdir -p "$fixture/glob/private"
+printf '%s\n' changed >"$fixture/glob/private/task.txt"
+git -C "$fixture" add glob/private/task.txt
+git -C "$fixture" commit -qm "test: add nested glob path"
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/glob.md" 2>&1)"; then
+    fail "a single-component glob accepted a nested path"
+fi
+case "$out" in
+*glob/private/task.txt*) ;;
+*) fail "nested-path refusal did not name the path: $out" ;;
+esac
+make_brief "$tmp/globstar.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/**"}]'
+(
+    cd "$fixture"
+    "$fence_check" --brief "$tmp/globstar.md" --report "$tmp/report.md"
+) >/dev/null || fail "a recursive glob rejected a nested path"
+
 make_brief "$tmp/tooling.md" '[{"path":"CHANGELOG.md"}]'
 if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/tooling.md" 2>&1)"; then
     fail "a tooling-owned path was accepted in the fence"
@@ -130,7 +147,7 @@ case "$out" in
 *) fail "release-owned refusal was not actionable: $out" ;;
 esac
 
-make_brief "$tmp/lockfile.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/*.txt"},{"path":"package-lock.json"}]'
+make_brief "$tmp/lockfile.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/**"},{"path":"package-lock.json"}]'
 (
     cd "$fixture"
     "$fence_check" --brief "$tmp/lockfile.md"
@@ -140,7 +157,7 @@ newline_path=$'allowed-newline-a.txt\nallowed-newline-b.txt'
 printf '%s\n' changed >"$fixture/$newline_path"
 git -C "$fixture" add -- "$newline_path"
 git -C "$fixture" commit -qm "test: add a newline-bearing out-of-fence path"
-make_brief "$tmp/newline.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/*.txt"},{"path":"allowed-newline-a.txt"},{"path":"allowed-newline-b.txt"}]'
+make_brief "$tmp/newline.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/**"},{"path":"allowed-newline-a.txt"},{"path":"allowed-newline-b.txt"}]'
 if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/newline.md" 2>&1)"; then
     fail "a newline-bearing out-of-fence path was split into allowed paths"
 fi
@@ -168,6 +185,9 @@ for consumer in \
 done
 printf '%s\n' 'registry_set' >"$scan_fixture/.agents/skills/portable/assets/registry-consumer.sh"
 printf '%s\n' 'registry_set' >"$scan_fixture/.claude/skills/compat/assets/registry-consumer.sh"
+printf '%s\n' '{"status":"ok","properties":{"baseSha":{"enum":["go"]}}}' >"$scan_fixture/short-keys.json"
+printf '%s\n' 'status baseSha' >"$scan_fixture/scripts/short-key-consumer.sh"
+printf '%s\n' 'go' >"$scan_fixture/scripts/short-enum-consumer.sh"
 isolated_scan_out="$(cd "$scan_fixture" && "$scanner" agent-registry.json)" ||
     fail "isolated dependency scan failed"
 for consumer in \
@@ -182,6 +202,12 @@ for consumer in \
     .claude/skills/compat/assets/registry-consumer.sh; do
     grep -Fxq "$consumer" <<<"$isolated_scan_out" || fail "vendored scan missed $consumer"
 done
+short_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.json)" ||
+    fail "short-key dependency scan failed"
+grep -Fxq scripts/short-key-consumer.sh <<<"$short_scan_out" ||
+    fail "dependency scan missed short schema keys"
+grep -Fxq scripts/short-enum-consumer.sh <<<"$short_scan_out" ||
+    fail "dependency scan missed a short enum value"
 
 scan_out="$("$scanner" agent-registry.json)" || fail "real-tree dependency scan failed"
 for consumer in \

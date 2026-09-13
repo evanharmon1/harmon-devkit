@@ -120,6 +120,60 @@ git -C "$repo" diff --name-status -z "$comparison_base...HEAD" -- >"$changed_raw
 : >"$offenders"
 : >"$claims"
 
+_fence_pattern_parts=()
+_fence_path_parts=()
+
+match_path_components() {
+    local pattern_index="$1"
+    local path_index="$2"
+    local pattern_part
+
+    if [ "$pattern_index" -eq "${#_fence_pattern_parts[@]}" ]; then
+        [ "$path_index" -eq "${#_fence_path_parts[@]}" ]
+        return
+    fi
+
+    pattern_part="${_fence_pattern_parts[$pattern_index]}"
+    if [ "$pattern_part" = "**" ]; then
+        while [ "$path_index" -le "${#_fence_path_parts[@]}" ]; do
+            if match_path_components "$((pattern_index + 1))" "$path_index"; then
+                return 0
+            fi
+            path_index="$((path_index + 1))"
+        done
+        return 1
+    fi
+
+    [ "$path_index" -lt "${#_fence_path_parts[@]}" ] || return 1
+    case "${_fence_path_parts[$path_index]}" in
+    $pattern_part)
+        match_path_components "$((pattern_index + 1))" "$((path_index + 1))"
+        ;;
+    *) return 1 ;;
+    esac
+}
+
+path_matches_pattern() {
+    local path_rest="$1"
+    local pattern_rest="$2"
+    _fence_path_parts=()
+    _fence_pattern_parts=()
+
+    while [[ "$path_rest" == */* ]]; do
+        _fence_path_parts+=("${path_rest%%/*}")
+        path_rest="${path_rest#*/}"
+    done
+    _fence_path_parts+=("$path_rest")
+
+    while [[ "$pattern_rest" == */* ]]; do
+        _fence_pattern_parts+=("${pattern_rest%%/*}")
+        pattern_rest="${pattern_rest#*/}"
+    done
+    _fence_pattern_parts+=("$pattern_rest")
+
+    match_path_components 0 0
+}
+
 check_path() {
     path="$1"
     if is_tooling_owned "$path"; then
@@ -128,12 +182,10 @@ check_path() {
     fi
     matched=false
     while IFS= read -r pattern; do
-        case "$path" in
-        $pattern)
+        if path_matches_pattern "$path" "$pattern"; then
             matched=true
             break
-            ;;
-        esac
+        fi
     done <"$allowed"
     if [ "$matched" = false ]; then
         report_line="$(awk -F '\t' -v path="$path" '$1 == path { print $2; exit }' "$expanded")"
