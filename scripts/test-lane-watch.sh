@@ -87,6 +87,13 @@ cat >"$bin_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 set -u
 if [ "${1:-} ${2:-}" = "pr list" ]; then
+    if [ -f "$WATCH_FIXTURES/fail-pr-list" ]; then
+        exit 92
+    fi
+    if [ -f "$WATCH_FIXTURES/malformed-pr-list" ]; then
+        printf '%s\n' '{"error":"temporarily unavailable"}'
+        exit 0
+    fi
     branch=
     previous=
     for arg in "$@"; do
@@ -217,11 +224,39 @@ bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspa
 assert_count "$malformed_out" 0 '^AGENT delta:'
 rm "$fixture_dir/malformed-list"
 
+# GitHub indeterminacy terminates nonzero so persistent supervision re-arms.
+touch "$fixture_dir/malformed-pr-list"
+github_failure_err="$test_tmp/github-failure.err"
+if bash "$watcher" --iterations 1 --registry "$registry" \
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
+    >/dev/null 2>"$github_failure_err"; then
+    fail 'watcher accepted a malformed GitHub PR observation'
+fi
+assert_line "$github_failure_err" 'lane-watch: GitHub PR observation failed for lane delta'
+rm "$fixture_dir/malformed-pr-list"
+
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 1 >"$fixture_dir/pr-count"
+touch "$fixture_dir/fail-api"
+activity_failure_err="$test_tmp/activity-failure.err"
+if bash "$watcher" --iterations 1 --state-file "$test_tmp/activity-failure.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >/dev/null 2>"$activity_failure_err"; then
+    fail 'watcher accepted an indeterminate GitHub activity observation'
+fi
+assert_line "$activity_failure_err" 'lane-watch: GitHub activity observation failed for lane alpha'
+assert_count "$test_tmp/activity-failure.state" 1 '^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+'
+rm "$fixture_dir/fail-api"
+
 # An expired authoritative window hard-stops without another API snapshot.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 1 >"$fixture_dir/pr-count"
-printf 'PR\talpha\t#77 draft=false OPEN\t\nWINDOW\talpha\t77\t1\t0\nWALLCLOCK\trun\t0\t\n' \
+printf 'PR\talpha\t#77 draft=false OPEN\t\nWINDOW\talpha\t77\t1\t\nWALLCLOCK\trun\t0\t\n' \
     >"$test_tmp/expired.state"
+touch "$fixture_dir/fail-api"
 expired_out="$test_tmp/activity-expired.out"
 bash "$watcher" --iterations 1 --state-file "$test_tmp/expired.state" \
     --registry "$registry" --workspace-root "$workspace_root" \
@@ -229,6 +264,7 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/expired.state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$expired_out"
 assert_count "$expired_out" 0 '^POST-PROMOTION-ACTIVITY '
+rm "$fixture_dir/fail-api"
 
 # The same asset resolves the repository root and registry in the flattened
 # consumer layout when the lane spec supplies its required repository.
@@ -272,19 +308,35 @@ assert_line "$linked_out" 'SENTINEL alpha: LANE-ALPHA-READY-n1'
 
 # Nonces use a literal-safe identity alphabet rather than regex syntax.
 invalid_nonce_err="$test_tmp/invalid-nonce.err"
-bash "$watcher" --iterations 1 --registry "$registry" \
+if bash "$watcher" --iterations 1 --registry "$registry" \
     --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
     2099-01-01T00:00:00Z 'alpha:branch-alpha:n[1:evanharmon1/harmon-devkit' \
-    >/dev/null 2>"$invalid_nonce_err"
+    >/dev/null 2>"$invalid_nonce_err"; then
+    fail 'watcher accepted an invalid sentinel nonce'
+fi
 assert_line "$invalid_nonce_err" 'lane-watch: invalid sentinel nonce in spec: alpha:branch-alpha:n[1:evanharmon1/harmon-devkit'
 
 # Repository identity is mandatory; there is no ambient-repository fallback.
 missing_repo_err="$test_tmp/missing-repo.err"
-bash "$watcher" --iterations 1 --registry "$registry" \
+if bash "$watcher" --iterations 1 --registry "$registry" \
     --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1 \
-    >/dev/null 2>"$missing_repo_err"
+    >/dev/null 2>"$missing_repo_err"; then
+    fail 'watcher accepted a lane spec without owner/repo'
+fi
 assert_line "$missing_repo_err" 'lane-watch: invalid lane spec: alpha:branch-alpha:n1'
+
+# The immutable kickoff registry is validated before any poll begins.
+invalid_registry="$test_tmp/invalid-registry.json"
+printf '%s\n' '{"finders":"not-an-array"}' >"$invalid_registry"
+invalid_registry_err="$test_tmp/invalid-registry.err"
+if bash "$watcher" --iterations 1 --registry "$invalid_registry" \
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >/dev/null 2>"$invalid_registry_err"; then
+    fail 'watcher accepted a malformed kickoff registry'
+fi
+assert_line "$invalid_registry_err" "lane-watch: invalid agent registry: $invalid_registry"
 
 # Requested durable state fails loudly when its destination cannot be created.
 state_parent="$test_tmp/state-parent"
@@ -312,7 +364,7 @@ bash "$watcher" --iterations 1 --registry "$registry" \
     --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
     "$near_deadline" epsilon:branch-epsilon:n5:evanharmon1/harmon-devkit \
     >"$wallclock_out"
-assert_line "$wallclock_out" "WALLCLOCK run: 30 min to $near_deadline cap"
+assert_line "$wallclock_out" "WALLCLOCK run: 10 min to $near_deadline cap"
 
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED)|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
