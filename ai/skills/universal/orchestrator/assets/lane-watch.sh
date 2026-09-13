@@ -7,6 +7,7 @@
 #   USAGE-PAUSED <lane>
 #   WALLCLOCK <lane|run>: <text>
 #
+# Timestamp-versioned activity keys may emit one duplicate when adopting legacy state.
 # Every herdr/gh call is bounded. Failures mean indeterminate/no event; this watcher
 # never writes through either CLI. Pass --state-file so a re-armed watcher does
 # not repeat sentinels, transitions, or post-promotion activity.
@@ -450,7 +451,7 @@ discover_pr() {
     ' >/dev/null 2>&1 <<<"$payload" || return 1
     jq -r '
       .[0] // empty
-      | "#\(.number) draft=\(.isDraft) \(.state) head=\(.headRefOid[0:8])"
+      | "#\(.number) draft=\(.isDraft) \(.state) head=\(.headRefOid)"
     ' <<<"$payload" 2>/dev/null
 }
 
@@ -462,14 +463,15 @@ observe_pr() {
     old_pr="$(state_get PR "$lane" || true)"
     [ "$old_pr" != "$pr" ] || return 0
     state_set PR "$lane" "$pr"
-    if [[ "$pr" =~ ^#([0-9]+)\ draft=false\ (OPEN|CLOSED|MERGED)\ head=[0-9A-Fa-f]{8}$ ]]; then
+    if [[ "$pr" =~ ^#([0-9]+)\ draft=false\ (OPEN|CLOSED|MERGED)\ head=[0-9A-Fa-f]{8,64}$ ]]; then
         promoted_pr=${BASH_REMATCH[1]}
-        if [ -z "$old_pr" ] || [[ "$old_pr" =~ draft=true\ OPEN\ head=[0-9A-Fa-f]{8}$ ]]; then
+        if [ -z "$old_pr" ] || [[ "$old_pr" =~ draft=true\ OPEN(\ head=[0-9A-Fa-f]{8,64})?$ ]]; then
             state_set WINDOW "$lane" "$promoted_pr" "$((now + post_promotion_seconds))" ""
         fi
     fi
     persist_state
-    echo "PR $lane: $pr"
+    head_oid=${pr##* head=}
+    echo "PR $lane: ${pr%head=*}head=${head_oid:0:8}"
 }
 
 load_state
