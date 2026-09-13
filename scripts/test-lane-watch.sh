@@ -68,6 +68,9 @@ if [ "${1:-} ${2:-}" = "agent read" ]; then
         gamma) printf '%s\n' 'Prompt says `LANE-GAMMA-BLOCKED-n3`; do not print it yet.' ;;
         esac
     elif [ "$source" = visible ] && [ "$lane" = beta ]; then
+        if [ -f "$WATCH_FIXTURES/fail-visible-beta" ]; then
+            exit 92
+        fi
         printf '%s\n' 'Usage limit reached'
     fi
     exit 0
@@ -89,7 +92,7 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
         if [ "$previous" = --head ]; then branch=$arg; fi
         previous=$arg
     done
-    if [ "$branch" != "${WATCH_REPO_OWNER:-evanharmon1}:branch-alpha" ]; then
+    if [ "$branch" != branch-alpha ]; then
         printf '%s\n' '[]'
         exit 0
     fi
@@ -114,7 +117,7 @@ if [ "${1:-}" = api ]; then
     if [ -f "$WATCH_FIXTURES/fail-api" ] && [ "$phase" -eq 2 ]; then
         exit 92
     fi
-    if [ "$phase" -lt 3 ]; then
+    if [ "$phase" -lt 3 ] && [ ! -f "$WATCH_FIXTURES/race-activity" ]; then
         printf '%s\n' '[]'
         exit 0
     fi
@@ -153,7 +156,9 @@ common_args=(
 )
 
 primary_out="$test_tmp/primary.out"
+touch "$fixture_dir/race-activity"
 bash "$watcher" --iterations 4 "${common_args[@]}" >"$primary_out"
+rm "$fixture_dir/race-activity"
 
 # Three independently quoted specs pin the zsh word-splitting regression.
 assert_line "$primary_out" 'AGENT alpha: init -> working'
@@ -177,9 +182,15 @@ assert_count "$primary_out" 1 '^USAGE-PAUSED beta$'
 
 # A fresh process adopts state and does not re-emit either sentinel.
 restart_out="$test_tmp/restart.out"
+touch "$fixture_dir/fail-visible-beta"
 bash "$watcher" --iterations 1 "${common_args[@]}" >"$restart_out"
+rm "$fixture_dir/fail-visible-beta"
 assert_count "$restart_out" 0 '^SENTINEL '
 assert_count "$restart_out" 0 '^POST-PROMOTION-ACTIVITY '
+assert_count "$restart_out" 0 '^USAGE-PAUSED beta$'
+usage_recovery_out="$test_tmp/usage-recovery.out"
+bash "$watcher" --iterations 1 "${common_args[@]}" >"$usage_recovery_out"
+assert_count "$usage_recovery_out" 0 '^USAGE-PAUSED beta$'
 
 # A hanging external call times out without fabricating an absent transition.
 touch "$fixture_dir/hang-list"
@@ -222,6 +233,27 @@ WATCH_REPO=evanharmon1/consumer bash "$flattened_watcher" --iterations 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1 >"$flattened_out"
 assert_line "$flattened_out" 'SENTINEL alpha: LANE-ALPHA-READY-n1'
 
+# Nonces use a literal-safe identity alphabet rather than regex syntax.
+invalid_nonce_err="$test_tmp/invalid-nonce.err"
+bash "$watcher" --iterations 1 --registry "$registry" \
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z 'alpha:branch-alpha:n[1' \
+    >/dev/null 2>"$invalid_nonce_err"
+assert_line "$invalid_nonce_err" 'lane-watch: invalid sentinel nonce in spec: alpha:branch-alpha:n[1'
+
+# Requested durable state fails loudly when its destination cannot be created.
+state_parent="$test_tmp/state-parent"
+printf '%s\n' occupied >"$state_parent"
+state_failure_err="$test_tmp/state-failure.err"
+if bash "$watcher" --iterations 1 --state-file "$state_parent/watcher.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
+    >/dev/null 2>"$state_failure_err"; then
+    fail 'watcher accepted an unpersistable requested state file'
+fi
+assert_line "$state_failure_err" "lane-watch: could not persist state to $state_parent/watcher.state"
+
 # The warning uses the documented WALLCLOCK shape.
 wallclock_out="$test_tmp/wallclock.out"
 near_deadline="$(date -u -d '10 minutes' +%Y-%m-%dT%H:%M:%SZ)"
@@ -233,7 +265,8 @@ assert_line "$wallclock_out" "WALLCLOCK run: 30 min to $near_deadline cap"
 
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED)|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
-    "$primary_out" "$restart_out" "$hang_out" "$retry_out" "$flattened_out" "$wallclock_out"; then
+    "$primary_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$retry_out" \
+    "$flattened_out" "$wallclock_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
 

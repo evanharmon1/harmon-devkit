@@ -136,7 +136,7 @@ load_state() {
 save_state() {
     [ -n "$state_file" ] || return 0
     state_dir="$(dirname "$state_file")"
-    [ -d "$state_dir" ] || mkdir -p "$state_dir" || return 0
+    [ -d "$state_dir" ] || mkdir -p "$state_dir" || return 1
     state_tmp="${state_file}.tmp.$$"
     {
         for lane in "${!prev_agent[@]}"; do
@@ -164,8 +164,8 @@ save_state() {
             printf 'ACTIVITY\t%s\t%s\t%s\n' "$lane" "$kind" "$id"
         done
         printf 'WALLCLOCK\trun\t%s\t\n' "$warned"
-    } >"$state_tmp" || return 0
-    mv "$state_tmp" "$state_file" 2>/dev/null || true
+    } >"$state_tmp" || return 1
+    mv "$state_tmp" "$state_file" 2>/dev/null || return 1
 }
 
 bounded() {
@@ -258,12 +258,30 @@ discover_pr() {
     repo=$1
     branch=$2
     owner=${repo%%/*}
-    payload="$(bounded "$timeout_seconds" gh pr list --repo "$repo" --head "$owner:$branch" --state all \
+    payload="$(bounded "$timeout_seconds" gh pr list --repo "$repo" --head "$branch" --state all \
         --json number,isDraft,state,headRepositoryOwner)" || return 1
     jq -r --arg owner "$owner" '
       map(select(.headRepositoryOwner.login == $owner))
       | if length > 0 then .[0] | "#\(.number) draft=\(.isDraft) \(.state)" else empty end
     ' <<<"$payload" 2>/dev/null
+}
+
+observe_pr() {
+    lane=$1
+    pr=$2
+    now=$3
+    [ -n "$pr" ] || return 0
+    [ "${prev_pr[$lane]:-}" != "$pr" ] || return 0
+    old_pr=${prev_pr[$lane]:-}
+    echo "PR $lane: $pr"
+    prev_pr[$lane]=$pr
+    if [[ "$pr" =~ ^#([0-9]+)\ draft=false\ OPEN$ ]]; then
+        promoted_pr=${BASH_REMATCH[1]}
+        if [[ "$old_pr" =~ draft=true\ OPEN$ ]]; then
+            window_pr[$lane]=$promoted_pr
+            window_until[$lane]=$((now + post_promotion_seconds))
+        fi
+    fi
 }
 
 load_state
@@ -280,7 +298,10 @@ while true; do
     fi
     if [ "$now" -ge "$deadline" ]; then
         echo "WALLCLOCK run: deadline $deadline_iso reached"
-        save_state
+        save_state || {
+            echo "lane-watch: could not persist state to $state_file" >&2
+            exit 1
+        }
         exit 0
     fi
 
@@ -295,6 +316,12 @@ while true; do
             echo "lane-watch: invalid lane spec: $spec" >&2
             continue
         fi
+        case "$nonce" in
+        *[!A-Za-z0-9_-]*)
+            echo "lane-watch: invalid sentinel nonce in spec: $spec" >&2
+            continue
+            ;;
+        esac
         repo=${repo:-$default_repo}
         if [ -z "$repo" ]; then
             echo "lane-watch: repository omitted and current repository could not be derived: $spec" >&2
@@ -335,29 +362,19 @@ while true; do
             seen_sentinel[$sentinel_key]=1
         fi
 
-        pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 8 || true)"
-        if grep -Fq 'Usage limit reached' <<<"$pane_visible"; then
-            if [ "${usage_paused[$lane]:-0}" -eq 0 ]; then
-                echo "USAGE-PAUSED $lane"
-                usage_paused[$lane]=1
+        if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 8)"; then
+            if grep -Fq 'Usage limit reached' <<<"$pane_visible"; then
+                if [ "${usage_paused[$lane]:-0}" -eq 0 ]; then
+                    echo "USAGE-PAUSED $lane"
+                    usage_paused[$lane]=1
+                fi
+            else
+                usage_paused[$lane]=0
             fi
-        else
-            usage_paused[$lane]=0
         fi
 
         pr="$(discover_pr "$repo" "$branch" || true)"
-        if [ -n "$pr" ] && [ "${prev_pr[$lane]:-}" != "$pr" ]; then
-            old_pr=${prev_pr[$lane]:-}
-            echo "PR $lane: $pr"
-            prev_pr[$lane]=$pr
-            if [[ "$pr" =~ ^#([0-9]+)\ draft=false\ OPEN$ ]]; then
-                promoted_pr=${BASH_REMATCH[1]}
-                if [[ "$old_pr" =~ draft=true\ OPEN$ ]]; then
-                    window_pr[$lane]=$promoted_pr
-                    window_until[$lane]=$((now + post_promotion_seconds))
-                fi
-            fi
-        fi
+        observe_pr "$lane" "$pr" "$now"
 
         # Seed activity while the PR is still draft. The first ready-state poll
         # can then report anything that arrived after the last draft snapshot,
@@ -365,9 +382,14 @@ while true; do
         if [[ "$pr" =~ ^#([0-9]+)\ draft=true\ OPEN$ ]]; then
             draft_pr=${BASH_REMATCH[1]}
             if rows="$(activity_snapshot "$repo" "$draft_pr")"; then
-                while IFS=$'\t' read -r _actor kind id; do
-                    [ -z "$id" ] || seen_activity["$lane:$kind:$id"]=1
-                done <<<"$rows"
+                confirmed_pr="$(discover_pr "$repo" "$branch" || true)"
+                if [ "$confirmed_pr" = "$pr" ]; then
+                    while IFS=$'\t' read -r _actor kind id; do
+                        [ -z "$id" ] || seen_activity["$lane:$kind:$id"]=1
+                    done <<<"$rows"
+                elif [ -n "$confirmed_pr" ]; then
+                    observe_pr "$lane" "$confirmed_pr" "$now"
+                fi
             fi
         fi
 
@@ -376,7 +398,10 @@ while true; do
         fi
     done
 
-    save_state
+    save_state || {
+        echo "lane-watch: could not persist state to $state_file" >&2
+        exit 1
+    }
     poll_count=$((poll_count + 1))
     if [ "$iterations" -gt 0 ] && [ "$poll_count" -ge "$iterations" ]; then
         exit 0
