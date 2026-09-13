@@ -116,24 +116,82 @@ fi
     exit 2
 }
 
-declare -A prev_agent prev_pr usage_paused seen_sentinel
-declare -A window_pr window_until window_since seen_activity
+state_kinds=()
+state_keys=()
+state_values=()
+state_extras=()
+state_details=()
 warned=0
+
+state_get() {
+    wanted_kind=$1
+    wanted_key=$2
+    wanted_field=${3:-value}
+    index=0
+    while [ "$index" -lt "${#state_kinds[@]}" ]; do
+        if [ "${state_kinds[$index]}" = "$wanted_kind" ] && [ "${state_keys[$index]}" = "$wanted_key" ]; then
+            case "$wanted_field" in
+            value) printf '%s' "${state_values[$index]}" ;;
+            extra) printf '%s' "${state_extras[$index]}" ;;
+            detail) printf '%s' "${state_details[$index]}" ;;
+            esac
+            return 0
+        fi
+        index=$((index + 1))
+    done
+    return 1
+}
+
+state_set() {
+    wanted_kind=$1
+    wanted_key=$2
+    wanted_value=$3
+    wanted_extra=${4:-}
+    wanted_detail=${5:-}
+    index=0
+    while [ "$index" -lt "${#state_kinds[@]}" ]; do
+        if [ "${state_kinds[$index]}" = "$wanted_kind" ] && [ "${state_keys[$index]}" = "$wanted_key" ]; then
+            state_values[$index]=$wanted_value
+            state_extras[$index]=$wanted_extra
+            state_details[$index]=$wanted_detail
+            return 0
+        fi
+        index=$((index + 1))
+    done
+    state_kinds[${#state_kinds[@]}]=$wanted_kind
+    state_keys[${#state_keys[@]}]=$wanted_key
+    state_values[${#state_values[@]}]=$wanted_value
+    state_extras[${#state_extras[@]}]=$wanted_extra
+    state_details[${#state_details[@]}]=$wanted_detail
+}
+
+state_delete() {
+    wanted_kind=$1
+    wanted_key=$2
+    index=0
+    while [ "$index" -lt "${#state_kinds[@]}" ]; do
+        if [ "${state_kinds[$index]}" = "$wanted_kind" ] && [ "${state_keys[$index]}" = "$wanted_key" ]; then
+            unset 'state_kinds[index]' 'state_keys[index]' 'state_values[index]' \
+                'state_extras[index]' 'state_details[index]'
+            state_kinds=("${state_kinds[@]}")
+            state_keys=("${state_keys[@]}")
+            state_values=("${state_values[@]}")
+            state_extras=("${state_extras[@]}")
+            state_details=("${state_details[@]}")
+            return 0
+        fi
+        index=$((index + 1))
+    done
+}
 
 load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
-        AGENT) prev_agent["$lane"]=$value ;;
-        SENTINEL) seen_sentinel["$lane:$value"]=1 ;;
-        PR) prev_pr["$lane"]=$value ;;
-        USAGE) usage_paused["$lane"]=$value ;;
-        WINDOW)
-            window_pr["$lane"]=$value
-            window_until["$lane"]=$extra
-            window_since["$lane"]=$detail
-            ;;
-        ACTIVITY) seen_activity["$lane:$value:$extra"]=1 ;;
+        AGENT | PR | USAGE) state_set "$kind" "$lane" "$value" ;;
+        SENTINEL) state_set SENTINEL "$lane:$value" 1 ;;
+        WINDOW) state_set WINDOW "$lane" "$value" "$extra" "$detail" ;;
+        ACTIVITY) state_set ACTIVITY "$lane:$value:$extra" 1 ;;
         WALLCLOCK) warned=$value ;;
         esac
     done <"$state_file"
@@ -145,30 +203,26 @@ save_state() {
     [ -d "$state_dir" ] || mkdir -p "$state_dir" || return 1
     state_tmp="${state_file}.tmp.$$"
     {
-        for lane in "${!prev_agent[@]}"; do
-            printf 'AGENT\t%s\t%s\t\n' "$lane" "${prev_agent[$lane]}"
-        done
-        for key in "${!seen_sentinel[@]}"; do
-            lane=${key%%:*}
-            sentinel=${key#*:}
-            printf 'SENTINEL\t%s\t%s\t\n' "$lane" "$sentinel"
-        done
-        for lane in "${!prev_pr[@]}"; do
-            printf 'PR\t%s\t%s\t\n' "$lane" "${prev_pr[$lane]}"
-        done
-        for lane in "${!usage_paused[@]}"; do
-            printf 'USAGE\t%s\t%s\t\n' "$lane" "${usage_paused[$lane]}"
-        done
-        for lane in "${!window_pr[@]}"; do
-            printf 'WINDOW\t%s\t%s\t%s\t%s\n' "$lane" "${window_pr[$lane]}" \
-                "${window_until[$lane]}" "${window_since[$lane]:-}"
-        done
-        for key in "${!seen_activity[@]}"; do
-            lane=${key%%:*}
-            rest=${key#*:}
-            kind=${rest%%:*}
-            id=${rest#*:}
-            printf 'ACTIVITY\t%s\t%s\t%s\n' "$lane" "$kind" "$id"
+        index=0
+        while [ "$index" -lt "${#state_kinds[@]}" ]; do
+            kind=${state_kinds[$index]}
+            key=${state_keys[$index]}
+            value=${state_values[$index]}
+            extra=${state_extras[$index]}
+            detail=${state_details[$index]}
+            case "$kind" in
+            AGENT | PR | USAGE)
+                printf '%s\t%s\t%s\t\n' "$kind" "$key" "$value"
+                ;;
+            SENTINEL) printf 'SENTINEL\t%s\t%s\t\n' "${key%%:*}" "${key#*:}" ;;
+            WINDOW) printf 'WINDOW\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
+            ACTIVITY)
+                lane=${key%%:*}
+                rest=${key#*:}
+                printf 'ACTIVITY\t%s\t%s\t%s\n' "$lane" "${rest%%:*}" "${rest#*:}"
+                ;;
+            esac
+            index=$((index + 1))
         done
         printf 'WALLCLOCK\trun\t%s\t\n' "$warned"
     } >"$state_tmp" || return 1
@@ -242,13 +296,12 @@ poll_activity() {
     repo=$2
     pr_number=$3
     now=$4
-    since=${window_since[$lane]:-}
+    since="$(state_get WINDOW "$lane" detail || true)"
     if [ -z "$since" ]; then
         since="$(promotion_epoch "$repo" "$pr_number")" || return 0
-        window_since[$lane]=$since
-        window_until[$lane]=$((since + post_promotion_seconds))
+        state_set WINDOW "$lane" "$pr_number" "$((since + post_promotion_seconds))" "$since"
     fi
-    until=${window_until[$lane]:-0}
+    until="$(state_get WINDOW "$lane" extra || printf 0)"
     expired=0
     [ "$now" -le "$until" ] || expired=1
 
@@ -256,16 +309,16 @@ poll_activity() {
 
     while IFS=$'\t' read -r actor kind id created; do
         [ -n "$id" ] || continue
-        [ "$created" -gt "$since" ] || continue
+        [ "$created" -ge "$since" ] || continue
         key="$lane:$kind:$id"
-        if [ -z "${seen_activity[$key]:-}" ]; then
+        if ! state_get ACTIVITY "$key" >/dev/null; then
             echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
-            seen_activity[$key]=1
+            state_set ACTIVITY "$key" 1
         fi
     done <<<"$rows"
 
     if [ "$expired" -eq 1 ]; then
-        unset 'window_pr[$lane]' 'window_until[$lane]' 'window_since[$lane]'
+        state_delete WINDOW "$lane"
     fi
 }
 
@@ -289,8 +342,11 @@ discover_pr() {
     payload="$(bounded "$timeout_seconds" gh pr list --repo "$repo" --head "$branch" --state all \
         --json number,isDraft,state,headRepositoryOwner)" || return 1
     jq -r --arg owner "$owner" '
-      map(select(.headRepositoryOwner.login == $owner))
-      | if length > 0 then .[0] | "#\(.number) draft=\(.isDraft) \(.state)" else empty end
+      if length == 1 then .[0]
+      else map(select(.headRepositoryOwner.login == $owner))
+        | if length == 1 then .[0] else empty end
+      end
+      | "#\(.number) draft=\(.isDraft) \(.state)"
     ' <<<"$payload" 2>/dev/null
 }
 
@@ -299,16 +355,14 @@ observe_pr() {
     pr=$2
     now=$3
     [ -n "$pr" ] || return 0
-    [ "${prev_pr[$lane]:-}" != "$pr" ] || return 0
-    old_pr=${prev_pr[$lane]:-}
+    old_pr="$(state_get PR "$lane" || true)"
+    [ "$old_pr" != "$pr" ] || return 0
     echo "PR $lane: $pr"
-    prev_pr[$lane]=$pr
+    state_set PR "$lane" "$pr"
     if [[ "$pr" =~ ^#([0-9]+)\ draft=false\ OPEN$ ]]; then
         promoted_pr=${BASH_REMATCH[1]}
-        if [[ "$old_pr" =~ draft=true\ OPEN$ ]]; then
-            window_pr[$lane]=$promoted_pr
-            window_until[$lane]=$((now + post_promotion_seconds))
-            window_since[$lane]=
+        if [ -z "$old_pr" ] || [[ "$old_pr" =~ draft=true\ OPEN$ ]]; then
+            state_set WINDOW "$lane" "$promoted_pr" "$((now + post_promotion_seconds))" ""
         fi
     fi
 }
@@ -335,7 +389,8 @@ while true; do
     fi
 
     agents_available=0
-    if agents="$(bounded "$timeout_seconds" herdr agent list)" && jq -e . >/dev/null 2>&1 <<<"$agents"; then
+    if agents="$(bounded "$timeout_seconds" herdr agent list)" &&
+        jq -e '.result.agents | type == "array"' >/dev/null 2>&1 <<<"$agents"; then
         agents_available=1
     fi
 
@@ -367,10 +422,10 @@ while true; do
         if [ "$agents_available" -eq 1 ]; then
             agent_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
             agent_state=${agent_state:-absent}
-            previous=${prev_agent[$lane]:-init}
+            previous="$(state_get AGENT "$lane" || printf init)"
             if [ "$previous" != "$agent_state" ]; then
                 echo "AGENT $lane: $previous -> $agent_state"
-                prev_agent[$lane]=$agent_state
+                state_set AGENT "$lane" "$agent_state"
             fi
         fi
 
@@ -382,31 +437,32 @@ while true; do
             [ -z "$sentinel" ] || pane_only=1
         fi
         sentinel_key="$lane:$sentinel"
-        if [ -n "$sentinel" ] && [ -z "${seen_sentinel[$sentinel_key]:-}" ]; then
+        if [ -n "$sentinel" ] && ! state_get SENTINEL "$sentinel_key" >/dev/null; then
             if [ "$pane_only" -eq 1 ]; then
                 echo "SENTINEL $lane: $sentinel (pane only)"
             else
                 echo "SENTINEL $lane: $sentinel"
             fi
-            seen_sentinel[$sentinel_key]=1
+            state_set SENTINEL "$sentinel_key" 1
         fi
 
         if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 8)"; then
             if grep -Fq 'Usage limit reached' <<<"$pane_visible"; then
-                if [ "${usage_paused[$lane]:-0}" -eq 0 ]; then
+                if [ "$(state_get USAGE "$lane" || printf 0)" -eq 0 ]; then
                     echo "USAGE-PAUSED $lane"
-                    usage_paused[$lane]=1
+                    state_set USAGE "$lane" 1
                 fi
             else
-                usage_paused[$lane]=0
+                state_set USAGE "$lane" 0
             fi
         fi
 
         pr="$(discover_pr "$repo" "$branch" || true)"
         observe_pr "$lane" "$pr" "$now"
 
-        if [ -n "${window_pr[$lane]:-}" ]; then
-            poll_activity "$lane" "$repo" "${window_pr[$lane]}" "$now"
+        active_pr="$(state_get WINDOW "$lane" || true)"
+        if [ -n "$active_pr" ]; then
+            poll_activity "$lane" "$repo" "$active_pr" "$now"
         fi
     done
 

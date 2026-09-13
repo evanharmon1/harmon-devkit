@@ -57,6 +57,10 @@ if [ -f "$WATCH_FIXTURES/hang-list" ] && [ "${1:-} ${2:-}" = "agent list" ]; the
     sleep 5
 fi
 if [ "${1:-} ${2:-}" = "agent list" ]; then
+    if [ -f "$WATCH_FIXTURES/malformed-list" ]; then
+        printf '%s\n' '{"error":"temporarily unavailable"}'
+        exit 0
+    fi
     printf '%s\n' '{"result":{"agents":[{"name":"alpha","agent_status":"working"},{"name":"beta","agent_status":"idle"},{"name":"gamma","agent_status":"blocked"}]}}'
     exit 0
 fi
@@ -104,9 +108,9 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
     printf '%s\n' "$count" >"$count_file"
     printf '%s\n' "$count" >"$WATCH_FIXTURES/phase"
     case "$count" in
-    1) printf '%s\n' '[{"number":77,"isDraft":true,"state":"OPEN","headRepositoryOwner":{"login":"'"${WATCH_REPO_OWNER:-evanharmon1}"'"}}]' ;;
-    2 | 3) printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN","headRepositoryOwner":{"login":"'"${WATCH_REPO_OWNER:-evanharmon1}"'"}}]' ;;
-    *) printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED","headRepositoryOwner":{"login":"'"${WATCH_REPO_OWNER:-evanharmon1}"'"}}]' ;;
+    1) printf '%s\n' '[{"number":77,"isDraft":true,"state":"OPEN","headRepositoryOwner":{"login":"'"${WATCH_HEAD_OWNER:-evanharmon1}"'"}}]' ;;
+    2 | 3) printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN","headRepositoryOwner":{"login":"'"${WATCH_HEAD_OWNER:-evanharmon1}"'"}}]' ;;
+    *) printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED","headRepositoryOwner":{"login":"'"${WATCH_HEAD_OWNER:-evanharmon1}"'"}}]' ;;
     esac
     exit 0
 fi
@@ -130,7 +134,7 @@ if [ "${1:-}" = api ]; then
         printf '%s\n' '[{"id":501,"submitted_at":"2098-01-01T00:00:01Z","user":{"id":999,"login":"trusted-codex","type":"Bot"}}]'
         ;;
     */issues/*/comments?per_page=100)
-        printf '%s\n' '[{"id":601,"created_at":"2098-01-01T00:00:02Z","user":{"id":111,"login":"maintainer","type":"User"}}]'
+        printf '%s\n' '[{"id":601,"created_at":"2098-01-01T00:00:00Z","user":{"id":111,"login":"maintainer","type":"User"}}]'
         ;;
     */pulls/*/comments?per_page=100)
         printf '%s\n' '[{"id":701,"created_at":"2098-01-01T00:00:03Z","user":{"id":222,"login":"untrusted-bot","type":"Bot"}}]'
@@ -205,6 +209,16 @@ timeout 8 bash "$watcher" --iterations 1 \
 assert_count "$hang_out" 0 '^AGENT delta:'
 rm "$fixture_dir/hang-list"
 
+# A syntactically valid Herdr error envelope is indeterminate, not absence.
+touch "$fixture_dir/malformed-list"
+malformed_out="$test_tmp/malformed-list.out"
+bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
+    >"$malformed_out"
+assert_count "$malformed_out" 0 '^AGENT delta:'
+rm "$fixture_dir/malformed-list"
+
 # An expired activity window survives a failed final snapshot and closes only
 # after a successful retry, so activity during an API outage is not lost.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
@@ -218,6 +232,19 @@ bash "$watcher" --iterations 3 --state-file "$test_tmp/retry.state" \
 assert_line "$retry_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
 assert_line "$retry_out" 'POST-PROMOTION-ACTIVITY alpha: maintainer comment 601'
 rm "$fixture_dir/fail-api"
+
+# A fork-owned head is accepted when it is the unique branch match, and a
+# first observation after promotion still opens the timestamp-bound window.
+printf '%s\n' 1 >"$fixture_dir/pr-count"
+rm -f "$fixture_dir/phase"
+fork_out="$test_tmp/fork-ready.out"
+WATCH_HEAD_OWNER=contributor bash "$watcher" --iterations 2 \
+    --state-file "$test_tmp/fork.state" --registry "$registry" \
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$fork_out"
+assert_line "$fork_out" 'PR alpha: #77 draft=false OPEN'
+assert_line "$fork_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
 
 # The same asset resolves the repository root and registry in the flattened
 # consumer layout, and a three-field spec derives that consumer repository.
@@ -280,6 +307,9 @@ if bash "$watcher" --iterations 1 --state-file "$state_parent/watcher.state" \
 fi
 assert_line "$state_failure_err" "lane-watch: could not persist state to $state_parent/watcher.state"
 
+# The watcher state implementation stays compatible with macOS Bash 3.2.
+assert_count "$watcher" 0 'declare -A'
+
 # The warning uses the documented WALLCLOCK shape.
 wallclock_out="$test_tmp/wallclock.out"
 near_deadline="$(date -u -d '10 minutes' +%Y-%m-%dT%H:%M:%SZ)"
@@ -292,7 +322,7 @@ assert_line "$wallclock_out" "WALLCLOCK run: 30 min to $near_deadline cap"
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED)|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$retry_out" \
-    "$flattened_out" "$linked_out" "$wallclock_out"; then
+    "$malformed_out" "$fork_out" "$flattened_out" "$linked_out" "$wallclock_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
 
