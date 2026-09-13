@@ -99,6 +99,11 @@
       "properties": {
         "slug": { "$ref": "#/$defs/slug" },
         "display_name": { "type": "string", "minLength": 1 },
+        "cli_ids": {
+          "description": "Known harness-facing model identifiers when a harness does not accept the registry slug directly. Keys are harness slugs and values are the exact model identifiers passed to that harness. This object is intentionally optional and partial; semantic validation rejects keys that do not name a registered harness.",
+          "type": "object",
+          "additionalProperties": true
+        },
         "tier": {
           "description": "The model stratum (specs/dev-flow-v2.md, #635) — seeded from this repo's .devflow.toml [tier.*] tables, which harmon-init#1081 removes once resolution reads this field instead.",
           "enum": ["local", "economy", "standard", "frontier", "apex"]

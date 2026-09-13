@@ -15,7 +15,9 @@
 #   3. provisioning  — setup-github-labels.sh renders those labels from the
 #                      registry instead of hand-listing a forkable copy.
 #   4. wrappers      — every claude-<family> provider wrapper maps to a
-#                      provider-rewired harness registered in agent-registry.json.
+#                      provider-rewired harness registered in agent-registry.json;
+#                      where the registry declares exact wrapper CLI IDs, its
+#                      exported model set matches them.
 #   5. adapters      — the provisionable Foreman adapters are internally coherent;
 #                      the LIVE comparison against the pinned Foreman release is
 #                      `task foreman:audit-adapters` (network — out of this gate).
@@ -211,6 +213,55 @@ if [ -f "$wrappers_glob" ]; then
         fam_ok="$(jq -r --arg f "$family" '[.families[] | select(.slug == $f)] | length' "$registry")"
         if [ "$ok" != 1 ] || [ "$fam_ok" -lt 1 ]; then
             fail "provider wrapper '$fn' in $wrappers_glob has no matching registry row — add a provider-rewired harness '$harness' (family_constraint fixed→$family) and a family '$family' to agent-registry.json, or remove the wrapper"
+        fi
+
+        declared_ids="$(jq -r --arg f "$family" --arg h "$harness" '
+            .families[] | select(.slug == $f) | .models[] | .cli_ids[$h] // empty
+        ' "$registry" | sort -u)"
+        if [ -n "$declared_ids" ]; then
+            wrapper_body="$(awk -v fn="$fn" '
+                $0 == fn "() {" { in_wrapper = 1 }
+                in_wrapper { print }
+                in_wrapper && $0 == "}" { exit }
+            ' "$wrappers_glob")"
+            exported_ids="$(printf '%s\n' "$wrapper_body" |
+                sed -n -E 's/^[[:space:]]*export (ANTHROPIC_MODEL|ANTHROPIC_DEFAULT_(OPUS|SONNET|HAIKU|FABLE)_MODEL|CLAUDE_CODE_SUBAGENT_MODEL)="([^"]+)"/\3/p' |
+                sort -u)"
+            if [ "$exported_ids" != "$declared_ids" ]; then
+                fail "provider wrapper '$fn' exports model IDs [$exported_ids] but registry harness '$harness' declares [$declared_ids] — update the wrapper exports and model cli_ids together"
+            fi
+
+            # Provider wrappers consistently map their strongest exposed tier
+            # to main/Opus/Fable, standard (or strongest) to Sonnet, and their
+            # lightest exposed tier to Haiku/subagents. Derive those assignments
+            # from registry invariants so no family-specific mapping can drift.
+            while IFS=$'\t' read -r variable expected_id; do
+                actual_id="$(printf '%s\n' "$wrapper_body" |
+                    sed -n -E "s/^[[:space:]]*export ${variable}=\"([^\"]+)\"/\1/p")"
+                if [ -z "$expected_id" ] || [ "$actual_id" != "$expected_id" ]; then
+                    fail "provider wrapper '$fn' maps $variable to [$actual_id], expected registry-derived [$expected_id]"
+                fi
+            done < <(jq -r --arg f "$family" --arg h "$harness" '
+                def rank: {local: 0, economy: 1, standard: 2, frontier: 3, apex: 4}[.];
+                [.families[] | select(.slug == $f) | .models[] | select(.cli_ids[$h])]
+                    | sort_by(.tier | rank) as $models
+                    | ($models[-1].cli_ids[$h]) as $strongest
+                    | ($models[0].cli_ids[$h]) as $lightest
+                    | ([ $models[] | select(.tier == "standard") ]
+                        | if length == 0 then $strongest
+                          elif length == 1 then .[0].cli_ids[$h]
+                          else map(select(.default == true))[0].cli_ids[$h]
+                          end) as $standard
+                    | [
+                        ["ANTHROPIC_MODEL", $strongest],
+                        ["ANTHROPIC_DEFAULT_OPUS_MODEL", $strongest],
+                        ["ANTHROPIC_DEFAULT_FABLE_MODEL", $strongest],
+                        ["ANTHROPIC_DEFAULT_SONNET_MODEL", $standard],
+                        ["ANTHROPIC_DEFAULT_HAIKU_MODEL", $lightest],
+                        ["CLAUDE_CODE_SUBAGENT_MODEL", $lightest]
+                      ][]
+                    | @tsv
+            ' "$registry")
         fi
     done
 else

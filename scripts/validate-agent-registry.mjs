@@ -54,6 +54,7 @@ errors.push(...engine.validate(registry, schema, '$registry'))
 if (errors.length === 0) {
   const familySlugs = new Set(registry.families.map((family) => family.slug))
   const harnessSlugs = new Set(registry.harnesses.map((harness) => harness.slug))
+  const harnessesBySlug = new Map(registry.harnesses.map((harness) => [harness.slug, harness]))
 
   for (const slug of duplicateSlugs(registry.families))
     semanticError(`duplicate family slug: ${slug}`)
@@ -79,6 +80,28 @@ if (errors.length === 0) {
   for (const family of registry.families) {
     for (const slug of duplicateSlugs(family.models)) {
       semanticError(`family ${family.slug} has duplicate model slug: ${slug}`)
+    }
+    for (const model of family.models) {
+      for (const [harnessSlug, cliId] of Object.entries(model.cli_ids ?? {})) {
+        const harness = harnessesBySlug.get(harnessSlug)
+        if (!harness) {
+          semanticError(
+            `family ${family.slug} model ${model.slug} cli_ids references unknown harness ${harnessSlug}`
+          )
+        } else if (
+          harness.family_constraint.kind === 'fixed' &&
+          harness.family_constraint.family !== family.slug
+        ) {
+          semanticError(
+            `family ${family.slug} model ${model.slug} cli_ids references harness ${harnessSlug}, which is fixed to family ${harness.family_constraint.family}`
+          )
+        }
+        if (typeof cliId !== 'string' || cliId.trim().length === 0 || cliId !== cliId.trim()) {
+          semanticError(
+            `family ${family.slug} model ${model.slug} cli_ids.${harnessSlug} must be a non-empty string without surrounding whitespace`
+          )
+        }
+      }
     }
     if (harnessSlugs.has(family.slug)) {
       semanticError(`slug ${family.slug} is both a model family and a harness`)

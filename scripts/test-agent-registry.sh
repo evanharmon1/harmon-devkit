@@ -22,6 +22,69 @@ command -v node >/dev/null 2>&1 || fail "node is required to validate the agent 
 
 node "$validator" "$registry" "$schema"
 
+node --input-type=module - "$registry" <<'NODE'
+import { readFile } from 'node:fs/promises'
+import { deepStrictEqual } from 'node:assert/strict'
+
+const registry = JSON.parse(await readFile(process.argv[2], 'utf8'))
+
+const expectedInventory = {
+    claude: ['fable|Fable|apex', 'opus|Opus|frontier', 'sonnet|Sonnet|standard', 'haiku|Haiku|economy'],
+    gpt: ['astra|Astra|apex', 'sol|Sol|frontier', 'terra|Terra|standard', 'luna|Luna|economy'],
+    mai: ['code-1-1-flash|Code-1.1-Flash|economy', 'thinking-1|Thinking-1|standard'],
+    qwen: [
+        'max|3.8 Max|frontier',
+        'coder-plus|3 Coder Plus|standard',
+        'coder|3 Coder|economy',
+        'flash|3.8 Flash|economy',
+        'coder-next|3 Coder Next|standard',
+        'coder-30b|3 Coder 30B|local'
+    ],
+    deepseek: ['v4-1-flash|V4.1 Flash|standard'],
+    glm: ['5-3|5.3|standard', '5-3-flash|5.3 Flash|economy'],
+    kimi: ['k3|K3|standard'],
+    minimax: ['m3|M3|standard'],
+    gemini: [
+        '3-1-pro|3.1 Pro|frontier',
+        '3-8-flash|3.8 Flash|frontier',
+        '3-7-flash|3.7 Flash|standard',
+        '3-6-flash|3.6 Flash|standard',
+        '3-5-flash-lite|3.5 Flash-Lite|economy'
+    ],
+    mistral: ['medium-3-5|Medium 3.5|frontier', 'small-4|Small 4|standard']
+}
+const actualInventory = Object.fromEntries(
+    registry.families.map((entry) => [
+        entry.slug,
+        entry.models.map(({ slug, display_name: displayName, tier }) => `${slug}|${displayName}|${tier}`)
+    ])
+)
+deepStrictEqual(actualInventory, expectedInventory, 'shipped model inventory must match the 2026-09 refresh')
+
+const expectedCliIds = {
+    'gpt/astra': { 'codex-cli': 'gpt-6-astra' },
+    'gpt/sol': { 'codex-cli': 'gpt-5.6-sol' },
+    'gpt/terra': { 'codex-cli': 'gpt-5.6-terra' },
+    'gpt/luna': { 'codex-cli': 'gpt-5.6-luna' },
+    'qwen/max': { 'claude-code-qwen': 'qwen3.8-max' },
+    'qwen/coder-plus': { 'claude-code-qwen': 'qwen3-coder-plus' },
+    'qwen/flash': { 'claude-code-qwen': 'qwen3.8-flash' },
+    'deepseek/v4-1-flash': { 'claude-code-deepseek': 'deepseek-flash' },
+    'glm/5-3': { 'claude-code-glm': 'glm-5.3' },
+    'glm/5-3-flash': { 'claude-code-glm': 'glm-5.3-flash' }
+}
+const actualCliIds = Object.fromEntries(
+    registry.families.flatMap((entry) =>
+        entry.models
+            .filter(({ cli_ids: cliIds }) => cliIds)
+            .map(({ slug, cli_ids: cliIds }) => [`${entry.slug}/${slug}`, cliIds])
+    )
+)
+deepStrictEqual(actualCliIds, expectedCliIds, 'harness-facing model IDs must match the 2026-09 refresh')
+
+console.log('PASS: shipped model inventory includes the 2026-09 refresh')
+NODE
+
 test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 mutated="${test_tmp}/agent-registry.json"
@@ -109,6 +172,21 @@ switch (mutation) {
     // 65 chars: one over the family bound (64, from the longest description
     // wrapper) — the schema's maxLength must reject it declaratively (#680).
     registry.families[0].display_name = 'X'.repeat(65)
+    break
+  case 'empty-model-cli-id':
+    modelOf('gpt', 'astra').cli_ids['codex-cli'] = ''
+    break
+  case 'whitespace-model-cli-id':
+    modelOf('gpt', 'astra').cli_ids['codex-cli'] = '   '
+    break
+  case 'surrounding-whitespace-model-cli-id':
+    modelOf('gpt', 'astra').cli_ids['codex-cli'] = ' gpt-6-astra '
+    break
+  case 'unknown-model-cli-harness':
+    modelOf('gpt', 'astra').cli_ids['unknown-cli'] = 'gpt-6-astra'
+    break
+  case 'incompatible-model-cli-harness':
+    modelOf('gpt', 'astra').cli_ids = { 'claude-code': 'gpt-6-astra' }
     break
   case 'overlong-adapter-display-name':
     // 48 chars: inside the shared 50 cap but over the adapter-specific 47 —
@@ -557,6 +635,21 @@ rejects "a non-production legacy claude adapter" \
 rejects "a display_name over the schema's declarative length cap" \
     'overlong-display-name' \
     'must contain at most 64 character(s)'
+rejects "an empty harness-facing model id" \
+    'empty-model-cli-id' \
+    'cli_ids.codex-cli must be a non-empty string'
+rejects "a whitespace-only harness-facing model id" \
+    'whitespace-model-cli-id' \
+    'cli_ids.codex-cli must be a non-empty string'
+rejects "surrounding whitespace in a harness-facing model id" \
+    'surrounding-whitespace-model-cli-id' \
+    'cli_ids.codex-cli must be a non-empty string without surrounding whitespace'
+rejects "a harness-facing model id keyed by an unknown harness" \
+    'unknown-model-cli-harness' \
+    'cli_ids references unknown harness unknown-cli'
+rejects "a harness-facing model id keyed by an incompatible fixed-family harness" \
+    'incompatible-model-cli-harness' \
+    'cli_ids references harness claude-code, which is fixed to family claude'
 rejects "an adapter display_name over its tighter 47-char cap" \
     'overlong-adapter-display-name' \
     'must contain at most 47 character(s)'
