@@ -679,6 +679,24 @@ function checkHeadAgreement(kind, envelope, errors) {
       }
     }
   }
+  if (kind === 'integrator' && Array.isArray(payload.finder_cycles)) {
+    for (const [i, fc] of payload.finder_cycles.entries()) {
+      if (!fc || typeof fc !== 'object') continue
+      if (typeof fc.head === 'string' && fc.head !== head) {
+        errors.push(
+          `$result.payload.finder_cycles[${i}].head: ${fc.head} does not match envelope head ${head}`
+        )
+      }
+      const fcAccepted = fc.accepted
+      if (fcAccepted && typeof fcAccepted === 'object' && typeof fcAccepted.reviewed_commit === 'string') {
+        if (fcAccepted.reviewed_commit !== head) {
+          errors.push(
+            `$result.payload.finder_cycles[${i}].accepted.reviewed_commit: ${fcAccepted.reviewed_commit} does not match envelope head ${head}`
+          )
+        }
+      }
+    }
+  }
 }
 
 // checkIntegratorSettledAtAgreement — payload.settled_at ("when this
@@ -725,6 +743,18 @@ function checkCodexCycleAcceptedScope(payload, errors) {
     errors.push(
       `$result.payload.codex_cycle.accepted: must be absent when exit_code is ${cycle.exit_code} (only 0/10 are terminal)`
     )
+  }
+}
+
+function checkFinderCyclesAcceptedScope(payload, errors) {
+  if (!Array.isArray(payload.finder_cycles)) return
+  for (const [i, fc] of payload.finder_cycles.entries()) {
+    if (!fc || typeof fc !== 'object') continue
+    if (![0, 10].includes(fc.exit_code) && Object.hasOwn(fc, 'accepted')) {
+      errors.push(
+        `$result.payload.finder_cycles[${i}].accepted: must be absent when exit_code is ${fc.exit_code} (only 0/10 are terminal)`
+      )
+    }
   }
 }
 
@@ -957,6 +987,16 @@ function checkIntegratorCleanVerdict(payload, errors) {
       )
     }
   }
+  if (Array.isArray(payload.finder_cycles)) {
+    for (const [i, fc] of payload.finder_cycles.entries()) {
+      if (!fc || typeof fc !== 'object') continue
+      if (fc.exit_code !== 0 || !fc.accepted) {
+        errors.push(
+          `$result.payload.finder_cycles[${i}] (${fc.finder ?? '?'}): must have exit_code 0 with accepted present when verdict is clean`
+        )
+      }
+    }
+  }
   const appliedTo = new Map(
     (payload.applied_dispositions ?? [])
       .filter((entry) => typeof entry.finding_id === 'string')
@@ -1035,6 +1075,7 @@ function validateEnvelopeInstance(instance, kind, options) {
           checkIntegratorBlockedStatus(instance, errors)
           checkCodexCycleAcceptedScope(instance.payload, errors)
           checkCodexCycleExitCodeVerdict(instance.payload, errors)
+          checkFinderCyclesAcceptedScope(instance.payload, errors)
           checkAppliedDispositionsUnique(instance.payload, errors)
           checkAppliedDispositionsKnownFindingIds(instance.payload, options.knownIds, errors)
           checkAppliedDispositionsIntegrationRound(instance.payload, errors)

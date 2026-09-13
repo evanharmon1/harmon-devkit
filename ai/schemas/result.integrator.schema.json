@@ -115,6 +115,67 @@
         "required": ["accepted"]
       }
     },
+    "finder_cycles": {
+      "description": "Per-finder cloud review cycles driven this pass (#804). One entry per configured PR-side finder (codex-cloud, coderabbit-cloud, copilot-cloud, etc.) that was driven. The codex-cloud entry here mirrors codex_cycle above; codex_cycle remains required for backward compatibility, and finder_cycles carries the same data plus the non-codex finders. When the resolved integration cap is 0, this array is empty (no cycles driven). Each entry's head must equal the envelope's head — enforced by the validator's receipt-validation pass.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finder", "head", "cycle", "attempt", "exit_code"],
+        "properties": {
+          "finder": {
+            "description": "The registry finder slug (e.g. codex-cloud, coderabbit-cloud, copilot-cloud).",
+            "type": "string",
+            "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          },
+          "head": {
+            "description": "Must equal the envelope's head.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "cycle": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2
+          },
+          "trigger_comment_id": {
+            "description": "Present for review-comment finders; absent for requested-reviewer finders (no trigger comment exists).",
+            "type": "string",
+            "minLength": 1
+          },
+          "accepted": {
+            "description": "Present only when exit_code is 0 or 10.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["surface", "id", "reviewed_commit"],
+            "properties": {
+              "surface": {
+                "enum": ["review", "comment", "reaction"]
+              },
+              "id": { "type": "string", "minLength": 1 },
+              "reviewed_commit": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              }
+            }
+          },
+          "exit_code": {
+            "enum": [0, 2, 10, 11, 12, 13, 14]
+          }
+        },
+        "if": {
+          "properties": { "exit_code": { "enum": [0, 10] } },
+          "required": ["exit_code"]
+        },
+        "then": {
+          "required": ["accepted"]
+        }
+      }
+    },
     "integration_round": {
       "description": "The run-wide ordinal of THIS integrator pass — independent of whether a Codex cycle ran (codex_cycle is null exactly when the resolved integration cap is 0, but a pass still happens and still needs an ordinal). This is what an integration finding id's own round segment and an integration-stage adjudication's `round` are checked against (checkIntegratorFindingIds, checkAdjudicationAgainstPass) — never `codex_cycle.cycle`, which counts Codex cycles specifically and is absent whenever codex_cycle itself is null, nor `codex_cycle.attempt`, which counts retries within one cycle's own captured head. Three different counters: integration_round counts passes, cycle counts Codex cycles, attempt counts retries per head.",
       "type": "integer",

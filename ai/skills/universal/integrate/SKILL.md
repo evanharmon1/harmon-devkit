@@ -694,13 +694,14 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   its §4, reporting `codex_cycle: null` — the result §6's gate still
   requires, since `--integrator-result` is mandatory there at every cap;
   skipping the dispatch at 0 leaves an otherwise-ready PR with no result to
-  gate on). That file owns every mechanical detail (resumption after
-  interruption, the one bounded retry on a timed-out attempt, the
-  four-surface classification that makes `check-codex-cloud-review.sh`
-  trustworthy, the `reap` cleanup sweep); this skill's job is to give it
-  the right inputs and act correctly on what it returns. Hand the brief —
-  every item its §1 names, since it stops rather than guesses on a missing
-  one:
+  gate on). It also drives one cloud-review cycle per configured PR-side
+  finder (#804) — each finder's cycle is independent, with its trigger
+  mechanism and verdict mode resolved from the trusted registry. That file
+  owns every mechanical detail (resumption after interruption, the one
+  bounded retry on a timed-out attempt, per-finder surface classification,
+  the `reap` cleanup sweep); this skill's job is to give it the right
+  inputs and act correctly on what it returns. Hand the brief — every item
+  its §1 names, since it stops rather than guesses on a missing one:
 
   - repo, PR, and this round's **verified head** — from §2's round-start
     fetch, never re-read at dispatch time (a mid-adjudication push would
@@ -777,7 +778,10 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     `codex_cycle.exit_code` `0`/`10` — terminal for this pass. A `10` (or
     any human finding the agent also surfaced) feeds `findings[]` into §3;
     a clean `0` with no other open finding and an empty
-    `unanswered_thread_roots` proceeds toward §6.
+    `unanswered_thread_roots` proceeds toward §6. When `finder_cycles` is
+    present, every entry must also be terminal (exit_code 0 or 10) for the
+    pass to be terminal-clean — a non-codex finder with exit_code 11 or 13
+    has the same effect as the codex_cycle equivalent below.
   - `codex_cycle.exit_code: 11` (pending) — this pass ended without a
     terminal Codex result. Waiting is never a round (see "Round accounting"
     above): re-dispatch the agent after a bounded wait rather than
@@ -804,7 +808,9 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
 
   ```bash
   helper="$skill_dir/assets/check-codex-cloud-review.sh"
+  # For codex-cloud (legacy path):
   state="$(git rev-parse --git-path "integrate-codex/$repo/<n>.json")"
+  # For other finders: state="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
   "$helper" settle --state "$state" --actor-id 199175422 \
     --surface comment --id <comment-or-review-id> \
     --disposition declined --note "why, or the issue it was filed as"

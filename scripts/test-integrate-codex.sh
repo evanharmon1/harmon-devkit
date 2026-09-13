@@ -598,6 +598,7 @@ for tail in "P1: the retry path is unguarded" "P0: data loss on rollback" \
     ]]' >"${fixtures}/reviews.pages.json"
     run_check '2026-07-31T08:01:00Z'
     assert_status 10 findings
+    assert_accepted review 103
 done
 
 # The "trailing clause that does not read as praise" corpus that used to live
@@ -751,6 +752,7 @@ jq -cn \
     ]]' >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
+assert_accepted review 102
 
 echo "==> exact-head evidence remains valid after local state loss"
 new_cycle
@@ -872,6 +874,7 @@ jq -cn \
     ]]' >"${fixtures}/inline.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
+assert_accepted review 120
 # The detail must distinguish this from a verdict Codex itself posted: only
 # here did a human write the rationale that now stands on the PR.
 printf '%s' "$check_out" | jq -e '.detail | test("adjudicated")' >/dev/null ||
@@ -1173,6 +1176,7 @@ jq -cn \
     ]]' >"${fixtures}/inline.pages.json"
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
+assert_accepted review 120
 
 echo "==> a findings review with no current-head inline comments still gates"
 # Suppression is per review and requires at least one attributed current-head
@@ -1182,6 +1186,7 @@ new_cycle
 codex_findings_review
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
+assert_accepted review 120
 
 echo "==> a second findings review is not settled by the first review's findings"
 # The two-attempt contract makes two findings reviews on one head routine. When
@@ -2608,6 +2613,7 @@ new_cycle
 write_badged_comment 77
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
+assert_accepted comment 77
 run_settle --surface comment --id 77 --disposition declined \
     --note "bounded by the attempt deadline; reasoning posted on the PR"
 [ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
@@ -2624,6 +2630,7 @@ run_settle --surface comment --id 77 --disposition declined \
 # bounded wait and escalated, which is the deadlock `settle` exists to end.
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
+assert_accepted comment 77
 # The detail names the disposition that was APPLIED, not merely that one
 # existed: "declined" and "filed" mean different things to whoever reads this
 # result (PR #424 shepherd round 4).
@@ -2685,6 +2692,7 @@ run_settle --surface review --id 120 --disposition filed \
 [ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
+assert_accepted review 120
 # The 👍 proves the settled body is out of the way of a real clean verdict,
 # not merely that the review stopped reporting findings.
 jq -cn \
