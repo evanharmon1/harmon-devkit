@@ -27,12 +27,6 @@ import { readFile } from 'node:fs/promises'
 import { deepStrictEqual } from 'node:assert/strict'
 
 const registry = JSON.parse(await readFile(process.argv[2], 'utf8'))
-const family = (slug) => registry.families.find((entry) => entry.slug === slug)
-const model = (familySlug, modelSlug) =>
-    family(familySlug)?.models.find((entry) => entry.slug === modelSlug)
-const expect = (condition, message) => {
-    if (!condition) throw new Error(message)
-}
 
 const expectedInventory = {
     claude: ['fable|Fable|apex', 'opus|Opus|frontier', 'sonnet|Sonnet|standard', 'haiku|Haiku|economy'],
@@ -67,16 +61,27 @@ const actualInventory = Object.fromEntries(
 )
 deepStrictEqual(actualInventory, expectedInventory, 'shipped model inventory must match the 2026-09 refresh')
 
-expect(model('gpt', 'sol')?.tier === 'frontier', 'gpt.sol must remain frontier')
-expect(model('gpt', 'astra')?.tier === 'apex', 'gpt.astra must remain apex')
-expect(
-    model('gpt', 'astra')?.cli_ids?.['codex-cli'] === 'gpt-6-astra',
-    'gpt.astra must retain its Codex CLI id'
+const expectedCliIds = {
+    'gpt/astra': { 'codex-cli': 'gpt-6-astra' },
+    'gpt/sol': { 'codex-cli': 'gpt-5.6-sol' },
+    'gpt/terra': { 'codex-cli': 'gpt-5.6-terra' },
+    'gpt/luna': { 'codex-cli': 'gpt-5.6-luna' },
+    'qwen/max': { 'claude-code-qwen': 'qwen3.8-max' },
+    'qwen/coder-plus': { 'claude-code-qwen': 'qwen3-coder-plus' },
+    'qwen/flash': { 'claude-code-qwen': 'qwen3.8-flash' },
+    'deepseek/v4-1-flash': { 'claude-code-deepseek': 'deepseek-flash' },
+    'glm/5-3': { 'claude-code-glm': 'glm-5.3' },
+    'glm/5-3-flash': { 'claude-code-glm': 'glm-5.3-flash' }
+}
+const actualCliIds = Object.fromEntries(
+    registry.families.flatMap((entry) =>
+        entry.models
+            .filter(({ cli_ids: cliIds }) => cliIds)
+            .map(({ slug, cli_ids: cliIds }) => [`${entry.slug}/${slug}`, cliIds])
+    )
 )
-expect(
-    model('qwen', 'flash')?.cli_ids?.['claude-code-qwen'] === 'qwen3.8-flash',
-    'Qwen must expose 3.8 Flash through its provider wrapper'
-)
+deepStrictEqual(actualCliIds, expectedCliIds, 'harness-facing model IDs must match the 2026-09 refresh')
+
 console.log('PASS: shipped model inventory includes the 2026-09 refresh')
 NODE
 
