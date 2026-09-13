@@ -309,11 +309,11 @@ the script's outcome.
 ### Stage advance write
 
 Without that recorded upward override, an `action: advance` result is the sole
-authority to advance the run record. Re-read `run.json` and require its last
-transition to name the current stage and have no `exit`. The advance is
-idempotent: a re-entry that finds the transition already applied adopts it and
-completes the remaining readback, publication, and next-stage steps; it never
-appends a second transition, while any conflicting transition blocks.
+authority to advance the run record. Re-read `run.json`. First recognize and
+validate an exact already-applied current-to-next transition; adopt it and
+complete the remaining readback, publication, and next-stage steps without
+appending a second transition. Otherwise require the last transition to name
+the current stage and have no `exit`; any other state blocks.
 Close the current transition by setting its `exit` to
 `"<rule>: <detail>"`, where the rule is the verdict outcome and therefore starts
 with one of `continue`, `converged`, `diverging`, or `capped`; the detail names

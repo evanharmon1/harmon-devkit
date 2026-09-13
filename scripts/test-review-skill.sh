@@ -94,10 +94,10 @@ for text in 'Before replacing `run.json`, write the complete candidate beside it
     'scripts/validate-result-schemas.mjs run <run.json>' \
     '`run.json.receipts` cannot yet survive this schema validation' \
     'contract gap is tracked in #961' \
-    'The advance is' \
-    'idempotent: a re-entry that finds the transition already applied adopts it' \
-    'it never' \
-    'appends a second transition' \
+    'First recognize and' \
+    'validate an exact already-applied current-to-next transition; adopt it' \
+    'appending a second transition' \
+    'Otherwise require the last transition to name' \
     'Close the current transition by setting its `exit` to' \
     '`"<rule>: <detail>"`' \
     'therefore starts' \
@@ -124,15 +124,27 @@ jq -e '
 ' "$advance_fixture" >/dev/null || fail "empty-round advance fixture does not pin the writer shape"
 
 reentry_fixture="ai/schemas/fixtures/run.schema/valid/reentered-challenge-to-review.json"
+echo "==> post-rename crash re-entry adopts the applied transition before fresh-write checks"
 node scripts/validate-result-schemas.mjs run "$reentry_fixture" --receipt --no-adjudications ||
     fail "re-entered challenge-to-review transition fixture is invalid"
 jq -e '
     ([.stage_transitions[] | select(.stage == "challenge")] | length) == 1 and
     ([.stage_transitions[] | select(.stage == "review")] | length) == 1 and
-    .stage_transitions[-2].exit == "converged: two_consecutive rounds 3 and 4" and
-    .stage_transitions[-1].stage == "review" and
-    (.stage_transitions[-1] | has("exit") | not)
+    .stage_transitions[-2] == {
+      stage: "challenge",
+      entered_at: "2026-09-13T12:04:00Z",
+      exit: "converged: two_consecutive rounds 3 and 4"
+    } and
+    .stage_transitions[-1] == {
+      stage: "review",
+      entered_at: "2026-09-13T12:05:00Z"
+    }
 ' "$reentry_fixture" >/dev/null || fail "re-entry fixture does not adopt exactly one applied transition"
+
+adopt_line=$(grep -nF 'validate an exact already-applied current-to-next transition; adopt it' "$skill" | cut -d: -f1)
+fresh_line=$(grep -nF 'Otherwise require the last transition to name' "$skill" | cut -d: -f1)
+[ -n "$adopt_line" ] && [ -n "$fresh_line" ] && [ "$adopt_line" -lt "$fresh_line" ] ||
+    fail "post-rename adoption is not ordered before the fresh-write precondition"
 
 grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"
