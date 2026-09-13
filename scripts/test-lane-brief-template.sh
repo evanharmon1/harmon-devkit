@@ -8,12 +8,16 @@ cd "$repo"
 fail() {
     echo "FAIL: $*" >&2
     exit 1
+    return 0
 }
 
 template="ai/skills/universal/orchestrator/assets/lane-brief.md"
 rendered="$(<"$template")"
 
-mapfile -t placeholders < <(grep -oE '\{\{[a-z0-9-]+\}\}' "$template" | sort -u)
+placeholders=()
+while IFS= read -r token; do
+    placeholders[${#placeholders[@]}]="$token"
+done < <(grep -oE '\{\{[a-z0-9-]+\}\}' "$template" | sort -u)
 [ "${#placeholders[@]}" -gt 0 ] || fail "template exposes no placeholders"
 
 for token in "${placeholders[@]}"; do

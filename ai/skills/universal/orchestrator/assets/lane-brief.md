@@ -12,6 +12,7 @@ placeholder catalog; a rendered brief with any double-brace token left is invali
 | `{{base-sha}}` | Lane creation record |
 | `{{worktree-path}}` | `git rev-parse --show-toplevel` in the lane |
 | `{{harness}}` | Selected implementer's registry harness |
+| `{{report-path}}` | Orchestrator's nonce-scoped dispatch report path |
 | `{{generation}}` | Active pointer generation |
 | `{{active-state-path}}` | `scripts/dev-flow-monitor.sh active-path` |
 | `{{record-directory}}` | Active run record directory |
@@ -49,7 +50,7 @@ placeholder catalog; a rendered brief with any double-brace token left is invali
 
 You are the **implementer lane worker** for an orchestrated dev-flow v2 run,
 running in **{{harness}}**. An orchestrator session supervises you and reads
-`.lane-report.md` in this worktree root; keep that file current.
+`{{report-path}}`; keep that file current.
 
 - Run: `{{run-id}}` · Lane: `{{lane-name}}` · Branch: `{{branch}}` (already
   created off `{{default-branch}}` @ `{{base-sha}}`; you are in its worktree).
@@ -59,18 +60,18 @@ running in **{{harness}}**. An orchestrator session supervises you and reads
   stop-gate, or set gate/approval environment variables. Never claim or unclaim
   issues. Never write to a password manager or credential store. Never
   terminate a process.
-- Stay inside this worktree for project files. `.lane-brief.md` and
-  `.lane-report.md` are git-excluded control files: never commit or rename them.
+- Stay inside this worktree for project files. The lane brief and
+  `{{report-path}}` are git-excluded control files: never commit or rename them.
 - Git/sandbox rule: {{git-sandbox-note}}
 
 ## File-scope fence
 
 {{file-scope-fence}}
 
-If a rejecting validator or test outside the fence is untouched by every other
-lane, the worker may add that one file to the fence once. First append a dated,
-one-line entry to `.lane-report.md` naming the file and exact owned lines. Any
-other expansion is a blocker.
+Never widen this fence yourself. If a rejecting validator or test requires an
+out-of-fence edit, append a dated blocker to `{{report-path}}` naming the file
+and exact lines, then wait for the orchestrator to issue an updated fence and
+overlap map. Its ownership check and attributed re-brief must precede the edit.
 
 Live lanes and overlaps (shared files must name disjoint sections and their
 branch-update dependency): {{live-lane-overlaps}}
@@ -168,22 +169,29 @@ and qualifying rounds.
 
 ## Readiness gate
 
-Evaluate `AGENTS.md` § Readiness gate condition by condition using the procedure
-in the vendored integrate skill. A pending check row or an empty check list is
-indeterminate and the PR stays draft. Why: milestone entry 12 (#926) attempted
-promotion before checks had concluded.
+This section is the lane's handoff contract with the supervising orchestrator.
+The lane may gather and report integration evidence requested by the brief, but
+it never adjudicates findings, edits the PR body, replies to review threads, or
+promotes the PR. Those actions and the readiness decision remain orchestrator
+owned under `AGENTS.md` § Who decides, and what is delegated.
+
+The orchestrator evaluates `AGENTS.md` § Readiness gate condition by condition
+using the vendored integrate procedure. A pending check row or an empty check
+list is indeterminate and the PR stays draft. Why: milestone entry 12 (#926)
+attempted promotion before checks had concluded.
 
 Every inline review comment must be answered in its own thread before
 promotion; read the inline surface, not only summary comments. Why: milestone
 entry 19 found unanswered threads at promotion.
 
-After the final PR-body edit, re-read checks, `mergeStateStatus`, the
-current-head review cycle, and unanswered-thread count immediately before
-`gh pr ready`; re-read immediately before `gh pr ready` is the gate, not a
-best-effort refresh. A body edit can restart CI. Re-read `headRefOid` immediately
-before promotion, fingerprint the required PR surfaces, run `gh pr ready` at
-most once from the foreground turn, confirm the same head is non-draft, and
-re-fingerprint. A failed or indeterminate condition is never a pass.
+After the final PR-body edit, the orchestrator re-reads checks,
+`mergeStateStatus`, the current-head review cycle, and unanswered-thread count
+immediately before `gh pr ready`; re-read immediately before `gh pr ready` is
+the gate, not a best-effort refresh. A body edit can restart CI. The orchestrator
+re-reads `headRefOid` immediately before promotion, fingerprints the required
+PR surfaces, runs `gh pr ready` at most once from its foreground turn, confirms
+the same head is non-draft, and re-fingerprints. A failed or indeterminate
+condition is never a pass.
 
 ## Resolved policy
 
@@ -204,19 +212,20 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
   and any approved environmental-exception line. Sweep the complete sidecar
   directory before publishing.
 - Open with `gh pr create --draft`, then require `isDraft == true` on the exact
-  pushed `headRefOid`. Continue into integration; never merge.
+  pushed `headRefOid`. Record the draft handoff in `{{report-path}}`; the
+  orchestrator owns integration adjudication and promotion. Never merge.
 
 ## Reporting protocol
 
-- Write the plan to `.lane-report.md` before implementation. Append the
+- Write the plan to `{{report-path}}` before implementation. Append the
   `AGENTS.md` § Stage Ledger table at every stage transition and round boundary,
   plus a per-round adjudication table. Never delete history.
 - Keep each report filename and terminal signal unique per attempt. Why:
   milestone entry 2 observed a sentinel in the pane but not in the report file,
   allowing stale output to masquerade as completion. Append exactly one of the
-  following to `.lane-report.md` and print the same value as the final line of
+  following to `{{report-path}}` and print the same value as the final line of
   the final message:
-  - `{{ready-sentinel}}-{{attempt-nonce}}` — PR promoted through the readiness gate.
+  - `{{ready-sentinel}}-{{attempt-nonce}}` — the orchestrator promoted the PR through the readiness gate.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
 
 Begin now: perform the startup-capability check, read the issue, policy, stage
