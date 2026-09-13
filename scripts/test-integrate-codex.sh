@@ -293,6 +293,16 @@ assert_accepted() {
         fail "expected accepted.reviewed_commit $head_sha, got '$actual_reviewed_commit': $check_out"
 }
 
+assert_result_attempt() {
+    expected_attempt=$1
+    actual_attempt="$(printf '%s' "$check_out" | jq -r '.result_attempt // empty')"
+    [ "$actual_attempt" = "$expected_attempt" ] ||
+        fail "expected result_attempt $expected_attempt, got '$actual_attempt': $check_out"
+    accepted_attempt="$(printf '%s' "$check_out" | jq -r '.accepted.attempt // empty')"
+    [ "$accepted_attempt" = "$expected_attempt" ] ||
+        fail "expected accepted.attempt $expected_attempt, got '$accepted_attempt': $check_out"
+}
+
 echo "==> exact-trigger current-request +1 is clean"
 new_cycle
 jq -cn \
@@ -754,7 +764,7 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
 assert_accepted review 102
 
-echo "==> exact-head evidence remains valid after local state loss"
+echo "==> exact-head evidence from before a new request does not satisfy that cycle"
 new_cycle
 prefix="${head_sha:0:10}"
 jq -cn \
@@ -770,7 +780,7 @@ jq -cn \
       }
     ]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:01:00Z'
-assert_status 0 clean
+assert_status 11 pending
 
 echo "==> paginated current-head inline comment is a finding"
 new_cycle
@@ -1500,9 +1510,11 @@ set -e
 [ "$early_retry_rc" -eq 2 ] ||
     fail "early attempt-2 reservation should fail closed: $early_retry_out"
 
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
 trigger_id=124
 request_time='2026-07-31T08:16:01Z'
-new_cycle
 jq -cn \
     --argjson id "$trigger_id" \
     --arg created "$request_time" \
@@ -1522,19 +1534,45 @@ jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
     --arg head "$head_sha" \
-    '[[
-      {
-        id:78,user:{id:$id,login:$login},
-        created_at:"2026-07-31T08:10:00Z",
-        body:("P1: late attempt-one finding\n\n**Reviewed commit:** `" +
-          ($head[0:10]) + "`")
-      }
-    ]]' >"${fixtures}/comments.pages.json"
+    '{
+      id:78,user:{id:$id,login:$login},
+      submitted_at:"2026-07-31T08:10:00Z",commit_id:$head,
+      body:"P1: late attempt-one finding"
+    }' >"${fixtures}/review-78.json"
+jq -c '[[.]]' "${fixtures}/review-78.json" >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:17:00Z'
 assert_status 10 findings
-printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
-run_check '2026-07-31T08:32:01Z'
-assert_status 13 escalate
+assert_accepted review 78
+assert_result_attempt 1
+set +e
+settle_out="$("$helper" settle --state "$state" --actor-id "$actor_id" \
+    --surface review --id 78 --disposition declined \
+    --note "attempt 1 finding adjudicated; attempt 2 remains outstanding" 2>&1)"
+settle_rc=$?
+set -e
+[ "$settle_rc" -eq 0 ] || fail "late attempt-1 finding should settle: $settle_out"
+[ "$(printf '%s' "$settle_out" | jq -r '.settled[-1].attempt // empty')" = "1" ] ||
+    fail "settle output did not bind the result to attempt 1: $settle_out"
+run_check '2026-07-31T08:17:00Z'
+assert_status 11 pending
+
+# Attempt 2 becomes terminal only on evidence created after its own request.
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    --slurpfile earlier "${fixtures}/review-78.json" \
+    '[[$earlier[0],
+      {
+        id:79,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:16:10Z",commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:17:00Z'
+assert_status 0 clean
+assert_accepted review 79
+assert_result_attempt 2
 
 echo "==> attached head refuses uncontrolled duplicate reservation"
 set +e
@@ -1607,19 +1645,35 @@ echo "==> an existing state lock serializes reservations"
 write_defaults
 rm -f "$state"
 mkdir "${state}.lock"
+printf '%s\n' "$$" >"${state}.lock/pid"
 set +e
 locked_out="$("$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 2>&1)"
 locked_rc=$?
 set -e
+rm -f "${state}.lock/pid"
 rmdir "${state}.lock"
 [ "$locked_rc" -eq 2 ] ||
     fail "locked reservation should fail closed: $locked_out"
+grep -Fq "live shepherd PID $$" <<<"$locked_out" ||
+    fail "live-lock refusal did not identify its holder: $locked_out"
+
+echo "==> a stale state lock is recovered using its recorded PID"
+write_defaults
+rm -f "$state"
+mkdir "${state}.lock"
+printf '%s\n' 99999999 >"${state}.lock/pid"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+[ -f "$state" ] || fail "stale-lock recovery did not complete the reservation"
+[ ! -d "${state}.lock" ] || fail "stale-lock recovery left the lock directory behind"
 
 echo "==> state lock serializes checks with reservations"
 new_cycle
 mkdir "${state}.lock"
+printf '%s\n' "$$" >"${state}.lock/pid"
 set +e
 locked_check_out="$("$helper" check \
     --state "$state" --actor-id "$actor_id" \
@@ -1627,6 +1681,7 @@ locked_check_out="$("$helper" check \
     --now '2026-07-31T08:01:00Z' 2>&1)"
 locked_check_rc=$?
 set -e
+rm -f "${state}.lock/pid"
 rmdir "${state}.lock"
 [ "$locked_check_rc" -eq 2 ] ||
     fail "locked check should fail closed: $locked_check_out"
