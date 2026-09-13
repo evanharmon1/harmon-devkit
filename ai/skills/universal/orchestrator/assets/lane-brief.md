@@ -94,11 +94,12 @@ Select the subsection matching `{{harness}}`; the variants are procedures, not
 different brief formats. Read `AGENTS.md` first. It is the policy and the
 vendored stage skills are procedures beneath it.
 
-The issue was claimed by the supervising orchestrator before this lane was
-dispatched. Override `/implement` step 1's session/agent ownership comparison
-and its matching pre-publication claim comparison only: fetch the canonical
-issue from `{{issue-url}}` and require this authenticated handoff snapshot to
-still match exactly:
+The issue was claimed by the supervising orchestrator, then transactionally
+refreshed after this exact lane branch and worktree were provisioned. Override
+`/implement` step 1's session/agent ownership comparison and its matching
+pre-publication claim comparison only: fetch the canonical issue from
+`{{issue-url}}` and require this authenticated handoff snapshot to still match
+exactly:
 
 {{claim-handoff}}
 
@@ -106,7 +107,9 @@ The snapshot must identify the trusted claim comment by immutable ID, author
 ID, and `updated_at`, plus the expected assignees and claim labels. This is
 delegated use of the existing claim, not a claim transfer. Keep every other
 step-1 and pre-publication refusal, including closed/implemented state and any
-live drift; report BLOCKED rather than claiming, refreshing, or guessing.
+live drift; report BLOCKED rather than claiming, refreshing, or guessing. The
+snapshot's recorded branch must equal `{{branch}}`; a pre-provision claim record
+for another branch is drift, not a delegated claim.
 
 This lane's branch and worktree were provisioned before dispatch. Override
 `/implement` step 3: do not fetch-and-switch or create a branch. Verify that
@@ -154,23 +157,30 @@ findings before draft publication, append a decision request to
 `{{report-path}}` with the stage, round, finding IDs, reviewer priorities,
 evidence, and proposed classifications; then wait. The supervising orchestrator
 records the authoritative dispositions in the run record (or, for the inline
-fallback, in the report). When a confirmed finding requires a code change, keep
-waiting while the orchestrator follows `/review`: it reserves the bounded agent
-run and dispatches a fresh implementer, which commits and pushes through the
-round broker. Resume only from the resulting durable stage evidence. Do not
-apply the fix in this lane worker. Do not infer a disposition from silence or
-advance the stage before the orchestrator-authored decision and remediation
-evidence are durable.
+fallback, in the report). Under a compatible `/review` procedure, keep waiting.
+The orchestrator dispatches a fresh implementer through the reserved agent run;
+that worker commits and pushes through the round broker. Under the
+inline fallback only, no fresh-implementer dispatch surface exists: after recording its
+disposition, the orchestrator may authorize this lane to apply the exact
+confirmed fixes it names, and the lane returns the gate and publication evidence
+for orchestrator verification. That authorization does not transfer
+adjudication or widen scope. Resume only from the resulting durable stage
+evidence. Never apply a fix without the matching explicit orchestrator
+disposition and, for the inline fallback, authorization. Never infer
+authorization from silence. Do not infer a disposition from silence or advance
+the stage before the decision and remediation evidence are durable.
 
 ## Long-running gate invocations
 
-When the resolved confidence procedure is the inline fallback, always run its
-`task challenge` and `task review` invocations in the background and poll them;
-they normally take 5–15 minutes. Do not run these tasks in addition to a
-compatible `/review` procedure. A foreground invocation at an ordinary tool
-timeout can receive SIGTERM (exit 143), which is not an environmental gate
-failure. Why: a foreground challenge was terminated and mistakenly retried
-during the milestone handoff (lesson 3).
+When the resolved confidence procedure is the inline fallback, run each `task
+challenge` and `task review` invocation in an orchestrator-provisioned
+persistent session (for example, its Herdr/tmux pane) and poll that session;
+plain shell `&` backgrounding is not persistent evidence. Report BLOCKED when
+no session-lifetime primitive is available. These tasks normally take 5–15
+minutes. Do not run them in addition to a compatible `/review` procedure. A
+foreground invocation at an ordinary tool timeout can receive SIGTERM (exit
+143), which is not an environmental gate failure. Why: a foreground challenge
+was terminated and mistakenly retried during the milestone handoff (lesson 3).
 
 ## Known environmental failure
 

@@ -12,7 +12,6 @@ automatically on merge).
 
 ### Features
 
-* **orchestrator:** add the policy-bound lane-brief template and render contract ([#919](https://github.com/evanharmon1/harmon-devkit/issues/919))
 * **labels:** generate tier:&lt;role&gt;:&lt;tier&gt; labels from agent registry ([#931](https://github.com/evanharmon1/harmon-devkit/issues/931)) ([c82f3a8](https://github.com/evanharmon1/harmon-devkit/commit/c82f3a866300ba3b76c4078154da752d42a53ddf))
 * **registry:** detect cross-anchor severity_map shadows ([#929](https://github.com/evanharmon1/harmon-devkit/issues/929)) ([500cb53](https://github.com/evanharmon1/harmon-devkit/commit/500cb53e9833c5f272a1a243a84bbcbae4af52d3)), closes [#893](https://github.com/evanharmon1/harmon-devkit/issues/893)
 * **skills:** route orchestrated lanes through /review + /integrate for v2 evidence ([#932](https://github.com/evanharmon1/harmon-devkit/issues/932)) ([a132588](https://github.com/evanharmon1/harmon-devkit/commit/a132588e743239a453e1f4bc094ce8231be2da25))

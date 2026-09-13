@@ -156,8 +156,15 @@ grep -Fq '`/implement` step 3: do not fetch-and-switch or create a branch' \
     fail "provisioned lane worktree is not retained"
 grep -Fq 'dispatches a fresh implementer' "$rendered_file" ||
     fail "confidence remediation does not preserve fresh implementer dispatch"
-grep -Fq 'apply the fix in this lane worker.' "$rendered_file" ||
-    fail "confidence remediation can fall back to the existing lane worker"
+grep -Fq 'no fresh-implementer dispatch surface exists' "$rendered_file" ||
+    fail "inline confidence fallback has no authorized remediation path"
+grep -Fq 'Never apply a fix without the matching explicit' "$rendered_file" ||
+    fail "inline remediation is not bound to an orchestrator disposition"
+grep -Fq 'orchestrator-provisioned' "$rendered_file" ||
+    fail "inline confidence tasks have no persistent session requirement"
+grep -Fq 'plain shell `&` backgrounding is not persistent evidence' \
+    "$rendered_file" ||
+    fail "ordinary shell backgrounding can masquerade as persistence"
 
 grep -Fq 'every end-to-end, PR-owning implementation lane' \
     ai/skills/universal/orchestrator/SKILL.md ||
@@ -165,11 +172,16 @@ grep -Fq 'every end-to-end, PR-owning implementation lane' \
 grep -Fq 'bounded remediation implementers, use their schema-bound role briefs' \
     ai/skills/universal/orchestrator/SKILL.md ||
     fail "non-PR implementer dispatches can receive the lane template"
-grep -Fq 'Override `/implement` step 1' "$rendered_file" ||
+grep -Fq "step 1's session/agent ownership comparison" "$rendered_file" ||
     fail "orchestrator claim handoff does not override implement session matching"
 grep -Fq 'delegated use of the existing claim, not a claim transfer' \
     "$rendered_file" ||
     fail "claim handoff can be mistaken for ownership transfer"
+grep -Fq "snapshot's recorded branch must equal" "$rendered_file" ||
+    fail "claim handoff is not bound to the provisioned lane branch"
+grep -Fq 'transactionally refresh the existing' \
+    ai/skills/universal/orchestrator/SKILL.md ||
+    fail "orchestrator does not refresh the claim after lane provisioning"
 grep -Fq 'fixture-issue-url' "$rendered_file" ||
     fail "canonical issue URL is not passed through the rendered brief"
 grep -Fq 'git check-ignore -q --no-index' "$rendered_file" ||

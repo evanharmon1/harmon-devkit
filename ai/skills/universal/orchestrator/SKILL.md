@@ -51,7 +51,7 @@ table before their intended sections.
 | `{{issue-number}}` | Claimed GitHub issue number |
 | `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
 | `{{issue-url}}` | Canonical target-repository issue URL |
-| `{{claim-handoff}}` | Authenticated claim comment ID, author ID, `updated_at`, expected assignees, and expected claim labels |
+| `{{claim-handoff}}` | Transaction-refreshed claim for the provisioned lane branch: authenticated comment ID, author ID, `updated_at`, expected assignees, and expected claim labels |
 | `{{verified-facts-and-rulings}}` | Orchestrator verification and attributed decisions |
 | `{{git-sandbox-note}}` | Harness-specific sandbox policy, or `Not applicable.` |
 | `{{known-environmental-failure}}` | Verified run exception, or `None.` |
@@ -88,10 +88,12 @@ which produces no run record and no adjudication evidence.
 
 Before draft publication, a confidence-stage finding uses the template's
 decision handshake: the lane records a decision request and waits for a durable
-orchestrator-authored disposition. A confirmed code fix is performed by the
-fresh bounded implementer that `/review` requires after the orchestrator reserves
-its agent run; the original lane worker waits for that durable remediation
-evidence before advancing. The post-draft handoff remains separate and transfers
+orchestrator-authored disposition. With a compatible `/review`, a confirmed code
+fix is performed by the fresh bounded implementer dispatched after the
+orchestrator reserves its agent run. The inline fallback has no such dispatch
+surface, so the orchestrator instead authorizes the original lane to apply only
+the exact confirmed fixes in its recorded disposition and verifies the returned
+gate/publication evidence. The post-draft handoff remains separate and transfers
 integration to the supervising orchestrator.
 
 Render `assets/lane-brief.md` for every end-to-end, PR-owning implementation lane
@@ -101,8 +103,9 @@ return the artifact or fix their dispatch requested; they do not receive this
 draft-publication contract. For a PR-owning lane, the source catalog above is
 the complete input contract: source every value, select the harness procedure
 named by the rendered brief, and refuse dispatch if any `{{name}}` placeholder
-remains. Use the canonical target-repository issue URL, and authenticate the
-existing claim into the handoff snapshot without transferring its ownership.
+remains. Provision the lane branch/worktree, transactionally refresh the existing
+claim so its record names that exact branch, then authenticate the refreshed
+claim into the handoff snapshot without transferring its ownership.
 Place the per-attempt report under the common Git directory, or install and
 verify its worktree exclusion before dispatch; an assertion that it is excluded
 is not evidence. Preserve its nonce-scoped sentinels. Prompts sent after dispatch
