@@ -554,6 +554,23 @@ contains "$OUT" "- Rounds spent: 1 / no cap recorded" &&
     ok "rounds are reported without the unrelated denominator" ||
     bad "the unrelated cap still appears as a denominator"
 
+echo "==> explicit --run tolerates a >1 MiB gh response"
+d="$TMPROOT/large-gh-buffer"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/remediation-loop.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+POLICY_SECTION="$POLICY_SECTION" node -e '
+  const fs = require("node:fs")
+  fs.writeFileSync(process.argv[1], process.env.POLICY_SECTION + "\n" + "x".repeat(2 * 1024 * 1024))
+' "$d/body"
+make_pr_json "$d/pr.json" "$d/body"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --run run-6058-remediation-loop --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6058-remediation-loop`' &&
+    ok "the 64 MiB subprocess buffer carries the large gh payload" ||
+    bad "expected a successful large-output report, got $RC: $ERR"
+
 echo "==> exit 12 does not present a --run argument as proof the run exists"
 d="$TMPROOT/nostats-explicit-run"
 mkdir -p "$d/repo"
