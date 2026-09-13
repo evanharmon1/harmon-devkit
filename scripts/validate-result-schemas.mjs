@@ -2005,6 +2005,25 @@ function entryDigestForCheck(contentFields, prevDigest) {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
+const PLAN_PROJECTION_FIELDS = [
+  'schema',
+  'slate_id',
+  'generated_at',
+  'base_sha',
+  'policy',
+  'dispatcher',
+  'issues',
+  'overlaps',
+  'waves',
+  'lanes',
+  'fence_expansions',
+]
+
+function planProjectionDigest(document) {
+  const projection = Object.fromEntries(PLAN_PROJECTION_FIELDS.map((key) => [key, document[key]]))
+  return createHash('sha256').update(canonicalJsonForDigest(projection), 'utf8').digest('hex')
+}
+
 // checkPlanRevisionChain — plan recomputation updates the current projection
 // and appends one immutable reason/timestamp entry. This mirrors run.json's
 // chain convention: zero-based contiguous seq, genesis first, exact retry
@@ -2020,6 +2039,7 @@ function checkPlanRevisionChain(document, errors) {
         typeof entry === 'object' &&
         typeof entry.seq === 'number' &&
         typeof entry.digest === 'string' &&
+        typeof entry.projection_digest === 'string' &&
         typeof entry.prev_digest === 'string' &&
         typeof entry.at === 'string' &&
         typeof entry.reason === 'string'
@@ -2058,7 +2078,10 @@ function checkPlanRevisionChain(document, errors) {
       )
       return null
     }
-    const expected = entryDigestForCheck({ at: entry.at, reason: entry.reason }, prevDigest)
+    const expected = entryDigestForCheck(
+      { seq: entry.seq, projection_digest: entry.projection_digest, at: entry.at, reason: entry.reason },
+      prevDigest,
+    )
     if (entry.digest !== expected) {
       errors.push(`$plan.revisions[${entry.seq}].digest: does not match its own content — tampered`)
       return null
@@ -2211,12 +2234,14 @@ function checkPlanCoherence(document, errors) {
     }
   }
   const seenOverlapPairs = new Set()
+  const overlapByPair = new Map()
   for (const [index, overlap] of overlaps.entries()) {
     const pair = [overlap.issue_a, overlap.issue_b].sort((a, b) => a - b)
     const key = pair.join(':')
     if (overlap.issue_a >= overlap.issue_b) errors.push(`$plan.overlaps[${index}]: issue_a must be less than issue_b`)
     if (seenOverlapPairs.has(key)) errors.push(`$plan.overlaps: duplicate issue pair ${key}`)
     seenOverlapPairs.add(key)
+    overlapByPair.set(key, overlap)
     const expectedPaths = expectedOverlaps.get(key)
     const actualPaths = [...new Set(overlap.paths || [])].sort()
     if (!expectedPaths) errors.push(`$plan.overlaps[${index}]: pair ${key} has no candidate-file overlap`)
@@ -2245,10 +2270,37 @@ function checkPlanCoherence(document, errors) {
     if (!seenOverlapPairs.has(key)) errors.push(`$plan.overlaps: missing candidate-file overlap pair ${key}`)
   }
 
+  const effectiveFenceByLane = new Map(
+    lanes.map((lane) => [
+      lane.lane,
+      new Set((lane.fence || []).map((item) => (typeof item === 'string' ? item : item?.path)).filter(Boolean)),
+    ]),
+  )
+  for (const expansion of expansions) effectiveFenceByLane.get(expansion.lane)?.add(expansion.path)
+  for (let left = 0; left < lanes.length; left += 1) {
+    for (let right = left + 1; right < lanes.length; right += 1) {
+      const laneA = lanes[left]
+      const laneB = lanes[right]
+      const fenceA = effectiveFenceByLane.get(laneA.lane) || new Set()
+      const fenceB = effectiveFenceByLane.get(laneB.lane) || new Set()
+      const sharedFence = [...fenceA].filter((path) => fenceB.has(path)).sort()
+      if (sharedFence.length === 0) continue
+      const key = [laneA.issue, laneB.issue].sort((a, b) => a - b).join(':')
+      if (overlapByPair.get(key)?.resolution !== 'serialize') {
+        errors.push(
+          `$plan.lanes: effective fences for ${JSON.stringify(laneA.lane)} and ${JSON.stringify(laneB.lane)} overlap on ${JSON.stringify(sharedFence)} without a serialized issue pair`,
+        )
+      }
+    }
+  }
+
   const revisions = checkPlanRevisionChain(document, errors)
   const latest = revisions?.at(-1)
   if (latest && document.generated_at !== latest.at) {
     errors.push(`$plan.generated_at: must equal the latest revision timestamp ${latest.at}`)
+  }
+  if (latest && latest.projection_digest !== planProjectionDigest(document)) {
+    errors.push('$plan.revisions: latest projection_digest does not match the canonical current plan projection — tampered')
   }
 }
 

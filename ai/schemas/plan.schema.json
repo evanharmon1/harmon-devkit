@@ -155,11 +155,12 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["seq", "prev_digest", "digest", "at", "reason"],
+        "required": ["seq", "prev_digest", "digest", "projection_digest", "at", "reason"],
         "properties": {
           "seq": { "type": "integer", "minimum": 0 },
           "prev_digest": { "type": "string", "pattern": "^(genesis|[0-9a-f]{64})$" },
           "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "projection_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
           "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
           "reason": { "type": "string", "minLength": 1 }
         }

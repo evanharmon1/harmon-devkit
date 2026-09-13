@@ -10,6 +10,6 @@
   "waves": [{ "number": 1, "issues": [1] }],
   "lanes": [{ "lane": "one", "issue": 1, "wave": 1, "branch": "one", "run_id": "run-one", "fence": ["a"] }],
   "fence_expansions": [],
-  "revisions": [{ "seq": 0, "prev_digest": "genesis", "digest": "f6caa51f39fe852ac3e91389e2da099861d19be1bbe3d0022e4c7043cad6459f", "at": "2026-09-13T17:00:00Z", "reason": "initial slate plan" }],
+  "revisions": [{ "seq": 0, "prev_digest": "genesis", "digest": "8bf59adfa77e62621ff675171751d07f74a7f37d8af6b85774fef0b393f5cb1e", "projection_digest": "a5097af3093252116422644c465cbde7ea2c98a56282110de837b7e5974ffba3", "at": "2026-09-13T17:00:00Z", "reason": "initial slate plan" }],
   "unexpected": true
 }

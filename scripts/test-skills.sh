@@ -218,6 +218,12 @@ expect_ok "orchestrator planning validates the emitted plan" \
 expect_ok "orchestrator planning appends recomputations after external merges" \
     grep -qF '**Recompute after every external merge.**' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning publishes recomputations through validated replacement" \
+    grep -qF 'write the complete candidate beside' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning validates the canonical recomputation readback" \
+    grep -qF 'validate the canonical readback' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
 expect_ok "retro compares validated planned and actual lane execution" \
     grep -qF 'planned versus actual waves and interventions for each lane' \
     "$repo/ai/skills/universal/retro/SKILL.md"

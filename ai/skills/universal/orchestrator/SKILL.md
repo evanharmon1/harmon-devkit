@@ -72,9 +72,13 @@ Build and publish the plan in this order:
    head, release newly unblocked dependents, rebuild waves, and repeat live
    re-verification and pairwise overlap checks. Update the current projection
    and append the next `revisions[]` entry (`seq`, `prev_digest`, `digest`,
-   `at`, `reason`) using the same canonical-JSON SHA-256 chain convention as
-   `run.schema.json`; never replace revision history. Revalidate before the
-   next dispatch or merge-queue mutation.
+   `projection_digest`, `at`, `reason`) using the same canonical-JSON SHA-256
+   chain convention as `run.schema.json`; the projection digest covers the
+   complete sorted-key plan projection at that revision. Never replace revision
+   history. As the slate's single writer, write the complete candidate beside
+   `plan.json`, validate that candidate with the `plan` kind, rename it over the
+   canonical record, then validate the canonical readback. Either validation or
+   rename failure is a blocker; dispatch and merge-queue mutation remain paused.
 
 ## Lane briefs
 
