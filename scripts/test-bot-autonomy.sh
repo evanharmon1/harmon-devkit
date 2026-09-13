@@ -23,6 +23,14 @@ fail() {
     exit 1
 }
 
+test_file_sha512() {
+    if command -v sha512sum >/dev/null 2>&1; then
+        sha512sum "$1" | awk '{print $1}'
+    else
+        shasum -a 512 "$1" | awk '{print $1}'
+    fi
+}
+
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
 bot_autonomy="${repo_root}/.devcontainer/scripts/bot-autonomy.sh"
@@ -51,7 +59,7 @@ trap 'rm -rf "$work_dir"' EXIT
 # claude/codex/agy/opencode are never among them, by construction.
 safe_bin="${work_dir}/safe-bin"
 mkdir -p "$safe_bin"
-for tool in bash cat grep jq yq sha256sum git mktemp mv chmod install mkdir basename dirname cmp rm; do
+for tool in bash cat grep jq yq sha256sum shasum git mktemp mv chmod install mkdir basename dirname cmp rm; do
     tool_path="$(command -v "$tool" 2>/dev/null || true)"
     [ -n "$tool_path" ] && ln -sf "$tool_path" "${safe_bin}/${tool}"
 done
@@ -263,6 +271,26 @@ case "$wrapper_out" in
 *"--dangerously-skip-permissions --dangerously-skip-permissions"*) fail "wrapper duplicated an already-present flag: ${wrapper_out}" ;;
 esac
 
+# A stock macOS host provides shasum rather than GNU sha512sum. Exercise the
+# fallback under a deliberately narrow PATH that contains only shasum.
+agy9_portable_home="${work_dir}/agy-wrapper-portable-home"
+agy9_portable_bin="${work_dir}/agy-wrapper-portable-bin"
+agy9_apply_stub="${work_dir}/agy-wrapper-portable-apply"
+mkdir -p "$agy9_portable_home" "$agy9_portable_bin"
+for tool in awk bash basename cat chmod dirname flock install mkdir mktemp mv rm shasum shlock stat; do
+    tool_path="$(command -v "$tool" 2>/dev/null || true)"
+    [ -n "$tool_path" ] && ln -s "$tool_path" "${agy9_portable_bin}/${tool}"
+done
+printf '#!/bin/sh\nexit 0\n' >"$agy9_apply_stub"
+chmod +x "$agy9_apply_stub"
+HOME="$agy9_portable_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    BOT_AUTONOMY_ANTIGRAVITY_APPLY_SCRIPT="$agy9_apply_stub" \
+    PATH="$agy9_portable_bin" bash "$agy_module" apply >/dev/null ||
+    fail "Antigravity wrapper proof hashing did not fall back to shasum"
+[ -x "${agy9_portable_home}/.local/bin/agy" ] &&
+    [ -f "${agy9_portable_home}/.local/bin/.agy.harmon-init-owned" ] ||
+    fail "shasum fallback did not publish the wrapper and ownership proof"
+
 echo "==> 10. Antigravity: dangling symlink fails verify regardless of marker"
 dangling_home="${work_dir}/agy-dangling-home"
 mkdir -p "${dangling_home}/.local/bin"
@@ -329,7 +357,7 @@ if HOME="$correct_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled bash "$agy_modul
     fail "verify passed with the current workspace missing from trustedWorkspaces"
 fi
 
-echo "==> 11. Antigravity: disabled state is verified as absence, not defaulted"
+echo "==> 11. Antigravity: a clean disabled baseline is verified, not defaulted"
 disabled_home="${work_dir}/agy-disabled-home"
 mkdir -p "$disabled_home"
 # env -u: the outer shell (or containerEnv) may export
@@ -485,12 +513,14 @@ HOME="$no_agy_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled bash "$agy_module" a
 grep -q '"toolPermission": *"always-proceed"' "${no_agy_home}/.gemini/antigravity-cli/settings.json" ||
     fail "fixture setup: expected always-proceed after the enabled apply"
 
-# Now simulate disabling the option on a compatibility image with no system
-# agy: remove agy-real (as ensure-antigravity-cli.sh would) and dispatch
+# Now disable the option through the compatibility cleanup, then remove the
+# independently supplied agy-real so no executable remains on PATH. Dispatch
 # through the TOP-LEVEL bot-autonomy.sh — not antigravity.sh directly — on
 # SAFE_PATH, which by construction cannot resolve agy anywhere (this
 # sandbox's own /usr/local/bin/agy must not leak in and mask the bug).
-rm -f "${no_agy_home}/.local/bin/agy-real" "${no_agy_home}/.local/bin/agy"
+HOME="$no_agy_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "${repo_root}/.devcontainer/config/ensure-antigravity-cli.sh" >/dev/null
+rm -f "${no_agy_home}/.local/bin/agy-real"
 HOME="$no_agy_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled PATH="$SAFE_PATH" \
     BOT_AUTONOMY_REGISTRY="$registry" BOT_AUTONOMY_CONFIG_DIR="$module_dir" \
     bash "$bot_autonomy" apply >/dev/null ||
@@ -1258,6 +1288,20 @@ agy21_run "$agy21_dangling_home"
 [ ! -L "${agy21_dangling_home}/.local/bin/agy" ] && [ ! -e "${agy21_dangling_home}/.local/bin/agy" ] ||
     fail "the system-binary-sufficient early return left a dangling agy symlink in place"
 
+# Removing a dangling launcher also retires any stale ownership proof for that
+# pathname. Otherwise a later independent symlink could be judged using proof
+# from the removed generation.
+agy21_owned_dangling_home="${work_dir}/agy21-owned-dangling-home"
+mkdir -p "${agy21_owned_dangling_home}/.local/bin"
+ln -s "${agy21_owned_dangling_home}/.local/bin/agy-real" \
+    "${agy21_owned_dangling_home}/.local/bin/agy"
+printf 'stale proof for removed launcher\n' \
+    >"${agy21_owned_dangling_home}/.local/bin/.agy.harmon-init-owned"
+agy21_run "$agy21_owned_dangling_home"
+[ ! -L "${agy21_owned_dangling_home}/.local/bin/agy" ] &&
+    [ ! -e "${agy21_owned_dangling_home}/.local/bin/.agy.harmon-init-owned" ] ||
+    fail "the system-binary-sufficient early return left stale launcher ownership proof"
+
 # A symlink to an existing DIRECTORY is not dangling, but bot-autonomy/
 # antigravity.sh's install_wrapper does \`mv -f \$tmp \$AGY_LINK\`, which lands
 # INSIDE an existing directory target instead of replacing the link — this
@@ -1366,23 +1410,557 @@ fi
 [ "$(cat "${agy22_home}/.local/bin/agy")" = "$agy22_before" ] ||
     fail "a settings-apply failure modified the prior valid wrapper's content before aborting"
 
-echo "==> 23. ensure-antigravity-cli.sh: an inherited HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled does not leak into the disabled path (#888)"
-# When containerEnv sets HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled (as the
-# devcontainer does), the disabled-marker test cases in devcontainer-assert.sh
-# must clear it before invoking ensure-antigravity-cli.sh — otherwise the
-# script sees the outer env's "enabled" and keeps agy-real/agy in place.
-agy23_home="${work_dir}/agy23-env-leak-home"
-mkdir -p "${agy23_home}/.local/bin"
-: >"${agy23_home}/.local/bin/agy-real"
-: >"${agy23_home}/.local/bin/agy"
-# Export the var in the outer shell, exactly as containerEnv does.
-export HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled
-env -u HARMON_BOT_AUTONOMY_ANTIGRAVITY HOME="$agy23_home" bash "$ensure_script" >/dev/null
-[ ! -e "${agy23_home}/.local/bin/agy-real" ] ||
-    fail "ensure-antigravity-cli.sh left agy-real when env -u should have cleared the inherited enabled marker"
-[ ! -e "${agy23_home}/.local/bin/agy" ] ||
-    fail "ensure-antigravity-cli.sh left agy when env -u should have cleared the inherited enabled marker"
-# Restore the var for the rest of the test suite (it is already set in the
-# real devcontainer, so leaving it exported is the honest ambient state).
+echo "==> 23. apply-antigravity-settings.sh: managed top-level keys replace nested values atomically"
+agy23_home="${work_dir}/agy23-atomic-settings-home"
+agy23_settings="${agy23_home}/.gemini/antigravity-cli/settings.json"
+agy23_apply="${repo_root}/.devcontainer/config/apply-antigravity-settings.sh"
+agy23_defaults="${repo_root}/.devcontainer/config/antigravity-settings.json"
+agy23_workspace="${work_dir}/agy23-workspace"
+mkdir -p "$(dirname "$agy23_settings")"
+printf '%s\n' '{"model":"keep","permissions":{"bash":"deny","nested":{"stale":true}},"statusLine":{"command":"stale","nested":{"stale":true}},"unmanaged":{"nested":{"keep":true}}}' >"$agy23_settings"
+HOME="$agy23_home" bash "$agy23_apply" apply "$agy23_defaults" "$agy23_workspace" >/dev/null
+jq -e '
+    .model == "keep" and
+    .permissions == {} and
+    .statusLine == {
+        "type": "command",
+        "command": "/etc/claude-code/statusline.sh",
+        "enabled": true,
+        "stack_with_default": true
+    } and
+    .unmanaged == {"nested":{"keep":true}}
+' "$agy23_settings" >/dev/null ||
+    fail "managed Antigravity settings retained stale nested values or changed an unmanaged key"
+HOME="$agy23_home" bash "$agy23_apply" restore >/dev/null
+jq -e '
+    .permissions == {"bash":"deny","nested":{"stale":true}} and
+    .statusLine == {"command":"stale","nested":{"stale":true}} and
+    .unmanaged == {"nested":{"keep":true}}
+' "$agy23_settings" >/dev/null ||
+    fail "restoring Antigravity settings did not recover the original nested managed values"
+
+echo "==> 24. ensure-antigravity-cli.sh: launcher and executable ownership are independent"
+# The natural agy -> agy-real target is not ownership proof. An independently
+# installed launcher with exactly that shape must survive cleanup and pass
+# disabled verification when no launcher proof exists.
+agy24_link_home="${work_dir}/agy24-independent-natural-link-home"
+mkdir -p "${agy24_link_home}/.local/bin"
+printf 'independent compatibility binary\n' >"${agy24_link_home}/.local/bin/agy-real"
+ln -s "${agy24_link_home}/.local/bin/agy-real" "${agy24_link_home}/.local/bin/agy"
+HOME="$agy24_link_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$agy_module" verify >/dev/null ||
+    fail "disabled verify rejected an unowned natural agy -> agy-real symlink"
+HOME="$agy24_link_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled bash "$ensure_script" >/dev/null
+[ "$(cat "${agy24_link_home}/.local/bin/agy-real")" = "independent compatibility binary" ] &&
+    [ -L "${agy24_link_home}/.local/bin/agy" ] &&
+    [ "$(readlink "${agy24_link_home}/.local/bin/agy")" = "${agy24_link_home}/.local/bin/agy-real" ] ||
+    fail "disabled cleanup modified an unowned natural agy -> agy-real symlink"
+
+# The bot-autonomy module's marker proves ownership of its regular wrapper.
+agy24_wrapper_home="${work_dir}/agy24-managed-wrapper-home"
+mkdir -p "${agy24_wrapper_home}/.local/bin"
+printf '#!/bin/sh\necho REAL\n' >"${agy24_wrapper_home}/.local/bin/agy-real"
+chmod +x "${agy24_wrapper_home}/.local/bin/agy-real"
+HOME="$agy24_wrapper_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    BOT_AUTONOMY_ANTIGRAVITY_SETTINGS="${agy24_wrapper_home}/.gemini/antigravity-cli/settings.json" \
+    bash "$agy_module" apply >/dev/null
+[ -f "${agy24_wrapper_home}/.local/bin/.agy.harmon-init-owned" ] ||
+    fail "wrapper apply did not publish independent launcher ownership proof"
+if HOME="$agy24_wrapper_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$agy_module" verify >/dev/null 2>&1; then
+    fail "disabled verify accepted an independently proven managed Antigravity wrapper"
+fi
+HOME="$agy24_wrapper_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled bash "$ensure_script" >/dev/null
+[ "$("${agy24_wrapper_home}/.local/bin/agy-real")" = "REAL" ] &&
+    [ ! -e "${agy24_wrapper_home}/.local/bin/agy" ] &&
+    [ ! -e "${agy24_wrapper_home}/.local/bin/.agy.harmon-init-owned" ] ||
+    fail "disabled cleanup did not remove only the independently proven managed Antigravity wrapper"
+
+# A system-binary-only enabled run installs a wrapper but no local executable
+# or ownership proof. If a user later supplies agy-real, disabling may remove
+# the wrapper but must preserve that independently created executable.
+agy24_system_home="${work_dir}/agy24-system-only-home"
+agy24_system_bin="${agy24_system_home}/system-agy"
+mkdir -p "${agy24_system_home}/.local/bin"
+printf '#!/bin/sh\nprintf "1.1.11\\n"\n' >"$agy24_system_bin"
+chmod +x "$agy24_system_bin"
+HOME="$agy24_system_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_system_bin" \
+    bash "$ensure_script" >/dev/null
+HOME="$agy24_system_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_system_bin" \
+    BOT_AUTONOMY_ANTIGRAVITY_SETTINGS="${agy24_system_home}/.gemini/antigravity-cli/settings.json" \
+    bash "$agy_module" apply >/dev/null
+[ ! -e "${agy24_system_home}/.local/bin/.agy-real.harmon-init-owned" ] ||
+    fail "system-binary-only install unexpectedly claimed a local agy-real"
+[ -f "${agy24_system_home}/.local/bin/.agy.harmon-init-owned" ] ||
+    fail "system-binary-only wrapper did not publish launcher ownership proof"
+printf '#!/bin/sh\nprintf "independent\\n"\n' >"${agy24_system_home}/.local/bin/agy-real"
+chmod +x "${agy24_system_home}/.local/bin/agy-real"
+HOME="$agy24_system_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$ensure_script" >/dev/null
+[ ! -e "${agy24_system_home}/.local/bin/agy" ] &&
+    [ ! -e "${agy24_system_home}/.local/bin/.agy.harmon-init-owned" ] &&
+    [ "$("${agy24_system_home}/.local/bin/agy-real")" = "independent" ] ||
+    fail "disabled cleanup deleted agy-real based only on wrapper ownership"
+
+# Independent regular files at both reserved names carry no ownership proof.
+agy24_file_home="${work_dir}/agy24-independent-files-home"
+mkdir -p "${agy24_file_home}/.local/bin"
+printf 'independent real\n' >"${agy24_file_home}/.local/bin/agy-real"
+printf 'independent launcher\n' >"${agy24_file_home}/.local/bin/agy"
+HOME="$agy24_file_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled bash "$ensure_script" >/dev/null
+[ "$(cat "${agy24_file_home}/.local/bin/agy-real")" = "independent real" ] &&
+    [ "$(cat "${agy24_file_home}/.local/bin/agy")" = "independent launcher" ] ||
+    fail "disabled cleanup modified independent regular files"
+HOME="$agy24_file_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$agy_module" verify >/dev/null ||
+    fail "disabled verify rejected independent regular launcher files"
+
+# An independent symlink and an orphan agy-real are likewise not evidence that
+# this module owns either path.
+agy24_symlink_home="${work_dir}/agy24-independent-symlink-home"
+mkdir -p "${agy24_symlink_home}/.local/bin"
+printf 'independent real\n' >"${agy24_symlink_home}/.local/bin/agy-real"
+printf 'independent target\n' >"${agy24_symlink_home}/.local/bin/other-agy"
+ln -s "${agy24_symlink_home}/.local/bin/other-agy" "${agy24_symlink_home}/.local/bin/agy"
+HOME="$agy24_symlink_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled bash "$ensure_script" >/dev/null
+[ -f "${agy24_symlink_home}/.local/bin/agy-real" ] &&
+    [ -L "${agy24_symlink_home}/.local/bin/agy" ] &&
+    [ "$(readlink "${agy24_symlink_home}/.local/bin/agy")" = "${agy24_symlink_home}/.local/bin/other-agy" ] ||
+    fail "disabled cleanup modified an independent symlink or agy-real file"
+HOME="$agy24_symlink_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$agy_module" verify >/dev/null ||
+    fail "disabled verify rejected an independent launcher symlink"
+
+# An exact-version agy-real symlink is compatible but unowned. Enabled setup may
+# point agy at it, but must not replace the symlink or publish ownership proof;
+# disabled cleanup consequently removes only the managed launcher.
+agy24_exact_link_home="${work_dir}/agy24-exact-version-link-home"
+agy24_exact_target="${agy24_exact_link_home}/external/agy"
+mkdir -p "${agy24_exact_link_home}/.local/bin" "$(dirname "$agy24_exact_target")"
+printf '#!/bin/sh\nprintf "1.1.11\\n"\n' >"$agy24_exact_target"
+chmod +x "$agy24_exact_target"
+ln -s "$agy24_exact_target" "${agy24_exact_link_home}/.local/bin/agy-real"
+HOME="$agy24_exact_link_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY=/nonexistent bash "$ensure_script" >/dev/null
+[ -L "${agy24_exact_link_home}/.local/bin/agy-real" ] &&
+    [ "$(readlink "${agy24_exact_link_home}/.local/bin/agy-real")" = "$agy24_exact_target" ] &&
+    [ ! -e "${agy24_exact_link_home}/.local/bin/.agy-real.harmon-init-owned" ] ||
+    fail "enabled setup replaced or claimed an unowned exact-version agy-real symlink"
+HOME="$agy24_exact_link_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$ensure_script" >/dev/null
+[ -L "${agy24_exact_link_home}/.local/bin/agy-real" ] &&
+    [ "$(readlink "${agy24_exact_link_home}/.local/bin/agy-real")" = "$agy24_exact_target" ] &&
+    [ ! -e "${agy24_exact_link_home}/.local/bin/agy" ] ||
+    fail "disabled cleanup removed an unowned exact-version agy-real symlink"
+
+# The installer publishes identity-and-content proof for both managed paths.
+# If the launcher is later lost, disabled verification still fails closed and
+# cleanup removes the independently proven executable without guessing from
+# its filename or version.
+agy24_interrupted_home="${work_dir}/agy24-interrupted-install-home"
+agy24_interrupted_system="${agy24_interrupted_home}/system-agy"
+mkdir -p "${agy24_interrupted_home}/.local/bin"
+printf '#!/bin/sh\nprintf "old\\n"\n' >"${agy24_interrupted_home}/.local/bin/agy-real"
+chmod +x "${agy24_interrupted_home}/.local/bin/agy-real"
+printf '#!/bin/sh\nprintf "1.1.11\\n"\n' >"$agy24_interrupted_system"
+chmod +x "$agy24_interrupted_system"
+HOME="$agy24_interrupted_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_interrupted_system" \
+    bash "$ensure_script" >/dev/null
+[ -f "${agy24_interrupted_home}/.local/bin/.agy-real.harmon-init-owned" ] &&
+    grep -q '^type=file$' "${agy24_interrupted_home}/.local/bin/.agy-real.harmon-init-owned" &&
+    grep -q '^sha512=' "${agy24_interrupted_home}/.local/bin/.agy-real.harmon-init-owned" &&
+    [ -f "${agy24_interrupted_home}/.local/bin/.agy.harmon-init-owned" ] ||
+    fail "enabled install did not publish independent content proofs for agy-real and agy"
+rm -f "${agy24_interrupted_home}/.local/bin/agy"
+if HOME="$agy24_interrupted_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$agy_module" verify >/dev/null 2>&1; then
+    fail "disabled verify accepted an owned orphan agy-real from an interrupted install"
+fi
+HOME="$agy24_interrupted_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$ensure_script" >/dev/null
+[ ! -e "${agy24_interrupted_home}/.local/bin/agy-real" ] &&
+    [ ! -e "${agy24_interrupted_home}/.local/bin/.agy-real.harmon-init-owned" ] &&
+    [ ! -e "${agy24_interrupted_home}/.local/bin/.agy.harmon-init-owned" ] ||
+    fail "disabled cleanup left an owned orphan or ownership proof behind"
+HOME="$agy24_interrupted_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$agy_module" verify >/dev/null ||
+    fail "disabled verify failed after cleaning an interrupted managed install"
+
+# Rewriting an installed executable in place preserves its inode. The immutable
+# content fingerprint must still revoke deletion authority, preserving the
+# externally supplied bytes while cleaning stale module metadata and its owned
+# launcher.
+agy24_rewrite_home="${work_dir}/agy24-in-place-rewrite-home"
+agy24_rewrite_system="${agy24_rewrite_home}/system-agy"
+mkdir -p "${agy24_rewrite_home}/.local/bin"
+printf '#!/bin/sh\nprintf "old\\n"\n' >"${agy24_rewrite_home}/.local/bin/agy-real"
+printf '#!/bin/sh\nprintf "1.1.11\\n"\n' >"$agy24_rewrite_system"
+chmod +x "${agy24_rewrite_home}/.local/bin/agy-real" "$agy24_rewrite_system"
+HOME="$agy24_rewrite_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_rewrite_system" \
+    bash "$ensure_script" >/dev/null
+agy24_rewrite_identity="$(stat -c '%d:%i' "${agy24_rewrite_home}/.local/bin/agy-real" 2>/dev/null ||
+    stat -f '%d:%i' "${agy24_rewrite_home}/.local/bin/agy-real")"
+printf '#!/bin/sh\nprintf "independent rewrite\\n"\n' >"${agy24_rewrite_home}/.local/bin/agy-real"
+chmod +x "${agy24_rewrite_home}/.local/bin/agy-real"
+[ "$(stat -c '%d:%i' "${agy24_rewrite_home}/.local/bin/agy-real" 2>/dev/null ||
+    stat -f '%d:%i' "${agy24_rewrite_home}/.local/bin/agy-real")" = "$agy24_rewrite_identity" ] ||
+    fail "in-place rewrite fixture unexpectedly replaced the agy-real inode"
+HOME="$agy24_rewrite_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$ensure_script" >/dev/null
+[ "$("${agy24_rewrite_home}/.local/bin/agy-real")" = "independent rewrite" ] &&
+    [ ! -e "${agy24_rewrite_home}/.local/bin/agy" ] &&
+    [ ! -e "${agy24_rewrite_home}/.local/bin/.agy-real.harmon-init-owned" ] &&
+    [ ! -e "${agy24_rewrite_home}/.local/bin/.agy.harmon-init-owned" ] ||
+    fail "disabled cleanup deleted an in-place rewrite or retained stale managed state"
+HOME="$agy24_rewrite_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$agy_module" verify >/dev/null ||
+    fail "disabled verify rejected the preserved in-place rewrite"
+
+# Force the exact interrupted-upgrade window: transaction published, new
+# executable published, final ownership promotion fails. The next disabled run
+# must recover the transaction and remove the recognized managed executable.
+agy24_upgrade_home="${work_dir}/agy24-interrupted-upgrade-home"
+agy24_upgrade_system="${agy24_upgrade_home}/system-agy"
+agy24_upgrade_fake_bin="${agy24_upgrade_home}/fake-bin"
+agy24_upgrade_mv_count="${agy24_upgrade_home}/mv-count"
+agy24_real_mv="$(command -v mv)"
+mkdir -p "${agy24_upgrade_home}/.local/bin" "$agy24_upgrade_fake_bin"
+printf '#!/bin/sh\nprintf "1.0.0\\n"\n' >"${agy24_upgrade_home}/.local/bin/agy-real"
+chmod +x "${agy24_upgrade_home}/.local/bin/agy-real"
+agy24_old_identity="$(stat -c '%d:%i' "${agy24_upgrade_home}/.local/bin/agy-real" 2>/dev/null ||
+    stat -f '%d:%i' "${agy24_upgrade_home}/.local/bin/agy-real")"
+agy24_old_sha="$(test_file_sha512 "${agy24_upgrade_home}/.local/bin/agy-real")"
+printf 'type=file\nidentity=%s\nsha512=%s\ntemp_name=\n' \
+    "$agy24_old_identity" "$agy24_old_sha" >"${agy24_upgrade_home}/.local/bin/.agy-real.harmon-init-owned"
+printf '#!/bin/sh\nprintf "1.1.11\\n"\n' >"$agy24_upgrade_system"
+chmod +x "$agy24_upgrade_system"
+printf '%s\n' '#!/bin/sh' \
+    'count=0' \
+    '[ ! -f "$HARMON_TEST_MV_COUNT" ] || count=$(cat "$HARMON_TEST_MV_COUNT")' \
+    'count=$((count + 1))' \
+    'printf "%s\\n" "$count" >"$HARMON_TEST_MV_COUNT"' \
+    '[ "$count" -ne 3 ] || exit 75' \
+    'exec "$HARMON_TEST_REAL_MV" "$@"' >"${agy24_upgrade_fake_bin}/mv"
+chmod +x "${agy24_upgrade_fake_bin}/mv"
+if HOME="$agy24_upgrade_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_upgrade_system" \
+    HARMON_TEST_MV_COUNT="$agy24_upgrade_mv_count" HARMON_TEST_REAL_MV="$agy24_real_mv" \
+    PATH="${agy24_upgrade_fake_bin}:${PATH}" bash "$ensure_script" >/dev/null 2>&1; then
+    fail "interrupted-upgrade fixture did not stop before ownership promotion"
+fi
+[ -f "${agy24_upgrade_home}/.local/bin/.agy-real.harmon-init-transaction" ] &&
+    [ "$("${agy24_upgrade_home}/.local/bin/agy-real")" = "1.1.11" ] ||
+    fail "interrupted upgrade did not leave the recoverable new-generation state"
+HOME="$agy24_upgrade_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$ensure_script" >/dev/null
+[ ! -e "${agy24_upgrade_home}/.local/bin/agy-real" ] &&
+    [ ! -e "${agy24_upgrade_home}/.local/bin/.agy-real.harmon-init-owned" ] &&
+    [ ! -e "${agy24_upgrade_home}/.local/bin/.agy-real.harmon-init-transaction" ] ||
+    fail "disabled cleanup did not recover and remove an interrupted managed upgrade"
+
+# Dangling ownership/transaction symlinks are metadata presence, even though
+# test -e reports false. Verification must reject them and ensure must clean
+# them without following their targets.
+agy24_dangling_meta_home="${work_dir}/agy24-dangling-metadata-home"
+mkdir -p "${agy24_dangling_meta_home}/.local/bin"
+ln -s "${agy24_dangling_meta_home}/missing-real-proof" \
+    "${agy24_dangling_meta_home}/.local/bin/.agy-real.harmon-init-transaction"
+ln -s "${agy24_dangling_meta_home}/missing-link-proof" \
+    "${agy24_dangling_meta_home}/.local/bin/.agy.harmon-init-owned"
+if HOME="$agy24_dangling_meta_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$agy_module" verify >/dev/null 2>&1; then
+    fail "disabled verify accepted dangling Antigravity metadata symlinks"
+fi
+HOME="$agy24_dangling_meta_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$ensure_script" >/dev/null
+[ ! -L "${agy24_dangling_meta_home}/.local/bin/.agy-real.harmon-init-transaction" ] &&
+    [ ! -L "${agy24_dangling_meta_home}/.local/bin/.agy.harmon-init-owned" ] ||
+    fail "disabled cleanup left dangling Antigravity metadata symlinks"
+HOME="$agy24_dangling_meta_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    bash "$agy_module" verify >/dev/null ||
+    fail "disabled verify failed after dangling metadata cleanup"
+
+# Two concurrent reconciliation runs must not share or discard each other's
+# fixed transaction names. Hold the first run inside its system-version probe
+# (after lock acquisition), then prove the second fails closed on the lock.
+agy24_concurrent_home="${work_dir}/agy24-concurrent-home"
+agy24_concurrent_system="${agy24_concurrent_home}/system-agy"
+agy24_concurrent_started="${agy24_concurrent_home}/started"
+agy24_concurrent_release="${agy24_concurrent_home}/release"
+mkdir -p "${agy24_concurrent_home}/.local/bin"
+printf '#!/bin/sh\nprintf "1.0.0\\n"\n' >"${agy24_concurrent_home}/.local/bin/agy-real"
+printf '%s\n' '#!/bin/sh' \
+    'printf "started\\n" >"$HARMON_TEST_LOCK_STARTED"' \
+    'count=0' \
+    'while [ ! -e "$HARMON_TEST_LOCK_RELEASE" ]; do' \
+    '    count=$((count + 1))' \
+    '    [ "$count" -lt 200 ] || exit 70' \
+    '    sleep 0.05' \
+    'done' \
+    'printf "1.1.11\\n"' >"$agy24_concurrent_system"
+chmod +x "${agy24_concurrent_home}/.local/bin/agy-real" "$agy24_concurrent_system"
+HOME="$agy24_concurrent_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_concurrent_system" \
+    HARMON_TEST_LOCK_STARTED="$agy24_concurrent_started" \
+    HARMON_TEST_LOCK_RELEASE="$agy24_concurrent_release" \
+    bash "$ensure_script" >/dev/null 2>&1 &
+agy24_concurrent_pid=$!
+agy24_wait=0
+while [ ! -e "$agy24_concurrent_started" ] && [ "$agy24_wait" -lt 200 ]; do
+    agy24_wait=$((agy24_wait + 1))
+    sleep 0.05
+done
+if [ ! -e "$agy24_concurrent_started" ]; then
+    touch "$agy24_concurrent_release"
+    wait "$agy24_concurrent_pid" 2>/dev/null || true
+    fail "concurrent reconciliation fixture never reached its locked probe"
+fi
+if HOME="$agy24_concurrent_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_concurrent_system" \
+    HARMON_TEST_LOCK_STARTED="$agy24_concurrent_started" \
+    HARMON_TEST_LOCK_RELEASE="$agy24_concurrent_release" \
+    bash "$ensure_script" >/dev/null 2>&1; then
+    touch "$agy24_concurrent_release"
+    wait "$agy24_concurrent_pid" 2>/dev/null || true
+    fail "a concurrent reconciliation entered the shared transaction protocol"
+fi
+touch "$agy24_concurrent_release"
+wait "$agy24_concurrent_pid" ||
+    fail "the lock-owning reconciliation failed after its peer was refused"
+
+# Reproduce replacement after the initial proof match but before cleanup's old
+# unlink point. The atomic move must capture and revalidate that replacement,
+# then restore it instead of deleting it under the stale proof.
+agy24_quarantine_home="${work_dir}/agy24-quarantine-home"
+agy24_quarantine_system="${agy24_quarantine_home}/system-agy"
+agy24_quarantine_fake_bin="${agy24_quarantine_home}/fake-bin"
+agy24_quarantine_target="${agy24_quarantine_home}/.local/bin/agy-real"
+agy24_quarantine_real_mv="$(command -v mv)"
+mkdir -p "${agy24_quarantine_home}/.local/bin" "$agy24_quarantine_fake_bin"
+printf '#!/bin/sh\nprintf "1.0.0\\n"\n' >"$agy24_quarantine_target"
+printf '#!/bin/sh\nprintf "1.1.11\\n"\n' >"$agy24_quarantine_system"
+chmod +x "$agy24_quarantine_target" "$agy24_quarantine_system"
+HOME="$agy24_quarantine_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_quarantine_system" \
+    bash "$ensure_script" >/dev/null
+printf '%s\n' '#!/bin/sh' \
+    'if [ "$#" -eq 3 ] && [ "$1" = "-f" ] && [ "$2" = "$HARMON_TEST_QUARANTINE_TARGET" ]; then' \
+    '    case "$3" in' \
+    '    "$HARMON_TEST_QUARANTINE_TARGET".harmon-init-quarantine.*)' \
+    '        rm -f "$2"' \
+    '        printf "independent replacement\\n" >"$2"' \
+    '        ;;' \
+    '    esac' \
+    'fi' \
+    'exec "$HARMON_TEST_REAL_MV" "$@"' >"${agy24_quarantine_fake_bin}/mv"
+chmod +x "${agy24_quarantine_fake_bin}/mv"
+HOME="$agy24_quarantine_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    HARMON_TEST_QUARANTINE_TARGET="$agy24_quarantine_target" \
+    HARMON_TEST_REAL_MV="$agy24_quarantine_real_mv" \
+    PATH="${agy24_quarantine_fake_bin}:${PATH}" bash "$ensure_script" >/dev/null
+[ "$(cat "$agy24_quarantine_target")" = "independent replacement" ] &&
+    [ ! -e "${agy24_quarantine_home}/.local/bin/.agy-real.harmon-init-owned" ] &&
+    [ ! -e "${agy24_quarantine_home}/.local/bin/.agy.harmon-init-owned" ] ||
+    fail "quarantine cleanup deleted a concurrent replacement or retained stale proof"
+if ! agy24_quarantine_leftover="$(find "${agy24_quarantine_home}/.local/bin" -name 'agy-real.harmon-init-quarantine.*' -print -quit)"; then
+    fail "could not inspect quarantine leftovers"
+fi
+if [ -n "$agy24_quarantine_leftover" ]; then
+    fail "quarantine cleanup did not restore the captured independent replacement"
+fi
+
+# A failed quarantine move leaves the managed generation in place, so its
+# still-matching proof must survive for a later cleanup retry.
+agy24_quarantine_fail_home="${work_dir}/agy24-quarantine-fail-home"
+agy24_quarantine_fail_system="${agy24_quarantine_fail_home}/system-agy"
+agy24_quarantine_fail_bin="${agy24_quarantine_fail_home}/fake-bin"
+agy24_quarantine_fail_target="${agy24_quarantine_fail_home}/.local/bin/agy-real"
+mkdir -p "${agy24_quarantine_fail_home}/.local/bin" "$agy24_quarantine_fail_bin"
+printf '#!/bin/sh\nprintf "1.0.0\\n"\n' >"$agy24_quarantine_fail_target"
+printf '#!/bin/sh\nprintf "1.1.11\\n"\n' >"$agy24_quarantine_fail_system"
+chmod +x "$agy24_quarantine_fail_target" "$agy24_quarantine_fail_system"
+HOME="$agy24_quarantine_fail_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_quarantine_fail_system" \
+    bash "$ensure_script" >/dev/null
+printf '%s\n' '#!/bin/sh' \
+    'if [ "$#" -eq 3 ] && [ "$1" = "-f" ] && [ "$2" = "$HARMON_TEST_QUARANTINE_TARGET" ]; then' \
+    '    case "$3" in' \
+    '    "$HARMON_TEST_QUARANTINE_TARGET".harmon-init-quarantine.*) exit 74 ;;' \
+    '    esac' \
+    'fi' \
+    'exec "$HARMON_TEST_REAL_MV" "$@"' >"${agy24_quarantine_fail_bin}/mv"
+chmod +x "${agy24_quarantine_fail_bin}/mv"
+if HOME="$agy24_quarantine_fail_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    HARMON_TEST_QUARANTINE_TARGET="$agy24_quarantine_fail_target" \
+    HARMON_TEST_REAL_MV="$agy24_quarantine_real_mv" \
+    PATH="${agy24_quarantine_fail_bin}:${PATH}" bash "$ensure_script" >/dev/null 2>&1; then
+    fail "disabled cleanup accepted a failed managed-executable quarantine"
+fi
+[ -x "$agy24_quarantine_fail_target" ] &&
+    [ -f "${agy24_quarantine_fail_home}/.local/bin/.agy-real.harmon-init-owned" ] ||
+    fail "failed quarantine discarded the retryable executable or its ownership proof"
+
+# If a concurrent actor publishes a symlink to a directory after quarantine,
+# restore must not follow it and move captured bytes inside that directory.
+agy24_dirlink_home="${work_dir}/agy24-dirlink-home"
+agy24_dirlink_system="${agy24_dirlink_home}/system-agy"
+agy24_dirlink_bin="${agy24_dirlink_home}/fake-bin"
+agy24_dirlink_target="${agy24_dirlink_home}/.local/bin/agy-real"
+agy24_dirlink_destination="${agy24_dirlink_home}/independent-directory"
+agy24_dirlink_stderr="${agy24_dirlink_home}/cleanup.stderr"
+mkdir -p "${agy24_dirlink_home}/.local/bin" "$agy24_dirlink_bin" "$agy24_dirlink_destination"
+printf '#!/bin/sh\nprintf "1.0.0\\n"\n' >"$agy24_dirlink_target"
+printf '#!/bin/sh\nprintf "1.1.11\\n"\n' >"$agy24_dirlink_system"
+chmod +x "$agy24_dirlink_target" "$agy24_dirlink_system"
+HOME="$agy24_dirlink_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled \
+    HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_dirlink_system" \
+    bash "$ensure_script" >/dev/null
+printf '%s\n' '#!/bin/sh' \
+    'if [ "$#" -eq 3 ] && [ "$1" = "-f" ] && [ "$2" = "$HARMON_TEST_QUARANTINE_TARGET" ]; then' \
+    '    case "$3" in' \
+    '    "$HARMON_TEST_QUARANTINE_TARGET".harmon-init-quarantine.*)' \
+    '        rm -f "$2"' \
+    '        printf "captured independent bytes\\n" >"$2"' \
+    '        "$HARMON_TEST_REAL_MV" -f "$2" "$3"' \
+    '        ln -s "$HARMON_TEST_DIRECTORY_TARGET" "$2"' \
+    '        exit 0' \
+    '        ;;' \
+    '    esac' \
+    'fi' \
+    'exec "$HARMON_TEST_REAL_MV" "$@"' >"${agy24_dirlink_bin}/mv"
+chmod +x "${agy24_dirlink_bin}/mv"
+if HOME="$agy24_dirlink_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled \
+    HARMON_TEST_QUARANTINE_TARGET="$agy24_dirlink_target" \
+    HARMON_TEST_DIRECTORY_TARGET="$agy24_dirlink_destination" \
+    HARMON_TEST_REAL_MV="$agy24_quarantine_real_mv" \
+    PATH="${agy24_dirlink_bin}:${PATH}" bash "$ensure_script" >/dev/null 2>"$agy24_dirlink_stderr"; then
+    fail "cleanup did not fail closed while retaining quarantined bytes"
+fi
+[ -L "$agy24_dirlink_target" ] &&
+    [ "$(readlink "$agy24_dirlink_target")" = "$agy24_dirlink_destination" ] ||
+    fail "cleanup replaced the concurrent directory symlink"
+agy24_dirlink_recovery="$(find "${agy24_dirlink_home}/.local/bin" \
+    -name 'agy-real.harmon-init-quarantine.*' -print -quit)"
+[ -n "$agy24_dirlink_recovery" ] && [ -f "$agy24_dirlink_recovery" ] &&
+    grep -Fq "$agy24_dirlink_recovery" "$agy24_dirlink_stderr" ||
+    fail "cleanup did not retain and report the captured recovery path"
+[ ! -e "${agy24_dirlink_destination}/$(basename "$agy24_dirlink_recovery")" ] &&
+    [ ! -e "${agy24_dirlink_home}/.local/bin/.agy-real.harmon-init-owned" ] ||
+    fail "cleanup followed a directory symlink or retained stale executable proof"
+
+# A system-binary-only run retires an orphan proof before a later independent
+# agy-real can occupy the pathname.
+agy24_orphan_home="${work_dir}/agy24-orphan-proof-home"
+mkdir -p "${agy24_orphan_home}/.local/bin"
+printf 'type=file\nidentity=1:1\nsha512=stale\ntemp_name=\n' >"${agy24_orphan_home}/.local/bin/.agy-real.harmon-init-owned"
+agy21_run "$agy24_orphan_home"
+[ ! -e "${agy24_orphan_home}/.local/bin/.agy-real.harmon-init-owned" ] || fail "system-binary run retained orphan agy-real proof"
+printf '#!/bin/sh\nprintf "independent\\n"\n' >"${agy24_orphan_home}/.local/bin/agy-real"
+chmod +x "${agy24_orphan_home}/.local/bin/agy-real"
+HOME="$agy24_orphan_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled bash "$ensure_script" >/dev/null
+[ "$("${agy24_orphan_home}/.local/bin/agy-real")" = independent ] || fail "cleanup deleted later independent agy-real"
+
+# Recover a matching wrapper transaction before attempting a new publication.
+agy24_wtx_home="${work_dir}/agy24-wrapper-transaction-home"
+agy24_wtx_bin="${agy24_wtx_home}/fake-bin"
+agy24_wtx_stub="${agy24_wtx_home}/settings-stub.sh"
+agy24_wtx_recovered="${agy24_wtx_home}/recovered"
+agy24_wtx_real_mv="$(command -v mv)"
+mkdir -p "${agy24_wtx_home}/.local/bin" "$agy24_wtx_bin"
+printf '#!/bin/sh\nexit 0\n' >"$agy24_wtx_stub"
+chmod +x "$agy24_wtx_stub"
+HOME="$agy24_wtx_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled BOT_AUTONOMY_ANTIGRAVITY_APPLY_SCRIPT="$agy24_wtx_stub" bash "$agy_module" apply >/dev/null
+mv "${agy24_wtx_home}/.local/bin/.agy.harmon-init-owned" "${agy24_wtx_home}/.local/bin/.agy.harmon-init-transaction"
+printf '%s\n' '#!/bin/sh' \
+    'if [ "$3" = "$HARMON_TEST_LINK_OWNERSHIP" ]; then touch "$HARMON_TEST_RECOVERED"; fi' \
+    'if [ "$3" = "$HARMON_TEST_LINK_TRANSACTION" ]; then case "$2" in *.harmon-init-transaction.tmp.*) exit 75 ;; esac; fi' \
+    'exec "$HARMON_TEST_REAL_MV" "$@"' >"${agy24_wtx_bin}/mv"
+chmod +x "${agy24_wtx_bin}/mv"
+if HOME="$agy24_wtx_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled BOT_AUTONOMY_ANTIGRAVITY_APPLY_SCRIPT="$agy24_wtx_stub" \
+    HARMON_TEST_LINK_OWNERSHIP="${agy24_wtx_home}/.local/bin/.agy.harmon-init-owned" \
+    HARMON_TEST_LINK_TRANSACTION="${agy24_wtx_home}/.local/bin/.agy.harmon-init-transaction" \
+    HARMON_TEST_RECOVERED="$agy24_wtx_recovered" HARMON_TEST_REAL_MV="$agy24_wtx_real_mv" \
+    PATH="${agy24_wtx_bin}:${PATH}" bash "$agy_module" apply >/dev/null 2>&1; then
+    fail "wrapper transaction fixture did not interrupt new publication"
+fi
+[ -e "$agy24_wtx_recovered" ] && [ -f "${agy24_wtx_home}/.local/bin/.agy.harmon-init-owned" ] &&
+    [ ! -e "${agy24_wtx_home}/.local/bin/.agy.harmon-init-transaction" ] || fail "wrapper publisher overwrote prior transaction"
+
+# Empty digests cannot prove ownership, and a failed hash cannot publish a wrapper.
+agy24_hash_home="${work_dir}/agy24-hash-failure-home"
+agy24_hash_bin="${agy24_hash_home}/fake-bin"
+agy24_hash_stub="${agy24_hash_home}/settings-stub.sh"
+mkdir -p "${agy24_hash_home}/.local/bin" "$agy24_hash_bin"
+printf '#!/bin/sh\nprintf "independent\\n"\n' >"${agy24_hash_home}/.local/bin/agy-real"
+chmod +x "${agy24_hash_home}/.local/bin/agy-real"
+agy24_hash_identity="$(stat -c '%d:%i' "${agy24_hash_home}/.local/bin/agy-real" 2>/dev/null || stat -f '%d:%i' "${agy24_hash_home}/.local/bin/agy-real")"
+printf 'type=file\nidentity=%s\nsha512=\ntemp_name=\n' "$agy24_hash_identity" >"${agy24_hash_home}/.local/bin/.agy-real.harmon-init-owned"
+HOME="$agy24_hash_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled bash "$ensure_script" >/dev/null
+[ "$("${agy24_hash_home}/.local/bin/agy-real")" = independent ] && [ ! -e "${agy24_hash_home}/.local/bin/.agy-real.harmon-init-owned" ] || fail "empty digest authorized cleanup"
+printf '#!/bin/sh\nexit 64\n' >"${agy24_hash_bin}/sha512sum"
+printf '#!/bin/sh\nexit 0\n' >"$agy24_hash_stub"
+chmod +x "${agy24_hash_bin}/sha512sum" "$agy24_hash_stub"
+if HOME="$agy24_hash_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled BOT_AUTONOMY_ANTIGRAVITY_APPLY_SCRIPT="$agy24_hash_stub" \
+    PATH="${agy24_hash_bin}:${PATH}" bash "$agy_module" apply >/dev/null 2>&1; then fail "failed SHA-512 command published wrapper"; fi
+[ ! -e "${agy24_hash_home}/.local/bin/agy" ] && [ ! -e "${agy24_hash_home}/.local/bin/.agy.harmon-init-owned" ] &&
+    [ ! -e "${agy24_hash_home}/.local/bin/.agy.harmon-init-transaction" ] || fail "hash failure left managed wrapper state"
+
+# Persist the quarantine name before moving, so a following run can recover a
+# move that completed immediately before the process failed.
+agy24_qr_home="${work_dir}/agy24-quarantine-recovery-home"
+agy24_qr_system="${agy24_qr_home}/system-agy"
+agy24_qr_bin="${agy24_qr_home}/fake-bin"
+agy24_qr_target="${agy24_qr_home}/.local/bin/agy-real"
+mkdir -p "${agy24_qr_home}/.local/bin" "$agy24_qr_bin"
+printf '#!/bin/sh\nprintf "1.0.0\\n"\n' >"$agy24_qr_target"
+printf '#!/bin/sh\nprintf "1.1.11\\n"\n' >"$agy24_qr_system"
+chmod +x "$agy24_qr_target" "$agy24_qr_system"
+HOME="$agy24_qr_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=enabled HARMON_ANTIGRAVITY_SYSTEM_BINARY="$agy24_qr_system" bash "$ensure_script" >/dev/null
+printf '%s\n' '#!/bin/sh' \
+    'if [ "$#" -eq 3 ] && [ "$1" = "-f" ] && [ "$2" = "$HARMON_TEST_QUARANTINE_TARGET" ]; then' \
+    'case "$3" in "$HARMON_TEST_QUARANTINE_TARGET".harmon-init-quarantine.*) "$HARMON_TEST_REAL_MV" "$@"; exit 75 ;; esac; fi' \
+    'exec "$HARMON_TEST_REAL_MV" "$@"' >"${agy24_qr_bin}/mv"
+chmod +x "${agy24_qr_bin}/mv"
+if HOME="$agy24_qr_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled HARMON_TEST_QUARANTINE_TARGET="$agy24_qr_target" \
+    HARMON_TEST_REAL_MV="$agy24_quarantine_real_mv" PATH="${agy24_qr_bin}:${PATH}" bash "$ensure_script" >/dev/null 2>&1; then
+    fail "interrupted quarantine fixture did not fail"
+fi
+[ ! -e "$agy24_qr_target" ] && grep -q '^temp_name=agy-real.harmon-init-quarantine\.' "${agy24_qr_home}/.local/bin/.agy-real.harmon-init-owned" || fail "quarantine recovery name was not durable"
+HOME="$agy24_qr_home" HARMON_BOT_AUTONOMY_ANTIGRAVITY=disabled bash "$ensure_script" >/dev/null
+if ! agy24_qr_leftover="$(find "${agy24_qr_home}/.local/bin" -name 'agy-real.harmon-init-quarantine.*' -print -quit)"; then
+    fail "could not inspect recovered quarantine leftovers"
+fi
+[ ! -e "${agy24_qr_home}/.local/bin/.agy-real.harmon-init-owned" ] &&
+    [ -z "$agy24_qr_leftover" ] || fail "interrupted quarantine was not recovered"
+
+# The in-flight delta is the source for this correction and is reconciled into
+# the canonical requirement in the same commit. Compare the complete modified
+# requirement when those root-only OpenSpec artifacts are present; generated
+# repos intentionally ship neither file.
+agy24_canonical_spec="${repo_root}/openspec/specs/devcontainer/bot-autonomy/spec.md"
+agy24_delta_spec="${repo_root}/openspec/changes/agy-early-return/specs/devcontainer/bot-autonomy/spec.md"
+if [ -e "$agy24_canonical_spec" ] || [ -e "$agy24_delta_spec" ]; then
+    [ -f "$agy24_canonical_spec" ] && [ -f "$agy24_delta_spec" ] ||
+        fail "Antigravity canonical/delta spec pair is incomplete"
+    awk '
+        found && /^### Requirement:/ { exit }
+        /^### Requirement: Antigravity.*launcher/ { found = 1 }
+        found { print }
+    ' "$agy24_canonical_spec" >"${work_dir}/agy24-canonical-requirement"
+    awk '
+        found && /^### Requirement:/ { exit }
+        /^### Requirement: Antigravity.*launcher/ { found = 1 }
+        found { print }
+    ' "$agy24_delta_spec" >"${work_dir}/agy24-delta-requirement"
+    cmp -s "${work_dir}/agy24-canonical-requirement" "${work_dir}/agy24-delta-requirement" ||
+        fail "Antigravity canonical and in-flight delta requirements diverged"
+    grep -Fq 'independent ownership proof matches both its published filesystem identity' \
+        "${work_dir}/agy24-canonical-requirement" ||
+        fail "Antigravity spec does not require identity-and-content proof for managed cleanup"
+fi
 
 echo "All bot-autonomy unit tests passed."

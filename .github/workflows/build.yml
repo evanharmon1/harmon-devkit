@@ -82,6 +82,8 @@ jobs:
       # them; #726 tracks fixing the list itself so a future addition can't
       # silently skip CI again.
       - run: task test:dev-flow-stats
+      - run: task test:result-schemas
+
       - run: task test:registry-drift
       - run: task test:registry-docs
       - run: task test:label-registry
@@ -110,6 +112,8 @@ jobs:
       - run: task test:track-work
       - run: task test:claim-label-resolution
       - run: task test:notify-release
+      - run: task test:claim-release-merged
+
       - run: task test:setup-github-project
       - run: task test:sync-devkit-release
       - run: task test:hooks

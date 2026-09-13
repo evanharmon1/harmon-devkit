@@ -7,7 +7,7 @@ set -euo pipefail
 # registration), and that process must already see the bot's policy. Called
 # from both profiles' post-create.sh as the last step, after the shared
 # setup and (bot only) apply have both already run. See
-# post-create-common.sh's ownership/Coder-persistence prefix, which still
+# post-create-common.sh's permissions/Coder-persistence prefix, which still
 # runs unconditionally first in both profiles — this script has no ordering
 # requirement of its own relative to that.
 

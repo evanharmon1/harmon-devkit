@@ -189,7 +189,7 @@ else
     if [ -n "$answers" ]; then
         tracker="$(sed -n 's/^project_management:[[:space:]]*//p' "$answers" |
             sed 's/[[:space:]]*#.*$//' | tr -d "\"'" |
-            sed 's/[[:space:]]*$//' | head -n1)"
+            sed 's/[[:space:]]*$//' | sed -n '1p')"
     fi
     if [ -z "$tracker" ]; then
         if [ -f scripts/setup-github-project.sh ]; then

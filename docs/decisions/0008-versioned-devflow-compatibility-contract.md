@@ -4,8 +4,12 @@ Date: 2026-08-25
 
 ## Status
 
-Proposed — requires the owning repository's maintainer to approve it before
-this ADR is accepted.
+Accepted (2026-09-12) — maintainer approval recorded on
+[harmon-init#1115](https://github.com/evanharmon1/harmon-init/issues/1115).
+The contract this record proposed has shipped and is in daily use: consumers
+declare `schema_version` (v2 is current in harmon-devkit), and the
+schema/validator/conformance-fixture triad and merge-base resolution rule
+operate as described.
 
 ## Context
 

@@ -168,7 +168,7 @@ for var in "${ALLOWED_VARS[@]}"; do
     if [ -n "$val" ]; then
         strip_var "$var" "$WORK_FILE"
         echo "${var}=${val}" >>"$WORK_FILE"
-    elif ! grep -q "^${var}=." "$WORK_FILE"; then
+    elif ! grep "^${var}=." "$WORK_FILE" >/dev/null; then
         # `=.` requires at least one character after the `=`: a bare "VAR="
         # line (or a host var exported empty, which "${!var:-}" already treats
         # as unset) leaves the container with no usable value, so it warns the

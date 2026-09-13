@@ -146,10 +146,10 @@ lock_owner_alive() {
     _group_scan="$(ps -Ao pgid= 2>/dev/null || true)"
     _self_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
     if [ -z "$_self_pgid" ] ||
-        [ -z "$(printf '%s\n' "$_group_scan" | awk -v g="$_self_pgid" '$1 == g {print; exit}')" ]; then
+        [ -z "$(awk -v g="$_self_pgid" '$1 == g {print; exit}' <<<"$_group_scan")" ]; then
         return 0
     fi
-    if [ -n "$(printf '%s\n' "$_group_scan" | awk -v g="$_own_pgid" '$1 == g {print; exit}')" ]; then
+    if [ -n "$(awk -v g="$_own_pgid" '$1 == g {print; exit}' <<<"$_group_scan")" ]; then
         return 0
     fi
     return 1
