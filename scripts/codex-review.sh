@@ -8,7 +8,11 @@
 #               (architecture, authz, data loss, rollback, races, hidden
 #               coupling, operational failure modes, overdesign).
 #
-# Usage: codex-review.sh <review|challenge> [--model <model>] [--reasoning <level>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
+# Usage: codex-review.sh <review|challenge> [--model <model>] [--reasoning <level>]
+#        [--envelope --run-id <id> --head <sha> --stage <stage> --round <n>
+#         --slot <finder> --producer <script@sha> --record-dir <dir>
+#         --policy <file> --registry <file>]
+#        [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
 #
 # Target selection when no explicit flag is given: whatever exists is in
 # scope. Commits beyond the default base AND a dirty working tree are reviewed
@@ -40,7 +44,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> [--model <model>] [--reasoning <low|medium|high|xhigh>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> [--model <model>] [--reasoning <low|medium|high|xhigh>] [--envelope --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --producer <script@sha> --record-dir <dir> --policy <file> --registry <file>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
 
 MODE="${1:-}"
@@ -56,6 +60,16 @@ review_model="gpt-5.6-sol"
 review_reasoning="high"
 model_set=false
 reasoning_set=false
+envelope_mode=false
+run_id=
+envelope_head=
+envelope_stage=
+envelope_round=
+envelope_slot=
+expected_producer=
+record_dir=
+policy_path=
+registry_path=
 while [ $# -gt 0 ]; do
     case "$1" in
     --model)
@@ -94,9 +108,92 @@ while [ $# -gt 0 ]; do
         reasoning_set=true
         shift 2
         ;;
+    --envelope)
+        envelope_mode=true
+        shift
+        ;;
+    --run-id | --head | --stage | --round | --slot | --producer | --record-dir | --policy | --registry)
+        [ $# -ge 2 ] || {
+            echo "$1 requires a value" >&2
+            exit 2
+        }
+        case "$1" in
+        --run-id) run_id="$2" ;;
+        --head) envelope_head="$2" ;;
+        --stage) envelope_stage="$2" ;;
+        --round) envelope_round="$2" ;;
+        --slot) envelope_slot="$2" ;;
+        --producer) expected_producer="$2" ;;
+        --record-dir) record_dir="$2" ;;
+        --policy) policy_path="$2" ;;
+        --registry) registry_path="$2" ;;
+        esac
+        shift 2
+        ;;
     *) break ;;
     esac
 done
+
+producer_identity="codex-review.sh@$(git hash-object "$script_dir/codex-review.sh")"
+if [ "$envelope_mode" = true ]; then
+    for required in run_id envelope_head envelope_stage envelope_round envelope_slot expected_producer record_dir policy_path registry_path; do
+        [ -n "${!required}" ] || {
+            echo "--envelope requires --${required//_/-}" >&2
+            exit 2
+        }
+    done
+    [ "$envelope_stage" = "$MODE" ] || {
+        echo "--stage $envelope_stage does not match mode $MODE" >&2
+        exit 2
+    }
+    [[ "$envelope_head" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "--head must be a 40-character lowercase sha" >&2
+        exit 2
+    }
+    [[ "$envelope_round" =~ ^[1-9][0-9]*$ ]] || {
+        echo "--round must be a positive integer" >&2
+        exit 2
+    }
+    [ "$expected_producer" = "$producer_identity" ] || {
+        echo "--producer does not match the script-derived producer identity ($producer_identity)" >&2
+        exit 2
+    }
+    [ -d "$record_dir" ] || {
+        echo "--record-dir must name an existing directory" >&2
+        exit 2
+    }
+    [ -f "$record_dir/run.json" ] || {
+        echo "--record-dir must contain run.json" >&2
+        exit 2
+    }
+    [ -f "$policy_path" ] || {
+        echo "--policy must name a readable file" >&2
+        exit 2
+    }
+    [ -f "$registry_path" ] || {
+        echo "--registry must name a readable file" >&2
+        exit 2
+    }
+    command -v jq >/dev/null 2>&1 || {
+        echo "jq is required for envelope mode" >&2
+        exit 2
+    }
+    actual_head="$(git rev-parse HEAD)"
+    [ "$actual_head" = "$envelope_head" ] || {
+        echo "--head $envelope_head does not match HEAD $actual_head" >&2
+        exit 1
+    }
+    initiated_by="$(jq -er --arg run "$run_id" 'select(.run_id == $run) | .initiated_by | select(. == "human" or . == "foreman")' "$record_dir/run.json")" || {
+        echo "run.json does not bind run id '$run_id' to a valid initiated_by value" >&2
+        exit 1
+    }
+    expected_slug="codex-${MODE/review/verification}"
+    [ "$MODE" = challenge ] && expected_slug=codex-adversarial
+    [ "$envelope_slot" = "$expected_slug" ] || {
+        echo "--slot $envelope_slot does not match the configured Codex finder $expected_slug" >&2
+        exit 1
+    }
+fi
 
 if ! command -v codex >/dev/null 2>&1; then
     echo "codex CLI not found. Install it (brew install --cask codex, or npm install -g @openai/codex)," >&2
@@ -186,6 +283,19 @@ with git):
 
 ${manifest}"
 
+if [ "$envelope_mode" = true ]; then
+    envelope_role=challenger
+    [ "$MODE" = review ] && envelope_role=reviewer
+    payload_schema="$script_dir/../ai/schemas/result.${envelope_role}.schema.json"
+    instructions="${instructions}
+
+Return only one JSON object matching the supplied output schema. This object is
+the payload for a result.${envelope_role} envelope. Bind stage to
+${MODE}, round to ${envelope_round}, reviewed_head to ${envelope_head}, finder
+and slot to ${envelope_slot}, and use finding ids beginning
+${MODE}-r${envelope_round}-${envelope_slot}-. Do not wrap it in Markdown."
+fi
+
 # Codex puts the verdict on stdout and everything else — progress narration
 # and errors alike — on stderr, so a caller capturing both (the documented
 # `task challenge > log 2>&1`) interleaves them. Harmless until the CLI logs
@@ -231,7 +341,73 @@ bound_stderr_lines() {
 # a pipeline, so the tail of the narration cannot be lost to the script exiting
 # first. Under pipefail the filter exits 0, leaving codex's own status as the
 # rightmost non-zero, so a failed review still fails the task.
+if [ "$envelope_mode" = false ]; then
+    { printf '%s\n' "$instructions" | codex exec review \
+        --model "$review_model" \
+        --config "model_reasoning_effort=$review_reasoning" \
+        - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>&1
+    exit
+fi
+
+raw_payload="$(mktemp "$record_dir/.codex-payload.XXXXXX")"
+envelope_tmp="$(mktemp "$record_dir/.codex-envelope.XXXXXX")"
+known_ids="$(mktemp "$record_dir/.codex-known-ids.XXXXXX")"
+cleanup_envelope() {
+    rm -f "$raw_payload" "$envelope_tmp" "$known_ids"
+}
+trap cleanup_envelope EXIT
+
 { printf '%s\n' "$instructions" | codex exec review \
     --model "$review_model" \
     --config "model_reasoning_effort=$review_reasoning" \
-    - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>&1
+    --output-schema "$payload_schema" \
+    - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>"$raw_payload"
+
+jq -e --arg stage "$MODE" --argjson round "$envelope_round" \
+    --arg head "$envelope_head" --arg finder "$expected_slug" \
+    '.stage == $stage and .round == $round and .reviewed_head == $head and
+     .finder == $finder and .slot == $finder' "$raw_payload" >/dev/null || {
+    echo "finder payload does not match the captured stage, round, head, finder, and slot" >&2
+    exit 1
+}
+
+producer_tier="$(jq -er --arg model "${review_model##*-}" \
+    '[.families[].models[] | select(.slug == $model) | .tier] | unique | if length == 1 then .[0] else empty end' \
+    "$registry_path")" || {
+    echo "could not derive one producer tier for model $review_model from $registry_path" >&2
+    exit 1
+}
+
+jq -n \
+    --arg head "$envelope_head" \
+    --arg produced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg harness "$producer_identity" \
+    --arg model "$review_model" \
+    --arg tier "$producer_tier" \
+    --arg run_id "$run_id" \
+    --arg initiated_by "$initiated_by" \
+    --slurpfile payload "$raw_payload" \
+    --arg role "$envelope_role" \
+    '{schema: 2, role: $role, status: "completed", head: $head,
+      produced_at: $produced_at,
+      producer: {harness: $harness, model: $model, tier: $tier},
+      run: {run_id: $run_id, initiated_by: $initiated_by}, payload: $payload[0]}' \
+    >"$envelope_tmp"
+
+set -- "$record_dir"/passes/*.json
+if [ -e "$1" ]; then
+    jq -s '[.[].payload.findings[]?.id]' "$@" >"$known_ids"
+else
+    printf '[]\n' >"$known_ids"
+fi
+
+node "$script_dir/validate-result-schemas.mjs" envelope "$envelope_tmp" \
+    --run-id "$run_id" --initiated-by "$initiated_by" --known-ids "$known_ids" --receipt
+
+mkdir -p "$record_dir/passes"
+pass_path="$record_dir/passes/${MODE}-r${envelope_round}-${envelope_slot}.json"
+if ! ln "$envelope_tmp" "$pass_path" 2>/dev/null; then
+    echo "refusing to overwrite existing pass $pass_path" >&2
+    exit 1
+fi
+printf '%s\n' "$pass_path"

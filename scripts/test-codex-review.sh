@@ -30,6 +30,11 @@ trap 'rm -rf "$test_tmp"' EXIT
 mkdir -p "${test_tmp}/bin"
 cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
+if [ -n "${STUB_PAYLOAD_FILE:-}" ]; then
+    cat >/dev/null
+    cat "$STUB_PAYLOAD_FILE"
+    exit "${STUB_EXIT:-0}"
+fi
 printf 'STUB-ARGS:'
 printf ' %s' "$@"
 printf '\n'
@@ -640,6 +645,105 @@ CODEX_REVIEW_MAX_STDERR_BYTES=999999999999999999 STUB_BIG_STDERR=40000 \
     fail "the widest safe bound was rejected: $(cat "$big_err")"
 grep -q "integer expression expected" "$big_err" && fail "shell arithmetic error at the 18-digit boundary: $(cat "$big_err")"
 rm -f bound.txt
+
+echo "==> envelope mode writes receipt-validated challenger and reviewer passes atomically"
+mkdir -p ai/schemas scripts/lib
+cp -R "${repo}/ai/schemas/." ai/schemas/
+cp "${repo}/scripts/validate-result-schemas.mjs" scripts/
+cp "${repo}/scripts/lib/json-schema-subset.mjs" scripts/lib/
+cp "${repo}/agent-registry.json" agent-registry.json
+cp "${repo}/.devflow.toml" .devflow.toml
+record="${test_tmp}/codex-envelope-record"
+mkdir -p "$record"
+cat >"$record/run.json" <<'JSON'
+{"schema":2,"run_id":"run-envelope-fixture","initiated_by":"human"}
+JSON
+head_sha="$(git rev-parse HEAD)"
+producer="codex-review.sh@$(git hash-object scripts/codex-review.sh)"
+challenge_payload="${test_tmp}/challenge-payload.json"
+jq --arg head "$head_sha" '.reviewed_head = $head' \
+    ai/schemas/fixtures/envelope-mode/challenger-payload.json >"$challenge_payload"
+STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
+    --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 1 \
+    --slot codex-adversarial --producer "$producer" --record-dir "$record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null ||
+    fail "valid challenger envelope failed"
+challenge_pass="$record/passes/challenge-r1-codex-adversarial.json"
+[ -f "$challenge_pass" ] || fail "challenger pass was not published"
+jq -e --arg producer "$producer" '.role == "challenger" and .producer.harness == $producer' \
+    "$challenge_pass" >/dev/null || fail "challenger envelope lost role or script-derived producer"
+
+echo "==> Codex-lane fixture reaches adjudication, a converged exit, and retained retro evidence"
+jq '.receipts = [{kind:"transition",stage:"challenge"},
+  {kind:"pass",file:"challenge-r1-codex-adversarial"}]' \
+    "$record/run.json" >"$record/run.next.json"
+mv "$record/run.next.json" "$record/run.json"
+mkdir -p "$record/adjudications"
+jq -n --arg run run-envelope-fixture --arg head "$head_sha" \
+    '{schema:2,run_id:$run,stage:"challenge",round:1,reviewed_head:$head,adjudications:[]}' \
+    >"$record/adjudications/challenge-r1.json"
+set +e
+exit_out="$("$repo/scripts/dev-flow-exit.sh" --run "$record" --stage challenge \
+    --policy "$PWD/.devflow.toml" --current-head "$head_sha" --json 2>&1)"
+exit_status=$?
+set -e
+[ "$exit_status" -eq 20 ] || fail "fixture did not converge through dev-flow-exit (rc $exit_status): $exit_out"
+jq -e '.outcome == "converged" and .reason == "empty_round"' <<<"$exit_out" >/dev/null ||
+    fail "fixture converged with the wrong verdict: $exit_out"
+
+trajectory="${test_tmp}/trajectory.json"
+jq -n --arg run run-envelope-fixture \
+    '{run_id:$run,issue:941,initiated_by:"human",started_at:"2026-09-13T03:47:00Z",
+      outcome:null,pr:null,promotion:null,
+      stage_transitions:[{stage:"challenge",entered_at:"2026-09-13T04:00:00Z",exit:"converged"}],
+      interventions:[],settlements:[],rounds:[{stage:"challenge",round:1,findings:[]}],
+      findings_by_class_and_provenance:{},orphan_comments:[],forged_comments:[]}' >"$trajectory"
+stats_stub="${test_tmp}/stats-stub.sh"
+cat >"$stats_stub" <<'EOF'
+#!/usr/bin/env bash
+cat "$STUB_TRAJECTORY"
+EOF
+chmod +x "$stats_stub"
+STUB_TRAJECTORY="$trajectory" node "$repo/ai/skills/universal/retro/assets/retro-run-report.mjs" \
+    --repo evanharmon1/harmon-devkit --run run-envelope-fixture \
+    --trusted-actor-id 1 --stats-script "$stats_stub" --json >/dev/null ||
+    fail "retro-run-report did not accept the Codex-lane fixture's retained run evidence"
+
+review_payload="${test_tmp}/review-payload.json"
+jq --arg head "$head_sha" '.reviewed_head = $head' \
+    ai/schemas/fixtures/envelope-mode/reviewer-payload.json >"$review_payload"
+STUB_PAYLOAD_FILE="$review_payload" run review --envelope \
+    --run-id run-envelope-fixture --head "$head_sha" --stage review --round 1 \
+    --slot codex-verification --producer "$producer" --record-dir "$record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null ||
+    fail "valid reviewer envelope failed"
+[ -f "$record/passes/review-r1-codex-verification.json" ] || fail "reviewer pass was not published"
+
+echo "==> envelope identity mismatches and invalid payloads publish no partial pass"
+bad_record="${test_tmp}/codex-envelope-bad"
+mkdir -p "$bad_record"
+printf '%s\n' '{"run_id":"another-run","initiated_by":"human"}' >"$bad_record/run.json"
+if STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
+    --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 1 \
+    --slot codex-adversarial --producer "$producer" --record-dir "$bad_record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null 2>&1; then
+    fail "run-id mismatch was accepted"
+fi
+[ ! -e "$bad_record/passes/challenge-r1-codex-adversarial.json" ] || fail "run-id mismatch published a pass"
+if STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
+    --run-id run-envelope-fixture --head 0000000000000000000000000000000000000000 \
+    --stage challenge --round 2 --slot codex-adversarial --producer "$producer" \
+    --record-dir "$record" --policy .devflow.toml --registry agent-registry.json \
+    --base origin/develop >/dev/null 2>&1; then
+    fail "head mismatch was accepted"
+fi
+if STUB_PAYLOAD_FILE="ai/schemas/fixtures/envelope-mode/invalid-payload.json" run challenge --envelope \
+    --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 2 \
+    --slot codex-adversarial --producer "$producer" --record-dir "$record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null 2>&1; then
+    fail "invalid envelope payload was accepted"
+fi
+[ ! -e "$record/passes/challenge-r2-codex-adversarial.json" ] || fail "invalid payload published a partial pass"
 
 echo "==> gate: another repo's project-scoped plugin install is not accepted"
 fake_claude="${test_tmp}/claude-config"

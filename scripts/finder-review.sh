@@ -6,6 +6,9 @@
 #
 # Usage:
 #   finder-review.sh <review|challenge> <tool>
+#                    [--envelope --run-id <id> --head <sha> --stage <stage>
+#                     --round <n> --slot <finder> --producer <script@sha>
+#                     --record-dir <dir> --policy <file> --registry <file>]
 #                    [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
 #
 # `<tool>` names a registered local-CLI finder pair — `<tool>-adversarial` for
@@ -77,7 +80,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> <tool> [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> <tool> [--envelope --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --producer <script@sha> --record-dir <dir> --policy <file> --registry <file>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
 
 MODE="${1:-}"
@@ -101,6 +104,91 @@ case "$TOOL" in
 *) shift ;;
 esac
 
+envelope_mode=false
+run_id=
+envelope_head=
+envelope_stage=
+envelope_round=
+envelope_slot=
+expected_producer=
+record_dir=
+policy_path=
+registry="agent-registry.json"
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --envelope)
+        envelope_mode=true
+        shift
+        ;;
+    --run-id | --head | --stage | --round | --slot | --producer | --record-dir | --policy | --registry)
+        [ $# -ge 2 ] || {
+            echo "$1 requires a value" >&2
+            exit 2
+        }
+        case "$1" in
+        --run-id) run_id="$2" ;;
+        --head) envelope_head="$2" ;;
+        --stage) envelope_stage="$2" ;;
+        --round) envelope_round="$2" ;;
+        --slot) envelope_slot="$2" ;;
+        --producer) expected_producer="$2" ;;
+        --record-dir) record_dir="$2" ;;
+        --policy) policy_path="$2" ;;
+        --registry) registry="$2" ;;
+        esac
+        shift 2
+        ;;
+    *) break ;;
+    esac
+done
+
+producer_identity="finder-review.sh@$(git hash-object "$script_dir/finder-review.sh")"
+if [ "$envelope_mode" = true ]; then
+    for required in run_id envelope_head envelope_stage envelope_round envelope_slot expected_producer record_dir policy_path registry; do
+        [ -n "${!required}" ] || {
+            echo "--envelope requires --${required//_/-}" >&2
+            exit 2
+        }
+    done
+    [ "$envelope_stage" = "$MODE" ] || {
+        echo "--stage $envelope_stage does not match mode $MODE" >&2
+        exit 2
+    }
+    [[ "$envelope_head" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "--head must be a 40-character lowercase sha" >&2
+        exit 2
+    }
+    [[ "$envelope_round" =~ ^[1-9][0-9]*$ ]] || {
+        echo "--round must be a positive integer" >&2
+        exit 2
+    }
+    [ "$expected_producer" = "$producer_identity" ] || {
+        echo "--producer does not match the script-derived producer identity ($producer_identity)" >&2
+        exit 2
+    }
+    [ -d "$record_dir" ] && [ -f "$record_dir/run.json" ] || {
+        echo "--record-dir must name an existing directory containing run.json" >&2
+        exit 2
+    }
+    [ -f "$policy_path" ] || {
+        echo "--policy must name a readable file" >&2
+        exit 2
+    }
+    [ -f "$registry" ] || {
+        echo "--registry must name a readable file" >&2
+        exit 2
+    }
+    actual_head="$(git rev-parse HEAD)"
+    [ "$actual_head" = "$envelope_head" ] || {
+        echo "--head $envelope_head does not match HEAD $actual_head" >&2
+        exit 1
+    }
+    initiated_by="$(jq -er --arg run "$run_id" 'select(.run_id == $run) | .initiated_by | select(. == "human" or . == "foreman")' "$record_dir/run.json")" || {
+        echo "run.json does not bind run id '$run_id' to a valid initiated_by value" >&2
+        exit 1
+    }
+fi
+
 # The registry is the authority on which finders exist and what each one is
 # for; this script only knows how to DRIVE them. Resolving the slug here means
 # an unregistered finder refuses before a model call rather than producing a
@@ -109,7 +197,6 @@ case "$MODE" in
 challenge) slug="${TOOL}-adversarial" ;;
 review) slug="${TOOL}-verification" ;;
 esac
-registry="agent-registry.json"
 command -v jq >/dev/null 2>&1 || {
     echo "jq is required to resolve '$slug' against $registry." >&2
     exit 2
@@ -137,6 +224,10 @@ actual_target="$(printf '%s' "$finder_entry" | jq -r '.invocation.target')"
     echo "Reconcile $registry with the Taskfile rather than guessing which one is right." >&2
     exit 2
 }
+if [ "$envelope_mode" = true ] && [ "$envelope_slot" != "$slug" ]; then
+    echo "--slot $envelope_slot does not match the configured finder $slug" >&2
+    exit 1
+fi
 
 case "$TOOL" in
 copilot)
@@ -217,6 +308,18 @@ Authoritative changed-file manifest from git for this scope (status + path;
 every entry is in scope, including untracked files):
 
 ${manifest}"
+
+if [ "$envelope_mode" = true ]; then
+    envelope_role=challenger
+    [ "$MODE" = review ] && envelope_role=reviewer
+    instructions="${instructions}
+
+Return only one JSON object matching ai/schemas/result.${envelope_role}.schema.json.
+This object is the payload for a result.${envelope_role} envelope.
+Bind stage to ${MODE}, round to ${envelope_round}, reviewed_head to
+${envelope_head}, finder and slot to ${slug}, and use finding ids beginning
+${MODE}-r${envelope_round}-${slug}-. Do not wrap it in Markdown."
+fi
 
 # The prompt travels as a single argv element, which the kernel caps (~128 KiB
 # per argument on Linux), so it needs a bound — and the bound is a REFUSAL,
@@ -477,7 +580,13 @@ else
     echo "    the tree is verified unchanged afterwards)" >&2
 fi
 finder_status=0
-sandbox_exec "$bin" "${args[@]}" "$instructions" || finder_status=$?
+raw_payload=
+if [ "$envelope_mode" = true ]; then
+    raw_payload="$(mktemp "$record_dir/.finder-payload.XXXXXX")"
+    sandbox_exec "$bin" "${args[@]}" "$instructions" >"$raw_payload" || finder_status=$?
+else
+    sandbox_exec "$bin" "${args[@]}" "$instructions" || finder_status=$?
+fi
 
 # The verification is unconditional and runs BEFORE the exit status is
 # honoured: a pass whose tree changed is not a pass, whatever the CLI
@@ -489,4 +598,54 @@ if ! sandbox_verify; then
     echo "reported is accepted." >&2
     exit 1
 fi
-exit "$finder_status"
+[ "$finder_status" -eq 0 ] || exit "$finder_status"
+[ "$envelope_mode" = true ] || exit 0
+
+envelope_tmp="$(mktemp "$record_dir/.finder-envelope.XXXXXX")"
+known_ids="$(mktemp "$record_dir/.finder-known-ids.XXXXXX")"
+cleanup_finder_envelope() {
+    sandbox_cleanup
+    rm -f "$raw_payload" "$envelope_tmp" "$known_ids"
+}
+trap cleanup_finder_envelope EXIT
+
+jq -e --arg stage "$MODE" --argjson round "$envelope_round" \
+    --arg head "$envelope_head" --arg finder "$slug" \
+    '.stage == $stage and .round == $round and .reviewed_head == $head and
+     .finder == $finder and .slot == $finder' "$raw_payload" >/dev/null || {
+    echo "finder payload does not match the captured stage, round, head, finder, and slot" >&2
+    exit 1
+}
+
+jq -n \
+    --arg head "$envelope_head" \
+    --arg produced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg harness "$producer_identity" \
+    --arg model "$TOOL" \
+    --arg run_id "$run_id" \
+    --arg initiated_by "$initiated_by" \
+    --arg role "$envelope_role" \
+    --slurpfile payload "$raw_payload" \
+    '{schema: 2, role: $role, status: "completed", head: $head,
+      produced_at: $produced_at,
+      producer: {harness: $harness, model: $model, tier: "local"},
+      run: {run_id: $run_id, initiated_by: $initiated_by}, payload: $payload[0]}' \
+    >"$envelope_tmp"
+
+set -- "$record_dir"/passes/*.json
+if [ -e "$1" ]; then
+    jq -s '[.[].payload.findings[]?.id]' "$@" >"$known_ids"
+else
+    printf '[]\n' >"$known_ids"
+fi
+
+node "$script_dir/validate-result-schemas.mjs" envelope "$envelope_tmp" \
+    --run-id "$run_id" --initiated-by "$initiated_by" --known-ids "$known_ids" --receipt
+
+mkdir -p "$record_dir/passes"
+pass_path="$record_dir/passes/${MODE}-r${envelope_round}-${slug}.json"
+if ! ln "$envelope_tmp" "$pass_path" 2>/dev/null; then
+    echo "refusing to overwrite existing pass $pass_path" >&2
+    exit 1
+fi
+printf '%s\n' "$pass_path"

@@ -206,7 +206,9 @@ limited to its brokered trigger and orchestrator-supplied reply text.
 
 **Briefs are free-form; results are schema-bound.** The orchestrator → agent
 brief is prose. The agent → orchestrator result is validated on receipt
-against `ai/schemas/` before the orchestrator reads it.
+against `ai/schemas/` before the orchestrator reads it. For confidence finders,
+the runner/receipt trust boundary and the residual lane-forgery risk are
+specified in `ai/schemas/README.md` under "Finder-produced envelopes".
 
 **Whoever holds the dispatched worktree writes its named branch.** In
 interactive and sandboxed runs the feature-branch implementer commits and

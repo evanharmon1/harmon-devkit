@@ -25,6 +25,33 @@ agent file under `ai/agents/` (see the spec's "Roles and authority" table) — s
 `adjudication.schema.json` and `run.schema.json` are validated as complete
 top-level documents, never as an envelope's `payload`.
 
+## Finder-produced envelopes
+
+Confidence finder tasks own envelope production in `--envelope` mode. The
+runner constrains the model to the matching challenger or reviewer payload,
+derives its own producer identity as the runner filename plus the Git blob SHA
+of that script, wraps the payload with the captured run/head/round/slot, and
+runs `validate-result-schemas.mjs envelope --receipt` before an atomic link
+makes the pass visible under the run record's `passes/` directory. The legacy
+task mode remains prose-only and byte-compatible with its earlier contract.
+
+This boundary does not make the lane incorruptible: the lane executes the
+runner and could modify or replace it, forge its inputs, or call the validator
+over invented content. The receipt chain bounds that authority instead of
+pretending to remove it. The script-derived identity makes the exact producer
+bytes visible; the envelope receipt binds run identity, head, role, stage,
+round, slot, and prior finding IDs; immutable pass publication prevents a
+later rewrite at the same path; and the orchestrator independently validates
+the receipt against its trusted run state and captured revisions before it
+adjudicates or publishes evidence. A lane-controlled document can therefore
+be rejected or attributed to changed producer bytes, but it cannot silently
+be promoted into trusted run evidence by prose alone.
+
+That is the ADR 0009 D2 boundary: briefs remain free-form, while results remain
+schema-bound. Moving envelope assembly from an optional role-agent wrapper to
+the harness-neutral finder task changes which executable produces the receipt,
+not the validation or orchestrator-side trust required to accept it.
+
 ## Composition: how envelope and payload fit together
 
 `result.envelope.schema.json` declares `payload: { type: "object" }` —

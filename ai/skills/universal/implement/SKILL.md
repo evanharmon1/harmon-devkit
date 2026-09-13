@@ -289,11 +289,13 @@ say so.
 **Where the `review` skill is vendored and its supported topology holds —
 `origin` is the repository the PR will target — it is the procedure for the
 confidence stages in this step only**: where the harness exposes the Skill tool, invoke
-`review` through it; where it does not (a subagent, another harness),
-read `.agents/skills/review/SKILL.md` (or `.claude/skills/review/SKILL.md`)
-and follow it — it carries the adjudication ledger, durable round
-accounting. It returns to this skill for security and draft publication; it
-does not open a PR or run integration. In the fork topology this
+`review` through it; where it does not (a subagent, Codex, or another
+harness), read `.agents/skills/review/SKILL.md` (or
+`.claude/skills/review/SKILL.md`) and follow its envelope-mode task procedure
+directly — lack of a native Skill tool is not an inline fallback when an
+active run identity exists. It carries the adjudication ledger and durable
+round accounting. It returns to this skill for security and draft publication;
+it does not open a PR or run integration. In the fork topology this
 skill supports where `origin` is the writable fork rather than the target,
 review's entry gate would stop by design, so the steps below remain the
 procedure there — as they do wherever the skill is not vendored.

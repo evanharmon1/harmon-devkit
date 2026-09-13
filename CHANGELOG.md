@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [Unreleased]
+
+### Features
+
+- **review:** emit receipt-validated challenger and reviewer envelopes from
+  harness-neutral finder tasks.
+
 ## [0.44.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.43.0...v0.44.0) (2026-09-13)
 
 

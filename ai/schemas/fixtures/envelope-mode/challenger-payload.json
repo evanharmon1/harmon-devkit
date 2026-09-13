@@ -1,0 +1,17 @@
+{
+  "stage": "challenge",
+  "round": 1,
+  "reviewed_head": "1111111111111111111111111111111111111111",
+  "finder": "codex-adversarial",
+  "slot": "codex-adversarial",
+  "findings": [],
+  "counts": { "P0": 0, "P1": 0, "P2": 0, "P3": 0 },
+  "attack_scenarios": [
+    {
+      "id": "as-1",
+      "description": "attempted authorization and atomic-publication failures",
+      "outcome": "held",
+      "finding_id": null
+    }
+  ]
+}

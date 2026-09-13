@@ -149,11 +149,13 @@ machine-readable payload, so `scripts/normalize-finder-findings.mjs` decodes it
 mechanically and fails closed on anything it cannot decode. A `labelled-text`
 finder — every local CLI pass, Codex's included — has only free text, so that
 program refuses it by design: its output is the dispatched
-`challenger`/`reviewer` role's evidence source, and the role reads the badges
-against that same `severity_map` and returns the decoded findings inside its
-own `result.challenger`/`result.reviewer` envelope (below). Routing a
-`labelled-text` pass into the normalizer is a defect rather than a fallback —
-it would report every local finder unavailable.
+`challenger`/`reviewer` role's evidence source in legacy mode. In envelope
+mode the finder runner tightens that invocation to a schema-shaped payload,
+wraps it with its script-derived producer receipt, validates the complete
+`result.challenger`/`result.reviewer` envelope, and only then atomically
+publishes it under `passes/`. `normalize-finder-findings.mjs` remains the
+decoder for `github-review-json`; local free text is never guessed into
+findings. A malformed structured response makes the finder unavailable.
 
 **Per-run finder selection.** An attributable operator instruction for this run
 may add finders to a stage's configured set, or name the set it wants; it may
@@ -184,17 +186,18 @@ a reviewer cannot otherwise tell a wider review from the configured one.
 Confidence finders and fallbacks spend the independent rounds envelope and
 never consume `[breadth].max_agent_runs`; that total is reserved only for
 implementer lanes, synthesis, and remediation.
-The registry invocation is the role's evidence source, not itself a result
-envelope: the dispatched role binds that output to the supplied run, scope,
-round, slot, and producer identity and returns `result.challenger` or
-`result.reviewer`. A harness that cannot enforce that binding makes the finder
-unavailable; the orchestrator never fabricates runtime-attested envelope data.
-Reject a result until `scripts/validate-result-schemas.mjs envelope` validates
-it and its run, base, head, stage, round, finder, and previously seen ids match
-the captured scope. Persist each immutable accepted result in `passes/` before
-using it. A finder failure is retried by its configured fallback and the
-substitution is recorded; exhausted coverage is a blocker, never a smaller
-round disguised as complete.
+Invoke the configured finder task in `--envelope` mode with the captured run,
+base, head, stage, round, slot, policy, registry, record directory, and the
+script-derived producer identity expected by the caller. The runner derives
+the producer again, binds the structured finder result to those inputs,
+validates it with `scripts/validate-result-schemas.mjs envelope --receipt`,
+and atomically persists the immutable accepted result in `passes/`. Any
+harness that can run the task therefore gets the same binding; a Claude role
+agent is optional process isolation, not the envelope authority. Reject a
+result until its run, base, head, stage, round, finder, slot, and previously
+seen ids match the captured scope. A finder failure is retried by its
+configured fallback and the substitution is recorded; exhausted coverage is
+a blocker, never a smaller round disguised as complete.
 
 ## Verify, adjudicate, publish, exit
 

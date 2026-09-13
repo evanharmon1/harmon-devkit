@@ -108,6 +108,19 @@ for role in challenger reviewer; do
     grep -Fq 'validated finding records' "$agent" ||
         fail "$role cannot compare finding provenance across rounds"
 done
+for text in 'task in `--envelope` mode' 'script-derived producer identity' \
+    'atomically persists the immutable accepted result in `passes/`' \
+    'harness that can run the task' \
+    'optional process isolation'; do
+    grep -Fq "$text" "$skill" || fail "review skill is missing the harness-neutral envelope contract: $text"
+done
+grep -Fq 'lack of a native Skill tool is not an inline fallback' \
+    ai/skills/universal/implement/SKILL.md ||
+    fail "implement skill still routes an active non-Claude run to inline review"
+for role in challenger reviewer; do
+    grep -Fq 'never assemble or rewrite its JSON' "ai/agents/$role.md" ||
+        fail "$role agent still owns envelope assembly"
+done
 grep -Fq 'synthesis_of' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not preserve council synthesis provenance"
 for model_skill in "$skill" ai/skills/universal/orchestrator/SKILL.md; do
