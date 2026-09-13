@@ -1762,7 +1762,14 @@ function discoverRunsForId(repo, runId, options) {
   const issueNumber = issueNumberFromRunId(runId);
   if (issueNumber === null) return discoverAllRuns(repo, options);
 
-  const issue = ghApiOne(`repos/${repo}/issues/${issueNumber}`);
+  let issue;
+  try {
+    issue = ghApiOne(`repos/${repo}/issues/${issueNumber}`);
+  } catch (err) {
+    // Challenge round 1: a missing inferred issue means this run was not found.
+    if (err instanceof GhError && /\bHTTP 404\b/.test(err.message)) return [];
+    throw err;
+  }
   if (issue.pull_request) return [];
   return harvestRunsForIssue(repo, issueNumber, options);
 }

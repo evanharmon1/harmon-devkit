@@ -47,6 +47,7 @@ fi
 shift
 # Drop --paginate/--slurp flags; find the endpoint (first non-flag arg).
 endpoint=""
+api_args="$*"
 for a in "$@"; do
     case "$a" in
     --paginate | --slurp) ;;
@@ -56,7 +57,11 @@ done
 
 case "$endpoint" in
 repos/*/issues\?state=all\&per_page=100)
-    jq '[.issues]' "$db"
+    if [[ "$api_args" == *'--jq map(.[] | {number, pull_request})'* ]]; then
+        jq '[[.issues[] | {number, pull_request}]]' "$db"
+    else
+        jq '[.issues]' "$db"
+    fi
     ;;
 repos/*/issues/*/comments\?per_page=100)
     n="$(echo "$endpoint" | sed -E 's#.*/issues/([0-9]+)/comments.*#\1#')"
@@ -64,7 +69,10 @@ repos/*/issues/*/comments\?per_page=100)
     ;;
 repos/*/issues/[0-9]*)
     n="$(echo "$endpoint" | sed -E 's#.*/issues/([0-9]+).*#\1#')"
-    jq --argjson n "$n" '.issues[] | select(.number == $n)' "$db"
+    if ! jq -e --argjson n "$n" '.issues[] | select(.number == $n)' "$db"; then
+        echo "gh: Not Found (HTTP 404)" >&2
+        exit 1
+    fi
     ;;
 repos/*/pulls/*/commits\?per_page=100)
     n="$(echo "$endpoint" | sed -E 's#.*/pulls/([0-9]+)/commits.*#\1#')"
@@ -2794,6 +2802,16 @@ grep -Fq 'api repos/o/r/issues/185' "$DFSTATS_GH_LOG" ||
 if grep -Fq 'issues?state=all' "$DFSTATS_GH_LOG"; then
     fail "large-buffer --run: unexpectedly listed every issue"
 fi
+
+echo "== canonical --run maps a missing inferred issue to run-not-found =="
+if node scripts/dev-flow-stats.mjs --repo o/r --run run-999-missing --trusted-actor-id 9001 --json >"$tmp/missing-run.out" 2>"$tmp/missing-run.err"; then
+    fail "missing canonical run: expected run-not-found"
+else
+    rc=$?
+    [ "$rc" -eq 1 ] || fail "missing canonical run: expected exit 1, got $rc"
+fi
+grep -Fq 'run "run-999-missing" not found (searched issue #999 in o/r)' "$tmp/missing-run.err" ||
+    fail "missing canonical run: expected targeted run-not-found diagnostic"
 unset DFSTATS_GH_LOG
 
 echo "== chain fork: two entries claiming the same prev_digest -> indeterminate, never silently resolved =="
