@@ -106,6 +106,10 @@ api)
     case "$*" in
     */issues/*/comments*)
         n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\)/comments.*|\1|p')"
+        if [ "${GH_FAIL_ISSUE:-}" = "$n" ]; then
+            echo "gh stub: issue $n not found" >&2
+            exit 1
+        fi
         file="${GH_COMMENTS_DIR:-/nonexistent}/$n.json"
         if [ -f "$file" ]; then cat "$file"; else echo '[[]]'; fi
         ;;
@@ -493,6 +497,27 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 contains "$OUT" "evidence marker on issue #$ISSUE (non-closing reference)" &&
     ok "the source names the non-closing tier" || bad "the source hides the selected discovery tier"
 
+echo "==> an unreadable non-closing hint is disclosed without hiding a valid peer"
+d="$TMPROOT/nonclosing-unreadable"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" $'Refs #999999\nRefs #664'
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_FAIL_ISSUE=999999 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
+    ok "the readable peer still selects the run" || bad "an unreadable hint denied discovery: $ERR"
+contains "$OUT" "issue #999999 (non-closing reference):" &&
+    contains "$OUT" "issue 999999 not found" &&
+    ok "the report discloses the ignored hint and fetch failure" ||
+    bad "the report hid the unreadable hint"
+
 echo "==> a same-repository qualified reference is accepted case-insensitively"
 d="$TMPROOT/qualified-refs"
 mkdir -p "$d"
@@ -528,6 +553,8 @@ GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER
 contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
     bad "the cross-repository issue was queried in the target repository" ||
     ok "the cross-repository issue was not queried"
+contains "$ERR" "cross-repository reference does not belong to o/r" &&
+    ok "the ignored cross-repository hint is disclosed" || bad "the cross-repository hint was dropped silently"
 
 echo "==> a body run-id token binds only through its issue's exact trusted marker"
 d="$TMPROOT/body-run-token"
@@ -580,6 +607,16 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 [ "$RC" -eq 10 ] && contains "$ERR" "run-6001-further-along had no matching trusted marker" &&
     ok "the unverified token is refused with an explicit reason" ||
     bad "expected an unauthenticated-token fallback, got $RC: $ERR"
+
+echo "==> a valid PR marker does not query a nonexistent lower-tier token hint"
+d="$TMPROOT/pr-marker-skips-body-hint"
+scaffold "$d" further-along "Run example: run-999999-example"
+GH_FAIL_ISSUE=999999 GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" "evidence marker on PR #$PR" &&
+    ok "the trusted PR marker remains authoritative" || bad "the lower hint denied PR discovery: $ERR"
+contains "$(cat "$d/gh.log")" "repos/o/r/issues/999999/comments" &&
+    bad "the nonexistent lower-tier hint was queried" || ok "the lower-tier hint was not queried"
 
 echo "==> closing-reference evidence keeps precedence over non-closing evidence"
 d="$TMPROOT/closing-precedence"

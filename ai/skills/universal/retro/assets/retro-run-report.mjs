@@ -385,7 +385,8 @@ function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
 function parseBodyDiscovery(body, repo) {
   const issueNumbers = new Set()
   const runTokens = new Map()
-  if (typeof body !== 'string') return { issueNumbers, runTokens }
+  const ignoredHints = []
+  if (typeof body !== 'string') return { issueNumbers, runTokens, ignoredHints }
 
   // These are the non-closing reference forms the track-work contract emits.
   // An explicit owner/repo prefix is accepted only for this repository: a PR
@@ -394,6 +395,12 @@ function parseBodyDiscovery(body, repo) {
   for (const match of body.matchAll(referenceRe)) {
     if (!match.groups.repo || match.groups.repo.toLowerCase() === repo.toLowerCase()) {
       issueNumbers.add(Number(match.groups.number))
+    } else {
+      ignoredHints.push({
+        hint: `${match.groups.repo}#${match.groups.number}`,
+        tier: 'non-closing reference',
+        reason: `cross-repository reference does not belong to ${repo}`
+      })
     }
   }
 
@@ -405,7 +412,7 @@ function parseBodyDiscovery(body, repo) {
     const runId = match[0]
     runTokens.set(runId, Number(match.groups.number))
   }
-  return { issueNumbers, runTokens }
+  return { issueNumbers, runTokens, ignoredHints }
 }
 
 function addIssueRuns(target, issueNumber, runIds) {
@@ -426,6 +433,26 @@ function selectIssueTier(prNumber, tier, runs, sourceSuffix) {
   const [runId, seen] = [...runs.entries()][0]
   const where = [...seen].sort((a, b) => a - b).map((n) => `#${n}`).join(', ')
   return { runId, source: `evidence marker on issue ${where} (${sourceSuffix})` }
+}
+
+function fetchHintRunIds(args, issueNumber, tier, trustedActorIds, untrusted, malformed, ignoredHints) {
+  try {
+    return collectRunIds(
+      fetchComments(args.repo, issueNumber, args.asOf || null),
+      trustedActorIds,
+      `issue #${issueNumber}`,
+      untrusted,
+      malformed
+    )
+  } catch (error) {
+    if (!(error instanceof OperationalError)) throw error
+    ignoredHints.push({
+      hint: `issue #${issueNumber}`,
+      tier,
+      reason: error.message
+    })
+    return new Set()
+  }
 }
 
 // Prefer the PR's own evidence comments over closing references, then body
@@ -465,18 +492,14 @@ function discoverRun(args, trustedActorIds) {
     closingIssues.map((issue) => Number(issue && issue.number)).filter((number) => Number.isInteger(number) && number > 0)
   )
   const bodyDiscovery = parseBodyDiscovery(pr.body, args.repo)
+  const ignoredHints = [...bodyDiscovery.ignoredHints]
   const nonClosingNumbers = new Set([...bodyDiscovery.issueNumbers].filter((number) => !closingNumbers.has(number)))
-  const allIssueNumbers = new Set([
-    ...closingNumbers,
-    ...nonClosingNumbers,
-    ...bodyDiscovery.runTokens.values()
-  ])
   // Which issues carried a given run id, not just which ids exist: a run whose
   // record sits on a different issue than the reader expects is worth naming
   // in the report's provenance line rather than reducing to "an issue".
-  const issueRuns = new Map()
-  for (const issueNumber of allIssueNumbers) {
-    issueRuns.set(
+  const closingRuns = new Map()
+  for (const issueNumber of closingNumbers) {
+    closingRuns.set(
       issueNumber,
       collectRunIds(fetchComments(args.repo, issueNumber, asOf), trustedActorIds, `issue #${issueNumber}`, untrusted, malformed)
     )
@@ -494,19 +517,33 @@ function discoverRun(args, trustedActorIds) {
       source: `evidence marker on PR #${pr.number}`,
       untrusted,
       malformed,
+      ignoredHints,
       unverifiedBodyRunIds: []
     }
   }
 
   const fromClosing = new Map()
-  for (const issueNumber of closingNumbers) addIssueRuns(fromClosing, issueNumber, issueRuns.get(issueNumber))
+  for (const issueNumber of closingNumbers) addIssueRuns(fromClosing, issueNumber, closingRuns.get(issueNumber))
   const closingSelection = selectIssueTier(pr.number, 'the closing references', fromClosing, 'closing reference')
   if (closingSelection) {
-    return { pr, ...closingSelection, untrusted, malformed, unverifiedBodyRunIds: [] }
+    return { pr, ...closingSelection, untrusted, malformed, ignoredHints, unverifiedBodyRunIds: [] }
   }
 
+  const hintIssueRuns = new Map()
   const fromNonClosing = new Map()
-  for (const issueNumber of nonClosingNumbers) addIssueRuns(fromNonClosing, issueNumber, issueRuns.get(issueNumber))
+  for (const issueNumber of nonClosingNumbers) {
+    const runIds = fetchHintRunIds(
+      args,
+      issueNumber,
+      'non-closing reference',
+      trustedActorIds,
+      untrusted,
+      malformed,
+      ignoredHints
+    )
+    hintIssueRuns.set(issueNumber, runIds)
+    addIssueRuns(fromNonClosing, issueNumber, runIds)
+  }
   const nonClosingSelection = selectIssueTier(
     pr.number,
     'the non-closing issue references',
@@ -514,12 +551,24 @@ function discoverRun(args, trustedActorIds) {
     'non-closing reference'
   )
   if (nonClosingSelection) {
-    return { pr, ...nonClosingSelection, untrusted, malformed, unverifiedBodyRunIds: [] }
+    return { pr, ...nonClosingSelection, untrusted, malformed, ignoredHints, unverifiedBodyRunIds: [] }
   }
 
   const fromBodyTokens = new Map()
   for (const [runId, issueNumber] of bodyDiscovery.runTokens) {
-    if ((issueRuns.get(issueNumber) || new Set()).has(runId)) addIssueRuns(fromBodyTokens, issueNumber, [runId])
+    const runIds = hintIssueRuns.has(issueNumber)
+      ? hintIssueRuns.get(issueNumber)
+      : fetchHintRunIds(
+          args,
+          issueNumber,
+          'PR-body run-id token',
+          trustedActorIds,
+          untrusted,
+          malformed,
+          ignoredHints
+        )
+    hintIssueRuns.set(issueNumber, runIds)
+    if (runIds.has(runId)) addIssueRuns(fromBodyTokens, issueNumber, [runId])
   }
   const bodyTokenSelection = selectIssueTier(
     pr.number,
@@ -528,10 +577,10 @@ function discoverRun(args, trustedActorIds) {
     'PR-body run-id token'
   )
   if (bodyTokenSelection) {
-    return { pr, ...bodyTokenSelection, untrusted, malformed, unverifiedBodyRunIds: [] }
+    return { pr, ...bodyTokenSelection, untrusted, malformed, ignoredHints, unverifiedBodyRunIds: [] }
   }
   const mismatchedBodyTokens = [...bodyDiscovery.runTokens.entries()].flatMap(([runId, issueNumber]) => {
-    const otherRuns = [...(issueRuns.get(issueNumber) || [])].filter((candidate) => candidate !== runId).sort()
+    const otherRuns = [...(hintIssueRuns.get(issueNumber) || [])].filter((candidate) => candidate !== runId).sort()
     return otherRuns.length === 0 ? [] : [`${runId} vs ${otherRuns.join(', ')} on issue #${issueNumber}`]
   })
   if (mismatchedBodyTokens.length > 0) {
@@ -545,6 +594,7 @@ function discoverRun(args, trustedActorIds) {
     source: null,
     untrusted,
     malformed,
+    ignoredHints,
     unverifiedBodyRunIds: [...bodyDiscovery.runTokens.keys()].sort()
   }
 }
@@ -1093,6 +1143,14 @@ function renderMarkdown(report) {
       )
     }
   }
+  if (report.source.ignored_hints.length === 0) {
+    l.push('- Body discovery hints ignored: 0')
+  } else {
+    l.push(`- Body discovery hints ignored: ${report.source.ignored_hints.length}`)
+    for (const hint of report.source.ignored_hints) {
+      l.push(`  - ${cell(hint.hint)} (${cell(hint.tier)}): ${cell(hint.reason)}`)
+    }
+  }
   l.push('')
 
   l.push('### Not measurable from this run\'s evidence')
@@ -1122,6 +1180,12 @@ function reportIgnoredMarkers(untrusted, malformed) {
   }
 }
 
+function reportIgnoredHints(ignoredHints) {
+  for (const hint of ignoredHints) {
+    console.error(`${TOOL}: ignoring body discovery hint ${hint.hint} (${hint.tier}): ${hint.reason}`)
+  }
+}
+
 function run(argv) {
   const args = parseArgs(argv)
   if (args.help) {
@@ -1144,6 +1208,7 @@ function run(argv) {
   let runIdFrom = args.run ? '--run on the command line' : null
   let untrustedMarkers = []
   let malformedMarkers = []
+  let ignoredHints = []
   let unverifiedBodyRunIds = []
   if (!runId) {
     try {
@@ -1153,6 +1218,7 @@ function run(argv) {
       runIdFrom = discovered.source
       untrustedMarkers = discovered.untrusted
       malformedMarkers = discovered.malformed
+      ignoredHints = discovered.ignoredHints
       unverifiedBodyRunIds = discovered.unverifiedBodyRunIds
     } catch (error) {
       if (!(error instanceof IndeterminateError)) throw error
@@ -1162,6 +1228,7 @@ function run(argv) {
     // Before the no-run-record return, not after: "nothing was found" and
     // "something was found and refused" must never look the same on stderr.
     reportIgnoredMarkers(untrustedMarkers, malformedMarkers)
+    reportIgnoredHints(ignoredHints)
     if (!runId) {
       // "No trusted marker" and "no marker at all" are different answers, and
       // only the second one licenses the fallback. Markers that exist but do
@@ -1302,7 +1369,8 @@ function run(argv) {
       trusted_actors: trusted.source,
       pr_binding: prBinding,
       ignored_markers: untrustedMarkers,
-      malformed_markers: malformedMarkers
+      malformed_markers: malformedMarkers,
+      ignored_hints: ignoredHints
     },
     trajectory: harvested.trajectory,
     policy,
