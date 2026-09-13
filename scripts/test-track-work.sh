@@ -836,6 +836,14 @@ grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metad
     --previous-title "$title120")" = 0 ] ||
     fail "non-truncating retitle rewrite should pass: $(cat "$tmp/metadata.out")"
 
+# terminal punctuation deletion is refused as a truncation (e.g. deleting trailing '.' or '...')
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+    --title '(scope): Reject stale entries' \
+    --previous-title '(scope): Reject stale entries.')" = 1 ] ||
+    fail "deleting terminal punctuation without rewrite must be refused as truncation"
+grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metadata.out" ||
+    fail "refusal must explain truncation: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: per-rule failure messages name the rule and code-point count (harmon-devkit#588)"
 [ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title 'Metadata is missing')" = 1 ] ||
     fail "missing scope prefix must fail"

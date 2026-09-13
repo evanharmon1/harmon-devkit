@@ -78,6 +78,10 @@ validate_title() {
     1) die 2 "report title violates the canonical scoped-title contract" ;;
     *) die 2 "could not evaluate the shared issue-title predicate" ;;
     esac
+    if jq -e -n -L "$title_module_dir" --arg value "$title" \
+        'include "issue-title"; $value | issue_title_warn' >/dev/null 2>&1; then
+        echo "triage-report: warning: report title exceeds 100 code-point soft limit" >&2
+    fi
 }
 
 # Print the open report issue's number, or nothing. Dies on ambiguity.
