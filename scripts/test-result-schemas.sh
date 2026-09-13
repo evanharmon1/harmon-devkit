@@ -83,6 +83,146 @@ case "$out" in
 esac
 echo "PASS: brief deadline is checked against an existing run record"
 
+# brief.envelope uses rendered Markdown fixtures, so it cannot participate in
+# the JSON fixture/reason coverage walker below. Mutate the valid rendered
+# fixtures instead: every required property is removed once, and every enum is
+# replaced once, then the real brief validator must reject the mutation at the
+# expected schema location.
+node --input-type=module - "$schemas_dir/brief.envelope.schema.json" \
+    "$brief_fixture_dir/valid" "$validator" "$test_tmp/brief-mutations" <<'NODE'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import path from 'node:path'
+
+const [schemaFile, validDir, validator, mutationDir] = process.argv.slice(2)
+const beginMarker = '<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->'
+const endMarker = '<!-- END SCHEMA-BOUND ENVELOPE FACTS -->'
+const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
+
+function loadFixture(file) {
+  const source = readFileSync(file, 'utf8')
+  const begin = source.indexOf(beginMarker)
+  const end = source.indexOf(endMarker, begin + beginMarker.length)
+  const block = source.slice(begin + beginMarker.length, end).trim()
+  const match = /^```json\s*\n([\s\S]*)\n```$/.exec(block)
+  if (begin === -1 || end === -1 || !match) throw new Error(`cannot parse valid brief fixture ${file}`)
+  return { source, begin, end, envelope: JSON.parse(match[1]) }
+}
+
+function collect(node, currentPath, required, enums) {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return
+  for (const name of node.required ?? []) required.push({ parent: currentPath, name })
+  if (Array.isArray(node.enum)) enums.push(currentPath)
+  for (const [name, child] of Object.entries(node.properties ?? {})) {
+    collect(child, [...currentPath, name], required, enums)
+  }
+  if (node.items) collect(node.items, [...currentPath, '*'], required, enums)
+}
+
+function concretePaths(value, pattern, prefix = []) {
+  if (pattern.length === 0) return [prefix]
+  const [part, ...rest] = pattern
+  if (part === '*') {
+    if (!Array.isArray(value)) return []
+    return value.flatMap((entry, index) => concretePaths(entry, rest, [...prefix, index]))
+  }
+  if (value === null || typeof value !== 'object' || !Object.hasOwn(value, part)) return []
+  return concretePaths(value[part], rest, [...prefix, part])
+}
+
+function valueAt(value, concretePath) {
+  return concretePath.reduce((current, part) => current[part], value)
+}
+
+function location(concretePath) {
+  return concretePath.reduce(
+    (result, part) => (typeof part === 'number' ? `${result}[${part}]` : `${result}.${part}`),
+    '$brief'
+  )
+}
+
+function renderMutation(fixture, envelope) {
+  const block = `\n\`\`\`json\n${JSON.stringify(envelope)}\n\`\`\`\n`
+  return fixture.source.slice(0, fixture.begin + beginMarker.length) + block + fixture.source.slice(fixture.end)
+}
+
+const fixtures = readdirSync(validDir)
+  .filter((entry) => entry.endsWith('.md'))
+  .sort()
+  .map((entry) => loadFixture(path.join(validDir, entry)))
+const required = []
+const enums = []
+collect(schema, [], required, enums)
+mkdirSync(mutationDir, { recursive: true })
+
+let failures = 0
+let caseNumber = 0
+function runMutation(kind, pattern, name = null) {
+  let selected
+  const derivedBody = kind === 'required' && pattern.length === 0 && name === 'body'
+  for (const fixture of fixtures) {
+    if (derivedBody) {
+      selected = { fixture, concrete: [] }
+      break
+    }
+    const targets = concretePaths(fixture.envelope, pattern)
+    const concrete = targets.find((candidate) => {
+      const value = valueAt(fixture.envelope, candidate)
+      return name === null || (value !== null && typeof value === 'object' && Object.hasOwn(value, name))
+    })
+    if (concrete) {
+      selected = { fixture, concrete }
+      break
+    }
+  }
+  if (!selected) {
+    console.error(`FAIL: no valid brief fixture contains mutation target ${location(pattern)}${name ? `.${name}` : ''}`)
+    failures += 1
+    return
+  }
+
+  const envelope = structuredClone(selected.fixture.envelope)
+  const target = valueAt(envelope, selected.concrete)
+  const expectedLocation = location(selected.concrete) + (name === null ? '' : `.${name}`)
+  const expected =
+    derivedBody
+      ? '$brief.body: body is absent'
+      : kind === 'required'
+      ? `${location(selected.concrete)}: missing required property ${name}`
+      : `${expectedLocation}: must be one of`
+  if (kind === 'required' && !derivedBody) delete target[name]
+  else {
+    if (!derivedBody) {
+      const parent = valueAt(envelope, selected.concrete.slice(0, -1))
+      parent[selected.concrete.at(-1)] = '__invalid_enum__'
+    }
+  }
+
+  const mutationFile = path.join(mutationDir, `${String(++caseNumber).padStart(3, '0')}-${kind}.md`)
+  const mutation = derivedBody
+    ? selected.fixture.source.slice(
+        selected.fixture.begin,
+        selected.fixture.end + endMarker.length
+      )
+    : renderMutation(selected.fixture, envelope)
+  writeFileSync(mutationFile, mutation)
+  const result = spawnSync(process.execPath, [validator, 'brief', mutationFile], { encoding: 'utf8' })
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
+  if (result.status === 0 || !output.includes(expected)) {
+    console.error(`FAIL: ${kind} mutation at ${expectedLocation} did not produce ${JSON.stringify(expected)}: ${output.trim()}`)
+    failures += 1
+  }
+}
+
+for (const entry of required) runMutation('required', entry.parent, entry.name)
+for (const enumPath of enums) runMutation('enum', enumPath)
+
+if (failures > 0) process.exit(1)
+console.log(
+  `PASS: brief.envelope.schema.json mutation coverage complete (${required.length} required, ${enums.length} enum)`
+)
+NODE
+
 # is_context_only_fixture PATH — true for a fixture the generic per-directory
 # valid/invalid loops below must not validate directly (checked in BOTH —
 # a sidecar or a flag-dependent document can live under either, e.g. a
