@@ -154,6 +154,19 @@ the same lane-worker override: record the confirmed draft handoff in
 harness cannot read the policy, skill, or report path named by this brief,
 report BLOCKED instead of inventing a procedure.
 
+### Confidence-stage decision handshake
+
+The lane may run or route the resolved confidence procedure, but every finding
+disposition remains orchestrator-owned. When a challenger or reviewer returns
+findings before draft publication, append a decision request to
+`{{report-path}}` with the stage, round, finding IDs, reviewer priorities,
+evidence, and proposed classifications; then wait. The supervising orchestrator
+records the authoritative dispositions in the run record (or, for the inline
+fallback, in the report) and explicitly delegates any fixes. Apply only those
+delegated fixes, run the required gates, and return the resulting evidence to
+the same confidence procedure. Do not infer a disposition from silence or
+advance the stage before the orchestrator-authored decision is durable.
+
 ## Long-running gate invocations
 
 When the resolved confidence procedure is the inline fallback, always run its
@@ -188,11 +201,12 @@ and qualifying rounds.
 
 ## Readiness gate
 
-This section is the lane's handoff contract with the supervising orchestrator.
-The lane may gather and report integration evidence requested by the brief, but
-it never adjudicates findings, edits the PR body, replies to review threads, or
-promotes the PR. Those actions and the readiness decision remain orchestrator
-owned under `AGENTS.md` § Who decides, and what is delegated.
+This section is the lane's integration handoff contract with the supervising
+orchestrator. The lane may gather and report integration evidence requested by
+the brief, but it never adjudicates integration findings, edits the PR body,
+replies to review threads, or promotes the PR. Those actions and the readiness
+decision remain orchestrator-owned under `AGENTS.md` § Who decides, and what
+is delegated. Confidence-stage findings use the decision handshake above.
 
 The orchestrator evaluates `AGENTS.md` § Readiness gate condition by condition
 using the vendored integrate procedure. A pending check row or an empty check

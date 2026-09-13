@@ -37,6 +37,12 @@ active-state path, record directory, and policy projection. Without them the
 lane worker falls back to the inline `task challenge` / `task review` procedure,
 which produces no run record and no adjudication evidence.
 
+Before draft publication, a confidence-stage finding uses the template's
+decision handshake: the lane records a decision request and waits for a durable
+orchestrator-authored disposition before applying any delegated fix or advancing
+the stage. The post-draft handoff remains separate and transfers integration to
+the supervising orchestrator.
+
 Render `assets/lane-brief.md` for every dispatch instead of hand-authoring a
 brief. Its header table is the complete input contract: source every value,
 select the harness procedure named by the rendered brief, and refuse dispatch

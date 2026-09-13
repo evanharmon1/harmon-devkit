@@ -140,6 +140,12 @@ grep -Fq 'substring match is never completion evidence' "$rendered_file" ||
     fail "sentinel observation is not final-line anchored"
 grep -Fq 'return control to the supervising orchestrator' "$rendered_file" ||
     fail "lane integration handoff is missing"
+grep -Fq 'Confidence-stage decision handshake' "$rendered_file" ||
+    fail "confidence-stage decision handshake is missing"
+grep -Fq 'Do not infer a disposition from silence' "$rendered_file" ||
+    fail "confidence-stage decision wait is not fail-closed"
+grep -Fq 'never adjudicates integration findings' "$rendered_file" ||
+    fail "integration-only adjudication boundary is missing"
 
 for sentinel in \
     LANE-FIXTURE-READY-a1b2c3 \
