@@ -87,12 +87,17 @@ grep -Fq 'resolved cap is `0`' "$skill" ||
     fail "review skill does not skip finder dispatch for a disabled stage"
 
 echo "==> review stage advance writes and validates schema-shaped transitions"
-for text in 'Immediately after every write to `run.json`' \
+for text in 'Before replacing `run.json`, write the complete candidate beside it' \
+    'scripts/validate-result-schemas.mjs run <candidate>' \
+    'Rename the candidate over `run.json` only' \
+    'after that validation passes' \
     'scripts/validate-result-schemas.mjs run <run.json>' \
     'Close the current transition by setting its `exit` to' \
     '`"<rule>: <detail>"`' \
     'append exactly `{"stage":"<next>","entered_at":"<UTC timestamp>"}`' \
-    'append `{from,to,at,reason}`'; do
+    'append `{from,to,at,reason}`' \
+    'review cap is `0`, append no `review` transition' \
+    '`{"stage":"security","entered_at":"<UTC timestamp>"}` directly'; do
     grep -Fq "$text" "$skill" || fail "review stage-advance recipe is missing: $text"
 done
 advance_fixture="ai/schemas/fixtures/run.schema/valid/empty-round-challenge-to-review.json"
@@ -110,6 +115,15 @@ jq -e '
     } and
     ([.stage_transitions[] | has("from") or has("to") or has("at") or has("reason")] | any | not)
 ' "$advance_fixture" >/dev/null || fail "empty-round advance fixture does not pin the writer shape"
+
+disabled_review_fixture="ai/schemas/fixtures/run.schema/valid/disabled-review-challenge-to-security.json"
+node scripts/validate-result-schemas.mjs run "$disabled_review_fixture" ||
+    fail "disabled-review challenge-to-security transition fixture is invalid"
+grep -Fq '"stage": "security"' "$disabled_review_fixture" ||
+    fail "disabled-review fixture does not enter security"
+if grep -Fq '"stage": "review"' "$disabled_review_fixture"; then
+    fail "disabled-review fixture incorrectly records a review transition"
+fi
 
 grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"

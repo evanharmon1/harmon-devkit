@@ -1,0 +1,46 @@
+{
+  "schema": 2,
+  "run_id": "run-disabled-review-challenge-to-security",
+  "initiated_by": "human",
+  "started_at": "2026-09-13T12:00:00Z",
+  "stage_transitions": [
+    {
+      "stage": "kickoff",
+      "entered_at": "2026-09-13T12:00:00Z",
+      "exit": "claimed"
+    },
+    {
+      "stage": "claim",
+      "entered_at": "2026-09-13T12:01:00Z",
+      "exit": "implement"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-09-13T12:02:00Z",
+      "exit": "verified"
+    },
+    {
+      "stage": "verify",
+      "entered_at": "2026-09-13T12:03:00Z",
+      "exit": "challenge"
+    },
+    {
+      "stage": "challenge",
+      "entered_at": "2026-09-13T12:04:00Z",
+      "exit": "disabled: review cap 0; challenge empty_round: converged after round 1"
+    },
+    {
+      "stage": "security",
+      "entered_at": "2026-09-13T12:05:00Z"
+    }
+  ],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "settlements": [],
+  "promotion": null,
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": []
+}

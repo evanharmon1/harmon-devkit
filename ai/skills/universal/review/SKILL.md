@@ -227,10 +227,14 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
-Immediately after every write to `run.json`, run
-`scripts/validate-result-schemas.mjs run <run.json>` (adding every adjudication
-document the write depends on). A validation failure fails the round and is a
-terminal blocker; never defer validation until publication or promotion.
+Before replacing `run.json`, write the complete candidate beside it and run
+`scripts/validate-result-schemas.mjs run <candidate>` with every adjudication
+document the candidate depends on. Rename the candidate over `run.json` only
+after that validation passes. Immediately after every replacement of
+`run.json`, run `scripts/validate-result-schemas.mjs run <run.json>` with those
+same adjudication documents to validate the canonical readback. Either
+validation failure fails the round and is a terminal blocker; never publish an
+invalid candidate or defer validation until publication or promotion.
 
 After each adjudication, keep the immutable source envelopes locally, but build
 the fenced JSON public comment only from a verification-bound projection. Join
@@ -310,11 +314,19 @@ stale or duplicate write. Close the current transition by setting its `exit` to
 names the outcome and qualifying round or disabled-stage fact. Then
 append exactly `{"stage":"<next>","entered_at":"<UTC timestamp>"}`. Never
 append `{from,to,at,reason}`: those are verdict concepts, not the run schema's
-transition shape. Write the close and append as one atomic replacement, then
-apply the mandatory `run.json` validation above before publishing evidence or
-entering the next stage.
+transition shape. Write the close and append to a complete candidate beside
+`run.json`, validate that candidate with every adjudication document it
+depends on, then atomically rename it over `run.json` only after validation
+passes. Validate the canonical readback as required above before publishing
+evidence or entering the next stage.
 
-The next stage is `review` after a terminal `challenge` unless the resolved
-review cap is zero, in which case compute and record that disabled stage before
-entering `security`. A terminal `review` enters `security`. Deferred P2s remain
-recorded for integration.
+The next stage is `review` after a terminal `challenge`. When the resolved
+review cap is `0`, append no `review` transition. With `challenge` still
+current, compute the review disabled-stage verdict and require its authenticated
+result to say `action: advance`; any other result blocks. That verdict
+authorizes one candidate update: close `challenge` with
+`exit: "disabled: review cap 0; challenge <rule>: <detail>"`, then append
+`{"stage":"security","entered_at":"<UTC timestamp>"}` directly. The exit
+text names the disabled-stage verdict. Validate the candidate before the atomic
+rename as required above. A terminal non-disabled `review` enters `security`.
+Deferred P2s remain recorded for integration.
