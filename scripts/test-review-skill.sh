@@ -110,7 +110,8 @@ for role in challenger reviewer; do
 done
 grep -Fq 'synthesis_of' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not preserve council synthesis provenance"
-for model_skill in "$skill" ai/skills/universal/orchestrator/SKILL.md; do
+for model_skill in "$skill" ai/skills/universal/orchestrator/SKILL.md \
+    ai/skills/universal/breakdown/SKILL.md; do
     ! grep -Fq 'disable-model-invocation: true' "$model_skill" ||
         fail "$model_skill is not model-invocable"
     grep -Fq 'Use when' "$model_skill" || fail "$model_skill has no model discovery trigger"

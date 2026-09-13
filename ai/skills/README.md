@@ -35,14 +35,14 @@ ai/skills/
     └── standardize-repo/SKILL.md
 ```
 
-`universal/` ships the dev-workflow session suite, split on whether invoking
-the skill is itself the thing that authorizes what it does. Two stay
-user-only (`disable-model-invocation: true`): `/breakdown`, because invoking
-it **is** the human consent for a bulk decomposition written to GitHub, so a
-model triggering it on its own would file a batch of issues nobody agreed
-to; and `/retro`, a human-timed session ritual — only the person at the
-keyboard knows a session is actually ending. The rest are model-invocable,
-so an agent following the repo's own dev loop (`AGENTS.md`) can enter a
+`universal/` ships the dev-workflow session suite. `/retro` stays user-only
+(`disable-model-invocation: true`) because it is a human-timed session ritual
+— only the person at the keyboard knows a session is actually ending. The
+rest are model-invocable, including `/breakdown`: consent for its bulk GitHub
+writes is enforced by the interactive-human approval gate in §6, not by who
+typed the command. An unattended `/breakdown` may only file its proposal for a
+later interactive approval; it cannot execute the proposed writes. This lets
+an agent following the repo's own dev loop (`AGENTS.md`) enter a
 stage through the Skill tool instead of waiting for a human to type the
 command: `/claim` (the invocation still names and confirms the target issue
 before any write, exactly as it does when a human types it; its writes are
