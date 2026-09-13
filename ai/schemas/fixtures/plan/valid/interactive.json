@@ -5,7 +5,7 @@
     {
       "seq": 0,
       "prev_digest": "genesis",
-      "digest": "b2edf2b595ce2edcc0a0af794074bf1e15ec65146f8650e165f683d631590a77",
+      "digest": "a9f00bcb68c5f72d6063a8e19b859383bde278684c924b3f3dcad3629c76938a",
       "at": "2026-09-13T17:00:00Z",
       "reason": "initial slate plan",
       "plan": {
@@ -84,7 +84,7 @@
             "paths": [
               "orchestrator/SKILL.md"
             ],
-            "resolution": "split",
+            "resolution": "serialize",
             "merge_dependency": {
               "before": 935,
               "after": 936
@@ -134,6 +134,7 @@
             "branch": "936-fences",
             "run_id": "run-936-fences",
             "fence": [
+              "orchestrator/SKILL.md",
               "lane-brief.md"
             ],
             "expansions": []

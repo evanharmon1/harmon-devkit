@@ -2275,28 +2275,37 @@ function checkPlanCoherence(document, errors) {
     }
   }
   for (const [path, owners] of ownersByPath) {
-    if (owners.length > 1) {
-      errors.push(`$plan.lanes: effective-fence path ${JSON.stringify(path)} must not belong to more than one lane`)
+    for (let left = 0; left < owners.length; left += 1) {
+      for (let right = left + 1; right < owners.length; right += 1) {
+        if (owners[left].wave === owners[right].wave) {
+          errors.push(`$plan.lanes: effective-fence path ${JSON.stringify(path)} must not belong to concurrent lanes ${JSON.stringify(owners[left].lane)} and ${JSON.stringify(owners[right].lane)}`)
+        }
+      }
     }
   }
 
   for (const issue of activeIssues) {
     const ownLane = laneByIssue.get(issue.number)
     for (const path of issue.candidate_files || []) {
-      const splitOverlap = overlaps.find(
+      const isSplit = overlaps.some(
         (overlap) =>
           overlap.resolution === 'split' &&
           (overlap.paths || []).includes(path) &&
           (overlap.issue_a === issue.number || overlap.issue_b === issue.number),
       )
-      if (splitOverlap) {
-        const owners = ownersByPath.get(path) || []
-        const pair = [splitOverlap.issue_a, splitOverlap.issue_b]
-        if (owners.length !== 1 || !pair.includes(owners[0].issue)) {
-          errors.push(`$plan.lanes: split candidate path ${JSON.stringify(path)} must belong to exactly one lane in issue pair ${pair.join(':')}`)
-        }
-      } else if (!ownLane || !effectiveFenceByLane.get(ownLane.lane)?.has(path)) {
+      if (!isSplit && (!ownLane || !effectiveFenceByLane.get(ownLane.lane)?.has(path))) {
         errors.push(`$plan.lanes: issue ${issue.number}'s candidate path ${JSON.stringify(path)} must belong to its own lane`)
+      }
+    }
+  }
+
+  for (const overlap of overlaps.filter((entry) => entry.resolution === 'split')) {
+    const pair = [overlap.issue_a, overlap.issue_b]
+    const pairLanes = pair.map((issue) => laneByIssue.get(issue)).filter(Boolean)
+    for (const path of overlap.paths || []) {
+      const ownerCount = pairLanes.filter((lane) => effectiveFenceByLane.get(lane.lane)?.has(path)).length
+      if (ownerCount !== 1) {
+        errors.push(`$plan.lanes: split candidate path ${JSON.stringify(path)} must belong to exactly one lane in issue pair ${pair.join(':')}`)
       }
     }
   }
@@ -2306,7 +2315,6 @@ function checkDispatchPlan(document, errors) {
   const revisions = checkPlanRevisionChain(document, errors)
   if (!revisions) return
   const firstTime = Date.parse(revisions[0].at)
-  const latestTime = Date.parse(revisions.at(-1).at)
   for (const revision of revisions) {
     const revisionErrors = []
     checkPlanCoherence(revision.plan, revisionErrors)
@@ -2314,8 +2322,8 @@ function checkDispatchPlan(document, errors) {
     for (const [laneIndex, lane] of (revision.plan.lanes || []).entries()) {
       for (const [expansionIndex, expansion] of (lane.expansions || []).entries()) {
         const expansionTime = Date.parse(expansion.at)
-        if (expansionTime < firstTime || expansionTime > latestTime) {
-          errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must fall within the plan revision interval`)
+        if (expansionTime < firstTime || expansionTime > Date.parse(revision.at)) {
+          errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must fall between the first revision and its containing revision`)
         }
       }
     }
