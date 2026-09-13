@@ -145,7 +145,8 @@ already knows is active). The spec calls this layer **receipt validation**
 keyword, for every one of these:
 
 - **Head agreement** — a reviewer payload's `reviewed_head`, and an
-  integrator payload's `codex_cycle.head` / `codex_cycle.accepted.reviewed_commit`,
+  integrator payload's `codex_cycle.head` / `codex_cycle.accepted.reviewed_commit`
+  and every `finder_cycles[].head` / `.accepted.reviewed_commit`,
   must equal the enclosing envelope's `head`. The payload schema validates
   `payload` alone and has no visibility into the envelope; only the script,
   which has both, can compare them.
@@ -390,7 +391,8 @@ instance being validated:
   indeterminate, never a pass), while a non-required entry may additionally
   be `skipping`; `unanswered_thread_roots` is empty; `codex_cycle` is
   `null` or has `exit_code: 0` with `accepted` present (never `10`/findings
-  — a clean verdict cannot rest on an unresolved Codex cycle); and every
+  — a clean verdict cannot rest on an unresolved Codex cycle); every
+  `finder_cycles[]` entry has `exit_code: 0` with `accepted` present; and every
   `findings[].id` has a matching `applied_dispositions[]` entry whose
   disposition is specifically `decline` or `file` — `fix`/`restructure`/
   `delete` all change code (so the changed code has never itself been
@@ -950,7 +952,8 @@ decisions):
   "forbidden otherwise" — so `checkCodexCycleAcceptedScope` closes the gap
   in the validator: `accepted` present alongside any exit_code other than
   0/10 is rejected, since its presence is itself a claim of a terminal
-  result.
+  result. `checkFinderCyclesAcceptedScope` applies the identical rule to
+  every `finder_cycles[]` entry (#804).
 - **`codex_cycle.exit_code` constrains `verdict` beyond the terminal-vs-
   nonterminal split above.** `EXIT_CODE_VERDICT_CONSTRAINTS` is one table,
   keyed by the exit codes documented on `check-codex-cloud-review.sh`'s

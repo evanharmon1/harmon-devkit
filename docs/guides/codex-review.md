@@ -32,16 +32,14 @@ many finders it names).
 | `copilot-verification` | local CLI (`task review:copilot`) | review | GitHub Copilot CLI, authenticated |
 | `copilot-cloud` | PR review | integration† | GitHub Copilot code review enabled for the repo |
 
-† **Registered, not yet driven.** `coderabbit-cloud` and `copilot-cloud` are
-declared here — trigger mechanism, trusted actor, terminal-result signals and
-severity map — and their raw output normalizes like any other finder's. What
-does not exist yet is the integration-stage machinery that would *drive* them:
-the trigger broker, the per-finder cycle state and the readiness condition are
-still Codex-only. Naming one in `[stage.integration].finders` therefore
-configures a finder nothing will collect. That work is tracked as
-[#804](https://github.com/evanharmon1/harmon-devkit/issues/804), with the
-trust constraints it has to satisfy; until it lands, the integration stage runs
-Codex alone.
+† **Driven per-finder (#804).** The integration stage drives one cloud-review
+cycle per configured PR-side finder — `codex-cloud`, `coderabbit-cloud`, and
+`copilot-cloud` — through the same checker (`check-codex-cloud-review.sh
+--finder SLUG`), trigger broker (`gh-write-broker.sh trigger --finder SLUG` or
+`request-review --finder SLUG`), and readiness gate (per-finder exit_code 0
+condition). Each finder's trusted actor, trigger mechanism, surfaces, and
+verdict mode are resolved from the merge-base copy of `agent-registry.json`
+via `trusted-registry.sh` — never from the branch under review.
 
 **Codex is the shipped default and the only finder anything here assumes.**
 Nothing installs a CodeRabbit or Copilot CLI, nothing enables either app, and
@@ -124,9 +122,9 @@ round is cheaper than the defect it might catch:
   disagree usefully: Codex attacks the design, Copilot is stronger on
   line-level correctness and test gaps, and the round still costs one cap
   unit.
-- *The PR-side pairings* — Codex plus CodeRabbit or Copilot on `integration` —
-  are the ones the † above defers: the finders are registered, but nothing
-  drives them yet.
+- *The PR-side pairings* — Codex plus CodeRabbit or Copilot on `integration`.
+  Each finder runs its own cycle against the current head; a clean verdict
+  requires every configured finder to reach exit_code 0.
 - *Never* more than one finder from the same family on one stage: the registry
   refuses two finders sharing one actor identity, and two passes from the same
   product mostly repeat each other.

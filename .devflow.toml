@@ -148,11 +148,12 @@ description       = "Rigor: maximum scrutiny at every role — irreversible fail
 # use_codex_review is off, and integration to 0 when use_codex_cloud_review
 # is off. Their matching [stage.*].finders arrays render empty below, so an
 # opt-out never leaves an enabled stage with no installed reviewer task.
-# integration: bounds CODEX RE-REVIEW CYCLES ONLY. Human and CI findings are
-# always answered — uncapped. 0 waives only the Codex cycle (the readiness
-# gate's Codex condition drops out; every other condition stays). A fix after
-# the last permitted cycle = `capped`: blocker report naming the unreviewed
-# head, PR stays draft. The verdict is never waived.
+# integration: bounds CLOUD RE-REVIEW CYCLES per configured PR-side finder
+# (#804). Human and CI findings are always answered — uncapped. 0 waives all
+# cloud cycles (the readiness gate's per-finder conditions drop out; every
+# other condition stays). A fix after the last permitted cycle = `capped`:
+# blocker report naming the unreviewed head, PR stays draft. The verdict is
+# never waived.
 # remediation: bounds fix pushes in the integration stage. Terminal action is
 # escalation with the unresolved findings listed — never abandonment, never
 # promotion past them. 0 = the first finding needing a code fix escalates.

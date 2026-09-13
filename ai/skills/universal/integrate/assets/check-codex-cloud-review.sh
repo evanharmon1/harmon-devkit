@@ -851,11 +851,11 @@ attach)
     [ "$live_head" = "$state_head" ] ||
         die "PR head changed before trigger attachment"
     phase=$(jq -r '.phase' "$state_file")
-    finder_mechanism=$(jq -r '.finder.trigger_mechanism // "review-comment"' "$state_file")
 
     if [ -n "$requested_at_arg" ]; then
         # Requested-reviewer finders: no trigger comment to verify; the
         # caller recorded when the reviewer was requested.
+        finder_mechanism=$(jq -r '.finder.trigger_mechanism // "review-comment"' "$state_file")
         [ "$finder_mechanism" = "requested-reviewer" ] ||
             die "--requested-at is only valid for requested-reviewer finders"
         if [ "$phase" = "attached" ]; then

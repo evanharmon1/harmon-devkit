@@ -1075,6 +1075,36 @@ fi
 # condition is genuinely waived for this pass; that is a statement about
 # codex_cycle specifically, not about the pass as a whole.
 
+# 8b. Per-finder cloud conditions (#804). finder_cycles[] carries every
+# configured PR-side finder (codex-cloud, coderabbit-cloud, copilot-cloud,
+# etc.) that the integrator drove. Each entry must be terminal-clean
+# (exit_code 0) for the correct head. The codex-cloud entry is redundant
+# with codex_cycle above and is not re-checked; non-codex finders are
+# checked here.
+finder_cycles="$(jq -c '.payload.finder_cycles // []' "$integrator_result" 2>/dev/null)" || true
+finder_cycles_len="$(jq -r 'length' <<<"$finder_cycles" 2>/dev/null)" || finder_cycles_len=0
+if [ "$finder_cycles_len" -gt 0 ]; then
+    for fc_idx in $(seq 0 $((finder_cycles_len - 1))); do
+        fc_slug="$(jq -r ".[$fc_idx].finder // \"unknown\"" <<<"$finder_cycles")"
+        [ "$fc_slug" = "codex-cloud" ] && continue
+        fc_head="$(jq -r ".[$fc_idx].head // empty" <<<"$finder_cycles" 2>/dev/null)" ||
+            indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no head"
+        [ "$fc_head" = "$head" ] ||
+            indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) head $fc_head disagrees with the gated $head"
+        fc_exit="$(jq -r ".[$fc_idx].exit_code" <<<"$finder_cycles" 2>/dev/null)" ||
+            indeterminate malformed-data "finder_cycles[$fc_idx] ($fc_slug) carries no exit_code"
+        case "$fc_exit" in
+        0) ;; # terminal-clean — condition passes
+        10 | 11 | 12 | 13)
+            fail_condition finder-not-clean "finder_cycles[$fc_idx] ($fc_slug) exited $fc_exit, not terminal-clean"
+            ;;
+        *)
+            indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) exit_code $fc_exit is not a recognized value"
+            ;;
+        esac
+    done
+fi
+
 # 9a. The pass's own findings[] is unconditional evidence, independent of
 # codex_cycle — a null or clean codex_cycle says nothing about a NEW
 # top-level human finding the integrator surfaced this same pass (review
@@ -1294,6 +1324,14 @@ for evidence_adj in "$record_dir"/adjudications/*.json; do
     evidence_validate_args+=(--adjudication "$evidence_adj")
 done
 [ "${#evidence_validate_args[@]}" -gt 0 ] || evidence_validate_args=(--no-adjudications)
+# #821: strict mode — bind adjudication documents to the trusted receipt
+# sequence when the run record carries one. The receipts field is not yet in
+# run.schema.json, so pass --receipts only when the data exists; when it
+# does, every adjudication stage must have a matching transition receipt.
+receipts_file="${record_dir}/run.json"
+if jq -e '.receipts | type == "array"' "$receipts_file" >/dev/null 2>&1; then
+    evidence_validate_args+=(--receipts "$receipts_file")
+fi
 if ! record_semantic_err="$(node "$validate_result_schemas" run "$run_json" \
     "${evidence_validate_args[@]}" 2>&1 >/dev/null)"; then
     indeterminate malformed-data "run.json fails its own semantic validation against the record's adjudication set — its evidence chain, markers, or settlements cannot be trusted: $(printf '%s' "$record_semantic_err" | head -1)"

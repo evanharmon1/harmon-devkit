@@ -2,11 +2,11 @@
 name: integrator
 description: >-
   Run the mechanical, long-poll half of the integration stage in a fresh
-  context: settle CI, drive one current-head Codex cloud-review cycle to a
-  terminal result (reserve, trigger, attach, poll, one bounded retry, resume
+  context: settle CI, drive one current-head cloud-review cycle per configured
+  PR-side finder (reserve, trigger, attach, poll, one bounded retry, resume
   after interruption), find which review threads still lack a reply, and
   return schema-valid result.integrator evidence. Post only the brokered
-  `@codex review` trigger and exact reply text the orchestrator supplies.
+  trigger text and exact reply text the orchestrator supplies.
   Never adjudicates, settles, replies in its own words, or promotes.
 ---
 
@@ -255,7 +255,7 @@ merely `pending` (neither failed nor settled) belongs in `checks_ready`
 (already false) and `checks[]`, never in `$failed_required` or `findings[]`
 — it is not yet a defect to adjudicate, just CI still running.
 
-## 4. Drive one current-head Codex cycle (skip entirely when the cap is 0)
+## 4. Drive cloud review cycles (skip entirely when the cap is 0)
 
 If your brief states the resolved `[rounds].integration` cap is 0, **or §3's
 `checks_ready` is not `true`**, skip this whole section. Report
@@ -446,6 +446,46 @@ other (§5); recording its disposition against the checker's own state is the
 orchestrator's write, made after it decides fix/decline/file — not yours to
 make on its behalf.
 
+### Per-finder cycles (#804)
+
+When your brief lists configured finders beyond `codex-cloud` (each with a
+registry slug from `agent-registry.json`), drive one cycle per finder in
+addition to the `codex_cycle` above. The `codex_cycle` field remains the
+canonical backward-compatible record for the codex-cloud finder specifically;
+`finder_cycles` (§7) carries every finder including codex-cloud.
+
+Use the same checker with `--finder SLUG` — it resolves the finder's actor id,
+surfaces, and verdict mode from the trusted registry rather than needing
+explicit `--actor-id`:
+
+```sh
+state_finder="$(git rev-parse --git-path "integrate-$slug/$repo/<n>.json")"
+"$helper" reserve --state "$state_finder" --repo "$repo" --pr <n> \
+    --head "<head>" --attempt 1 --finder "$slug" || exit
+```
+
+The trigger mechanism varies by finder — the trusted registry determines which:
+
+- **`review-comment` finders** (e.g. `coderabbit-cloud`): trigger via
+  `gh-write-broker.sh trigger --finder "$slug" --repo "$repo" --pr <n>`, which
+  resolves the trigger body from the trusted registry. Attach with
+  `--trigger-id`.
+
+- **`requested-reviewer` finders** (e.g. `copilot-cloud`): trigger via
+  `gh-write-broker.sh request-review --finder "$slug" --repo "$repo" --pr <n>`.
+  Attach with `--requested-at <ISO8601>` (the timestamp from the response).
+
+```bash
+check_exit=0
+check_out="$("$helper" check --state "$state_finder")" || check_exit=$?
+```
+
+No `--actor-id` argument is needed when `--finder` was passed to `reserve` —
+the checker reads the actor identity from the persisted state. The same exit
+codes, retry logic, polling window, and bounded retry (attempt 2) apply
+identically to every finder. Build each finder's entry for `finder_cycles` (§7)
+from its own `check_out`, the same way `codex_cycle` is built for codex-cloud.
+
 ## 5. Find what still needs a reply
 
 Fetch inline review comments and classify by reply linkage — a thread with no
@@ -605,6 +645,7 @@ jq -n \
     --arg initiated_by "<initiated_by from your brief>" \
     --argjson checks "$checks_json" \
     --argjson codex_cycle "$codex_cycle_json_or_null" \
+    --argjson finder_cycles "$finder_cycles_json" \
     --argjson integration_round "$integration_round" \
     --argjson findings "$findings_json" \
     --argjson unanswered_thread_roots "$unanswered_json" \
@@ -616,6 +657,7 @@ jq -n \
       producer: {harness: $harness, model: $model, tier: $tier},
       run: {run_id: $run_id, initiated_by: $initiated_by},
       payload: ({checks: $checks, codex_cycle: $codex_cycle,
+                 finder_cycles: $finder_cycles,
                  integration_round: $integration_round, findings: $findings,
                  unanswered_thread_roots: $unanswered_thread_roots,
                  settled_at: $settled_at, verdict: $verdict}
@@ -630,13 +672,15 @@ separate substitutions can straddle a second boundary and disagree despite
 both being "now" (Codex cloud-review cycle on this PR, harmon-devkit#758).
 
 `head` here is the SAME head your brief named throughout — the envelope's
-own `head`, `payload.codex_cycle.head` (when non-null), and
-`payload.codex_cycle.accepted.reviewed_commit` (when present) must all be
-identical, never three separate reads of "the current head".
+own `head`, `payload.codex_cycle.head` (when non-null),
+`payload.codex_cycle.accepted.reviewed_commit` (when present), and every
+`payload.finder_cycles[].head` and `.accepted.reviewed_commit` must all be
+identical, never separate reads of "the current head".
 
 Derive `$verdict` mechanically, never by feel: `clean` only when every
 required check is `pass` (or non-required and `skipping`), the Codex cycle
-(when the cap is not 0) is terminal-clean or was skipped by a 0 cap, and
+(when the cap is not 0) is terminal-clean or was skipped by a 0 cap, **every
+finder cycle** is terminal-clean (exit_code 0 with accepted present), and
 `unanswered_thread_roots` and `findings` are both empty; `findings` when
 anything substantive surfaced that the orchestrator has not adjudicated away;
 `pending` when still waiting on CI or the Codex window with nothing else
