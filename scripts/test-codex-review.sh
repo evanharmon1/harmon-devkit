@@ -31,6 +31,9 @@ mkdir -p "${test_tmp}/bin"
 cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
 if [ -n "${STUB_PAYLOAD_FILE:-}" ]; then
+    if [ -n "${STUB_SLEEP:-}" ]; then
+        sleep "$STUB_SLEEP"
+    fi
     if [ -n "${STUB_ARGS_FILE:-}" ]; then
         printf '%s\n' "$@" >"$STUB_ARGS_FILE"
     fi
@@ -685,6 +688,37 @@ jq -e '[.receipts[] | select(.kind == "pass" and .file == "challenge-r1-codex-ad
     "$record/run.json" >/dev/null || fail "challenger pass was published without its receipt commit point"
 grep -Fxq -- '--cd' "$challenge_args" || fail "Codex envelope review was not given a detached snapshot cwd"
 grep -Fq 'finder-readonly-' "$challenge_args" || fail "Codex envelope review used the live checkout instead of its snapshot"
+
+echo "==> concurrent publishers cannot lose each other's receipt"
+parallel_record="${test_tmp}/codex-parallel-record"
+mkdir -p "$parallel_record"
+printf '%s\n' '{"schema":2,"run_id":"run-codex-parallel","initiated_by":"human"}' >"$parallel_record/run.json"
+parallel_challenge_payload="${test_tmp}/parallel-challenge-payload.json"
+jq --arg head "$head_sha" '.reviewed_head = $head | .round = 2' \
+    ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$parallel_challenge_payload"
+parallel_review_payload="${test_tmp}/parallel-review-payload.json"
+jq --arg head "$head_sha" '.reviewed_head = $head' \
+    ai/schemas/fixtures/result.reviewer.schema/runner-envelope-mode/reviewer-payload.json >"$parallel_review_payload"
+parallel_challenge_out="${test_tmp}/parallel-challenge.out"
+parallel_review_out="${test_tmp}/parallel-review.out"
+STUB_SLEEP=0.2 STUB_PAYLOAD_FILE="$parallel_challenge_payload" run challenge --envelope \
+    --run-id run-codex-parallel --head "$head_sha" --stage challenge --round 2 \
+    --slot codex-adversarial --producer "$producer" --record-dir "$parallel_record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop >"$parallel_challenge_out" &
+parallel_challenge_pid=$!
+STUB_SLEEP=0.2 STUB_PAYLOAD_FILE="$parallel_review_payload" run review --envelope \
+    --run-id run-codex-parallel --head "$head_sha" --stage review --round 1 \
+    --slot codex-verification --producer "$producer" --record-dir "$parallel_record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop >"$parallel_review_out" &
+parallel_review_pid=$!
+wait "$parallel_challenge_pid" || fail "parallel challenger publication failed: $(cat "$parallel_challenge_out")"
+wait "$parallel_review_pid" || fail "parallel reviewer publication failed: $(cat "$parallel_review_out")"
+jq -e '[.receipts[] | select(.kind == "pass") | .file] | sort ==
+    ["challenge-r2-codex-adversarial", "review-r1-codex-verification"]' \
+    "$parallel_record/run.json" >/dev/null || fail "concurrent publication lost a pass receipt"
+[ -f "$parallel_record/passes/challenge-r2-codex-adversarial.json" ] &&
+    [ -f "$parallel_record/passes/review-r1-codex-verification.json" ] ||
+    fail "concurrent publication lost a validated pass"
 
 echo "==> envelope mode binds the review target to the canonical branch scope"
 set +e

@@ -206,34 +206,26 @@ if [ "$envelope_mode" = true ]; then
     publication_lock="$record_dir/.pass-publication.lock"
     publication_lock_held=false
     acquire_publication_lock() {
-        lock_attempt=0
-        while ! mkdir "$publication_lock" 2>/dev/null; do
-            lock_owner="$(cat "$publication_lock/pid" 2>/dev/null || true)"
-            case "$lock_owner" in
-            '' | *[!0-9]*) ;;
-            *)
-                if ! kill -0 "$lock_owner" 2>/dev/null; then
-                    echo "reclaiming stale pass-publication lock from pid $lock_owner" >&2
-                    rm -f "$publication_lock/pid"
-                    rmdir "$publication_lock" 2>/dev/null || true
-                    continue
-                fi
-                ;;
-            esac
-            lock_attempt=$((lock_attempt + 1))
-            [ "$lock_attempt" -lt 100 ] || {
-                echo "timed out waiting for pass-publication lock $publication_lock" >&2
-                return 1
-            }
-            sleep 0.1
-        done
-        printf '%s\n' "$$" >"$publication_lock/pid"
+        command -v flock >/dev/null 2>&1 || {
+            echo "flock is required for crash-safe pass publication" >&2
+            return 1
+        }
+        # The persistent file is intentional: removing a locked file would
+        # let another process lock a different inode at the same path. Kernel
+        # ownership releases the lock even if the publisher terminates
+        # abruptly, eliminating stale-lock reclamation races.
+        exec 9>"$publication_lock"
+        flock -w 10 9 || {
+            exec 9>&-
+            echo "timed out waiting for pass-publication lock $publication_lock" >&2
+            return 1
+        }
         publication_lock_held=true
     }
     release_publication_lock() {
         [ "$publication_lock_held" = true ] || return 0
-        rm -f "$publication_lock/pid"
-        rmdir "$publication_lock" 2>/dev/null || true
+        flock -u 9
+        exec 9>&-
         publication_lock_held=false
     }
     trap release_publication_lock EXIT
