@@ -124,19 +124,25 @@ vendored stage skills are procedures beneath it.
 
 ### Claude Code (Skill tool)
 
-Invoke `/implement {{issue-number}}` with the Skill tool. Let it enter `/review`
-and `/integrate` when the active run identity and topology support them. Never
-paste a terminal sentinel value into a worker or role-agent prompt; refer to the
-reporting contract indirectly.
+Invoke `/implement {{issue-number}}` with the Skill tool through draft-PR
+publication. For a lane worker, repository policy overrides `/implement` step
+9: record the confirmed draft handoff in `{{report-path}}` and return control to
+the supervising orchestrator. That one orchestrator invokes integration and
+owns every finding disposition, PR-body edit, thread reply, readiness decision,
+and promotion. Never paste a terminal sentinel value into a worker or role-agent
+prompt; refer to the reporting contract indirectly.
 
 ### Codex CLI (read the skill)
 
 Read `.agents/skills/implement/SKILL.md` completely and follow it for
-issue #{{issue-number}}. Enter later stages only by reading their vendored
-`.agents/skills/<stage>/SKILL.md` completely. Apply the Git/sandbox rule from
-Identity and boundaries; a permission failure is not authority to find another
-write route. Never paste a terminal sentinel value into another prompt; refer
-to the reporting contract indirectly.
+issue #{{issue-number}} through draft-PR publication. For a lane worker,
+repository policy overrides `/implement` step 9: record the confirmed draft
+handoff in `{{report-path}}` and return control to the supervising orchestrator.
+Only that orchestrator may enter the vendored integrate procedure and own its
+decisions and writes. Apply the Git/sandbox rule from Identity and boundaries;
+a permission failure is not authority to find another write route. Never paste
+a terminal sentinel value into another prompt; refer to the reporting contract
+indirectly.
 
 ## Long-running gate invocations
 
@@ -150,8 +156,9 @@ during the milestone handoff (lesson 3).
 
 {{known-environmental-failure}}
 
-Treat an exception as green only when its exact signature is the sole failure
-and the brief supplies its required confirmation. Every other failure gates.
+This field classifies and explains an observed environmental failure; it never
+turns a failed or indeterminate gate green. Record the exact signature and
+report BLOCKED unless the cause is fixed and the gate itself passes.
 
 ## Stage-exit rules
 

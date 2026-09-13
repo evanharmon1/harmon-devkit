@@ -14,11 +14,64 @@ fail() {
 template="ai/skills/universal/orchestrator/assets/lane-brief.md"
 rendered="$(<"$template")"
 
+required_placeholders=(
+    '{{active-state-path}}'
+    '{{attempt-nonce}}'
+    '{{base-sha}}'
+    '{{blocked-sentinel}}'
+    '{{branch}}'
+    '{{challenge-cap}}'
+    '{{deadline}}'
+    '{{default-branch}}'
+    '{{file-scope-fence}}'
+    '{{generation}}'
+    '{{git-sandbox-note}}'
+    '{{harness}}'
+    '{{integration-cap}}'
+    '{{issue-number}}'
+    '{{issue-title}}'
+    '{{known-environmental-failure}}'
+    '{{lane-name}}'
+    '{{live-lane-overlaps}}'
+    '{{max-agent-runs}}'
+    '{{max-parallel-agents}}'
+    '{{min-rounds}}'
+    '{{operator-pins}}'
+    '{{policy-projection}}'
+    '{{pr-title}}'
+    '{{ready-sentinel}}'
+    '{{record-directory}}'
+    '{{remediation-cap}}'
+    '{{report-path}}'
+    '{{review-cap}}'
+    '{{rigor}}'
+    '{{rigor-source}}'
+    '{{role-tiers}}'
+    '{{run-id}}'
+    '{{strategy}}'
+    '{{strategy-source}}'
+    '{{verified-facts-and-rulings}}'
+    '{{wall-clock-min}}'
+    '{{worktree-path}}'
+)
+
 placeholders=()
 while IFS= read -r token; do
     placeholders[${#placeholders[@]}]="$token"
 done < <(grep -oE '\{\{[a-z0-9-]+\}\}' "$template" | sort -u)
-[ "${#placeholders[@]}" -gt 0 ] || fail "template exposes no placeholders"
+
+[ "${#placeholders[@]}" -eq "${#required_placeholders[@]}" ] ||
+    fail "template placeholder set differs from the required contract"
+for expected in "${required_placeholders[@]}"; do
+    found=0
+    for token in "${placeholders[@]}"; do
+        if [ "$token" = "$expected" ]; then
+            found=1
+            break
+        fi
+    done
+    [ "$found" -eq 1 ] || fail "missing required placeholder: $expected"
+done
 
 for token in "${placeholders[@]}"; do
     grep -Fq "| \`$token\` |" "$template" ||
