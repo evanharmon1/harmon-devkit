@@ -30,7 +30,7 @@ For a proposed retitle, validate the title and guard against truncation:
 
 ```sh
 <skill-dir>/assets/check-issue-metadata.sh --title-only \
-  --title '(delivery queue): Reject stale dispatches' \
+  --title '(delivery queue): Drop expired payloads' \
   --previous-title '(delivery queue): Reject stale dispatches when queue is full'
 ```
 

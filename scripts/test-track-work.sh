@@ -836,6 +836,12 @@ grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metad
     --previous-title "$title120")" = 0 ] ||
     fail "non-truncating retitle rewrite should pass: $(cat "$tmp/metadata.out")"
 
+# semantic retitle ending in punctuation passes (e.g. C APIs to C++)
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+    --title '(compiler): Support C++' \
+    --previous-title '(compiler): Support C APIs')" = 0 ] ||
+    fail "semantic retitle ending in punctuation should pass: $(cat "$tmp/metadata.out")"
+
 # terminal punctuation deletion is refused as a truncation (e.g. deleting trailing '.' or '...')
 [ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
     --title '(scope): Reject stale entries' \

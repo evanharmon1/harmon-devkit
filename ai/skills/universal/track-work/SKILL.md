@@ -595,7 +595,7 @@ For a proposed retitle, validate the title and guard against truncation:
 
 ```sh
 <skill-dir>/assets/check-issue-metadata.sh --title-only \
-  --title '(cache): Reject stale entries' \
+  --title '(cache): Evict cold entries' \
   --previous-title '(cache): Reject stale entries when cache is cold'
 ```
 

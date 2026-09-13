@@ -58,12 +58,13 @@ def issue_title_outcome:
   end;
 
 def issue_title_is_prefix($cand; $target):
-  ($cand | sub("([[:punct:]]|[[:space:]])+$"; "")) as $c
+  ($cand | sub("[[:space:]]+$"; "")) as $c_raw
+  | ($cand | sub("([[:punct:]]|[[:space:]])+$"; "")) as $c
   | ($target | sub("([[:punct:]]|[[:space:]])+$"; "")) as $t
   | ($cand | length) as $cl
   | ($target | length) as $tl
   | ($c | length > 0) and (
-      (($cl < $tl) and ($target | startswith($c)))
+      (($cl < $tl) and ($target | startswith($c_raw)))
       or
       (($cl < $tl) and ($c == $t))
     );
