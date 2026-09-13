@@ -75,7 +75,12 @@ class UsageError extends Error {}
 class OperationalError extends Error {}
 // Evidence that exists but does not authenticate, or cannot be attributed to
 // one run. Distinct from "no evidence" — see the exit-code table above.
-class IndeterminateError extends Error {}
+class IndeterminateError extends Error {
+  constructor(message, { ignoredHints = [] } = {}) {
+    super(message)
+    this.ignoredHints = [...ignoredHints]
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Arguments
@@ -392,17 +397,19 @@ function parseBodyDiscovery(body, repo) {
   // The declaration must own the line (with an optional list marker), so prose,
   // quotations, and lazy blockquote continuations cannot become lookup inputs.
   // An explicit owner/repo prefix is accepted only for this repository.
-  const declarationRe = /^[ \t]*(?:[-*][ \t]+)?(?:refs|addresses|part[ \t]+of)[ \t]+(?=(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#[1-9][0-9]*\b)[^\r\n]*$/gim
-  const referenceRe = /(?:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)(?<number>[1-9][0-9]*)\b/gi
+  const declarationRe = /^[ \t]*(?:[-*][ \t]+)?(?:refs|addresses|part[ \t]+of)[ \t]+(?=(?:(?:https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull)\/)|(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#)[1-9][0-9]*\b)[^\r\n]*$/gim
+  const referenceRe = /(?<url>https:\/\/github\.com\/(?<urlRepo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?<urlKind>issues|pull)\/(?<urlNumber>[1-9][0-9]*)\b)|(?:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)(?<number>[1-9][0-9]*)\b/gi
   const declarationLines = []
   for (const declaration of body.matchAll(declarationRe)) {
     declarationLines.push(declaration[0])
     for (const match of declaration[0].matchAll(referenceRe)) {
-      if (!match.groups.repo || match.groups.repo.toLowerCase() === repo.toLowerCase()) {
-        issueNumbers.add(Number(match.groups.number))
+      const hintRepo = match.groups.urlRepo || match.groups.repo
+      const issueNumber = Number(match.groups.urlNumber || match.groups.number)
+      if (!hintRepo || hintRepo.toLowerCase() === repo.toLowerCase()) {
+        issueNumbers.add(issueNumber)
       } else {
         ignoredHints.push({
-          hint: `${match.groups.repo}#${match.groups.number}`,
+          hint: match.groups.url || `${match.groups.repo}#${match.groups.number}`,
           tier: 'non-closing reference',
           reason: `cross-repository reference does not belong to ${repo}`
         })
@@ -476,7 +483,8 @@ function fetchHintRunIds(args, issueNumber, tier, trustedActorIds, untrusted, ma
       return new Set()
     }
     throw new IndeterminateError(
-      `${tier} issue #${issueNumber} could not be read reliably (${error.message}); rerun after GitHub recovers or use --run <run_id>`
+      `${tier} issue #${issueNumber} could not be read reliably (${error.message}); rerun after GitHub recovers or use --run <run_id>`,
+      { ignoredHints }
     )
   }
 }
@@ -1255,6 +1263,7 @@ function run(argv) {
       unverifiedBodyRunIds = discovered.unverifiedBodyRunIds
     } catch (error) {
       if (!(error instanceof IndeterminateError)) throw error
+      reportIgnoredHints(error.ignoredHints)
       console.error(`${TOOL}: indeterminate — ${error.message}`)
       return 11
     }

@@ -60,7 +60,9 @@ of`, and finally a `run-<issue>-<slug>` body token only when the PR or issue
 `<issue>` carries a trusted marker naming that exact run. More than one run on
 the selected tier is indeterminate, and a lower tier never overrides a run
 selected above it. Every issue token on a line-anchored reference declaration in
-the PR body participates in discovery; references never come from its comments,
+the PR body participates in discovery, including same-repository GitHub issue
+URLs; a pull URL is disclosed and ignored as a PR hint, and a foreign-repository
+URL is disclosed without being queried. References never come from PR comments,
 quoted lines, or mid-line prose. Run tokens are read only from those declarations
 or a line-anchored `Run:` line, preserving the complete token through whitespace
 or its closing backtick, bracket, or comma before exact marker comparison.

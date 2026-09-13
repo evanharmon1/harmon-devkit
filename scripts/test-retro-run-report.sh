@@ -97,6 +97,15 @@ make_gh() {
     cat >"$1/bin/gh" <<'GH_STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+issue_failure_status() {
+    if [ "${GH_FAIL_ISSUE:-}" = "$1" ]; then
+        printf '%s\n' "${GH_FAIL_ISSUE_STATUS:-404}"
+    elif [ "${GH_FAIL_ISSUE_2:-}" = "$1" ]; then
+        printf '%s\n' "${GH_FAIL_ISSUE_STATUS_2:-404}"
+    else
+        return 1
+    fi
+}
 printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
 case "${1:-}" in
 pr)
@@ -106,8 +115,7 @@ api)
     case "$*" in
     */issues/*/comments*)
         n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\)/comments.*|\1|p')"
-        if [ "${GH_FAIL_ISSUE:-}" = "$n" ]; then
-            status="${GH_FAIL_ISSUE_STATUS:-404}"
+        if status="$(issue_failure_status "$n")"; then
             if [ "$status" = "timeout" ]; then
                 echo "gh stub: request timed out reading issue $n" >&2
             else
@@ -120,8 +128,7 @@ api)
         ;;
     */issues/*)
         n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\).*$|\1|p')"
-        if [ "${GH_FAIL_ISSUE:-}" = "$n" ]; then
-            status="${GH_FAIL_ISSUE_STATUS:-404}"
+        if status="$(issue_failure_status "$n")"; then
             if [ "$status" = "timeout" ]; then
                 echo "gh stub: request timed out reading issue $n" >&2
             else
@@ -556,6 +563,24 @@ GH_FAIL_ISSUE=999998 GH_FAIL_ISSUE_STATUS=503 GH_PR_JSON="$d/pr.json" GH_COMMENT
     ok "the transient failure cannot become absent evidence" ||
     bad "a transient hint failure was ignored, got $RC: $ERR"
 
+echo "==> durable ignored hints remain disclosed before a later transient failure"
+d="$TMPROOT/nonclosing-durable-then-transient"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" $'Refs #999999\nRefs #999998'
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_FAIL_ISSUE=999999 GH_FAIL_ISSUE_STATUS=404 \
+    GH_FAIL_ISSUE_2=999998 GH_FAIL_ISSUE_STATUS_2=503 \
+    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "indeterminate" && contains "$ERR" "HTTP 503" &&
+    contains "$ERR" "ignoring body discovery hint issue #999999" && contains "$ERR" "HTTP 404" &&
+    ok "the indeterminate path preserves the earlier durable-hint disclosure" ||
+    bad "the later transient failure dropped an earlier ignored hint, got $RC: $ERR"
+
 echo "==> a same-repository qualified reference is accepted case-insensitively"
 d="$TMPROOT/qualified-refs"
 mkdir -p "$d"
@@ -572,6 +597,63 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 0 ] && ok "the qualified same-repository reference is discovered" ||
     bad "expected qualified discovery, got $RC: $ERR"
+
+echo "==> a same-repository full issue URL is accepted"
+d="$TMPROOT/full-url-issue"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "Refs https://github.com/O/R/issues/$ISSUE"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" "evidence marker on issue #$ISSUE (non-closing reference)" &&
+    ok "the full issue URL discovers same-repository evidence" ||
+    bad "expected full-URL issue discovery, got $RC: $ERR"
+
+echo "==> a same-repository full pull URL is disclosed and ignored"
+d="$TMPROOT/full-url-pull"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "Refs https://github.com/o/r/pull/$ISSUE"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" evidence run-other-pr challenge pr -
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_PULL_REQUEST_ISSUE="$ISSUE" GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" \
+    GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "is a pull request, not an issue" &&
+    ok "the full pull URL is disclosed as a PR hint" ||
+    bad "full pull URL evidence selected a run, got $RC: $ERR"
+contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
+    bad "the full-URL PR's comments were read" || ok "the full-URL PR's comments were not read"
+
+echo "==> a foreign-repository full URL is disclosed and never consulted"
+d="$TMPROOT/full-url-foreign"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "Refs https://github.com/other/project/issues/$ISSUE"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "https://github.com/other/project/issues/$ISSUE" &&
+    contains "$ERR" "cross-repository reference does not belong to o/r" &&
+    ok "the foreign full URL is disclosed and ignored" ||
+    bad "expected foreign full-URL refusal, got $RC: $ERR"
+contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE" &&
+    bad "the foreign full URL was queried in the target repository" ||
+    ok "the foreign full URL was not queried"
 
 echo "==> a qualified cross-repository reference is never consulted"
 d="$TMPROOT/cross-repo-refs"
