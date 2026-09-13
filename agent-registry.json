@@ -33,16 +33,17 @@
       "display_name": "GPT",
       "legacy_claim_labels": ["agent:codex"],
       "models": [
-        { "slug": "sol", "display_name": "Sol", "tier": "apex" },
-        { "slug": "terra", "display_name": "Terra", "tier": "standard" },
-        { "slug": "luna", "display_name": "Luna", "tier": "economy" }
+        { "slug": "astra", "display_name": "Astra", "cli_ids": { "codex-cli": "gpt-6-astra" }, "tier": "apex" },
+        { "slug": "sol", "display_name": "Sol", "cli_ids": { "codex-cli": "gpt-5.6-sol" }, "tier": "frontier" },
+        { "slug": "terra", "display_name": "Terra", "cli_ids": { "codex-cli": "gpt-5.6-terra" }, "tier": "standard" },
+        { "slug": "luna", "display_name": "Luna", "cli_ids": { "codex-cli": "gpt-5.6-luna" }, "tier": "economy" }
       ]
     },
     {
       "slug": "mai",
       "display_name": "MAI",
       "models": [
-        { "slug": "code-1-flash", "display_name": "Code-1-Flash", "tier": "economy" },
+        { "slug": "code-1-1-flash", "display_name": "Code-1.1-Flash", "tier": "economy" },
         { "slug": "thinking-1", "display_name": "Thinking-1", "tier": "standard" }
       ]
     },
@@ -51,9 +52,10 @@
       "display_name": "Qwen",
       "legacy_claim_labels": ["agent:qwen-code"],
       "models": [
-        { "slug": "max", "display_name": "3.7 Max", "tier": "frontier" },
+        { "slug": "max", "display_name": "3.8 Max", "tier": "frontier" },
         { "slug": "coder-plus", "display_name": "3 Coder Plus", "tier": "standard", "default": true },
         { "slug": "coder", "display_name": "3 Coder", "tier": "economy" },
+        { "slug": "flash", "display_name": "3.8 Flash", "tier": "economy", "default": true },
         { "slug": "coder-next", "display_name": "3 Coder Next", "tier": "standard" },
         { "slug": "coder-30b", "display_name": "3 Coder 30B", "tier": "local" }
       ]
@@ -62,16 +64,15 @@
       "slug": "deepseek",
       "display_name": "DeepSeek",
       "models": [
-        { "slug": "v4-pro", "display_name": "V4 Pro", "tier": "standard" },
-        { "slug": "v4-flash", "display_name": "V4 Flash", "tier": "economy" }
+        { "slug": "v4-1-flash", "display_name": "V4.1 Flash", "tier": "standard" }
       ]
     },
     {
       "slug": "glm",
       "display_name": "GLM",
       "models": [
-        { "slug": "5-2", "display_name": "5.2", "tier": "standard" },
-        { "slug": "4-7-flash", "display_name": "4.7 Flash", "tier": "economy" }
+        { "slug": "5-3", "display_name": "5.3", "tier": "standard" },
+        { "slug": "5-3-flash", "display_name": "5.3 Flash", "tier": "economy" }
       ]
     },
     {
@@ -91,6 +92,8 @@
       "legacy_claim_labels": ["agent:gemini-cli"],
       "models": [
         { "slug": "3-1-pro", "display_name": "3.1 Pro", "tier": "frontier" },
+        { "slug": "3-8-flash", "display_name": "3.8 Flash", "tier": "frontier", "default": true },
+        { "slug": "3-7-flash", "display_name": "3.7 Flash", "tier": "standard", "default": true },
         { "slug": "3-6-flash", "display_name": "3.6 Flash", "tier": "standard" },
         { "slug": "3-5-flash-lite", "display_name": "3.5 Flash-Lite", "tier": "economy" }
       ]
@@ -98,7 +101,10 @@
     {
       "slug": "mistral",
       "display_name": "Mistral",
-      "models": [{ "slug": "devstral-small-2", "display_name": "Devstral Small 2", "tier": "standard" }]
+      "models": [
+        { "slug": "medium-3-5", "display_name": "Medium 3.5", "tier": "frontier" },
+        { "slug": "small-4", "display_name": "Small 4", "tier": "standard" }
+      ]
     }
   ],
   "harnesses": [

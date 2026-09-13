@@ -80,6 +80,20 @@ if (errors.length === 0) {
     for (const slug of duplicateSlugs(family.models)) {
       semanticError(`family ${family.slug} has duplicate model slug: ${slug}`)
     }
+    for (const model of family.models) {
+      for (const [harnessSlug, cliId] of Object.entries(model.cli_ids ?? {})) {
+        if (!harnessSlugs.has(harnessSlug)) {
+          semanticError(
+            `family ${family.slug} model ${model.slug} cli_ids references unknown harness ${harnessSlug}`
+          )
+        }
+        if (typeof cliId !== 'string' || cliId.length === 0) {
+          semanticError(
+            `family ${family.slug} model ${model.slug} cli_ids.${harnessSlug} must be a non-empty string`
+          )
+        }
+      }
+    }
     if (harnessSlugs.has(family.slug)) {
       semanticError(`slug ${family.slug} is both a model family and a harness`)
     }

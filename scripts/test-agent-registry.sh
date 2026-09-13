@@ -22,6 +22,32 @@ command -v node >/dev/null 2>&1 || fail "node is required to validate the agent 
 
 node "$validator" "$registry" "$schema"
 
+node --input-type=module - "$registry" <<'NODE'
+import { readFile } from 'node:fs/promises'
+
+const registry = JSON.parse(await readFile(process.argv[2], 'utf8'))
+const family = (slug) => registry.families.find((entry) => entry.slug === slug)
+const model = (familySlug, modelSlug) =>
+    family(familySlug)?.models.find((entry) => entry.slug === modelSlug)
+const expect = (condition, message) => {
+    if (!condition) throw new Error(message)
+}
+
+expect(model('gpt', 'sol')?.tier === 'frontier', 'gpt.sol must remain frontier')
+expect(model('gpt', 'astra')?.tier === 'apex', 'gpt.astra must remain apex')
+expect(
+    model('gpt', 'astra')?.cli_ids?.['codex-cli'] === 'gpt-6-astra',
+    'gpt.astra must retain its Codex CLI id'
+)
+expect(model('mai', 'code-1-1-flash'), 'MAI must include Code 1.1 Flash')
+expect(model('qwen', 'flash'), 'Qwen must include 3.8 Flash')
+expect(model('deepseek', 'v4-1-flash'), 'DeepSeek must include V4.1 Flash')
+expect(model('glm', '5-3') && model('glm', '5-3-flash'), 'GLM must include 5.3 and 5.3 Flash')
+expect(model('gemini', '3-8-flash'), 'Gemini must include 3.8 Flash')
+expect(model('mistral', 'medium-3-5') && model('mistral', 'small-4'), 'Mistral must include its current agentic models')
+console.log('PASS: shipped model inventory includes the 2026-09 refresh')
+NODE
+
 test_tmp="$(mktemp -d)"
 trap 'rm -rf "$test_tmp"' EXIT
 mutated="${test_tmp}/agent-registry.json"
@@ -109,6 +135,12 @@ switch (mutation) {
     // 65 chars: one over the family bound (64, from the longest description
     // wrapper) — the schema's maxLength must reject it declaratively (#680).
     registry.families[0].display_name = 'X'.repeat(65)
+    break
+  case 'empty-model-cli-id':
+    modelOf('gpt', 'astra').cli_ids['codex-cli'] = ''
+    break
+  case 'unknown-model-cli-harness':
+    modelOf('gpt', 'astra').cli_ids['unknown-cli'] = 'gpt-6-astra'
     break
   case 'overlong-adapter-display-name':
     // 48 chars: inside the shared 50 cap but over the adapter-specific 47 —
@@ -557,6 +589,12 @@ rejects "a non-production legacy claude adapter" \
 rejects "a display_name over the schema's declarative length cap" \
     'overlong-display-name' \
     'must contain at most 64 character(s)'
+rejects "an empty harness-facing model id" \
+    'empty-model-cli-id' \
+    'cli_ids.codex-cli must be a non-empty string'
+rejects "a harness-facing model id keyed by an unknown harness" \
+    'unknown-model-cli-harness' \
+    'cli_ids references unknown harness unknown-cli'
 rejects "an adapter display_name over its tighter 47-char cap" \
     'overlong-adapter-display-name' \
     'must contain at most 47 character(s)'

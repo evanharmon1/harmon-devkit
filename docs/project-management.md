@@ -802,15 +802,15 @@ with no adapter behind it is a false capability that can strand armed work.
 | Family | Name | Models |
 | --- | --- | --- |
 | `claude` | Claude | `fable`, `opus`, `sonnet`, `haiku` |
-| `gpt` | GPT | `sol`, `terra`, `luna` |
-| `mai` | MAI | `code-1-flash`, `thinking-1` |
-| `qwen` | Qwen | `max`, `coder-plus`, `coder`, `coder-next`, `coder-30b` |
-| `deepseek` | DeepSeek | `v4-pro`, `v4-flash` |
-| `glm` | GLM | `5-2`, `4-7-flash` |
+| `gpt` | GPT | `astra`, `sol`, `terra`, `luna` |
+| `mai` | MAI | `code-1-1-flash`, `thinking-1` |
+| `qwen` | Qwen | `max`, `coder-plus`, `coder`, `flash`, `coder-next`, `coder-30b` |
+| `deepseek` | DeepSeek | `v4-1-flash` |
+| `glm` | GLM | `5-3`, `5-3-flash` |
 | `kimi` | Kimi | `k3` |
 | `minimax` | MiniMax | `m3` |
-| `gemini` | Gemini | `3-1-pro`, `3-6-flash`, `3-5-flash-lite` |
-| `mistral` | Mistral | `devstral-small-2` |
+| `gemini` | Gemini | `3-1-pro`, `3-8-flash`, `3-7-flash`, `3-6-flash`, `3-5-flash-lite` |
+| `mistral` | Mistral | `medium-3-5`, `small-4` |
 
 `Model selected by` values:
 
