@@ -102,10 +102,17 @@ const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
 function loadFixture(file) {
   const source = readFileSync(file, 'utf8')
   const begin = source.indexOf(beginMarker)
-  const end = source.indexOf(endMarker, begin + beginMarker.length)
+  const blockStart = begin + beginMarker.length
+  const openingFence = /^\s*```json\s*\n/.exec(source.slice(blockStart))
+  const jsonStart = openingFence ? blockStart + openingFence[0].length : -1
+  const closingFence = jsonStart === -1 ? null : /\n```[\t ]*(?=\r?\n|$)/.exec(source.slice(jsonStart))
+  const closingFenceEnd = closingFence ? jsonStart + closingFence.index + closingFence[0].length : -1
+  const end = closingFenceEnd === -1 ? -1 : source.indexOf(endMarker, closingFenceEnd)
   const block = source.slice(begin + beginMarker.length, end).trim()
   const match = /^```json\s*\n([\s\S]*)\n```$/.exec(block)
-  if (begin === -1 || end === -1 || !match) throw new Error(`cannot parse valid brief fixture ${file}`)
+  if (begin === -1 || !openingFence || !closingFence || end === -1 || !match) {
+    throw new Error(`cannot parse valid brief fixture ${file}`)
+  }
   return { source, begin, end, envelope: JSON.parse(match[1]) }
 }
 

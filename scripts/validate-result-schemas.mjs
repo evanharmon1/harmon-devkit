@@ -227,8 +227,28 @@ function loadBrief(file) {
   const errors = []
 
   const begin = source.indexOf(BRIEF_BEGIN)
-  const end = begin === -1 ? -1 : source.indexOf(BRIEF_END, begin + BRIEF_BEGIN.length)
-  if (begin === -1 || end === -1) {
+  if (begin === -1) {
+    errors.push('$brief: expected an ordered schema-bound envelope delimiter pair')
+    return { instance: null, errors }
+  }
+
+  const blockStart = begin + BRIEF_BEGIN.length
+  const openingFence = /^\s*```json\s*\n/.exec(source.slice(blockStart))
+  if (!openingFence) {
+    errors.push('$brief: envelope block must contain exactly one fenced ```json object')
+    return { instance: null, errors }
+  }
+
+  const jsonStart = blockStart + openingFence[0].length
+  const closingFence = /\n```[\t ]*(?=\r?\n|$)/.exec(source.slice(jsonStart))
+  if (!closingFence) {
+    errors.push('$brief: envelope block must contain exactly one fenced ```json object')
+    return { instance: null, errors }
+  }
+
+  const closingFenceEnd = jsonStart + closingFence.index + closingFence[0].length
+  const end = source.indexOf(BRIEF_END, closingFenceEnd)
+  if (end === -1) {
     errors.push('$brief: expected an ordered schema-bound envelope delimiter pair')
     return { instance: null, errors }
   }
