@@ -21,6 +21,32 @@ terms="$scratch/terms"
 matches="$scratch/matches"
 : >"$matches"
 
+scan_root() {
+    root="$1"
+    recursive="$2"
+    [ -e "$root" ] || return 0
+    if [ "$recursive" = true ]; then
+        if grep -rFl -f "$terms" "$root"; then
+            return 0
+        else
+            status="$?"
+        fi
+    else
+        if grep -Fl -f "$terms" "$root"; then
+            return 0
+        else
+            status="$?"
+        fi
+    fi
+    case "$status" in
+    0 | 1) return 0 ;;
+    *)
+        echo "validator-dependency-scan: grep failed for $root (exit $status)" >&2
+        return "$status"
+        ;;
+    esac
+}
+
 for supplied in "$@"; do
     case "$supplied" in
     /*) target="$supplied" ;;
@@ -59,11 +85,11 @@ for supplied in "$@"; do
     done | LC_ALL=C sort -u >"$terms"
 
     {
-        [ ! -d "$repo/scripts" ] || grep -rFl -f "$terms" "$repo/scripts" || [ "$?" -eq 1 ]
-        [ ! -d "$repo/ai/skills" ] || grep -rFl -f "$terms" "$repo/ai/skills" || [ "$?" -eq 1 ]
-        [ ! -d "$repo/taskfiles" ] || grep -rFl -f "$terms" "$repo/taskfiles" || [ "$?" -eq 1 ]
-        [ ! -f "$repo/Taskfile.yml" ] || grep -Fl -f "$terms" "$repo/Taskfile.yml" || [ "$?" -eq 1 ]
-    } 2>/dev/null | while IFS= read -r candidate; do
+        scan_root "$repo/scripts" true
+        scan_root "$repo/ai/skills" true
+        scan_root "$repo/taskfiles" true
+        scan_root "$repo/Taskfile.yml" false
+    } | while IFS= read -r candidate; do
         [ "$candidate" != "$target" ] || continue
         relative_candidate="${candidate#"$repo"/}"
         case "$relative_candidate" in

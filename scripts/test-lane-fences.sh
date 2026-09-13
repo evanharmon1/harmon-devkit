@@ -20,22 +20,26 @@ git -C "$fixture" config user.name "Lane Fence Test"
 git -C "$fixture" config user.email "lane-fence@example.invalid"
 printf '%s\n' base >"$fixture/allowed.txt"
 printf '%s\n' base >"$fixture/outside.txt"
+printf '%s\n' base >"$fixture/outside-rename.txt"
 mkdir -p "$fixture/glob"
 printf '%s\n' base >"$fixture/glob/one.txt"
 git -C "$fixture" add .
 git -C "$fixture" commit -qm "test: seed fence fixture"
 base="$(git -C "$fixture" rev-parse HEAD)"
+git -C "$fixture" update-ref refs/remotes/origin/main "$base"
 
 make_brief() {
     destination="$1"
     fence_json="$2"
+    brief_base="${3:-$base}"
     awk '
       /^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=1; next }
       /^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=0; next }
       inside && /^```json$/ { fenced=1; next }
       inside && fenced && /^```$/ { fenced=0; next }
       inside && fenced { print }
-    ' .lane-brief.md | jq --argjson fence "$fence_json" '.fence = $fence' >"$tmp/envelope.json"
+    ' .lane-brief.md | jq --argjson fence "$fence_json" --arg base "$brief_base" \
+        '.fence = $fence | .base_sha = $base | .default_branch = "main"' >"$tmp/envelope.json"
     sed -n '1,/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/p' .lane-brief.md >"$destination"
     printf '\n```json\n' >>"$destination"
     cat "$tmp/envelope.json" >>"$destination"
@@ -50,13 +54,13 @@ git -C "$fixture" add allowed.txt
 git -C "$fixture" commit -qm "test: change allowed path"
 (
     cd "$fixture"
-    "$fence_check" --brief "$tmp/allowed.md" --base "$base"
+    "$fence_check" --brief "$tmp/allowed.md"
 ) >/dev/null || fail "an in-fence change was rejected"
 
 printf '%s\n' changed >"$fixture/outside.txt"
 git -C "$fixture" add outside.txt
 git -C "$fixture" commit -qm "test: change outside path"
-if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/allowed.md" --base "$base" 2>&1)"; then
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/allowed.md" 2>&1)"; then
     fail "an out-of-fence change was accepted"
 fi
 case "$out" in
@@ -67,20 +71,43 @@ esac
 printf '%s\n' '2026-09-13 fence expansion: outside.txt:1-4 — rejecting validator' >"$tmp/report.md"
 (
     cd "$fixture"
-    "$fence_check" --brief "$tmp/allowed.md" --base "$base" --report "$tmp/report.md"
-) >/dev/null || fail "a dated self-expansion was not honoured"
+    "$fence_check" --brief "$tmp/allowed.md" --report "$tmp/report.md"
+) >"$tmp/expansion.out" || fail "a dated self-expansion was not honoured"
+grep -Fq 'expansion-claimed: outside.txt (report line 1)' "$tmp/expansion.out" ||
+    fail "a report expansion was not labelled for the orchestrator"
 
-make_brief "$tmp/glob.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"glob/*.txt"}]'
+make_brief "$tmp/bad-base.md" '[{"path":"allowed.txt"},{"path":"outside.txt"}]' \
+    0000000000000000000000000000000000000000
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/bad-base.md" 2>&1)"; then
+    fail "a brief base outside the derived-base ancestry was accepted"
+fi
+case "$out" in
+*'is not an ancestor of derived base'*) ;;
+*) fail "base-ancestry refusal was not actionable: $out" ;;
+esac
+
+git -C "$fixture" mv outside-rename.txt allowed-renamed.txt
+git -C "$fixture" commit -qm "test: rename an out-of-fence source"
+make_brief "$tmp/rename.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"allowed-renamed.txt"}]'
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/rename.md" 2>&1)"; then
+    fail "a rename from an out-of-fence source was accepted"
+fi
+case "$out" in
+*outside-rename.txt*) ;;
+*) fail "rename refusal did not name its out-of-fence source: $out" ;;
+esac
+
+make_brief "$tmp/glob.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/*.txt"}]'
 printf '%s\n' changed >"$fixture/glob/one.txt"
 git -C "$fixture" add glob/one.txt
 git -C "$fixture" commit -qm "test: change glob path"
 (
     cd "$fixture"
-    "$fence_check" --brief "$tmp/glob.md" --base "$base"
+    "$fence_check" --brief "$tmp/glob.md" --report "$tmp/report.md"
 ) >/dev/null || fail "a matching glob entry was rejected"
 
 make_brief "$tmp/tooling.md" '[{"path":"CHANGELOG.md"}]'
-if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/tooling.md" --base "$base" 2>&1)"; then
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/tooling.md" 2>&1)"; then
     fail "a tooling-owned path was accepted in the fence"
 fi
 case "$out" in
@@ -97,6 +124,18 @@ for consumer in \
     scripts/validate-label-registry.mjs; do
     grep -Fxq "$consumer" <<<"$scan_out" || fail "dependency scan missed $consumer"
 done
+
+real_grep="$(command -v grep)"
+mkdir -p "$tmp/fakebin"
+printf '#!/bin/sh\ncase "$*" in *"/scripts"*) exit 2;; esac\nexec %s "$@"\n' "$real_grep" >"$tmp/fakebin/grep"
+chmod +x "$tmp/fakebin/grep"
+if out="$(PATH="$tmp/fakebin:$PATH" "$scanner" agent-registry.json 2>&1)"; then
+    fail "a grep error produced a partial successful dependency scan"
+fi
+case "$out" in
+*'grep failed for'*'/scripts (exit 2)'*) ;;
+*) fail "grep failure did not name its root and status: $out" ;;
+esac
 
 skill="ai/skills/universal/orchestrator/SKILL.md"
 template="ai/skills/universal/orchestrator/assets/lane-brief.md"

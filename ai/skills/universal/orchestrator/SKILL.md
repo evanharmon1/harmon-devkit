@@ -53,10 +53,11 @@ Every other expansion requires an ownership check and an attributed re-brief
 before the worker edits the file.
 
 Before evaluating the readiness gate, run
-`assets/fence-check.sh --brief <rendered.md> --base <sha> [--report <lane-report.md>]`.
-It proves that `git diff --name-only <base>...HEAD` is a subset of the rendered
-envelope fence plus valid report-recorded expansions. A refusal blocks the
-lane, but this pre-gate subset check is not a readiness-gate condition.
+`assets/fence-check.sh --brief <rendered.md> [--report <lane-report.md>]`.
+It derives the comparison base from the brief's default branch, then reports
+whether both sides of every changed path are covered by the rendered envelope
+fence or a labelled, report-recorded expansion. Its advisory refusal is visible
+to the orchestrator. This pre-gate subset check is not a readiness-gate condition.
 
 The source catalog below is the complete render contract. It deliberately lives
 in this procedure rather than in the dispatched template: substituting free-form
