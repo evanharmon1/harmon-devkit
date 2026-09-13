@@ -57,14 +57,16 @@ def issue_title_outcome:
   else .
   end;
 
+def issue_title_strip_truncation:
+  sub("([.!?…:;—–\\-\",'\"`~*^/\\\\|()<>\\[\\]{}]|[[:space:]])+$"; "");
+
 def issue_title_is_prefix($cand; $target):
-  ($cand | sub("[[:space:]]+$"; "")) as $c_raw
-  | ($cand | sub("([[:punct:]]|[[:space:]])+$"; "")) as $c
-  | ($target | sub("([[:punct:]]|[[:space:]])+$"; "")) as $t
+  ($cand | issue_title_strip_truncation) as $c
+  | ($target | issue_title_strip_truncation) as $t
   | ($cand | length) as $cl
   | ($target | length) as $tl
   | ($c | length > 0) and (
-      (($cl < $tl) and ($target | startswith($c_raw)))
+      (($cl < $tl) and ($target | startswith($c)))
       or
       (($cl < $tl) and ($c == $t))
     );

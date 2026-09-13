@@ -850,6 +850,16 @@ grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metad
 grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metadata.out" ||
     fail "refusal must explain truncation: $(cat "$tmp/metadata.out")"
 
+# truncated prefixes with appended punctuation are refused as truncation
+for punct_suffix in '...' '…' '.' '!'; do
+    [ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+        --title "(scope): Reject stale entries$punct_suffix" \
+        --previous-title '(scope): Reject stale entries when cache is cold')" = 1 ] ||
+        fail "truncated prefix with appended punctuation '$punct_suffix' must be refused"
+    grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metadata.out" ||
+        fail "refusal must explain truncation for '$punct_suffix': $(cat "$tmp/metadata.out")"
+done
+
 [ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
     --title '(scope): Reject stale entries' \
     --previous-title '')" = 2 ] ||
