@@ -777,7 +777,12 @@ cp "$repo/scripts/lib/json-schema-subset.mjs" "$work/scripts/lib/"
 cp "$repo/.devflow.toml" "$work/"
 git -C "$work" add -A
 git -C "$work" commit -qm 'test: add envelope validation support'
+envelope_base="$(git -C "$work" rev-parse HEAD)"
+git -C "$work" update-ref refs/remotes/origin/main "$envelope_base"
+git -C "$work" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 printf 'envelope change\n' >"$work/src/app.txt"
+git -C "$work" add src/app.txt
+git -C "$work" commit -qm 'test: envelope review target'
 record="$tmp/finder-envelope-record"
 mkdir -p "$record"
 printf '%s\n' '{"run_id":"run-finder-envelope","initiated_by":"human"}' >"$record/run.json"
@@ -803,13 +808,44 @@ chmod +x "$envelope_bin/copilot"
         --run-id run-finder-envelope --head "$head_sha" --stage challenge --round 1 \
         --slot copilot-adversarial --producer "$producer" --record-dir "$record" \
         --policy .devflow.toml --registry agent-registry.json \
-        --model gpt-5.6-sol --tier apex --uncommitted >/dev/null
+        --model gpt-5.6-sol --tier apex --base origin/main >/dev/null
 ) || fail "valid local-finder envelope failed"
 finder_pass="$record/passes/challenge-r1-copilot-adversarial.json"
 [ -f "$finder_pass" ] || fail "local-finder pass was not published"
 jq -e --arg producer "$producer" '.role == "challenger" and .producer.harness == $producer and
     .producer.model == "gpt-5.6-sol" and .producer.tier == "apex"' \
     "$finder_pass" >/dev/null || fail "local-finder envelope lost role or script-derived producer"
+
+echo "==> envelope model validation preserves multi-hyphen registry slugs"
+(
+    cd "$work" || exit 1
+    PATH="$envelope_bin:$PATH" FINDER_REVIEW_DRY_RUN=1 \
+        ./scripts/finder-review.sh challenge copilot --envelope \
+        --run-id run-finder-envelope --head "$head_sha" --stage challenge --round 2 \
+        --slot copilot-adversarial --producer "$producer" --record-dir "$record" \
+        --policy .devflow.toml --registry agent-registry.json \
+        --model qwen-coder-plus --tier standard --base origin/main >/dev/null
+) || fail "a valid multi-hyphen model slug was rejected"
+
+echo "==> a fallback finder preserves the configured primary slot"
+cat >"$envelope_bin/copilot" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '{"stage":"challenge","round":1,"reviewed_head":"$head_sha","finder":"copilot-adversarial","slot":"coderabbit-adversarial","substitutes_for":"coderabbit-adversarial","findings":[],"counts":{"P0":0,"P1":0,"P2":0,"P3":0},"attack_scenarios":[{"id":"as-fallback","description":"attempted fallback binding bypasses","outcome":"held","finding_id":null}]}'
+EOF
+chmod +x "$envelope_bin/copilot"
+(
+    cd "$work" || exit 1
+    PATH="$envelope_bin:$PATH" ./scripts/finder-review.sh challenge copilot --envelope \
+        --run-id run-finder-envelope --head "$head_sha" --stage challenge --round 1 \
+        --slot coderabbit-adversarial --producer "$producer" --record-dir "$record" \
+        --policy .devflow.toml --registry agent-registry.json \
+        --model gpt-5.6-sol --tier apex --base origin/main >/dev/null
+) || fail "valid local-finder fallback envelope failed"
+fallback_pass="$record/passes/challenge-r1-coderabbit-adversarial.json"
+jq -e '.payload.finder == "copilot-adversarial" and
+    .payload.slot == "coderabbit-adversarial" and
+    .payload.substitutes_for == "coderabbit-adversarial"' \
+    "$fallback_pass" >/dev/null || fail "fallback pass lost its primary-slot substitution binding"
 
 echo "==> a local-finder run-id mismatch and malformed payload publish nothing"
 bad_record="$tmp/finder-envelope-bad"
@@ -821,7 +857,7 @@ if (
         --run-id run-finder-envelope --head "$head_sha" --stage challenge --round 1 \
         --slot copilot-adversarial --producer "$producer" --record-dir "$bad_record" \
         --policy .devflow.toml --registry agent-registry.json \
-        --model gpt-5.6-sol --tier apex --uncommitted >/dev/null 2>&1
+        --model gpt-5.6-sol --tier apex --base origin/main >/dev/null 2>&1
 ); then
     fail "local-finder run-id mismatch was accepted"
 fi
@@ -838,7 +874,7 @@ if (
         --run-id run-finder-envelope --head "$head_sha" --stage challenge --round 2 \
         --slot copilot-adversarial --producer "$producer" --record-dir "$record" \
         --policy .devflow.toml --registry agent-registry.json \
-        --model gpt-5.6-sol --tier apex --uncommitted >/dev/null 2>&1
+        --model gpt-5.6-sol --tier apex --base origin/main >/dev/null 2>&1
 ); then
     fail "malformed local-finder payload was accepted"
 fi

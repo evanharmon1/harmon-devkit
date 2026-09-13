@@ -677,6 +677,29 @@ challenge_pass="$record/passes/challenge-r1-codex-adversarial.json"
 jq -e --arg producer "$producer" '.role == "challenger" and .producer.harness == $producer' \
     "$challenge_pass" >/dev/null || fail "challenger envelope lost role or script-derived producer"
 
+echo "==> envelope mode binds the review target to the canonical branch scope"
+set +e
+target_out="$(STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
+    --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 2 \
+    --slot codex-adversarial --producer "$producer" --record-dir "$record" \
+    --policy .devflow.toml --registry agent-registry.json --commit HEAD 2>&1)"
+target_status=$?
+set -e
+[ "$target_status" -ne 0 ] || fail "envelope mode accepted a commit-scoped review for a branch-head receipt"
+grep -Fq 'requires a branch-scoped --base review' <<<"$target_out" ||
+    fail "commit-scoped envelope was rejected for the wrong reason: $target_out"
+wrong_base="$(git rev-list --max-parents=0 HEAD)"
+set +e
+target_out="$(STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
+    --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 2 \
+    --slot codex-adversarial --producer "$producer" --record-dir "$record" \
+    --policy .devflow.toml --registry agent-registry.json --base "$wrong_base" 2>&1)"
+target_status=$?
+set -e
+[ "$target_status" -ne 0 ] || fail "envelope mode accepted a base outside the canonical branch scope"
+grep -Fq 'not the canonical branch scope' <<<"$target_out" ||
+    fail "noncanonical base was rejected for the wrong reason: $target_out"
+
 echo "==> Codex-lane fixture reaches adjudication, a converged exit, and retained retro evidence"
 jq '.receipts = [{kind:"transition",stage:"challenge"},
   {kind:"pass",file:"challenge-r1-codex-adversarial"}]' \

@@ -230,6 +230,32 @@ esac
 . "$script_dir/lib/review-scope.sh"
 resolve_review_scope "$@"
 
+if [ "$envelope_mode" = true ]; then
+    [ "$target_kind" = base ] || {
+        echo "envelope mode requires a branch-scoped --base review" >&2
+        exit 2
+    }
+    canonical_base="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [ -z "$canonical_base" ]; then
+        for candidate in main master; do
+            if git rev-parse --verify --quiet "$candidate" >/dev/null; then
+                canonical_base="$candidate"
+                break
+            fi
+        done
+    fi
+    [ -n "$canonical_base" ] || {
+        echo "envelope mode cannot bind --base: no canonical default-branch ref is available" >&2
+        exit 2
+    }
+    selected_merge_base="$(git merge-base "$base_ref" HEAD)"
+    canonical_merge_base="$(git merge-base "$canonical_base" HEAD)"
+    [ "$selected_merge_base" = "$canonical_merge_base" ] || {
+        echo "--base $base_ref resolves review scope $selected_merge_base, not the canonical branch scope $canonical_merge_base" >&2
+        exit 1
+    }
+fi
+
 # The mode prose and the severity scale below are read from
 # scripts/lib/review-instructions/ rather than inlined here: scripts/
 # finder-review.sh renders the same two blocks for the other local-CLI

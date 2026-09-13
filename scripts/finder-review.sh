@@ -225,8 +225,10 @@ finder_entry="$(jq -c --arg slug "$slug" '.finders[] | select(.slug == $slug)' "
     echo "could not read $registry" >&2
     exit 2
 }
-[ "$envelope_mode" = false ] || jq -e --arg model "${producer_model##*-}" --arg tier "$producer_tier" '
-    [.families[].models[]? | select(.slug == $model and .tier == $tier)] | length == 1
+[ "$envelope_mode" = false ] || jq -e --arg model "$producer_model" --arg tier "$producer_tier" '
+    [.families[].models[]? | .slug as $slug |
+      select(.tier == $tier and ($model == $slug or ($model | endswith("-" + $slug))))] |
+    length == 1
 ' "$registry" >/dev/null || {
     echo "--model $producer_model does not resolve to exactly one --tier $producer_tier model in $registry" >&2
     exit 2
@@ -246,9 +248,20 @@ actual_target="$(printf '%s' "$finder_entry" | jq -r '.invocation.target')"
     echo "Reconcile $registry with the Taskfile rather than guessing which one is right." >&2
     exit 2
 }
+fallback_for=
 if [ "$envelope_mode" = true ] && [ "$envelope_slot" != "$slug" ]; then
-    echo "--slot $envelope_slot does not match the configured finder $slug" >&2
-    exit 1
+    slot_entry="$(jq -c --arg slot "$envelope_slot" --arg stage "$MODE" '
+        .finders[] | select(.slug == $slot and .surface == "local-cli" and
+          (.stages | index($stage) != null))
+    ' "$registry")" || {
+        echo "could not resolve fallback slot $envelope_slot in $registry" >&2
+        exit 2
+    }
+    [ -n "$slot_entry" ] || {
+        echo "--slot $envelope_slot is not a registered local-cli primary for stage $MODE" >&2
+        exit 1
+    }
+    fallback_for="$envelope_slot"
 fi
 
 case "$TOOL" in
@@ -293,6 +306,32 @@ fi
 # shellcheck source=scripts/lib/review-scope.sh
 . "$script_dir/lib/review-scope.sh"
 resolve_review_scope "$@"
+
+if [ "$envelope_mode" = true ]; then
+    [ "$target_kind" = base ] || {
+        echo "envelope mode requires a branch-scoped --base review" >&2
+        exit 2
+    }
+    canonical_base="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [ -z "$canonical_base" ]; then
+        for candidate in main master; do
+            if git rev-parse --verify --quiet "$candidate" >/dev/null; then
+                canonical_base="$candidate"
+                break
+            fi
+        done
+    fi
+    [ -n "$canonical_base" ] || {
+        echo "envelope mode cannot bind --base: no canonical default-branch ref is available" >&2
+        exit 2
+    }
+    selected_merge_base="$(git merge-base "$base_ref" HEAD)"
+    canonical_merge_base="$(git merge-base "$canonical_base" HEAD)"
+    [ "$selected_merge_base" = "$canonical_merge_base" ] || {
+        echo "--base $base_ref resolves review scope $selected_merge_base, not the canonical branch scope $canonical_merge_base" >&2
+        exit 1
+    }
+fi
 
 read_instruction() {
     instruction_file="$script_dir/lib/review-instructions/$1.txt"
@@ -350,12 +389,17 @@ if [ "$envelope_mode" = true ]; then
             exit 1
         }
     fi
+    if [ -n "$fallback_for" ]; then
+        envelope_binding="Bind finder to ${slug}, slot to ${envelope_slot}, and substitutes_for to ${fallback_for}."
+    else
+        envelope_binding="Bind finder and slot to ${slug}, and omit substitutes_for."
+    fi
     instructions="${instructions}
 
 Return only one JSON object matching the complete JSON Schema below. This
 object is the payload for a result.${envelope_role} envelope.
 Bind stage to ${MODE}, round to ${envelope_round}, reviewed_head to
-${envelope_head}, finder and slot to ${slug}, and use finding ids beginning
+${envelope_head}. ${envelope_binding} Use finding ids beginning
 ${MODE}-r${envelope_round}-${slug}-. Do not wrap it in Markdown.
 
 JSON Schema:
@@ -671,9 +715,12 @@ envelope_tmp="$(mktemp "$record_dir/.finder-envelope.XXXXXX")"
 known_ids="$(mktemp "$record_dir/.finder-known-ids.XXXXXX")"
 
 jq -e --arg stage "$MODE" --argjson round "$envelope_round" \
-    --arg head "$envelope_head" --arg finder "$slug" \
+    --arg head "$envelope_head" --arg finder "$slug" --arg slot "$envelope_slot" \
+    --arg fallback "$fallback_for" \
     '.stage == $stage and .round == $round and .reviewed_head == $head and
-     .finder == $finder and .slot == $finder' "$raw_payload" >/dev/null || {
+     .finder == $finder and .slot == $slot and
+     (if $fallback == "" then (has("substitutes_for") | not)
+      else .substitutes_for == $fallback end)' "$raw_payload" >/dev/null || {
     echo "finder payload does not match the captured stage, round, head, finder, and slot" >&2
     exit 1
 }
@@ -705,7 +752,7 @@ node "$script_dir/validate-result-schemas.mjs" envelope "$envelope_tmp" \
     --run-id "$run_id" --initiated-by "$initiated_by" --known-ids "$known_ids" --receipt
 
 mkdir -p "$record_dir/passes"
-pass_path="$record_dir/passes/${MODE}-r${envelope_round}-${slug}.json"
+pass_path="$record_dir/passes/${MODE}-r${envelope_round}-${envelope_slot}.json"
 if ! ln "$envelope_tmp" "$pass_path" 2>/dev/null; then
     echo "refusing to overwrite existing pass $pass_path" >&2
     exit 1
