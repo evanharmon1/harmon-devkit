@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.44.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.43.0...v0.44.0) (2026-09-13)
+
+
+### Features
+
+* **labels:** generate tier:&lt;role&gt;:&lt;tier&gt; labels from agent registry ([#931](https://github.com/evanharmon1/harmon-devkit/issues/931)) ([c82f3a8](https://github.com/evanharmon1/harmon-devkit/commit/c82f3a866300ba3b76c4078154da752d42a53ddf))
+* **registry:** detect cross-anchor severity_map shadows ([#929](https://github.com/evanharmon1/harmon-devkit/issues/929)) ([500cb53](https://github.com/evanharmon1/harmon-devkit/commit/500cb53e9833c5f272a1a243a84bbcbae4af52d3)), closes [#893](https://github.com/evanharmon1/harmon-devkit/issues/893)
+* **skills:** route orchestrated lanes through /review + /integrate for v2 evidence ([#932](https://github.com/evanharmon1/harmon-devkit/issues/932)) ([a132588](https://github.com/evanharmon1/harmon-devkit/commit/a132588e743239a453e1f4bc094ce8231be2da25))
+
+
+### Bug Fixes
+
+* **review:** harden sandbox probe, env shebang parsing, and SIGPIPE fixture ([#937](https://github.com/evanharmon1/harmon-devkit/issues/937)) ([6c0e2a6](https://github.com/evanharmon1/harmon-devkit/commit/6c0e2a6ad2d2a0cfaba588cd43e6ce58858dc478))
+* **tasks:** add verify × test dedupe regression guard ([#924](https://github.com/evanharmon1/harmon-devkit/issues/924)) ([3c5f1a8](https://github.com/evanharmon1/harmon-devkit/commit/3c5f1a8f5ac02b900a4e9ab2d2fefbd4e84507f5))
+* **tests:** clear inherited HARMON_BOT_AUTONOMY_ANTIGRAVITY in disabled-path tests ([#923](https://github.com/evanharmon1/harmon-devkit/issues/923)) ([af90aaf](https://github.com/evanharmon1/harmon-devkit/commit/af90aaf3b9357f3edef79153b9c6569355c88d69)), closes [#888](https://github.com/evanharmon1/harmon-devkit/issues/888)
+
 ## [0.43.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.42.0...v0.43.0) (2026-09-12)
 
 
