@@ -85,6 +85,32 @@ for text in 'mandatory round-two scaffolding checkpoint' \
 done
 grep -Fq 'resolved cap is `0`' "$skill" ||
     fail "review skill does not skip finder dispatch for a disabled stage"
+
+echo "==> review stage advance writes and validates schema-shaped transitions"
+for text in 'Immediately after every write to `run.json`' \
+    'scripts/validate-result-schemas.mjs run <run.json>' \
+    'Close the current transition by setting its `exit` to' \
+    '`"<rule>: <detail>"`' \
+    'append exactly `{"stage":"<next>","entered_at":"<UTC timestamp>"}`' \
+    'append `{from,to,at,reason}`'; do
+    grep -Fq "$text" "$skill" || fail "review stage-advance recipe is missing: $text"
+done
+advance_fixture="ai/schemas/fixtures/run.schema/valid/empty-round-challenge-to-review.json"
+node scripts/validate-result-schemas.mjs run "$advance_fixture" ||
+    fail "empty-round challenge-to-review transition fixture is invalid"
+jq -e '
+    .stage_transitions[-2] == {
+      stage: "challenge",
+      entered_at: "2026-09-13T12:04:00Z",
+      exit: "empty_round: converged after round 1"
+    } and
+    .stage_transitions[-1] == {
+      stage: "review",
+      entered_at: "2026-09-13T12:05:00Z"
+    } and
+    ([.stage_transitions[] | has("from") or has("to") or has("at") or has("reason")] | any | not)
+' "$advance_fixture" >/dev/null || fail "empty-round advance fixture does not pin the writer shape"
+
 grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"
 for text in 'Retry an unavailable primary' 'already active dev-flow-v2 run' \

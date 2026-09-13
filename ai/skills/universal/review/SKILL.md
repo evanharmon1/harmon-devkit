@@ -227,6 +227,11 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
+Immediately after every write to `run.json`, run
+`scripts/validate-result-schemas.mjs run <run.json>` (adding every adjudication
+document the write depends on). A validation failure fails the round and is a
+terminal blocker; never defer validation until publication or promotion.
+
 After each adjudication, keep the immutable source envelopes locally, but build
 the fenced JSON public comment only from a verification-bound projection. Join
 the validated source facts to `verdict.json.verified_findings` by finding ID and
@@ -293,6 +298,23 @@ operator may override it upward to exactly one additional pass while the
 resolved stage cap still has headroom. Before dispatch, append that operator's
 reason and attribution to `run.json.interventions` as `kind: other`; refuse the
 override when no round remains. Never override an exit downward or reinterpret
-the script's outcome. Without that recorded upward override, a terminal
-`challenge` clean transitions to `review` and a terminal `review` clean names
-security as next. Deferred P2s remain recorded for integration.
+the script's outcome.
+
+### Stage advance write
+
+Without that recorded upward override, an `action: advance` result is the sole
+authority to advance the run record. Re-read `run.json` and require its last
+transition to name the current stage and have no `exit`; otherwise stop as a
+stale or duplicate write. Close the current transition by setting its `exit` to
+`"<rule>: <detail>"`, where the rule is the verdict's exit reason and the detail
+names the outcome and qualifying round or disabled-stage fact. Then
+append exactly `{"stage":"<next>","entered_at":"<UTC timestamp>"}`. Never
+append `{from,to,at,reason}`: those are verdict concepts, not the run schema's
+transition shape. Write the close and append as one atomic replacement, then
+apply the mandatory `run.json` validation above before publishing evidence or
+entering the next stage.
+
+The next stage is `review` after a terminal `challenge` unless the resolved
+review cap is zero, in which case compute and record that disabled stage before
+entering `security`. A terminal `review` enters `security`. Deferred P2s remain
+recorded for integration.

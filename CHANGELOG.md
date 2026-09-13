@@ -19,6 +19,7 @@ automatically on merge).
 
 ### Bug Fixes
 
+* **review:** write schema-shaped stage transitions during stage advance
 * **review:** harden sandbox probe, env shebang parsing, and SIGPIPE fixture ([#937](https://github.com/evanharmon1/harmon-devkit/issues/937)) ([6c0e2a6](https://github.com/evanharmon1/harmon-devkit/commit/6c0e2a6ad2d2a0cfaba588cd43e6ce58858dc478))
 * **tasks:** add verify × test dedupe regression guard ([#924](https://github.com/evanharmon1/harmon-devkit/issues/924)) ([3c5f1a8](https://github.com/evanharmon1/harmon-devkit/commit/3c5f1a8f5ac02b900a4e9ab2d2fefbd4e84507f5))
 * **tests:** clear inherited HARMON_BOT_AUTONOMY_ANTIGRAVITY in disabled-path tests ([#923](https://github.com/evanharmon1/harmon-devkit/issues/923)) ([af90aaf](https://github.com/evanharmon1/harmon-devkit/commit/af90aaf3b9357f3edef79153b9c6569355c88d69)), closes [#888](https://github.com/evanharmon1/harmon-devkit/issues/888)
