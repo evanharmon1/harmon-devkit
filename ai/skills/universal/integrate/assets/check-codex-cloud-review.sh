@@ -704,8 +704,13 @@ reserve)
             die "attempt 1 state has an invalid cycle request time"
         valid_time "$previous_reserved_at" ||
             die "attempt 1 state has an invalid reservation time"
-        valid_uint "$previous_trigger_id" ||
-            die "attempt 1 state has an invalid trigger ID"
+        prev_mechanism=$(jq -r '.finder.trigger_mechanism // "review-comment"' "$state_file")
+        if [ "$prev_mechanism" = "requested-reviewer" ]; then
+            previous_trigger_id=null
+        else
+            valid_uint "$previous_trigger_id" ||
+                die "attempt 1 state has an invalid trigger ID"
+        fi
         previous_reserved_epoch=$(jq -nr \
             --arg value "$previous_reserved_at" '$value | fromdateiso8601') ||
             die "cannot parse attempt 1 reservation time"
@@ -1604,10 +1609,16 @@ check)
               ) | {
                 id: (.id | tostring),
                 time: (.submitted_at // ""),
-                count: ((.body // "") | capture($pattern; "i").1 // "-1" | tonumber)
+                count: ((.body // "") | (try (match($pattern; "i").captures[0].string | tonumber) catch -1))
               }] | sort_by(.time) | .[] |
               [.id, .time, (.count | tostring)] | @tsv
             ' "$workdir/reviews.json" 2>/dev/null)
+
+        if [ "$adjudicated_findings" = "1" ] && [ -n "$actionable_review_id" ]; then
+            emit clean "current-head findings are all adjudicated by trusted in-thread replies" \
+                review "$actionable_review_id"
+            exit 0
+        fi
 
         if [ "$actionable_count" -gt 0 ]; then
             emit findings "actionable review comments reported by finder" \
@@ -1616,12 +1627,6 @@ check)
         elif [ "$actionable_count" -eq 0 ]; then
             emit clean "finder reported zero actionable comments" \
                 review "$actionable_review_id"
-            exit 0
-        fi
-
-        if [ "$adjudicated_findings" = "1" ]; then
-            emit clean "current-head findings are all adjudicated by trusted in-thread replies" \
-                review ""
             exit 0
         fi
         bounded_wait "no terminal current-head evidence from actionable-count finder yet"
@@ -1633,10 +1638,12 @@ check)
         # Check for a submitted review (evidence the finder ran).
         copilot_review_id=$(jq -r \
             --argjson id "$actor_id" \
-            --arg head "$state_head" '
+            --arg head "$state_head" \
+            --arg after "$state_requested" '
               [.[] | select(
                 .user.id? == $id and
-                (.commit_id? == $head)
+                (.commit_id? == $head) and
+                ((.submitted_at // "") > $after)
               ) | .id | tostring] | last // ""
             ' "$workdir/reviews.json")
 

@@ -473,7 +473,8 @@ The trigger mechanism varies by finder — the trusted registry determines which
 
 - **`requested-reviewer` finders** (e.g. `copilot-cloud`): trigger via
   `gh-write-broker.sh request-review --finder "$slug" --repo "$repo" --pr <n>`.
-  Attach with `--requested-at <ISO8601>` (the timestamp from the response).
+  The broker outputs the ISO-8601 UTC timestamp of the request.
+  Attach with `--requested-at <ISO8601>` (the timestamp the broker printed).
 
 ```bash
 check_exit=0

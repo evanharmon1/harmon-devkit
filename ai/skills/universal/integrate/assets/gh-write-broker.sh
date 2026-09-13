@@ -176,8 +176,10 @@ request-review)
     reviewer_login=$(printf '%s' "$profile" | jq -r '.collection.trigger.reviewer_login')
     [ -n "$reviewer_login" ] ||
         refuse "finder '$finder' has no reviewer_login in the registry"
-    exec gh api "repos/$repo/pulls/$pr/requested_reviewers" \
-        -f "reviewers[]=$reviewer_login" --jq '.users[].login'
+    requested_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    gh api "repos/$repo/pulls/$pr/requested_reviewers" \
+        -f "reviewers[]=$reviewer_login" --jq '.users[].login' >/dev/null
+    printf '%s\n' "$requested_at"
     ;;
 reply)
     [ -n "$comment_id" ] || usage
