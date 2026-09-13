@@ -209,11 +209,14 @@ schema-bound.** As decided in
 [`2026-09-13-brief-envelope-schema-bound-free-form-body.md`](https://github.com/evanharmon1/harmon-init/blob/main/docs/decisions/2026-09-13-brief-envelope-schema-bound-free-form-body.md),
 the envelope validates only machine-read facts, the body is opaque Markdown
 with no content lint, the envelope is closed while the body is open, and every
-envelope field is a fact rather than a composed instruction. The standing
-drift test is verbatim: **if a brief author ever shortens or omits an
-instruction to satisfy the schema, the schema is wrong.** Agent → orchestrator
-results remain validated on receipt against `ai/schemas/` before the
-orchestrator reads them.
+envelope field is a fact rather than a composed instruction. The brief
+validator therefore permits literal double-brace examples in the body while
+rejecting unresolved double-brace tokens inside the envelope block. The
+orchestrator renderer owns the separate whole-file render-completeness check
+before dispatch. The standing drift test is verbatim: **if a brief author ever
+shortens or omits an instruction to satisfy the schema, the schema is wrong.**
+Agent → orchestrator results remain validated on receipt against `ai/schemas/`
+before the orchestrator reads them.
 
 **Whoever holds the dispatched worktree writes its named branch.** In
 interactive and sandboxed runs the feature-branch implementer commits and

@@ -38,10 +38,13 @@ and instructions without JSON escaping or content lint while keeping the fact
 set closed.
 
 In addition to schema validation, the `brief` kind rejects any unresolved
-double-brace placeholder anywhere in the rendered file, requires the brief
-branch to equal `claim_handoff.branch`, requires all three terminal sentinels
-to end in `-<attempt_nonce>`, and—when `record_directory` exists—requires the
-deadline to be no earlier than that run's `run.json.started_at`.
+double-brace placeholder inside the envelope block, requires the brief branch
+to equal `claim_handoff.branch`, requires all three terminal sentinels to end
+in `-<attempt_nonce>`, and—when `record_directory` exists—requires the deadline
+to be no earlier than that run's `run.json.started_at`. The body remains opaque
+to this validator, including when it quotes a literal double-brace example.
+The orchestrator renderer separately checks its entire rendered output for
+unreplaced template tokens before dispatch.
 
 ## Composition: how envelope and payload fit together
 

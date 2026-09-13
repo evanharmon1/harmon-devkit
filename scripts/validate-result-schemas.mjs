@@ -225,9 +225,6 @@ function loadBrief(file) {
   }
 
   const errors = []
-  if (DOUBLE_BRACE_PLACEHOLDER.test(source)) {
-    errors.push('$brief: unresolved double-brace placeholder remains in rendered brief')
-  }
 
   const begin = source.indexOf(BRIEF_BEGIN)
   const end = source.indexOf(BRIEF_END)
@@ -243,6 +240,10 @@ function loadBrief(file) {
   }
 
   const block = source.slice(begin + BRIEF_BEGIN.length, end).trim()
+  if (DOUBLE_BRACE_PLACEHOLDER.test(block)) {
+    errors.push('$brief: unresolved double-brace placeholder remains in envelope block')
+  }
+
   const match = /^```json\s*\n([\s\S]*)\n```$/.exec(block)
   if (!match) {
     errors.push('$brief: envelope block must contain exactly one fenced ```json object')
