@@ -58,7 +58,7 @@ def issue_title_outcome:
   end;
 
 def issue_title_strip_truncation:
-  sub("([.!?…:;—–\\-\",'\"`~*^/\\\\|()<>\\[\\]{}]|[[:space:]])+$"; "");
+  sub("((?![+#])[\\p{P}\\p{S}]|\\s)+$"; "");
 
 def issue_title_is_prefix($cand; $target):
   ($cand | issue_title_strip_truncation) as $c

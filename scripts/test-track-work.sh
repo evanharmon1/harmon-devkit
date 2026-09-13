@@ -860,6 +860,21 @@ for punct_suffix in '...' '…' '.' '!'; do
         fail "refusal must explain truncation for '$punct_suffix': $(cat "$tmp/metadata.out")"
 done
 
+# typographic and unicode closing punctuation in truncation checks
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+    --title '(scope): “Reject stale entries…”' \
+    --previous-title '(scope): “Reject stale entries when cache is cold”')" = 1 ] ||
+    fail "typographic quote with ellipsis must be refused as truncation"
+grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metadata.out" ||
+    fail "refusal must explain truncation: $(cat "$tmp/metadata.out")"
+
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+    --title '(scope): «Reject stale entries…»' \
+    --previous-title '(scope): «Reject stale entries when cache is cold»')" = 1 ] ||
+    fail "guillemet with ellipsis must be refused as truncation"
+grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metadata.out" ||
+    fail "refusal must explain truncation: $(cat "$tmp/metadata.out")"
+
 # truncated prefix whose raw length exceeds previous title due to appended punctuation is refused
 [ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
     --title '(scope): Reject stale entrie...' \
