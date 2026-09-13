@@ -59,9 +59,11 @@ same-repository issues named in the PR body by `Refs`, `Addresses`, or `Part
 of`, and finally a `run-<issue>-<slug>` body token only when the PR or issue
 `<issue>` carries a trusted marker naming that exact run. More than one run on
 the selected tier is indeterminate, and a lower tier never overrides a run
-selected above it. References are line-anchored declarations in the PR body,
-never its comments, quoted lines, or mid-line prose;
-run tokens are read only from those declarations or a line-anchored `Run:` line.
+selected above it. Every issue token on a line-anchored reference declaration in
+the PR body participates in discovery; references never come from its comments,
+quoted lines, or mid-line prose. Run tokens are read only from those declarations
+or a line-anchored `Run:` line, preserving the complete token through whitespace
+or its closing backtick, bracket, or comma before exact marker comparison.
 At most 10 unique non-closing/token issue hints are read, with a larger set
 refused rather than truncated. A hint that names a PR or missing/deleted issue is
 disclosed and ignored, while a transient lookup failure is indeterminate. Both

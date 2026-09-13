@@ -200,14 +200,15 @@ make_trajectory() {
     # cleared, so the prefix means what it looks like it means.
     local issue="${ISSUE_NUMBER:-0}" rounds="${ROUNDS_JSON:-[]}" classes="${CLASSES_JSON:-{\}}"
     local orphans="${ORPHANS_JSON:-[]}" forged="${FORGED_JSON:-[]}"
-    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON
-    ISSUE_NUMBER="$issue" ROUNDS_JSON="$rounds" CLASSES_JSON="$classes" \
+    local run_id="${RUN_ID_OVERRIDE:-}"
+    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON RUN_ID_OVERRIDE
+    ISSUE_NUMBER="$issue" ROUNDS_JSON="$rounds" CLASSES_JSON="$classes" RUN_ID_OVERRIDE="$run_id" \
         ORPHANS_JSON="$orphans" FORGED_JSON="$forged" node -e '
       const fs = require("node:fs")
       const [fixture, out] = process.argv.slice(1)
       const run = JSON.parse(fs.readFileSync(fixture, "utf8"))
       const trajectory = {
-        run_id: run.run_id,
+        run_id: process.env.RUN_ID_OVERRIDE || run.run_id,
         issue: Number(process.env.ISSUE_NUMBER || 0),
         initiated_by: run.initiated_by,
         started_at: run.started_at,
@@ -762,6 +763,45 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 [ "$RC" -eq 11 ] && contains "$ERR" "run-one, run-two" &&
     ok "the selected non-closing tier refuses ambiguity" ||
     bad "expected non-closing ambiguity, got $RC: $ERR"
+
+echo "==> every reference on one declaration line participates in ambiguity"
+d="$TMPROOT/ambiguous-nonclosing-one-line"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" 'Refs #664, Refs #665'
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-one kickoff issue -
+marker_file "$d/i2" run-index run-two kickoff issue -
+set_comments "$d/comments" 664 "$d/i1"
+set_comments "$d/comments" 665 "$d/i2"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "run-one, run-two" &&
+    ok "same-line references reach the selected-tier ambiguity guard" ||
+    bad "same-line references silently selected one run, got $RC: $ERR"
+
+echo "==> body run tokens preserve dot, underscore, and uppercase suffixes"
+for run_id in run-6001-feature.v2 run-6001-feature_name run-6001-UPPER; do
+    d="$TMPROOT/token-domain-${run_id##*-}"
+    mkdir -p "$d"
+    make_gh "$d"
+    RUN_ID_OVERRIDE="$run_id" ISSUE_NUMBER=6001 \
+        make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+    make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+    write_file "$d/body" "Run: $run_id"
+    write_file "$d/c1" "no marker"
+    make_pr_json "$d/pr.json" "$d/body"
+    set_comments "$d/comments" "$PR" "$d/c1"
+    marker_file "$d/i1" run-index "$run_id" kickoff issue -
+    set_comments "$d/comments" 6001 "$d/i1"
+    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+    [ "$RC" -eq 0 ] && contains "$OUT" "run \`$run_id\`" &&
+        ok "$run_id is compared as one exact token" || bad "$run_id was narrowed, got $RC: $ERR"
+done
 
 echo "==> a marker past the first page of comments is still found"
 d="$TMPROOT/paged"

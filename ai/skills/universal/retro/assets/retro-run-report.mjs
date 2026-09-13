@@ -392,25 +392,28 @@ function parseBodyDiscovery(body, repo) {
   // The declaration must own the line (with an optional list marker), so prose,
   // quotations, and lazy blockquote continuations cannot become lookup inputs.
   // An explicit owner/repo prefix is accepted only for this repository.
-  const referenceRe = /^[ \t]*(?:[-*][ \t]+)?(?:refs|addresses|part[ \t]+of)[ \t]+(?:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)(?<number>[1-9][0-9]*)\b[^\r\n]*$/gim
+  const declarationRe = /^[ \t]*(?:[-*][ \t]+)?(?:refs|addresses|part[ \t]+of)[ \t]+(?=(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#[1-9][0-9]*\b)[^\r\n]*$/gim
+  const referenceRe = /(?:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)(?<number>[1-9][0-9]*)\b/gi
   const declarationLines = []
-  for (const match of body.matchAll(referenceRe)) {
-    declarationLines.push(match[0])
-    if (!match.groups.repo || match.groups.repo.toLowerCase() === repo.toLowerCase()) {
-      issueNumbers.add(Number(match.groups.number))
-    } else {
-      ignoredHints.push({
-        hint: `${match.groups.repo}#${match.groups.number}`,
-        tier: 'non-closing reference',
-        reason: `cross-repository reference does not belong to ${repo}`
-      })
+  for (const declaration of body.matchAll(declarationRe)) {
+    declarationLines.push(declaration[0])
+    for (const match of declaration[0].matchAll(referenceRe)) {
+      if (!match.groups.repo || match.groups.repo.toLowerCase() === repo.toLowerCase()) {
+        issueNumbers.add(Number(match.groups.number))
+      } else {
+        ignoredHints.push({
+          hint: `${match.groups.repo}#${match.groups.number}`,
+          tier: 'non-closing reference',
+          reason: `cross-repository reference does not belong to ${repo}`
+        })
+      }
     }
   }
 
   // A contributor-controlled body token is only a lookup hint. Its issue
   // number says where the trusted marker must live; the exact run id still
   // has to be named by that marker before this tier can select it.
-  const runIdRe = /\brun-(?<number>[1-9][0-9]*)-(?<slug>[a-z0-9][a-z0-9-]*)\b/g
+  const runIdRe = /\brun-(?<number>[1-9][0-9]*)-(?<slug>[^\s`\]\)},]+)/g
   const policyRunLines = body.match(/^[ \t]*(?:[-*][ \t]+)?run(?:[ \t]+(?:id|identity))?[ \t]*:[^\r\n]*$/gim) || []
   for (const line of [...declarationLines, ...policyRunLines]) {
     for (const match of line.matchAll(runIdRe)) {
