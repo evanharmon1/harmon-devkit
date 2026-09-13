@@ -1,1 +1,1 @@
-candidate path "two" must have exactly one effective-fence owner, got 2
+effective-fence path "two" must not belong to more than one lane

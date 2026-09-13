@@ -1,1 +1,1 @@
-candidate path "shared" must have exactly one effective-fence owner, got 2
+effective-fence path "shared" must not belong to more than one lane

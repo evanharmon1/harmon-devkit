@@ -1,1 +1,1 @@
-candidate path "shared" must have exactly one effective-fence owner, got 0
+split candidate path "shared" must belong to exactly one lane in issue pair 1:2

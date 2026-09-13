@@ -2007,9 +2007,8 @@ function entryDigestForCheck(contentFields, prevDigest) {
 
 // checkPlanRevisionChain — plan recomputation appends one complete immutable
 // plan snapshot. This mirrors run.json's
-// chain convention: zero-based contiguous seq, genesis first, exact retry
-// duplicates tolerated, forks rejected, and each digest authenticating the
-// entry's content plus prev_digest.
+// chain convention: serialized zero-based contiguous seq, genesis first, and
+// each digest authenticating the entry's content plus prev_digest.
 function checkPlanRevisionChain(document, errors) {
   const entries = document.revisions
   if (!Array.isArray(entries)) return null
@@ -2030,22 +2029,7 @@ function checkPlanRevisionChain(document, errors) {
     return null
   }
 
-  const bySeq = new Map()
-  for (const entry of entries) {
-    const group = bySeq.get(entry.seq) || []
-    group.push(entry)
-    bySeq.set(entry.seq, group)
-  }
-  const revisions = []
-  for (const [seq, group] of bySeq) {
-    const first = canonicalJsonForDigest(group[0])
-    if (!group.every((entry) => canonicalJsonForDigest(entry) === first)) {
-      errors.push(`$plan.revisions: two entries at seq ${seq} carry different content — forked chain`)
-      return null
-    }
-    revisions.push(group[0])
-  }
-  revisions.sort((a, b) => a.seq - b.seq)
+  const revisions = entries
 
   let prevDigest = 'genesis'
   let previousAt = null
@@ -2282,11 +2266,38 @@ function checkPlanCoherence(document, errors) {
       ]),
     ]),
   )
-  const candidatePaths = new Set(activeIssues.flatMap((issue) => issue.candidate_files || []))
-  for (const path of candidatePaths) {
-    const owners = lanes.filter((lane) => effectiveFenceByLane.get(lane.lane)?.has(path)).map((lane) => lane.lane)
-    if (owners.length !== 1) {
-      errors.push(`$plan.lanes: candidate path ${JSON.stringify(path)} must have exactly one effective-fence owner, got ${owners.length}`)
+  const ownersByPath = new Map()
+  for (const lane of lanes) {
+    for (const path of effectiveFenceByLane.get(lane.lane) || []) {
+      const owners = ownersByPath.get(path) || []
+      owners.push(lane)
+      ownersByPath.set(path, owners)
+    }
+  }
+  for (const [path, owners] of ownersByPath) {
+    if (owners.length > 1) {
+      errors.push(`$plan.lanes: effective-fence path ${JSON.stringify(path)} must not belong to more than one lane`)
+    }
+  }
+
+  for (const issue of activeIssues) {
+    const ownLane = laneByIssue.get(issue.number)
+    for (const path of issue.candidate_files || []) {
+      const splitOverlap = overlaps.find(
+        (overlap) =>
+          overlap.resolution === 'split' &&
+          (overlap.paths || []).includes(path) &&
+          (overlap.issue_a === issue.number || overlap.issue_b === issue.number),
+      )
+      if (splitOverlap) {
+        const owners = ownersByPath.get(path) || []
+        const pair = [splitOverlap.issue_a, splitOverlap.issue_b]
+        if (owners.length !== 1 || !pair.includes(owners[0].issue)) {
+          errors.push(`$plan.lanes: split candidate path ${JSON.stringify(path)} must belong to exactly one lane in issue pair ${pair.join(':')}`)
+        }
+      } else if (!ownLane || !effectiveFenceByLane.get(ownLane.lane)?.has(path)) {
+        errors.push(`$plan.lanes: issue ${issue.number}'s candidate path ${JSON.stringify(path)} must belong to its own lane`)
+      }
     }
   }
 }

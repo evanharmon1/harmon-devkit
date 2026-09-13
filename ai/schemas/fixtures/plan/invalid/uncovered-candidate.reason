@@ -1,1 +1,1 @@
-candidate path "unowned" must have exactly one effective-fence owner, got 0
+candidate path "unowned" must belong to its own lane

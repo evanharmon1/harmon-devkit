@@ -5,7 +5,7 @@
     {
       "seq": 0,
       "prev_digest": "genesis",
-      "digest": "c8cdb273d7f67688970fd38c24099a80e1177e3a56627604b693c2af4c64e09b",
+      "digest": "b2edf2b595ce2edcc0a0af794074bf1e15ec65146f8650e165f683d631590a77",
       "at": "2026-09-13T17:00:00Z",
       "reason": "initial slate plan",
       "plan": {
@@ -84,7 +84,7 @@
             "paths": [
               "orchestrator/SKILL.md"
             ],
-            "resolution": "serialize",
+            "resolution": "split",
             "merge_dependency": {
               "before": 935,
               "after": 936
