@@ -32,7 +32,7 @@ placeholder catalog; a rendered brief with any double-brace token left is invali
 | `{{remediation-cap}}` | Selected rounds policy |
 | `{{min-rounds}}` | Selected rounds policy |
 | `{{wall-clock-min}}` | Selected rounds policy |
-| `{{deadline}}` | Kickoff timestamp plus `wall_clock_min` |
+| `{{deadline}}` | Active `run.json.started_at` plus `wall_clock_min` |
 | `{{max-agent-runs}}` | Selected breadth envelope |
 | `{{max-parallel-agents}}` | Selected breadth envelope |
 | `{{strategy}}` | Trusted policy resolution |
@@ -239,7 +239,10 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
   plus a per-round adjudication table. Never delete history.
 - Keep each report filename and terminal signal unique per attempt. Why:
   milestone entry 2 observed a sentinel in the pane but not in the report file,
-  allowing stale output to masquerade as completion. Append exactly one of the
+  allowing stale output to masquerade as completion. The orchestrator must
+  accept a signal only when it is the final nonblank line of fresh worker output
+  and the identical final nonblank line of `{{report-path}}`; a raw pane-history
+  substring match is never completion evidence. Append exactly one of the
   following to `{{report-path}}` and print the same value as the final line of
   the final message:
   - `{{ready-sentinel}}-{{attempt-nonce}}` — the orchestrator promoted the PR through the readiness gate.

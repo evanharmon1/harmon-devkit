@@ -132,6 +132,12 @@ done
 
 grep -Fq 'immediately before `gh pr ready`' "$rendered_file" ||
     fail "missing immediate pre-promotion re-read rule"
+grep -Fq 'Active `run.json.started_at` plus `wall_clock_min`' "$rendered_file" ||
+    fail "deadline is not sourced from the active run start"
+grep -Fq 'raw pane-history' "$rendered_file" ||
+    fail "sentinel observation does not reject raw pane history"
+grep -Fq 'substring match is never completion evidence' "$rendered_file" ||
+    fail "sentinel observation is not final-line anchored"
 
 for sentinel in \
     LANE-FIXTURE-READY-a1b2c3 \

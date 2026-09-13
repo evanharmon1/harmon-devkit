@@ -215,7 +215,10 @@ belongs in a separate user, container, or VM, not a sibling pane.
    ad hoc. Select its harness-specific procedure, require zero unreplaced
    placeholders, and keep sentinel values only in the rendered reporting
    section; later steering refers to that contract indirectly so it cannot
-   replay a completion signal.
+   replay a completion signal. Because the initial brief itself contains those
+   tokens, never treat a raw pane-history substring match as completion: require
+   the token as the final nonblank line of fresh worker output and as the
+   identical final nonblank line of the nonce-scoped report file.
 4. **Wait** — `agent wait <name> --timeout <ms>` per worker (background it;
    rounds run minutes), or `pane wait-output --match <sentinel> --timeout
    <ms>` where detection is weak. Always bound the wait: a worker whose
