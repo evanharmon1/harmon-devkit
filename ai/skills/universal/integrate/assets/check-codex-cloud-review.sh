@@ -1419,7 +1419,24 @@ check)
             exit 2
         }
         if [ "$inline_unadjudicated" -gt 0 ]; then
-            emit findings "authenticated current-head inline review findings are unanswered by a trusted in-thread reply"
+            inline_findings_review_id=$(printf '%s' "$inline_partition" | jq -r '
+              (.settled // []) as $s |
+              [(.attributed // [])[] |
+               select(. as $r | $s | index($r) | not)] |
+              first // null | tostring | if . == "null" then "" else . end
+            ')
+            if [ -z "$inline_findings_review_id" ]; then
+                inline_findings_review_id=$(jq -r \
+                    --argjson id "$actor_id" \
+                    --arg head "$state_head" '
+                      [.[] | select(
+                        .user.id? == $id and .commit_id? == $head and
+                        ((.id? | type) == "number")
+                      ) | .id | tostring] | last // ""
+                    ' "$workdir/reviews.json")
+            fi
+            emit findings "authenticated current-head inline review findings are unanswered by a trusted in-thread reply" \
+                review "$inline_findings_review_id"
             exit 10
         fi
         adjudicated_findings=1
@@ -1650,8 +1667,33 @@ check)
             ((.id? | type) == "number")
           ) | .id] | unique
         ' "$workdir/reviews.json")
+    findings_review_id=""
     if [ "$review_result" = "findings" ]; then
-        emit findings "authenticated current-head review requires adjudication"
+        findings_review_id=$(jq -r \
+            --argjson id "$actor_id" \
+            --arg head "$state_head" \
+            --argjson disposed "$disposed_reviews" \
+            --argjson settled "$settled_reviews" \
+            "$codex_verdict_defs"'
+              [.[] | select(
+                .user.id? == $id and
+                (.commit_id? == $head) and
+                (body_text != "")
+              ) | . as $review | verdict_class as $class |
+              select($class == "findings") |
+              select(
+                (($review.id? | type) != "number") or
+                (($disposed | index($review.id)) == null)
+              ) |
+              select(
+                (($review.id? | type) != "number") or
+                (($settled | index($review.id)) == null) or
+                has_severity_marker or (is_carrier_only | not)
+              ) |
+              .id | tostring] | first // ""
+            ' "$workdir/reviews.json")
+        emit findings "authenticated current-head review requires adjudication" \
+            review "$findings_review_id"
         exit 10
     fi
     if [ "$review_result" = "unrecognized" ]; then
@@ -1681,6 +1723,7 @@ check)
     comment_result=none
     clean_comment_time=""
     clean_comment_id=""
+    findings_comment_id=""
     while IFS='	' read -r prefix classification comment_id comment_created; do
         [ -n "$prefix" ] || continue
         grep -Eq '^[0-9a-fA-F]{7,40}$' <<<"$prefix" || {
@@ -1718,6 +1761,7 @@ check)
         }
         if [ "$classification" = "findings" ]; then
             comment_result=findings
+            [ -n "$findings_comment_id" ] || findings_comment_id=$comment_id
         elif [ "$classification" = "unrecognized" ]; then
             # findings outranks unrecognized outranks clean, so a single
             # unclassifiable verdict is never masked by a clean sibling.
@@ -1733,7 +1777,8 @@ check)
     done <"$comment_candidates"
 
     if [ "$comment_result" = "findings" ]; then
-        emit findings "authenticated current-head conversation finding requires adjudication"
+        emit findings "authenticated current-head conversation finding requires adjudication" \
+            comment "$findings_comment_id"
         exit 10
     fi
     if [ "$comment_result" = "unrecognized" ]; then
@@ -1917,7 +1962,15 @@ check)
             emit pending "an empty review shell is still unresolved for this head"
             exit 11
         fi
-        emit clean "current-head findings are all adjudicated by trusted in-thread replies"
+        adjudicated_review_id=$(jq -r \
+            --argjson settled "$settled_reviews" '
+              [.[] | select((.id? | type) == "number") |
+               . as $r | select($settled | index($r.id)) |
+               {id: ($r.id | tostring), time: ($r.submitted_at // "")}] |
+              sort_by(.time) | last // null | .id // ""
+            ' "$workdir/reviews.json")
+        emit clean "current-head findings are all adjudicated by trusted in-thread replies" \
+            review "$adjudicated_review_id"
         exit 0
     fi
 
@@ -1935,7 +1988,34 @@ check)
         # The detail names the DISPOSITIONS actually applied, not just that
         # some existed: "declined" and "filed" mean different things to
         # whoever reads this result, and a mixture means both happened.
-        emit clean "current-head non-thread findings are all settled: ${applied_dispositions:-recorded dispositions}"
+        disposed_surface=""
+        disposed_id=""
+        disposed_review_latest=$(jq -r \
+            --argjson disposed "$disposed_reviews" '
+              [.[] | select((.id? | type) == "number") |
+               . as $r | select($disposed | index($r.id)) |
+               {id: ($r.id | tostring), time: ($r.submitted_at // "")}] |
+              sort_by(.time) | last // null | .id // ""
+            ' "$workdir/reviews.json")
+        disposed_comment_latest=$(jq -r \
+            --argjson disposed "$disposed_comments" '
+              [.[] | select((.id? | type) == "number") |
+               . as $r | select($disposed | index($r.id)) |
+               {id: ($r.id | tostring), time: ($r.created_at // "")}] |
+              sort_by(.time) | last // null | .id // ""
+            ' "$workdir/comments.json")
+        if [ -n "$disposed_review_latest" ]; then
+            disposed_surface=review
+            disposed_id=$disposed_review_latest
+        fi
+        if [ -n "$disposed_comment_latest" ]; then
+            if [ -z "$disposed_surface" ]; then
+                disposed_surface=comment
+                disposed_id=$disposed_comment_latest
+            fi
+        fi
+        emit clean "current-head non-thread findings are all settled: ${applied_dispositions:-recorded dispositions}" \
+            "$disposed_surface" "$disposed_id"
         exit 0
     fi
 
