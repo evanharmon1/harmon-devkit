@@ -88,13 +88,13 @@ def issue_title_diagnostics:
       (if any($all[]; issue_title_is_control)
        then "title is \($len) code points; title contains Unicode control characters"
        else empty end),
-      (if test("^\\(.*\\(.*\\).*\\):")
+      (if (if test("^\\([^:]*\\):") then (capture("^\\((?<raw>[^:]*)\\):").raw | test("[()]")) else false end)
        then "title is \($len) code points; scope contains parentheses"
        else empty end),
       (if test("^\\s") or test("\\s$")
        then "title is \($len) code points; surrounding whitespace in title"
        else empty end),
-      (if $parts == null and (test("^\\(.*\\):") | not) and (test("^\\(.*\\(.*\\).*\\):") | not)
+      (if $parts == null and (test("^\\(.*\\):") | not) and ((if test("^\\([^:]*\\):") then (capture("^\\((?<raw>[^:]*)\\):").raw | test("[()]")) else false end) | not)
        then "title is \($len) code points; missing (scope): prefix"
        else empty end),
       (if $parts == null and test("^\\([^()]*\\):") and (test("^\\([^()]*\\): ") | not)

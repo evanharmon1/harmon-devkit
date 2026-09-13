@@ -871,7 +871,7 @@ grep -q "surrounding whitespace in scope" "$tmp/metadata.out" ||
 
 echo "==> metadata: free-form Unicode, spaced, and punctuated scopes pass"
 for title in '(CI/CD): Reject stale runs' '(Build Tools): Repair cache keys' \
-    '(déploiement 🚀): Verify rollback'; do
+    '(déploiement 🚀): Verify rollback' '(parser): Handle ((nested)): tokens'; do
     [ "$(METADATA_RAW_TITLE=1 run_personal "$title" "$valid_body")" = 0 ] ||
         fail "valid scoped title should pass: $title ($(cat "$tmp/metadata.out"))"
 done
