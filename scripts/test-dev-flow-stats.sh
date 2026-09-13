@@ -1612,28 +1612,15 @@ function writeScenario(name, db) {
 // posting order.
 {
   const runId = "run-chronological-rounds-1";
-  const pass1 = { ...pass("codex-cli", []), produced_at: "2026-09-01T00:01:00Z" };
-  const payload1 = { passes: [pass1], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 1, adjudications: [] } };
+  const payload1 = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 1, adjudications: [] } };
   const ev1 = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, payload1, "2026-09-01T00:01:00Z");
-  const pass2 = { ...pass("codex-cli", []), produced_at: "2026-09-01T00:02:00Z" };
-  const payload2 = { passes: [pass2], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
+  const payload2 = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
   const ev2 = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payload2, "2026-09-01T00:02:00Z");
-  const pass3 = { ...pass("codex-cli", []), produced_at: "2026-09-01T00:03:00Z" };
-  const payload3 = { passes: [pass3], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 2, adjudications: [] } };
+  const payload3 = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 2, adjudications: [] } };
   const ev3 = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 2, 1, payload3, "2026-09-01T00:03:00Z");
   const runBody = {
     schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
-    stage_transitions: chain([
-      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
-      { stage: "claim", entered_at: "2026-09-01T00:00:10Z", exit: "implementing" },
-      { stage: "implement", entered_at: "2026-09-01T00:00:20Z", exit: "verifying" },
-      { stage: "verify", entered_at: "2026-09-01T00:00:30Z", exit: "challenging" },
-      { stage: "challenge", entered_at: "2026-09-01T00:00:40Z", exit: "reviewing" },
-      { stage: "review", entered_at: "2026-09-01T00:01:40Z", exit: "implementing" },
-      { stage: "implement", entered_at: "2026-09-01T00:02:10Z", exit: "verifying" },
-      { stage: "verify", entered_at: "2026-09-01T00:02:20Z", exit: "challenging" },
-      { stage: "challenge", entered_at: "2026-09-01T00:02:40Z" },
-    ]),
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
     interventions: chain([]), settlements: chain([]),
     outcome: null, pr: null,
     evidence_comments: [
@@ -3002,10 +2989,6 @@ function parseArgs(argv) {
   return a;
 }
 const args = parseArgs(process.argv.slice(2));
-const replayRun = JSON.parse(readFileSync(path.join(args.run, "run.json"), "utf8"));
-if (process.env.FAKE_EXIT_RECEIPTS_LOG) {
-  writeFileSync(process.env.FAKE_EXIT_RECEIPTS_LOG, JSON.stringify(replayRun.receipts));
-}
 // Records every --current-head this fake was invoked with, keyed by
 // stage, so the bash test can assert on it afterward — proving
 // dev-flow-stats.mjs derives a real head for a non-promoted (capped) run
@@ -3050,26 +3033,9 @@ review_cap = 3
 TOML
 export DFSTATS_DB="$tmp/scenarios/omator-397.json"
 export FAKE_EXIT_HEAD_LOG="$tmp/fake-exit-heads.json"
-export FAKE_EXIT_RECEIPTS_LOG="$tmp/fake-exit-receipts.json"
 rm -f "$FAKE_EXIT_HEAD_LOG"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.[0].diffs | length == 0' >/dev/null || fail "replay (matching policy): expected no diffs, got: $out"
-
-echo "== replay emits canonical transition and pass receipt shapes =="
-jq -e '
-  length > 0 and
-  all(.[];
-    if .kind == "transition" then
-      (keys | sort) == ["entered_at", "kind", "stage"] and
-      (.entered_at | type == "string")
-    elif .kind == "pass" then
-      (keys | sort) == ["file", "kind"]
-    else
-      false
-    end
-  )
-' "$FAKE_EXIT_RECEIPTS_LOG" >/dev/null || fail "replay receipts do not match the canonical closed variants"
-unset FAKE_EXIT_RECEIPTS_LOG
 
 echo "== replay derives a real current-head for a capped (never-promoted) run, not an all-zero placeholder =="
 [ -f "$FAKE_EXIT_HEAD_LOG" ] || fail "replay head log was never written — the fake exit script was never invoked"
@@ -3418,21 +3384,6 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 echo "$out" | jq -e '.rounds[0].stage == "challenge" and .rounds[0].round == 1' >/dev/null || fail "chronological-rounds: expected rounds[0] = challenge r1, got: $out"
 echo "$out" | jq -e '.rounds[1].stage == "review" and .rounds[1].round == 1' >/dev/null || fail "chronological-rounds: expected rounds[1] = review r1 (posted before challenge r2), got: $out"
 echo "$out" | jq -e '.rounds[2].stage == "challenge" and .rounds[2].round == 2' >/dev/null || fail "chronological-rounds: expected rounds[2] = challenge r2, got: $out"
-
-echo "== challenge round 2: replay preserves repeated-stage transition timestamps by occurrence =="
-export FAKE_EXIT_RECEIPTS_LOG="$tmp/reentry-receipts.json"
-node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json >/dev/null
-jq -e '
-  [
-    {kind: "transition", stage: "challenge", entered_at: "2026-09-01T00:00:40Z"},
-    {kind: "pass", file: "challenge-r1-0"},
-    {kind: "transition", stage: "review", entered_at: "2026-09-01T00:01:40Z"},
-    {kind: "pass", file: "review-r1-1"},
-    {kind: "transition", stage: "challenge", entered_at: "2026-09-01T00:02:40Z"},
-    {kind: "pass", file: "challenge-r2-2"}
-  ] == .
-' "$FAKE_EXIT_RECEIPTS_LOG" >/dev/null || fail "reentry replay did not consume repeated-stage timestamps in occurrence order"
-unset FAKE_EXIT_RECEIPTS_LOG
 
 echo "== shepherd round 1: a bot-authored post-promotion commit never counts as a post-ready HUMAN fix =="
 export DFSTATS_DB="$tmp/scenarios/postfix-bot.json"

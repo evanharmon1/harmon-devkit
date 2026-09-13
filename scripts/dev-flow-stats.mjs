@@ -1590,31 +1590,18 @@ function buildRunDirectory(runRecord, roundEvidence, destDir) {
   issueRounds.sort((a, b) => Math.min(...a.commentIds) - Math.min(...b.commentIds));
 
   const receipts = [];
-  const recordedTransitions = runRecord.stage_transitions ?? [];
-  let recordedTransitionCursor = 0;
-  const nextEnteredAt = (stage) => {
-    while (recordedTransitionCursor < recordedTransitions.length) {
-      const transition = recordedTransitions[recordedTransitionCursor++];
-      if (transition.stage === stage) return transition.entered_at;
-    }
-    return runRecord.started_at;
-  };
   let currentStage = null;
   let passIndex = 0;
   for (const round of issueRounds) {
     if (round.stage !== currentStage) {
-      receipts.push({
-        kind: "transition",
-        stage: round.stage,
-        entered_at: nextEnteredAt(round.stage),
-      });
+      receipts.push({ kind: "transition", stage: round.stage });
       currentStage = round.stage;
     }
     const passes = Array.isArray(round.payload.passes) ? round.payload.passes : [];
     for (const envelope of passes) {
       const name = `${round.stage}-r${round.round}-${passIndex++}`;
       writeFileSync(path.join(passesDir, `${name}.json`), JSON.stringify(envelope, null, 2));
-      receipts.push({ kind: "pass", file: name });
+      receipts.push({ kind: "pass", stage: round.stage, file: name });
     }
     if (round.payload.adjudication) {
       writeFileSync(
