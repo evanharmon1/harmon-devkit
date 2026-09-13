@@ -139,8 +139,14 @@ switch (mutation) {
   case 'empty-model-cli-id':
     modelOf('gpt', 'astra').cli_ids['codex-cli'] = ''
     break
+  case 'whitespace-model-cli-id':
+    modelOf('gpt', 'astra').cli_ids['codex-cli'] = '   '
+    break
   case 'unknown-model-cli-harness':
     modelOf('gpt', 'astra').cli_ids['unknown-cli'] = 'gpt-6-astra'
+    break
+  case 'incompatible-model-cli-harness':
+    modelOf('gpt', 'astra').cli_ids = { 'claude-code': 'gpt-6-astra' }
     break
   case 'overlong-adapter-display-name':
     // 48 chars: inside the shared 50 cap but over the adapter-specific 47 —
@@ -592,9 +598,15 @@ rejects "a display_name over the schema's declarative length cap" \
 rejects "an empty harness-facing model id" \
     'empty-model-cli-id' \
     'cli_ids.codex-cli must be a non-empty string'
+rejects "a whitespace-only harness-facing model id" \
+    'whitespace-model-cli-id' \
+    'cli_ids.codex-cli must be a non-empty string'
 rejects "a harness-facing model id keyed by an unknown harness" \
     'unknown-model-cli-harness' \
     'cli_ids references unknown harness unknown-cli'
+rejects "a harness-facing model id keyed by an incompatible fixed-family harness" \
+    'incompatible-model-cli-harness' \
+    'cli_ids references harness claude-code, which is fixed to family claude'
 rejects "an adapter display_name over its tighter 47-char cap" \
     'overlong-adapter-display-name' \
     'must contain at most 47 character(s)'
