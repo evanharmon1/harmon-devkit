@@ -63,12 +63,12 @@ def issue_title_strip_truncation:
 def issue_title_is_prefix($cand; $target):
   ($cand | issue_title_strip_truncation) as $c
   | ($target | issue_title_strip_truncation) as $t
-  | ($cand | length) as $cl
-  | ($target | length) as $tl
+  | ($c | length) as $cl
+  | ($t | length) as $tl
   | ($c | length > 0) and (
-      (($cl < $tl) and ($target | startswith($c)))
+      (($cl < $tl) and ($t | startswith($c)))
       or
-      (($cl < $tl) and ($c == $t))
+      (((($cand | length) < ($target | length))) and ($c == $t))
     );
 
 def issue_title_is_truncation($prev):
