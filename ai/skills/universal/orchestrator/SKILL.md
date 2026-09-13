@@ -92,7 +92,7 @@ manual polling.
 Use `assets/lane-watch.sh` for that polling. Harness monitor primitives may run
 their command under a non-Bash shell, so always invoke the file as
 `bash <skill-dir>/assets/lane-watch.sh --state-file <run-state> --registry
-<kickoff-registry-snapshot> <deadline> <lane:branch:nonce[:owner/repo]>...`;
+<kickoff-registry-snapshot> <deadline> <lane:branch:nonce:owner/repo>...`;
 never paste its loop inline. Keep the state file across re-arms so reported
 sentinels and post-promotion activity remain deduplicated. The watcher bounds
 every `herdr` and `gh` read, prefers each lane's `.lane-report.md` sentinel,

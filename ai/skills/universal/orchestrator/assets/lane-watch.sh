@@ -14,7 +14,7 @@ set -u
 
 usage() {
     cat <<'EOF'
-Usage: lane-watch.sh [options] DEADLINE_ISO lane:branch:nonce[:owner/repo] ...
+Usage: lane-watch.sh [options] DEADLINE_ISO lane:branch:nonce:owner/repo ...
 
 Options:
   --state-file PATH               Persist emitted state across restarts
@@ -239,7 +239,6 @@ bounded() {
 }
 
 trusted_actor_ids="$(jq -r '.finders[]? | .trusted_actor_id // empty | tostring' "$registry" 2>/dev/null || true)"
-default_repo="$(bounded "$timeout_seconds" gh repo view --json nameWithOwner -q .nameWithOwner || true)"
 
 sentinel_from_report() {
     report=$1
@@ -302,14 +301,17 @@ poll_activity() {
         state_set WINDOW "$lane" "$pr_number" "$((since + post_promotion_seconds))" "$since"
     fi
     until="$(state_get WINDOW "$lane" extra || printf 0)"
-    expired=0
-    [ "$now" -le "$until" ] || expired=1
+    if [ "$now" -gt "$until" ]; then
+        state_delete WINDOW "$lane"
+        return 0
+    fi
 
     rows="$(activity_snapshot "$repo" "$pr_number")" || return 0
 
     while IFS=$'\t' read -r actor kind id created; do
         [ -n "$id" ] || continue
         [ "$created" -ge "$since" ] || continue
+        [ "$created" -le "$until" ] || continue
         key="$lane:$kind:$id"
         if ! state_get ACTIVITY "$key" >/dev/null; then
             echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
@@ -317,9 +319,6 @@ poll_activity() {
         fi
     done <<<"$rows"
 
-    if [ "$expired" -eq 1 ]; then
-        state_delete WINDOW "$lane"
-    fi
 }
 
 promotion_epoch() {
@@ -338,14 +337,10 @@ promotion_epoch() {
 discover_pr() {
     repo=$1
     branch=$2
-    owner=${repo%%/*}
     payload="$(bounded "$timeout_seconds" gh pr list --repo "$repo" --head "$branch" --state all \
-        --json number,isDraft,state,headRepositoryOwner)" || return 1
-    jq -r --arg owner "$owner" '
-      if length == 1 then .[0]
-      else map(select(.headRepositoryOwner.login == $owner))
-        | if length == 1 then .[0] else empty end
-      end
+        --limit 1 --json number,isDraft,state)" || return 1
+    jq -r '
+      .[0] // empty
       | "#\(.number) draft=\(.isDraft) \(.state)"
     ' <<<"$payload" 2>/dev/null
 }
@@ -396,7 +391,8 @@ while true; do
 
     for spec in "${specs[@]}"; do
         IFS=: read -r lane branch nonce repo extra <<<"$spec"
-        if [ -z "${lane:-}" ] || [ -z "${branch:-}" ] || [ -z "${nonce:-}" ] || [ -n "${extra:-}" ]; then
+        if [ -z "${lane:-}" ] || [ -z "${branch:-}" ] || [ -z "${nonce:-}" ] ||
+            [ -z "${repo:-}" ] || [ -n "${extra:-}" ]; then
             echo "lane-watch: invalid lane spec: $spec" >&2
             continue
         fi
@@ -406,11 +402,6 @@ while true; do
             continue
             ;;
         esac
-        repo=${repo:-$default_repo}
-        if [ -z "$repo" ]; then
-            echo "lane-watch: repository omitted and current repository could not be derived: $spec" >&2
-            continue
-        fi
         case "$repo" in
         */*) ;;
         *)

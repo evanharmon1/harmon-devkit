@@ -86,10 +86,6 @@ STUB
 cat >"$bin_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 set -u
-if [ "${1:-} ${2:-}" = "repo view" ]; then
-    printf '%s\n' "${WATCH_REPO:-evanharmon1/harmon-devkit}"
-    exit 0
-fi
 if [ "${1:-} ${2:-}" = "pr list" ]; then
     branch=
     previous=
@@ -108,9 +104,9 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
     printf '%s\n' "$count" >"$count_file"
     printf '%s\n' "$count" >"$WATCH_FIXTURES/phase"
     case "$count" in
-    1) printf '%s\n' '[{"number":77,"isDraft":true,"state":"OPEN","headRepositoryOwner":{"login":"'"${WATCH_HEAD_OWNER:-evanharmon1}"'"}}]' ;;
-    2 | 3) printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN","headRepositoryOwner":{"login":"'"${WATCH_HEAD_OWNER:-evanharmon1}"'"}}]' ;;
-    *) printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED","headRepositoryOwner":{"login":"'"${WATCH_HEAD_OWNER:-evanharmon1}"'"}}]' ;;
+    1) printf '%s\n' '[{"number":77,"isDraft":true,"state":"OPEN"}]' ;;
+    2 | 3) printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN"}]' ;;
+    *) printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED"}]' ;;
     esac
     exit 0
 fi
@@ -159,8 +155,8 @@ common_args=(
     --timeout-seconds 1
     2099-01-01T00:00:00Z
     alpha:branch-alpha:n1:evanharmon1/harmon-devkit
-    beta:branch-beta:n2
-    gamma:branch-gamma:n3
+    beta:branch-beta:n2:evanharmon1/harmon-devkit
+    gamma:branch-gamma:n3:evanharmon1/harmon-devkit
 )
 
 primary_out="$test_tmp/primary.out"
@@ -201,7 +197,9 @@ assert_count "$usage_recovery_out" 0 '^USAGE-PAUSED beta$'
 # A hanging external call times out without fabricating an absent transition.
 touch "$fixture_dir/hang-list"
 hang_out="$test_tmp/hang.out"
-timeout 8 bash "$watcher" --iterations 1 \
+test_timeout="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+[ -n "$test_timeout" ] || fail 'GNU timeout (timeout or gtimeout) is required'
+"$test_timeout" --kill-after=2 8 bash "$watcher" --iterations 1 \
     --registry "$registry" --workspace-root "$workspace_root" \
     --interval-seconds 0 --timeout-seconds 1 \
     2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
@@ -219,35 +217,21 @@ bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspa
 assert_count "$malformed_out" 0 '^AGENT delta:'
 rm "$fixture_dir/malformed-list"
 
-# An expired activity window survives a failed final snapshot and closes only
-# after a successful retry, so activity during an API outage is not lost.
+# An expired authoritative window hard-stops without another API snapshot.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
-touch "$fixture_dir/fail-api"
-retry_out="$test_tmp/activity-retry.out"
-bash "$watcher" --iterations 3 --state-file "$test_tmp/retry.state" \
-    --registry "$registry" --workspace-root "$workspace_root" \
-    --interval-seconds 1 --post-promotion-seconds 0 --timeout-seconds 1 \
-    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
-    >"$retry_out"
-assert_line "$retry_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
-assert_line "$retry_out" 'POST-PROMOTION-ACTIVITY alpha: maintainer comment 601'
-rm "$fixture_dir/fail-api"
-
-# A fork-owned head is accepted when it is the unique branch match, and a
-# first observation after promotion still opens the timestamp-bound window.
 printf '%s\n' 1 >"$fixture_dir/pr-count"
-rm -f "$fixture_dir/phase"
-fork_out="$test_tmp/fork-ready.out"
-WATCH_HEAD_OWNER=contributor bash "$watcher" --iterations 2 \
-    --state-file "$test_tmp/fork.state" --registry "$registry" \
-    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
+printf 'PR\talpha\t#77 draft=false OPEN\t\nWINDOW\talpha\t77\t1\t0\nWALLCLOCK\trun\t0\t\n' \
+    >"$test_tmp/expired.state"
+expired_out="$test_tmp/activity-expired.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/expired.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --post-promotion-seconds 900 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
-    >"$fork_out"
-assert_line "$fork_out" 'PR alpha: #77 draft=false OPEN'
-assert_line "$fork_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
+    >"$expired_out"
+assert_count "$expired_out" 0 '^POST-PROMOTION-ACTIVITY '
 
 # The same asset resolves the repository root and registry in the flattened
-# consumer layout, and a three-field spec derives that consumer repository.
+# consumer layout when the lane spec supplies its required repository.
 flattened_root="$test_tmp/consumer"
 flattened_watcher="$flattened_root/.agents/skills/orchestrator/assets/lane-watch.sh"
 mkdir -p "$(dirname "$flattened_watcher")" "$flattened_root/.worktrees/alpha"
@@ -257,9 +241,9 @@ cp "$workspace_root/harmon-devkit/.worktrees/alpha/.lane-report.md" \
     "$flattened_root/.worktrees/alpha/.lane-report.md"
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 flattened_out="$test_tmp/flattened.out"
-WATCH_REPO=evanharmon1/consumer bash "$flattened_watcher" --iterations 1 \
+bash "$flattened_watcher" --iterations 1 \
     --state-file "$test_tmp/flattened.state" --interval-seconds 0 --timeout-seconds 1 \
-    2099-01-01T00:00:00Z alpha:branch-alpha:n1 >"$flattened_out"
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/consumer >"$flattened_out"
 assert_line "$flattened_out" 'SENTINEL alpha: LANE-ALPHA-READY-n1'
 
 # A watcher launched from a linked worktree still finds reports in sibling
@@ -281,18 +265,26 @@ cp "$workspace_root/harmon-devkit/.worktrees/alpha/.lane-report.md" \
     "$linked_main/.worktrees/alpha/.lane-report.md"
 linked_watcher="$linked_main/.worktrees/monitor/ai/skills/universal/orchestrator/assets/lane-watch.sh"
 linked_out="$test_tmp/linked.out"
-WATCH_REPO=evanharmon1/repo bash "$linked_watcher" --iterations 1 \
+bash "$linked_watcher" --iterations 1 \
     --state-file "$test_tmp/linked.state" --interval-seconds 0 --timeout-seconds 1 \
-    2099-01-01T00:00:00Z alpha:branch-alpha:n1 >"$linked_out"
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/repo >"$linked_out"
 assert_line "$linked_out" 'SENTINEL alpha: LANE-ALPHA-READY-n1'
 
 # Nonces use a literal-safe identity alphabet rather than regex syntax.
 invalid_nonce_err="$test_tmp/invalid-nonce.err"
 bash "$watcher" --iterations 1 --registry "$registry" \
     --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
-    2099-01-01T00:00:00Z 'alpha:branch-alpha:n[1' \
+    2099-01-01T00:00:00Z 'alpha:branch-alpha:n[1:evanharmon1/harmon-devkit' \
     >/dev/null 2>"$invalid_nonce_err"
-assert_line "$invalid_nonce_err" 'lane-watch: invalid sentinel nonce in spec: alpha:branch-alpha:n[1'
+assert_line "$invalid_nonce_err" 'lane-watch: invalid sentinel nonce in spec: alpha:branch-alpha:n[1:evanharmon1/harmon-devkit'
+
+# Repository identity is mandatory; there is no ambient-repository fallback.
+missing_repo_err="$test_tmp/missing-repo.err"
+bash "$watcher" --iterations 1 --registry "$registry" \
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1 \
+    >/dev/null 2>"$missing_repo_err"
+assert_line "$missing_repo_err" 'lane-watch: invalid lane spec: alpha:branch-alpha:n1'
 
 # Requested durable state fails loudly when its destination cannot be created.
 state_parent="$test_tmp/state-parent"
@@ -312,7 +304,10 @@ assert_count "$watcher" 0 'declare -A'
 
 # The warning uses the documented WALLCLOCK shape.
 wallclock_out="$test_tmp/wallclock.out"
-near_deadline="$(date -u -d '10 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+near_deadline="$(date -u -d '10 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+if [ -z "$near_deadline" ]; then
+    near_deadline="$(date -u -v+10M +%Y-%m-%dT%H:%M:%SZ)"
+fi
 bash "$watcher" --iterations 1 --registry "$registry" \
     --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
     "$near_deadline" epsilon:branch-epsilon:n5:evanharmon1/harmon-devkit \
@@ -321,8 +316,8 @@ assert_line "$wallclock_out" "WALLCLOCK run: 30 min to $near_deadline cap"
 
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED)|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
-    "$primary_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$retry_out" \
-    "$malformed_out" "$fork_out" "$flattened_out" "$linked_out" "$wallclock_out"; then
+    "$primary_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
+    "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
 
