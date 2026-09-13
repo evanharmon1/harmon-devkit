@@ -28,12 +28,14 @@ explicit merge dependency in both lane briefs.
 ## Lane briefs
 
 Every lane brief MUST carry the active run identity so the lane worker can
-route confidence stages through `/review` and integration through `/integrate`,
-producing the v2 evidence (`retro-run-report.mjs` exit 10 `no-run-record` is
-the failure this routing prevents). The required fields are: run id, branch,
-generation, active-state path, record directory, and policy projection. Without
-them the lane worker falls back to the inline `task challenge` / `task review`
-procedure, which produces no run record and no adjudication evidence.
+route confidence stages through `/review` and publish a draft with v2 evidence;
+the supervising orchestrator then invokes `/integrate` and retains every
+finding disposition, PR-body edit, thread reply, readiness decision, and
+promotion. (`retro-run-report.mjs` exit 10 `no-run-record` is the failure this
+routing prevents.) The required fields are: run id, branch, generation,
+active-state path, record directory, and policy projection. Without them the
+lane worker falls back to the inline `task challenge` / `task review` procedure,
+which produces no run record and no adjudication evidence.
 
 Render `assets/lane-brief.md` for every dispatch instead of hand-authoring a
 brief. Its header table is the complete input contract: source every value,

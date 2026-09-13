@@ -138,6 +138,8 @@ grep -Fq 'raw pane-history' "$rendered_file" ||
     fail "sentinel observation does not reject raw pane history"
 grep -Fq 'substring match is never completion evidence' "$rendered_file" ||
     fail "sentinel observation is not final-line anchored"
+grep -Fq 'return control to the supervising orchestrator' "$rendered_file" ||
+    fail "lane integration handoff is missing"
 
 for sentinel in \
     LANE-FIXTURE-READY-a1b2c3 \
