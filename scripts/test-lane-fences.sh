@@ -31,6 +31,7 @@ git -C "$fixture" add .
 git -C "$fixture" commit -qm "test: seed fence fixture"
 base="$(git -C "$fixture" rev-parse HEAD)"
 git -C "$fixture" update-ref refs/remotes/origin/main "$base"
+fixture_branch="$(git -C "$fixture" branch --show-current)"
 invoking_worktree="$tmp/invoking-worktree"
 git -C "$fixture" worktree add --detach -q "$invoking_worktree" "$base"
 
@@ -38,6 +39,8 @@ make_brief() {
     destination="$1"
     fence_json="$2"
     brief_base="${3:-$base}"
+    brief_report="${4:-$tmp/report.md}"
+    brief_branch="${5:-$fixture_branch}"
     awk '
       /^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=1; next }
       /^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=0; next }
@@ -45,8 +48,8 @@ make_brief() {
       inside && fenced && /^```$/ { fenced=0; next }
       inside && fenced { print }
     ' "$brief_source" | jq --argjson fence "$fence_json" --arg base "$brief_base" \
-        --arg worktree "$fixture" \
-        '.fence = $fence | .base_sha = $base | .default_branch = "main" | .worktree_path = $worktree' \
+        --arg worktree "$fixture" --arg report "$brief_report" --arg branch "$brief_branch" \
+        '.fence = $fence | .base_sha = $base | .default_branch = "main" | .worktree_path = $worktree | .report_path = $report | .branch = $branch | .claim_handoff.branch = $branch' \
         >"$tmp/envelope.json"
     sed -n '1,/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/p' "$brief_source" >"$destination"
     printf '\n```json\n' >>"$destination"
@@ -95,13 +98,40 @@ case "$out" in
 *) fail "cross-checkout refusal did not report the lane worktree path: $out" ;;
 esac
 
+make_brief "$tmp/wrong-branch.md" '[{"path":"allowed.txt"},{"path":"outside.txt"}]' \
+    "$base" "$tmp/report.md" "not-$fixture_branch"
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/wrong-branch.md" 2>&1)"; then
+    fail "a brief bound to another branch was accepted"
+fi
+case "$out" in
+*"envelope branch not-$fixture_branch"*"worktree branch $fixture_branch"*) ;;
+*) fail "branch-mismatch refusal did not name both branches: $out" ;;
+esac
+
 printf '%s\n' '2026-09-13 fence expansion: outside.txt:1-4 — rejecting validator' >"$tmp/report.md"
 (
     cd "$fixture"
-    "$fence_check" --brief "$tmp/allowed.md" --report "$tmp/report.md"
+    "$fence_check" --brief "$tmp/allowed.md"
 ) >"$tmp/expansion.out" || fail "a dated self-expansion was not honoured"
 grep -Fq 'expansion-claimed: outside.txt (report line 1)' "$tmp/expansion.out" ||
     fail "a report expansion was not labelled for the orchestrator"
+
+make_brief "$tmp/other-report.md" '[{"path":"allowed.txt"}]' \
+    "$base" "$tmp/absent-report.md"
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/other-report.md" 2>&1)"; then
+    fail "an expansion from a report other than the envelope report_path was accepted"
+fi
+case "$out" in
+*outside.txt*) ;;
+*) fail "other-report refusal did not name outside.txt: $out" ;;
+esac
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/allowed.md" --report "$tmp/report.md" 2>&1)"; then
+    fail "the deleted --report option was still accepted"
+fi
+case "$out" in
+*'usage: fence-check.sh --brief <rendered.md>'*) ;;
+*) fail "deleted --report option did not produce usage: $out" ;;
+esac
 
 make_brief "$tmp/bad-base.md" '[{"path":"allowed.txt"},{"path":"outside.txt"}]' \
     0000000000000000000000000000000000000000
@@ -130,7 +160,7 @@ git -C "$fixture" add glob/one.txt
 git -C "$fixture" commit -qm "test: change glob path"
 (
     cd "$fixture"
-    "$fence_check" --brief "$tmp/glob.md" --report "$tmp/report.md"
+    "$fence_check" --brief "$tmp/glob.md"
 ) >/dev/null || fail "a matching glob entry was rejected"
 
 mkdir -p "$fixture/glob/private"
@@ -147,7 +177,7 @@ esac
 make_brief "$tmp/globstar.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/**"}]'
 (
     cd "$fixture"
-    "$fence_check" --brief "$tmp/globstar.md" --report "$tmp/report.md"
+    "$fence_check" --brief "$tmp/globstar.md"
 ) >/dev/null || fail "a recursive glob rejected a nested path"
 
 make_brief "$tmp/tooling.md" '[{"path":"CHANGELOG.md"}]'

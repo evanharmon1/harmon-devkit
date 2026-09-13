@@ -3,22 +3,16 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: fence-check.sh --brief <rendered.md> [--report <lane-report.md>]" >&2
+    echo "usage: fence-check.sh --brief <rendered.md>" >&2
     exit 2
 }
 
 brief=""
-report=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --brief)
         [ "$#" -ge 2 ] || usage
         brief="$2"
-        shift 2
-        ;;
-    --report)
-        [ "$#" -ge 2 ] || usage
-        report="$2"
         shift 2
         ;;
     *) usage ;;
@@ -30,11 +24,6 @@ done
     echo "fence-check: brief is not a file: $brief" >&2
     exit 1
 }
-[ -z "$report" ] || [ -f "$report" ] || {
-    echo "fence-check: report is not a file: $report" >&2
-    exit 1
-}
-
 invoking_repo="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     echo "fence-check: not inside a Git worktree" >&2
     exit 1
@@ -71,6 +60,8 @@ jq -e 'type == "object" and (.fence | type == "array")' "$envelope" >/dev/null |
 default_branch="$(jq -r '.default_branch' "$envelope")"
 recorded_base="$(jq -r '.base_sha' "$envelope")"
 worktree_path="$(jq -r '.worktree_path' "$envelope")"
+expected_branch="$(jq -r '.branch' "$envelope")"
+report="$(jq -r '.report_path' "$envelope")"
 lane_root="$(git -C "$worktree_path" rev-parse --show-toplevel 2>/dev/null)" || {
     echo "fence-check: envelope worktree_path is not a Git worktree: $worktree_path" >&2
     exit 1
@@ -91,6 +82,14 @@ lane_common="$(git -C "$worktree_path" rev-parse --path-format=absolute --git-co
 }
 [ "$invoking_common" = "$lane_common" ] || {
     echo "fence-check: envelope worktree_path belongs to a different repository: $worktree_path" >&2
+    exit 1
+}
+current_branch="$(git -C "$worktree_path" branch --show-current)" || {
+    echo "fence-check: could not resolve the current branch in $worktree_path" >&2
+    exit 1
+}
+[ "$current_branch" = "$expected_branch" ] || {
+    echo "fence-check: envelope branch $expected_branch does not match worktree branch ${current_branch:-<detached>}" >&2
     exit 1
 }
 comparison_base="$(git -C "$worktree_path" merge-base HEAD "origin/$default_branch" 2>/dev/null)" || {
@@ -126,7 +125,7 @@ while IFS= read -r -d '' entry; do
 done <"$allowed"
 
 : >"$expanded"
-if [ -n "$report" ]; then
+if [ -f "$report" ]; then
     awk '
       /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] fence expansion: [^:]+:[0-9]+(-[0-9]+)?[[:space:]]+/ {
         path=$0
