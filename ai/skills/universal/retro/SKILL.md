@@ -53,6 +53,16 @@ is a reconstruction after the fact.
   marker it ignored, and refuses a trajectory whose own record names a
   different PR.
 
+Discovery applies strict tier precedence: a trusted marker on the PR itself,
+then trusted markers on closing issue references, then trusted markers on
+same-repository issues named in the PR body by `Refs`, `Addresses`, or `Part
+of`, and finally a `run-<issue>-<slug>` body token only when the PR or issue
+`<issue>` carries a trusted marker naming that exact run. More than one run on
+the selected tier is indeterminate, and a lower tier never overrides a run
+selected above it. References come from the PR body, never its comments; both
+the closing-reference set and these body-derived lookup inputs are mutable
+current state that `--as-of` cannot reconstruct.
+
 **Run the projection rather than reading the trajectory by hand.** It resolves
 the run id, calls the harvester (`scripts/dev-flow-stats.mjs --run <id> --json`,
 issue #663) and renders §2's fixed sections:
@@ -93,8 +103,10 @@ the harvester replays the record's append-only chain to it. But two discovery
 inputs are things GitHub does not version, so they are read as they stand now
 and are **not** reconstructed:
 
-- the **linked-issue set** (the PR's closing references), which decides which
-  issues a fallback search reaches — re-linking one changes a historical read;
+- the **linked-issue set** (the PR's closing references plus the same-repository
+  non-closing references and run-id issue numbers in its body), which decides
+  which issues a fallback search reaches — re-linking an issue or editing the
+  body changes a historical read;
 - the **PR body** the disclosed caps come from, which is mutable and
   unauthenticated anyway (§2).
 

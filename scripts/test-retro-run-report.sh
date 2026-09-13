@@ -473,6 +473,152 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 contains "$OUT" "run id from evidence marker on issue #$ISSUE" &&
     ok "the report states where the run id came from" || bad "provenance of the run id is not reported"
 
+echo "==> a Refs-only PR discovers trusted evidence on the non-closing issue"
+d="$TMPROOT/nonclosing-refs"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "Refs #$ISSUE"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
+    ok "the non-closing reference selects the trusted issue marker" ||
+    bad "expected Refs-only discovery, got $RC: $ERR"
+contains "$OUT" "evidence marker on issue #$ISSUE (non-closing reference)" &&
+    ok "the source names the non-closing tier" || bad "the source hides the selected discovery tier"
+
+echo "==> a same-repository qualified reference is accepted case-insensitively"
+d="$TMPROOT/qualified-refs"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "aDdReSsEs O/R#$ISSUE"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "the qualified same-repository reference is discovered" ||
+    bad "expected qualified discovery, got $RC: $ERR"
+
+echo "==> a qualified cross-repository reference is never consulted"
+d="$TMPROOT/cross-repo-refs"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "Refs other/project#$ISSUE"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && ok "the cross-repository reference cannot select a run" ||
+    bad "expected cross-repository refusal, got $RC: $ERR"
+contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
+    bad "the cross-repository issue was queried in the target repository" ||
+    ok "the cross-repository issue was not queried"
+
+echo "==> a body run-id token binds only through its issue's exact trusted marker"
+d="$TMPROOT/body-run-token"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "Run identity: run-6001-further-along"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+set_comments "$d/comments" 6001 "$d/i1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
+    ok "the exact trusted issue marker authenticates the body token" ||
+    bad "expected authenticated body-token discovery, got $RC: $ERR"
+contains "$OUT" "evidence marker on issue #6001 (PR-body run-id token)" &&
+    ok "the source names the body-token tier" || bad "the source hides body-token authentication"
+
+echo "==> a body token cannot borrow a different run marker from the named issue"
+d="$TMPROOT/body-run-token-mismatch"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "Run identity: run-6001-further-along"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-6001-something-else kickoff issue -
+set_comments "$d/comments" 6001 "$d/i1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "run-6001-further-along vs run-6001-something-else" &&
+    ok "mismatched trusted evidence is indeterminate rather than absent" ||
+    bad "a mismatched issue marker did not raise an integrity error, got $RC: $ERR"
+
+echo "==> a contributor-controlled body run-id token never binds by itself"
+d="$TMPROOT/unverified-body-run-token"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "Run identity: run-6001-further-along"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "run-6001-further-along had no matching trusted marker" &&
+    ok "the unverified token is refused with an explicit reason" ||
+    bad "expected an unauthenticated-token fallback, got $RC: $ERR"
+
+echo "==> closing-reference evidence keeps precedence over non-closing evidence"
+d="$TMPROOT/closing-precedence"
+mkdir -p "$d"
+make_gh "$d"
+ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+write_file "$d/body" "Refs #665"
+write_file "$d/c1" "no marker"
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+marker_file "$d/i2" run-index run-a-lower-tier kickoff issue -
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+set_comments "$d/comments" 665 "$d/i2"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" "evidence marker on issue #$ISSUE (closing reference)" &&
+    ok "the closing-reference tier wins" || bad "a lower discovery tier overrode closing evidence: $ERR"
+
+echo "==> two non-closing issues naming different runs are indeterminate"
+d="$TMPROOT/ambiguous-nonclosing"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" $'Refs #664\nPart of #665'
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-one kickoff issue -
+marker_file "$d/i2" run-index run-two kickoff issue -
+set_comments "$d/comments" 664 "$d/i1"
+set_comments "$d/comments" 665 "$d/i2"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "run-one, run-two" &&
+    ok "the selected non-closing tier refuses ambiguity" ||
+    bad "expected non-closing ambiguity, got $RC: $ERR"
+
 echo "==> a marker past the first page of comments is still found"
 d="$TMPROOT/paged"
 mkdir -p "$d"

@@ -64,7 +64,7 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
                                evidence as of this instant. Discovery inputs
                                GitHub does not version are NOT reconstructed
                                and stay current-state: the linked-issue set
-                               (the PR's closing references) and the PR body
+                               (the PR's closing and body references) and the PR body
                                the disclosed caps are read from. The report
                                says so wherever it uses one.
   --stats-script <path>        Override harvester discovery (tests, or a
@@ -382,10 +382,55 @@ function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
   return found
 }
 
-// Prefer the PR's own evidence comments over the issue's: a re-run posts a
-// second run record on the same issue, so "which run is this PR's" is only
-// answerable from PR-bound evidence. Fall back to the linked issues, which is
-// where a run that capped before its PR existed keeps everything.
+function parseBodyDiscovery(body, repo) {
+  const issueNumbers = new Set()
+  const runTokens = new Map()
+  if (typeof body !== 'string') return { issueNumbers, runTokens }
+
+  // These are the non-closing reference forms the track-work contract emits.
+  // An explicit owner/repo prefix is accepted only for this repository: a PR
+  // cannot authenticate a run by reaching sideways into another tracker.
+  const referenceRe = /\b(?:refs|addresses|part[ \t]+of)[ \t]+(?:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)(?<number>[1-9][0-9]*)\b/gi
+  for (const match of body.matchAll(referenceRe)) {
+    if (!match.groups.repo || match.groups.repo.toLowerCase() === repo.toLowerCase()) {
+      issueNumbers.add(Number(match.groups.number))
+    }
+  }
+
+  // A contributor-controlled body token is only a lookup hint. Its issue
+  // number says where the trusted marker must live; the exact run id still
+  // has to be named by that marker before this tier can select it.
+  const runIdRe = /\brun-(?<number>[1-9][0-9]*)-(?<slug>[a-z0-9][a-z0-9-]*)\b/g
+  for (const match of body.matchAll(runIdRe)) {
+    const runId = match[0]
+    runTokens.set(runId, Number(match.groups.number))
+  }
+  return { issueNumbers, runTokens }
+}
+
+function addIssueRuns(target, issueNumber, runIds) {
+  for (const runId of runIds) {
+    const seen = target.get(runId) || new Set()
+    seen.add(issueNumber)
+    target.set(runId, seen)
+  }
+}
+
+function selectIssueTier(prNumber, tier, runs, sourceSuffix) {
+  if (runs.size > 1) {
+    throw new IndeterminateError(
+      `${tier} for PR #${prNumber} carry trusted evidence for more than one run (${[...runs.keys()].sort().join(', ')}) — rerun with --run <run_id>`
+    )
+  }
+  if (runs.size === 0) return null
+  const [runId, seen] = [...runs.entries()][0]
+  const where = [...seen].sort((a, b) => a - b).map((n) => `#${n}`).join(', ')
+  return { runId, source: `evidence marker on issue ${where} (${sourceSuffix})` }
+}
+
+// Prefer the PR's own evidence comments over closing references, then body
+// non-closing references, then an authenticated body run-id token. Lower tiers
+// can contribute anomaly reporting, but never override a run selected above.
 function discoverRun(args, trustedActorIds) {
   const asOf = args.asOf || null
   const untrusted = []
@@ -406,26 +451,35 @@ function discoverRun(args, trustedActorIds) {
     )
   }
   // NOT reconstructed by --as-of, and the report says so. The linked-issue
-  // set comes from the PR's closing references as they stand NOW: GitHub does
-  // not version that link, so a re-link after the cutoff changes which issues
-  // a historical read searches. Rather than patch a fourth current-state
+  // set comes from the PR's closing references and current body as they stand
+  // NOW: GitHub does not version those inputs, so a re-link or body edit after
+  // the cutoff changes which issues a historical read searches. Rather than
+  // patch a fourth current-state
   // input into the cutoff (review round 4's P1, after r2's comment filter and
   // r3's cutoff validation), --as-of is restructured to the invariant it can
   // actually keep: it reconstructs the RUN RECORD and its comment evidence at
   // the cutoff, and every discovery input GitHub does not version is
   // current-state and disclosed as such in the output.
-  const issues = Array.isArray(pr.closingIssuesReferences) ? pr.closingIssuesReferences : []
+  const closingIssues = Array.isArray(pr.closingIssuesReferences) ? pr.closingIssuesReferences : []
+  const closingNumbers = new Set(
+    closingIssues.map((issue) => Number(issue && issue.number)).filter((number) => Number.isInteger(number) && number > 0)
+  )
+  const bodyDiscovery = parseBodyDiscovery(pr.body, args.repo)
+  const nonClosingNumbers = new Set([...bodyDiscovery.issueNumbers].filter((number) => !closingNumbers.has(number)))
+  const allIssueNumbers = new Set([
+    ...closingNumbers,
+    ...nonClosingNumbers,
+    ...bodyDiscovery.runTokens.values()
+  ])
   // Which issues carried a given run id, not just which ids exist: a run whose
   // record sits on a different issue than the reader expects is worth naming
   // in the report's provenance line rather than reducing to "an issue".
-  const fromIssues = new Map()
-  for (const issue of issues) {
-    const comments = fetchComments(args.repo, issue.number, asOf)
-    for (const runId of collectRunIds(comments, trustedActorIds, `issue #${issue.number}`, untrusted, malformed)) {
-      const seen = fromIssues.get(runId) || new Set()
-      seen.add(issue.number)
-      fromIssues.set(runId, seen)
-    }
+  const issueRuns = new Map()
+  for (const issueNumber of allIssueNumbers) {
+    issueRuns.set(
+      issueNumber,
+      collectRunIds(fetchComments(args.repo, issueNumber, asOf), trustedActorIds, `issue #${issueNumber}`, untrusted, malformed)
+    )
   }
   // The PR's own run wins, but the linked issues are still SCANNED — the
   // early return that used to skip them meant a redirect attempt or a
@@ -434,19 +488,65 @@ function discoverRun(args, trustedActorIds) {
   // reported (cloud review round 1, confirmed P2). Selection preference and
   // anomaly reporting are different jobs; only the first one short-circuits.
   if (fromPr.length === 1) {
-    return { pr, runId: fromPr[0], source: `evidence marker on PR #${pr.number}`, untrusted, malformed }
+    return {
+      pr,
+      runId: fromPr[0],
+      source: `evidence marker on PR #${pr.number}`,
+      untrusted,
+      malformed,
+      unverifiedBodyRunIds: []
+    }
   }
-  if (fromIssues.size === 1) {
-    const [runId, seen] = [...fromIssues.entries()][0]
-    const where = [...seen].sort((a, b) => a - b).map((n) => `#${n}`).join(', ')
-    return { pr, runId, source: `evidence marker on issue ${where}`, untrusted, malformed }
+
+  const fromClosing = new Map()
+  for (const issueNumber of closingNumbers) addIssueRuns(fromClosing, issueNumber, issueRuns.get(issueNumber))
+  const closingSelection = selectIssueTier(pr.number, 'the closing references', fromClosing, 'closing reference')
+  if (closingSelection) {
+    return { pr, ...closingSelection, untrusted, malformed, unverifiedBodyRunIds: [] }
   }
-  if (fromIssues.size > 1) {
+
+  const fromNonClosing = new Map()
+  for (const issueNumber of nonClosingNumbers) addIssueRuns(fromNonClosing, issueNumber, issueRuns.get(issueNumber))
+  const nonClosingSelection = selectIssueTier(
+    pr.number,
+    'the non-closing issue references',
+    fromNonClosing,
+    'non-closing reference'
+  )
+  if (nonClosingSelection) {
+    return { pr, ...nonClosingSelection, untrusted, malformed, unverifiedBodyRunIds: [] }
+  }
+
+  const fromBodyTokens = new Map()
+  for (const [runId, issueNumber] of bodyDiscovery.runTokens) {
+    if ((issueRuns.get(issueNumber) || new Set()).has(runId)) addIssueRuns(fromBodyTokens, issueNumber, [runId])
+  }
+  const bodyTokenSelection = selectIssueTier(
+    pr.number,
+    'the authenticated PR-body run-id tokens',
+    fromBodyTokens,
+    'PR-body run-id token'
+  )
+  if (bodyTokenSelection) {
+    return { pr, ...bodyTokenSelection, untrusted, malformed, unverifiedBodyRunIds: [] }
+  }
+  const mismatchedBodyTokens = [...bodyDiscovery.runTokens.entries()].flatMap(([runId, issueNumber]) => {
+    const otherRuns = [...(issueRuns.get(issueNumber) || [])].filter((candidate) => candidate !== runId).sort()
+    return otherRuns.length === 0 ? [] : [`${runId} vs ${otherRuns.join(', ')} on issue #${issueNumber}`]
+  })
+  if (mismatchedBodyTokens.length > 0) {
     throw new IndeterminateError(
-      `the issues linked to PR #${pr.number} carry trusted evidence for more than one run (${[...fromIssues.keys()].sort().join(', ')}) — rerun with --run <run_id>`
+      `PR #${pr.number} carries body run-id token(s) that do not match the trusted evidence on their named issues (${mismatchedBodyTokens.join('; ')}) — rerun with --run <run_id>`
     )
   }
-  return { pr, runId: null, source: null, untrusted, malformed }
+  return {
+    pr,
+    runId: null,
+    source: null,
+    untrusted,
+    malformed,
+    unverifiedBodyRunIds: [...bodyDiscovery.runTokens.keys()].sort()
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -811,7 +911,7 @@ function renderMarkdown(report) {
   if (report.as_of) {
     l.push(`- Reconstructed as of: ${safe(report.as_of)} — **the run record and its comment evidence only.**`)
     l.push(
-      '  Discovery inputs GitHub does not version are **not** reconstructed and are read as they stand now: the **linked-issue set** (the PR\'s closing references, which decide which issues a fallback search reaches) and the **PR body** the disclosed caps above come from. Re-linking an issue, or editing the body, changes those even for a fixed cutoff.'
+      '  Discovery inputs GitHub does not version are **not** reconstructed and are read as they stand now: the **linked-issue set** (the PR\'s closing references plus same-repository non-closing references and run-id issue numbers parsed from its body, which decide which issues a fallback search reaches) and the **PR body** the disclosed caps above come from. Re-linking an issue, or editing the body, changes those even for a fixed cutoff.'
     )
   }
   l.push('')
@@ -1044,6 +1144,7 @@ function run(argv) {
   let runIdFrom = args.run ? '--run on the command line' : null
   let untrustedMarkers = []
   let malformedMarkers = []
+  let unverifiedBodyRunIds = []
   if (!runId) {
     try {
       const discovered = discoverRun(args, trusted.ids)
@@ -1052,6 +1153,7 @@ function run(argv) {
       runIdFrom = discovered.source
       untrustedMarkers = discovered.untrusted
       malformedMarkers = discovered.malformed
+      unverifiedBodyRunIds = discovered.unverifiedBodyRunIds
     } catch (error) {
       if (!(error instanceof IndeterminateError)) throw error
       console.error(`${TOOL}: indeterminate — ${error.message}`)
@@ -1091,7 +1193,7 @@ function run(argv) {
         return 11
       }
       console.error(
-        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker at all; use the retro's fallback procedure`
+        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker at all${unverifiedBodyRunIds.length > 0 ? `; PR-body run-id token(s) ${unverifiedBodyRunIds.join(', ')} had no matching trusted marker and cannot bind a run` : ''}; use the retro's fallback procedure`
       )
       return 10
     }
