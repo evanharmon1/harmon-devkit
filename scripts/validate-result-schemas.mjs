@@ -2005,27 +2005,8 @@ function entryDigestForCheck(contentFields, prevDigest) {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
-const PLAN_PROJECTION_FIELDS = [
-  'schema',
-  'slate_id',
-  'generated_at',
-  'base_sha',
-  'policy',
-  'dispatcher',
-  'issues',
-  'overlaps',
-  'waves',
-  'lanes',
-  'fence_expansions',
-]
-
-function planProjectionDigest(document) {
-  const projection = Object.fromEntries(PLAN_PROJECTION_FIELDS.map((key) => [key, document[key]]))
-  return createHash('sha256').update(canonicalJsonForDigest(projection), 'utf8').digest('hex')
-}
-
-// checkPlanRevisionChain — plan recomputation updates the current projection
-// and appends one immutable reason/timestamp entry. This mirrors run.json's
+// checkPlanRevisionChain — plan recomputation appends one complete immutable
+// plan snapshot. This mirrors run.json's
 // chain convention: zero-based contiguous seq, genesis first, exact retry
 // duplicates tolerated, forks rejected, and each digest authenticating the
 // entry's content plus prev_digest.
@@ -2039,7 +2020,8 @@ function checkPlanRevisionChain(document, errors) {
         typeof entry === 'object' &&
         typeof entry.seq === 'number' &&
         typeof entry.digest === 'string' &&
-        typeof entry.projection_digest === 'string' &&
+        entry.plan &&
+        typeof entry.plan === 'object' &&
         typeof entry.prev_digest === 'string' &&
         typeof entry.at === 'string' &&
         typeof entry.reason === 'string'
@@ -2080,7 +2062,7 @@ function checkPlanRevisionChain(document, errors) {
       return null
     }
     const expected = entryDigestForCheck(
-      { seq: entry.seq, projection_digest: entry.projection_digest, at: entry.at, reason: entry.reason },
+      { seq: entry.seq, plan: entry.plan, at: entry.at, reason: entry.reason },
       prevDigest,
     )
     if (entry.digest !== expected) {
@@ -2109,7 +2091,6 @@ function checkPlanCoherence(document, errors) {
   const overlaps = Array.isArray(document.overlaps) ? document.overlaps : []
   const waves = Array.isArray(document.waves) ? document.waves : []
   const lanes = Array.isArray(document.lanes) ? document.lanes : []
-  const expansions = Array.isArray(document.fence_expansions) ? document.fence_expansions : []
 
   for (const number of duplicates(issues.map((issue) => issue.number))) {
     errors.push(`$plan.issues: duplicate issue number ${number}`)
@@ -2176,14 +2157,10 @@ function checkPlanCoherence(document, errors) {
   for (const issueNumber of expectedIssues) {
     if (!laneByIssue.has(issueNumber)) errors.push(`$plan.lanes: dispatchable issue ${issueNumber} has no lane assignment`)
   }
-  for (const [index, expansion] of expansions.entries()) {
-    if (!laneNames.includes(expansion.lane)) {
-      errors.push(`$plan.fence_expansions[${index}].lane: unknown lane ${JSON.stringify(expansion.lane)}`)
+  for (const [index, lane] of lanes.entries()) {
+    for (const path of duplicates((lane.expansions || []).map((entry) => entry.path))) {
+      errors.push(`$plan.lanes[${index}].expansions: duplicate path ${JSON.stringify(path)}`)
     }
-  }
-  for (const key of duplicates(expansions.map((entry) => `${entry.lane}\u0000${entry.path}`))) {
-    const [lane, path] = key.split('\u0000')
-    errors.push(`$plan.fence_expansions: duplicate lane/path expansion ${JSON.stringify(lane)} ${JSON.stringify(path)}`)
   }
 
   const policyCap = document.policy?.breadth?.max_parallel_agents
@@ -2239,14 +2216,12 @@ function checkPlanCoherence(document, errors) {
     }
   }
   const seenOverlapPairs = new Set()
-  const overlapByPair = new Map()
   for (const [index, overlap] of overlaps.entries()) {
     const pair = [overlap.issue_a, overlap.issue_b].sort((a, b) => a - b)
     const key = pair.join(':')
     if (overlap.issue_a >= overlap.issue_b) errors.push(`$plan.overlaps[${index}]: issue_a must be less than issue_b`)
     if (seenOverlapPairs.has(key)) errors.push(`$plan.overlaps: duplicate issue pair ${key}`)
     seenOverlapPairs.add(key)
-    overlapByPair.set(key, overlap)
     const expectedPaths = expectedOverlaps.get(key)
     const actualPaths = [...new Set(overlap.paths || [])].sort()
     if (!expectedPaths) errors.push(`$plan.overlaps[${index}]: pair ${key} has no candidate-file overlap`)
@@ -2275,59 +2250,62 @@ function checkPlanCoherence(document, errors) {
     if (!seenOverlapPairs.has(key)) errors.push(`$plan.overlaps: missing candidate-file overlap pair ${key}`)
   }
 
+  const mergeSuccessors = new Map(issues.map((issue) => [issue.number, []]))
+  const mergeInDegree = new Map(issues.map((issue) => [issue.number, 0]))
+  for (const overlap of overlaps) {
+    const dependency = overlap.merge_dependency
+    if (!dependency || !mergeSuccessors.has(dependency.before) || !mergeInDegree.has(dependency.after)) continue
+    mergeSuccessors.get(dependency.before).push(dependency.after)
+    mergeInDegree.set(dependency.after, mergeInDegree.get(dependency.after) + 1)
+  }
+  const mergeReady = [...mergeInDegree].filter(([, degree]) => degree === 0).map(([issue]) => issue)
+  let mergeVisited = 0
+  while (mergeReady.length > 0) {
+    const issue = mergeReady.pop()
+    mergeVisited += 1
+    for (const successor of mergeSuccessors.get(issue) || []) {
+      const degree = mergeInDegree.get(successor) - 1
+      mergeInDegree.set(successor, degree)
+      if (degree === 0) mergeReady.push(successor)
+    }
+  }
+  if (mergeVisited !== mergeInDegree.size) {
+    errors.push('$plan.overlaps: merge-dependency graph must be acyclic')
+  }
+
   const effectiveFenceByLane = new Map(
     lanes.map((lane) => [
       lane.lane,
-      new Set((lane.fence || []).map((item) => (typeof item === 'string' ? item : item?.path)).filter(Boolean)),
+      new Set([
+        ...(lane.fence || []).map((item) => (typeof item === 'string' ? item : item?.path)).filter(Boolean),
+        ...(lane.expansions || []).map((entry) => entry.path).filter(Boolean),
+      ]),
     ]),
   )
-  for (const expansion of expansions) effectiveFenceByLane.get(expansion.lane)?.add(expansion.path)
-  for (let left = 0; left < lanes.length; left += 1) {
-    for (let right = left + 1; right < lanes.length; right += 1) {
-      const laneA = lanes[left]
-      const laneB = lanes[right]
-      const fenceA = effectiveFenceByLane.get(laneA.lane) || new Set()
-      const fenceB = effectiveFenceByLane.get(laneB.lane) || new Set()
-      const sharedFence = [...fenceA].filter((path) => fenceB.has(path)).sort()
-      const key = [laneA.issue, laneB.issue].sort((a, b) => a - b).join(':')
-      const overlap = overlapByPair.get(key)
-      const splitPaths = new Set(overlap?.resolution === 'split' ? overlap.paths || [] : [])
-      if (overlap?.resolution === 'split') {
-        const overlapIndex = overlaps.indexOf(overlap)
-        for (const path of splitPaths) {
-          const ownerCount = Number(fenceA.has(path)) + Number(fenceB.has(path))
-          if (ownerCount !== 1) {
-            errors.push(`$plan.overlaps[${overlapIndex}].paths: split path ${JSON.stringify(path)} must have exactly one effective-fence owner, got ${ownerCount}`)
-          }
-        }
-      }
-      const forbiddenShared = overlap?.resolution === 'serialize'
-        ? []
-        : sharedFence.filter((path) => !splitPaths.has(path))
-      if (forbiddenShared.length > 0) {
-        errors.push(
-          `$plan.lanes: effective fences for ${JSON.stringify(laneA.lane)} and ${JSON.stringify(laneB.lane)} overlap on ${JSON.stringify(forbiddenShared)} without a serialized issue pair`,
-        )
-      }
+  const candidatePaths = new Set(activeIssues.flatMap((issue) => issue.candidate_files || []))
+  for (const path of candidatePaths) {
+    const owners = lanes.filter((lane) => effectiveFenceByLane.get(lane.lane)?.has(path)).map((lane) => lane.lane)
+    if (owners.length !== 1) {
+      errors.push(`$plan.lanes: candidate path ${JSON.stringify(path)} must have exactly one effective-fence owner, got ${owners.length}`)
     }
   }
+}
 
+function checkDispatchPlan(document, errors) {
   const revisions = checkPlanRevisionChain(document, errors)
-  const latest = revisions?.at(-1)
-  if (latest && document.generated_at !== latest.at) {
-    errors.push(`$plan.generated_at: must equal the latest revision timestamp ${latest.at}`)
-  }
-  if (latest && latest.projection_digest !== planProjectionDigest(document)) {
-    errors.push('$plan.revisions: latest projection_digest does not match the canonical current plan projection — tampered')
-  }
-  const first = revisions?.[0]
-  if (first && latest) {
-    const firstTime = Date.parse(first.at)
-    const latestTime = Date.parse(latest.at)
-    for (const [index, expansion] of expansions.entries()) {
-      const expansionTime = Date.parse(expansion.at)
-      if (expansionTime < firstTime || expansionTime > latestTime) {
-        errors.push(`$plan.fence_expansions[${index}].at: must fall within the plan revision interval`)
+  if (!revisions) return
+  const firstTime = Date.parse(revisions[0].at)
+  const latestTime = Date.parse(revisions.at(-1).at)
+  for (const revision of revisions) {
+    const revisionErrors = []
+    checkPlanCoherence(revision.plan, revisionErrors)
+    errors.push(...revisionErrors.map((error) => error.replace('$plan', `$plan.revisions[${revision.seq}].plan`)))
+    for (const [laneIndex, lane] of (revision.plan.lanes || []).entries()) {
+      for (const [expansionIndex, expansion] of (lane.expansions || []).entries()) {
+        const expansionTime = Date.parse(expansion.at)
+        if (expansionTime < firstTime || expansionTime > latestTime) {
+          errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must fall within the plan revision interval`)
+        }
       }
     }
   }
@@ -3151,7 +3129,7 @@ function main() {
   if (kind === 'plan') {
     const schema = loadSchema('plan.schema.json')
     const errors = validateAgainst(schema, instance, '$plan')
-    if (errors.length === 0) checkPlanCoherence(instance, errors)
+    if (errors.length === 0) checkDispatchPlan(instance, errors)
     checkTimestampRealness(instance, errors, '$plan')
     report(errors, 'dispatch plan OK')
     return

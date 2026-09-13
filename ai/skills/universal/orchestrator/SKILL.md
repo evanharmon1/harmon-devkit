@@ -58,34 +58,37 @@ Build and publish the plan in this order:
    `[breadth].max_parallel_agents` directly. Only when Foreman is the dispatcher
    is that policy cap intersected with `.foreman.toml`'s `max_parallel`; a
    configured Foreman limit never lowers an interactive run's cap.
-5. **Project.** Record the resolved policy snapshot; re-verified issues and
-   candidate files; pairwise overlaps and resolutions; waves; and lane, issue,
-   branch, run id, and fence assignments. Each lane fence uses exactly the
-   `brief.envelope.schema.json` `fence` item shape. Later authorized expansions
-   append `{lane, path, at, reason}` entries instead of rewriting the original
-   fence.
+5. **Project.** In a complete revision `plan`, record the resolved policy
+   snapshot; re-verified issues and candidate files; pairwise overlaps and
+   resolutions; waves; and lane, issue, branch, run id, and fence assignments.
+   Each lane fence uses exactly the `brief.envelope.schema.json` `fence` item
+   shape. Later authorized expansions append `{path, at, reason}` entries to
+   that lane's `expansions` array instead of rewriting its original fence.
 6. **Emit and validate.** Write the closed record and validate it with
    `node scripts/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
    on a structural error, a broken revision digest, an incomplete overlap set,
-   a graph/projection mismatch, or a cap violation. Immediately before each
-   lane dispatch, compare the live target head with the plan's `base_sha`; when
-   they differ, recompute and validate the plan before dispatching.
+   a graph/projection mismatch, an ownership error, or a cap violation.
+   Immediately before each lane dispatch, compare the live target head with the
+   last revision's `plan.base_sha`; when they differ, recompute and validate the
+   plan before dispatching.
 7. **Recompute after every external merge.** Re-read the new default-branch
    head, release newly unblocked dependents, rebuild waves, and repeat live
-   re-verification and pairwise overlap checks. Update the current projection
-   and append the next `revisions[]` entry (`seq`, `prev_digest`, `digest`,
-   `projection_digest`, `at`, `reason`) using the same canonical-JSON SHA-256
-   chain convention as `run.schema.json`; the projection digest covers the
-   complete sorted-key plan projection at that revision. Never replace revision
-   history. As the slate's single writer, write the complete candidate beside
-   `plan.json`, validate that candidate with the `plan` kind, rename it over the
-   canonical record, then validate the canonical readback. Either validation or
-   rename failure is a blocker; dispatch and merge-queue mutation remain paused.
+   re-verification and pairwise overlap checks. Append the next `revisions[]`
+   entry with the complete new `plan` plus `seq`, `prev_digest`, `digest`, `at`,
+   and `reason`, using the same canonical-JSON SHA-256 chain convention as
+   `run.schema.json`; the digest covers the complete sorted-key `plan` and the
+   chain fields. The last revision is current, and earlier revisions remain
+   reconstructable without a second top-level projection. As the slate's single
+   writer, write the complete candidate beside `plan.json`, validate that
+   candidate with the `plan` kind, rename it over the canonical record, then
+   validate the canonical readback. Either validation or rename failure is a
+   blocker; dispatch and merge-queue mutation remain paused.
 
 ## Lane briefs
 
-Lane briefs consume the validated plan's assignments, fences, overlap choices,
-and merge dependencies rather than reconstructing them from session prose.
+Lane briefs consume the validated plan's last revision assignments, fences,
+overlap choices, and merge dependencies rather than reconstructing them from
+session prose.
 
 The source catalog below is the complete render contract. It deliberately lives
 in this procedure rather than in the dispatched template: substituting free-form

@@ -216,10 +216,13 @@ expect_ok "orchestrator planning validates the emitted plan" \
     grep -qF 'validate-result-schemas.mjs plan <plan.json>' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
 expect_ok "orchestrator planning rechecks target-head freshness before dispatch" \
-    grep -qF 'compare the live target head with the plan' \
+    grep -qF 'compare the live target head with the' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
 expect_ok "orchestrator planning appends recomputations after external merges" \
     grep -qF '**Recompute after every external merge.**' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning keeps each revision reconstructable" \
+    grep -qF 'earlier revisions remain' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
 expect_ok "orchestrator planning publishes recomputations through validated replacement" \
     grep -qF 'write the complete candidate beside' \
