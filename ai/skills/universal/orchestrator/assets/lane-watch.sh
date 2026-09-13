@@ -428,7 +428,16 @@ discover_pr() {
     branch=$2
     payload="$(bounded "$timeout_seconds" gh pr list --repo "$repo" --head "$branch" --state all \
         --limit 1 --json number,isDraft,state)" || return 1
-    jq -e 'type == "array"' >/dev/null 2>&1 <<<"$payload" || return 1
+    jq -e '
+      type == "array"
+      and length <= 1
+      and all(.[];
+        (.number | type) == "number"
+        and (.number | floor) == .number
+        and .number > 0
+        and (.isDraft | type) == "boolean"
+        and (.state == "OPEN" or .state == "CLOSED" or .state == "MERGED"))
+    ' >/dev/null 2>&1 <<<"$payload" || return 1
     jq -r '
       .[0] // empty
       | "#\(.number) draft=\(.isDraft) \(.state)"

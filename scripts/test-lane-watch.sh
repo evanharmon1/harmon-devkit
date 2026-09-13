@@ -94,7 +94,7 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
         exit 92
     fi
     if [ -f "$WATCH_FIXTURES/malformed-pr-list" ]; then
-        printf '%s\n' '{"error":"temporarily unavailable"}'
+        printf '%s\n' '[{"error":"partial response"}]'
         exit 0
     fi
     branch=
@@ -250,7 +250,8 @@ bash "$watcher" --iterations 1 --registry "$registry" --workspace-root "$workspa
 assert_count "$malformed_out" 0 '^AGENT delta:'
 rm "$fixture_dir/malformed-list"
 
-# GitHub indeterminacy terminates nonzero so persistent supervision re-arms.
+# A syntactically valid but incomplete PR object is indeterminate, so
+# persistent supervision re-arms instead of persisting a #null transition.
 touch "$fixture_dir/malformed-pr-list"
 github_failure_err="$test_tmp/github-failure.err"
 if bash "$watcher" --iterations 1 --registry "$registry" \
