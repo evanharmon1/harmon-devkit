@@ -235,6 +235,8 @@ after that validation passes. Immediately after every replacement of
 same adjudication documents to validate the canonical readback. Either
 validation failure fails the round and is a terminal blocker; never publish an
 invalid candidate or defer validation until publication or promotion.
+`run.json.receipts` cannot yet survive this schema validation; that pre-existing
+contract gap is tracked in #961.
 
 After each adjudication, keep the immutable source envelopes locally, but build
 the fenced JSON public comment only from a verification-bound projection. Join

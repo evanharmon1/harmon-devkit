@@ -92,6 +92,8 @@ for text in 'Before replacing `run.json`, write the complete candidate beside it
     'Rename the candidate over `run.json` only' \
     'after that validation passes' \
     'scripts/validate-result-schemas.mjs run <run.json>' \
+    '`run.json.receipts` cannot yet survive this schema validation' \
+    'contract gap is tracked in #961' \
     'The advance is' \
     'idempotent: a re-entry that finds the transition already applied adopts it' \
     'it never' \
