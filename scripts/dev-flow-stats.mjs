@@ -1590,9 +1590,15 @@ function buildRunDirectory(runRecord, roundEvidence, destDir) {
   issueRounds.sort((a, b) => Math.min(...a.commentIds) - Math.min(...b.commentIds));
 
   const receipts = [];
-  const transitionEnteredAt = new Map(
-    (runRecord.stage_transitions ?? []).map((entry) => [entry.stage, entry.entered_at]),
-  );
+  const recordedTransitions = runRecord.stage_transitions ?? [];
+  let recordedTransitionCursor = 0;
+  const nextEnteredAt = (stage) => {
+    while (recordedTransitionCursor < recordedTransitions.length) {
+      const transition = recordedTransitions[recordedTransitionCursor++];
+      if (transition.stage === stage) return transition.entered_at;
+    }
+    return runRecord.started_at;
+  };
   let currentStage = null;
   let passIndex = 0;
   for (const round of issueRounds) {
@@ -1600,7 +1606,7 @@ function buildRunDirectory(runRecord, roundEvidence, destDir) {
       receipts.push({
         kind: "transition",
         stage: round.stage,
-        entered_at: transitionEnteredAt.get(round.stage) ?? runRecord.started_at,
+        entered_at: nextEnteredAt(round.stage),
       });
       currentStage = round.stage;
     }

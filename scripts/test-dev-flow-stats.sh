@@ -1612,15 +1612,28 @@ function writeScenario(name, db) {
 // posting order.
 {
   const runId = "run-chronological-rounds-1";
-  const payload1 = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 1, adjudications: [] } };
+  const pass1 = { ...pass("codex-cli", []), produced_at: "2026-09-01T00:01:00Z" };
+  const payload1 = { passes: [pass1], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 1, adjudications: [] } };
   const ev1 = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, payload1, "2026-09-01T00:01:00Z");
-  const payload2 = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
+  const pass2 = { ...pass("codex-cli", []), produced_at: "2026-09-01T00:02:00Z" };
+  const payload2 = { passes: [pass2], adjudication: { schema: 2, run_id: runId, stage: "review", round: 1, adjudications: [] } };
   const ev2 = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, payload2, "2026-09-01T00:02:00Z");
-  const payload3 = { passes: [pass("codex-cli", [])], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 2, adjudications: [] } };
+  const pass3 = { ...pass("codex-cli", []), produced_at: "2026-09-01T00:03:00Z" };
+  const payload3 = { passes: [pass3], adjudication: { schema: 2, run_id: runId, stage: "challenge", round: 2, adjudications: [] } };
   const ev3 = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 2, 1, payload3, "2026-09-01T00:03:00Z");
   const runBody = {
     schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
-    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: "2026-09-01T00:00:00Z", exit: "claimed" },
+      { stage: "claim", entered_at: "2026-09-01T00:00:10Z", exit: "implementing" },
+      { stage: "implement", entered_at: "2026-09-01T00:00:20Z", exit: "verifying" },
+      { stage: "verify", entered_at: "2026-09-01T00:00:30Z", exit: "challenging" },
+      { stage: "challenge", entered_at: "2026-09-01T00:00:40Z", exit: "reviewing" },
+      { stage: "review", entered_at: "2026-09-01T00:01:40Z", exit: "implementing" },
+      { stage: "implement", entered_at: "2026-09-01T00:02:10Z", exit: "verifying" },
+      { stage: "verify", entered_at: "2026-09-01T00:02:20Z", exit: "challenging" },
+      { stage: "challenge", entered_at: "2026-09-01T00:02:40Z" },
+    ]),
     interventions: chain([]), settlements: chain([]),
     outcome: null, pr: null,
     evidence_comments: [
@@ -3405,6 +3418,21 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 echo "$out" | jq -e '.rounds[0].stage == "challenge" and .rounds[0].round == 1' >/dev/null || fail "chronological-rounds: expected rounds[0] = challenge r1, got: $out"
 echo "$out" | jq -e '.rounds[1].stage == "review" and .rounds[1].round == 1' >/dev/null || fail "chronological-rounds: expected rounds[1] = review r1 (posted before challenge r2), got: $out"
 echo "$out" | jq -e '.rounds[2].stage == "challenge" and .rounds[2].round == 2' >/dev/null || fail "chronological-rounds: expected rounds[2] = challenge r2, got: $out"
+
+echo "== challenge round 2: replay preserves repeated-stage transition timestamps by occurrence =="
+export FAKE_EXIT_RECEIPTS_LOG="$tmp/reentry-receipts.json"
+node scripts/dev-flow-stats.mjs --repo o/r --replay --policy "$tmp/policy-matching.toml" --exit-script "$tmp/fake-exit-script.mjs" --trusted-actor-id 9001 --json >/dev/null
+jq -e '
+  [
+    {kind: "transition", stage: "challenge", entered_at: "2026-09-01T00:00:40Z"},
+    {kind: "pass", file: "challenge-r1-0"},
+    {kind: "transition", stage: "review", entered_at: "2026-09-01T00:01:40Z"},
+    {kind: "pass", file: "review-r1-1"},
+    {kind: "transition", stage: "challenge", entered_at: "2026-09-01T00:02:40Z"},
+    {kind: "pass", file: "challenge-r2-2"}
+  ] == .
+' "$FAKE_EXIT_RECEIPTS_LOG" >/dev/null || fail "reentry replay did not consume repeated-stage timestamps in occurrence order"
+unset FAKE_EXIT_RECEIPTS_LOG
 
 echo "== shepherd round 1: a bot-authored post-promotion commit never counts as a post-ready HUMAN fix =="
 export DFSTATS_DB="$tmp/scenarios/postfix-bot.json"
