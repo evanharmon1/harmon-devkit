@@ -986,6 +986,65 @@ accept_context_case \
     "$fixtures_dir/run.schema/valid/ready-with-settled-deferral.json" \
     --adjudication "$settlement_cross_check_adjudication"
 
+# harmon-devkit#961: receipts are part of the run record in every run-kind
+# mode. The generic corpus loop above proves plain `run`; these explicit cases
+# prove the receipt-required and receipt-binding modes accept the same records.
+for receipt_fixture in \
+    "$fixtures_dir/run.schema/valid/receipts-transition-only.json" \
+    "$fixtures_dir/run.schema/valid/receipts-transition-pass.json"; do
+    accept_context_case \
+        "a receipt-bearing run is accepted by run --receipt ($(basename "$receipt_fixture"))" \
+        run \
+        "$receipt_fixture" \
+        --no-adjudications --receipt
+
+    accept_context_case \
+        "a receipt-bearing run is accepted by run --receipts ($(basename "$receipt_fixture"))" \
+        run \
+        "$receipt_fixture" \
+        --no-adjudications --receipts "$receipt_fixture"
+done
+
+# Each item-shape violation is already rejected by plain `run` in the corpus
+# loop. Exercise the two flag modes too and require their diagnostics to retain
+# the receipt's array index rather than collapsing to an unlocated oneOf error.
+for malformed_receipt in \
+    receipts-unknown-kind \
+    receipts-missing-stage \
+    receipts-missing-entered-at \
+    receipts-missing-file \
+    receipts-extra-property; do
+    malformed_file="$fixtures_dir/run.schema/invalid/$malformed_receipt.json"
+    run_context_case \
+        "$malformed_receipt is rejected by run --receipt with an indexed diagnostic" \
+        run \
+        "$malformed_file" \
+        '$run.receipts[0]' \
+        --no-adjudications --receipt
+
+    run_context_case \
+        "$malformed_receipt is rejected by run --receipts with an indexed diagnostic" \
+        run \
+        "$malformed_file" \
+        '$run.receipts[0]' \
+        --no-adjudications --receipts "$malformed_file"
+done
+
+receipts_not_array="$fixtures_dir/run.schema/invalid/receipts-not-array.json"
+run_context_case \
+    "a non-array receipts value is rejected by run --receipt" \
+    run \
+    "$receipts_not_array" \
+    '$run.receipts' \
+    --no-adjudications --receipt
+
+run_context_case \
+    "a non-array receipts value is rejected by run --receipts before binding" \
+    run \
+    "$receipts_not_array" \
+    'has a non-array receipts field' \
+    --no-adjudications --receipts "$receipts_not_array"
+
 # harmon-devkit#821: --receipts strict mode — an adjudication whose stage has
 # no transition receipt in the --receipts record is rejected; without the flag,
 # the same fixture is accepted (the adjudication's stage IS in stage_transitions).

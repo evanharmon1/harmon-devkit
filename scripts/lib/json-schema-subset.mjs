@@ -38,6 +38,9 @@
 //     present, but the schema-subset engine has no "forbidden otherwise"
 //     keyword, so expressing both directions of one field's status-
 //     conditional shape needs both bounds.
+//   - oneOf — exclusive composition (exactly one member schema must match).
+//     Added for discriminated run-record receipts, whose closed transition
+//     and pass variants are one sequence but must never overlap.
 export const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   '$schema',
   '$id',
@@ -64,7 +67,8 @@ export const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   'if',
   'then',
   'else',
-  'allOf'
+  'allOf',
+  'oneOf'
 ])
 
 export const SUPPORTED_INSTANCE_TYPES = new Set([
@@ -230,6 +234,9 @@ function assertSchemaKeywordValues(rule, location) {
   if (Object.hasOwn(rule, 'allOf') && (!Array.isArray(rule.allOf) || rule.allOf.length === 0)) {
     schemaError(location, 'allOf', 'must be a non-empty array')
   }
+  if (Object.hasOwn(rule, 'oneOf') && (!Array.isArray(rule.oneOf) || rule.oneOf.length === 0)) {
+    schemaError(location, 'oneOf', 'must be a non-empty array')
+  }
 }
 
 // createSchemaValidator ROOT — a validator bound to ROOT for `$ref`
@@ -297,6 +304,9 @@ export function createSchemaValidator(rootSchema) {
     }
     for (const [index, child] of (rule.allOf ?? []).entries()) {
       assertSupportedSchema(child, `${location}.allOf[${index}]`, audit)
+    }
+    for (const [index, child] of (rule.oneOf ?? []).entries()) {
+      assertSupportedSchema(child, `${location}.oneOf[${index}]`, audit)
     }
     audit.active.delete(rule)
     audit.complete.add(rule)
@@ -407,6 +417,22 @@ export function createSchemaValidator(rootSchema) {
     // between branches, each member simply always applies).
     for (const child of rule.allOf ?? []) {
       validateInto(value, child, location, errors)
+    }
+
+    // oneOf: trial every member independently and accept only one exact
+    // match. Branch-local diagnostics are deliberately not emitted: the
+    // stable contract is the indexed instance location plus the exclusive
+    // match count, independent of how a variant's internals evolve.
+    if (Object.hasOwn(rule, 'oneOf')) {
+      let matches = 0
+      for (const child of rule.oneOf) {
+        const trial = []
+        validateInto(value, child, location, trial)
+        if (trial.length === 0) matches += 1
+      }
+      if (matches !== 1) {
+        errors.push(`${location}: must match exactly one schema in oneOf (matched ${matches})`)
+      }
     }
   }
 

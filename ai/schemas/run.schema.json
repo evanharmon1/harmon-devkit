@@ -77,6 +77,57 @@
         }
       }
     },
+    "receipts": {
+      "description": "Optional append-order evidence consumed by scripts/dev-flow-exit.mjs. Transition receipts record the active confidence stage and its entry time; pass receipts bind a persisted pass filename to its position in that sequence.",
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "stage", "entered_at"],
+            "properties": {
+              "kind": { "const": "transition" },
+              "stage": {
+                "enum": [
+                  "kickoff", "claim", "explore", "plan", "implement", "verify",
+                  "challenge", "review", "security", "integration"
+                ]
+              },
+              "entered_at": {
+                "type": "string",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "file"],
+            "properties": {
+              "kind": { "const": "pass" },
+              "file": { "type": "string", "minLength": 1 }
+            }
+          }
+        ]
+      }
+    },
+    "slot_failures": {
+      "description": "Optional evidence that a configured confidence-stage slot remained unfilled after its retry/fallback path, consumed by scripts/dev-flow-exit.mjs when assembling logical rounds.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "round", "slot", "reason"],
+        "properties": {
+          "stage": { "enum": ["challenge", "review"] },
+          "round": { "type": "integer", "minimum": 1 },
+          "slot": { "type": "string", "minLength": 1 },
+          "reason": { "enum": ["finder_unavailable", "breadth_exhausted"] },
+          "head": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+        }
+      }
+    },
     "interventions": {
       "description": "Every human touchpoint between kickoff and gh pr ready. kind distinguishes asked (answering an implementer's blocked_question, which the success metric counts separately) from other (every other human action, which the success metric counts as an intervention) — docs/glossary.md 'intervention'.",
       "type": "array",
