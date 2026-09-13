@@ -237,6 +237,15 @@ switch (mutation) {
       { match: 'P1X', priority: 'P0', anchor: 'anywhere' }
     )
     break
+  // ── cross-anchor severity_map shadows (#893) ──────────────────────────
+  case 'finder-severity-map-cross-anchor-shadow':
+    // codex-cloud has "P1" at anywhere; pushing "P1" at leading-token
+    // after it creates a cross-anchor shadow — the earlier anywhere rule
+    // fires first via leadingHit at any line-start position.
+    finder('codex-cloud').severity_map.rules.push(
+      { match: 'P1', priority: 'P0', anchor: 'leading-token' }
+    )
+    break
   // ── regex terminal signal compilation (#833) ──────────────────────────
   case 'finder-invalid-regex-actionable-pattern':
     finder('coderabbit-cloud').collection.terminal_signals.actionable_pattern = '[invalid('
@@ -391,6 +400,16 @@ switch (mutation) {
     // positions, so the later rule wins when its match starts first.
     finder('codex-cloud').severity_map.rules.push(
       { match: 'high P1', priority: 'P0', anchor: 'anywhere' }
+    )
+    break
+  // ── cross-anchor non-shadow (#893) ────────────────────────────────────
+  case 'severity-map-no-shadow-cross-anchor':
+    // A later anywhere rule after an earlier leading-token rule is NOT a
+    // shadow: leading-token requires the trimmed first token to equal the
+    // match exactly, so the anywhere rule fires independently for any
+    // occurrence that is not the leading token.
+    finder('codex-adversarial').severity_map.rules.push(
+      { match: 'P1', priority: 'P0', anchor: 'anywhere' }
     )
     break
   default:
@@ -668,6 +687,13 @@ accepts "an anywhere rule that is NOT a word-bounded substring of another (word 
     'severity-map-no-shadow-word-boundary'
 accepts "an anywhere rule where the earlier match is a non-prefix substring (leadingHit positional)" \
     'severity-map-no-shadow-non-prefix-substring'
+
+# ── cross-anchor severity_map shadows (#893) ──────────────────────────────
+rejects "a severity_map where an earlier anywhere rule shadows a later leading-token rule" \
+    'finder-severity-map-cross-anchor-shadow' \
+    'shadows later rule'
+accepts "a later anywhere rule after an earlier leading-token rule (no shadow — leading-token is exact)" \
+    'severity-map-no-shadow-cross-anchor'
 
 # ── regex terminal signal compilation (#833) ───────────────────────────────
 rejects "an invalid regex in terminal_signals.actionable_pattern" \

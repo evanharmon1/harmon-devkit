@@ -482,6 +482,37 @@ if (errors.length === 0) {
         }
       }
     }
+    // Cross-anchor shadows (#893): priorityOf (normalize-finder-findings.mjs)
+    // walks ALL rules through leadingHit in declaration order regardless of
+    // anchor. For a non-anywhere rule, leadingHit delegates to matchesRule
+    // and returns 0 or -1 — the rule still occupies its array position in the
+    // loop. An earlier anywhere rule whose match is identical to or a
+    // word-bounded prefix of a later leading-token rule's match fires first
+    // whenever that match appears at a line start, because leadingHit's
+    // anywhere path finds it before the loop reaches the leading-token rule's
+    // matchesRule delegation. The reverse (earlier leading-token, later
+    // anywhere) is NOT a shadow: leading-token's matchesRule requires the
+    // trimmed text's first whitespace-delimited token to equal the match
+    // exactly, so the anywhere rule fires independently for any occurrence
+    // that is not the leading token. No finder mixes anchors today; this
+    // guards future edits.
+    const allRules = finder.severity_map?.rules ?? []
+    for (let j = 1; j < allRules.length; j++) {
+      for (let i = 0; i < j; i++) {
+        if (allRules[i].anchor === allRules[j].anchor) continue
+        if (allRules[i].anchor !== 'anywhere' || allRules[j].anchor !== 'leading-token') continue
+        const earlier = String(allRules[i].match).toLowerCase()
+        const later = String(allRules[j].match).toLowerCase()
+        if (
+          later.startsWith(earlier) &&
+          (earlier.length === later.length || !/[a-z0-9]/.test(later[earlier.length]))
+        ) {
+          semanticError(
+            `finder ${finder.slug} severity_map rule "${allRules[i].match}" (${allRules[i].priority}) at anchor ${allRules[i].anchor} shadows later rule "${allRules[j].match}" (${allRules[j].priority}) at anchor ${allRules[j].anchor} — priorityOf evaluates leadingHit for all rules in declaration order, and the earlier anywhere match fires first at any line-start position`
+          )
+        }
+      }
+    }
     const collection = finder.collection
     if (collection === null || collection === undefined) continue
 
