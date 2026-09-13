@@ -53,7 +53,6 @@ trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 envelope="$scratch/envelope.json"
 allowed="$scratch/allowed"
 expanded="$scratch/expanded"
-changed="$scratch/changed"
 changed_raw="$scratch/changed.raw"
 offenders="$scratch/offenders"
 claims="$scratch/claims"
@@ -118,31 +117,14 @@ git -C "$repo" diff --name-status -z "$comparison_base...HEAD" -- >"$changed_raw
     echo "fence-check: could not collect the lane diff" >&2
     exit 1
 }
-: >"$changed"
-while IFS= read -r -d '' status; do
-    IFS= read -r -d '' first || {
-        echo "fence-check: malformed name-status record" >&2
-        exit 1
-    }
-    printf '%s\n' "$first" >>"$changed"
-    case "$status" in
-    R* | C*)
-        IFS= read -r -d '' second || {
-            echo "fence-check: malformed rename/copy record" >&2
-            exit 1
-        }
-        printf '%s\n' "$second" >>"$changed"
-        ;;
-    esac
-done <"$changed_raw"
-
 : >"$offenders"
 : >"$claims"
-while IFS= read -r path; do
-    [ -n "$path" ] || continue
+
+check_path() {
+    path="$1"
     if is_tooling_owned "$path"; then
-        printf '%s\n' "$path" >>"$offenders"
-        continue
+        printf '%s\0' "$path" >>"$offenders"
+        return 0
     fi
     matched=false
     while IFS= read -r pattern; do
@@ -156,18 +138,41 @@ while IFS= read -r path; do
     if [ "$matched" = false ]; then
         report_line="$(awk -F '\t' -v path="$path" '$1 == path { print $2; exit }' "$expanded")"
         if [ -n "$report_line" ]; then
-            printf 'expansion-claimed: %s (report line %s)\n' "$path" "$report_line" >>"$claims"
+            printf '%s\0%s\0' "$path" "$report_line" >>"$claims"
         else
-            printf '%s\n' "$path" >>"$offenders"
+            printf '%s\0' "$path" >>"$offenders"
         fi
     fi
-done <"$changed"
+}
+
+while IFS= read -r -d '' status; do
+    IFS= read -r -d '' first || {
+        echo "fence-check: malformed name-status record" >&2
+        exit 1
+    }
+    check_path "$first"
+    case "$status" in
+    R* | C*)
+        IFS= read -r -d '' second || {
+            echo "fence-check: malformed rename/copy record" >&2
+            exit 1
+        }
+        check_path "$second"
+        ;;
+    esac
+done <"$changed_raw"
 
 if [ -s "$offenders" ]; then
     echo "fence-check: changed paths outside the lane fence:" >&2
-    sed 's/^/  - /' "$offenders" >&2
+    while IFS= read -r -d '' path; do
+        printf '  - %q\n' "$path" >&2
+    done <"$offenders"
     exit 1
 fi
 
-[ ! -s "$claims" ] || cat "$claims"
+if [ -s "$claims" ]; then
+    while IFS= read -r -d '' path && IFS= read -r -d '' report_line; do
+        printf 'expansion-claimed: %q (report line %s)\n' "$path" "$report_line"
+    done <"$claims"
+fi
 echo "fence-check: all changed paths are within the lane fence"

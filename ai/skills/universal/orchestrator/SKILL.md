@@ -35,8 +35,9 @@ files, and the consumers reported by
 `assets/validator-dependency-scan.sh <path>...` for each manifest, schema, or
 registry in that surface. The scan is a read-only, grep-based inventory of
 consumers under `scripts/`, `ai/skills/**/assets`, `taskfiles/`, and
-`Taskfile.yml`; inspect its candidates and add the validators and tests that
-would reject the lane's change. Release-please's `CHANGELOG.md` is never
+`Taskfile.yml`; it finds file names and hard-coded keys, not YAML/TOML scalar
+values. Inspect its candidates and add the validators and tests that would
+reject the lane's change. Release-please's `CHANGELOG.md` is never
 lane-owned and never belongs in a fence; lockfiles are ordinary fence entries.
 
 Across live lanes, enforce one writer per file. When an overlap is unavoidable,

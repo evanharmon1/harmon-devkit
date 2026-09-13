@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Find repository validators and helpers coupled to manifest/schema/registry files.
+# Find consumers naming a file or its hard-coded keys; YAML/TOML scalar values are out of scope.
 set -euo pipefail
 
 usage() {

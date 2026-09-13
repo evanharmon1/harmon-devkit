@@ -136,6 +136,19 @@ make_brief "$tmp/lockfile.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"
     "$fence_check" --brief "$tmp/lockfile.md"
 ) >/dev/null || fail "an ordinary lockfile fence entry was rejected"
 
+newline_path=$'allowed-newline-a.txt\nallowed-newline-b.txt'
+printf '%s\n' changed >"$fixture/$newline_path"
+git -C "$fixture" add -- "$newline_path"
+git -C "$fixture" commit -qm "test: add a newline-bearing out-of-fence path"
+make_brief "$tmp/newline.md" '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/*.txt"},{"path":"allowed-newline-a.txt"},{"path":"allowed-newline-b.txt"}]'
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/newline.md" 2>&1)"; then
+    fail "a newline-bearing out-of-fence path was split into allowed paths"
+fi
+case "$out" in
+*allowed-newline-a.txt*allowed-newline-b.txt*) ;;
+*) fail "newline-path refusal did not render the escaped full path: $out" ;;
+esac
+
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
 scan_fixture="$tmp/scan-repo"
 git init -q "$scan_fixture"
