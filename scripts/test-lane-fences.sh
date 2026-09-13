@@ -17,6 +17,8 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 fixture="$tmp/repo"
 brief_source="$repo/ai/schemas/fixtures/brief.envelope/valid/codex.md"
 git init -q "$fixture"
+mkdir -p "$fixture/scripts"
+ln -s "$repo/scripts/validate-result-schemas.mjs" "$fixture/scripts/validate-result-schemas.mjs"
 git -C "$fixture" config user.name "Lane Fence Test"
 git -C "$fixture" config user.email "lane-fence@example.invalid"
 printf '%s\n' base >"$fixture/allowed.txt"
@@ -57,6 +59,18 @@ git -C "$fixture" commit -qm "test: change allowed path"
     cd "$fixture"
     "$fence_check" --brief "$tmp/allowed.md"
 ) >/dev/null || fail "an in-fence change was rejected"
+
+mkdir -p \
+    "$fixture/.agents/skills/orchestrator/assets" \
+    "$tmp/nodebin"
+cp "$fence_check" "$fixture/.agents/skills/orchestrator/assets/fence-check.sh"
+printf '#!/bin/sh\n[ "$1" = "%s/scripts/validate-result-schemas.mjs" ]\n' "$fixture" >"$tmp/nodebin/node"
+chmod +x "$tmp/nodebin/node"
+(
+    cd "$fixture"
+    PATH="$tmp/nodebin:$PATH" .agents/skills/orchestrator/assets/fence-check.sh \
+        --brief "$tmp/allowed.md"
+) >/dev/null || fail "a vendored-layout fence check did not resolve the repository validator"
 
 printf '%s\n' changed >"$fixture/outside.txt"
 git -C "$fixture" add outside.txt
@@ -128,6 +142,8 @@ git init -q "$scan_fixture"
 mkdir -p \
     "$scan_fixture/ai/skills/universal/breakdown/assets" \
     "$scan_fixture/ai/skills/universal/label-registry-support/assets" \
+    "$scan_fixture/.agents/skills/portable/assets" \
+    "$scan_fixture/.claude/skills/compat/assets" \
     "$scan_fixture/scripts"
 printf '%s\n' '{"registry_set": []}' >"$scan_fixture/agent-registry.json"
 for consumer in \
@@ -137,6 +153,8 @@ for consumer in \
     scripts/validate-label-registry.mjs; do
     printf '%s\n' 'registry_set' >"$scan_fixture/$consumer"
 done
+printf '%s\n' 'registry_set' >"$scan_fixture/.agents/skills/portable/assets/registry-consumer.sh"
+printf '%s\n' 'registry_set' >"$scan_fixture/.claude/skills/compat/assets/registry-consumer.sh"
 isolated_scan_out="$(cd "$scan_fixture" && "$scanner" agent-registry.json)" ||
     fail "isolated dependency scan failed"
 for consumer in \
@@ -145,6 +163,11 @@ for consumer in \
     scripts/label-registry-render.mjs \
     scripts/validate-label-registry.mjs; do
     grep -Fxq "$consumer" <<<"$isolated_scan_out" || fail "isolated scan missed $consumer"
+done
+for consumer in \
+    .agents/skills/portable/assets/registry-consumer.sh \
+    .claude/skills/compat/assets/registry-consumer.sh; do
+    grep -Fxq "$consumer" <<<"$isolated_scan_out" || fail "vendored scan missed $consumer"
 done
 
 scan_out="$("$scanner" agent-registry.json)" || fail "real-tree dependency scan failed"

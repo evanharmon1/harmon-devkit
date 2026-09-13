@@ -39,8 +39,7 @@ repo="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     echo "fence-check: not inside a Git worktree" >&2
     exit 1
 }
-script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
-validator="$script_dir/../../../../../scripts/validate-result-schemas.mjs"
+validator="$repo/scripts/validate-result-schemas.mjs"
 [ -x "$validator" ] || {
     echo "fence-check: brief validator is unavailable: $validator" >&2
     exit 1

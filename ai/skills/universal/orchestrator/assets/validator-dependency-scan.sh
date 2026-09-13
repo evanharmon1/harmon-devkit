@@ -87,13 +87,15 @@ for supplied in "$@"; do
     {
         scan_root "$repo/scripts" true
         scan_root "$repo/ai/skills" true
+        scan_root "$repo/.agents/skills" true
+        scan_root "$repo/.claude/skills" true
         scan_root "$repo/taskfiles" true
         scan_root "$repo/Taskfile.yml" false
     } | while IFS= read -r candidate; do
         [ "$candidate" != "$target" ] || continue
         relative_candidate="${candidate#"$repo"/}"
         case "$relative_candidate" in
-        scripts/* | taskfiles/* | Taskfile.yml | ai/skills/*/assets/*)
+        scripts/* | taskfiles/* | Taskfile.yml | ai/skills/*/assets/* | .agents/skills/*/assets/* | .claude/skills/*/assets/*)
             printf '%s\n' "$relative_candidate" >>"$matches"
             ;;
         esac
