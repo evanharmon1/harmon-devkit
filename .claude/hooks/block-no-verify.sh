@@ -11,7 +11,7 @@ command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 [[ -n "$command" ]] || exit 0
 
 # Only police git invocations.
-grep -qE '\bgit\b' <<<"$command" || exit 0
+grep -E '\bgit\b' <<<"$command" >/dev/null || exit 0
 
 if command -v python3 >/dev/null 2>&1; then
     if ! python3 -c '

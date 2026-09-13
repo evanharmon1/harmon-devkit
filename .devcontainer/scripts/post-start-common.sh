@@ -75,7 +75,8 @@ fi
 # path would go stale there. Matches post-create-common.sh's setup guard.
 REPO_NAME="$(basename "$PWD")"
 if command -v agent-deck &>/dev/null &&
-    agent-deck conductor status "$REPO_NAME" 2>/dev/null | grep -qi "stopped"; then # shell-robustness: ok — pre-existing; the fail-open risk is tracked in #822 and deliberately not fixed in a test-robustness PR
+    conductor_status="$(agent-deck conductor status "$REPO_NAME" 2>/dev/null)" &&
+    grep -i "stopped" <<<"$conductor_status" >/dev/null; then
     agent-deck session start "conductor-$REPO_NAME" 2>/dev/null &
     echo "==> Conductor $REPO_NAME started"
 fi

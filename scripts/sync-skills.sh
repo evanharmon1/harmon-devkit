@@ -231,7 +231,7 @@ list_skill_dirs() {
 
 # prov_field PROV FIELD — value of a `# FIELD: …` provenance header line.
 prov_field() {
-    sed -n "s/^# $2:[[:space:]]*//p" "$1" | head -n 1
+    head -n 1 < <(sed -n "s/^# $2:[[:space:]]*//p" "$1")
 }
 
 # status_prov_ref PROV — the ref recorded by a provenance stamp, or empty when
@@ -239,7 +239,7 @@ prov_field() {
 # incomplete stamp is reported as not fully vendored rather than repaired.
 status_prov_ref() {
     [ -f "$1" ] || return 0
-    grep -q '^# managed:' "$1" || return 0
+    grep '^# managed:' "$1" >/dev/null || return 0
     prov_field "$1" "ref" | sed 's/ (.*//'
 }
 
@@ -431,7 +431,7 @@ EOF
 managed_names() {
     _mn_prov="$1" _mn_dest="$2"
     [ -f "$_mn_prov" ] || return 0
-    if grep -q '^# managed:' "$_mn_prov"; then
+    if grep '^# managed:' "$_mn_prov" >/dev/null; then
         prov_list "$_mn_prov" "managed"
         return 0
     fi
@@ -525,7 +525,7 @@ vendor_agents() {
     mkdir -p "$3"
     # The wildcard is resolved BEFORE assert_sane_name, which rejects `*` as an
     # unsafe name — it is a manifest sentinel, never a filename.
-    if grep -qxF '*' <<<"$2"; then
+    if grep -xF '*' <<<"$2" >/dev/null; then
         [ "$(printf '%s\n' "$2" | grep -cv '^$')" -eq 1 ] ||
             die "manifest: agents.names is either [\"*\"] (every agent) or an explicit list, not both"
         for _va_f in "$_va_src"/*.md; do
@@ -587,7 +587,7 @@ EOF
 # it is damage, and guessing what it owned could delete a local agent.
 agents_managed_names() {
     [ -f "$1" ] || return 0
-    grep -q '^# managed:' "$1" ||
+    grep '^# managed:' "$1" >/dev/null ||
         die "agents provenance '$1' has no '# managed:' line — inspect it by hand before re-syncing"
     prov_list "$1" "managed"
 }
@@ -793,7 +793,7 @@ orphaned_schemas_dest() {
 assert_orphan_usable() {
     assert_safe_dest "$1" "orphaned vendored files"
     _aou_prov="$1/$2"
-    grep -q '^# managed:' "$_aou_prov" ||
+    grep '^# managed:' "$_aou_prov" >/dev/null ||
         die "provenance '$_aou_prov' has no '# managed:' line — inspect it by hand before re-syncing"
     # Every NAME too, not just the line's presence. devendor_agents/
     # devendor_schemas validate each name before their `rm`, which is correct
@@ -908,7 +908,7 @@ agents_preflight() {
     # work. Checked here, before ANY deletion anywhere in the run.
     while IFS= read -r _agp_name; do
         [ -n "$_agp_name" ] || continue
-        if [ -e "$_AGP_DEST/$_agp_name.md" ] && ! grep -qxF "$_agp_name" <<<"$_AGP_MANAGED"; then
+        if [ -e "$_AGP_DEST/$_agp_name.md" ] && ! grep -xF "$_agp_name" <<<"$_AGP_MANAGED" >/dev/null; then
             die "local agent '$_agp_name' collides with an incoming vendored agent — rename the local file or drop it from $MANIFEST"
         fi
     done <<EOF
@@ -1033,7 +1033,7 @@ cmd_sync() {
     incoming="$(list_skill_dirs "$WORKDIR/vendor")"
 
     prov="$dest/.SKILLS_PROVENANCE"
-    if [ -f "$prov" ] && ! grep -q '^# managed:' "$prov"; then
+    if [ -f "$prov" ] && ! grep '^# managed:' "$prov" >/dev/null; then
         echo "sync-skills: legacy provenance stamp — computing the vendored set from the old pin, then upgrading the stamp"
     fi
     old_managed="$(managed_names "$prov" "$dest")"
@@ -1042,7 +1042,7 @@ cmd_sync() {
     # and that an incoming skill wants is local work — never overwrite it.
     while IFS= read -r name; do
         [ -n "$name" ] || continue
-        if [ -e "$dest/$name" ] && ! grep -qxF "$name" <<<"$old_managed"; then
+        if [ -e "$dest/$name" ] && ! grep -xF "$name" <<<"$old_managed" >/dev/null; then
             die "local skill '$name' collides with an incoming vendored skill — rename the local dir or drop its category from $MANIFEST"
         fi
     done <<EOF
@@ -1174,7 +1174,7 @@ EOF
     # A managed agent no longer named by the manifest is a leftover to clean up.
     while IFS= read -r _vap_n; do
         [ -n "$_vap_n" ] || continue
-        if ! grep -qxF "$_vap_n" <<<"$_vap_incoming"; then
+        if ! grep -xF "$_vap_n" <<<"$_vap_incoming" >/dev/null; then
             echo "✗ '$_vap_n' is vendored (managed) but no longer shipped by the pin" >&2
             _vap_drift=1
         fi
@@ -1297,7 +1297,7 @@ EOF
     # A managed dir no longer shipped by the pin is a leftover to clean up.
     while IFS= read -r name; do
         [ -n "$name" ] || continue
-        if ! grep -qxF "$name" <<<"$incoming"; then
+        if ! grep -xF "$name" <<<"$incoming" >/dev/null; then
             echo "✗ '$name' is vendored (managed) but no longer shipped by the pin" >&2
             drift=1
         fi

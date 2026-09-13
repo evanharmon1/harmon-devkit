@@ -8,8 +8,8 @@
 # Everything environment/container-shaped belongs in this file; ~/.gitconfig is
 # reserved for personal config (VS Code's copyGitConfig may copy the host's in
 # on attach — that copy must never be able to break container plumbing).
-# post-create-common.sh appends runtime-only values (git identity) to this
-# file explicitly via `git config --file`.
+# post-create-common.sh appends runtime-only values (safe.directory and git
+# identity) to this file explicitly via `git config --file`.
 
 [alias]
 	ll = log --graph --oneline --decorate

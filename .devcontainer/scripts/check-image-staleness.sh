@@ -142,7 +142,7 @@ while IFS= read -r f; do
     # A path the diff pass already counted must not be counted again just
     # because its MODE also changed — one drifted config is one entry, or the
     # summary claims "2 baked configs" for a single file.
-    if printf '%s' "${names}" | grep -qxF "      ${rel}"; then # shell-robustness: ok — pre-existing; the fail-open risk is tracked in #822 and deliberately not fixed in a test-robustness PR
+    if grep -xF "      ${rel}" <<<"${names}" >/dev/null; then
         continue
     fi
     if [ "$(xbits_of "${f}")" != "$(xbits_of "${other}")" ]; then
