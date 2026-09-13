@@ -799,13 +799,67 @@ echo "==> metadata: owner type is verified against the target repository"
 grep -q 'does not match target repository owner type' "$tmp/metadata.out" ||
     fail "the owner mismatch should be the reported violation"
 
-echo "==> metadata: exact title boundary is 70 Unicode code points"
-title70="(scope): $(printf 'a%.0s' {1..61})"
-title71="${title70}a"
-[ "$(METADATA_RAW_TITLE=1 run_personal "$title70" "$valid_body")" = 0 ] ||
-    fail "70 code points should pass"
-[ "$(METADATA_RAW_TITLE=1 run_personal "$title71" "$valid_body")" = 1 ] ||
-    fail "71 code points should fail"
+echo "==> metadata: exact title boundary is 100 soft / 120 hard code points"
+title100="(scope): $(printf 'a%.0s' {1..91})"
+title110="(scope): $(printf 'a%.0s' {1..101})"
+title120="(scope): $(printf 'a%.0s' {1..111})"
+title121="${title120}a"
+[ "$(METADATA_RAW_TITLE=1 run_personal "$title100" "$valid_body")" = 0 ] ||
+    fail "100 code points should pass clean"
+grep -q "warning:" "$tmp/metadata.out" &&
+    fail "100 code points should not emit a warning: $(cat "$tmp/metadata.out")"
+
+[ "$(METADATA_RAW_TITLE=1 run_personal "$title110" "$valid_body")" = 0 ] ||
+    fail "110 code points should warn and exit 0"
+grep -q "warning: title is 110 code points; exceeds soft limit of 100" "$tmp/metadata.out" ||
+    fail "110 code points should warn with measured count and soft limit: $(cat "$tmp/metadata.out")"
+
+[ "$(METADATA_RAW_TITLE=1 run_personal "$title120" "$valid_body")" = 0 ] ||
+    fail "120 code points should pass with warning and exit 0"
+grep -q "warning: title is 120 code points; exceeds soft limit of 100" "$tmp/metadata.out" ||
+    fail "120 code points should warn with measured count and soft limit: $(cat "$tmp/metadata.out")"
+
+[ "$(METADATA_RAW_TITLE=1 run_personal "$title121" "$valid_body")" = 1 ] ||
+    fail "121 code points should fail"
+grep -q "title is 121 code points; exceeds hard limit of 120 (ceiling is 120)" "$tmp/metadata.out" ||
+    fail "121 code points should report measured count, hard limit, and ceiling: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: title-only mode refuses prefix-truncating retitles"
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title "$title100" \
+    --previous-title "$title120")" = 1 ] ||
+    fail "prefix-truncating retitle should fail"
+grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metadata.out" ||
+    fail "prefix-truncating retitle should explain refusal: $(cat "$tmp/metadata.out")"
+
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+    --title '(scope): Rewritten outcome stating real intent' \
+    --previous-title "$title120")" = 0 ] ||
+    fail "non-truncating retitle rewrite should pass: $(cat "$tmp/metadata.out")"
+
+echo "==> metadata: per-rule failure messages name the rule and code-point count (harmon-devkit#588)"
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title 'Metadata is missing')" = 1 ] ||
+    fail "missing scope prefix must fail"
+grep -q "missing (scope): prefix" "$tmp/metadata.out" ||
+    fail "failure must name missing (scope): $(cat "$tmp/metadata.out")"
+grep -q "title is 19 code points" "$tmp/metadata.out" ||
+    fail "failure must name code-point count: $(cat "$tmp/metadata.out")"
+
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title '(scope): [Bug]: Metadata is missing')" = 1 ] ||
+    fail "nested prefix must fail"
+grep -q "outcome contains forbidden nested prefix" "$tmp/metadata.out" ||
+    fail "failure must name nested prefix: $(cat "$tmp/metadata.out")"
+grep -q "title is 35 code points" "$tmp/metadata.out" ||
+    fail "failure must name code-point count: $(cat "$tmp/metadata.out")"
+
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title '(nested(scope)): Repair metadata')" = 1 ] ||
+    fail "parentheses in scope must fail"
+grep -q "scope contains parentheses" "$tmp/metadata.out" ||
+    fail "failure must name parentheses in scope: $(cat "$tmp/metadata.out")"
+
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title '( scope): Repair metadata')" = 1 ] ||
+    fail "surrounding whitespace in scope must fail"
+grep -q "surrounding whitespace in scope" "$tmp/metadata.out" ||
+    fail "failure must name surrounding whitespace: $(cat "$tmp/metadata.out")"
 
 echo "==> metadata: free-form Unicode, spaced, and punctuated scopes pass"
 for title in '(CI/CD): Reject stale runs' '(Build Tools): Repair cache keys' \

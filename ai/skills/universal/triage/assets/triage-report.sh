@@ -271,8 +271,8 @@ entries, or triage a narrower window."
         # Re-verify the marker on the LIVE body immediately before the edit —
         # the one write this script makes must be provably aimed at its own
         # artifact, whatever changed since `find`.
-        local live_json live live_title
-        live_json="$(gh issue view "$target" --repo "$repo" --json body,title)" ||
+        local live_json live live_title is_bot
+        live_json="$(gh issue view "$target" --repo "$repo" --json body,title,author)" ||
             die 2 "could not re-read $repo#$target before editing"
         live="$(printf '%s' "$live_json" | jq -r '.body // ""')" ||
             die 2 "could not parse the live report body"
@@ -280,6 +280,17 @@ entries, or triage a narrower window."
             die 2 "could not parse the live report title"
         grep -qF "$MARKER" <<<"$live" ||
             die 4 "refused: $repo#$target no longer carries the report marker"
+
+        is_bot="$(printf '%s' "$live_json" | jq -r '
+            if (.author.type == "Bot")
+               or (.author.is_bot == true)
+               or (.author.login == "app/renovate")
+               or (.author.login // "" | test("^app/|\\[bot\\]$"))
+            then "true" else "false" end')" ||
+            die 2 "could not check author of $repo#$target"
+        if [ "$is_bot" = "true" ]; then
+            die 4 "refused: will not retitle bot-authored issue $repo#$target"
+        fi
         # Idempotency: identical findings must not churn the issue. The
         # timestamp line is generation metadata, so compare without it and
         # skip the edit when nothing else changed.
