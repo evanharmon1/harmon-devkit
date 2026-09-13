@@ -133,6 +133,16 @@ The selection includes `grill-me` and its `grilling` dependency, along with
 also includes `handoff`, `matt-triage`, `prototype`, `research`,
 `setup-matt-pocock-skills`, `to-spec`, `to-tickets`, and `wayfinder`.
 
+The `backend` category vendors the complete suite of 33 official Convex agent
+skills from [get-convex/agent-skills](https://github.com/get-convex/agent-skills)
+(Apache-2.0). It covers project quickstarting (`convex-quickstart`),
+core backend capabilities (`convex-auth`, `convex-crons`, `convex-billing`,
+`convex-agent`, `convex-docs`), architecture/design (`convex-design`,
+`convex-create-component`), and operation/auditing (`convex-reviewer`,
+`convex-authz`, `convex-test`, `convex-optimize`, `convex-migrate`, `convex-verify`).
+Each skill preserves upstream attribution, `LICENSE.upstream`, and
+`UPSTREAM.md` provenance.
+
 ## The unique-name rule
 
 Categories are **flattened** when vendored (a consumer's `.agents/skills/` holds
