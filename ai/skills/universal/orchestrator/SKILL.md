@@ -27,6 +27,39 @@ explicit merge dependency in both lane briefs.
 
 ## Lane briefs
 
+### File-scope fences
+
+A file-scope fence is the closed list of paths and globs a lane may write. Derive
+it from the issue's named surface, every repository test that asserts on those
+files, and the consumers reported by
+`assets/validator-dependency-scan.sh <path>...` for each manifest, schema, or
+registry in that surface. The scan is a read-only, grep-based inventory of
+consumers under `scripts/`, `ai/skills/**/assets`, `taskfiles/`, and
+`Taskfile.yml`; it finds file names and hard-coded keys, not YAML/TOML scalar
+values. Inspect its candidates and add the validators and tests that would
+reject the lane's change. Release-please's `CHANGELOG.md` is never
+lane-owned and never belongs in a fence; lockfiles are ordinary fence entries.
+
+Across live lanes, enforce one writer per file. When an overlap is unavoidable,
+name the shared file and disjoint sections in both lane briefs' overlap lists
+and record the branch-update or merge dependency that serializes them. A worker
+has one bounded self-expansion route: a validator or test that rejects its
+change and that no other live lane touches, recorded once for that file as
+`YYYY-MM-DD fence expansion: path:line[-line] — reason` in its lane report.
+Verify the dated entry and line scope, reject it if another live fence owns the
+file, and record the accepted expansion as a `run.json` intervention with `kind: asked`.
+The Planning section owns recording the same fact in `plan.json`.
+Every other expansion requires an ownership check and an attributed re-brief
+before the worker edits the file.
+
+Before evaluating the readiness gate, run
+`assets/fence-check.sh --brief <rendered.md>`.
+It derives the comparison base from the brief's default branch, then reports
+whether both sides of every changed path are covered by the rendered envelope
+fence or a labelled expansion in the envelope's `report_path`. Its advisory
+refusal is visible to the orchestrator.
+This pre-gate subset check is not a readiness-gate condition.
+
 The source catalog below is the complete render contract. It deliberately lives
 in this procedure rather than in the dispatched template: substituting free-form
 values into a catalog inside the output would duplicate them into a Markdown

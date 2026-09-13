@@ -396,6 +396,7 @@ tasks:
       - test:finder-normalization
       - test:finder-review
       - test:lane-brief-template
+      - test:lane-fences
       - test:lint-shell-robustness
       - test:lane-watch
 
@@ -463,6 +464,11 @@ tasks:
     desc: Render and validate the orchestrator lane-brief template contract
     cmds:
       - ./scripts/test-lane-brief-template.sh
+
+  test:lane-fences:
+    desc: Verify orchestrated lane fence derivation and enforcement
+    cmds:
+      - ./scripts/test-lane-fences.sh
 
   devflow:render:
     desc: 'Render a dev-flow-v2 projection or publish generated sections (task devflow:render -- <projection|publish> --record <dir> ...)'
