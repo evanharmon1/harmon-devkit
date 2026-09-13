@@ -191,6 +191,27 @@ expect_ok "cross-repo filing runs the full pre-create contract" \
 expect_ok "breakdown applies scoped titles to every issue shape" \
     grep -qF 'every parent, child, and flat issue uses' \
     "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "breakdown keeps execution behind interactive human approval" \
+    grep -qF 'human turn in an interactive session' \
+    "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "breakdown unattended runs stop at a filed proposal" \
+    grep -qF 'The run must not enter §7' \
+    "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "breakdown names proposal filing as the sole pre-approval write" \
+    grep -qF 'sole pre-approval write is the unattended' \
+    "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "breakdown proposal comments preserve track-work authorization" \
+    grep -qF 'already authorized that specific bookkeeping write' \
+    "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "breakdown unattended draft handoffs are durably retrievable" \
+    grep -qF "draft's exact repository, path, and" \
+    "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "breakdown unattended filings reuse a stable proposal identity" \
+    grep -qF 'reuse the same filing after a' \
+    "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "the skills README locates breakdown consent in section 6" \
+    grep -qF 'approval gate in §6, not by who' \
+    "$repo/ai/skills/README.md"
 expect_ok "triage owns a canonical scoped rolling-report title" \
     grep -qF "DEFAULT_TITLE='(triage): Track backlog findings'" \
     "$repo/ai/skills/universal/triage/assets/triage-report.sh"
