@@ -19,12 +19,39 @@ helper="$repo_root/scripts/devcontainer-changed.sh"
 tmp="$(mktemp -d -t test-devcontainer-changed-XXXXXX)"
 cleanup() {
     cd "$repo_root" 2>/dev/null || true
-    for _ in 1 2 3 4 5; do
-        rm -rf "$tmp" 2>/dev/null && return 0 || sleep 0.1
+    cleanup_attempt=0
+    while [ -e "$tmp" ] && [ "$cleanup_attempt" -lt 3 ]; do
+        rm -rf "$tmp" >/dev/null 2>&1 || true
+        cleanup_attempt=$((cleanup_attempt + 1))
+        if [ -e "$tmp" ] && [ "$cleanup_attempt" -lt 3 ]; then
+            sleep 1
+        fi
     done
-    rm -rf "$tmp" || true
+
+    if [ -e "$tmp" ]; then
+        echo "test-devcontainer-changed: cleanup left $tmp after ${cleanup_attempt} attempts" >&2
+    fi
+    return 0
 }
-trap cleanup EXIT HUP INT TERM
+
+on_exit() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    cleanup
+    exit "$status"
+}
+
+on_signal() {
+    status=$1
+    trap - EXIT HUP INT TERM
+    cleanup
+    exit "$status"
+}
+
+trap on_exit EXIT
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 repo="$tmp/repo"
 mkdir -p "$repo/.devcontainer" "$repo/src" "$repo/.github/workflows" "$repo/scripts"
@@ -32,6 +59,11 @@ cd "$repo"
 git init -q .
 git config user.email test@example.com
 git config user.name Test
+# The fixture must not leave background maintenance writing objects while its
+# temporary directory is being removed.
+git config maintenance.auto false
+git config gc.auto 0
+git config gc.autoDetach false
 
 printf '%s\n' 'FROM scratch' >.devcontainer/Dockerfile
 printf '%s\n' 'x' >src/app.js

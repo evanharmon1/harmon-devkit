@@ -101,7 +101,7 @@ for f in "${files[@]}"; do
         continue
         ;;
     esac
-    if grep -q 'binary' < <(file --mime-encoding "$f" 2>/dev/null); then
+    if grep 'binary' < <(file --mime-encoding "$f" 2>/dev/null) >/dev/null; then
         continue
     fi
 
@@ -196,7 +196,7 @@ for f in "${files[@]}"; do
         scripts/lint-hygiene.sh | template/scripts/lint-hygiene.sh | \
         scripts/test-lint-hygiene.sh | template/scripts/test-lint-hygiene.sh) ;;
     *)
-        if grep -qiE '@claude[[:space:][:punct:]`$+<=>^|~]{1,20}(plan|implement|review)' \
+        if grep -iE '@claude[[:space:][:punct:]`$+<=>^|~]{1,20}(plan|implement|review)' >/dev/null \
             < <(tr -s '[:space:]' ' ' <"$f" | sed -E 's/\]\([^)]*\)//g'); then
             warn "$f: Claude trigger phrase reconstructable from rendered copy (mention + subcommand across markup/whitespace, any case) — quoted into a comment this starts a workflow; put prose words between the tokens"
         fi
@@ -204,7 +204,7 @@ for f in "${files[@]}"; do
     esac
 
     # --- Mixed line endings ---
-    if grep -q 'CRLF' < <(file "$f" 2>/dev/null); then
+    if grep 'CRLF' < <(file "$f" 2>/dev/null) >/dev/null; then
         warn "$f: CRLF line endings detected (use LF)"
     fi
 

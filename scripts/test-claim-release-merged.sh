@@ -149,6 +149,12 @@ released="$(awk '{ for (i = 1; i <= NF; i++) if ($i == "--issue") print $(i + 1)
 [ "$released" = "50" ] || fail "expected 50 capped release calls, got $released"
 grep -Fq 'candidate cap exceeded' "$tmp/summary" || fail "missing truncation audit"
 
+echo "==> a zero candidate cap performs no release mutation"
+CLAIM_RELEASE_MAX_CANDIDATES=0 GH_CLOSING='' GH_BODY='Refs #45' run_case
+[ "$run_rc" -eq 5 ] || fail "zero-cap path exited $run_rc, expected 5"
+calls_are ''
+grep -Fq 'Processed the first 0 of 1 references' "$tmp/summary" || fail "missing zero-cap audit"
+
 echo "==> the event body snapshot outranks the live PR body"
 GH_CLOSING='' GH_BODY='Refs #98' PR_BODY_OVERRIDE='Refs #97' run_case
 [ "$run_rc" -eq 0 ] || fail "snapshot path exited $run_rc"

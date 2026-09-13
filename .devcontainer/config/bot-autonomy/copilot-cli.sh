@@ -186,7 +186,7 @@ WRAPPER
 # module wrote, of any release, identified by the stable marker above.
 module_owns_link() {
     [ -f "$COPILOT_LINK" ] && [ ! -L "$COPILOT_LINK" ] &&
-        grep -Fqx "$WRAPPER_MARKER" "$COPILOT_LINK"
+        grep -Fx "$WRAPPER_MARKER" "$COPILOT_LINK" >/dev/null
 }
 
 # This module claims exactly one path and both of its states need it: enabled

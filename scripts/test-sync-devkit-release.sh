@@ -30,7 +30,7 @@ mkdir -p "$BIN_DIR"
 export PATH="$BIN_DIR:$PATH"
 
 note() {
-    printf '\n  \033[1;37m%s\033[0m\n' "$*" || true
+    printf '\n  \033[1;37m%s\033[0m\n' "$*"
     return 0
 }
 

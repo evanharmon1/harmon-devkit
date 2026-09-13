@@ -108,6 +108,30 @@ complete='{"data":{"node":{"fields":{"nodes":[
    {"id":"p4","name":"Low","color":"GRAY","description":""}]}
 ]}}}}'
 
+# run_expecting_snapshot_failure FIELDS — a malformed/errored snapshot is
+# UNKNOWN, never evidence that every expected field is absent. Require a loud
+# refusal before any field mutation.
+run_expecting_snapshot_failure() {
+    printf '%s' "$1" >"$STUB_FIELDS_FILE"
+    : >"$STUB_FIELDS_FILE2"
+    rm -f "$tmp_seen"
+    : >"$MUTATIONS"
+    if "$script" --owner someuser --title "Test Project" >"$tmp/out" 2>&1; then
+        fail "an invalid project-field snapshot was accepted"
+    fi
+    grep -q "snapshot was malformed or contained GraphQL errors" "$tmp/out" ||
+        fail "the invalid snapshot refusal did not explain the parse/GraphQL failure"
+    [ ! -s "$MUTATIONS" ] ||
+        fail "an invalid project-field snapshot reached a field mutation"
+}
+
+echo "==> malformed field JSON fails closed before field creation"
+run_expecting_snapshot_failure '{"data":{"node":{"fields":{"nodes":'
+
+echo "==> HTTP-200 GraphQL errors fail closed before field creation"
+run_expecting_snapshot_failure \
+    '{"errors":[{"message":"partial field failure"}],"data":{"node":{"fields":{"nodes":[]}}}}'
+
 echo "==> a re-run against an already-synced project writes nothing"
 run_with "$complete"
 [ "$(updates)" = 0 ] || fail "expected no mutations on an unchanged project, got $(updates)"

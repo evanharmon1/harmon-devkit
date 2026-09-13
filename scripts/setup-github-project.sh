@@ -275,19 +275,33 @@ fi
 # ── Snapshot current fields (reused for existence checks; re-read immediately
 #    before any option replacement — see refresh_fields) ──
 refresh_fields() {
-    fields_json=$(gh api graphql -f query='query($p:ID!){node(id:$p){... on ProjectV2{fields(first:50){nodes{... on ProjectV2FieldCommon{id name dataType} ... on ProjectV2SingleSelectField{options{id name color description}}}}}}}' \
-        -f p="$project_id")
+    if ! fields_json=$(gh api graphql -f query='query($p:ID!){node(id:$p){... on ProjectV2{fields(first:50){nodes{... on ProjectV2FieldCommon{id name dataType} ... on ProjectV2SingleSelectField{options{id name color description}}}}}}}' \
+        -f p="$project_id"); then
+        echo "ERROR: could not read the project-field snapshot" >&2
+        return 1
+    fi
+    # GraphQL may return HTTP 200 with an `errors` array, and malformed JSON
+    # makes jq fail. Either state is UNKNOWN, never proof that a field is
+    # absent: creation on that evidence could duplicate or mis-type fields.
+    if ! jq -e '
+        ((.errors? == null) or
+            (((.errors? | type) == "array") and ((.errors | length) == 0))) and
+        ((.data.node.fields.nodes? | type) == "array")
+    ' >/dev/null <<<"$fields_json"; then
+        echo "ERROR: project-field snapshot was malformed or contained GraphQL errors — refusing field creation" >&2
+        return 1
+    fi
 }
 refresh_fields
 
 field_id() {
-    printf '%s' "$fields_json" |
-        jq -r --arg n "$1" '.data.node.fields.nodes[] | select(.name==$n) | .id' | head -n1
+    jq -r --arg n "$1" 'first(.data.node.fields.nodes[] | select(.name==$n) | .id) // empty' \
+        <<<"$fields_json"
 }
 
 field_type() {
-    printf '%s' "$fields_json" |
-        jq -r --arg n "$1" '.data.node.fields.nodes[] | select(.name==$n) | .dataType' | head -n1
+    jq -r --arg n "$1" 'first(.data.node.fields.nodes[] | select(.name==$n) | .dataType) // empty' \
+        <<<"$fields_json"
 }
 
 # existing_options NAME — the single-select field's CURRENT options, as a JSON

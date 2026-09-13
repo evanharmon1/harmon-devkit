@@ -17,11 +17,10 @@ set -euo pipefail
 #                          ~/.local/bin/agy (state a), overwriting whatever
 #                          .devcontainer/config/ensure-antigravity-cli.sh
 #                          (which runs earlier in post-create) left there.
-#   marker != enabled  -> apply-antigravity-settings.sh restore; ~/.local/
-#                          bin/agy is left untouched — ensure-antigravity-
-#                          cli.sh has already left it absent (state c), and
-#                          re-touching it here would be redundant, not
-#                          corrective.
+#   marker != enabled  -> apply-antigravity-settings.sh restore; independently
+#                          owned launchers are allowed, while any compatibility
+#                          launcher or executable still carrying this module's
+#                          ownership proof fails verification.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPLY_SETTINGS="${BOT_AUTONOMY_ANTIGRAVITY_APPLY_SCRIPT:-${SCRIPT_DIR}/../apply-antigravity-settings.sh}"
@@ -29,7 +28,99 @@ BOT_DEFAULTS="${BOT_AUTONOMY_ANTIGRAVITY_DEFAULTS:-${SCRIPT_DIR}/../antigravity-
 SETTINGS="${BOT_AUTONOMY_ANTIGRAVITY_SETTINGS:-$HOME/.gemini/antigravity-cli/settings.json}"
 AGY_LINK="${BOT_AUTONOMY_AGY_LINK:-$HOME/.local/bin/agy}"
 AGY_REAL="${BOT_AUTONOMY_AGY_REAL:-$HOME/.local/bin/agy-real}"
+AGY_REAL_OWNERSHIP="${BOT_AUTONOMY_AGY_OWNERSHIP:-$(dirname "$AGY_REAL")/.agy-real.harmon-init-owned}"
+AGY_REAL_TRANSACTION="${BOT_AUTONOMY_AGY_TRANSACTION:-$(dirname "$AGY_REAL")/.agy-real.harmon-init-transaction}"
+AGY_LINK_OWNERSHIP="${BOT_AUTONOMY_AGY_LINK_OWNERSHIP:-$(dirname "$AGY_LINK")/.agy.harmon-init-owned}"
+AGY_LINK_TRANSACTION="${BOT_AUTONOMY_AGY_LINK_TRANSACTION:-$(dirname "$AGY_LINK")/.agy.harmon-init-transaction}"
+AGY_LOCK="${BOT_AUTONOMY_AGY_LOCK:-$(dirname "$AGY_LINK")/.agy.harmon-init-lock}"
 AGY_SYSTEM_BINARY="${HARMON_ANTIGRAVITY_SYSTEM_BINARY:-/usr/local/bin/agy}"
+lock_backend=""
+
+release_launcher_lock() {
+    if [ "$lock_backend" = "shlock" ] && [ -f "$AGY_LOCK" ] && [ ! -L "$AGY_LOCK" ] &&
+        [ "$(cat "$AGY_LOCK")" = "$$" ]; then
+        rm -f "$AGY_LOCK"
+    fi
+    lock_backend=""
+}
+
+trap release_launcher_lock EXIT
+
+acquire_launcher_lock() {
+    install -d -m 0755 "$(dirname "$AGY_LINK")"
+    if command -v flock >/dev/null 2>&1; then
+        exec 9<"$(dirname "$AGY_LINK")"
+        flock -n 9 || {
+            echo "antigravity: launcher reconciliation is already running" >&2
+            return 1
+        }
+        lock_backend="flock"
+    elif command -v shlock >/dev/null 2>&1; then
+        shlock -f "$AGY_LOCK" -p "$$" || {
+            echo "antigravity: launcher reconciliation is already running" >&2
+            return 1
+        }
+        lock_backend="shlock"
+    else
+        echo "antigravity: launcher reconciliation requires flock or shlock" >&2
+        return 1
+    fi
+}
+
+metadata_exists() {
+    [ -e "$1" ] || [ -L "$1" ]
+}
+
+file_sha512() {
+    if command -v sha512sum >/dev/null 2>&1; then
+        sha512sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 512 "$1" | awk '{print $1}'
+    else
+        echo "antigravity: SHA-512 verification requires sha512sum or shasum" >&2
+        return 1
+    fi
+}
+
+path_identity() {
+    stat -c '%d:%i' "$1" 2>/dev/null || stat -f '%d:%i' "$1"
+}
+
+proof_value() {
+    sed -n "s/^$2=//p" "$1" | head -1
+}
+
+launcher_proof_matches() (
+    proof="$1"
+    path="$2"
+    [ -f "$proof" ] && [ ! -L "$proof" ] && [ -f "$path" ] && [ ! -L "$path" ] || return 1
+    [ "$(proof_value "$proof" type)" = "file" ] || return 1
+    expected_identity="$(proof_value "$proof" identity)"
+    [ -n "$expected_identity" ] || return 1
+    actual_identity="$(path_identity "$path" 2>/dev/null)" || return 1
+    [ -n "$actual_identity" ] && [ "$expected_identity" = "$actual_identity" ] || return 1
+    expected_digest="$(proof_value "$proof" sha512)"
+    [ -n "$expected_digest" ] || return 1
+    actual_digest="$(file_sha512 "$path")" || return 1
+    [ -n "$actual_digest" ] && [ "$expected_digest" = "$actual_digest" ]
+)
+
+discard_launcher_transaction() {
+    temp_name="$(proof_value "$AGY_LINK_TRANSACTION" temp_name 2>/dev/null || true)"
+    case "$temp_name" in
+    agy.tmp.*) rm -f "$(dirname "$AGY_LINK")/${temp_name}" ;;
+    esac
+    rm -f "$AGY_LINK_TRANSACTION"
+}
+
+recover_launcher_transaction() {
+    metadata_exists "$AGY_LINK_TRANSACTION" || return 0
+    if launcher_proof_matches "$AGY_LINK_TRANSACTION" "$AGY_LINK"; then
+        mv -f "$AGY_LINK_TRANSACTION" "$AGY_LINK_OWNERSHIP"
+    else
+        discard_launcher_transaction
+    fi
+}
 
 marker_enabled() {
     [ "${HARMON_BOT_AUTONOMY_ANTIGRAVITY:-}" = "enabled" ]
@@ -70,19 +161,35 @@ exec "\$real" --dangerously-skip-permissions "\$@"
 WRAPPER
 }
 
-install_wrapper() {
+install_wrapper() (
     install -d -m 0755 "$(dirname "$AGY_LINK")"
-    local tmp
-    tmp="$(mktemp)"
+    recover_launcher_transaction
+    tmp="$(mktemp "$(dirname "$AGY_LINK")/agy.tmp.XXXXXX")"
+    proof_tmp="$(mktemp "${AGY_LINK_TRANSACTION}.tmp.XXXXXX")"
+    trap 'rm -f "$tmp" "$proof_tmp"' EXIT
     write_wrapper "$tmp"
     chmod 0755 "$tmp"
+    identity="$(path_identity "$tmp")" || return 1
+    [ -n "$identity" ] || return 1
+    digest="$(file_sha512 "$tmp")" || return 1
+    [ -n "$digest" ] || return 1
+    printf 'type=file\nidentity=%s\nsha512=%s\ntemp_name=%s\n' \
+        "$identity" \
+        "$digest" \
+        "$(basename "$tmp")" >"$proof_tmp"
+    chmod 0600 "$proof_tmp"
+    mv -f "$proof_tmp" "$AGY_LINK_TRANSACTION"
+    rm -f "$AGY_LINK"
     mv -f "$tmp" "$AGY_LINK"
-}
+    mv -f "$AGY_LINK_TRANSACTION" "$AGY_LINK_OWNERSHIP"
+)
 
 cmd_apply() {
     if marker_enabled; then
         bash "$APPLY_SETTINGS" apply "$BOT_DEFAULTS" "$PWD"
+        acquire_launcher_lock
         install_wrapper
+        release_launcher_lock
         echo "==> antigravity: autonomous policy applied (wrapper installed)"
     else
         bash "$APPLY_SETTINGS" restore
@@ -184,9 +291,13 @@ verify_wrapper_enabled() {
     }
 }
 
-verify_agy_absent() {
-    if [ -e "$AGY_LINK" ] || [ -L "$AGY_LINK" ]; then
-        echo "antigravity: verify failed — ${AGY_LINK} should be absent when Antigravity autonomy is disabled-by-option" >&2
+verify_agy_unmanaged() {
+    if metadata_exists "$AGY_LINK_OWNERSHIP" || metadata_exists "$AGY_LINK_TRANSACTION"; then
+        echo "antigravity: verify failed — managed ownership metadata remains for ${AGY_LINK} while Antigravity autonomy is disabled-by-option" >&2
+        exit 1
+    fi
+    if metadata_exists "$AGY_REAL_OWNERSHIP" || metadata_exists "$AGY_REAL_TRANSACTION"; then
+        echo "antigravity: verify failed — managed ownership metadata remains for ${AGY_REAL} while Antigravity autonomy is disabled-by-option" >&2
         exit 1
     fi
 }
@@ -197,7 +308,7 @@ cmd_verify() {
         verify_settings_autonomous
         verify_wrapper_enabled
     else
-        verify_agy_absent
+        verify_agy_unmanaged
     fi
 }
 
@@ -207,8 +318,8 @@ verify) cmd_verify ;;
 executable) echo "agy" ;;
 # bot-autonomy.sh's dispatch gate normally skips a module when its
 # declared executable is absent from PATH. That is wrong here: agy's
-# presence is exactly what apply/verify manage (ensure-antigravity-cli.sh
-# removes it when the option is disabled), so gating dispatch on it would
+# managed state is exactly what apply/verify reconcile (ensure-antigravity-cli.sh
+# removes owned remnants when disabled), so gating dispatch on presence would
 # skip the disabled branch's settings restore precisely when disabling —
 # the opposite of the intent. This module always runs; its own marker
 # check decides what to do.

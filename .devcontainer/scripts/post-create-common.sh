@@ -31,6 +31,73 @@ PROFILE_SOURCE_LINE='source /usr/local/share/devcontainer-config/shell-aliases.s
 ENV_GITCONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/git/config"
 mkdir -p "$(dirname "$ENV_GITCONFIG")"
 
+# --- Workspace permissions reconciliation ---
+# Git 2.35+ refuses to inspect a bind-mounted repository when the host checkout
+# owner differs from the in-container user. Resolve the mounted workspace from
+# its .git marker without asking Git first, grant the Git metadata tree the
+# permissions needed by this container, then add only that exact path to the
+# environment config. Changing permissions preserves the host runner's UID/GID;
+# a wildcard safe.directory would trust unrelated repositories, so it is never
+# used here.
+resolve_workspace_root() {
+    local candidate="$1"
+    while [ "$candidate" != "/" ]; do
+        if [ -L "$candidate/.git" ]; then
+            echo "ERROR: refusing a symlinked Git marker at $candidate/.git" >&2
+            return 1
+        fi
+        if [ -e "$candidate/.git" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+        candidate="$(dirname "$candidate")"
+    done
+    return 1
+}
+
+reconcile_workspace_permissions() {
+    local env_gitconfig="$1"
+    local workspace_root
+
+    workspace_root="$(resolve_workspace_root "$(pwd -P)")" || {
+        echo "ERROR: could not resolve the repository/workspace root from $(pwd -P)" >&2
+        return 1
+    }
+    [ "$workspace_root" != "/" ] || {
+        echo "ERROR: refusing to reconcile the filesystem root as a workspace" >&2
+        return 1
+    }
+
+    # Keep the host checkout's UID/GID intact. Git and Lefthook write under
+    # .git, so make only that repository metadata tree readable, writable, and
+    # traversable for the container user. Capital X adds execute permission to
+    # directories and files that were already executable, not every file.
+    sudo chmod -R a+rwX "$workspace_root/.git" || {
+        echo "ERROR: could not grant Git metadata permissions at $workspace_root/.git" >&2
+        return 1
+    }
+
+    # This read is deliberately an exact-line match. An existing wildcard (or
+    # another repository path) does not satisfy the workspace's own entry. It
+    # is written only after the permission repair succeeds, so a failed
+    # lifecycle never leaves a trusted-but-unusable checkout.
+    safe_directories=""
+    if ! safe_directories="$(git config --file "$env_gitconfig" \
+        --get-all safe.directory 2>/dev/null)" ||
+        ! grep -Fx "$workspace_root" <<<"$safe_directories" >/dev/null; then
+        git config --file "$env_gitconfig" --add safe.directory "$workspace_root" || return 1
+    fi
+
+    RECONCILED_WORKSPACE_ROOT="$workspace_root"
+}
+
+# --- End workspace permissions reconciliation ---
+RECONCILED_WORKSPACE_ROOT=""
+reconcile_workspace_permissions "$ENV_GITCONFIG"
+WORKSPACE_ROOT="$RECONCILED_WORKSPACE_ROOT"
+cd "$WORKSPACE_ROOT"
+echo "==> Workspace permissions prepared for $(id -un):$(id -gn): $WORKSPACE_ROOT"
+
 # Git identity for commits. Written to the environment layer, so in a bot or
 # headless container DEVCONTAINER_GIT_* is the identity. When a human attaches
 # via VS Code and copyGitConfig brings their personal ~/.gitconfig in, its
@@ -324,7 +391,7 @@ echo "==> Wiring up shell aliases/functions source line..."
 # works regardless of which shell is active (scripts still use bash).
 for rcfile in ~/.bashrc ~/.zshrc; do
     touch "$rcfile"
-    if ! grep -Fqx "${PROFILE_SOURCE_LINE}" "$rcfile"; then
+    if ! grep -Fx "${PROFILE_SOURCE_LINE}" "$rcfile" >/dev/null; then
         {
             echo ""
             echo "# Added by devcontainer post-create"

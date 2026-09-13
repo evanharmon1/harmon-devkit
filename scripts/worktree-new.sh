@@ -138,7 +138,7 @@ branch_canon="$(git check-ref-format --branch "$branch" 2>/dev/null)" ||
 # worktree nests .worktrees/a/.worktrees/b and every tool's assumption about
 # where trees live stops holding. The first `git worktree list --porcelain`
 # record is always the main worktree.
-main_root="$(git worktree list --porcelain | awk '/^worktree /{print substr($0, 10); exit}')"
+main_root="$(awk '/^worktree /{print substr($0, 10); exit}' < <(git worktree list --porcelain))"
 [ -n "$main_root" ] && [ -d "$main_root" ] || die "could not resolve the main worktree root"
 
 # The default base is the MAIN worktree's HEAD, not the caller's. Running this
@@ -262,7 +262,7 @@ verify_default_base() {
         verify_probed_tip=""
         probe_out="$(git_net ls-remote "$upstream_remote" "$upstream_merge")" || verify_failed=1
         if [ "$verify_failed" -eq 0 ]; then
-            upstream_tip="$(printf '%s\n' "$probe_out" | awk -v ref="$upstream_merge" -F'\t' '$2 == ref {print $1; exit}')"
+            upstream_tip="$(awk -v ref="$upstream_merge" -F'\t' '$2 == ref {print $1; exit}' <<<"$probe_out")"
             if [ -z "$upstream_tip" ]; then
                 # Nothing to verify against: the configured source branch is
                 # gone from the remote, and the local ref is all there is.
@@ -284,7 +284,7 @@ verify_default_base() {
             probe_out="$(git_net ls-remote "$upstream_remote" "$upstream_merge")" || verify_failed=1
         fi
         if [ "$verify_failed" -eq 0 ]; then
-            upstream_tip="$(printf '%s\n' "$probe_out" | awk -v ref="$upstream_merge" -F'\t' '$2 == ref {print $1; exit}')"
+            upstream_tip="$(awk -v ref="$upstream_merge" -F'\t' '$2 == ref {print $1; exit}' <<<"$probe_out")"
             if [ -z "$upstream_tip" ]; then
                 echo "==> Note: '$upstream_remote' no longer has ${upstream_merge#refs/heads/} — basing on the local ${base_label}"
                 return 0
@@ -516,7 +516,7 @@ cleanup() {
         if [ "$branch_owned" -eq 0 ] &&
             [ "$branch_created" -eq 1 ] && [ "$tree_registered_before" -eq 0 ] &&
             worktree_records="$(git worktree list --porcelain)" &&
-            grep -qxF "worktree $tree" <<<"$worktree_records"; then
+            grep -xF "worktree $tree" <<<"$worktree_records" >/dev/null; then
             branch_is_ours=1
         fi
         # `rmdir`, never `rm -rf`. What this run created is either a worktree
@@ -541,7 +541,11 @@ cleanup() {
         # prune has nothing left to do that is ours to do. A record surviving
         # both is reported, never swept.
         rollback_tree_gone=1
-        if grep -qxF "worktree $tree" < <(git worktree list --porcelain); then
+        rollback_worktree_records=""
+        if ! rollback_worktree_records="$(git worktree list --porcelain)"; then
+            rollback_tree_gone=0
+            echo "worktree:new: could not verify the worktree registry after rollback — leaving branch '$branch' alone" >&2
+        elif grep -xF "worktree $tree" <<<"$rollback_worktree_records" >/dev/null; then
             rollback_tree_gone=0
             echo "worktree:new: $tree is still registered after rollback — clear it with 'task worktree:rm -- $name'" >&2
         fi
@@ -560,7 +564,7 @@ cleanup() {
             # HEAD (challenge round 3).
             if [ "$rollback_tree_gone" -eq 0 ]; then
                 echo "worktree:new: leaving branch '$branch' alone — its worktree could not be removed and still has it checked out" >&2
-            elif grep -qxF "branch refs/heads/$branch" < <(git worktree list --porcelain); then
+            elif grep -xF "branch refs/heads/$branch" <<<"$rollback_worktree_records" >/dev/null; then
                 # A non-cooperating client — a raw `git worktree add`,
                 # outside the branch lock — can attach the just-published
                 # branch before this run's own attach fails on it, and
@@ -594,7 +598,11 @@ cleanup() {
                 echo "worktree:new: leaving branch '$branch' alone — its tip moved since this run created it" >&2
             fi
         elif [ "$branch_is_ours" -eq 1 ]; then
-            LEFTHOOK=0 git branch -D "$branch" >/dev/null 2>&1 || true
+            if [ "$rollback_tree_gone" -eq 0 ]; then
+                echo "worktree:new: leaving branch '$branch' alone — its worktree registry state could not be proven clear" >&2
+            else
+                LEFTHOOK=0 git branch -D "$branch" >/dev/null 2>&1 || true
+            fi
         elif [ "$branch_created" -eq 1 ]; then
             echo "worktree:new: leaving branch '$branch' alone — this run did not create it" >&2
         fi
@@ -643,7 +651,7 @@ if [ "$base_origin" != "explicit" ] && ! git show-ref --verify --quiet "refs/hea
         # the branch is new, and guessing here is the data-loss path.
         probe_out="$(git_net ls-remote --heads "$remote_name" "refs/heads/$branch")" ||
             die "could not query remote '$remote_name' for branch '$branch' — offline, unreachable, or needs interactive credentials; retry with network/auth, or pass --base <ref> to skip the remote lookup"
-        probe_sha="$(printf '%s\n' "$probe_out" | awk -v ref="refs/heads/$branch" -F'\t' '$2 == ref {print $1; exit}')"
+        probe_sha="$(awk -v ref="refs/heads/$branch" -F'\t' '$2 == ref {print $1; exit}' <<<"$probe_out")"
         if [ -n "$probe_sha" ]; then
             remote_matches="refs/remotes/$remote_name/$branch"
             remote_match_remote="$remote_name"
@@ -681,7 +689,7 @@ EOF
         # it one probe wide instead of pretending to close it.)
         probe_out="$(git_net ls-remote --heads "$remote_match_remote" "refs/heads/$branch")" ||
             die "remote '$remote_match_remote' became unqueryable while fetching '$branch' — retry, or pass --base <ref>"
-        remote_probe_sha="$(printf '%s\n' "$probe_out" | awk -v ref="refs/heads/$branch" -F'\t' '$2 == ref {print $1; exit}')"
+        remote_probe_sha="$(awk -v ref="refs/heads/$branch" -F'\t' '$2 == ref {print $1; exit}' <<<"$probe_out")"
         [ -n "$remote_probe_sha" ] ||
             die "branch '$branch' disappeared from remote '$remote_match_remote' while fetching — retry, or pass --base <ref>"
         git rev-parse --verify --quiet "$remote_probe_sha^{commit}" >/dev/null ||
@@ -1022,7 +1030,7 @@ EOF
         printf 'chore: worktree hook probe\n' >"$probe_dir/msg"
         (cd "$tree" && LEFTHOOK_BIN="$probe_dir/probe" "$hooks_dir/$hook" "$probe_dir/msg") ||
             die "the $hook hook at $hooks_dir failed to execute from $tree"
-        grep -q "^run $hook" "$marker" 2>/dev/null ||
+        grep "^run $hook" "$marker" 2>/dev/null >/dev/null ||
             die "the $hook hook did not delegate to lefthook from $tree — reinstall with 'task install:hooks'"
     done
     echo "==> Hooks verified: git resolves $hooks_dir and$configured_hooks fire in the new tree"
