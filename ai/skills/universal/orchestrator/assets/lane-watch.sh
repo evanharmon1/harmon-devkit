@@ -204,6 +204,7 @@ load_state() {
 }
 
 save_state() {
+    local state_dir state_tmp index kind key value extra detail lane rest
     [ -n "$state_file" ] || return 0
     state_dir="$(dirname "$state_file")"
     [ -d "$state_dir" ] || mkdir -p "$state_dir" || return 1
@@ -233,6 +234,25 @@ save_state() {
         printf 'WALLCLOCK\trun\t%s\t\n' "$warned"
     } >"$state_tmp" || return 1
     mv "$state_tmp" "$state_file" 2>/dev/null || return 1
+}
+
+persist_state() {
+    save_state || {
+        echo "lane-watch: could not persist state to $state_file" >&2
+        exit 1
+    }
+}
+
+observation_failed() {
+    local label=$1
+    if [ "$(date -u +%s)" -ge "$deadline" ]; then
+        persist_state
+        echo "WALLCLOCK run: deadline $deadline_iso reached"
+        exit 0
+    fi
+    echo "lane-watch: $label" >&2
+    persist_state
+    exit 1
 }
 
 bounded() {
@@ -364,8 +384,9 @@ poll_activity() {
         [ "$created" -le "$until" ] || continue
         key="$lane:$kind:$id"
         if ! state_get ACTIVITY "$key" >/dev/null; then
-            echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
             state_set ACTIVITY "$key" 1
+            persist_state
+            echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
         fi
     done <<<"$rows"
 
@@ -407,7 +428,6 @@ observe_pr() {
     [ -n "$pr" ] || return 0
     old_pr="$(state_get PR "$lane" || true)"
     [ "$old_pr" != "$pr" ] || return 0
-    echo "PR $lane: $pr"
     state_set PR "$lane" "$pr"
     if [[ "$pr" =~ ^#([0-9]+)\ draft=false\ OPEN$ ]]; then
         promoted_pr=${BASH_REMATCH[1]}
@@ -415,6 +435,8 @@ observe_pr() {
             state_set WINDOW "$lane" "$promoted_pr" "$((now + post_promotion_seconds))" ""
         fi
     fi
+    persist_state
+    echo "PR $lane: $pr"
 }
 
 load_state
@@ -427,8 +449,9 @@ while true; do
     now="$(date -u +%s)"
     if [ "$warned" -eq 0 ] && [ $((deadline - now)) -le 1800 ]; then
         remaining_minutes=$(((deadline - now + 59) / 60))
-        echo "WALLCLOCK run: $remaining_minutes min to $deadline_iso cap"
         warned=1
+        persist_state
+        echo "WALLCLOCK run: $remaining_minutes min to $deadline_iso cap"
     fi
     if [ "$now" -ge "$deadline" ]; then
         echo "WALLCLOCK run: deadline $deadline_iso reached"
@@ -452,8 +475,9 @@ while true; do
             agent_state=${agent_state:-absent}
             previous="$(state_get AGENT "$lane" || printf init)"
             if [ "$previous" != "$agent_state" ]; then
-                echo "AGENT $lane: $previous -> $agent_state"
                 state_set AGENT "$lane" "$agent_state"
+                persist_state
+                echo "AGENT $lane: $previous -> $agent_state"
             fi
         fi
 
@@ -470,19 +494,21 @@ while true; do
         fi
         sentinel_key="$lane:$sentinel"
         if [ -n "$sentinel" ] && ! state_get SENTINEL "$sentinel_key" >/dev/null; then
+            state_set SENTINEL "$sentinel_key" 1
+            persist_state
             if [ "$pane_only" -eq 1 ]; then
                 echo "SENTINEL $lane: $sentinel (pane only)"
             else
                 echo "SENTINEL $lane: $sentinel"
             fi
-            state_set SENTINEL "$sentinel_key" 1
         fi
 
         if pane_visible="$(bounded "$timeout_seconds" herdr agent read "$lane" --source visible --lines 8)"; then
             if grep -Fq 'Usage limit reached' <<<"$pane_visible"; then
                 if [ "$(state_get USAGE "$lane" || printf 0)" -eq 0 ]; then
-                    echo "USAGE-PAUSED $lane"
                     state_set USAGE "$lane" 1
+                    persist_state
+                    echo "USAGE-PAUSED $lane"
                 fi
             else
                 state_set USAGE "$lane" 0
@@ -490,26 +516,19 @@ while true; do
         fi
 
         if ! pr="$(discover_pr "$repo" "$branch")"; then
-            echo "lane-watch: GitHub PR observation failed for lane $lane" >&2
-            save_state || echo "lane-watch: could not persist state to $state_file" >&2
-            exit 1
+            observation_failed "GitHub PR observation failed for lane $lane"
         fi
         observe_pr "$lane" "$pr" "$now"
 
         active_pr="$(state_get WINDOW "$lane" || true)"
         if [ -n "$active_pr" ]; then
             if ! poll_activity "$lane" "$repo" "$active_pr" "$now"; then
-                echo "lane-watch: GitHub activity observation failed for lane $lane" >&2
-                save_state || echo "lane-watch: could not persist state to $state_file" >&2
-                exit 1
+                observation_failed "GitHub activity observation failed for lane $lane"
             fi
         fi
     done
 
-    save_state || {
-        echo "lane-watch: could not persist state to $state_file" >&2
-        exit 1
-    }
+    persist_state
     poll_count=$((poll_count + 1))
     if [ "$iterations" -gt 0 ] && [ "$poll_count" -ge "$iterations" ]; then
         exit 0

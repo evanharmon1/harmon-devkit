@@ -87,6 +87,9 @@ cat >"$bin_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 set -u
 if [ "${1:-} ${2:-}" = "pr list" ]; then
+    if [ -f "$WATCH_FIXTURES/hang-pr-list" ]; then
+        sleep 3
+    fi
     if [ -f "$WATCH_FIXTURES/fail-pr-list" ]; then
         exit 92
     fi
@@ -228,12 +231,14 @@ rm "$fixture_dir/malformed-list"
 touch "$fixture_dir/malformed-pr-list"
 github_failure_err="$test_tmp/github-failure.err"
 if bash "$watcher" --iterations 1 --registry "$registry" \
+    --state-file "$test_tmp/github-failure.state" \
     --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
     2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
     >/dev/null 2>"$github_failure_err"; then
     fail 'watcher accepted a malformed GitHub PR observation'
 fi
 assert_line "$github_failure_err" 'lane-watch: GitHub PR observation failed for lane delta'
+assert_count "$test_tmp/github-failure.state" 1 '^AGENT[[:space:]]+delta[[:space:]]+absent'
 rm "$fixture_dir/malformed-pr-list"
 
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
@@ -366,10 +371,24 @@ bash "$watcher" --iterations 1 --registry "$registry" \
     >"$wallclock_out"
 assert_line "$wallclock_out" "WALLCLOCK run: 10 min to $near_deadline cap"
 
+# A bounded read that crosses the deadline terminates as wall-clock exhaustion.
+crossed_deadline="$(date -u -d '1 second' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+if [ -z "$crossed_deadline" ]; then
+    crossed_deadline="$(date -u -v+1S +%Y-%m-%dT%H:%M:%SZ)"
+fi
+touch "$fixture_dir/hang-pr-list"
+deadline_out="$test_tmp/deadline-crossed.out"
+bash "$watcher" --iterations 1 --registry "$registry" \
+    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 2 \
+    "$crossed_deadline" epsilon:branch-epsilon:n5:evanharmon1/harmon-devkit \
+    >"$deadline_out"
+rm "$fixture_dir/hang-pr-list"
+assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
+
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED)|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
-    "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out"; then
+    "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
 
