@@ -189,10 +189,21 @@ if [ "$envelope_mode" = true ]; then
     }
     expected_slug="codex-${MODE/review/verification}"
     [ "$MODE" = challenge ] && expected_slug=codex-adversarial
-    [ "$envelope_slot" = "$expected_slug" ] || {
-        echo "--slot $envelope_slot does not match the configured Codex finder $expected_slug" >&2
-        exit 1
-    }
+    fallback_for=
+    if [ "$envelope_slot" != "$expected_slug" ]; then
+        slot_entry="$(jq -c --arg slot "$envelope_slot" --arg stage "$MODE" '
+            .finders[] | select(.slug == $slot and .surface == "local-cli" and
+              (.stages | index($stage) != null))
+        ' "$registry_path")" || {
+            echo "could not resolve fallback slot $envelope_slot in $registry_path" >&2
+            exit 2
+        }
+        [ -n "$slot_entry" ] || {
+            echo "--slot $envelope_slot is not a registered local-cli primary for stage $MODE" >&2
+            exit 1
+        }
+        fallback_for="$envelope_slot"
+    fi
 fi
 
 if ! command -v codex >/dev/null 2>&1; then
@@ -254,6 +265,7 @@ if [ "$envelope_mode" = true ]; then
         echo "--base $base_ref resolves review scope $selected_merge_base, not the canonical branch scope $canonical_merge_base" >&2
         exit 1
     }
+    scope="Review the changes at captured head ${envelope_head} relative to captured merge base ${selected_merge_base} (the immutable diff ${selected_merge_base}...${envelope_head})."
 fi
 
 # The mode prose and the severity scale below are read from
@@ -324,13 +336,18 @@ if [ "$envelope_mode" = true ]; then
             exit 1
         }
     fi
+    if [ -n "$fallback_for" ]; then
+        envelope_binding="Bind finder to ${expected_slug}, slot to ${envelope_slot}, and substitutes_for to ${fallback_for}."
+    else
+        envelope_binding="Bind finder and slot to ${expected_slug}, and omit substitutes_for."
+    fi
     instructions="${instructions}
 
 Return only one JSON object matching the supplied output schema. This object is
 the payload for a result.${envelope_role} envelope. Bind stage to
-${MODE}, round to ${envelope_round}, reviewed_head to ${envelope_head}, finder
-and slot to ${envelope_slot}, and use finding ids beginning
-${MODE}-r${envelope_round}-${envelope_slot}-. Do not wrap it in Markdown.
+${MODE}, round to ${envelope_round}, and reviewed_head to ${envelope_head}.
+${envelope_binding} Use finding ids beginning
+${MODE}-r${envelope_round}-${expected_slug}-. Do not wrap it in Markdown.
 
 Complete validated findings from earlier rounds of this same stage follow.
 Use them to classify provenance and fingerprint recurrence; round 1 receives
@@ -395,21 +412,40 @@ fi
 raw_payload="$(mktemp "$record_dir/.codex-payload.XXXXXX")"
 envelope_tmp="$(mktemp "$record_dir/.codex-envelope.XXXXXX")"
 known_ids="$(mktemp "$record_dir/.codex-known-ids.XXXXXX")"
+# shellcheck source=scripts/lib/readonly-sandbox.sh
+. "$script_dir/lib/readonly-sandbox.sh"
 cleanup_envelope() {
+    sandbox_cleanup
     rm -f "$raw_payload" "$envelope_tmp" "$known_ids"
 }
 trap cleanup_envelope EXIT
+sandbox_create "$envelope_head" 0 >/dev/null || {
+    echo "could not build the immutable Codex review snapshot at $envelope_head" >&2
+    exit 1
+}
 
-{ printf '%s\n' "$instructions" | codex exec review \
+{ printf '%s\n' "$instructions" | codex exec --cd "$readonly_sandbox_dir" review \
     --model "$review_model" \
     --config "model_reasoning_effort=$review_reasoning" \
     --output-schema "$payload_schema" \
     - 2>&1 1>&3 3>&- | bound_stderr_lines >&2; } 3>"$raw_payload"
 
-jq -e --arg stage "$MODE" --argjson round "$envelope_round" \
-    --arg head "$envelope_head" --arg finder "$expected_slug" \
-    '.stage == $stage and .round == $round and .reviewed_head == $head and
-     .finder == $finder and .slot == $finder' "$raw_payload" >/dev/null || {
+sandbox_verify || {
+    echo "Codex modified its immutable review snapshot; refusing the payload" >&2
+    exit 1
+}
+[ "$(git rev-parse HEAD)" = "$envelope_head" ] || {
+    echo "HEAD changed during the Codex review; refusing the stale payload" >&2
+    exit 1
+}
+
+jq -se --arg stage "$MODE" --argjson round "$envelope_round" \
+    --arg head "$envelope_head" --arg finder "$expected_slug" --arg slot "$envelope_slot" \
+    --arg fallback "$fallback_for" \
+    'length == 1 and .[0].stage == $stage and .[0].round == $round and
+     .[0].reviewed_head == $head and .[0].finder == $finder and .[0].slot == $slot and
+     (if $fallback == "" then (.[0] | has("substitutes_for") | not)
+      else .[0].substitutes_for == $fallback end)' "$raw_payload" >/dev/null || {
     echo "finder payload does not match the captured stage, round, head, finder, and slot" >&2
     exit 1
 }

@@ -714,13 +714,13 @@ fi
 envelope_tmp="$(mktemp "$record_dir/.finder-envelope.XXXXXX")"
 known_ids="$(mktemp "$record_dir/.finder-known-ids.XXXXXX")"
 
-jq -e --arg stage "$MODE" --argjson round "$envelope_round" \
+jq -se --arg stage "$MODE" --argjson round "$envelope_round" \
     --arg head "$envelope_head" --arg finder "$slug" --arg slot "$envelope_slot" \
     --arg fallback "$fallback_for" \
-    '.stage == $stage and .round == $round and .reviewed_head == $head and
-     .finder == $finder and .slot == $slot and
-     (if $fallback == "" then (has("substitutes_for") | not)
-      else .substitutes_for == $fallback end)' "$raw_payload" >/dev/null || {
+    'length == 1 and .[0].stage == $stage and .[0].round == $round and
+     .[0].reviewed_head == $head and .[0].finder == $finder and .[0].slot == $slot and
+     (if $fallback == "" then (.[0] | has("substitutes_for") | not)
+      else .[0].substitutes_for == $fallback end)' "$raw_payload" >/dev/null || {
     echo "finder payload does not match the captured stage, round, head, finder, and slot" >&2
     exit 1
 }

@@ -847,6 +847,26 @@ jq -e '.payload.finder == "copilot-adversarial" and
     .payload.substitutes_for == "coderabbit-adversarial"' \
     "$fallback_pass" >/dev/null || fail "fallback pass lost its primary-slot substitution binding"
 
+echo "==> multiple local-finder payload documents publish nothing"
+cat >"$envelope_bin/copilot" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' '{"stage":"challenge","round":99,"reviewed_head":"$head_sha","finder":"copilot-adversarial","slot":"copilot-adversarial","findings":[],"counts":{"P0":0,"P1":0,"P2":0,"P3":0},"attack_scenarios":[]}'
+printf '%s\n' '{"stage":"challenge","round":2,"reviewed_head":"$head_sha","finder":"copilot-adversarial","slot":"copilot-adversarial","findings":[],"counts":{"P0":0,"P1":0,"P2":0,"P3":0},"attack_scenarios":[]}'
+EOF
+chmod +x "$envelope_bin/copilot"
+if (
+    cd "$work" || exit 1
+    PATH="$envelope_bin:$PATH" ./scripts/finder-review.sh challenge copilot --envelope \
+        --run-id run-finder-envelope --head "$head_sha" --stage challenge --round 2 \
+        --slot copilot-adversarial --producer "$producer" --record-dir "$record" \
+        --policy .devflow.toml --registry agent-registry.json \
+        --model gpt-5.6-sol --tier apex --base origin/main >/dev/null 2>&1
+); then
+    fail "multiple local-finder payload documents were accepted"
+fi
+[ ! -e "$record/passes/challenge-r2-copilot-adversarial.json" ] ||
+    fail "multiple local-finder payload documents published a pass"
+
 echo "==> a local-finder run-id mismatch and malformed payload publish nothing"
 bad_record="$tmp/finder-envelope-bad"
 mkdir -p "$bad_record"

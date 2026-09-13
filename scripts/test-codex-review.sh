@@ -31,6 +31,9 @@ mkdir -p "${test_tmp}/bin"
 cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
 if [ -n "${STUB_PAYLOAD_FILE:-}" ]; then
+    if [ -n "${STUB_ARGS_FILE:-}" ]; then
+        printf '%s\n' "$@" >"$STUB_ARGS_FILE"
+    fi
     if [ -n "${STUB_PROMPT_FILE:-}" ]; then
         cat >"$STUB_PROMPT_FILE"
     else
@@ -88,6 +91,7 @@ git init -q -b develop "${test_tmp}/upstream"
     mkdir -p scripts/lib
     cp -R "${repo}/scripts/lib/review-instructions" scripts/lib/
     cp "${repo}/scripts/lib/review-scope.sh" scripts/lib/
+    cp "${repo}/scripts/lib/readonly-sandbox.sh" scripts/lib/
     git add -A
     git_t commit -q -m base
 )
@@ -665,9 +669,10 @@ JSON
 head_sha="$(git rev-parse HEAD)"
 producer="codex-review.sh@$(git hash-object scripts/codex-review.sh)"
 challenge_payload="${test_tmp}/challenge-payload.json"
+challenge_args="${test_tmp}/challenge-args.txt"
 jq --arg head "$head_sha" '.reviewed_head = $head' \
     ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$challenge_payload"
-STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
+STUB_ARGS_FILE="$challenge_args" STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
     --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 1 \
     --slot codex-adversarial --producer "$producer" --record-dir "$record" \
     --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null ||
@@ -676,6 +681,8 @@ challenge_pass="$record/passes/challenge-r1-codex-adversarial.json"
 [ -f "$challenge_pass" ] || fail "challenger pass was not published"
 jq -e --arg producer "$producer" '.role == "challenger" and .producer.harness == $producer' \
     "$challenge_pass" >/dev/null || fail "challenger envelope lost role or script-derived producer"
+grep -Fxq -- '--cd' "$challenge_args" || fail "Codex envelope review was not given a detached snapshot cwd"
+grep -Fq 'finder-readonly-' "$challenge_args" || fail "Codex envelope review used the live checkout instead of its snapshot"
 
 echo "==> envelope mode binds the review target to the canonical branch scope"
 set +e
@@ -699,6 +706,40 @@ set -e
 [ "$target_status" -ne 0 ] || fail "envelope mode accepted a base outside the canonical branch scope"
 grep -Fq 'not the canonical branch scope' <<<"$target_out" ||
     fail "noncanonical base was rejected for the wrong reason: $target_out"
+
+echo "==> Codex fallback and single-document bindings are enforced"
+fallback_record="${test_tmp}/codex-fallback-record"
+mkdir -p "$fallback_record"
+printf '%s\n' '{"run_id":"run-codex-fallback","initiated_by":"human"}' >"$fallback_record/run.json"
+fallback_payload="${test_tmp}/codex-fallback-payload.json"
+jq --arg head "$head_sha" '.reviewed_head = $head | .slot = "copilot-adversarial" |
+    .substitutes_for = "copilot-adversarial"' \
+    ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$fallback_payload"
+STUB_PAYLOAD_FILE="$fallback_payload" run challenge --envelope \
+    --run-id run-codex-fallback --head "$head_sha" --stage challenge --round 1 \
+    --slot copilot-adversarial --producer "$producer" --record-dir "$fallback_record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null ||
+    fail "valid Codex fallback envelope failed"
+jq -e '.payload.finder == "codex-adversarial" and .payload.slot == "copilot-adversarial" and
+    .payload.substitutes_for == "copilot-adversarial"' \
+    "$fallback_record/passes/challenge-r1-copilot-adversarial.json" >/dev/null ||
+    fail "Codex fallback pass lost its primary-slot substitution binding"
+multi_record="${test_tmp}/codex-multidoc-record"
+mkdir -p "$multi_record"
+printf '%s\n' '{"run_id":"run-codex-multidoc","initiated_by":"human"}' >"$multi_record/run.json"
+multi_payload="${test_tmp}/codex-multidoc-payload.json"
+jq --arg head "$head_sha" '.round = 99 | .reviewed_head = $head' \
+    ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$multi_payload"
+jq --arg head "$head_sha" '.round = 2 | .reviewed_head = $head' \
+    ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >>"$multi_payload"
+if STUB_PAYLOAD_FILE="$multi_payload" run challenge --envelope \
+    --run-id run-codex-multidoc --head "$head_sha" --stage challenge --round 2 \
+    --slot codex-adversarial --producer "$producer" --record-dir "$multi_record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null 2>&1; then
+    fail "multiple Codex payload documents were accepted"
+fi
+[ ! -e "$multi_record/passes/challenge-r2-codex-adversarial.json" ] ||
+    fail "multiple Codex payload documents published a pass"
 
 echo "==> Codex-lane fixture reaches adjudication, a converged exit, and retained retro evidence"
 jq '.receipts = [{kind:"transition",stage:"challenge"},
