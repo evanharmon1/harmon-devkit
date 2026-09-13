@@ -73,8 +73,11 @@ for supplied in "$@"; do
               | select(test("^[A-Za-z][A-Za-z0-9_.:-]*$"))
             ' "$target"
             ;;
-        *.yaml | *.yml | *.toml)
-            sed -nE 's/^[[:space:]]*([A-Za-z][A-Za-z0-9_.-]{3,79})[[:space:]]*=?.*/\1/p' "$target"
+        *.yaml | *.yml)
+            sed -nE 's/^[[:space:]]*(-[[:space:]]+)?([A-Za-z][A-Za-z0-9_.-]{0,79})[[:space:]]*:.*/\2/p' "$target"
+            ;;
+        *.toml)
+            sed -nE 's/^[[:space:]]*([A-Za-z][A-Za-z0-9_.-]{0,79})[[:space:]]*=.*/\1/p' "$target"
             ;;
         esac
     } | while IFS= read -r term; do

@@ -24,12 +24,15 @@ git -C "$fixture" config user.email "lane-fence@example.invalid"
 printf '%s\n' base >"$fixture/allowed.txt"
 printf '%s\n' base >"$fixture/outside.txt"
 printf '%s\n' base >"$fixture/outside-rename.txt"
+printf '%s\n' 'unique unchanged copy source' >"$fixture/copy-source.txt"
 mkdir -p "$fixture/glob"
 printf '%s\n' base >"$fixture/glob/one.txt"
 git -C "$fixture" add .
 git -C "$fixture" commit -qm "test: seed fence fixture"
 base="$(git -C "$fixture" rev-parse HEAD)"
 git -C "$fixture" update-ref refs/remotes/origin/main "$base"
+invoking_worktree="$tmp/invoking-worktree"
+git -C "$fixture" worktree add --detach -q "$invoking_worktree" "$base"
 
 make_brief() {
     destination="$1"
@@ -42,7 +45,9 @@ make_brief() {
       inside && fenced && /^```$/ { fenced=0; next }
       inside && fenced { print }
     ' "$brief_source" | jq --argjson fence "$fence_json" --arg base "$brief_base" \
-        '.fence = $fence | .base_sha = $base | .default_branch = "main"' >"$tmp/envelope.json"
+        --arg worktree "$fixture" \
+        '.fence = $fence | .base_sha = $base | .default_branch = "main" | .worktree_path = $worktree' \
+        >"$tmp/envelope.json"
     sed -n '1,/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/p' "$brief_source" >"$destination"
     printf '\n```json\n' >>"$destination"
     cat "$tmp/envelope.json" >>"$destination"
@@ -81,6 +86,13 @@ fi
 case "$out" in
 *outside.txt*) ;;
 *) fail "out-of-fence failure did not name outside.txt: $out" ;;
+esac
+if out="$(cd "$invoking_worktree" && "$fence_check" --brief "$tmp/allowed.md" 2>&1)"; then
+    fail "invoking from another checkout silently checked that checkout"
+fi
+case "$out" in
+*outside.txt*) ;;
+*) fail "cross-checkout refusal did not report the lane worktree path: $out" ;;
 esac
 
 printf '%s\n' '2026-09-13 fence expansion: outside.txt:1-4 — rejecting validator' >"$tmp/report.md"
@@ -165,6 +177,27 @@ case "$out" in
 *allowed-newline-a.txt*allowed-newline-b.txt*) ;;
 *) fail "newline-path refusal did not render the escaped full path: $out" ;;
 esac
+newline_fence="$(jq -cn --arg path "$newline_path" \
+    '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/**"},{"path":$path}]')"
+make_brief "$tmp/newline-fence.md" "$newline_fence"
+(
+    cd "$fixture"
+    "$fence_check" --brief "$tmp/newline-fence.md"
+) >/dev/null || fail "an exact newline-bearing fence entry was split into patterns"
+
+cp "$fixture/copy-source.txt" "$fixture/copy-destination.txt"
+git -C "$fixture" add copy-destination.txt
+git -C "$fixture" commit -qm "test: copy an unchanged out-of-fence source"
+copy_fence="$(jq -cn --arg path "$newline_path" \
+    '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/**"},{"path":"copy-destination.txt"},{"path":$path}]')"
+make_brief "$tmp/copy.md" "$copy_fence"
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/copy.md" 2>&1)"; then
+    fail "a copy from an unchanged out-of-fence source was accepted"
+fi
+case "$out" in
+*copy-source.txt*) ;;
+*) fail "copy refusal did not name its out-of-fence source: $out" ;;
+esac
 
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
 scan_fixture="$tmp/scan-repo"
@@ -188,6 +221,11 @@ printf '%s\n' 'registry_set' >"$scan_fixture/.claude/skills/compat/assets/regist
 printf '%s\n' '{"status":"ok","properties":{"baseSha":{"enum":["go"]}}}' >"$scan_fixture/short-keys.json"
 printf '%s\n' 'status baseSha' >"$scan_fixture/scripts/short-key-consumer.sh"
 printf '%s\n' 'go' >"$scan_fixture/scripts/short-enum-consumer.sh"
+printf '%s\n' 'id: short' >"$scan_fixture/short-keys.yaml"
+printf '%s\n' '- name: fixture' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' 'id name' >"$scan_fixture/scripts/yaml-key-consumer.sh"
+printf '%s\n' 'id = "short"' >"$scan_fixture/short-keys.toml"
+printf '%s\n' 'id' >"$scan_fixture/scripts/toml-key-consumer.sh"
 isolated_scan_out="$(cd "$scan_fixture" && "$scanner" agent-registry.json)" ||
     fail "isolated dependency scan failed"
 for consumer in \
@@ -208,6 +246,14 @@ grep -Fxq scripts/short-key-consumer.sh <<<"$short_scan_out" ||
     fail "dependency scan missed short schema keys"
 grep -Fxq scripts/short-enum-consumer.sh <<<"$short_scan_out" ||
     fail "dependency scan missed a short enum value"
+yaml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.yaml)" ||
+    fail "YAML-key dependency scan failed"
+grep -Fxq scripts/yaml-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan missed short or list-mapping YAML keys"
+toml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.toml)" ||
+    fail "TOML-key dependency scan failed"
+grep -Fxq scripts/toml-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed a short TOML key"
 
 scan_out="$("$scanner" agent-registry.json)" || fail "real-tree dependency scan failed"
 for consumer in \

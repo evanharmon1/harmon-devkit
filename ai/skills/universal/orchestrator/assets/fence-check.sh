@@ -35,11 +35,11 @@ done
     exit 1
 }
 
-repo="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+invoking_repo="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     echo "fence-check: not inside a Git worktree" >&2
     exit 1
 }
-validator="$repo/scripts/validate-result-schemas.mjs"
+validator="$invoking_repo/scripts/validate-result-schemas.mjs"
 [ -x "$validator" ] || {
     echo "fence-check: brief validator is unavailable: $validator" >&2
     exit 1
@@ -70,15 +70,39 @@ jq -e 'type == "object" and (.fence | type == "array")' "$envelope" >/dev/null |
 }
 default_branch="$(jq -r '.default_branch' "$envelope")"
 recorded_base="$(jq -r '.base_sha' "$envelope")"
-comparison_base="$(git -C "$repo" merge-base HEAD "origin/$default_branch" 2>/dev/null)" || {
+worktree_path="$(jq -r '.worktree_path' "$envelope")"
+lane_root="$(git -C "$worktree_path" rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "fence-check: envelope worktree_path is not a Git worktree: $worktree_path" >&2
+    exit 1
+}
+resolved_worktree="$(cd "$worktree_path" && pwd -P)"
+resolved_lane_root="$(cd "$lane_root" && pwd -P)"
+[ "$resolved_worktree" = "$resolved_lane_root" ] || {
+    echo "fence-check: envelope worktree_path is not the worktree root: $worktree_path" >&2
+    exit 1
+}
+invoking_common="$(git -C "$invoking_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || {
+    echo "fence-check: could not resolve the invoking repository" >&2
+    exit 1
+}
+lane_common="$(git -C "$worktree_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || {
+    echo "fence-check: could not resolve the envelope worktree repository" >&2
+    exit 1
+}
+[ "$invoking_common" = "$lane_common" ] || {
+    echo "fence-check: envelope worktree_path belongs to a different repository: $worktree_path" >&2
+    exit 1
+}
+comparison_base="$(git -C "$worktree_path" merge-base HEAD "origin/$default_branch" 2>/dev/null)" || {
     echo "fence-check: could not derive a merge base against origin/$default_branch" >&2
     exit 1
 }
-git -C "$repo" merge-base --is-ancestor "$recorded_base" "$comparison_base" || {
+git -C "$worktree_path" merge-base --is-ancestor "$recorded_base" "$comparison_base" || {
     echo "fence-check: brief base $recorded_base is not an ancestor of derived base $comparison_base" >&2
     exit 1
 }
-jq -r '.fence[] | if type == "string" then . else .path end' "$envelope" >"$allowed"
+jq -j '.fence[] | ((if type == "string" then . else .path end) + "\u0000")' \
+    "$envelope" >"$allowed"
 
 is_tooling_owned() {
     candidate="$1"
@@ -90,7 +114,7 @@ is_tooling_owned() {
     return 1
 }
 
-while IFS= read -r entry; do
+while IFS= read -r -d '' entry; do
     [ -n "$entry" ] || {
         echo "fence-check: fence contains an empty path" >&2
         exit 1
@@ -113,7 +137,8 @@ if [ -n "$report" ]; then
     ' "$report" >"$expanded"
 fi
 
-git -C "$repo" diff --name-status -z "$comparison_base...HEAD" -- >"$changed_raw" || {
+git -C "$worktree_path" diff -C --find-copies-harder --name-status -z \
+    "$comparison_base...HEAD" -- >"$changed_raw" || {
     echo "fence-check: could not collect the lane diff" >&2
     exit 1
 }
@@ -181,7 +206,7 @@ check_path() {
         return 0
     fi
     matched=false
-    while IFS= read -r pattern; do
+    while IFS= read -r -d '' pattern; do
         if path_matches_pattern "$path" "$pattern"; then
             matched=true
             break
