@@ -40,7 +40,12 @@ if [ -z "$repo_root" ]; then
 fi
 state_file=
 registry="$repo_root/agent-registry.json"
-workspace_root="$(dirname "$repo_root")"
+git_common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [ -n "$git_common_dir" ] && [ "$(basename "$git_common_dir")" = .git ]; then
+    workspace_root="$(dirname "$(dirname "$git_common_dir")")"
+else
+    workspace_root="$(dirname "$repo_root")"
+fi
 interval_seconds=15
 post_promotion_seconds=900
 timeout_seconds=30
@@ -112,12 +117,12 @@ fi
 }
 
 declare -A prev_agent prev_pr usage_paused seen_sentinel
-declare -A window_pr window_until seen_activity
+declare -A window_pr window_until window_since seen_activity
 warned=0
 
 load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
-    while IFS=$'\t' read -r kind lane value extra; do
+    while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
         AGENT) prev_agent["$lane"]=$value ;;
         SENTINEL) seen_sentinel["$lane:$value"]=1 ;;
@@ -126,6 +131,7 @@ load_state() {
         WINDOW)
             window_pr["$lane"]=$value
             window_until["$lane"]=$extra
+            window_since["$lane"]=$detail
             ;;
         ACTIVITY) seen_activity["$lane:$value:$extra"]=1 ;;
         WALLCLOCK) warned=$value ;;
@@ -154,7 +160,8 @@ save_state() {
             printf 'USAGE\t%s\t%s\t\n' "$lane" "${usage_paused[$lane]}"
         done
         for lane in "${!window_pr[@]}"; do
-            printf 'WINDOW\t%s\t%s\t%s\n' "$lane" "${window_pr[$lane]}" "${window_until[$lane]}"
+            printf 'WINDOW\t%s\t%s\t%s\t%s\n' "$lane" "${window_pr[$lane]}" \
+                "${window_until[$lane]}" "${window_since[$lane]:-}"
         done
         for key in "${!seen_activity[@]}"; do
             lane=${key%%:*}
@@ -174,7 +181,7 @@ bounded() {
     remaining=$((deadline - $(date -u +%s)))
     [ "$remaining" -gt 0 ] || return 124
     [ "$seconds" -le "$remaining" ] || seconds=$remaining
-    "$timeout_bin" "$seconds" "$@" </dev/null 2>/dev/null
+    "$timeout_bin" --kill-after=2 "$seconds" "$@" </dev/null 2>/dev/null
 }
 
 trusted_actor_ids="$(jq -r '.finders[]? | .trusted_actor_id // empty | tostring' "$registry" 2>/dev/null || true)"
@@ -207,7 +214,8 @@ activity_rows() {
       (if (.[0]? | type) == "array" then add else . end)[]?
       | (.user.id | tostring) as $actor_id
       | select(.user.type == "User" or ($trusted | split("\n") | index($actor_id)))
-      | [.user.login, $kind, (.id | tostring)] | @tsv
+      | (.submitted_at // .created_at // empty | fromdateiso8601) as $created
+      | [.user.login, $kind, (.id | tostring), ($created | tostring)] | @tsv
     ' <<<"$payload" 2>/dev/null
 }
 
@@ -234,14 +242,21 @@ poll_activity() {
     repo=$2
     pr_number=$3
     now=$4
+    since=${window_since[$lane]:-}
+    if [ -z "$since" ]; then
+        since="$(promotion_epoch "$repo" "$pr_number")" || return 0
+        window_since[$lane]=$since
+        window_until[$lane]=$((since + post_promotion_seconds))
+    fi
     until=${window_until[$lane]:-0}
     expired=0
     [ "$now" -le "$until" ] || expired=1
 
     rows="$(activity_snapshot "$repo" "$pr_number")" || return 0
 
-    while IFS=$'\t' read -r actor kind id; do
+    while IFS=$'\t' read -r actor kind id created; do
         [ -n "$id" ] || continue
+        [ "$created" -gt "$since" ] || continue
         key="$lane:$kind:$id"
         if [ -z "${seen_activity[$key]:-}" ]; then
             echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
@@ -250,8 +265,21 @@ poll_activity() {
     done <<<"$rows"
 
     if [ "$expired" -eq 1 ]; then
-        unset 'window_pr[$lane]' 'window_until[$lane]'
+        unset 'window_pr[$lane]' 'window_until[$lane]' 'window_since[$lane]'
     fi
+}
+
+promotion_epoch() {
+    repo=$1
+    pr_number=$2
+    endpoint="repos/$repo/issues/$pr_number/events?per_page=100"
+    payload="$(bounded "$timeout_seconds" gh api --paginate --slurp "$endpoint")" || return 1
+    [ -n "$payload" ] || return 1
+    jq -er '
+      (if (.[0]? | type) == "array" then add else . end)
+      | map(select(.event == "ready_for_review") | .created_at | fromdateiso8601)
+      | if length > 0 then max else empty end
+    ' <<<"$payload" 2>/dev/null
 }
 
 discover_pr() {
@@ -280,6 +308,7 @@ observe_pr() {
         if [[ "$old_pr" =~ draft=true\ OPEN$ ]]; then
             window_pr[$lane]=$promoted_pr
             window_until[$lane]=$((now + post_promotion_seconds))
+            window_since[$lane]=
         fi
     fi
 }
@@ -375,23 +404,6 @@ while true; do
 
         pr="$(discover_pr "$repo" "$branch" || true)"
         observe_pr "$lane" "$pr" "$now"
-
-        # Seed activity while the PR is still draft. The first ready-state poll
-        # can then report anything that arrived after the last draft snapshot,
-        # including activity racing the promotion transition itself.
-        if [[ "$pr" =~ ^#([0-9]+)\ draft=true\ OPEN$ ]]; then
-            draft_pr=${BASH_REMATCH[1]}
-            if rows="$(activity_snapshot "$repo" "$draft_pr")"; then
-                confirmed_pr="$(discover_pr "$repo" "$branch" || true)"
-                if [ "$confirmed_pr" = "$pr" ]; then
-                    while IFS=$'\t' read -r _actor kind id; do
-                        [ -z "$id" ] || seen_activity["$lane:$kind:$id"]=1
-                    done <<<"$rows"
-                elif [ -n "$confirmed_pr" ]; then
-                    observe_pr "$lane" "$confirmed_pr" "$now"
-                fi
-            fi
-        fi
 
         if [ -n "${window_pr[$lane]:-}" ]; then
             poll_activity "$lane" "$repo" "${window_pr[$lane]}" "$now"

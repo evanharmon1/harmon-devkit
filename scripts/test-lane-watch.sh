@@ -53,6 +53,7 @@ cat >"$bin_dir/herdr" <<'STUB'
 #!/usr/bin/env bash
 set -u
 if [ -f "$WATCH_FIXTURES/hang-list" ] && [ "${1:-} ${2:-}" = "agent list" ]; then
+    trap '' TERM
     sleep 5
 fi
 if [ "${1:-} ${2:-}" = "agent list" ]; then
@@ -117,19 +118,22 @@ if [ "${1:-}" = api ]; then
     if [ -f "$WATCH_FIXTURES/fail-api" ] && [ "$phase" -eq 2 ]; then
         exit 92
     fi
-    if [ "$phase" -lt 3 ] && [ ! -f "$WATCH_FIXTURES/race-activity" ]; then
+    if [ "$phase" -lt 3 ]; then
         printf '%s\n' '[]'
         exit 0
     fi
     case "$endpoint" in
+    */events?per_page=100)
+        printf '%s\n' '[{"id":401,"event":"ready_for_review","created_at":"2098-01-01T00:00:00Z","actor":{"id":111,"login":"maintainer","type":"User"}}]'
+        ;;
     */reviews?per_page=100)
-        printf '%s\n' '[{"id":501,"user":{"id":999,"login":"trusted-codex","type":"Bot"}}]'
+        printf '%s\n' '[{"id":501,"submitted_at":"2098-01-01T00:00:01Z","user":{"id":999,"login":"trusted-codex","type":"Bot"}}]'
         ;;
     */issues/*/comments?per_page=100)
-        printf '%s\n' '[{"id":601,"user":{"id":111,"login":"maintainer","type":"User"}}]'
+        printf '%s\n' '[{"id":601,"created_at":"2098-01-01T00:00:02Z","user":{"id":111,"login":"maintainer","type":"User"}}]'
         ;;
     */pulls/*/comments?per_page=100)
-        printf '%s\n' '[{"id":701,"user":{"id":222,"login":"untrusted-bot","type":"Bot"}}]'
+        printf '%s\n' '[{"id":701,"created_at":"2098-01-01T00:00:03Z","user":{"id":222,"login":"untrusted-bot","type":"Bot"}}]'
         ;;
     *) exit 91 ;;
     esac
@@ -156,9 +160,7 @@ common_args=(
 )
 
 primary_out="$test_tmp/primary.out"
-touch "$fixture_dir/race-activity"
 bash "$watcher" --iterations 4 "${common_args[@]}" >"$primary_out"
-rm "$fixture_dir/race-activity"
 
 # Three independently quoted specs pin the zsh word-splitting regression.
 assert_line "$primary_out" 'AGENT alpha: init -> working'
@@ -233,6 +235,30 @@ WATCH_REPO=evanharmon1/consumer bash "$flattened_watcher" --iterations 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1 >"$flattened_out"
 assert_line "$flattened_out" 'SENTINEL alpha: LANE-ALPHA-READY-n1'
 
+# A watcher launched from a linked worktree still finds reports in sibling
+# worktrees under the primary checkout.
+linked_parent="$test_tmp/linked"
+linked_main="$linked_parent/repo"
+mkdir -p "$linked_main"
+git -C "$linked_main" init -q -b main
+git -C "$linked_main" config user.name test
+git -C "$linked_main" config user.email test@example.invalid
+mkdir -p "$linked_main/ai/skills/universal/orchestrator/assets"
+cp "$watcher" "$linked_main/ai/skills/universal/orchestrator/assets/lane-watch.sh"
+cp "$registry" "$linked_main/agent-registry.json"
+git -C "$linked_main" add .
+git -C "$linked_main" commit -qm initial
+git -C "$linked_main" worktree add -q -b monitor "$linked_main/.worktrees/monitor"
+mkdir -p "$linked_main/.worktrees/alpha"
+cp "$workspace_root/harmon-devkit/.worktrees/alpha/.lane-report.md" \
+    "$linked_main/.worktrees/alpha/.lane-report.md"
+linked_watcher="$linked_main/.worktrees/monitor/ai/skills/universal/orchestrator/assets/lane-watch.sh"
+linked_out="$test_tmp/linked.out"
+WATCH_REPO=evanharmon1/repo bash "$linked_watcher" --iterations 1 \
+    --state-file "$test_tmp/linked.state" --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1 >"$linked_out"
+assert_line "$linked_out" 'SENTINEL alpha: LANE-ALPHA-READY-n1'
+
 # Nonces use a literal-safe identity alphabet rather than regex syntax.
 invalid_nonce_err="$test_tmp/invalid-nonce.err"
 bash "$watcher" --iterations 1 --registry "$registry" \
@@ -266,7 +292,7 @@ assert_line "$wallclock_out" "WALLCLOCK run: 30 min to $near_deadline cap"
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED)|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$retry_out" \
-    "$flattened_out" "$wallclock_out"; then
+    "$flattened_out" "$linked_out" "$wallclock_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
 
