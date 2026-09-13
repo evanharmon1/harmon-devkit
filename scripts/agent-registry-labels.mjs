@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // agent-registry-labels.mjs — render the agent-vocabulary GitHub labels from the
 // machine-readable agent registry (agent-registry.json). This is the SINGLE
-// source of the `suggest:*`, `claim:*`, and `foreman:<adapter>` label lines:
-// setup-github-labels.sh provisions them and test-registry-drift.sh checks them,
-// both by calling this file, so the two can never disagree.
+// source of the `suggest:*`, `claim:*`, `foreman:<adapter>`, and
+// `tier:<role>:<tier>` label lines: setup-github-labels.sh provisions them and
+// test-registry-drift.sh checks them, both by calling this file, so the two can
+// never disagree.
 //
 // Output: one `name|hex-color|description` line per label (the format
 // setup-github-labels.sh consumes). Only FAMILY-LEVEL suggest/claim labels are
@@ -20,13 +21,14 @@
 // deliberately NOT part of `all`.
 //
 // Usage: node agent-registry-labels.mjs <mode> [registry-path]
-//   mode = suggest-claim | foreman-adapters | all | docs-tables
+//   mode = suggest-claim | foreman-adapters | tier-roles | all | docs-tables
 // Registry defaults to ../agent-registry.json relative to this file.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { TIER_ORDER } from './lib/registry-roles.mjs'
 
 // Colors mirror setup-github-labels.sh's family grouping: claim inherits the
 // retired agent:* teal (it answers the same "who is working this" question);
@@ -34,8 +36,17 @@ import { fileURLToPath } from 'node:url'
 const COLOR_SUGGEST = 'BFD4F2'
 const COLOR_CLAIM = '006B75'
 const COLOR_FOREMAN = '1D76DB'
+const COLOR_TIER_ROLE = '7057FF'
 
-const MODES = new Set(['suggest-claim', 'foreman-adapters', 'all', 'docs-tables'])
+const TIER_BLURBS = new Map([
+  ['local', 'self-hosted endpoint first'],
+  ['economy', 'cheapest qualified hosted model'],
+  ['standard', 'reliable general-purpose coding model'],
+  ['frontier', 'opus-class heavyweight, no warm-up'],
+  ['apex', 'mythos-class leading edge'],
+])
+
+const MODES = new Set(['suggest-claim', 'foreman-adapters', 'tier-roles', 'all', 'docs-tables'])
 
 const mode = process.argv[2]
 if (!MODES.has(mode)) {
@@ -133,6 +144,30 @@ if (mode === 'foreman-adapters' || mode === 'all') {
         `Arm this issue for foreman dispatch with the ${name} backend`
       )
     )
+  }
+}
+
+if (mode === 'tier-roles' || mode === 'all') {
+  for (const role of registry.roles ?? []) {
+    const slug = field(role.slug, `role slug`)
+    for (const tier of TIER_ORDER) {
+      const name = `tier:${slug}:${tier}`
+      if ([...name].length > GH_LABEL_NAME_MAX) {
+        console.error(
+          `agent-registry-labels: label '${name}' is ${[...name].length} chars, over GitHub's ` +
+            `${GH_LABEL_NAME_MAX}-char limit — shorten the role slug in agent-registry.json`
+        )
+        process.exit(1)
+      }
+      const blurb = TIER_BLURBS.get(tier) ?? tier
+      lines.push(
+        record(
+          name,
+          COLOR_TIER_ROLE,
+          `Tier override: pin the ${slug} to ${tier} — ${blurb}`
+        )
+      )
+    }
   }
 }
 

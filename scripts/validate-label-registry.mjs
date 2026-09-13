@@ -337,7 +337,8 @@ const GH_LABEL_NAME_MAX = 50
 const REGISTRY_SET_PREFIX = {
   suggest: 'suggest',
   claim: 'claim',
-  'foreman-adapters': 'foreman'
+  'foreman-adapters': 'foreman',
+  'tier-roles': null
 }
 const VALUE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 

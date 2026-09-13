@@ -555,31 +555,6 @@ tier:standard|7057FF|Model tier: reliable general-purpose coding model first
 tier:frontier|7057FF|Model tier: opus-class heavyweights; no warm-up on weaker models
 tier:apex|7057FF|Model tier: mythos-class leading edge (fable, sol)
 tier:adaptive|7057FF|Model tier: cheap preflight classifies, then chooses or escalates
-tier:orchestrator:local|7057FF|Tier override: pin the orchestrator to local — self-hosted endpoint first
-tier:orchestrator:economy|7057FF|Tier override: pin the orchestrator to economy — cheapest qualified hosted model
-tier:orchestrator:standard|7057FF|Tier override: pin the orchestrator to standard — reliable general-purpose coding model
-tier:orchestrator:frontier|7057FF|Tier override: pin the orchestrator to frontier — opus-class heavyweight, no warm-up
-tier:orchestrator:apex|7057FF|Tier override: pin the orchestrator to apex — mythos-class leading edge
-tier:implementer:local|7057FF|Tier override: pin the implementer to local — self-hosted endpoint first
-tier:implementer:economy|7057FF|Tier override: pin the implementer to economy — cheapest qualified hosted model
-tier:implementer:standard|7057FF|Tier override: pin the implementer to standard — reliable general-purpose coding model
-tier:implementer:frontier|7057FF|Tier override: pin the implementer to frontier — opus-class heavyweight, no warm-up
-tier:implementer:apex|7057FF|Tier override: pin the implementer to apex — mythos-class leading edge
-tier:reviewer:local|7057FF|Tier override: pin the reviewer to local — self-hosted endpoint first
-tier:reviewer:economy|7057FF|Tier override: pin the reviewer to economy — cheapest qualified hosted model
-tier:reviewer:standard|7057FF|Tier override: pin the reviewer to standard — reliable general-purpose coding model
-tier:reviewer:frontier|7057FF|Tier override: pin the reviewer to frontier — opus-class heavyweight, no warm-up
-tier:reviewer:apex|7057FF|Tier override: pin the reviewer to apex — mythos-class leading edge
-tier:challenger:local|7057FF|Tier override: pin the challenger to local — self-hosted endpoint first
-tier:challenger:economy|7057FF|Tier override: pin the challenger to economy — cheapest qualified hosted model
-tier:challenger:standard|7057FF|Tier override: pin the challenger to standard — reliable general-purpose coding model
-tier:challenger:frontier|7057FF|Tier override: pin the challenger to frontier — opus-class heavyweight, no warm-up
-tier:challenger:apex|7057FF|Tier override: pin the challenger to apex — mythos-class leading edge
-tier:integrator:local|7057FF|Tier override: pin the integrator to local — self-hosted endpoint first
-tier:integrator:economy|7057FF|Tier override: pin the integrator to economy — cheapest qualified hosted model
-tier:integrator:standard|7057FF|Tier override: pin the integrator to standard — reliable general-purpose coding model
-tier:integrator:frontier|7057FF|Tier override: pin the integrator to frontier — opus-class heavyweight, no warm-up
-tier:integrator:apex|7057FF|Tier override: pin the integrator to apex — mythos-class leading edge
 strategy:oneshot|BF3989|Strategy: single agent, no separate plan phase
 strategy:plan|BF3989|Strategy: agent plans then implements; no human plan gate
 strategy:plan-approved|BF3989|Strategy: plan requires human approval before implementation
@@ -617,10 +592,12 @@ check_lockfile() {
     local manifest="$1" registry="$2" inline="$3" label="$4"
     local base_expect foreman_expect got_base got_foreman
     base_expect="$( (printf '%s\n' "$inline" &&
-        node scripts/agent-registry-labels.mjs suggest-claim "$registry") | sort)"
+        node scripts/agent-registry-labels.mjs suggest-claim "$registry" &&
+        node scripts/agent-registry-labels.mjs tier-roles "$registry") | sort)"
     foreman_expect="$( (printf '%s\n' "$inline" && printf '%s\n' "$foreman_inline" &&
         node scripts/agent-registry-labels.mjs suggest-claim "$registry" &&
-        node scripts/agent-registry-labels.mjs foreman-adapters "$registry") | sort)"
+        node scripts/agent-registry-labels.mjs foreman-adapters "$registry" &&
+        node scripts/agent-registry-labels.mjs tier-roles "$registry") | sort)"
     got_base="$(node scripts/label-registry-render.mjs labels "$manifest" | sort)"
     got_foreman="$(node scripts/label-registry-render.mjs labels --foreman "$manifest" | sort)"
     if [ "$got_base" != "$base_expect" ]; then
