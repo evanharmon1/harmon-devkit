@@ -24,6 +24,7 @@ node "$validator" "$registry" "$schema"
 
 node --input-type=module - "$registry" <<'NODE'
 import { readFile } from 'node:fs/promises'
+import { deepStrictEqual } from 'node:assert/strict'
 
 const registry = JSON.parse(await readFile(process.argv[2], 'utf8'))
 const family = (slug) => registry.families.find((entry) => entry.slug === slug)
@@ -33,21 +34,49 @@ const expect = (condition, message) => {
     if (!condition) throw new Error(message)
 }
 
+const expectedInventory = {
+    claude: ['fable|Fable|apex', 'opus|Opus|frontier', 'sonnet|Sonnet|standard', 'haiku|Haiku|economy'],
+    gpt: ['astra|Astra|apex', 'sol|Sol|frontier', 'terra|Terra|standard', 'luna|Luna|economy'],
+    mai: ['code-1-1-flash|Code-1.1-Flash|economy', 'thinking-1|Thinking-1|standard'],
+    qwen: [
+        'max|3.8 Max|frontier',
+        'coder-plus|3 Coder Plus|standard',
+        'coder|3 Coder|economy',
+        'flash|3.8 Flash|economy',
+        'coder-next|3 Coder Next|standard',
+        'coder-30b|3 Coder 30B|local'
+    ],
+    deepseek: ['v4-1-flash|V4.1 Flash|standard'],
+    glm: ['5-3|5.3|standard', '5-3-flash|5.3 Flash|economy'],
+    kimi: ['k3|K3|standard'],
+    minimax: ['m3|M3|standard'],
+    gemini: [
+        '3-1-pro|3.1 Pro|frontier',
+        '3-8-flash|3.8 Flash|frontier',
+        '3-7-flash|3.7 Flash|standard',
+        '3-6-flash|3.6 Flash|standard',
+        '3-5-flash-lite|3.5 Flash-Lite|economy'
+    ],
+    mistral: ['medium-3-5|Medium 3.5|frontier', 'small-4|Small 4|standard']
+}
+const actualInventory = Object.fromEntries(
+    registry.families.map((entry) => [
+        entry.slug,
+        entry.models.map(({ slug, display_name: displayName, tier }) => `${slug}|${displayName}|${tier}`)
+    ])
+)
+deepStrictEqual(actualInventory, expectedInventory, 'shipped model inventory must match the 2026-09 refresh')
+
 expect(model('gpt', 'sol')?.tier === 'frontier', 'gpt.sol must remain frontier')
 expect(model('gpt', 'astra')?.tier === 'apex', 'gpt.astra must remain apex')
 expect(
     model('gpt', 'astra')?.cli_ids?.['codex-cli'] === 'gpt-6-astra',
     'gpt.astra must retain its Codex CLI id'
 )
-expect(model('mai', 'code-1-1-flash'), 'MAI must include Code 1.1 Flash')
 expect(
     model('qwen', 'flash')?.cli_ids?.['claude-code-qwen'] === 'qwen3.8-flash',
     'Qwen must expose 3.8 Flash through its provider wrapper'
 )
-expect(model('deepseek', 'v4-1-flash'), 'DeepSeek must include V4.1 Flash')
-expect(model('glm', '5-3') && model('glm', '5-3-flash'), 'GLM must include 5.3 and 5.3 Flash')
-expect(model('gemini', '3-8-flash'), 'Gemini must include 3.8 Flash')
-expect(model('mistral', 'medium-3-5') && model('mistral', 'small-4'), 'Mistral must include its current agentic models')
 console.log('PASS: shipped model inventory includes the 2026-09 refresh')
 NODE
 

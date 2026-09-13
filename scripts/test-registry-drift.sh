@@ -230,6 +230,29 @@ if [ -f "$wrappers_glob" ]; then
             if [ "$exported_ids" != "$declared_ids" ]; then
                 fail "provider wrapper '$fn' exports model IDs [$exported_ids] but registry harness '$harness' declares [$declared_ids] — update the wrapper exports and model cli_ids together"
             fi
+
+            # Qwen deliberately uses three models across its Claude role slots;
+            # preserving the set alone would not catch a Sonnet/Haiku swap.
+            if [ "$harness" = "claude-code-qwen" ]; then
+                for binding in \
+                    ANTHROPIC_MODEL:max \
+                    ANTHROPIC_DEFAULT_OPUS_MODEL:max \
+                    ANTHROPIC_DEFAULT_FABLE_MODEL:max \
+                    ANTHROPIC_DEFAULT_SONNET_MODEL:coder-plus \
+                    ANTHROPIC_DEFAULT_HAIKU_MODEL:flash \
+                    CLAUDE_CODE_SUBAGENT_MODEL:flash; do
+                    variable="${binding%%:*}"
+                    model_slug="${binding#*:}"
+                    expected_id="$(jq -r --arg f "$family" --arg m "$model_slug" --arg h "$harness" '
+                        .families[] | select(.slug == $f) | .models[] | select(.slug == $m) | .cli_ids[$h] // empty
+                    ' "$registry")"
+                    actual_id="$(printf '%s\n' "$wrapper_body" |
+                        sed -n -E "s/^[[:space:]]*export ${variable}=\"([^\"]+)\"/\1/p")"
+                    if [ -z "$expected_id" ] || [ "$actual_id" != "$expected_id" ]; then
+                        fail "provider wrapper '$fn' maps $variable to [$actual_id], expected registry model '$model_slug' [$expected_id]"
+                    fi
+                done
+            fi
         fi
     done
 else
