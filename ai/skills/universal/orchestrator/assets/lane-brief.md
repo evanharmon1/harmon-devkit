@@ -41,6 +41,7 @@ placeholder catalog; a rendered brief with any double-brace token left is invali
 | `{{operator-pins}}` | Attributed operator pins, or `None.` |
 | `{{pr-title}}` | Orchestrator's release-title-compliant proposal |
 | `{{ready-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |
+| `{{handoff-sentinel}}` | Orchestrator-generated draft-handoff sentinel prefix |
 | `{{blocked-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |
 | `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
 
@@ -144,6 +145,15 @@ a permission failure is not authority to find another write route. Never paste
 a terminal sentinel value into another prompt; refer to the reporting contract
 indirectly.
 
+### Other supported harness (read the skill)
+
+For a selected harness without a Skill tool, read the portable vendored
+`implement` skill completely and follow it through draft-PR publication. Apply
+the same lane-worker override: record the confirmed draft handoff in
+`{{report-path}}` and return control to the supervising orchestrator. If the
+harness cannot read the policy, skill, or report path named by this brief,
+report BLOCKED instead of inventing a procedure.
+
 ## Long-running gate invocations
 
 Always run `task challenge` and `task review` in the background and poll them;
@@ -233,6 +243,7 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
   following to `{{report-path}}` and print the same value as the final line of
   the final message:
   - `{{ready-sentinel}}-{{attempt-nonce}}` — the orchestrator promoted the PR through the readiness gate.
+  - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
 
 Begin now: perform the startup-capability check, read the issue, policy, stage

@@ -26,6 +26,7 @@ required_placeholders=(
     '{{file-scope-fence}}'
     '{{generation}}'
     '{{git-sandbox-note}}'
+    '{{handoff-sentinel}}'
     '{{harness}}'
     '{{integration-cap}}'
     '{{issue-number}}'
@@ -80,6 +81,7 @@ for token in "${placeholders[@]}"; do
     key="${key%\}\}}"
     case "$key" in
     ready-sentinel) value="LANE-FIXTURE-READY" ;;
+    handoff-sentinel) value="LANE-FIXTURE-HANDOFF" ;;
     blocked-sentinel) value="LANE-FIXTURE-BLOCKED" ;;
     attempt-nonce) value="a1b2c3" ;;
     *) value="fixture-$key" ;;
@@ -102,6 +104,7 @@ headings=(
     '## Procedure'
     '### Claude Code (Skill tool)'
     '### Codex CLI (read the skill)'
+    '### Other supported harness (read the skill)'
     '## Long-running gate invocations'
     '## Known environmental failure'
     '## Stage-exit rules'
@@ -130,7 +133,10 @@ done
 grep -Fq 'immediately before `gh pr ready`' "$rendered_file" ||
     fail "missing immediate pre-promotion re-read rule"
 
-for sentinel in LANE-FIXTURE-READY-a1b2c3 LANE-FIXTURE-BLOCKED-a1b2c3; do
+for sentinel in \
+    LANE-FIXTURE-READY-a1b2c3 \
+    LANE-FIXTURE-HANDOFF-a1b2c3 \
+    LANE-FIXTURE-BLOCKED-a1b2c3; do
     count="$(grep -Fc "$sentinel" "$rendered_file")"
     [ "$count" -eq 1 ] || fail "$sentinel must appear exactly once (found $count)"
     line="$(grep -nF "$sentinel" "$rendered_file" | cut -d: -f1)"
