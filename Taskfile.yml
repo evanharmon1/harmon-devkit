@@ -395,6 +395,7 @@ tasks:
       - test:retro-run-report
       - test:finder-normalization
       - test:finder-review
+      - test:lane-brief-template
       - test:lint-shell-robustness
 
   test:agent-registry:
@@ -451,6 +452,11 @@ tasks:
     desc: Offline guards for the non-Codex local-CLI finder runner
     cmds:
       - ./scripts/test-finder-review.sh
+
+  test:lane-brief-template:
+    desc: Render and validate the orchestrator lane-brief template contract
+    cmds:
+      - ./scripts/test-lane-brief-template.sh
 
   devflow:render:
     desc: 'Render a dev-flow-v2 projection or publish generated sections (task devflow:render -- <projection|publish> --record <dir> ...)'

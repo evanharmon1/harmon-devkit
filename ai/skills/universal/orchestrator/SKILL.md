@@ -27,14 +27,90 @@ explicit merge dependency in both lane briefs.
 
 ## Lane briefs
 
+The source catalog below is the complete render contract. It deliberately lives
+in this procedure rather than in the dispatched template: substituting free-form
+values into a catalog inside the output would duplicate them into a Markdown
+table before their intended sections.
+
+| Placeholder | Source |
+| --- | --- |
+| `{{lane-name}}` | Orchestrator lane plan |
+| `{{run-id}}` | Active run's `run.json` |
+| `{{branch}}` | Lane plan and `git branch --show-current` |
+| `{{default-branch}}` | Target repository default branch |
+| `{{base-sha}}` | Lane creation record |
+| `{{worktree-path}}` | `git rev-parse --show-toplevel` in the lane |
+| `{{harness}}` | Selected implementer's registry harness |
+| `{{report-path}}` | Nonce-scoped path under the common Git directory, or a path whose worktree exclusion the orchestrator has installed and verified |
+| `{{generation}}` | Active pointer generation |
+| `{{active-state-path}}` | `scripts/dev-flow-monitor.sh active-path` |
+| `{{record-directory}}` | Active run record directory |
+| `{{policy-projection}}` | Resolved policy projection recorded at kickoff |
+| `{{file-scope-fence}}` | Orchestrator's lane ownership plan |
+| `{{live-lane-overlaps}}` | Orchestrator's complete live-lane overlap map |
+| `{{issue-number}}` | Claimed GitHub issue number |
+| `{{issue-title}}` | Fresh canonical-target `gh issue view` result |
+| `{{issue-url}}` | Canonical target-repository issue URL |
+| `{{claim-handoff}}` | Transaction-refreshed claim for the provisioned lane branch: authenticated comment ID, author ID, `updated_at`, expected assignees, and expected claim labels |
+| `{{verified-facts-and-rulings}}` | Orchestrator verification and attributed decisions |
+| `{{git-sandbox-note}}` | Harness-specific sandbox policy, or `Not applicable.` |
+| `{{known-environmental-failure}}` | Verified run exception, or `None.` |
+| `{{rigor}}` | Trusted policy resolution |
+| `{{rigor-source}}` | Policy resolver disclosure |
+| `{{challenge-cap}}` | Selected rounds policy |
+| `{{review-cap}}` | Selected rounds policy |
+| `{{integration-cap}}` | Selected rounds policy |
+| `{{remediation-cap}}` | Selected rounds policy |
+| `{{min-rounds}}` | Selected rounds policy |
+| `{{wall-clock-min}}` | Selected rounds policy |
+| `{{deadline}}` | Active `run.json.started_at` plus `wall_clock_min` |
+| `{{max-agent-runs}}` | Selected breadth envelope |
+| `{{max-parallel-agents}}` | Selected breadth envelope |
+| `{{strategy}}` | Trusted policy resolution |
+| `{{strategy-source}}` | Policy resolver disclosure |
+| `{{role-tiers}}` | Resolved five-role tier projection |
+| `{{operator-pins}}` | Attributed operator pins, or `None.` |
+| `{{pr-title}}` | Orchestrator's release-title-compliant proposal |
+| `{{ready-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |
+| `{{handoff-sentinel}}` | Orchestrator-generated draft-handoff sentinel prefix |
+| `{{blocked-sentinel}}` | Orchestrator-generated per-lane sentinel prefix |
+| `{{attempt-nonce}}` | Fresh nonce for this dispatch attempt |
+
 Every lane brief MUST carry the active run identity so the lane worker can
-route confidence stages through `/review` and integration through `/integrate`,
-producing the v2 evidence (`retro-run-report.mjs` exit 10 `no-run-record` is
-the failure this routing prevents). The required fields are: run id, branch,
-generation, active-state path, record directory, and policy projection. Without
-them the lane worker falls back to the inline `task challenge` / `task review`
-procedure, which produces no run record and no adjudication evidence. See
-`assets/lane-brief.md` for the template skeleton.
+route confidence stages through `/review` and publish a draft with v2 evidence;
+the supervising orchestrator then invokes `/integrate` and retains every
+finding disposition, PR-body edit, thread reply, readiness decision, and
+promotion. (`retro-run-report.mjs` exit 10 `no-run-record` is the failure this
+routing prevents.) The required fields are: run id, branch, generation,
+active-state path, record directory, and policy projection. Without them the
+lane worker falls back to the inline `task challenge` / `task review` procedure,
+which produces no run record and no adjudication evidence.
+
+Before draft publication, a confidence-stage finding uses the template's
+decision handshake: the lane records a decision request and waits for a durable
+orchestrator-authored disposition. With a compatible `/review`, a confirmed code
+fix is performed by the fresh bounded implementer dispatched after the
+orchestrator reserves its agent run. The inline fallback has no such dispatch
+surface, so the orchestrator instead authorizes the original lane to apply only
+the exact confirmed fixes in its recorded disposition and verifies the returned
+gate/publication evidence. The post-draft handoff remains separate and transfers
+integration to the supervising orchestrator.
+
+Render `assets/lane-brief.md` for every end-to-end, PR-owning implementation lane
+instead of hand-authoring a brief. Council proposal and synthesis implementers,
+and bounded remediation implementers, use their schema-bound role briefs and
+return the artifact or fix their dispatch requested; they do not receive this
+draft-publication contract. For a PR-owning lane, the source catalog above is
+the complete input contract: source every value, select the harness procedure
+named by the rendered brief, and refuse dispatch if any `{{name}}` placeholder
+remains. Provision the lane branch/worktree, transactionally refresh the existing
+claim so its record names that exact branch, then authenticate the refreshed
+claim into the handoff snapshot without transferring its ownership.
+Place the per-attempt report under the common Git directory, or install and
+verify its worktree exclusion before dispatch; an assertion that it is excluded
+is not evidence. Preserve its nonce-scoped sentinels. Prompts sent after dispatch
+refer to that reporting contract indirectly and never quote a sentinel value,
+because old pane output must not satisfy a later attempt.
 
 ## PR-open confirmation
 
