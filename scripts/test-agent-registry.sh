@@ -142,6 +142,9 @@ switch (mutation) {
   case 'whitespace-model-cli-id':
     modelOf('gpt', 'astra').cli_ids['codex-cli'] = '   '
     break
+  case 'surrounding-whitespace-model-cli-id':
+    modelOf('gpt', 'astra').cli_ids['codex-cli'] = ' gpt-6-astra '
+    break
   case 'unknown-model-cli-harness':
     modelOf('gpt', 'astra').cli_ids['unknown-cli'] = 'gpt-6-astra'
     break
@@ -601,6 +604,9 @@ rejects "an empty harness-facing model id" \
 rejects "a whitespace-only harness-facing model id" \
     'whitespace-model-cli-id' \
     'cli_ids.codex-cli must be a non-empty string'
+rejects "surrounding whitespace in a harness-facing model id" \
+    'surrounding-whitespace-model-cli-id' \
+    'cli_ids.codex-cli must be a non-empty string without surrounding whitespace'
 rejects "a harness-facing model id keyed by an unknown harness" \
     'unknown-model-cli-harness' \
     'cli_ids references unknown harness unknown-cli'

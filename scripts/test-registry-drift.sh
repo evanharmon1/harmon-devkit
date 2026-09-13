@@ -15,7 +15,9 @@
 #   3. provisioning  — setup-github-labels.sh renders those labels from the
 #                      registry instead of hand-listing a forkable copy.
 #   4. wrappers      — every claude-<family> provider wrapper maps to a
-#                      provider-rewired harness registered in agent-registry.json.
+#                      provider-rewired harness registered in agent-registry.json;
+#                      where the registry declares exact wrapper CLI IDs, its
+#                      exported model set matches them.
 #   5. adapters      — the provisionable Foreman adapters are internally coherent;
 #                      the LIVE comparison against the pinned Foreman release is
 #                      `task foreman:audit-adapters` (network — out of this gate).
@@ -211,6 +213,23 @@ if [ -f "$wrappers_glob" ]; then
         fam_ok="$(jq -r --arg f "$family" '[.families[] | select(.slug == $f)] | length' "$registry")"
         if [ "$ok" != 1 ] || [ "$fam_ok" -lt 1 ]; then
             fail "provider wrapper '$fn' in $wrappers_glob has no matching registry row — add a provider-rewired harness '$harness' (family_constraint fixed→$family) and a family '$family' to agent-registry.json, or remove the wrapper"
+        fi
+
+        declared_ids="$(jq -r --arg f "$family" --arg h "$harness" '
+            .families[] | select(.slug == $f) | .models[] | .cli_ids[$h] // empty
+        ' "$registry" | sort -u)"
+        if [ -n "$declared_ids" ]; then
+            wrapper_body="$(awk -v fn="$fn" '
+                $0 == fn "() {" { in_wrapper = 1 }
+                in_wrapper { print }
+                in_wrapper && $0 == "}" { exit }
+            ' "$wrappers_glob")"
+            exported_ids="$(printf '%s\n' "$wrapper_body" |
+                sed -n -E 's/^[[:space:]]*export (ANTHROPIC_MODEL|ANTHROPIC_DEFAULT_(OPUS|SONNET|HAIKU|FABLE)_MODEL|CLAUDE_CODE_SUBAGENT_MODEL)="([^"]+)"/\3/p' |
+                sort -u)"
+            if [ "$exported_ids" != "$declared_ids" ]; then
+                fail "provider wrapper '$fn' exports model IDs [$exported_ids] but registry harness '$harness' declares [$declared_ids] — update the wrapper exports and model cli_ids together"
+            fi
         fi
     done
 else

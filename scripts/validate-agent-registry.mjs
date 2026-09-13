@@ -96,9 +96,9 @@ if (errors.length === 0) {
             `family ${family.slug} model ${model.slug} cli_ids references harness ${harnessSlug}, which is fixed to family ${harness.family_constraint.family}`
           )
         }
-        if (typeof cliId !== 'string' || cliId.trim().length === 0) {
+        if (typeof cliId !== 'string' || cliId.trim().length === 0 || cliId !== cliId.trim()) {
           semanticError(
-            `family ${family.slug} model ${model.slug} cli_ids.${harnessSlug} must be a non-empty string`
+            `family ${family.slug} model ${model.slug} cli_ids.${harnessSlug} must be a non-empty string without surrounding whitespace`
           )
         }
       }

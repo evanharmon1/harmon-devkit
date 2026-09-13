@@ -77,8 +77,8 @@ claude-kimi() {
     )
 }
 
-# Launch Claude Code with DeepSeek V4 Pro for primary work and V4 Flash for
-# lightweight tiers and subagents, without changing the parent shell environment.
+# Launch Claude Code with DeepSeek V4.1 Flash without changing the parent shell
+# environment.
 # Uses an existing DEEPSEEK_API_KEY, otherwise loads it from
 # $CLAUDE_PROVIDERS_ENV_FILE through `op run` (dev profile only — bot has no op).
 claude-deepseek() {
@@ -110,19 +110,19 @@ claude-deepseek() {
         unset CLAUDE_PROVIDERS_OP_RUN_ACTIVE
         export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
         export ANTHROPIC_AUTH_TOKEN="$api_key"
-        export ANTHROPIC_MODEL="deepseek-v4-pro[1m]"
-        export ANTHROPIC_DEFAULT_OPUS_MODEL="deepseek-v4-pro[1m]"
-        export ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-v4-pro[1m]"
-        export ANTHROPIC_DEFAULT_HAIKU_MODEL="deepseek-v4-flash"
-        export ANTHROPIC_DEFAULT_FABLE_MODEL="deepseek-v4-pro[1m]"
-        export CLAUDE_CODE_SUBAGENT_MODEL="deepseek-v4-flash"
+        export ANTHROPIC_MODEL="deepseek-flash"
+        export ANTHROPIC_DEFAULT_OPUS_MODEL="deepseek-flash"
+        export ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-flash"
+        export ANTHROPIC_DEFAULT_HAIKU_MODEL="deepseek-flash"
+        export ANTHROPIC_DEFAULT_FABLE_MODEL="deepseek-flash"
+        export CLAUDE_CODE_SUBAGENT_MODEL="deepseek-flash"
         export ENABLE_CLAUDEAI_MCP_SERVERS="false"
         command claude "$@"
     )
 }
 
-# Launch Claude Code with Z.AI GLM-5.2 without changing the parent shell
-# environment. Uses an existing ZAI_API_KEY, otherwise loads it from
+# Launch Claude Code with Z.AI GLM-5.3 for primary work and GLM-5.3-Flash for
+# lightweight tiers and subagents. Uses an existing ZAI_API_KEY, otherwise loads it from
 # $CLAUDE_PROVIDERS_ENV_FILE through `op run` (dev profile only — bot has no op).
 claude-glm() {
     local api_key="${ZAI_API_KEY:-}"
@@ -153,12 +153,12 @@ claude-glm() {
         unset CLAUDE_PROVIDERS_OP_RUN_ACTIVE
         export ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
         export ANTHROPIC_AUTH_TOKEN="$api_key"
-        export ANTHROPIC_MODEL="glm-5.2"
-        export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.2"
-        export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.2"
-        export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5.2"
-        export ANTHROPIC_DEFAULT_FABLE_MODEL="glm-5.2"
-        export CLAUDE_CODE_SUBAGENT_MODEL="glm-5.2"
+        export ANTHROPIC_MODEL="glm-5.3"
+        export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.3"
+        export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.3"
+        export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5.3-flash"
+        export ANTHROPIC_DEFAULT_FABLE_MODEL="glm-5.3"
+        export CLAUDE_CODE_SUBAGENT_MODEL="glm-5.3-flash"
         export ENABLE_CLAUDEAI_MCP_SERVERS="false"
         export ENABLE_TOOL_SEARCH="false"
         export CLAUDE_CODE_AUTO_COMPACT_WINDOW="1048576"
@@ -167,7 +167,7 @@ claude-glm() {
     )
 }
 
-# Launch Claude Code with Qwen3.7-Max for the main/reasoning roles and
+# Launch Claude Code with Qwen3.8-Max for the main/reasoning roles and
 # Qwen3-Coder-Plus for the coding/subagent roles, without changing the parent
 # shell environment. Uses an existing QWEN_API_KEY, otherwise loads it from
 # $CLAUDE_PROVIDERS_ENV_FILE through `op run` (dev profile only — bot has no op).
@@ -200,9 +200,9 @@ claude-qwen() {
         unset CLAUDE_PROVIDERS_OP_RUN_ACTIVE
         export ANTHROPIC_BASE_URL="https://dashscope.aliyuncs.com/api/anthropic"
         export ANTHROPIC_AUTH_TOKEN="$api_key"
-        export ANTHROPIC_MODEL="qwen3.7-max"
-        export ANTHROPIC_DEFAULT_OPUS_MODEL="qwen3.7-max"
-        export ANTHROPIC_DEFAULT_FABLE_MODEL="qwen3.7-max"
+        export ANTHROPIC_MODEL="qwen3.8-max"
+        export ANTHROPIC_DEFAULT_OPUS_MODEL="qwen3.8-max"
+        export ANTHROPIC_DEFAULT_FABLE_MODEL="qwen3.8-max"
         export ANTHROPIC_DEFAULT_SONNET_MODEL="qwen3-coder-plus"
         export ANTHROPIC_DEFAULT_HAIKU_MODEL="qwen3-coder-plus"
         export CLAUDE_CODE_SUBAGENT_MODEL="qwen3-coder-plus"
