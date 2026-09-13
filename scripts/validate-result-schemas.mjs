@@ -227,15 +227,9 @@ function loadBrief(file) {
   const errors = []
 
   const begin = source.indexOf(BRIEF_BEGIN)
-  const end = source.indexOf(BRIEF_END)
-  if (
-    begin === -1 ||
-    end === -1 ||
-    begin >= end ||
-    source.indexOf(BRIEF_BEGIN, begin + BRIEF_BEGIN.length) !== -1 ||
-    source.indexOf(BRIEF_END, end + BRIEF_END.length) !== -1
-  ) {
-    errors.push('$brief: expected exactly one ordered schema-bound envelope delimiter pair')
+  const end = begin === -1 ? -1 : source.indexOf(BRIEF_END, begin + BRIEF_BEGIN.length)
+  if (begin === -1 || end === -1) {
+    errors.push('$brief: expected an ordered schema-bound envelope delimiter pair')
     return { instance: null, errors }
   }
 
@@ -282,10 +276,15 @@ function checkBriefFacts(instance, errors) {
   }
 
   const nonce = instance.sentinels.attempt_nonce
-  for (const field of ['ready', 'handoff', 'blocked']) {
+  const terminalFields = ['ready', 'handoff', 'blocked']
+  for (const field of terminalFields) {
     if (!instance.sentinels[field].endsWith(`-${nonce}`)) {
       errors.push(`$brief.sentinels.${field}: sentinel ${JSON.stringify(instance.sentinels[field])} must end with -${nonce}`)
     }
+  }
+  const terminalValues = terminalFields.map((field) => instance.sentinels[field])
+  if (new Set(terminalValues).size !== terminalValues.length) {
+    errors.push('$brief.sentinels: ready, handoff, and blocked must be pairwise distinct')
   }
 
   if (!isRealInstant(instance.deadline)) {
