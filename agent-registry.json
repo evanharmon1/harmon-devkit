@@ -55,7 +55,7 @@
         { "slug": "max", "display_name": "3.8 Max", "cli_ids": { "claude-code-qwen": "qwen3.8-max" }, "tier": "frontier" },
         { "slug": "coder-plus", "display_name": "3 Coder Plus", "cli_ids": { "claude-code-qwen": "qwen3-coder-plus" }, "tier": "standard", "default": true },
         { "slug": "coder", "display_name": "3 Coder", "tier": "economy" },
-        { "slug": "flash", "display_name": "3.8 Flash", "tier": "economy", "default": true },
+        { "slug": "flash", "display_name": "3.8 Flash", "cli_ids": { "claude-code-qwen": "qwen3.8-flash" }, "tier": "economy", "default": true },
         { "slug": "coder-next", "display_name": "3 Coder Next", "tier": "standard" },
         { "slug": "coder-30b", "display_name": "3 Coder 30B", "tier": "local" }
       ]
@@ -193,7 +193,7 @@
       "family_constraint": { "kind": "fixed", "family": "qwen" },
       "model_resolution": {
         "owner": "provider-wrapper",
-        "details": "The provider-rewired wrapper fixes the family; per-role model env vars select Qwen3.7-Max for the main/reasoning roles and Qwen3-Coder-Plus for the coding/subagent roles."
+        "details": "The provider-rewired wrapper fixes the family; per-role model env vars select Qwen3.8-Max for the main/reasoning roles, Qwen3-Coder-Plus for coding, and Qwen3.8-Flash for lightweight/subagent roles."
       },
       "provider_rewired": true,
       "roles": ["implementer", "challenger", "reviewer", "integrator"],

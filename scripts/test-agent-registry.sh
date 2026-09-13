@@ -40,7 +40,10 @@ expect(
     'gpt.astra must retain its Codex CLI id'
 )
 expect(model('mai', 'code-1-1-flash'), 'MAI must include Code 1.1 Flash')
-expect(model('qwen', 'flash'), 'Qwen must include 3.8 Flash')
+expect(
+    model('qwen', 'flash')?.cli_ids?.['claude-code-qwen'] === 'qwen3.8-flash',
+    'Qwen must expose 3.8 Flash through its provider wrapper'
+)
 expect(model('deepseek', 'v4-1-flash'), 'DeepSeek must include V4.1 Flash')
 expect(model('glm', '5-3') && model('glm', '5-3-flash'), 'GLM must include 5.3 and 5.3 Flash')
 expect(model('gemini', '3-8-flash'), 'Gemini must include 3.8 Flash')

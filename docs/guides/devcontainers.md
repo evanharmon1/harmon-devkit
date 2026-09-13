@@ -615,8 +615,8 @@ with `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` pointed at a provider's
 native Anthropic-compatible endpoint under a vendor-documented path prefix
 (Moonshot Kimi K3, DeepSeek V4.1 Flash, Z.AI GLM-5.3, Alibaba DashScope Qwen3.8-Max /
 Qwen3-Coder-Plus — no proxy), plus the per-tier `ANTHROPIC_*_MODEL` vars
-(`claude-qwen` uses Qwen3.8-Max for the main/reasoning roles and
-Qwen3-Coder-Plus for coding/subagent roles). The functions live in
+(`claude-qwen` uses Qwen3.8-Max for the main/reasoning roles,
+Qwen3-Coder-Plus for coding, and Qwen3.8-Flash for lightweight/subagent roles). The functions live in
 `.devcontainer/config/claude-providers.sh` and are sourced from `shell-aliases.sh`.
 
 `claude-qwen-local` is different: it targets your **own** Ollama/LM Studio

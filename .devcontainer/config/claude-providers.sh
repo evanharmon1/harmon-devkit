@@ -167,9 +167,9 @@ claude-glm() {
     )
 }
 
-# Launch Claude Code with Qwen3.8-Max for the main/reasoning roles and
-# Qwen3-Coder-Plus for the coding/subagent roles, without changing the parent
-# shell environment. Uses an existing QWEN_API_KEY, otherwise loads it from
+# Launch Claude Code with Qwen3.8-Max for the main/reasoning roles,
+# Qwen3-Coder-Plus for coding, and Qwen3.8-Flash for lightweight/subagent roles,
+# without changing the parent shell environment. Uses an existing QWEN_API_KEY, otherwise loads it from
 # $CLAUDE_PROVIDERS_ENV_FILE through `op run` (dev profile only — bot has no op).
 claude-qwen() {
     local api_key="${QWEN_API_KEY:-}"
@@ -204,8 +204,8 @@ claude-qwen() {
         export ANTHROPIC_DEFAULT_OPUS_MODEL="qwen3.8-max"
         export ANTHROPIC_DEFAULT_FABLE_MODEL="qwen3.8-max"
         export ANTHROPIC_DEFAULT_SONNET_MODEL="qwen3-coder-plus"
-        export ANTHROPIC_DEFAULT_HAIKU_MODEL="qwen3-coder-plus"
-        export CLAUDE_CODE_SUBAGENT_MODEL="qwen3-coder-plus"
+        export ANTHROPIC_DEFAULT_HAIKU_MODEL="qwen3.8-flash"
+        export CLAUDE_CODE_SUBAGENT_MODEL="qwen3.8-flash"
         export ENABLE_CLAUDEAI_MCP_SERVERS="false"
         export ENABLE_TOOL_SEARCH="false"
         export CLAUDE_CODE_AUTO_COMPACT_WINDOW="1048576"
