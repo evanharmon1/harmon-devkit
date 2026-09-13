@@ -87,6 +87,12 @@ grep -Fq 'resolved cap is `0`' "$skill" ||
     fail "review skill does not skip finder dispatch for a disabled stage"
 grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"
+grep -Fq 'validate-result-schemas.mjs brief "$brief_path"' \
+    ai/skills/universal/orchestrator/SKILL.md ||
+    fail "orchestrator does not validate a rendered brief before dispatch"
+grep -Fq 'validated `brief.envelope.schema.json` envelope; never scrape' \
+    ai/skills/universal/implement/SKILL.md ||
+    fail "implement routing still reads run identity from prose"
 for text in 'Retry an unavailable primary' 'already active dev-flow-v2 run' \
     'session-lifetime persistent monitor primitive' 'distinct_families' \
     'assembly.canonical_head' 'adopt the existing entry without appending' \

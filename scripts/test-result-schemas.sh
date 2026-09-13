@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-result-schemas.sh — schema-check the dev-flow-v2 result/record fixture
+# test-result-schemas.sh — schema-check the dev-flow-v2 brief/result/record fixture
 # corpus (ai/schemas/fixtures/) and exercise the receipt-validation semantic
 # checks scripts/validate-result-schemas.mjs layers on top of raw schema
 # validation.
@@ -33,6 +33,55 @@ command -v node >/dev/null 2>&1 || fail "node is required to validate the result
 [ -f "$validator" ] || fail "missing required asset: $validator"
 
 node scripts/test-result-schema-composition.mjs
+
+# Briefs are rendered Markdown rather than JSON documents. Exercise their
+# dedicated corpus separately so the established result/run fixture walker
+# below remains unchanged apart from skipping this non-JSON directory.
+brief_fixture_dir="$fixtures_dir/brief.envelope"
+brief_valid_count=0
+brief_invalid_count=0
+for f in "$brief_fixture_dir"/valid/*.md; do
+    [ -f "$f" ] || continue
+    brief_valid_count=$((brief_valid_count + 1))
+    if ! out="$(node "$validator" brief "$f" 2>&1)"; then
+        fail "valid brief fixture rejected: $f -> $out"
+    fi
+done
+for f in "$brief_fixture_dir"/invalid/*.md; do
+    [ -f "$f" ] || continue
+    reason_file="${f%.md}.reason"
+    [ -f "$reason_file" ] || fail "invalid brief fixture $f has no sibling .reason file"
+    expected="$(<"$reason_file")"
+    [ -n "$expected" ] || fail "$reason_file is empty"
+    brief_invalid_count=$((brief_invalid_count + 1))
+    if out="$(node "$validator" brief "$f" 2>&1)"; then
+        fail "invalid brief fixture accepted: $f"
+    fi
+    case "$out" in
+    *"$expected"*) ;;
+    *) fail "$f rejected for the wrong reason — expected substring '$expected', got: $out" ;;
+    esac
+done
+[ "$brief_valid_count" -ge 3 ] || fail "brief corpus requires at least 3 valid fixtures"
+[ "$brief_invalid_count" -ge 6 ] || fail "brief corpus requires at least 6 invalid fixtures"
+echo "PASS: brief envelope corpus OK ($brief_valid_count valid, $brief_invalid_count invalid)"
+
+# The deadline cross-check is contextual: it activates only when the rendered
+# record_directory exists. Materialize that context without making a fixture
+# depend on a repository-local absolute path.
+brief_run_dir="$test_tmp/brief-run"
+mkdir -p "$brief_run_dir"
+printf '%s\n' '{"started_at":"2026-09-13T12:01:00Z"}' >"$brief_run_dir/run.json"
+sed "s#/nonexistent/r#$brief_run_dir#" \
+    "$brief_fixture_dir/valid/minimal.md" >"$test_tmp/deadline-before-start.md"
+if out="$(node "$validator" brief "$test_tmp/deadline-before-start.md" 2>&1)"; then
+    fail "brief deadline before run started_at was accepted"
+fi
+case "$out" in
+*'is before run started_at'*) ;;
+*) fail "brief deadline cross-check rejected for the wrong reason: $out" ;;
+esac
+echo "PASS: brief deadline is checked against an existing run record"
 
 # is_context_only_fixture PATH — true for a fixture the generic per-directory
 # valid/invalid loops below must not validate directly (checked in BOTH —
@@ -148,6 +197,8 @@ for dir in "$fixtures_dir"/*/; do
     # kind, so scripts/test-finder-normalization.sh (task
     # test:finder-normalization) owns it and it is not iterated here.
     [ "$base" = "finder-normalization" ] && continue
+    # brief.envelope is the rendered-Markdown corpus exercised above.
+    [ "$base" = "brief.envelope" ] && continue
     kind="$(kind_for_dir "$base")"
     fixture_dirs_found=$((fixture_dirs_found + 1))
 

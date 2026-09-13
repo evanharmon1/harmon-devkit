@@ -794,3 +794,4 @@ automatically on merge).
 ### Added
 
 - Initial repository scaffolding generated from [harmon-init](https://github.com/evanharmon1/harmon-init) on 2026-06-27.
+- Add a closed dev-flow lane-brief envelope schema around an opaque Markdown body.

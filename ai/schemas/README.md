@@ -6,10 +6,11 @@ tests against at a pinned tag ([foreman#182](https://github.com/ponderousdev/for
 Filenames and field names are a contract on merge — [#635](https://github.com/evanharmon1/harmon-devkit/issues/635)–[#639](https://github.com/evanharmon1/harmon-devkit/issues/639)
 reference them.
 
-## The eight schemas
+## The nine schemas
 
 | File | Validates | Authored by |
 |---|---|---|
+| `brief.envelope.schema.json` | The closed machine-fact envelope around an orchestrator lane brief's opaque Markdown body. | orchestrator |
 | `result.envelope.schema.json` | The common envelope every agent result returns: `schema`, `role`, `status`, `head`, `produced_at`, `producer`, `run`, `payload`. **Envelope-only, on purpose** — `payload` stays untyped here; it deliberately does not dispatch to a per-role payload shape (see "Composition" below). | An agent (implementer/challenger/reviewer/integrator role) |
 | `result.implementer.schema.json` | The shape of `payload` when `role: implementer`. Backward-compatible with Foreman v1's flat `result.json`. | implementer |
 | `result.challenger.schema.json` | The shape of `payload` when `role: challenger` — one **pass** (one finder's contribution to the challenge stage): attack scenarios, design-level findings, and de-scaffolding recommendations. Shares its finding core field-for-field with `result.reviewer.schema.json` (agent-registry.json #635) so one evaluator computes over both. | challenger |
@@ -25,6 +26,23 @@ agent file under `ai/agents/` (see the spec's "Roles and authority" table) — s
 `adjudication.schema.json` and `run.schema.json` are validated as complete
 top-level documents, never as an envelope's `payload`.
 
+## Brief envelope and Markdown body
+
+Rendered lane briefs keep their human-facing format. Between the existing
+`BEGIN SCHEMA-BOUND ENVELOPE FACTS` and `END SCHEMA-BOUND ENVELOPE FACTS`
+comments, one fenced `json` object serializes every machine-read fact except
+`body`. The `brief` validator kind derives `body` from all Markdown outside the
+delimiters, then validates the combined object against
+`brief.envelope.schema.json`. This preserves arbitrary body headings, prose,
+and instructions without JSON escaping or content lint while keeping the fact
+set closed.
+
+In addition to schema validation, the `brief` kind rejects any unresolved
+double-brace placeholder anywhere in the rendered file, requires the brief
+branch to equal `claim_handoff.branch`, requires all three terminal sentinels
+to end in `-<attempt_nonce>`, and—when `record_directory` exists—requires the
+deadline to be no earlier than that run's `run.json.started_at`.
+
 ## Composition: how envelope and payload fit together
 
 `result.envelope.schema.json` declares `payload: { type: "object" }` —
@@ -37,7 +55,7 @@ resolves which one applies:
 3. Validate `instance.payload` against `result.<role>.schema.json`'s own root.
 
 This is `scripts/validate-result-schemas.mjs`'s job (`<kind> <file>`, where
-`kind` is `envelope | implementer | challenger | reviewer | integrator |
+`kind` is `brief | envelope | implementer | challenger | reviewer | integrator |
 adjudication | run`). **`kind: envelope` is a convenience for "I don't already
 know the role," not a payload-blind mode** — it runs steps 2 and 3 (and every
 receipt check the role-named `kind` would) by reading `role` off the instance
@@ -1288,7 +1306,7 @@ commit; `finder` is `codex-cli` throughout, matching the ledger.
 ## Running the validator
 
 ```sh
-node scripts/validate-result-schemas.mjs <envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> \
+node scripts/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> \
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
   [--pass <envelope.json> ...] [--known-adjudicated <ids.json>] \
   [--adjudication <file.json> ... | --no-adjudications] \

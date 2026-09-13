@@ -18,6 +18,7 @@ required_placeholders=(
     '{{active-state-path}}'
     '{{attempt-nonce}}'
     '{{base-sha}}'
+    '{{brief-envelope-json}}'
     '{{blocked-sentinel}}'
     '{{branch}}'
     '{{challenge-cap}}'
@@ -82,6 +83,10 @@ for token in "${placeholders[@]}"; do
     key="${token#\{\{}"
     key="${key%\}\}}"
     case "$key" in
+    brief-envelope-json)
+        value="$(awk '/^```json$/{capture=1;next} /^```$/{capture=0} capture' \
+            ai/schemas/fixtures/brief.envelope/valid/minimal.md)"
+        ;;
     ready-sentinel) value="LANE-FIXTURE-READY" ;;
     handoff-sentinel) value="LANE-FIXTURE-HANDOFF" ;;
     blocked-sentinel) value="LANE-FIXTURE-BLOCKED" ;;
@@ -98,6 +103,9 @@ printf '%s\n' "$rendered" >"$rendered_file"
 if grep -Eq '\{\{[a-z0-9-]+\}\}' "$rendered_file"; then
     fail "rendered fixture retains a placeholder"
 fi
+
+node scripts/validate-result-schemas.mjs brief "$rendered_file" >/dev/null ||
+    fail "rendered fixture does not satisfy the brief envelope schema"
 
 headings=(
     '## Identity and boundaries'

@@ -204,9 +204,16 @@ comment). The challenger and reviewer make no external writes. The implementer
 legitimately commits and pushes through `push-round.sh`; the integrator is
 limited to its brokered trigger and orchestrator-supplied reply text.
 
-**Briefs are free-form; results are schema-bound.** The orchestrator → agent
-brief is prose. The agent → orchestrator result is validated on receipt
-against `ai/schemas/` before the orchestrator reads it.
+**Briefs have a schema-bound envelope and a free-form body; results are
+schema-bound.** As decided in
+[`2026-09-13-brief-envelope-schema-bound-free-form-body.md`](https://github.com/evanharmon1/harmon-init/blob/main/docs/decisions/2026-09-13-brief-envelope-schema-bound-free-form-body.md),
+the envelope validates only machine-read facts, the body is opaque Markdown
+with no content lint, the envelope is closed while the body is open, and every
+envelope field is a fact rather than a composed instruction. The standing
+drift test is verbatim: **if a brief author ever shortens or omits an
+instruction to satisfy the schema, the schema is wrong.** Agent → orchestrator
+results remain validated on receipt against `ai/schemas/` before the
+orchestrator reads them.
 
 **Whoever holds the dispatched worktree writes its named branch.** In
 interactive and sandboxed runs the feature-branch implementer commits and
