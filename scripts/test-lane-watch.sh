@@ -20,6 +20,7 @@ mkdir -p "$bin_dir" "$fixture_dir" \
 fail() {
     echo "FAIL: $*" >&2
     exit 1
+    return 0
 }
 
 assert_line() {
@@ -77,6 +78,10 @@ STUB
 cat >"$bin_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 set -u
+if [ "${1:-} ${2:-}" = "repo view" ]; then
+    printf '%s\n' "${WATCH_REPO:-evanharmon1/harmon-devkit}"
+    exit 0
+fi
 if [ "${1:-} ${2:-}" = "pr list" ]; then
     branch=
     previous=
@@ -84,7 +89,8 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
         if [ "$previous" = --head ]; then branch=$arg; fi
         previous=$arg
     done
-    if [ "$branch" != branch-alpha ]; then
+    if [ "$branch" != "${WATCH_REPO_OWNER:-evanharmon1}:branch-alpha" ]; then
+        printf '%s\n' '[]'
         exit 0
     fi
     count_file="$WATCH_FIXTURES/pr-count"
@@ -94,9 +100,9 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
     printf '%s\n' "$count" >"$count_file"
     printf '%s\n' "$count" >"$WATCH_FIXTURES/phase"
     case "$count" in
-    1) printf '%s\n' '#77 draft=true OPEN' ;;
-    2 | 3) printf '%s\n' '#77 draft=false OPEN' ;;
-    *) printf '%s\n' '#77 draft=false MERGED' ;;
+    1) printf '%s\n' '[{"number":77,"isDraft":true,"state":"OPEN","headRepositoryOwner":{"login":"'"${WATCH_REPO_OWNER:-evanharmon1}"'"}}]' ;;
+    2 | 3) printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN","headRepositoryOwner":{"login":"'"${WATCH_REPO_OWNER:-evanharmon1}"'"}}]' ;;
+    *) printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED","headRepositoryOwner":{"login":"'"${WATCH_REPO_OWNER:-evanharmon1}"'"}}]' ;;
     esac
     exit 0
 fi
@@ -105,6 +111,9 @@ if [ "${1:-}" = api ]; then
     endpoint=${*: -1}
     phase=0
     [ ! -f "$WATCH_FIXTURES/phase" ] || phase="$(<"$WATCH_FIXTURES/phase")"
+    if [ -f "$WATCH_FIXTURES/fail-api" ] && [ "$phase" -eq 2 ]; then
+        exit 92
+    fi
     if [ "$phase" -lt 3 ]; then
         printf '%s\n' '[]'
         exit 0
@@ -139,8 +148,8 @@ common_args=(
     --timeout-seconds 1
     2099-01-01T00:00:00Z
     alpha:branch-alpha:n1:evanharmon1/harmon-devkit
-    beta:branch-beta:n2:evanharmon1/harmon-devkit
-    gamma:branch-gamma:n3:evanharmon1/harmon-devkit
+    beta:branch-beta:n2
+    gamma:branch-gamma:n3
 )
 
 primary_out="$test_tmp/primary.out"
@@ -172,7 +181,7 @@ bash "$watcher" --iterations 1 "${common_args[@]}" >"$restart_out"
 assert_count "$restart_out" 0 '^SENTINEL '
 assert_count "$restart_out" 0 '^POST-PROMOTION-ACTIVITY '
 
-# A hanging external call times out, degrades to absent, and does not hang/crash.
+# A hanging external call times out without fabricating an absent transition.
 touch "$fixture_dir/hang-list"
 hang_out="$test_tmp/hang.out"
 timeout 8 bash "$watcher" --iterations 1 \
@@ -180,8 +189,38 @@ timeout 8 bash "$watcher" --iterations 1 \
     --interval-seconds 0 --timeout-seconds 1 \
     2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
     >"$hang_out" || fail 'watcher did not degrade a hanging herdr call'
-assert_line "$hang_out" 'AGENT delta: init -> absent'
+assert_count "$hang_out" 0 '^AGENT delta:'
 rm "$fixture_dir/hang-list"
+
+# An expired activity window survives a failed final snapshot and closes only
+# after a successful retry, so activity during an API outage is not lost.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+touch "$fixture_dir/fail-api"
+retry_out="$test_tmp/activity-retry.out"
+bash "$watcher" --iterations 3 --state-file "$test_tmp/retry.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$retry_out"
+assert_line "$retry_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
+assert_line "$retry_out" 'POST-PROMOTION-ACTIVITY alpha: maintainer comment 601'
+rm "$fixture_dir/fail-api"
+
+# The same asset resolves the repository root and registry in the flattened
+# consumer layout, and a three-field spec derives that consumer repository.
+flattened_root="$test_tmp/consumer"
+flattened_watcher="$flattened_root/.agents/skills/orchestrator/assets/lane-watch.sh"
+mkdir -p "$(dirname "$flattened_watcher")" "$flattened_root/.worktrees/alpha"
+cp "$watcher" "$flattened_watcher"
+cp "$registry" "$flattened_root/agent-registry.json"
+cp "$workspace_root/harmon-devkit/.worktrees/alpha/.lane-report.md" \
+    "$flattened_root/.worktrees/alpha/.lane-report.md"
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+flattened_out="$test_tmp/flattened.out"
+WATCH_REPO=evanharmon1/consumer bash "$flattened_watcher" --iterations 1 \
+    --state-file "$test_tmp/flattened.state" --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1 >"$flattened_out"
+assert_line "$flattened_out" 'SENTINEL alpha: LANE-ALPHA-READY-n1'
 
 # The warning uses the documented WALLCLOCK shape.
 wallclock_out="$test_tmp/wallclock.out"
@@ -194,7 +233,7 @@ assert_line "$wallclock_out" "WALLCLOCK run: 30 min to $near_deadline cap"
 
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED)|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
-    "$primary_out" "$restart_out" "$hang_out" "$wallclock_out"; then
+    "$primary_out" "$restart_out" "$hang_out" "$retry_out" "$flattened_out" "$wallclock_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
 

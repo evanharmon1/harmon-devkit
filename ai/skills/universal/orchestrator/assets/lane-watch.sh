@@ -7,7 +7,7 @@
 #   USAGE-PAUSED <lane>
 #   WALLCLOCK <lane|run>: <text>
 #
-# Every herdr/gh call is bounded. Failures mean absent/no event; this watcher
+# Every herdr/gh call is bounded. Failures mean indeterminate/no event; this watcher
 # never writes through either CLI. Pass --state-file so a re-armed watcher does
 # not repeat sentinels, transitions, or post-promotion activity.
 set -u
@@ -28,7 +28,16 @@ EOF
 }
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/../../../../.." && pwd)"
+repo_root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$repo_root" ]; then
+    flattened_root="$(cd "$script_dir/../../../.." 2>/dev/null && pwd || true)"
+    source_root="$(cd "$script_dir/../../../../.." 2>/dev/null && pwd || true)"
+    if [ -f "$flattened_root/agent-registry.json" ]; then
+        repo_root=$flattened_root
+    else
+        repo_root=$source_root
+    fi
+fi
 state_file=
 registry="$repo_root/agent-registry.json"
 workspace_root="$(dirname "$repo_root")"
@@ -162,10 +171,14 @@ save_state() {
 bounded() {
     seconds=$1
     shift
+    remaining=$((deadline - $(date -u +%s)))
+    [ "$remaining" -gt 0 ] || return 124
+    [ "$seconds" -le "$remaining" ] || seconds=$remaining
     "$timeout_bin" "$seconds" "$@" </dev/null 2>/dev/null
 }
 
 trusted_actor_ids="$(jq -r '.finders[]? | .trusted_actor_id // empty | tostring' "$registry" 2>/dev/null || true)"
+default_repo="$(bounded "$timeout_seconds" gh repo view --json nameWithOwner -q .nameWithOwner || true)"
 
 sentinel_from_report() {
     report=$1
@@ -186,14 +199,34 @@ activity_rows() {
     pr_number=$2
     kind=$3
     endpoint=$4
-    payload="$(bounded "$timeout_seconds" gh api --paginate --slurp "$endpoint" || true)"
-    [ -n "$payload" ] || return 0
+    payload="$(bounded "$timeout_seconds" gh api --paginate --slurp "$endpoint")" || return 1
+    [ -n "$payload" ] || return 1
+    jq -e 'if (.[0]? | type) == "array" then all(.[]; type == "array") else type == "array" end' \
+        >/dev/null 2>&1 <<<"$payload" || return 1
     jq -r --arg kind "$kind" --arg trusted "$trusted_actor_ids" '
       (if (.[0]? | type) == "array" then add else . end)[]?
       | (.user.id | tostring) as $actor_id
       | select(.user.type == "User" or ($trusted | split("\n") | index($actor_id)))
       | [.user.login, $kind, (.id | tostring)] | @tsv
-    ' <<<"$payload" 2>/dev/null || true
+    ' <<<"$payload" 2>/dev/null
+}
+
+activity_snapshot() {
+    repo=$1
+    pr_number=$2
+    rows=
+    for kind_endpoint in \
+        "review repos/$repo/pulls/$pr_number/reviews?per_page=100" \
+        "comment repos/$repo/issues/$pr_number/comments?per_page=100" \
+        "inline repos/$repo/pulls/$pr_number/comments?per_page=100"; do
+        kind=${kind_endpoint%% *}
+        endpoint=${kind_endpoint#* }
+        part="$(activity_rows "$repo" "$pr_number" "$kind" "$endpoint")" || return 1
+        if [ -n "$part" ]; then
+            rows="${rows}${rows:+$'\n'}${part}"
+        fi
+    done
+    printf '%s' "$rows"
 }
 
 poll_activity() {
@@ -202,10 +235,10 @@ poll_activity() {
     pr_number=$3
     now=$4
     until=${window_until[$lane]:-0}
-    [ "$now" -le "$until" ] || {
-        unset 'window_pr[$lane]' 'window_until[$lane]'
-        return 0
-    }
+    expired=0
+    [ "$now" -le "$until" ] || expired=1
+
+    rows="$(activity_snapshot "$repo" "$pr_number")" || return 0
 
     while IFS=$'\t' read -r actor kind id; do
         [ -n "$id" ] || continue
@@ -214,11 +247,23 @@ poll_activity() {
             echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
             seen_activity[$key]=1
         fi
-    done < <(
-        activity_rows "$repo" "$pr_number" review "repos/$repo/pulls/$pr_number/reviews?per_page=100"
-        activity_rows "$repo" "$pr_number" comment "repos/$repo/issues/$pr_number/comments?per_page=100"
-        activity_rows "$repo" "$pr_number" inline "repos/$repo/pulls/$pr_number/comments?per_page=100"
-    )
+    done <<<"$rows"
+
+    if [ "$expired" -eq 1 ]; then
+        unset 'window_pr[$lane]' 'window_until[$lane]'
+    fi
+}
+
+discover_pr() {
+    repo=$1
+    branch=$2
+    owner=${repo%%/*}
+    payload="$(bounded "$timeout_seconds" gh pr list --repo "$repo" --head "$owner:$branch" --state all \
+        --json number,isDraft,state,headRepositoryOwner)" || return 1
+    jq -r --arg owner "$owner" '
+      map(select(.headRepositoryOwner.login == $owner))
+      | if length > 0 then .[0] | "#\(.number) draft=\(.isDraft) \(.state)" else empty end
+    ' <<<"$payload" 2>/dev/null
 }
 
 load_state
@@ -239,8 +284,10 @@ while true; do
         exit 0
     fi
 
-    agents="$(bounded "$timeout_seconds" herdr agent list || true)"
-    [ -n "$agents" ] || agents='{}'
+    agents_available=0
+    if agents="$(bounded "$timeout_seconds" herdr agent list)" && jq -e . >/dev/null 2>&1 <<<"$agents"; then
+        agents_available=1
+    fi
 
     for spec in "${specs[@]}"; do
         IFS=: read -r lane branch nonce repo extra <<<"$spec"
@@ -248,7 +295,11 @@ while true; do
             echo "lane-watch: invalid lane spec: $spec" >&2
             continue
         fi
-        repo=${repo:-evanharmon1/harmon-devkit}
+        repo=${repo:-$default_repo}
+        if [ -z "$repo" ]; then
+            echo "lane-watch: repository omitted and current repository could not be derived: $spec" >&2
+            continue
+        fi
         case "$repo" in
         */*) ;;
         *)
@@ -257,12 +308,14 @@ while true; do
             ;;
         esac
 
-        agent_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
-        agent_state=${agent_state:-absent}
-        previous=${prev_agent[$lane]:-init}
-        if [ "$previous" != "$agent_state" ]; then
-            echo "AGENT $lane: $previous -> $agent_state"
-            prev_agent[$lane]=$agent_state
+        if [ "$agents_available" -eq 1 ]; then
+            agent_state="$(jq -r --arg lane "$lane" '.result.agents[]? | select(.name == $lane) | .agent_status' <<<"$agents" 2>/dev/null | tail -1)"
+            agent_state=${agent_state:-absent}
+            previous=${prev_agent[$lane]:-init}
+            if [ "$previous" != "$agent_state" ]; then
+                echo "AGENT $lane: $previous -> $agent_state"
+                prev_agent[$lane]=$agent_state
+            fi
         fi
 
         report="$workspace_root/${repo#*/}/.worktrees/$lane/.lane-report.md"
@@ -292,8 +345,7 @@ while true; do
             usage_paused[$lane]=0
         fi
 
-        pr="$(bounded "$timeout_seconds" gh pr list --repo "$repo" --head "$branch" --state all --json number,isDraft,state \
-            -q 'if length > 0 then .[0] | "#\(.number) draft=\(.isDraft) \(.state)" else empty end' || true)"
+        pr="$(discover_pr "$repo" "$branch" || true)"
         if [ -n "$pr" ] && [ "${prev_pr[$lane]:-}" != "$pr" ]; then
             old_pr=${prev_pr[$lane]:-}
             echo "PR $lane: $pr"
@@ -312,13 +364,11 @@ while true; do
         # including activity racing the promotion transition itself.
         if [[ "$pr" =~ ^#([0-9]+)\ draft=true\ OPEN$ ]]; then
             draft_pr=${BASH_REMATCH[1]}
-            while IFS=$'\t' read -r _actor kind id; do
-                [ -z "$id" ] || seen_activity["$lane:$kind:$id"]=1
-            done < <(
-                activity_rows "$repo" "$draft_pr" review "repos/$repo/pulls/$draft_pr/reviews?per_page=100"
-                activity_rows "$repo" "$draft_pr" comment "repos/$repo/issues/$draft_pr/comments?per_page=100"
-                activity_rows "$repo" "$draft_pr" inline "repos/$repo/pulls/$draft_pr/comments?per_page=100"
-            )
+            if rows="$(activity_snapshot "$repo" "$draft_pr")"; then
+                while IFS=$'\t' read -r _actor kind id; do
+                    [ -z "$id" ] || seen_activity["$lane:$kind:$id"]=1
+                done <<<"$rows"
+            fi
         fi
 
         if [ -n "${window_pr[$lane]:-}" ]; then
