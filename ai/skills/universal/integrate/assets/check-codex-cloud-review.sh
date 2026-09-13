@@ -33,12 +33,16 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2
+  check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
-  check-codex-cloud-review.sh check --state FILE --actor-id N [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
+  check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
+  check-codex-cloud-review.sh check --state FILE [--actor-id N] [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
   check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--covers N] [--now ISO8601]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
+
+When --finder is given on reserve, actor identity and verdict classification
+are driven by the finder's profile in the trusted registry (C1-C3).
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
 14 PR no longer open, 2 indeterminate. Exit 14 means GitHub answered and
@@ -99,10 +103,12 @@ reap_entries=
 reap_lock=
 reap_budget_sec=60
 reap_deadline_epoch=
+finder_slug=
+requested_at_arg=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers)
+    --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --state) state_file=$2 ;;
@@ -114,6 +120,8 @@ while [ "$#" -gt 0 ]; do
         --trigger-id) trigger_id=$2 ;;
         --actor-id) actor_id=$2 ;;
         --actor-login) actor_login=$2 ;;
+        --finder) finder_slug=$2 ;;
+        --requested-at) requested_at_arg=$2 ;;
         --timeout-min)
             timeout_min=$2
             timeout_min_set=1
@@ -151,6 +159,12 @@ valid_uint() {
 valid_sha() {
     grep -Eq '^[0-9a-fA-F]{40}$' <<<"$1"
 }
+
+valid_slug() {
+    grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$' <<<"$1"
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 valid_time() {
     grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' <<<"$1"
@@ -731,6 +745,45 @@ reserve)
     else
         payload_timeout_min=$timeout_min
     fi
+
+    # Per-finder profile resolution (#804 C1-C3): when --finder is set,
+    # resolve the trusted registry at the PR's merge-base commit and extract
+    # the finder's profile. The caller names only a slug; the actor identity,
+    # trigger shape, and terminal signals all come from the registry.
+    finder_payload=null
+    if [ -n "$finder_slug" ]; then
+        valid_slug "$finder_slug" || die "invalid finder slug: $finder_slug"
+        # shellcheck source=trusted-registry.sh
+        . "$SCRIPT_DIR/trusted-registry.sh"
+        finder_tmpdir=$(mktemp -d -t codex-finder-XXXXXX)
+        resolve_trusted_registry "$repo" "$pr" "$finder_tmpdir/registry.json" ||
+            die "cannot resolve trusted registry for $repo#$pr"
+        resolve_finder_profile "$finder_tmpdir/registry.json" "$finder_slug" \
+            "$finder_tmpdir/profile.json" ||
+            die "cannot resolve finder profile for slug '$finder_slug'"
+        finder_payload=$(jq -c '{
+            slug: .slug,
+            actor_id: (.trusted_actor_id | tostring),
+            actor_login: .trusted_actor_login,
+            trigger_mechanism: .collection.trigger.mechanism,
+            trigger_body: .collection.trigger.body,
+            reviewer_login: .collection.trigger.reviewer_login,
+            surfaces: .collection.terminal_signals.surfaces,
+            head_binding: .collection.terminal_signals.head_binding,
+            verdict_mode: .collection.terminal_signals.verdict_mode,
+            clean_verdict: .collection.terminal_signals.clean_verdict,
+            actionable_pattern: .collection.terminal_signals.actionable_pattern,
+            severity_marker: .collection.terminal_signals.severity_marker,
+            metadata_line: .collection.terminal_signals.metadata_line,
+            about_summary: .collection.terminal_signals.about_summary,
+            heading: .collection.terminal_signals.heading,
+            carrier_sentence: .collection.terminal_signals.carrier_sentence,
+            success_reaction: .collection.terminal_signals.success_reaction,
+            pending_reaction: .collection.terminal_signals.pending_reaction
+          }' "$finder_tmpdir/profile.json")
+        rm -rf "$finder_tmpdir"
+    fi
+
     payload=$(jq -cn \
         --arg repo "$repo" \
         --argjson pr "$pr" \
@@ -741,6 +794,7 @@ reserve)
         --argjson previous_trigger_id "$previous_trigger_id" \
         --argjson timeout_min "$payload_timeout_min" \
         --argjson settled "$carried_settled" \
+        --argjson finder "$finder_payload" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
@@ -749,7 +803,8 @@ reserve)
             (if $cycle_requested_at == "" then null else $cycle_requested_at end),
           previous_trigger_comment_id:$previous_trigger_id,
           timeout_min:$timeout_min,
-          settled:$settled
+          settled:$settled,
+          finder:$finder
         }')
     write_state "$state_file" "$payload"
     release_state_lock
@@ -757,8 +812,15 @@ reserve)
     ;;
 
 attach)
-    [ -n "$trigger_id" ] || usage
-    valid_uint "$trigger_id" || die "invalid trigger comment ID"
+    # For review-comment finders (or legacy codex): --trigger-id is required.
+    # For requested-reviewer finders: --requested-at replaces --trigger-id.
+    if [ -n "$trigger_id" ]; then
+        valid_uint "$trigger_id" || die "invalid trigger comment ID"
+    elif [ -n "$requested_at_arg" ]; then
+        valid_time "$requested_at_arg" || die "invalid --requested-at timestamp"
+    else
+        usage
+    fi
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     acquire_state_lock
     read_state
@@ -789,6 +851,31 @@ attach)
     [ "$live_head" = "$state_head" ] ||
         die "PR head changed before trigger attachment"
     phase=$(jq -r '.phase' "$state_file")
+    finder_mechanism=$(jq -r '.finder.trigger_mechanism // "review-comment"' "$state_file")
+
+    if [ -n "$requested_at_arg" ]; then
+        # Requested-reviewer finders: no trigger comment to verify; the
+        # caller recorded when the reviewer was requested.
+        [ "$finder_mechanism" = "requested-reviewer" ] ||
+            die "--requested-at is only valid for requested-reviewer finders"
+        if [ "$phase" = "attached" ]; then
+            cat "$state_file"
+            exit 0
+        fi
+        payload=$(jq \
+            --arg requested_at "$requested_at_arg" '
+              .version = 2 |
+              .phase = "attached" |
+              .trigger_comment_id = null |
+              .requested_at = $requested_at |
+              .cycle_requested_at = (.cycle_requested_at // $requested_at)
+            ' "$state_file")
+        write_state "$state_file" "$payload"
+        release_state_lock
+        printf '%s\n' "$payload"
+        exit 0
+    fi
+
     if [ "$phase" = "attached" ]; then
         existing_id=$(jq -r '.trigger_comment_id' "$state_file")
         [ "$existing_id" = "$trigger_id" ] ||
@@ -797,13 +884,17 @@ attach)
         exit 0
     fi
 
+    # Review-comment finders: verify the trigger comment matches the
+    # finder's trigger body (or the hardcoded "@codex review" for legacy).
+    expected_trigger_body=$(jq -r '.finder.trigger_body // "@codex review"' "$state_file")
     comment=$(run_gh api "repos/$state_repo/issues/comments/$trigger_id") ||
         die "cannot fetch exact trigger comment $trigger_id"
     printf '%s' "$comment" | jq -e \
         --argjson id "$trigger_id" \
-        --arg suffix "/issues/$state_pr" '
+        --arg suffix "/issues/$state_pr" \
+        --arg expected "$expected_trigger_body" '
           (.id == $id) and
-          ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "@codex review") and
+          ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == $expected) and
           ((.issue_url // "") | endswith($suffix)) and
           (.created_at | type == "string")
         ' >/dev/null || die "comment $trigger_id is not this PR's exact review trigger"
@@ -1025,8 +1116,6 @@ reap)
     ;;
 
 check)
-    [ -n "$actor_id" ] || usage
-    valid_uint "$actor_id" || die "invalid actor ID"
     valid_uint "$timeout_min" || die "timeout must be a positive integer"
     acquire_state_lock
     read_state
@@ -1040,12 +1129,36 @@ check)
         emit indeterminate "review request was reserved but its exact trigger is not attached"
         exit 2
     }
-    state_trigger=$(jq -r '.trigger_comment_id' "$state_file")
+
+    # Per-finder parameters (#804): when state carries a finder profile,
+    # actor identity and classification are driven by it.
+    finder_verdict_mode=$(jq -r '.finder.verdict_mode // "clean-sentence"' "$state_file")
+    finder_has_surface() {
+        jq -e --arg s "$1" '(.finder.surfaces // ["reaction","comment","review","inline"]) | index($s) != null' "$state_file" >/dev/null 2>&1
+    }
+    finder_trigger_mechanism=$(jq -r '.finder.trigger_mechanism // "review-comment"' "$state_file")
+    finder_success_reaction=$(jq -r '.finder.success_reaction // "+1"' "$state_file")
+    finder_pending_reaction=$(jq -r '.finder.pending_reaction // "eyes"' "$state_file")
+    finder_actionable_pattern=$(jq -r '.finder.actionable_pattern // ""' "$state_file")
+    finder_head_binding=$(jq -r '.finder.head_binding // "reviewed-commit-line"' "$state_file")
+    state_finder_actor_id=$(jq -r '.finder.actor_id // empty' "$state_file")
+    state_finder_actor_login=$(jq -r '.finder.actor_login // empty' "$state_file")
+    if [ -n "$state_finder_actor_id" ]; then
+        actor_id=$state_finder_actor_id
+        actor_login=${state_finder_actor_login:-$actor_login}
+    fi
+    [ -n "$actor_id" ] || die "no actor identity: supply --actor-id or use --finder on reserve"
+    valid_uint "$actor_id" || die "invalid actor ID"
+
+    state_trigger=$(jq -r '.trigger_comment_id // empty' "$state_file")
     state_reserved=$(jq -r '.reserved_at' "$state_file")
     state_requested=$(jq -r '.requested_at' "$state_file")
     cycle_requested=$(jq -r '.cycle_requested_at' "$state_file")
     previous_trigger=$(jq -r '.previous_trigger_comment_id // empty' "$state_file")
-    valid_uint "$state_trigger" || die "state has an invalid trigger ID"
+    # trigger_comment_id is null for requested-reviewer finders
+    if [ "$finder_trigger_mechanism" = "review-comment" ]; then
+        valid_uint "$state_trigger" || die "state has an invalid trigger ID"
+    fi
     valid_time "$state_reserved" || die "state has an invalid reservation time"
     valid_time "$state_requested" || die "state has an invalid request time"
     valid_time "$cycle_requested" || die "state has an invalid cycle request time"
@@ -1082,55 +1195,75 @@ check)
     trap 'rm -rf "$workdir"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
     actor=$(run_gh api "users/$actor_login") || {
-        bounded_wait "cannot authenticate the configured Codex actor"
+        bounded_wait "cannot authenticate the configured finder actor"
     }
     printf '%s' "$actor" | jq -e \
         --argjson id "$actor_id" \
         --arg login "$actor_login" '
           (.id == $id) and (.login == $login) and (.type == "Bot")
         ' >/dev/null || {
-        emit indeterminate "configured Codex login does not resolve to the pinned Bot actor ID"
+        emit indeterminate "configured finder login does not resolve to the pinned Bot actor ID"
         exit 2
     }
 
-    trigger=$(run_gh api "repos/$state_repo/issues/comments/$state_trigger") || {
-        bounded_wait "cannot re-fetch the exact trigger comment"
-    }
-    printf '%s' "$trigger" | jq -e \
-        --argjson id "$state_trigger" \
-        --arg created "$state_requested" \
-        --arg suffix "/issues/$state_pr" '
-          (.id == $id) and (.created_at == $created) and
-          ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "@codex review") and
-          ((.issue_url // "") | endswith($suffix))
-        ' >/dev/null || {
-        emit indeterminate "exact trigger metadata changed or is malformed"
-        exit 2
-    }
-
-    fetch_evidence \
-        "repos/$state_repo/issues/comments/$state_trigger/reactions?per_page=100" \
-        "$workdir/current-reactions.json" \
-        "exact-trigger reactions"
-    printf '%s\n' '[]' >"$workdir/previous-reactions.json"
-    if [ -n "$previous_trigger" ]; then
-        fetch_evidence \
-            "repos/$state_repo/issues/comments/$previous_trigger/reactions?per_page=100" \
-            "$workdir/previous-reactions.json" \
-            "previous-trigger reactions"
+    # Trigger verification: review-comment finders re-fetch and verify the
+    # trigger comment; requested-reviewer finders skip this (no trigger
+    # comment exists).
+    if [ "$finder_trigger_mechanism" = "review-comment" ] && [ -n "$state_trigger" ]; then
+        expected_trigger_body=$(jq -r '.finder.trigger_body // "@codex review"' "$state_file")
+        trigger=$(run_gh api "repos/$state_repo/issues/comments/$state_trigger") || {
+            bounded_wait "cannot re-fetch the exact trigger comment"
+        }
+        printf '%s' "$trigger" | jq -e \
+            --argjson id "$state_trigger" \
+            --arg created "$state_requested" \
+            --arg suffix "/issues/$state_pr" \
+            --arg expected "$expected_trigger_body" '
+              (.id == $id) and (.created_at == $created) and
+              ((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == $expected) and
+              ((.issue_url // "") | endswith($suffix))
+            ' >/dev/null || {
+            emit indeterminate "exact trigger metadata changed or is malformed"
+            exit 2
+        }
     fi
-    jq -s 'add' \
-        "$workdir/current-reactions.json" \
-        "$workdir/previous-reactions.json" >"$workdir/reactions.json"
-    fetch_evidence \
-        "repos/$state_repo/issues/$state_pr/comments?per_page=100" \
-        "$workdir/comments.json" "PR conversation comments"
-    fetch_evidence \
-        "repos/$state_repo/pulls/$state_pr/reviews?per_page=100" \
-        "$workdir/reviews.json" "PR reviews"
-    fetch_evidence \
-        "repos/$state_repo/pulls/$state_pr/comments?per_page=100" \
-        "$workdir/inline.json" "inline comments"
+
+    # Fetch only the surfaces this finder uses.
+    printf '%s\n' '[]' >"$workdir/reactions.json"
+    if finder_has_surface reaction && [ "$finder_trigger_mechanism" = "review-comment" ] && [ -n "$state_trigger" ]; then
+        fetch_evidence \
+            "repos/$state_repo/issues/comments/$state_trigger/reactions?per_page=100" \
+            "$workdir/current-reactions.json" \
+            "exact-trigger reactions"
+        printf '%s\n' '[]' >"$workdir/previous-reactions.json"
+        if [ -n "$previous_trigger" ]; then
+            fetch_evidence \
+                "repos/$state_repo/issues/comments/$previous_trigger/reactions?per_page=100" \
+                "$workdir/previous-reactions.json" \
+                "previous-trigger reactions"
+        fi
+        jq -s 'add' \
+            "$workdir/current-reactions.json" \
+            "$workdir/previous-reactions.json" >"$workdir/reactions.json"
+    fi
+    printf '%s\n' '[]' >"$workdir/comments.json"
+    if finder_has_surface comment; then
+        fetch_evidence \
+            "repos/$state_repo/issues/$state_pr/comments?per_page=100" \
+            "$workdir/comments.json" "PR conversation comments"
+    fi
+    printf '%s\n' '[]' >"$workdir/reviews.json"
+    if finder_has_surface review; then
+        fetch_evidence \
+            "repos/$state_repo/pulls/$state_pr/reviews?per_page=100" \
+            "$workdir/reviews.json" "PR reviews"
+    fi
+    printf '%s\n' '[]' >"$workdir/inline.json"
+    if finder_has_surface inline; then
+        fetch_evidence \
+            "repos/$state_repo/pulls/$state_pr/comments?per_page=100" \
+            "$workdir/inline.json" "inline comments"
+    fi
 
     provider_status=0
     second_head=$(provider_head "$state_pr" "$state_repo") || provider_status=$?
@@ -1147,6 +1280,12 @@ check)
     }
 
     for evidence in reactions comments reviews inline; do
+        case "$evidence" in
+        reactions) finder_has_surface reaction || continue ;;
+        comments) finder_has_surface comment || continue ;;
+        reviews) finder_has_surface review || continue ;;
+        inline) finder_has_surface inline || continue ;;
+        esac
         jq -e \
             --argjson id "$actor_id" \
             --arg login "$actor_login" '
@@ -1157,7 +1296,7 @@ check)
                 ((.user.login? == $login) | not) or (.user.id? == $id)
               )
             ' "$workdir/$evidence.json" >/dev/null || {
-            emit indeterminate "Codex-looking activity has an unexpected immutable actor identity"
+            emit indeterminate "finder-looking activity has an unexpected immutable actor identity"
             exit 2
         }
     done
@@ -1440,6 +1579,75 @@ check)
             exit 10
         fi
         adjudicated_findings=1
+    fi
+
+    # --- Per-finder verdict classification (#804) ---
+    # Non-codex verdict modes exit here. The codex clean-sentence classification
+    # (the massive block below) only runs for clean-sentence mode.
+    if [ "$finder_verdict_mode" = "actionable-count" ]; then
+        # CodeRabbit: parse review bodies for "actionable comments posted: N".
+        # N=0 means clean; N>0 means findings; no match means pending.
+        actionable_review_id=""
+        actionable_count=-1
+        while IFS='	' read -r rid rtime rbody_count; do
+            [ -n "$rid" ] || continue
+            actionable_count=$rbody_count
+            actionable_review_id=$rid
+        done < <(jq -r \
+            --argjson id "$actor_id" \
+            --arg head "$state_head" \
+            --arg pattern "$finder_actionable_pattern" '
+              [.[] | select(
+                .user.id? == $id and
+                (.commit_id? == $head) and
+                ((.body // "") != "")
+              ) | {
+                id: (.id | tostring),
+                time: (.submitted_at // ""),
+                count: ((.body // "") | capture($pattern; "i").1 // "-1" | tonumber)
+              }] | sort_by(.time) | .[] |
+              [.id, .time, (.count | tostring)] | @tsv
+            ' "$workdir/reviews.json" 2>/dev/null)
+
+        if [ "$actionable_count" -gt 0 ]; then
+            emit findings "actionable review comments reported by finder" \
+                review "$actionable_review_id"
+            exit 10
+        elif [ "$actionable_count" -eq 0 ]; then
+            emit clean "finder reported zero actionable comments" \
+                review "$actionable_review_id"
+            exit 0
+        fi
+
+        if [ "$adjudicated_findings" = "1" ]; then
+            emit clean "current-head findings are all adjudicated by trusted in-thread replies" \
+                review ""
+            exit 0
+        fi
+        bounded_wait "no terminal current-head evidence from actionable-count finder yet"
+    fi
+
+    if [ "$finder_verdict_mode" = "inline-comment-count" ]; then
+        # Copilot: verdict is purely inline-comment-driven. If we got here,
+        # any unadjudicated inline findings already exited at 10 above.
+        # Check for a submitted review (evidence the finder ran).
+        copilot_review_id=$(jq -r \
+            --argjson id "$actor_id" \
+            --arg head "$state_head" '
+              [.[] | select(
+                .user.id? == $id and
+                (.commit_id? == $head)
+              ) | .id | tostring] | last // ""
+            ' "$workdir/reviews.json")
+
+        if [ -n "$copilot_review_id" ]; then
+            if [ "$adjudicated_findings" = "1" ] || [ "$inline_head_findings" -eq 0 ]; then
+                emit clean "requested-reviewer finder submitted a review with no unadjudicated findings" \
+                    review "$copilot_review_id"
+                exit 0
+            fi
+        fi
+        bounded_wait "no terminal current-head evidence from inline-comment-count finder yet"
     fi
 
     # Classifying a current-head result is three-way, not binary, because

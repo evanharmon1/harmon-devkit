@@ -46,7 +46,7 @@ resolve_trusted_registry() {
         printf 'trusted-registry: %s#%s reported no baseRefOid\n' "$repo" "$pr" >&2
         return 1
     }
-    printf '%s' "$base_oid" | grep -Eq '^[0-9a-f]{40}$' || {
+    grep -Eq '^[0-9a-f]{40}$' <<<"$base_oid" || {
         printf 'trusted-registry: %s#%s baseRefOid is not a 40-hex SHA: %s\n' \
             "$repo" "$pr" "$base_oid" >&2
         return 1
