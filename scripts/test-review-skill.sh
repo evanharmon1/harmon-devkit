@@ -109,6 +109,7 @@ for role in challenger reviewer; do
         fail "$role cannot compare finding provenance across rounds"
 done
 for text in 'task in `--envelope` mode' 'script-derived producer identity' \
+    'resolved model and tier' 'loads complete earlier same-stage finding records' \
     'atomically persists the immutable accepted result in `passes/`' \
     'harness that can run the task' \
     'optional process isolation'; do

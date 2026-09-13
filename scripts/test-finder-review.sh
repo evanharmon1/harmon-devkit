@@ -787,7 +787,14 @@ envelope_bin="$tmp/envelope-bin"
 mkdir -p "$envelope_bin"
 cat >"$envelope_bin/copilot" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' '{"stage":"challenge","round":1,"reviewed_head":"$head_sha","finder":"copilot-adversarial","slot":"copilot-adversarial","findings":[],"counts":{"P0":0,"P1":0,"P2":0,"P3":0},"attack_scenarios":[{"id":"as-1","description":"attempted scope and sandbox escapes","outcome":"held","finding_id":null}]}'
+case " \$* " in
+*" --model gpt-5.6-sol "*) ;;
+*) exit 8 ;;
+esac
+prompt="\${!#}"
+grep -Fq '"attack_scenarios"' <<<"\$prompt" || exit 9
+grep -Fq 'an explicit empty array' <<<"\$prompt" || exit 10
+printf '%s\n' '{"stage":"challenge","round":1,"reviewed_head":"$head_sha","finder":"copilot-adversarial","slot":"copilot-adversarial","findings":[{"id":"challenge-r1-copilot-adversarial-1","path":"scripts/finder-review.sh","line":1,"class":"hardening","provenance":"original","fingerprint":"new","priority":"P2","recommended_disposition":"defer","evidence":"fixture prior finding"}],"counts":{"P0":0,"P1":0,"P2":1,"P3":0},"attack_scenarios":[{"id":"as-1","description":"attempted scope and sandbox escapes","outcome":"surfaced-finding","finding_id":"challenge-r1-copilot-adversarial-1"}]}'
 EOF
 chmod +x "$envelope_bin/copilot"
 (
@@ -795,11 +802,13 @@ chmod +x "$envelope_bin/copilot"
     PATH="$envelope_bin:$PATH" ./scripts/finder-review.sh challenge copilot --envelope \
         --run-id run-finder-envelope --head "$head_sha" --stage challenge --round 1 \
         --slot copilot-adversarial --producer "$producer" --record-dir "$record" \
-        --policy .devflow.toml --registry agent-registry.json --uncommitted >/dev/null
+        --policy .devflow.toml --registry agent-registry.json \
+        --model gpt-5.6-sol --tier apex --uncommitted >/dev/null
 ) || fail "valid local-finder envelope failed"
 finder_pass="$record/passes/challenge-r1-copilot-adversarial.json"
 [ -f "$finder_pass" ] || fail "local-finder pass was not published"
-jq -e --arg producer "$producer" '.role == "challenger" and .producer.harness == $producer' \
+jq -e --arg producer "$producer" '.role == "challenger" and .producer.harness == $producer and
+    .producer.model == "gpt-5.6-sol" and .producer.tier == "apex"' \
     "$finder_pass" >/dev/null || fail "local-finder envelope lost role or script-derived producer"
 
 echo "==> a local-finder run-id mismatch and malformed payload publish nothing"
@@ -811,13 +820,15 @@ if (
     PATH="$envelope_bin:$PATH" ./scripts/finder-review.sh challenge copilot --envelope \
         --run-id run-finder-envelope --head "$head_sha" --stage challenge --round 1 \
         --slot copilot-adversarial --producer "$producer" --record-dir "$bad_record" \
-        --policy .devflow.toml --registry agent-registry.json --uncommitted >/dev/null 2>&1
+        --policy .devflow.toml --registry agent-registry.json \
+        --model gpt-5.6-sol --tier apex --uncommitted >/dev/null 2>&1
 ); then
     fail "local-finder run-id mismatch was accepted"
 fi
 [ ! -e "$bad_record/passes/challenge-r1-copilot-adversarial.json" ] || fail "run-id mismatch published a pass"
 cat >"$envelope_bin/copilot" <<'EOF'
 #!/usr/bin/env bash
+grep -Fq 'challenge-r1-copilot-adversarial-1' <<<"${!#}" || exit 9
 printf '%s\n' '{"stage":"challenge"}'
 EOF
 chmod +x "$envelope_bin/copilot"
@@ -826,11 +837,14 @@ if (
     PATH="$envelope_bin:$PATH" ./scripts/finder-review.sh challenge copilot --envelope \
         --run-id run-finder-envelope --head "$head_sha" --stage challenge --round 2 \
         --slot copilot-adversarial --producer "$producer" --record-dir "$record" \
-        --policy .devflow.toml --registry agent-registry.json --uncommitted >/dev/null 2>&1
+        --policy .devflow.toml --registry agent-registry.json \
+        --model gpt-5.6-sol --tier apex --uncommitted >/dev/null 2>&1
 ); then
     fail "malformed local-finder payload was accepted"
 fi
 [ ! -e "$record/passes/challenge-r2-copilot-adversarial.json" ] || fail "malformed local-finder payload published a pass"
+set -- "$record"/.finder-payload.*
+[ ! -e "$1" ] || fail "failed local-finder envelope stranded a raw payload in the record directory"
 
 echo "==> the review path uses no GNU-only construct macOS lacks"
 # Three of these shipped in this change and each one broke every non-dry-run

@@ -287,13 +287,30 @@ if [ "$envelope_mode" = true ]; then
     envelope_role=challenger
     [ "$MODE" = review ] && envelope_role=reviewer
     payload_schema="$script_dir/../ai/schemas/result.${envelope_role}.schema.json"
+    prior_findings='[]'
+    set -- "$record_dir"/passes/*.json
+    if [ -e "$1" ]; then
+        prior_findings="$(jq -sc --arg stage "$MODE" --argjson round "$envelope_round" '
+            [.[] | select(.status == "completed" and .payload.stage == $stage and
+                .payload.round < $round) | .payload.findings[]?] | sort_by(.id)
+        ' "$@")" || {
+            echo "could not load complete prior-round findings from $record_dir/passes" >&2
+            exit 1
+        }
+    fi
     instructions="${instructions}
 
 Return only one JSON object matching the supplied output schema. This object is
 the payload for a result.${envelope_role} envelope. Bind stage to
 ${MODE}, round to ${envelope_round}, reviewed_head to ${envelope_head}, finder
 and slot to ${envelope_slot}, and use finding ids beginning
-${MODE}-r${envelope_round}-${envelope_slot}-. Do not wrap it in Markdown."
+${MODE}-r${envelope_round}-${envelope_slot}-. Do not wrap it in Markdown.
+
+Complete validated findings from earlier rounds of this same stage follow.
+Use them to classify provenance and fingerprint recurrence; round 1 receives
+an explicit empty array:
+
+${prior_findings}"
 fi
 
 # Codex puts the verdict on stdout and everything else — progress narration

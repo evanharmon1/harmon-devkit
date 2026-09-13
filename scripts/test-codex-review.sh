@@ -31,7 +31,11 @@ mkdir -p "${test_tmp}/bin"
 cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
 if [ -n "${STUB_PAYLOAD_FILE:-}" ]; then
-    cat >/dev/null
+    if [ -n "${STUB_PROMPT_FILE:-}" ]; then
+        cat >"$STUB_PROMPT_FILE"
+    else
+        cat >/dev/null
+    fi
     cat "$STUB_PAYLOAD_FILE"
     exit "${STUB_EXIT:-0}"
 fi
@@ -662,7 +666,7 @@ head_sha="$(git rev-parse HEAD)"
 producer="codex-review.sh@$(git hash-object scripts/codex-review.sh)"
 challenge_payload="${test_tmp}/challenge-payload.json"
 jq --arg head "$head_sha" '.reviewed_head = $head' \
-    ai/schemas/fixtures/envelope-mode/challenger-payload.json >"$challenge_payload"
+    ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$challenge_payload"
 STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
     --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 1 \
     --slot codex-adversarial --producer "$producer" --record-dir "$record" \
@@ -709,9 +713,31 @@ STUB_TRAJECTORY="$trajectory" node "$repo/ai/skills/universal/retro/assets/retro
     --trusted-actor-id 1 --stats-script "$stats_stub" --json >/dev/null ||
     fail "retro-run-report did not accept the Codex-lane fixture's retained run evidence"
 
+echo "==> envelope round 2 receives complete prior-round finding records"
+cp "$challenge_pass" "${test_tmp}/challenge-pass.clean.json"
+jq '.payload.findings = [{
+      id:"challenge-r1-codex-adversarial-1", path:"scripts/codex-review.sh", line:1,
+      class:"hardening", provenance:"original", fingerprint:"new", priority:"P2",
+      recommended_disposition:"defer", evidence:"fixture prior finding"
+    }] | .payload.counts.P2 = 1' "$challenge_pass" >"${test_tmp}/challenge-pass.context.json"
+mv "${test_tmp}/challenge-pass.context.json" "$challenge_pass"
+round2_payload="${test_tmp}/challenge-round2-payload.json"
+jq --arg head "$head_sha" '.round = 2 | .reviewed_head = $head' \
+    ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$round2_payload"
+round2_prompt="${test_tmp}/challenge-round2-prompt.txt"
+STUB_PROMPT_FILE="$round2_prompt" STUB_PAYLOAD_FILE="$round2_payload" run challenge --envelope \
+    --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 2 \
+    --slot codex-adversarial --producer "$producer" --record-dir "$record" \
+    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null ||
+    fail "round-2 challenger envelope failed"
+grep -Fq 'challenge-r1-codex-adversarial-1' "$round2_prompt" ||
+    fail "round-2 Codex prompt omitted the complete prior-round finding"
+mv "${test_tmp}/challenge-pass.clean.json" "$challenge_pass"
+rm -f "$record/passes/challenge-r2-codex-adversarial.json"
+
 review_payload="${test_tmp}/review-payload.json"
 jq --arg head "$head_sha" '.reviewed_head = $head' \
-    ai/schemas/fixtures/envelope-mode/reviewer-payload.json >"$review_payload"
+    ai/schemas/fixtures/result.reviewer.schema/runner-envelope-mode/reviewer-payload.json >"$review_payload"
 STUB_PAYLOAD_FILE="$review_payload" run review --envelope \
     --run-id run-envelope-fixture --head "$head_sha" --stage review --round 1 \
     --slot codex-verification --producer "$producer" --record-dir "$record" \
@@ -737,7 +763,7 @@ if STUB_PAYLOAD_FILE="$challenge_payload" run challenge --envelope \
     --base origin/develop >/dev/null 2>&1; then
     fail "head mismatch was accepted"
 fi
-if STUB_PAYLOAD_FILE="ai/schemas/fixtures/envelope-mode/invalid-payload.json" run challenge --envelope \
+if STUB_PAYLOAD_FILE="ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/invalid-payload.json" run challenge --envelope \
     --run-id run-envelope-fixture --head "$head_sha" --stage challenge --round 2 \
     --slot codex-adversarial --producer "$producer" --record-dir "$record" \
     --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null 2>&1; then

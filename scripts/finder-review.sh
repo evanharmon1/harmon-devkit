@@ -8,7 +8,8 @@
 #   finder-review.sh <review|challenge> <tool>
 #                    [--envelope --run-id <id> --head <sha> --stage <stage>
 #                     --round <n> --slot <finder> --producer <script@sha>
-#                     --record-dir <dir> --policy <file> --registry <file>]
+#                     --record-dir <dir> --policy <file> --registry <file>
+#                     --model <model> --tier <tier>]
 #                    [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]
 #
 # `<tool>` names a registered local-CLI finder pair — `<tool>-adversarial` for
@@ -80,7 +81,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$script_dir/.."
 
 usage() {
-    echo "usage: $0 <review|challenge> <tool> [--envelope --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --producer <script@sha> --record-dir <dir> --policy <file> --registry <file>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
+    echo "usage: $0 <review|challenge> <tool> [--envelope --run-id <id> --head <sha> --stage <stage> --round <n> --slot <finder> --producer <script@sha> --record-dir <dir> --policy <file> --registry <file> --model <model> --tier <tier>] [--base <ref>|--uncommitted|--commit <sha>] [focus text ...]" >&2
 }
 
 MODE="${1:-}"
@@ -114,13 +115,15 @@ expected_producer=
 record_dir=
 policy_path=
 registry="agent-registry.json"
+producer_model=
+producer_tier=
 while [ $# -gt 0 ]; do
     case "$1" in
     --envelope)
         envelope_mode=true
         shift
         ;;
-    --run-id | --head | --stage | --round | --slot | --producer | --record-dir | --policy | --registry)
+    --run-id | --head | --stage | --round | --slot | --producer | --record-dir | --policy | --registry | --model | --tier)
         [ $# -ge 2 ] || {
             echo "$1 requires a value" >&2
             exit 2
@@ -135,6 +138,8 @@ while [ $# -gt 0 ]; do
         --record-dir) record_dir="$2" ;;
         --policy) policy_path="$2" ;;
         --registry) registry="$2" ;;
+        --model) producer_model="$2" ;;
+        --tier) producer_tier="$2" ;;
         esac
         shift 2
         ;;
@@ -144,7 +149,7 @@ done
 
 producer_identity="finder-review.sh@$(git hash-object "$script_dir/finder-review.sh")"
 if [ "$envelope_mode" = true ]; then
-    for required in run_id envelope_head envelope_stage envelope_round envelope_slot expected_producer record_dir policy_path registry; do
+    for required in run_id envelope_head envelope_stage envelope_round envelope_slot expected_producer record_dir policy_path registry producer_model producer_tier; do
         [ -n "${!required}" ] || {
             echo "--envelope requires --${required//_/-}" >&2
             exit 2
@@ -162,6 +167,17 @@ if [ "$envelope_mode" = true ]; then
         echo "--round must be a positive integer" >&2
         exit 2
     }
+    [[ "$producer_model" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+        echo "invalid producer model: $producer_model" >&2
+        exit 2
+    }
+    case "$producer_tier" in
+    local | economy | standard | frontier | apex) ;;
+    *)
+        echo "unsupported producer tier: $producer_tier" >&2
+        exit 2
+        ;;
+    esac
     [ "$expected_producer" = "$producer_identity" ] || {
         echo "--producer does not match the script-derived producer identity ($producer_identity)" >&2
         exit 2
@@ -207,6 +223,12 @@ command -v jq >/dev/null 2>&1 || {
 }
 finder_entry="$(jq -c --arg slug "$slug" '.finders[] | select(.slug == $slug)' "$registry")" || {
     echo "could not read $registry" >&2
+    exit 2
+}
+[ "$envelope_mode" = false ] || jq -e --arg model "${producer_model##*-}" --arg tier "$producer_tier" '
+    [.families[].models[]? | select(.slug == $model and .tier == $tier)] | length == 1
+' "$registry" >/dev/null || {
+    echo "--model $producer_model does not resolve to exactly one --tier $producer_tier model in $registry" >&2
     exit 2
 }
 [ -n "$finder_entry" ] || {
@@ -312,13 +334,39 @@ ${manifest}"
 if [ "$envelope_mode" = true ]; then
     envelope_role=challenger
     [ "$MODE" = review ] && envelope_role=reviewer
+    payload_schema="$script_dir/../ai/schemas/result.${envelope_role}.schema.json"
+    [ -f "$payload_schema" ] || {
+        echo "missing envelope payload schema: $payload_schema" >&2
+        exit 2
+    }
+    prior_findings='[]'
+    set -- "$record_dir"/passes/*.json
+    if [ -e "$1" ]; then
+        prior_findings="$(jq -sc --arg stage "$MODE" --argjson round "$envelope_round" '
+            [.[] | select(.status == "completed" and .payload.stage == $stage and
+                .payload.round < $round) | .payload.findings[]?] | sort_by(.id)
+        ' "$@")" || {
+            echo "could not load complete prior-round findings from $record_dir/passes" >&2
+            exit 1
+        }
+    fi
     instructions="${instructions}
 
-Return only one JSON object matching ai/schemas/result.${envelope_role}.schema.json.
-This object is the payload for a result.${envelope_role} envelope.
+Return only one JSON object matching the complete JSON Schema below. This
+object is the payload for a result.${envelope_role} envelope.
 Bind stage to ${MODE}, round to ${envelope_round}, reviewed_head to
 ${envelope_head}, finder and slot to ${slug}, and use finding ids beginning
-${MODE}-r${envelope_round}-${slug}-. Do not wrap it in Markdown."
+${MODE}-r${envelope_round}-${slug}-. Do not wrap it in Markdown.
+
+JSON Schema:
+
+$(cat "$payload_schema")
+
+Complete validated findings from earlier rounds of this same stage follow.
+Use them to classify provenance and fingerprint recurrence; round 1 receives
+an explicit empty array:
+
+${prior_findings}"
 fi
 
 # The prompt travels as a single argv element, which the kernel caps (~128 KiB
@@ -400,6 +448,17 @@ fi
 # shellcheck disable=SC2206 # deliberate word-splitting: the override is a flag
 # list, not one argument.
 args=(${FINDER_REVIEW_COPILOT_ARGS:-$default_args})
+if [ "$envelope_mode" = true ]; then
+    for arg in "${args[@]}"; do
+        case "$arg" in
+        --model | --model=*)
+            echo "FINDER_REVIEW_COPILOT_ARGS must not select a model in envelope mode; use --model so the receipt and invocation stay bound" >&2
+            exit 2
+            ;;
+        esac
+    done
+    args+=(--model "$producer_model")
+fi
 if [ "$dry_run" = 1 ]; then
     printf 'finder: %s\ncommand: %s %s\n' "$slug" "$bin" "${args[*]}"
     printf '%s\n' "$instructions"
@@ -581,7 +640,14 @@ else
 fi
 finder_status=0
 raw_payload=
+envelope_tmp=
+known_ids=
 if [ "$envelope_mode" = true ]; then
+    cleanup_finder_envelope() {
+        sandbox_cleanup
+        rm -f "$raw_payload" "$envelope_tmp" "$known_ids"
+    }
+    trap cleanup_finder_envelope EXIT
     raw_payload="$(mktemp "$record_dir/.finder-payload.XXXXXX")"
     sandbox_exec "$bin" "${args[@]}" "$instructions" >"$raw_payload" || finder_status=$?
 else
@@ -603,11 +669,6 @@ fi
 
 envelope_tmp="$(mktemp "$record_dir/.finder-envelope.XXXXXX")"
 known_ids="$(mktemp "$record_dir/.finder-known-ids.XXXXXX")"
-cleanup_finder_envelope() {
-    sandbox_cleanup
-    rm -f "$raw_payload" "$envelope_tmp" "$known_ids"
-}
-trap cleanup_finder_envelope EXIT
 
 jq -e --arg stage "$MODE" --argjson round "$envelope_round" \
     --arg head "$envelope_head" --arg finder "$slug" \
@@ -621,14 +682,15 @@ jq -n \
     --arg head "$envelope_head" \
     --arg produced_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg harness "$producer_identity" \
-    --arg model "$TOOL" \
+    --arg model "$producer_model" \
+    --arg tier "$producer_tier" \
     --arg run_id "$run_id" \
     --arg initiated_by "$initiated_by" \
     --arg role "$envelope_role" \
     --slurpfile payload "$raw_payload" \
     '{schema: 2, role: $role, status: "completed", head: $head,
       produced_at: $produced_at,
-      producer: {harness: $harness, model: $model, tier: "local"},
+      producer: {harness: $harness, model: $model, tier: $tier},
       run: {run_id: $run_id, initiated_by: $initiated_by}, payload: $payload[0]}' \
     >"$envelope_tmp"
 

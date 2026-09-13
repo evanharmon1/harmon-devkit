@@ -115,7 +115,10 @@ the captured base/head plus access to the source and diff it must review. For a
 committed round, require every source and diff read to resolve from those
 captured Git revisions, never mutable worktree bytes. For an orchestrated
 `codex-cli` pass, give `scripts/codex-review.sh` the resolved values as leading
-`--model <model> --reasoning <level>` arguments. Pass each dispatch the
+`--model <model> --reasoning <level>` arguments. Give every other local-CLI
+finder its resolved model and tier as `--model <model> --tier <tier>`; the
+runner pins that model in the vendor invocation and records the same values in
+the receipt rather than inventing producer metadata. Pass each dispatch the
 remaining whole-run wall-clock budget and bound the caller's supervision and
 wait by that deadline. On expiry, stop waiting, follow the orchestrator's
 capped-run handling, and reject any late result; this grants no authority to
@@ -188,8 +191,10 @@ never consume `[breadth].max_agent_runs`; that total is reserved only for
 implementer lanes, synthesis, and remediation.
 Invoke the configured finder task in `--envelope` mode with the captured run,
 base, head, stage, round, slot, policy, registry, record directory, and the
-script-derived producer identity expected by the caller. The runner derives
-the producer again, binds the structured finder result to those inputs,
+script-derived producer identity expected by the caller, plus the resolved
+model and tier for a non-Codex local finder. The runner derives the producer
+again, loads complete earlier same-stage finding records from the accepted
+passes, binds the structured finder result to those inputs,
 validates it with `scripts/validate-result-schemas.mjs envelope --receipt`,
 and atomically persists the immutable accepted result in `passes/`. Any
 harness that can run the task therefore gets the same binding; a Claude role
