@@ -39,11 +39,10 @@ migration visible; a stage that finds another way to finish hides it.
 
 A consumer that has not advanced its pin still has the retired single-stage
 skill at the pin it is on, which is exactly why the pin waits for the policy;
-`scripts/consumer-pin-audit.sh` is the check that the two agree. This is the
-delta spec's own "the tooling's own repository has not migrated" case, and
-harmon-devkit is in it: its `.devflow.toml` is still legacy and migrates only
-through the maintainer's `copier update` (harmon-devkit#711), so this skill
-refuses there by design while its own suites run against fixture policies. Do
+`scripts/consumer-pin-audit.sh` is the check that the two agree. harmon-devkit's
+`.devflow.toml` is `schema_version = 2` (harmon-devkit#862), so this skill
+operates there natively; a consumer that has not yet migrated still has the
+retired single-stage skill at its pin and refuses as described above. Do
 not fabricate a `run.json` to route around any of this; there is nothing that
 would keep it truthful.
 
@@ -86,7 +85,7 @@ accounts for.
 
 ## Stage ledger
 
-The stage ledger — distinct from the gauntlet's private adjudication ledger,
+The stage ledger — distinct from the review skill's private adjudication ledger,
 which is a file — is a short table in the agent's **own commentary** (tool
 output is collapsed and does not count), always in this shape, with this
 legend:
@@ -98,16 +97,16 @@ legend:
 | **Next** | fix P1 → `task verify` → ⚔️ challenge round 3 |
 
 Stage glyphs: 🔨 implement · 🧪 verify · ⚔️ challenge · 🔍 review · 🛡️ security ·
-🏗️ ci · 🚢 shepherd. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
+🏗️ ci · 🚢 integrate. Status glyphs: ✅ clean/green · 🔴 P0/P1 open · 🟡 P2 deferred ·
 ⚪ P3 noted · ⏳ waiting on CI or a reviewer · ⛔ blocked/escalating · 🏁 stage
 converged.
 The same glyph always means the same thing, so a reader can tell
 the state at a glance without parsing prose. `Stage` names the stage and,
 for a capped stage, **its round as `round n/cap`** from the cap resolved
-below — challenge, review, and shepherd are counted and capped separately and
+below — challenge, review, and integration are counted and capped separately and
 never combined; implement, verify, and ci have no cap and carry no round —
 and says whether a round is a local `task challenge`/`task review` run or a cloud
-PR-shepherd review cycle. `Next` names the next concrete gate or action,
+PR-integration review cycle. `Next` names the next concrete gate or action,
 including the `task verify` a fix owes before the next round.
 When a cap of 0 skips a stage outright, there is no round to number: omit
 `round n/cap` and write `skipped (cap 0)` in `Stage` instead of inventing
@@ -131,7 +130,7 @@ default sequence is forbidden. An override is an attributable human decision
 and is followed, but it redirects the loop rather than erasing findings: any
 P0/P1 still open in the stage it ends is carried, **unchecked**, into the PR
 body's `## Deferred findings` with the override recorded as the reason it was
-carried — not as a disposition, so the shepherd stage still owes it a normal
+carried — not as a disposition, so the integration stage still owes it a normal
 fix / decline-with-evidence / file-as-follow-up — and the ledger records the
 override as the reason for the transition. Before leaving a stage under an
 override before the PR exists, append every still-open P0/P1 to the
@@ -396,7 +395,7 @@ your own commentary. Before the stage's first round, use
 completed `round n/cap` while polling instead of moving the counter backward.
 The fetch and an ordinary clean/pending watch spend no round. When that fetch
 does establish a watch/fix round, post the table again before adjudicating.
-Fill `Stage` with `🚢 shepherd`, the resolved current `round n/cap`, and the
+Fill `Stage` with `🚢 integrate`, the resolved current `round n/cap`, and the
 cloud (PR review cycle) marker; use `Round` for the current checks/review state
 and `Next` for the concrete action or bounded wait that follows. A no-change
 adjudication cycle follows the same numbered entry rule.
@@ -828,7 +827,7 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
 result, regardless of whether it is clean, findings, pending, retry, escalation,
 closed, or indeterminate, post the fixed stage-ledger table in your own
 commentary before replying, settling, re-dispatching, or stopping. Fill
-`Stage` with `🚢 shepherd`; before a finding or no-change adjudication cycle
+`Stage` with `🚢 integrate`; before a finding or no-change adjudication cycle
 has begun, omit `round n/cap` and write `waiting (no round yet)`, while a
 cap-zero stage uses `skipped (cap 0)` as the shared rule requires. Otherwise
 fill in the current `round n/cap`; use the matching status glyph (`✅`, `🔴`,
@@ -1216,7 +1215,7 @@ is optional in addition, never a substitute for per-thread replies.
 
   The push increments the round counter. **Immediately after every successful
   fix push, post the fixed stage-ledger table in your own commentary.** Fill
-  `Stage` with `🚢 shepherd`, the new current `round n/cap`, and the cloud PR
+  `Stage` with `🚢 integrate`, the new current `round n/cap`, and the cloud PR
   review-cycle marker; record the pushed head's check/review state in `Round`
   and make `Next` the required return to watch.
 
@@ -1435,7 +1434,7 @@ that loops indefinitely:
    commentary before cleanup and stopping. If no round ran, omit `round n/cap`:
    write `skipped (cap 0)` when the cap is 0, or `completed (no round ran)` at
    a positive cap. Still write `Round` with `🏁 stage converged` and the green
-   readiness result. Otherwise fill `Stage` with `🚢 shepherd`, the final
+   readiness result. Otherwise fill `Stage` with `🚢 integrate`, the final
    `round n/cap`, `Round` with `🏁 stage converged` and the green readiness
    result, and `Next` with human review followed by the maintainer's merge
    decision.
@@ -1533,7 +1532,7 @@ that loops indefinitely:
 maintainer-blocked stop, post the fixed stage-ledger table in your own
 commentary before the blocker report. If no round ran, omit `round n/cap`:
 write `skipped (cap 0)` when the cap is 0, or `stopped (no round ran)` at a
-positive cap. Otherwise fill `Stage` with `🚢 shepherd`, the current
+positive cap. Otherwise fill `Stage` with `🚢 integrate`, the current
 `round n/cap`, `Round` with `⛔ blocked/escalating`, and `Next` with the
 maintainer action that unblocks or decides the work. This requirement also
 covers the timeline-guard stop that necessarily leaves a promoted PR ready.

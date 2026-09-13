@@ -23,7 +23,39 @@ isolation is optional; its absence alone is not a dispatch blocker. Every role
 still stays within its declared scope. Use one worktree and branch per lane,
 record ownership, scope, dependencies, and the complete file overlap.
 Before dispatching overlapping scopes, either serialize them or record the
-explicit merge dependency in both lane briefs. Select implementers only from
+explicit merge dependency in both lane briefs.
+
+## Lane briefs
+
+Every lane brief MUST carry the active run identity so the lane worker can
+route confidence stages through `/review` and integration through `/integrate`,
+producing the v2 evidence (`retro-run-report.mjs` exit 10 `no-run-record` is
+the failure this routing prevents). The required fields are: run id, branch,
+generation, active-state path, record directory, and policy projection. Without
+them the lane worker falls back to the inline `task challenge` / `task review`
+procedure, which produces no run record and no adjudication evidence. See
+`assets/lane-brief.md` for the template skeleton.
+
+## PR-open confirmation
+
+Before promoting a lane's PR, confirm the lane produced v2 evidence
+appropriate to its topology and resolved policy for the lane's active
+run ID. Each enabled confidence stage (resolved cap ≥ 1) must have its
+own evidence — adjudication records from `/review`, not merely a kickoff
+marker — and a disabled stage (cap 0) must have its authenticated
+disabled-stage verdict; a single verdict never covers an enabled stage.
+A lane dispatched under the fork topology or without a vendored
+`/review` skill uses the inline fallback by design and produces no v2
+evidence; the orchestrator accepts that limitation and does not require
+evidence the procedure cannot produce. `retro-run-report.mjs` exit 10
+(`no-run-record`) is the diagnostic for a lane that was expected to
+produce evidence and did not; when the condition fails and the skill
+path is available for the lane's topology, the routing failed and the
+lane must be re-run before the PR is promoted.
+
+## Implementer selection
+
+Select implementers only from
 the resolved `[stage.implement].pool`, registry role eligibility, and resolved
 family/harness preferences; council dispatches also enforce its
 `distinct_families` requirement. Enforce one
