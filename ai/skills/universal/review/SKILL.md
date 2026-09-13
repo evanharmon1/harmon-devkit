@@ -308,8 +308,11 @@ the script's outcome.
 
 Without that recorded upward override, an `action: advance` result is the sole
 authority to advance the run record. Re-read `run.json` and require its last
-transition to name the current stage and have no `exit`; otherwise stop as a
-stale or duplicate write. Close the current transition by setting its `exit` to
+transition to name the current stage and have no `exit`. The advance is
+idempotent: a re-entry that finds the transition already applied adopts it and
+completes the remaining readback, publication, and next-stage steps; it never
+appends a second transition, while any conflicting transition blocks.
+Close the current transition by setting its `exit` to
 `"<rule>: <detail>"`, where the rule is the verdict outcome and therefore starts
 with one of `continue`, `converged`, `diverging`, or `capped`; the detail names
 the verdict's exit reason and qualifying round. Then

@@ -92,6 +92,10 @@ for text in 'Before replacing `run.json`, write the complete candidate beside it
     'Rename the candidate over `run.json` only' \
     'after that validation passes' \
     'scripts/validate-result-schemas.mjs run <run.json>' \
+    'The advance is' \
+    'idempotent: a re-entry that finds the transition already applied adopts it' \
+    'it never' \
+    'appends a second transition' \
     'Close the current transition by setting its `exit` to' \
     '`"<rule>: <detail>"`' \
     'therefore starts' \
@@ -102,7 +106,7 @@ for text in 'Before replacing `run.json`, write the complete candidate beside it
     grep -Fq "$text" "$skill" || fail "review stage-advance recipe is missing: $text"
 done
 advance_fixture="ai/schemas/fixtures/run.schema/valid/empty-round-challenge-to-review.json"
-node scripts/validate-result-schemas.mjs run "$advance_fixture" ||
+node scripts/validate-result-schemas.mjs run "$advance_fixture" --receipt --no-adjudications ||
     fail "empty-round challenge-to-review transition fixture is invalid"
 jq -e '
     .stage_transitions[-2] == {
@@ -116,6 +120,17 @@ jq -e '
     } and
     ([.stage_transitions[] | has("from") or has("to") or has("at") or has("reason")] | any | not)
 ' "$advance_fixture" >/dev/null || fail "empty-round advance fixture does not pin the writer shape"
+
+reentry_fixture="ai/schemas/fixtures/run.schema/valid/reentered-challenge-to-review.json"
+node scripts/validate-result-schemas.mjs run "$reentry_fixture" --receipt --no-adjudications ||
+    fail "re-entered challenge-to-review transition fixture is invalid"
+jq -e '
+    ([.stage_transitions[] | select(.stage == "challenge")] | length) == 1 and
+    ([.stage_transitions[] | select(.stage == "review")] | length) == 1 and
+    .stage_transitions[-2].exit == "converged: two_consecutive rounds 3 and 4" and
+    .stage_transitions[-1].stage == "review" and
+    (.stage_transitions[-1] | has("exit") | not)
+' "$reentry_fixture" >/dev/null || fail "re-entry fixture does not adopt exactly one applied transition"
 
 grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"
