@@ -114,14 +114,14 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
     printf '%s\n' "$count" >"$count_file"
     printf '%s\n' "$count" >"$WATCH_FIXTURES/phase"
     case "$count" in
-    1) printf '%s\n' '[{"number":77,"isDraft":true,"state":"OPEN"}]' ;;
+    1) printf '%s\n' '[{"number":77,"isDraft":true,"state":"OPEN","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]' ;;
     2) if [ -f "$WATCH_FIXTURES/skip-ready" ]; then
-        printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED"}]'
+        printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]'
     else
-        printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN"}]'
+        printf '%s\n' '[{"number":77,"isDraft":true,"state":"OPEN","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]'
     fi ;;
-    3) printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN"}]' ;;
-    *) printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED"}]' ;;
+    3 | 4) printf '%s\n' '[{"number":77,"isDraft":false,"state":"OPEN","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]' ;;
+    *) printf '%s\n' '[{"number":77,"isDraft":false,"state":"MERGED","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]' ;;
     esac
     exit 0
 fi
@@ -130,11 +130,11 @@ if [ "${1:-}" = api ]; then
     endpoint=${*: -1}
     phase=0
     [ ! -f "$WATCH_FIXTURES/phase" ] || phase="$(<"$WATCH_FIXTURES/phase")"
-    if [ -f "$WATCH_FIXTURES/fail-api" ] && [ "$phase" -eq 2 ]; then
-        exit 92
-    fi
     activity_phase=3
     [ ! -f "$WATCH_FIXTURES/skip-ready" ] || activity_phase=2
+    if [ -f "$WATCH_FIXTURES/fail-api" ] && [ "$phase" -eq "$activity_phase" ]; then
+        exit 92
+    fi
     if [ "$phase" -lt "$activity_phase" ]; then
         printf '%s\n' '[]'
         exit 0
@@ -147,7 +147,7 @@ if [ "${1:-}" = api ]; then
         printf '%s\n' '[{"id":501,"submitted_at":"2098-01-01T00:00:01Z","user":{"id":999,"login":"trusted-codex","type":"Bot"}}]'
         ;;
     */issues/*/comments?per_page=100)
-        printf '%s\n' '[{"id":601,"created_at":"2098-01-01T00:00:00Z","user":{"id":111,"login":"maintainer","type":"User"}}]'
+        printf '%s\n' '[{"id":601,"created_at":"2097-12-31T23:59:00Z","updated_at":"2098-01-01T00:00:02Z","user":{"id":111,"login":"maintainer","type":"User"}}]'
         ;;
     */pulls/*/comments?per_page=100)
         printf '%s\n' '[{"id":701,"created_at":"2098-01-01T00:00:03Z","user":{"id":222,"login":"untrusted-bot","type":"Bot"}}]'
@@ -177,7 +177,7 @@ common_args=(
 )
 
 primary_out="$test_tmp/primary.out"
-bash "$watcher" --iterations 4 "${common_args[@]}" >"$primary_out"
+bash "$watcher" --iterations 5 "${common_args[@]}" >"$primary_out"
 
 # Three independently quoted specs pin the zsh word-splitting regression.
 assert_line "$primary_out" 'AGENT alpha: init -> working'
@@ -191,11 +191,13 @@ assert_count "$primary_out" 0 '^SENTINEL gamma:'
 assert_count "$primary_out" 1 '^SENTINEL alpha:'
 assert_count "$primary_out" 1 '^SENTINEL beta:'
 
-assert_line "$primary_out" 'PR alpha: #77 draft=true OPEN'
-assert_line "$primary_out" 'PR alpha: #77 draft=false OPEN'
-assert_line "$primary_out" 'PR alpha: #77 draft=false MERGED'
+assert_line "$primary_out" 'PR alpha: #77 draft=true OPEN head=aaaaaaaa'
+assert_line "$primary_out" 'PR alpha: #77 draft=true OPEN head=bbbbbbbb'
+assert_line "$primary_out" 'PR alpha: #77 draft=false OPEN head=bbbbbbbb'
+assert_line "$primary_out" 'PR alpha: #77 draft=false MERGED head=bbbbbbbb'
 assert_line "$primary_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
 assert_line "$primary_out" 'POST-PROMOTION-ACTIVITY alpha: maintainer comment 601'
+assert_count "$primary_out" 1 '^POST-PROMOTION-ACTIVITY alpha: maintainer comment 601$'
 assert_count "$primary_out" 0 'untrusted-bot'
 assert_count "$primary_out" 1 '^USAGE-PAUSED beta$'
 
@@ -211,8 +213,8 @@ bash "$watcher" --iterations 2 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$skipped_ready_out"
 rm "$fixture_dir/skip-ready"
-assert_line "$skipped_ready_out" 'PR alpha: #77 draft=true OPEN'
-assert_line "$skipped_ready_out" 'PR alpha: #77 draft=false MERGED'
+assert_line "$skipped_ready_out" 'PR alpha: #77 draft=true OPEN head=aaaaaaaa'
+assert_line "$skipped_ready_out" 'PR alpha: #77 draft=false MERGED head=bbbbbbbb'
 assert_line "$skipped_ready_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
 
 # A fresh process adopts state and does not re-emit either sentinel.
@@ -266,7 +268,7 @@ assert_count "$test_tmp/github-failure.state" 1 '^AGENT[[:space:]]+delta[[:space
 rm "$fixture_dir/malformed-pr-list"
 
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
-printf '%s\n' 1 >"$fixture_dir/pr-count"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
 touch "$fixture_dir/fail-api"
 activity_failure_err="$test_tmp/activity-failure.err"
 if bash "$watcher" --iterations 1 --state-file "$test_tmp/activity-failure.state" \
@@ -283,7 +285,7 @@ rm "$fixture_dir/fail-api"
 # An expired authoritative window hard-stops without another API snapshot.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 1 >"$fixture_dir/pr-count"
-printf 'PR\talpha\t#77 draft=false OPEN\t\nWINDOW\talpha\t77\t1\t\nWALLCLOCK\trun\t0\t\n' \
+printf 'PR\talpha\t#77 draft=false OPEN head=bbbbbbbb\t\nWINDOW\talpha\t77\t1\t\nWALLCLOCK\trun\t0\t\n' \
     >"$test_tmp/expired.state"
 touch "$fixture_dir/fail-api"
 expired_out="$test_tmp/activity-expired.out"
@@ -433,7 +435,7 @@ rm "$fixture_dir/hang-pr-list"
 assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 
 # Every emitted line belongs to one of the stable event grammars.
-if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED)|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
+if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
     "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
