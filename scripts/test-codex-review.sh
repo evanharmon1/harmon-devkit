@@ -446,9 +446,30 @@ echo "==> a differing-submodule-commit refuses the uncommitted diff"
 # clean. The production fix (refuse_dirty_submodules) captures the complete
 # `git submodule status --recursive` output and tests it with a here-string,
 # so a SIGPIPE from an early-exiting consumer under pipefail cannot silently
-# accept a partial match. Tested by calling collect_review_diff directly:
-# refuse_dirty_submodules lives in review-scope.sh and is reached through
-# collect_review_diff, not through resolve_review_scope.
+# accept a partial match. A git wrapper emits the real output first, then pads
+# with >64 KB of clean entries — grep -q finds the dirty record and exits
+# early, the wrapper still has 70 KB to write, and the resulting SIGPIPE under
+# pipefail makes the pipeline return 141 instead of 0, so the if-condition in
+# refuse_dirty_submodules evaluates false and the dirty state is silently
+# accepted. Calls refuse_dirty_submodules directly to isolate the SIGPIPE
+# mechanism from unrelated collect_untracked_diff failures (stale untracked
+# directories from earlier tests).
+sigpipe_real_git="$(command -v git)"
+sigpipe_bin="${test_tmp}/sigpipe-bin"
+mkdir -p "$sigpipe_bin"
+cat >"$sigpipe_bin/git" <<SIGPIPE_WRAPPER
+#!/usr/bin/env bash
+if [ "\${1:-}" = "submodule" ] && [ "\${2:-}" = "status" ]; then
+    "$sigpipe_real_git" "\$@"
+    _rc=\$?
+    for _i in \$(seq 1 1200); do
+        printf ' 0000000000000000000000000000000000000000 padding-submod-%04d\n' "\$_i"
+    done
+    exit \$_rc
+fi
+exec "$sigpipe_real_git" "\$@"
+SIGPIPE_WRAPPER
+chmod +x "$sigpipe_bin/git"
 git checkout -q -b submod-refusal-test feature
 git init -q "${test_tmp}/submod-a"
 (cd "${test_tmp}/submod-a" && git_t commit -q --allow-empty -m a1 && git_t commit -q --allow-empty -m a2)
@@ -458,23 +479,24 @@ git -c protocol.file.allow=always submodule add -q "${test_tmp}/submod-a" sub-a
 git -c protocol.file.allow=always submodule add -q "${test_tmp}/submod-b" sub-b
 git_t commit -q -m "add two submodules"
 (cd sub-a && git checkout -q HEAD~1)
-# sub-a now differs from the index; sub-b is clean.
-# Source the shared scope library and call collect_review_diff with the
-# worktree diff spec that the --uncommitted path would set.
+# sub-a now differs from the index; sub-b is clean. The git wrapper appends
+# ~70 KB of clean padding after the real output, so grep -q exits early on the
+# dirty record and the writer still has >64 KB to flush — triggering SIGPIPE.
 if (
     set -euo pipefail
+    export PATH="$sigpipe_bin:$PATH"
     # shellcheck source=scripts/lib/review-scope.sh
     . ./scripts/lib/review-scope.sh
-    review_diff_spec="worktree"
-    collect_review_diff >/dev/null 2>&1
+    refuse_dirty_submodules
 ); then
-    fail "a differing-submodule-commit was reviewed (SIGPIPE regression)"
+    fail "a differing-submodule-commit was accepted (SIGPIPE regression)"
 fi
 
 echo "==> a clean submodule tree is accepted by refuse_dirty_submodules"
 (cd sub-a && git checkout -q -)
 if ! (
     set -euo pipefail
+    export PATH="$sigpipe_bin:$PATH"
     # shellcheck source=scripts/lib/review-scope.sh
     . ./scripts/lib/review-scope.sh
     refuse_dirty_submodules

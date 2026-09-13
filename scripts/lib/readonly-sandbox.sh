@@ -78,8 +78,8 @@ sandbox_resolve_bwrap() {
     fi
     if command -v bwrap >/dev/null 2>&1; then
         readonly_sandbox_bwrap="$(command -v bwrap)"
-        sandbox_probe_bwrap
-        return $?
+        readonly_sandbox_bwrap_probed=
+        sandbox_probe_bwrap && return 0
     fi
     local candidate
     for candidate in \
@@ -88,24 +88,29 @@ sandbox_resolve_bwrap() {
         /opt/homebrew/bin/bwrap; do
         if [ -x "$candidate" ]; then
             readonly_sandbox_bwrap="$candidate"
-            sandbox_probe_bwrap
-            return $?
+            readonly_sandbox_bwrap_probed=
+            sandbox_probe_bwrap && return 0
         fi
     done
     return 1
 }
 
-# Probe that the resolved bwrap can actually create a user namespace. Runs
-# once per process; subsequent calls return the cached result.
+# Probe that the resolved bwrap can actually create a user namespace.
+# Cached per binary: sandbox_resolve_bwrap resets the cache before each
+# non-explicit candidate so a failed binary does not prevent testing the next.
 sandbox_probe_bwrap() {
     if [ -n "$readonly_sandbox_bwrap_probed" ]; then
         [ "$readonly_sandbox_bwrap_probed" = 0 ]
         return $?
     fi
-    if "$readonly_sandbox_bwrap" --unshare-pid --unshare-ipc --unshare-uts --dev /dev --proc /proc \
-        --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
-        --symlink usr/bin /bin --symlink usr/sbin /sbin \
-        -- true >/dev/null 2>&1; then
+    local -a _probe_args
+    local _p
+    _probe_args=("$readonly_sandbox_bwrap" --unshare-pid --unshare-ipc --unshare-uts --dev /dev --proc /proc)
+    for _p in "${readonly_sandbox_base_paths[@]}"; do
+        [ -e "$_p" ] || continue
+        _probe_args+=(--ro-bind "$_p" "$_p")
+    done
+    if "${_probe_args[@]}" -- true >/dev/null 2>&1; then
         readonly_sandbox_bwrap_probed=0
         return 0
     fi
