@@ -2360,6 +2360,24 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
   }
 }
 
+// checkReceiptVariants — oneOf deliberately reports only its stable indexed
+// summary, so validate the discriminated receipt branch as well. Besides a
+// useful field-level diagnostic, this keeps the negative-fixture coverage
+// audit capable of proving every variant requirement and enum constraint.
+function checkReceiptVariants(document, runSchema, location, errors) {
+  if (!Array.isArray(document.receipts)) return
+  const branches = runSchema.properties.receipts.items.oneOf
+  for (const [index, receipt] of document.receipts.entries()) {
+    if (receipt === null || typeof receipt !== 'object' || Array.isArray(receipt)) continue
+    const candidates = Object.hasOwn(receipt, 'kind')
+      ? branches.filter((branch) => branch.properties.kind.const === receipt.kind)
+      : branches
+    for (const branch of candidates) {
+      errors.push(...validateAgainst(branch, receipt, `${location}.receipts[${index}]`))
+    }
+  }
+}
+
 // checkReceiptsRecord — an independent --receipts file is a run-directory
 // subset, not necessarily a complete persisted run record. Validate the two
 // fields strict mode trusts with the canonical run schema definitions before
@@ -2374,6 +2392,8 @@ function checkReceiptsRecord(document, receiptsRecord, runSchema, errors) {
     }
   }
   errors.push(...validateAgainst(contextSchema, receiptsRecord, '$receipts'))
+  checkReceiptVariants(receiptsRecord, runSchema, '$receipts', errors)
+  checkTimestampRealness(receiptsRecord, errors, '$receipts')
   if (
     typeof receiptsRecord.run_id === 'string' &&
     receiptsRecord.run_id !== document.run_id
@@ -2794,6 +2814,7 @@ function main() {
   if (kind === 'run') {
     const schema = loadSchema('run.schema.json')
     const errors = validateAgainst(schema, instance, '$run')
+    checkReceiptVariants(instance, schema, '$run', errors)
     if (errors.length === 0) {
       if (options.receiptsRecord) {
         checkReceiptsRecord(instance, options.receiptsRecord, schema, errors)

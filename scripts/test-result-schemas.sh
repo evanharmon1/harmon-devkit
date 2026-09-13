@@ -1269,12 +1269,15 @@ receipts_strict_adjudication="$fixtures_dir/run.schema/invalid/adjudication-not-
 receipts_strict_receipts="$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.receipts.json"
 receipts_split_valid="$test_tmp/receipts-split-valid.json"
 receipts_split_malformed="$test_tmp/receipts-split-malformed.json"
+receipts_split_impossible="$test_tmp/receipts-split-impossible.json"
 
 jq -n \
     --arg run_id "run-0821-receipts-strict" \
     '{run_id: $run_id, receipts: [{kind: "transition", stage: "challenge", entered_at: "2026-09-01T00:30:00Z"}]}' \
     >"$receipts_split_valid"
 jq 'del(.receipts[0].entered_at)' "$receipts_split_valid" >"$receipts_split_malformed"
+jq '.receipts[0].entered_at = "2026-02-30T00:00:00Z"' \
+    "$receipts_split_valid" >"$receipts_split_impossible"
 
 run_context_case \
     "a malformed independent --receipts entry is rejected with its index" \
@@ -1283,6 +1286,14 @@ run_context_case \
     '$receipts.receipts[0]' \
     --adjudication "$receipts_strict_adjudication" \
     --receipts "$receipts_split_malformed"
+
+run_context_case \
+    "an impossible independent --receipts timestamp is rejected with its index" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    '$receipts.receipts[0].entered_at' \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$receipts_split_impossible"
 
 accept_context_case \
     "valid independent --receipts entries authorize their adjudication stage" \
@@ -1683,6 +1694,9 @@ function collect(root, schema, currentPath, required, enums, seen) {
     collect(root, child, `${currentPath}.${key}`, required, enums, seen)
   }
   if (schema.items) collect(root, schema.items, `${currentPath}[]`, required, enums, seen)
+  for (const child of schema.oneOf ?? []) {
+    collect(root, child, currentPath, required, enums, seen)
+  }
   for (const key of ['if', 'then', 'else']) {
     if (schema[key]) collect(root, schema[key], currentPath, required, enums, seen)
   }
