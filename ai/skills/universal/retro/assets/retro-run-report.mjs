@@ -76,9 +76,11 @@ class OperationalError extends Error {}
 // Evidence that exists but does not authenticate, or cannot be attributed to
 // one run. Distinct from "no evidence" — see the exit-code table above.
 class IndeterminateError extends Error {
-  constructor(message, { ignoredHints = [] } = {}) {
+  constructor(message, { ignoredHints = [], untrusted = [], malformed = [] } = {}) {
     super(message)
     this.ignoredHints = [...ignoredHints]
+    this.untrusted = [...untrusted]
+    this.malformed = [...malformed]
   }
 }
 
@@ -397,7 +399,7 @@ function parseBodyDiscovery(body, repo) {
   // The declaration must own the line (with an optional list marker), so prose,
   // quotations, and lazy blockquote continuations cannot become lookup inputs.
   // An explicit owner/repo prefix is accepted only for this repository.
-  const declarationRe = /^[ \t]*(?:[-*][ \t]+)?(?:refs|addresses|part[ \t]+of)[ \t]+(?=(?:(?:https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull)\/)|(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#)[1-9][0-9]*\b)[^\r\n]*$/gim
+  const declarationRe = /^[ \t]*(?:(?:[-*+]|[0-9]+[.)])[ \t]+)?(?:refs|addresses|part[ \t]+of)[ \t]+(?=(?:(?:https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull)\/)|(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#)[1-9][0-9]*\b)[^\r\n]*$/gim
   const referenceRe = /(?<url>https:\/\/github\.com\/(?<urlRepo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?<urlKind>issues|pull)\/(?<urlNumber>[1-9][0-9]*)\b)|(?:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)(?<number>[1-9][0-9]*)\b/gi
   const declarationLines = []
   for (const declaration of body.matchAll(declarationRe)) {
@@ -405,14 +407,21 @@ function parseBodyDiscovery(body, repo) {
     for (const match of declaration[0].matchAll(referenceRe)) {
       const hintRepo = match.groups.urlRepo || match.groups.repo
       const issueNumber = Number(match.groups.urlNumber || match.groups.number)
-      if (!hintRepo || hintRepo.toLowerCase() === repo.toLowerCase()) {
-        issueNumbers.add(issueNumber)
-      } else {
+      const hint = match.groups.url || `${match.groups.repo || ''}#${match.groups.number}`
+      if (hintRepo && hintRepo.toLowerCase() !== repo.toLowerCase()) {
         ignoredHints.push({
-          hint: match.groups.url || `${match.groups.repo}#${match.groups.number}`,
+          hint,
           tier: 'non-closing reference',
           reason: `cross-repository reference does not belong to ${repo}`
         })
+      } else if (match.groups.urlKind && match.groups.urlKind.toLowerCase() === 'pull') {
+        ignoredHints.push({
+          hint,
+          tier: 'non-closing reference',
+          reason: `#${issueNumber} is a pull request, not an issue`
+        })
+      } else {
+        issueNumbers.add(issueNumber)
       }
     }
   }
@@ -420,7 +429,7 @@ function parseBodyDiscovery(body, repo) {
   // A contributor-controlled body token is only a lookup hint. Its issue
   // number says where the trusted marker must live; the exact run id still
   // has to be named by that marker before this tier can select it.
-  const runIdRe = /\brun-(?<number>[1-9][0-9]*)-(?<slug>[^\s`\]\)},]+)/g
+  const runIdRe = /\brun-(?<number>[1-9][0-9]*)-(?<slug>[A-Za-z0-9._-]+)/g
   const policyRunLines = body.match(/^[ \t]*(?:[-*][ \t]+)?run(?:[ \t]+(?:id|identity))?[ \t]*:[^\r\n]*$/gim) || []
   for (const line of [...declarationLines, ...policyRunLines]) {
     for (const match of line.matchAll(runIdRe)) {
@@ -439,10 +448,11 @@ function addIssueRuns(target, issueNumber, runIds) {
   }
 }
 
-function selectIssueTier(prNumber, tier, runs, sourceSuffix) {
+function selectIssueTier(prNumber, tier, runs, sourceSuffix, context) {
   if (runs.size > 1) {
     throw new IndeterminateError(
-      `${tier} for PR #${prNumber} carry trusted evidence for more than one run (${[...runs.keys()].sort().join(', ')}) — rerun with --run <run_id>`
+      `${tier} for PR #${prNumber} carry trusted evidence for more than one run (${[...runs.keys()].sort().join(', ')}) — rerun with --run <run_id>`,
+      context
     )
   }
   if (runs.size === 0) return null
@@ -484,7 +494,7 @@ function fetchHintRunIds(args, issueNumber, tier, trustedActorIds, untrusted, ma
     }
     throw new IndeterminateError(
       `${tier} issue #${issueNumber} could not be read reliably (${error.message}); rerun after GitHub recovers or use --run <run_id>`,
-      { ignoredHints }
+      { ignoredHints, untrusted, malformed }
     )
   }
 }
@@ -508,7 +518,8 @@ function discoverRun(args, trustedActorIds) {
   const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number, asOf), trustedActorIds, `PR #${pr.number}`, untrusted, malformed)].sort()
   if (fromPr.length > 1) {
     throw new IndeterminateError(
-      `PR #${pr.number} carries trusted evidence for more than one run (${fromPr.join(', ')}) — rerun with --run <run_id>`
+      `PR #${pr.number} carries trusted evidence for more than one run (${fromPr.join(', ')}) — rerun with --run <run_id>`,
+      { untrusted, malformed }
     )
   }
   // NOT reconstructed by --as-of, and the report says so. The linked-issue
@@ -558,7 +569,11 @@ function discoverRun(args, trustedActorIds) {
 
   const fromClosing = new Map()
   for (const issueNumber of closingNumbers) addIssueRuns(fromClosing, issueNumber, closingRuns.get(issueNumber))
-  const closingSelection = selectIssueTier(pr.number, 'the closing references', fromClosing, 'closing reference')
+  const closingSelection = selectIssueTier(pr.number, 'the closing references', fromClosing, 'closing reference', {
+    ignoredHints,
+    untrusted,
+    malformed
+  })
   if (closingSelection) {
     return { pr, ...closingSelection, untrusted, malformed, ignoredHints, unverifiedBodyRunIds: [] }
   }
@@ -566,11 +581,12 @@ function discoverRun(args, trustedActorIds) {
   const hintIssueNumbers = new Set([...nonClosingNumbers, ...bodyDiscovery.runTokens.values()])
   if (hintIssueNumbers.size > 10) {
     throw new IndeterminateError(
-      `PR #${pr.number} body carries ${hintIssueNumbers.size} unique non-closing/token issue hints; the discovery limit is 10 — rerun with --run <run_id>`
+      `PR #${pr.number} body carries ${hintIssueNumbers.size} unique non-closing/token issue hints; the discovery limit is 10 — rerun with --run <run_id>`,
+      { ignoredHints, untrusted, malformed }
     )
   }
 
-  const hintIssueRuns = new Map()
+  const hintIssueRuns = new Map(closingRuns)
   const fromNonClosing = new Map()
   for (const issueNumber of nonClosingNumbers) {
     const runIds = fetchHintRunIds(
@@ -589,7 +605,8 @@ function discoverRun(args, trustedActorIds) {
     pr.number,
     'the non-closing issue references',
     fromNonClosing,
-    'non-closing reference'
+    'non-closing reference',
+    { ignoredHints, untrusted, malformed }
   )
   if (nonClosingSelection) {
     return { pr, ...nonClosingSelection, untrusted, malformed, ignoredHints, unverifiedBodyRunIds: [] }
@@ -615,7 +632,8 @@ function discoverRun(args, trustedActorIds) {
     pr.number,
     'the authenticated PR-body run-id tokens',
     fromBodyTokens,
-    'PR-body run-id token'
+    'PR-body run-id token',
+    { ignoredHints, untrusted, malformed }
   )
   if (bodyTokenSelection) {
     return { pr, ...bodyTokenSelection, untrusted, malformed, ignoredHints, unverifiedBodyRunIds: [] }
@@ -626,7 +644,8 @@ function discoverRun(args, trustedActorIds) {
   })
   if (mismatchedBodyTokens.length > 0) {
     throw new IndeterminateError(
-      `PR #${pr.number} carries body run-id token(s) that do not match the trusted evidence on their named issues (${mismatchedBodyTokens.join('; ')}) — rerun with --run <run_id>`
+      `PR #${pr.number} carries body run-id token(s) that do not match the trusted evidence on their named issues (${mismatchedBodyTokens.join('; ')}) — rerun with --run <run_id>`,
+      { ignoredHints, untrusted, malformed }
     )
   }
   return {
@@ -1263,6 +1282,7 @@ function run(argv) {
       unverifiedBodyRunIds = discovered.unverifiedBodyRunIds
     } catch (error) {
       if (!(error instanceof IndeterminateError)) throw error
+      reportIgnoredMarkers(error.untrusted, error.malformed)
       reportIgnoredHints(error.ignoredHints)
       console.error(`${TOOL}: indeterminate — ${error.message}`)
       return 11

@@ -625,16 +625,13 @@ write_file "$d/body" "Refs https://github.com/o/r/pull/$ISSUE"
 write_file "$d/c1" "no marker"
 make_pr_json "$d/pr.json" "$d/body"
 set_comments "$d/comments" "$PR" "$d/c1"
-marker_file "$d/i1" evidence run-other-pr challenge pr -
-set_comments "$d/comments" "$ISSUE" "$d/i1"
-GH_PULL_REQUEST_ISSUE="$ISSUE" GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" \
-    GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 10 ] && contains "$ERR" "is a pull request, not an issue" &&
     ok "the full pull URL is disclosed as a PR hint" ||
     bad "full pull URL evidence selected a run, got $RC: $ERR"
-contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
-    bad "the full-URL PR's comments were read" || ok "the full-URL PR's comments were not read"
+contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE" &&
+    bad "the full pull URL caused a network lookup" || ok "the full pull URL caused no network lookup"
 
 echo "==> a foreign-repository full URL is disclosed and never consulted"
 d="$TMPROOT/full-url-foreign"
@@ -697,6 +694,26 @@ for example in 'quoted line' 'mid-line prose'; do
         bad "$example selected a run, got $RC: $ERR"
     contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
         bad "$example caused an issue lookup" || ok "$example issue was not queried"
+done
+
+echo "==> plus and ordered list markers qualify declaration lines"
+for list_marker in '+' '1.'; do
+    d="$TMPROOT/declaration-list-${list_marker//./dot}"
+    mkdir -p "$d"
+    make_gh "$d"
+    ISSUE_NUMBER="$ISSUE" make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+    make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+    write_file "$d/body" "$list_marker Refs #$ISSUE"
+    write_file "$d/c1" "no marker"
+    make_pr_json "$d/pr.json" "$d/body"
+    set_comments "$d/comments" "$PR" "$d/c1"
+    marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+    set_comments "$d/comments" "$ISSUE" "$d/i1"
+    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+    [ "$RC" -eq 0 ] && contains "$OUT" "evidence marker on issue #$ISSUE (non-closing reference)" &&
+        ok "$list_marker list declaration is discovered" ||
+        bad "$list_marker list declaration was ignored, got $RC: $ERR"
 done
 
 echo "==> a referenced pull request is disclosed and never read as issue evidence"
@@ -827,6 +844,25 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 [ "$RC" -eq 0 ] && contains "$OUT" "evidence marker on issue #$ISSUE (closing reference)" &&
     ok "the closing-reference tier wins" || bad "a lower discovery tier overrode closing evidence: $ERR"
 
+echo "==> a token-encoded closing issue is fetched and reported only once"
+d="$TMPROOT/closing-token-reuse"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "Run: run-$ISSUE-example"
+write_file "$d/c1" "no marker"
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-other kickoff issue -
+COMMENT_ACTOR=777 set_comments "$d/comments" "$ISSUE" "$d/i1"
+GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] &&
+    [ "$(printf '%s\n' "$ERR" | grep -c "ignoring an untrusted evidence marker naming run run-other on issue #$ISSUE")" -eq 1 ] &&
+    [ "$(printf '%s\n' "$(cat "$d/gh.log")" | grep -c "repos/o/r/issues/$ISSUE/comments")" -eq 1 ] &&
+    ok "closing results authenticate token hints without a second fetch or anomaly" ||
+    bad "the closing/token issue was fetched or reported more than once, got $RC: $ERR"
+
 echo "==> two non-closing issues naming different runs are indeterminate"
 d="$TMPROOT/ambiguous-nonclosing"
 mkdir -p "$d"
@@ -845,6 +881,26 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
 [ "$RC" -eq 11 ] && contains "$ERR" "run-one, run-two" &&
     ok "the selected non-closing tier refuses ambiguity" ||
     bad "expected non-closing ambiguity, got $RC: $ERR"
+
+echo "==> selected-tier ambiguity preserves earlier discovery disclosures"
+d="$TMPROOT/ambiguous-nonclosing-disclosure"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" $'Refs #999999\nRefs #664\nRefs #665'
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+marker_file "$d/i1" run-index run-one kickoff issue -
+marker_file "$d/i2" run-index run-two kickoff issue -
+set_comments "$d/comments" 664 "$d/i1"
+set_comments "$d/comments" 665 "$d/i2"
+GH_FAIL_ISSUE=999999 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "run-one, run-two" &&
+    contains "$ERR" "ignoring body discovery hint issue #999999" && contains "$ERR" "HTTP 404" &&
+    ok "ambiguity retains the accumulated ignored-hint disclosure" ||
+    bad "selected-tier ambiguity dropped discovery context, got $RC: $ERR"
 
 echo "==> every reference on one declaration line participates in ambiguity"
 d="$TMPROOT/ambiguous-nonclosing-one-line"
@@ -883,6 +939,27 @@ for run_id in run-6001-feature.v2 run-6001-feature_name run-6001-UPPER; do
         run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
     [ "$RC" -eq 0 ] && contains "$OUT" "run \`$run_id\`" &&
         ok "$run_id is compared as one exact token" || bad "$run_id was narrowed, got $RC: $ERR"
+done
+
+echo "==> body run tokens stop before semicolon and comma punctuation"
+for punctuation in ';' ','; do
+    d="$TMPROOT/token-punctuation-${punctuation//;/semicolon}"
+    mkdir -p "$d"
+    make_gh "$d"
+    RUN_ID_OVERRIDE=run-6001-feature ISSUE_NUMBER=6001 \
+        make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
+    make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
+    write_file "$d/body" "Run: run-6001-feature$punctuation"
+    write_file "$d/c1" "no marker"
+    make_pr_json "$d/pr.json" "$d/body"
+    set_comments "$d/comments" "$PR" "$d/c1"
+    marker_file "$d/i1" run-index run-6001-feature kickoff issue -
+    set_comments "$d/comments" 6001 "$d/i1"
+    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+    [ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-feature`' &&
+        ok "the run token stops before $punctuation" ||
+        bad "the run token swallowed $punctuation, got $RC: $ERR"
 done
 
 echo "==> a marker past the first page of comments is still found"
