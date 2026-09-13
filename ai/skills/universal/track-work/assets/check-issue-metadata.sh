@@ -99,6 +99,7 @@ while [ "$#" -gt 0 ]; do
             title_set=1
             ;;
         --previous-title)
+            [ -n "$2" ] || die "--previous-title requires a non-empty title argument"
             previous_title="$2"
             previous_title_set=1
             ;;

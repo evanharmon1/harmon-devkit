@@ -844,6 +844,13 @@ grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metad
 grep -q "proposed title is a truncated prefix of the previous title" "$tmp/metadata.out" ||
     fail "refusal must explain truncation: $(cat "$tmp/metadata.out")"
 
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only \
+    --title '(scope): Reject stale entries' \
+    --previous-title '')" = 2 ] ||
+    fail "empty --previous-title argument must be refused"
+grep -q -- "--previous-title requires a non-empty title argument" "$tmp/metadata.out" ||
+    fail "refusal must explain empty previous title: $(cat "$tmp/metadata.out")"
+
 echo "==> metadata: per-rule failure messages name the rule and code-point count (harmon-devkit#588)"
 [ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title 'Metadata is missing')" = 1 ] ||
     fail "missing scope prefix must fail"
@@ -863,6 +870,11 @@ grep -q "title is 35 code points" "$tmp/metadata.out" ||
     fail "parentheses in scope must fail"
 grep -q "scope contains parentheses" "$tmp/metadata.out" ||
     fail "failure must name parentheses in scope: $(cat "$tmp/metadata.out")"
+
+[ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title '(foo:bar(baz)): Repair metadata')" = 1 ] ||
+    fail "colon-bearing scope with parentheses must fail"
+grep -q "scope contains parentheses" "$tmp/metadata.out" ||
+    fail "failure must name parentheses in scope for colon-bearing scope: $(cat "$tmp/metadata.out")"
 
 [ "$(METADATA_RAW_TITLE=1 run_metadata --title-only --title '( scope): Repair metadata')" = 1 ] ||
     fail "surrounding whitespace in scope must fail"
