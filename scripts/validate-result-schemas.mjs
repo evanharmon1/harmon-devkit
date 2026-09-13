@@ -9,7 +9,7 @@
 // Usage:
 //   validate-result-schemas.mjs <kind> <file> [options]
 //
-//   kind: brief | envelope | implementer | challenger | reviewer | integrator | adjudication | run
+//   kind: brief | envelope | implementer | challenger | reviewer | integrator | adjudication | run | plan
 //   `brief` accepts rendered Markdown, extracts the fenced JSON fact block
 //   between the schema-bound-envelope delimiters, derives `body` from every
 //   byte outside that block, then validates brief.envelope.schema.json.
@@ -151,7 +151,7 @@ import { fileURLToPath } from 'node:url'
 import { createSchemaValidator } from './lib/json-schema-subset.mjs'
 
 const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'ai', 'schemas')
-const KINDS = ['brief', 'envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run']
+const KINDS = ['brief', 'envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run', 'plan']
 const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
 const SHA_PATTERN = /^[0-9a-f]{40}$/
 const BRIEF_BEGIN = '<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->'
@@ -167,7 +167,7 @@ const ISSUE_NUMBER_PATTERN = /^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[
 
 function usage() {
   console.error(
-    'usage: validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> ' +
+    'usage: validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
       '[--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>]'
@@ -2005,6 +2005,253 @@ function entryDigestForCheck(contentFields, prevDigest) {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
+// checkPlanRevisionChain — plan recomputation updates the current projection
+// and appends one immutable reason/timestamp entry. This mirrors run.json's
+// chain convention: zero-based contiguous seq, genesis first, exact retry
+// duplicates tolerated, forks rejected, and each digest authenticating the
+// entry's content plus prev_digest.
+function checkPlanRevisionChain(document, errors) {
+  const entries = document.revisions
+  if (!Array.isArray(entries)) return null
+  if (
+    !entries.every(
+      (entry) =>
+        entry &&
+        typeof entry === 'object' &&
+        typeof entry.seq === 'number' &&
+        typeof entry.digest === 'string' &&
+        typeof entry.prev_digest === 'string' &&
+        typeof entry.at === 'string' &&
+        typeof entry.reason === 'string'
+    )
+  ) {
+    return null
+  }
+
+  const bySeq = new Map()
+  for (const entry of entries) {
+    const group = bySeq.get(entry.seq) || []
+    group.push(entry)
+    bySeq.set(entry.seq, group)
+  }
+  const revisions = []
+  for (const [seq, group] of bySeq) {
+    const first = canonicalJsonForDigest(group[0])
+    if (!group.every((entry) => canonicalJsonForDigest(entry) === first)) {
+      errors.push(`$plan.revisions: two entries at seq ${seq} carry different content — forked chain`)
+      return null
+    }
+    revisions.push(group[0])
+  }
+  revisions.sort((a, b) => a.seq - b.seq)
+
+  let prevDigest = 'genesis'
+  for (let index = 0; index < revisions.length; index += 1) {
+    const entry = revisions[index]
+    if (entry.seq !== index) {
+      errors.push(`$plan.revisions: expected seq ${index}, got ${entry.seq} — chain not contiguous from 0`)
+      return null
+    }
+    if (entry.prev_digest !== prevDigest) {
+      errors.push(
+        `$plan.revisions[${entry.seq}].prev_digest: ${JSON.stringify(entry.prev_digest)} does not match the preceding entry's own digest (${JSON.stringify(prevDigest)}) — chain broken`
+      )
+      return null
+    }
+    const expected = entryDigestForCheck({ at: entry.at, reason: entry.reason }, prevDigest)
+    if (entry.digest !== expected) {
+      errors.push(`$plan.revisions[${entry.seq}].digest: does not match its own content — tampered`)
+      return null
+    }
+    prevDigest = entry.digest
+  }
+  return revisions
+}
+
+function duplicates(values) {
+  const seen = new Set()
+  return [...new Set(values.filter((value) => (seen.has(value) ? true : (seen.add(value), false))))]
+}
+
+// checkPlanCoherence — the schema closes each record; these checks close the
+// relationships between them so a structurally valid file is also a usable
+// dispatch plan rather than several disagreeing lists.
+function checkPlanCoherence(document, errors) {
+  const issues = Array.isArray(document.issues) ? document.issues : []
+  const overlaps = Array.isArray(document.overlaps) ? document.overlaps : []
+  const waves = Array.isArray(document.waves) ? document.waves : []
+  const lanes = Array.isArray(document.lanes) ? document.lanes : []
+  const expansions = Array.isArray(document.fence_expansions) ? document.fence_expansions : []
+
+  for (const number of duplicates(issues.map((issue) => issue.number))) {
+    errors.push(`$plan.issues: duplicate issue number ${number}`)
+  }
+  const issueByNumber = new Map(issues.map((issue) => [issue.number, issue]))
+  for (const [index, issue] of issues.entries()) {
+    for (const path of duplicates(issue.candidate_files || [])) {
+      errors.push(`$plan.issues[${index}].candidate_files: duplicate path ${JSON.stringify(path)}`)
+    }
+    for (const blocker of duplicates(issue.blocked_by || [])) {
+      errors.push(`$plan.issues[${index}].blocked_by: duplicate issue ${blocker}`)
+    }
+    for (const blocker of issue.blocked_by || []) {
+      if (!issueByNumber.has(blocker)) {
+        errors.push(`$plan.issues[${index}].blocked_by: unknown issue ${blocker}`)
+      } else if (blocker === issue.number) {
+        errors.push(`$plan.issues[${index}].blocked_by: issue cannot block itself`)
+      }
+    }
+  }
+
+  const expectedIssues = issues.filter((issue) => issue.verdict !== 'done').map((issue) => issue.number)
+  const waveNumbers = waves.map((wave) => wave.number)
+  for (const number of duplicates(waveNumbers)) errors.push(`$plan.waves: duplicate wave number ${number}`)
+  const sortedWaveNumbers = [...new Set(waveNumbers)].sort((a, b) => a - b)
+  sortedWaveNumbers.forEach((number, index) => {
+    if (number !== index + 1) errors.push(`$plan.waves: expected contiguous wave ${index + 1}, got ${number}`)
+  })
+  const waveByIssue = new Map()
+  for (const [index, wave] of waves.entries()) {
+    for (const issueNumber of duplicates(wave.issues || [])) {
+      errors.push(`$plan.waves[${index}].issues: duplicate issue ${issueNumber}`)
+    }
+    for (const issueNumber of wave.issues || []) {
+      const issue = issueByNumber.get(issueNumber)
+      if (!issue) errors.push(`$plan.waves[${index}].issues: unknown issue ${issueNumber}`)
+      else if (issue.verdict === 'done') errors.push(`$plan.waves[${index}].issues: done issue ${issueNumber} must not be dispatched`)
+      if (waveByIssue.has(issueNumber)) errors.push(`$plan.waves: issue ${issueNumber} appears in more than one wave`)
+      waveByIssue.set(issueNumber, wave.number)
+    }
+  }
+  for (const issueNumber of expectedIssues) {
+    if (!waveByIssue.has(issueNumber)) errors.push(`$plan.waves: dispatchable issue ${issueNumber} is not assigned to a wave`)
+  }
+
+  const laneNames = lanes.map((lane) => lane.lane)
+  const laneBranches = lanes.map((lane) => lane.branch)
+  const laneRuns = lanes.map((lane) => lane.run_id)
+  for (const name of duplicates(laneNames)) errors.push(`$plan.lanes: duplicate lane ${JSON.stringify(name)}`)
+  for (const branch of duplicates(laneBranches)) errors.push(`$plan.lanes: duplicate branch ${JSON.stringify(branch)}`)
+  for (const runId of duplicates(laneRuns)) errors.push(`$plan.lanes: duplicate run_id ${JSON.stringify(runId)}`)
+  const laneByIssue = new Map()
+  for (const [index, lane] of lanes.entries()) {
+    const issue = issueByNumber.get(lane.issue)
+    if (!issue) errors.push(`$plan.lanes[${index}].issue: unknown issue ${lane.issue}`)
+    else if (issue.verdict === 'done') errors.push(`$plan.lanes[${index}].issue: done issue ${lane.issue} must not have a lane`)
+    if (laneByIssue.has(lane.issue)) errors.push(`$plan.lanes: issue ${lane.issue} has more than one lane`)
+    laneByIssue.set(lane.issue, lane)
+    const plannedWave = waveByIssue.get(lane.issue)
+    if (plannedWave !== undefined && lane.wave !== plannedWave) {
+      errors.push(`$plan.lanes[${index}].wave: ${lane.wave} does not match issue ${lane.issue}'s wave ${plannedWave}`)
+    }
+  }
+  for (const issueNumber of expectedIssues) {
+    if (!laneByIssue.has(issueNumber)) errors.push(`$plan.lanes: dispatchable issue ${issueNumber} has no lane assignment`)
+  }
+  for (const [index, expansion] of expansions.entries()) {
+    if (!laneNames.includes(expansion.lane)) {
+      errors.push(`$plan.fence_expansions[${index}].lane: unknown lane ${JSON.stringify(expansion.lane)}`)
+    }
+  }
+  for (const key of duplicates(expansions.map((entry) => `${entry.lane}\u0000${entry.path}`))) {
+    const [lane, path] = key.split('\u0000')
+    errors.push(`$plan.fence_expansions: duplicate lane/path expansion ${JSON.stringify(lane)} ${JSON.stringify(path)}`)
+  }
+
+  const policyCap = document.policy?.breadth?.max_parallel_agents
+  const dispatcher = document.dispatcher
+  if (dispatcher && typeof policyCap === 'number') {
+    if (dispatcher.kind === 'interactive') {
+      if (dispatcher.foreman_max_parallel !== null) {
+        errors.push('$plan.dispatcher.foreman_max_parallel: must be null for the interactive dispatcher')
+      }
+      if (dispatcher.parallel_cap !== policyCap) {
+        errors.push(`$plan.dispatcher.parallel_cap: interactive dispatcher must use policy max_parallel_agents ${policyCap}`)
+      }
+    } else if (dispatcher.kind === 'foreman') {
+      if (typeof dispatcher.foreman_max_parallel !== 'number') {
+        errors.push('$plan.dispatcher.foreman_max_parallel: required for the Foreman dispatcher')
+      } else {
+        const expected = Math.min(policyCap, dispatcher.foreman_max_parallel)
+        if (dispatcher.parallel_cap !== expected) {
+          errors.push(`$plan.dispatcher.parallel_cap: Foreman dispatcher must use min(policy, Foreman) = ${expected}`)
+        }
+      }
+    }
+    for (const wave of waves) {
+      if ((wave.issues || []).length > dispatcher.parallel_cap) {
+        errors.push(`$plan.waves: wave ${wave.number} has ${(wave.issues || []).length} issues, exceeding dispatcher cap ${dispatcher.parallel_cap}`)
+      }
+    }
+  }
+
+  for (const issue of issues) {
+    const issueWave = waveByIssue.get(issue.number)
+    for (const blocker of issue.blocked_by || []) {
+      const blockerIssue = issueByNumber.get(blocker)
+      const blockerWave = waveByIssue.get(blocker)
+      if (issueWave !== undefined && blockerIssue?.verdict !== 'done' && blockerWave >= issueWave) {
+        errors.push(`$plan.issues: blocker ${blocker} must be in an earlier wave than issue ${issue.number}`)
+      }
+    }
+  }
+
+  const activeIssues = issues.filter((issue) => issue.verdict !== 'done')
+  const expectedOverlaps = new Map()
+  for (let left = 0; left < activeIssues.length; left += 1) {
+    for (let right = left + 1; right < activeIssues.length; right += 1) {
+      const issueA = activeIssues[left]
+      const issueB = activeIssues[right]
+      const rightPaths = new Set(issueB.candidate_files || [])
+      const shared = [...new Set((issueA.candidate_files || []).filter((path) => rightPaths.has(path)))].sort()
+      if (shared.length > 0) {
+        const pair = [issueA.number, issueB.number].sort((a, b) => a - b)
+        expectedOverlaps.set(pair.join(':'), shared)
+      }
+    }
+  }
+  const seenOverlapPairs = new Set()
+  for (const [index, overlap] of overlaps.entries()) {
+    const pair = [overlap.issue_a, overlap.issue_b].sort((a, b) => a - b)
+    const key = pair.join(':')
+    if (overlap.issue_a >= overlap.issue_b) errors.push(`$plan.overlaps[${index}]: issue_a must be less than issue_b`)
+    if (seenOverlapPairs.has(key)) errors.push(`$plan.overlaps: duplicate issue pair ${key}`)
+    seenOverlapPairs.add(key)
+    const expectedPaths = expectedOverlaps.get(key)
+    const actualPaths = [...new Set(overlap.paths || [])].sort()
+    if (!expectedPaths) errors.push(`$plan.overlaps[${index}]: pair ${key} has no candidate-file overlap`)
+    else if (canonicalJsonForDigest(actualPaths) !== canonicalJsonForDigest(expectedPaths)) {
+      errors.push(`$plan.overlaps[${index}].paths: must equal the pair's complete candidate-file intersection`)
+    }
+    const dependency = overlap.merge_dependency
+    if (dependency && !pair.includes(dependency.before)) {
+      errors.push(`$plan.overlaps[${index}].merge_dependency.before: must name one issue in pair ${key}`)
+    }
+    if (dependency && !pair.includes(dependency.after)) {
+      errors.push(`$plan.overlaps[${index}].merge_dependency.after: must name one issue in pair ${key}`)
+    }
+    if (dependency && dependency.before === dependency.after) {
+      errors.push(`$plan.overlaps[${index}].merge_dependency: before and after must differ`)
+    }
+    if (dependency && overlap.resolution === 'serialize') {
+      const beforeWave = waveByIssue.get(dependency.before)
+      const afterWave = waveByIssue.get(dependency.after)
+      if (beforeWave !== undefined && afterWave !== undefined && beforeWave >= afterWave) {
+        errors.push(`$plan.overlaps[${index}].merge_dependency: serialized pair must use increasing waves`)
+      }
+    }
+  }
+  for (const key of expectedOverlaps.keys()) {
+    if (!seenOverlapPairs.has(key)) errors.push(`$plan.overlaps: missing candidate-file overlap pair ${key}`)
+  }
+
+  const revisions = checkPlanRevisionChain(document, errors)
+  const latest = revisions?.at(-1)
+  if (latest && document.generated_at !== latest.at) {
+    errors.push(`$plan.generated_at: must equal the latest revision timestamp ${latest.at}`)
+  }
+}
+
 // Returns { evidence_registrations, pr_bindings, outcome_transitions },
 // each either the chain's own verified, deduped, seq-ordered entries or
 // `null` when that chain had ANY error (missing/wrong-shaped fields, a
@@ -2817,6 +3064,15 @@ function main() {
     const skipped = skippedContextFlags(kind, role, options)
     const suffix = skipped.length > 0 ? ` (context skipped: ${skipped.join(', ')})` : ''
     report(errors, `run record OK${suffix}`)
+    return
+  }
+
+  if (kind === 'plan') {
+    const schema = loadSchema('plan.schema.json')
+    const errors = validateAgainst(schema, instance, '$plan')
+    if (errors.length === 0) checkPlanCoherence(instance, errors)
+    checkTimestampRealness(instance, errors, '$plan')
+    report(errors, 'dispatch plan OK')
     return
   }
 

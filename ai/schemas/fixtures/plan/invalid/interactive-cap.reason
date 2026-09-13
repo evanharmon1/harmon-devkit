@@ -1,0 +1,1 @@
+$plan.dispatcher.parallel_cap: interactive dispatcher must use policy max_parallel_agents 4

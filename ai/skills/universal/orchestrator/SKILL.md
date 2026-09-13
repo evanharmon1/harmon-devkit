@@ -25,7 +25,61 @@ record ownership, scope, dependencies, and the complete file overlap.
 Before dispatching overlapping scopes, either serialize them or record the
 explicit merge dependency in both lane briefs.
 
+## Planning
+
+Before provisioning or dispatching a slate, turn its milestone or explicit
+issue list and the resolved policy into a durable plan at
+`<git-common-dir>/dev-flow-v2/slates/<slate-id>/plan.json`. Resolve the common
+Git directory with `git rev-parse --git-common-dir`; a linked worktree's `.git`
+path is a file and is never the shared-state root. Planning is orchestrator
+judgement written down, not a new autonomous planner: the schema, validator,
+and append-only recompute rule make its deterministic parts checkable.
+
+Build and publish the plan in this order:
+
+1. **Graph.** When `.foreman.toml` exists and the slate is milestone-backed,
+   consume `task foreman:plan -- --milestone <n>` for dependencies, waves, and
+   the ready set instead of reimplementing Foreman's graph. Otherwise read
+   native blocked-by edges and the fixed `Blocked by:` fallback lines from
+   `breakdown` §4. For an explicit issue list in a Foreman repository, include
+   its containing milestone in the graph input or stop if no authoritative
+   Foreman graph can cover the list.
+2. **Re-verify.** Check every ready issue read-only against the live target
+   tree. Record `valid`, `partial`, or `done` and a complete candidate-file
+   list; issue-body line numbers are hints, never evidence. Remove `done`
+   issues from dispatch waves without erasing their verified verdict.
+3. **Overlap.** Compare every pair of dispatchable candidate-file lists. Record
+   the complete shared-path intersection for each overlapping pair, choose
+   `serialize` or `split`, and record the resulting merge dependency. A split
+   also becomes the ownership fence in both lane briefs; an overlap absent
+   from the plan is not safe to dispatch.
+4. **Cap.** Record which dispatcher applies and the cap it actually uses. An
+   interactive orchestrator uses the resolved
+   `[breadth].max_parallel_agents` directly. Only when Foreman is the dispatcher
+   is that policy cap intersected with `.foreman.toml`'s `max_parallel`; a
+   configured Foreman limit never lowers an interactive run's cap.
+5. **Project.** Record the resolved policy snapshot; re-verified issues and
+   candidate files; pairwise overlaps and resolutions; waves; and lane, issue,
+   branch, run id, and fence assignments. Each lane fence uses exactly the
+   `brief.envelope.schema.json` `fence` item shape. Later authorized expansions
+   append `{lane, path, at, reason}` entries instead of rewriting the original
+   fence.
+6. **Emit and validate.** Write the closed record and validate it with
+   `node scripts/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
+   on a structural error, a broken revision digest, an incomplete overlap set,
+   a graph/projection mismatch, or a cap violation.
+7. **Recompute after every external merge.** Re-read the new default-branch
+   head, release newly unblocked dependents, rebuild waves, and repeat live
+   re-verification and pairwise overlap checks. Update the current projection
+   and append the next `revisions[]` entry (`seq`, `prev_digest`, `digest`,
+   `at`, `reason`) using the same canonical-JSON SHA-256 chain convention as
+   `run.schema.json`; never replace revision history. Revalidate before the
+   next dispatch or merge-queue mutation.
+
 ## Lane briefs
+
+Lane briefs consume the validated plan's assignments, fences, overlap choices,
+and merge dependencies rather than reconstructing them from session prose.
 
 The source catalog below is the complete render contract. It deliberately lives
 in this procedure rather than in the dispatched template: substituting free-form

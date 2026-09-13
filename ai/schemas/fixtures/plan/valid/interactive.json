@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "slate_id": "milestone-8",
+  "generated_at": "2026-09-13T17:00:00Z",
+  "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
+  "policy": {
+    "rigor": "deep",
+    "rigor_source": "explicit operator input",
+    "caps": { "challenge": 5, "review": 5, "integration": 6, "remediation": 6, "min_rounds": 1, "wall_clock_min": 480 },
+    "breadth": { "max_agent_runs": 20, "max_parallel_agents": 4 },
+    "strategy": "plan",
+    "strategy_source": "default_strategy",
+    "role_tiers": { "orchestrator": "apex", "implementer": "frontier", "challenger": "apex", "reviewer": "frontier", "integrator": "economy" },
+    "operator_pins": ["Implementer: Codex CLI gpt-5.6-sol @ medium"]
+  },
+  "dispatcher": { "kind": "interactive", "parallel_cap": 4, "foreman_max_parallel": null },
+  "issues": [
+    { "number": 935, "title": "Add planning", "url": "https://github.com/example/repo/issues/935", "verdict": "valid", "candidate_files": ["orchestrator/SKILL.md", "plan.schema.json"], "blocked_by": [] },
+    { "number": 936, "title": "Add fences", "url": "https://github.com/example/repo/issues/936", "verdict": "partial", "candidate_files": ["orchestrator/SKILL.md", "lane-brief.md"], "blocked_by": [935] },
+    { "number": 937, "title": "Already delivered", "url": "https://github.com/example/repo/issues/937", "verdict": "done", "candidate_files": [], "blocked_by": [] }
+  ],
+  "overlaps": [
+    { "issue_a": 935, "issue_b": 936, "paths": ["orchestrator/SKILL.md"], "resolution": "serialize", "merge_dependency": { "before": 935, "after": 936 } }
+  ],
+  "waves": [
+    { "number": 1, "issues": [935] },
+    { "number": 2, "issues": [936] }
+  ],
+  "lanes": [
+    { "lane": "planning", "issue": 935, "wave": 1, "branch": "935-plan", "run_id": "run-935-plan", "fence": [{ "path": "orchestrator/SKILL.md", "note": "Planning section only" }] },
+    { "lane": "fences", "issue": 936, "wave": 2, "branch": "936-fences", "run_id": "run-936-fences", "fence": ["lane-brief.md"] }
+  ],
+  "fence_expansions": [
+    { "lane": "planning", "path": "scripts/test-skills.sh", "at": "2026-09-13T16:59:00Z", "reason": "prose validator rejected the new contract" }
+  ],
+  "revisions": [
+    { "seq": 0, "prev_digest": "genesis", "digest": "f6caa51f39fe852ac3e91389e2da099861d19be1bbe3d0022e4c7043cad6459f", "at": "2026-09-13T17:00:00Z", "reason": "initial slate plan" }
+  ]
+}

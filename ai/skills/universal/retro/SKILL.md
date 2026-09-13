@@ -129,6 +129,12 @@ is how tampered evidence would read as an ordinary memory-based retro.
 Paste the helper's output verbatim. Its sections are fixed, in this order, so
 two retros of two different runs are comparable line for line:
 
+When the run's slate has a `plan.json`, read its validated revision and include
+planned versus actual waves and interventions for each lane in the report;
+name assignments that moved, serialization or fence decisions that changed,
+and the recorded reason rather than reconstructing the original plan from lane
+briefs or memory.
+
 1. `## Run evidence` — run id, issue, PR, who initiated it, outcome, promotion,
    and where the run id was discovered.
 2. `### Policy the PR discloses (unverified)` — the resolved rigor line read

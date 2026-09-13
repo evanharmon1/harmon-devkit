@@ -235,6 +235,11 @@ judgment. The bar, concretely:
   `file:line` in the early drafts has had months to rot, so the Verify block
   is more load-bearing here than on a file-it-today issue.
 
+Each authored issue also carries a `## Surface` section listing the paths or
+areas it is expected to touch. Keep the list complete enough for dispatch-time
+pairwise overlap analysis while treating it as a starting hypothesis: the
+orchestrator re-verifies it against live code before assigning a lane.
+
 **Duplicate-search before filing each issue** (`track-work` §3): search the
 repo the issue is going into — `--state all --limit 200`, the invariant's
 vocabulary — plus the open-PR check for each file the chunk is about. A lump
