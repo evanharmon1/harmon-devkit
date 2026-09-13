@@ -209,6 +209,12 @@ expect_ok "breakdown unattended draft handoffs are durably retrievable" \
 expect_ok "breakdown unattended filings reuse a stable proposal identity" \
     grep -qF 'reuse the same filing after a' \
     "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "breakdown unattended handoffs preserve ephemeral prose sources" \
+    grep -qF 'preserves the complete original source when that source was' \
+    "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "breakdown resumed proposals refresh duplicate and open-PR searches" \
+    grep -qF "repeats §5's duplicate-issue and open-PR searches" \
+    "$repo/ai/skills/universal/breakdown/SKILL.md"
 expect_ok "the skills README locates breakdown consent in section 6" \
     grep -qF 'approval gate in §6, not by who' \
     "$repo/ai/skills/README.md"

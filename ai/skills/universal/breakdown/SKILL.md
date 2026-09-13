@@ -296,12 +296,17 @@ one stable proposal identity and retain it in the run's handoff state; use that
 identity in the comment marker or draft path, and reuse the same filing after a
 retry rather than creating a competing proposal. The handoff records the
 comment URL or the draft's exact repository, path, and branch or commit
-reference. If no authorized durable destination is available, the identity
-cannot be retained, or the filing fails, stop with that blocker rather than
-claiming the proposal was filed. The run must not enter §7 or perform any of
-the proposed writes. A later interactive session re-reads the source and filed
-proposal, presents it to the human, and obtains the human-turn approval above
-before execution.
+reference. It also preserves the complete original source when that source was
+supplied as prose, or an immutable source reference when one exists, so the
+later session can re-read the source without reconstructing it from the
+proposal. If no authorized durable destination is available, the identity or
+source cannot be retained, or the filing fails, stop with that blocker rather
+than claiming the proposal was filed. The run must not enter §7 or perform any
+of the proposed writes. A later interactive session re-reads the source and
+filed proposal, repeats §5's duplicate-issue and open-PR searches against the
+current target state, incorporates any changed results, re-presents any
+structurally changed proposal, and obtains the human-turn approval above before
+execution.
 
 ## 7. Execute the writes
 
