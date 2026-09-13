@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.45.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.44.0...v0.45.0) (2026-09-13)
+
+
+### Features
+
+* **backend:** vendor official Convex agent skills from get-convex ([#943](https://github.com/evanharmon1/harmon-devkit/issues/943)) ([ec246e2](https://github.com/evanharmon1/harmon-devkit/commit/ec246e24016e3bc8d561e1e1caadc9a63cb29a0f))
+* **integrate:** drive a cloud cycle per configured PR-side finder ([#804](https://github.com/evanharmon1/harmon-devkit/issues/804)) ([#946](https://github.com/evanharmon1/harmon-devkit/issues/946)) ([9f61ff4](https://github.com/evanharmon1/harmon-devkit/commit/9f61ff49f23d53e00bd59fb311b670dc485f79df))
+* **orchestrator:** ship policy-bound lane brief template ([#954](https://github.com/evanharmon1/harmon-devkit/issues/954)) ([008138e](https://github.com/evanharmon1/harmon-devkit/commit/008138e4a9b9a3f2322fde01bb813c015612f978))
+* **skills:** make breakdown model-invocable ([#945](https://github.com/evanharmon1/harmon-devkit/issues/945)) ([f0aade7](https://github.com/evanharmon1/harmon-devkit/commit/f0aade7e671d40d36c1f0f0003fb88928932407b))
+
+
+### Bug Fixes
+
+* **agent-registry:** refresh model inventory ([#947](https://github.com/evanharmon1/harmon-devkit/issues/947)) ([878a08b](https://github.com/evanharmon1/harmon-devkit/commit/878a08bfcbcda2d55e4b86948f29b9a2482e31f6))
+
 ## [0.44.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.43.0...v0.44.0) (2026-09-13)
 
 
