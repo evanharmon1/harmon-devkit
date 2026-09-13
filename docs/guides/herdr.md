@@ -210,6 +210,12 @@ belongs in a separate user, container, or VM, not a sibling pane.
    effects (GitHub writes, deploys) is at-least-once delivery. Re-send only
    when the pane shows the prompt never landed; make briefs idempotent where
    you can.
+   For Dev flow lanes, render the orchestrator skill's
+   `assets/lane-brief.md` input contract instead of composing this prompt
+   ad hoc. Select its harness-specific procedure, require zero unreplaced
+   placeholders, and keep sentinel values only in the rendered reporting
+   section; later steering refers to that contract indirectly so it cannot
+   replay a completion signal.
 4. **Wait** — `agent wait <name> --timeout <ms>` per worker (background it;
    rounds run minutes), or `pane wait-output --match <sentinel> --timeout
    <ms>` where detection is weak. Always bound the wait: a worker whose
