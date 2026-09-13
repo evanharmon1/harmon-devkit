@@ -27,7 +27,7 @@
     {
       "stage": "challenge",
       "entered_at": "2026-09-13T12:04:00Z",
-      "exit": "empty_round: converged after round 1"
+      "exit": "converged: empty_round after round 1"
     },
     {
       "stage": "review",

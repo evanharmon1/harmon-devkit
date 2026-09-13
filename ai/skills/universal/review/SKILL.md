@@ -310,8 +310,9 @@ Without that recorded upward override, an `action: advance` result is the sole
 authority to advance the run record. Re-read `run.json` and require its last
 transition to name the current stage and have no `exit`; otherwise stop as a
 stale or duplicate write. Close the current transition by setting its `exit` to
-`"<rule>: <detail>"`, where the rule is the verdict's exit reason and the detail
-names the outcome and qualifying round or disabled-stage fact. Then
+`"<rule>: <detail>"`, where the rule is the verdict outcome and therefore starts
+with one of `continue`, `converged`, `diverging`, or `capped`; the detail names
+the verdict's exit reason and qualifying round. Then
 append exactly `{"stage":"<next>","entered_at":"<UTC timestamp>"}`. Never
 append `{from,to,at,reason}`: those are verdict concepts, not the run schema's
 transition shape. Write the close and append to a complete candidate beside
@@ -320,13 +321,7 @@ depends on, then atomically rename it over `run.json` only after validation
 passes. Validate the canonical readback as required above before publishing
 evidence or entering the next stage.
 
-The next stage is `review` after a terminal `challenge`. When the resolved
-review cap is `0`, append no `review` transition. With `challenge` still
-current, compute the review disabled-stage verdict and require its authenticated
-result to say `action: advance`; any other result blocks. That verdict
-authorizes one candidate update: close `challenge` with
-`exit: "disabled: review cap 0; challenge <rule>: <detail>"`, then append
-`{"stage":"security","entered_at":"<UTC timestamp>"}` directly. The exit
-text names the disabled-stage verdict. Validate the candidate before the atomic
-rename as required above. A terminal non-disabled `review` enters `security`.
+This advance recipe covers stages whose resolved cap is at least `1`. The next
+stage is `review` after a terminal `challenge`; a terminal `review` enters
+`security`. A cap-zero advance is outside this recipe and tracked in #957.
 Deferred P2s remain recorded for integration.

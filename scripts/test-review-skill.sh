@@ -94,10 +94,11 @@ for text in 'Before replacing `run.json`, write the complete candidate beside it
     'scripts/validate-result-schemas.mjs run <run.json>' \
     'Close the current transition by setting its `exit` to' \
     '`"<rule>: <detail>"`' \
+    'therefore starts' \
+    'with one of `continue`, `converged`, `diverging`, or `capped`' \
     'append exactly `{"stage":"<next>","entered_at":"<UTC timestamp>"}`' \
     'append `{from,to,at,reason}`' \
-    'review cap is `0`, append no `review` transition' \
-    '`{"stage":"security","entered_at":"<UTC timestamp>"}` directly'; do
+    'resolved cap is at least `1`'; do
     grep -Fq "$text" "$skill" || fail "review stage-advance recipe is missing: $text"
 done
 advance_fixture="ai/schemas/fixtures/run.schema/valid/empty-round-challenge-to-review.json"
@@ -107,7 +108,7 @@ jq -e '
     .stage_transitions[-2] == {
       stage: "challenge",
       entered_at: "2026-09-13T12:04:00Z",
-      exit: "empty_round: converged after round 1"
+      exit: "converged: empty_round after round 1"
     } and
     .stage_transitions[-1] == {
       stage: "review",
@@ -115,15 +116,6 @@ jq -e '
     } and
     ([.stage_transitions[] | has("from") or has("to") or has("at") or has("reason")] | any | not)
 ' "$advance_fixture" >/dev/null || fail "empty-round advance fixture does not pin the writer shape"
-
-disabled_review_fixture="ai/schemas/fixtures/run.schema/valid/disabled-review-challenge-to-security.json"
-node scripts/validate-result-schemas.mjs run "$disabled_review_fixture" ||
-    fail "disabled-review challenge-to-security transition fixture is invalid"
-grep -Fq '"stage": "security"' "$disabled_review_fixture" ||
-    fail "disabled-review fixture does not enter security"
-if grep -Fq '"stage": "review"' "$disabled_review_fixture"; then
-    fail "disabled-review fixture incorrectly records a review transition"
-fi
 
 grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"
