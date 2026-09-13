@@ -50,6 +50,11 @@ cp "$repo/agent-registry.json" "$work/"
 printf 'initial\n' >"$work/src/app.txt"
 git -C "$work" add -A
 git -C "$work" commit -qm 'test: fixture base'
+# The runner sources this host-side orchestration helper before constructing
+# the reviewed snapshot. Keep it out of the root-commit payload fixture below,
+# whose deliberately broad diff already sits near the CLI's argv ceiling.
+printf '%s\n' 'scripts/lib/review-prior-findings.sh' >>"$work/.git/info/exclude"
+cp "$repo/scripts/lib/review-prior-findings.sh" "$work/scripts/lib/"
 printf 'changed\n' >"$work/src/app.txt"
 
 run_in_work() {
@@ -70,6 +75,8 @@ grep -Fq 'src/app.txt' <<<"$out" ||
     fail "the authoritative manifest was not rendered"
 grep -Fq 'The change itself:' <<<"$out" ||
     fail "the change was not embedded for a finder that is given the diff"
+grep -Fq 'BEGIN UNTRUSTED REPOSITORY DIFF' <<<"$out" ||
+    fail "the embedded repository diff lacked an explicit prompt-injection boundary"
 
 echo "==> the review mode renders the verification instruction, not the adversarial one"
 out="$(run_in_work env FINDER_REVIEW_DRY_RUN=1 ./scripts/finder-review.sh review copilot --uncommitted 2>/dev/null)"

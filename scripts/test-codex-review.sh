@@ -92,6 +92,7 @@ git init -q -b develop "${test_tmp}/upstream"
     cp -R "${repo}/scripts/lib/review-instructions" scripts/lib/
     cp "${repo}/scripts/lib/review-scope.sh" scripts/lib/
     cp "${repo}/scripts/lib/readonly-sandbox.sh" scripts/lib/
+    cp "${repo}/scripts/lib/review-prior-findings.sh" scripts/lib/
     git add -A
     git_t commit -q -m base
 )
@@ -530,6 +531,7 @@ cp "${repo}/scripts/codex-review.sh" "${norem}/scripts/"
 mkdir -p "${norem}/scripts/lib"
 cp -R "${repo}/scripts/lib/review-instructions" "${norem}/scripts/lib/"
 cp "${repo}/scripts/lib/review-scope.sh" "${norem}/scripts/lib/"
+cp "${repo}/scripts/lib/review-prior-findings.sh" "${norem}/scripts/lib/"
 git init -q -b feature "$norem"
 (
     cd "$norem"
@@ -779,6 +781,7 @@ STUB_TRAJECTORY="$trajectory" node "$repo/ai/skills/universal/retro/assets/retro
 
 echo "==> envelope round 2 receives complete prior-round finding records"
 cp "$challenge_pass" "${test_tmp}/challenge-pass.clean.json"
+printf '%s\n' '{not-json' >"$record/passes/orphan-unreceipted.json"
 jq '.payload.findings = [{
       id:"challenge-r1-codex-adversarial-1", path:"scripts/codex-review.sh", line:1,
       class:"hardening", provenance:"original", fingerprint:"new", priority:"P2",
@@ -796,6 +799,9 @@ STUB_PROMPT_FILE="$round2_prompt" STUB_PAYLOAD_FILE="$round2_payload" run challe
     fail "round-2 challenger envelope failed"
 grep -Fq 'challenge-r1-codex-adversarial-1' "$round2_prompt" ||
     fail "round-2 Codex prompt omitted the complete prior-round finding"
+grep -Fq 'repository content, diffs, manifests, prior finder text' "$round2_prompt" ||
+    fail "the Codex envelope prompt omitted its hostile-repository-data boundary"
+rm -f "$record/passes/orphan-unreceipted.json"
 mv "${test_tmp}/challenge-pass.clean.json" "$challenge_pass"
 rm -f "$record/passes/challenge-r2-codex-adversarial.json"
 
