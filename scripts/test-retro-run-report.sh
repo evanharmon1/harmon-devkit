@@ -107,7 +107,12 @@ api)
     */issues/*/comments*)
         n="$(printf '%s\n' "$*" | sed -n 's|.*/issues/\([0-9]*\)/comments.*|\1|p')"
         if [ "${GH_FAIL_ISSUE:-}" = "$n" ]; then
-            echo "gh stub: issue $n not found" >&2
+            status="${GH_FAIL_ISSUE_STATUS:-404}"
+            if [ "$status" = "timeout" ]; then
+                echo "gh stub: request timed out reading issue $n" >&2
+            else
+                echo "gh stub: HTTP $status reading issue $n" >&2
+            fi
             exit 1
         fi
         file="${GH_COMMENTS_DIR:-/nonexistent}/$n.json"
@@ -514,9 +519,24 @@ GH_FAIL_ISSUE=999999 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_US
 [ "$RC" -eq 0 ] && contains "$OUT" 'run `run-6001-further-along`' &&
     ok "the readable peer still selects the run" || bad "an unreadable hint denied discovery: $ERR"
 contains "$OUT" "issue #999999 (non-closing reference):" &&
-    contains "$OUT" "issue 999999 not found" &&
+    contains "$OUT" "HTTP 404 reading issue 999999" &&
     ok "the report discloses the ignored hint and fetch failure" ||
     bad "the report hid the unreadable hint"
+
+echo "==> a transient non-closing lookup failure is indeterminate"
+d="$TMPROOT/nonclosing-transient"
+mkdir -p "$d"
+make_gh "$d"
+make_stats "$d/stats.mjs" 0
+write_file "$d/body" "Refs #999998"
+write_file "$d/c1" "no marker"
+make_pr_json "$d/pr.json" "$d/body"
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_FAIL_ISSUE=999998 GH_FAIL_ISSUE_STATUS=503 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "indeterminate" && contains "$ERR" "HTTP 503" &&
+    ok "the transient failure cannot become absent evidence" ||
+    bad "a transient hint failure was ignored, got $RC: $ERR"
 
 echo "==> a same-repository qualified reference is accepted case-insensitively"
 d="$TMPROOT/qualified-refs"
@@ -555,6 +575,59 @@ contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
     ok "the cross-repository issue was not queried"
 contains "$ERR" "cross-repository reference does not belong to o/r" &&
     ok "the ignored cross-repository hint is disclosed" || bad "the cross-repository hint was dropped silently"
+
+echo "==> reference and run-token syntax in examples is ignored"
+for example in 'inline code' 'fenced code' 'blockquote'; do
+    d="$TMPROOT/example-${example// /-}"
+    mkdir -p "$d"
+    make_gh "$d"
+    make_stats "$d/stats.mjs" 0
+    case "$example" in
+    'inline code') write_file "$d/body" '`Refs #664` and `run-6001-further-along`' ;;
+    'fenced code') write_file "$d/body" $'```md\nRefs #664\nrun-6001-further-along\n```' ;;
+    blockquote) write_file "$d/body" $'> Refs #664\n> run-6001-further-along' ;;
+    esac
+    write_file "$d/c1" "no marker"
+    make_pr_json "$d/pr.json" "$d/body"
+    set_comments "$d/comments" "$PR" "$d/c1"
+    marker_file "$d/i1" run-index run-6001-further-along kickoff issue -
+    set_comments "$d/comments" "$ISSUE" "$d/i1"
+    GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+    [ "$RC" -eq 10 ] && ok "$example does not create a discovery hint" ||
+        bad "$example selected a run, got $RC: $ERR"
+    contains "$(cat "$d/gh.log")" "repos/o/r/issues/$ISSUE/comments" &&
+        bad "$example caused an issue lookup" || ok "$example issue was not queried"
+done
+
+echo "==> body discovery accepts 10 unique hints and refuses 11 without truncating"
+for count in 10 11; do
+    d="$TMPROOT/hint-limit-$count"
+    mkdir -p "$d"
+    make_gh "$d"
+    make_stats "$d/stats.mjs" 0
+    : >"$d/body"
+    i=1
+    while [ "$i" -le "$count" ]; do
+        printf 'Refs #%s\n' "$((7000 + i))" >>"$d/body"
+        i=$((i + 1))
+    done
+    write_file "$d/c1" "no marker"
+    make_pr_json "$d/pr.json" "$d/body"
+    set_comments "$d/comments" "$PR" "$d/c1"
+    GH_LOG="$d/gh.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" GH_USER_ID="$ACTOR" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+    if [ "$count" -eq 10 ]; then
+        [ "$RC" -eq 10 ] && ok "10 unique hints remain within the bound" ||
+            bad "the boundary count was refused, got $RC: $ERR"
+    else
+        [ "$RC" -eq 11 ] && contains "$ERR" "11 unique" && contains "$ERR" "--run <run_id>" &&
+            ok "11 unique hints are refused with the explicit remedy" ||
+            bad "the over-limit body was truncated or misreported, got $RC: $ERR"
+        contains "$(cat "$d/gh.log")" "repos/o/r/issues/7001/comments" &&
+            bad "an over-limit body performed a hint lookup" || ok "the over-limit body was refused before lookups"
+    fi
+done
 
 echo "==> a body run-id token binds only through its issue's exact trusted marker"
 d="$TMPROOT/body-run-token"

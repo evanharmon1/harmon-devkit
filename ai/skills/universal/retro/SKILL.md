@@ -59,9 +59,13 @@ same-repository issues named in the PR body by `Refs`, `Addresses`, or `Part
 of`, and finally a `run-<issue>-<slug>` body token only when the PR or issue
 `<issue>` carries a trusted marker naming that exact run. More than one run on
 the selected tier is indeterminate, and a lower tier never overrides a run
-selected above it. References come from the PR body, never its comments; both
-the closing-reference set and these body-derived lookup inputs are mutable
-current state that `--as-of` cannot reconstruct.
+selected above it. References come from declarative PR-body text, never its
+comments, quoted examples, blockquotes, inline code, or fenced code; at most 10
+unique non-closing/token issue hints are read, with a larger set refused rather
+than truncated. A missing/deleted hint is disclosed and ignored, while a
+transient lookup failure is indeterminate. Both the closing-reference set and
+these body-derived lookup inputs are mutable current state that `--as-of` cannot
+reconstruct.
 
 **Run the projection rather than reading the trajectory by hand.** It resolves
 the run id, calls the harvester (`scripts/dev-flow-stats.mjs --run <id> --json`,

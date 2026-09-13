@@ -382,17 +382,38 @@ function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
   return found
 }
 
+function stripBodyExamples(body) {
+  const kept = []
+  let fence = null
+  for (const line of body.split('\n')) {
+    const delimiter = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line)
+    if (fence) {
+      if (delimiter && delimiter[1][0] === fence.char && delimiter[1].length >= fence.length) fence = null
+      continue
+    }
+    if (delimiter) {
+      fence = { char: delimiter[1][0], length: delimiter[1].length }
+      continue
+    }
+    if (/^[ \t]{0,3}>/.test(line)) continue
+    kept.push(line.replace(/`+[^`\n]*`+/g, ''))
+  }
+  return kept.join('\n')
+}
+
 function parseBodyDiscovery(body, repo) {
   const issueNumbers = new Set()
   const runTokens = new Map()
   const ignoredHints = []
   if (typeof body !== 'string') return { issueNumbers, runTokens, ignoredHints }
 
+  const discoveryText = stripBodyExamples(body)
+
   // These are the non-closing reference forms the track-work contract emits.
   // An explicit owner/repo prefix is accepted only for this repository: a PR
   // cannot authenticate a run by reaching sideways into another tracker.
   const referenceRe = /\b(?:refs|addresses|part[ \t]+of)[ \t]+(?:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)(?<number>[1-9][0-9]*)\b/gi
-  for (const match of body.matchAll(referenceRe)) {
+  for (const match of discoveryText.matchAll(referenceRe)) {
     if (!match.groups.repo || match.groups.repo.toLowerCase() === repo.toLowerCase()) {
       issueNumbers.add(Number(match.groups.number))
     } else {
@@ -408,7 +429,7 @@ function parseBodyDiscovery(body, repo) {
   // number says where the trusted marker must live; the exact run id still
   // has to be named by that marker before this tier can select it.
   const runIdRe = /\brun-(?<number>[1-9][0-9]*)-(?<slug>[a-z0-9][a-z0-9-]*)\b/g
-  for (const match of body.matchAll(runIdRe)) {
+  for (const match of discoveryText.matchAll(runIdRe)) {
     const runId = match[0]
     runTokens.set(runId, Number(match.groups.number))
   }
@@ -446,12 +467,20 @@ function fetchHintRunIds(args, issueNumber, tier, trustedActorIds, untrusted, ma
     )
   } catch (error) {
     if (!(error instanceof OperationalError)) throw error
-    ignoredHints.push({
-      hint: `issue #${issueNumber}`,
-      tier,
-      reason: error.message
-    })
-    return new Set()
+    // Challenge round 2 restructures the round-1 catch-all to the invariant:
+    // only a durable, unusable hint can be ignored. A transient failure leaves
+    // discovery retry-dependent and therefore cannot be treated as absence.
+    if (/\bHTTP (?:404|410)\b/i.test(error.message)) {
+      ignoredHints.push({
+        hint: `issue #${issueNumber}`,
+        tier,
+        reason: error.message
+      })
+      return new Set()
+    }
+    throw new IndeterminateError(
+      `${tier} issue #${issueNumber} could not be read reliably (${error.message}); rerun after GitHub recovers or use --run <run_id>`
+    )
   }
 }
 
@@ -527,6 +556,13 @@ function discoverRun(args, trustedActorIds) {
   const closingSelection = selectIssueTier(pr.number, 'the closing references', fromClosing, 'closing reference')
   if (closingSelection) {
     return { pr, ...closingSelection, untrusted, malformed, ignoredHints, unverifiedBodyRunIds: [] }
+  }
+
+  const hintIssueNumbers = new Set([...nonClosingNumbers, ...bodyDiscovery.runTokens.values()])
+  if (hintIssueNumbers.size > 10) {
+    throw new IndeterminateError(
+      `PR #${pr.number} body carries ${hintIssueNumbers.size} unique non-closing/token issue hints; the discovery limit is 10 — rerun with --run <run_id>`
+    )
   }
 
   const hintIssueRuns = new Map()
