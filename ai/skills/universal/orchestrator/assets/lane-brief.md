@@ -123,6 +123,12 @@ Select the subsection matching `{{harness}}`; the variants are procedures, not
 different brief formats. Read `AGENTS.md` first. It is the policy and the
 vendored stage skills are procedures beneath it.
 
+This lane's branch and worktree were provisioned before dispatch. Override
+`/implement` step 3: do not fetch-and-switch or create a branch. Verify that
+`git branch --show-current` is exactly `{{branch}}`, that the worktree root is
+exactly `{{worktree-path}}`, and that the recorded base is `{{base-sha}}`; report
+BLOCKED on any mismatch. Continue with the provisioned branch and worktree.
+
 ### Claude Code (Skill tool)
 
 Invoke `/implement {{issue-number}}` with the Skill tool through draft-PR
@@ -162,10 +168,13 @@ findings before draft publication, append a decision request to
 `{{report-path}}` with the stage, round, finding IDs, reviewer priorities,
 evidence, and proposed classifications; then wait. The supervising orchestrator
 records the authoritative dispositions in the run record (or, for the inline
-fallback, in the report) and explicitly delegates any fixes. Apply only those
-delegated fixes, run the required gates, and return the resulting evidence to
-the same confidence procedure. Do not infer a disposition from silence or
-advance the stage before the orchestrator-authored decision is durable.
+fallback, in the report). When a confirmed finding requires a code change, keep
+waiting while the orchestrator follows `/review`: it reserves the bounded agent
+run and dispatches a fresh implementer, which commits and pushes through the
+round broker. Resume only from the resulting durable stage evidence. Do not
+apply the fix in this lane worker. Do not infer a disposition from silence or
+advance the stage before the orchestrator-authored decision and remediation
+evidence are durable.
 
 ## Long-running gate invocations
 

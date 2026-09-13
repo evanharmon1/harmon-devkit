@@ -146,6 +146,23 @@ grep -Fq 'Do not infer a disposition from silence' "$rendered_file" ||
     fail "confidence-stage decision wait is not fail-closed"
 grep -Fq 'never adjudicates integration findings' "$rendered_file" ||
     fail "integration-only adjudication boundary is missing"
+grep -Fq 'This lane'"'"'s branch and worktree were provisioned before dispatch. Override' \
+    "$rendered_file" ||
+    fail "pre-created lane branch does not override implement branch creation"
+grep -Fq '`/implement` step 3: do not fetch-and-switch or create a branch' \
+    "$rendered_file" ||
+    fail "provisioned lane worktree is not retained"
+grep -Fq 'dispatches a fresh implementer' "$rendered_file" ||
+    fail "confidence remediation does not preserve fresh implementer dispatch"
+grep -Fq 'apply the fix in this lane worker.' "$rendered_file" ||
+    fail "confidence remediation can fall back to the existing lane worker"
+
+grep -Fq 'every end-to-end, PR-owning implementation lane' \
+    ai/skills/universal/orchestrator/SKILL.md ||
+    fail "lane template is not scoped to PR-owning dispatches"
+grep -Fq 'bounded remediation implementers, use their schema-bound role briefs' \
+    ai/skills/universal/orchestrator/SKILL.md ||
+    fail "non-PR implementer dispatches can receive the lane template"
 
 for sentinel in \
     LANE-FIXTURE-READY-a1b2c3 \

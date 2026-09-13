@@ -39,17 +39,22 @@ which produces no run record and no adjudication evidence.
 
 Before draft publication, a confidence-stage finding uses the template's
 decision handshake: the lane records a decision request and waits for a durable
-orchestrator-authored disposition before applying any delegated fix or advancing
-the stage. The post-draft handoff remains separate and transfers integration to
-the supervising orchestrator.
+orchestrator-authored disposition. A confirmed code fix is performed by the
+fresh bounded implementer that `/review` requires after the orchestrator reserves
+its agent run; the original lane worker waits for that durable remediation
+evidence before advancing. The post-draft handoff remains separate and transfers
+integration to the supervising orchestrator.
 
-Render `assets/lane-brief.md` for every dispatch instead of hand-authoring a
-brief. Its header table is the complete input contract: source every value,
-select the harness procedure named by the rendered brief, and refuse dispatch
-if any `{{name}}` placeholder remains. Preserve its per-attempt report path and
-nonce-scoped sentinels; prompts sent after dispatch refer to that reporting
-contract indirectly and never quote a sentinel value, because old pane output
-must not satisfy a later attempt.
+Render `assets/lane-brief.md` for every end-to-end, PR-owning implementation lane
+instead of hand-authoring a brief. Council proposal and synthesis implementers,
+and bounded remediation implementers, use their schema-bound role briefs and
+return the artifact or fix their dispatch requested; they do not receive this
+draft-publication contract. For a PR-owning lane, the template's header table is
+the complete input contract: source every value, select the harness procedure
+named by the rendered brief, and refuse dispatch if any `{{name}}` placeholder
+remains. Preserve its per-attempt report path and nonce-scoped sentinels; prompts
+sent after dispatch refer to that reporting contract indirectly and never quote
+a sentinel value, because old pane output must not satisfy a later attempt.
 
 ## PR-open confirmation
 
