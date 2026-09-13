@@ -31,8 +31,9 @@ Confidence finder tasks own envelope production in `--envelope` mode. The
 runner constrains the model to the matching challenger or reviewer payload,
 derives its own producer identity as the runner filename plus the Git blob SHA
 of that script, wraps the payload with the captured run/head/round/slot, and
-runs `validate-result-schemas.mjs envelope --receipt` before an atomic link
-makes the pass visible under the run record's `passes/` directory. The legacy
+runs `validate-result-schemas.mjs envelope --receipt` before a temporary file
+is renamed into the run record's `passes/` directory. The runner never appends
+a receipt or otherwise writes `run.json`; the trusted caller owns that step. The legacy
 task mode remains prose-only and byte-compatible with its earlier contract.
 
 This boundary does not make the lane incorruptible: the lane executes the
@@ -42,15 +43,15 @@ pretending to remove it. The script-derived identity makes the exact producer
 bytes visible; the envelope receipt binds run identity, head, role, stage,
 round, slot, and prior finding IDs; immutable pass publication prevents a
 later rewrite at the same path; and the orchestrator independently validates
-the receipt against its trusted run state and captured revisions before it
+the pass and appends its receipt against trusted run state and captured revisions before it
 adjudicates or publishes evidence. A lane-controlled document can therefore
 be rejected or attributed to changed producer bytes, but it cannot silently
 be promoted into trusted run evidence by prose alone.
 
 That is the ADR 0009 D2 boundary: briefs remain free-form, while results remain
 schema-bound. Moving envelope assembly from an optional role-agent wrapper to
-the harness-neutral finder task changes which executable produces the receipt,
-not the validation or orchestrator-side trust required to accept it.
+the harness-neutral finder task changes which executable produces the envelope,
+not the caller-owned receipt or orchestrator-side trust required to accept it.
 
 ## Composition: how envelope and payload fit together
 
@@ -2067,17 +2068,13 @@ preceding `"transition"` receipt into its own `payload.stage`, is rejected
 and contributes no pass or finding — logged in the verdict's `diagnostics[]`,
 never silently.
 
-For local finder envelope publication, the receipt is the commit point. The
-runner first writes and validates a temporary pass inside `passes/`, then
-renames it to its final pass name. It next writes a temporary `run.json` with
-the corresponding receipt and atomically renames that file over the old run
-record. An interruption between those renames can leave an unreceipted pass
-file, but never accepted evidence: receipt-aware consumers and strict receipt
-validation ignore it. Before its next envelope dispatch, the runner logs and
-deletes every pass file with no matching receipt, allowing the same slot to be
-retried. An interruption during the second rename leaves the old `run.json`
-intact. This is deliberately crash-consistent rather than cross-file atomic;
-the filesystem cannot atomically rename two independent directory entries.
+For local finder envelope publication, the runner writes and validates a
+temporary pass inside `passes/`, then renames it to its final pass name and
+returns. It never writes `run.json`; the trusted caller appends the matching
+receipt under its active-run reservation. A pass file with no matching receipt
+is an **orphan**: it is never evidence, and receipt-aware consumers and strict
+receipt validation ignore it. Orphan cleanup and retry policy belong to the
+caller, not to the finder runner.
 
 `run.json` may also carry `slot_failures: [{stage, round,
 slot, reason: "finder_unavailable"|"breadth_exhausted", head?}]`, recording a

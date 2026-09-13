@@ -118,7 +118,7 @@ captured Git revisions, never mutable worktree bytes. For an orchestrated
 `--model <model> --reasoning <level>` arguments. Give every other local-CLI
 finder its resolved model and tier as `--model <model> --tier <tier>`; the
 runner pins that model in the vendor invocation and records the same values in
-the receipt rather than inventing producer metadata. Pass each dispatch the
+the envelope rather than inventing producer metadata. Pass each dispatch the
 remaining whole-run wall-clock budget and bound the caller's supervision and
 wait by that deadline. On expiry, stop waiting, follow the orchestrator's
 capped-run handling, and reject any late result; this grants no authority to

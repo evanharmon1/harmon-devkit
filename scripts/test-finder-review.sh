@@ -816,8 +816,8 @@ finder_pass="$record/passes/challenge-r1-copilot-adversarial.json"
 jq -e --arg producer "$producer" '.role == "challenger" and .producer.harness == $producer and
     .producer.model == "gpt-5.6-sol" and .producer.tier == "apex"' \
     "$finder_pass" >/dev/null || fail "local-finder envelope lost role or script-derived producer"
-jq -e '[.receipts[] | select(.kind == "pass" and .file == "challenge-r1-copilot-adversarial")] | length == 1' \
-    "$record/run.json" >/dev/null || fail "local-finder pass was published without its receipt commit point"
+jq -e 'has("receipts") | not' "$record/run.json" >/dev/null ||
+    fail "local finder mutated run.json instead of leaving receipt publication to the caller"
 
 echo "==> envelope model validation preserves multi-hyphen registry slugs"
 (

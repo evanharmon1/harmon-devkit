@@ -187,55 +187,7 @@ if [ "$envelope_mode" = true ]; then
         echo "run.json does not bind run id '$run_id' to a valid initiated_by value" >&2
         exit 1
     }
-    publication_lock="$record_dir/.pass-publication.lock"
-    publication_lock_held=false
-    acquire_publication_lock() {
-        command -v flock >/dev/null 2>&1 || {
-            echo "flock is required for crash-safe pass publication" >&2
-            return 1
-        }
-        # Keep the lock file: unlinking it would let a new caller lock a new
-        # inode while this process still holds the old one. The kernel drops
-        # the advisory lock on every exit path, including abrupt termination,
-        # so no stale-lock reclamation protocol (and its compare/delete race)
-        # is needed.
-        exec 9>"$publication_lock"
-        flock -w 10 9 || {
-            exec 9>&-
-            echo "timed out waiting for pass-publication lock $publication_lock" >&2
-            return 1
-        }
-        publication_lock_held=true
-    }
-    release_publication_lock() {
-        [ "$publication_lock_held" = true ] || return 0
-        flock -u 9
-        exec 9>&-
-        publication_lock_held=false
-    }
-    trap release_publication_lock EXIT
-    acquire_publication_lock
     mkdir -p "$record_dir/passes"
-    receipt_names="$(mktemp "$record_dir/.codex-receipts.XXXXXX")"
-    jq -e '(.receipts // []) | type == "array"' "$record_dir/run.json" >/dev/null &&
-        jq -r '(.receipts // [])[] | select(.kind == "pass") | .file' \
-            "$record_dir/run.json" >"$receipt_names" || {
-        rm -f "$receipt_names"
-        echo "run.json has no readable receipt sequence" >&2
-        exit 1
-    }
-    orphan_candidates=("$record_dir"/passes/*.json)
-    for existing_pass in "${orphan_candidates[@]}"; do
-        [ -e "$existing_pass" ] || continue
-        existing_name="$(basename "$existing_pass" .json)"
-        if ! grep -Fxq -- "$existing_name" "$receipt_names"; then
-            echo "removing orphaned unreceipted pass: $existing_pass" >&2
-            rm -f -- "$existing_pass"
-        fi
-    done
-    rm -f "$receipt_names"
-    release_publication_lock
-    trap - EXIT
     expected_slug="codex-${MODE/review/verification}"
     [ "$MODE" = challenge ] && expected_slug=codex-adversarial
     fallback_for=
@@ -444,13 +396,11 @@ fi
 raw_payload="$(mktemp "$record_dir/.codex-payload.XXXXXX")"
 envelope_tmp="$(mktemp "$record_dir/passes/.codex-envelope.XXXXXX")"
 known_ids="$(mktemp "$record_dir/.codex-known-ids.XXXXXX")"
-run_tmp=
 # shellcheck source=scripts/lib/readonly-sandbox.sh
 . "$script_dir/lib/readonly-sandbox.sh"
 cleanup_envelope() {
     sandbox_cleanup
-    release_publication_lock
-    rm -f "$raw_payload" "$envelope_tmp" "$known_ids" "$run_tmp"
+    rm -f "$raw_payload" "$envelope_tmp" "$known_ids"
 }
 trap cleanup_envelope EXIT
 sandbox_create "$envelope_head" 0 >/dev/null || {
@@ -519,22 +469,10 @@ node "$script_dir/validate-result-schemas.mjs" envelope "$envelope_tmp" \
 
 pass_name="${MODE}-r${envelope_round}-${envelope_slot}"
 pass_path="$record_dir/passes/${pass_name}.json"
-acquire_publication_lock
 if [ -e "$pass_path" ]; then
     echo "refusing to overwrite existing pass $pass_path" >&2
     exit 1
 fi
 mv "$envelope_tmp" "$pass_path"
 envelope_tmp=
-run_tmp="$(mktemp "$record_dir/.run.XXXXXX")"
-jq --arg file "$pass_name" '
-    if any((.receipts // [])[]; .kind == "pass" and .file == $file) then
-      error("duplicate pass receipt: " + $file)
-    else
-      .receipts = ((.receipts // []) + [{kind: "pass", file: $file}])
-    end
-' "$record_dir/run.json" >"$run_tmp"
-mv "$run_tmp" "$record_dir/run.json"
-run_tmp=
-release_publication_lock
 printf '%s\n' "$pass_path"

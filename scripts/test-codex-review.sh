@@ -31,9 +31,6 @@ mkdir -p "${test_tmp}/bin"
 cat >"${test_tmp}/bin/codex" <<'CODEXSTUB'
 #!/usr/bin/env bash
 if [ -n "${STUB_PAYLOAD_FILE:-}" ]; then
-    if [ -n "${STUB_SLEEP:-}" ]; then
-        sleep "$STUB_SLEEP"
-    fi
     if [ -n "${STUB_ARGS_FILE:-}" ]; then
         printf '%s\n' "$@" >"$STUB_ARGS_FILE"
     fi
@@ -684,41 +681,10 @@ challenge_pass="$record/passes/challenge-r1-codex-adversarial.json"
 [ -f "$challenge_pass" ] || fail "challenger pass was not published"
 jq -e --arg producer "$producer" '.role == "challenger" and .producer.harness == $producer' \
     "$challenge_pass" >/dev/null || fail "challenger envelope lost role or script-derived producer"
-jq -e '[.receipts[] | select(.kind == "pass" and .file == "challenge-r1-codex-adversarial")] | length == 1' \
-    "$record/run.json" >/dev/null || fail "challenger pass was published without its receipt commit point"
+jq -e 'has("receipts") | not' "$record/run.json" >/dev/null ||
+    fail "runner mutated run.json instead of leaving receipt publication to the caller"
 grep -Fxq -- '--cd' "$challenge_args" || fail "Codex envelope review was not given a detached snapshot cwd"
 grep -Fq 'finder-readonly-' "$challenge_args" || fail "Codex envelope review used the live checkout instead of its snapshot"
-
-echo "==> concurrent publishers cannot lose each other's receipt"
-parallel_record="${test_tmp}/codex-parallel-record"
-mkdir -p "$parallel_record"
-printf '%s\n' '{"schema":2,"run_id":"run-codex-parallel","initiated_by":"human"}' >"$parallel_record/run.json"
-parallel_challenge_payload="${test_tmp}/parallel-challenge-payload.json"
-jq --arg head "$head_sha" '.reviewed_head = $head | .round = 2' \
-    ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$parallel_challenge_payload"
-parallel_review_payload="${test_tmp}/parallel-review-payload.json"
-jq --arg head "$head_sha" '.reviewed_head = $head' \
-    ai/schemas/fixtures/result.reviewer.schema/runner-envelope-mode/reviewer-payload.json >"$parallel_review_payload"
-parallel_challenge_out="${test_tmp}/parallel-challenge.out"
-parallel_review_out="${test_tmp}/parallel-review.out"
-STUB_SLEEP=0.2 STUB_PAYLOAD_FILE="$parallel_challenge_payload" run challenge --envelope \
-    --run-id run-codex-parallel --head "$head_sha" --stage challenge --round 2 \
-    --slot codex-adversarial --producer "$producer" --record-dir "$parallel_record" \
-    --policy .devflow.toml --registry agent-registry.json --base origin/develop >"$parallel_challenge_out" &
-parallel_challenge_pid=$!
-STUB_SLEEP=0.2 STUB_PAYLOAD_FILE="$parallel_review_payload" run review --envelope \
-    --run-id run-codex-parallel --head "$head_sha" --stage review --round 1 \
-    --slot codex-verification --producer "$producer" --record-dir "$parallel_record" \
-    --policy .devflow.toml --registry agent-registry.json --base origin/develop >"$parallel_review_out" &
-parallel_review_pid=$!
-wait "$parallel_challenge_pid" || fail "parallel challenger publication failed: $(cat "$parallel_challenge_out")"
-wait "$parallel_review_pid" || fail "parallel reviewer publication failed: $(cat "$parallel_review_out")"
-jq -e '[.receipts[] | select(.kind == "pass") | .file] | sort ==
-    ["challenge-r2-codex-adversarial", "review-r1-codex-verification"]' \
-    "$parallel_record/run.json" >/dev/null || fail "concurrent publication lost a pass receipt"
-[ -f "$parallel_record/passes/challenge-r2-codex-adversarial.json" ] &&
-    [ -f "$parallel_record/passes/review-r1-codex-verification.json" ] ||
-    fail "concurrent publication lost a validated pass"
 
 echo "==> envelope mode binds the review target to the canonical branch scope"
 set +e
@@ -776,46 +742,6 @@ if STUB_PAYLOAD_FILE="$multi_payload" run challenge --envelope \
 fi
 [ ! -e "$multi_record/passes/challenge-r2-codex-adversarial.json" ] ||
     fail "multiple Codex payload documents published a pass"
-
-echo "==> an interruption after pass rename leaves an orphan that the next start cleans"
-interrupt_record="${test_tmp}/codex-interrupt-record"
-mkdir -p "$interrupt_record"
-printf '%s\n' '{"run_id":"run-codex-interrupt","initiated_by":"human"}' >"$interrupt_record/run.json"
-interrupt_payload="${test_tmp}/codex-interrupt-payload.json"
-jq --arg head "$head_sha" '.reviewed_head = $head' \
-    ai/schemas/fixtures/result.challenger.schema/runner-envelope-mode/challenger-payload.json >"$interrupt_payload"
-interrupt_bin="${test_tmp}/interrupt-bin"
-mkdir -p "$interrupt_bin"
-cat >"$interrupt_bin/mv" <<EOF
-#!/usr/bin/env bash
-destination="\${!#}"
-case "\$destination" in
-"$interrupt_record/run.json") exit 97 ;;
-esac
-exec /bin/mv "\$@"
-EOF
-chmod +x "$interrupt_bin/mv"
-set +e
-PATH="$interrupt_bin:$PATH" STUB_PAYLOAD_FILE="$interrupt_payload" run challenge --envelope \
-    --run-id run-codex-interrupt --head "$head_sha" --stage challenge --round 1 \
-    --slot codex-adversarial --producer "$producer" --record-dir "$interrupt_record" \
-    --policy .devflow.toml --registry agent-registry.json --base origin/develop >/dev/null
-interrupt_status=$?
-set -e
-[ "$interrupt_status" -eq 97 ] || fail "interrupted publication exited $interrupt_status, expected 97"
-interrupt_pass="$interrupt_record/passes/challenge-r1-codex-adversarial.json"
-[ -f "$interrupt_pass" ] || fail "interrupted publication did not reach the pass rename"
-jq -e '[(.receipts // [])[] | select(.kind == "pass")] | length == 0' \
-    "$interrupt_record/run.json" >/dev/null || fail "interrupted publication committed a receipt"
-interrupt_out="$(STUB_PAYLOAD_FILE="$interrupt_payload" run challenge --envelope \
-    --run-id run-codex-interrupt --head "$head_sha" --stage challenge --round 1 \
-    --slot codex-adversarial --producer "$producer" --record-dir "$interrupt_record" \
-    --policy .devflow.toml --registry agent-registry.json --base origin/develop)" ||
-    fail "retry after interrupted publication failed: $interrupt_out"
-grep -Fq 'removing orphaned unreceipted pass:' <<<"$interrupt_out" ||
-    fail "retry did not log orphan cleanup: $interrupt_out"
-jq -e '[.receipts[] | select(.kind == "pass" and .file == "challenge-r1-codex-adversarial")] | length == 1' \
-    "$interrupt_record/run.json" >/dev/null || fail "retry did not commit the recovered pass receipt"
 
 echo "==> Codex-lane fixture reaches adjudication, a converged exit, and retained retro evidence"
 jq '.receipts = [{kind:"transition",stage:"challenge"},
