@@ -38,6 +38,7 @@ cat >"$stub/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 db="${DFSTATS_DB:?DFSTATS_DB must be set}"
+printf '%s\n' "$*" >>"${DFSTATS_GH_LOG:-/dev/null}"
 
 if [ "${1:-}" != api ]; then
     echo "fake gh: unsupported subcommand: ${1:-}" >&2
@@ -60,6 +61,10 @@ repos/*/issues\?state=all\&per_page=100)
 repos/*/issues/*/comments\?per_page=100)
     n="$(echo "$endpoint" | sed -E 's#.*/issues/([0-9]+)/comments.*#\1#')"
     jq --arg n "$n" '[(.comments[$n] // [])]' "$db"
+    ;;
+repos/*/issues/[0-9]*)
+    n="$(echo "$endpoint" | sed -E 's#.*/issues/([0-9]+).*#\1#')"
+    jq --argjson n "$n" '.issues[] | select(.number == $n)' "$db"
     ;;
 repos/*/pulls/*/commits\?per_page=100)
     n="$(echo "$endpoint" | sed -E 's#.*/pulls/([0-9]+)/commits.*#\1#')"
@@ -2722,6 +2727,27 @@ function writeScenario(name, db) {
   });
 }
 
+// --- #952: canonical --run lookup bypasses the full issue listing, while
+// both the direct issue read and discovery tolerate output above Node's
+// default 1 MiB synchronous-child buffer.
+{
+  const runId = "run-185-large-buffer";
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: "2026-09-01T00:00:00Z",
+    stage_transitions: chain([{ stage: "kickoff", entered_at: "2026-09-01T00:00:00Z" }]),
+    interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+    evidence_comments: [], promotion: null,
+  };
+  const { index: idx, record: rr } = runRecordComment(
+    TRUSTED_ORCHESTRATOR, "orchestrator", runId, runBody, "2026-09-01T00:00:00Z",
+  );
+  writeScenario("large-buffer", {
+    issues: [{ number: 185, pull_request: null, padding: "x".repeat(2 * 1024 * 1024) }],
+    comments: { "185": [idx, rr] }, commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 185 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -2747,6 +2773,28 @@ echo "== happy path: --repo metric counts the issue as unattended success =="
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.cohort_size == 1 and .unattended_success_count == 1' >/dev/null || fail "happy: expected 1/1 unattended success"
 echo "$out" | jq -e '.per_issue[0].success == true' >/dev/null || fail "happy: per_issue success flag wrong"
+
+echo "== issue discovery tolerates >1 MiB output and projects paginated fields =="
+export DFSTATS_DB="$tmp/scenarios/large-buffer.json"
+export DFSTATS_GH_LOG="$tmp/large-buffer-discovery-gh.log"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.cohort_size == 1 and .per_issue[0].issueNumber == 185' >/dev/null ||
+    fail "large-buffer discovery: expected the oversized issue to be harvested"
+grep -Fq 'api --paginate --slurp repos/o/r/issues?state=all&per_page=100 --jq map(.[] | {number, pull_request})' "$DFSTATS_GH_LOG" ||
+    fail "large-buffer discovery: issue listing was not paginated and projected"
+
+echo "== canonical --run reads only its issue and succeeds with >1 MiB gh output =="
+export DFSTATS_GH_LOG="$tmp/large-buffer-run-gh.log"
+run_id="$(meta large-buffer .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 185' >/dev/null ||
+    fail "large-buffer --run: expected the canonical run from issue #185"
+grep -Fq 'api repos/o/r/issues/185' "$DFSTATS_GH_LOG" ||
+    fail "large-buffer --run: direct issue lookup was not used"
+if grep -Fq 'issues?state=all' "$DFSTATS_GH_LOG"; then
+    fail "large-buffer --run: unexpectedly listed every issue"
+fi
+unset DFSTATS_GH_LOG
 
 echo "== chain fork: two entries claiming the same prev_digest -> indeterminate, never silently resolved =="
 export DFSTATS_DB="$tmp/scenarios/fork.json"

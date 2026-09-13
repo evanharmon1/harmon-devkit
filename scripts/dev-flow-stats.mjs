@@ -27,6 +27,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+const MAX_SYNC_BUFFER_BYTES = 64 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // gh api wrapper
 // ---------------------------------------------------------------------------
@@ -36,8 +38,10 @@ class GhError extends Error {}
 // Resolved via $PATH (never an absolute path) so a test's stub directory,
 // prepended to PATH ahead of the real gh, transparently shadows it — the
 // same shim pattern scripts/test-claim-transaction.sh already establishes.
-function ghApiPaginated(endpoint) {
-  const result = spawnSync("gh", ["api", "--paginate", "--slurp", endpoint], { encoding: "utf8" });
+function ghApiPaginated(endpoint, jq = null) {
+  const argv = ["api", "--paginate", "--slurp", endpoint];
+  if (jq) argv.push("--jq", jq);
+  const result = spawnSync("gh", argv, { encoding: "utf8", maxBuffer: MAX_SYNC_BUFFER_BYTES });
   if (result.error) throw new GhError(`gh api ${endpoint} failed to execute: ${result.error.message}`);
   if (result.status !== 0) throw new GhError(`gh api ${endpoint} exited ${result.status}: ${(result.stderr || "").trim()}`);
   let pages;
@@ -51,7 +55,7 @@ function ghApiPaginated(endpoint) {
 }
 
 function ghApiOne(endpoint) {
-  const result = spawnSync("gh", ["api", endpoint], { encoding: "utf8" });
+  const result = spawnSync("gh", ["api", endpoint], { encoding: "utf8", maxBuffer: MAX_SYNC_BUFFER_BYTES });
   if (result.error) throw new GhError(`gh api ${endpoint} failed to execute: ${result.error.message}`);
   if (result.status !== 0) throw new GhError(`gh api ${endpoint} exited ${result.status}: ${(result.stderr || "").trim()}`);
   try {
@@ -456,7 +460,17 @@ function fetchIssueList(repo) {
   // state=all: a closed (merged, capped, abandoned) issue's run still
   // belongs in the closed-cohort denominator — the metric explicitly
   // counts abandoned/capped runs as failures, not as absent.
-  return ghApiPaginated(`repos/${repo}/issues?state=all&per_page=100`).filter((i) => !i.pull_request);
+  return ghApiPaginated(
+    `repos/${repo}/issues?state=all&per_page=100`,
+    "map(.[] | {number, pull_request})",
+  ).filter((i) => !i.pull_request);
+}
+
+function issueNumberFromRunId(runId) {
+  const match = /^run-([1-9][0-9]*)-/.exec(runId);
+  if (!match) return null;
+  const issueNumber = Number(match[1]);
+  return Number.isSafeInteger(issueNumber) ? issueNumber : null;
 }
 
 function fetchIssueComments(repo, issueNumber) {
@@ -1744,6 +1758,15 @@ function discoverAllRuns(repo, { trustedActorIds, asOf }) {
   return runs;
 }
 
+function discoverRunsForId(repo, runId, options) {
+  const issueNumber = issueNumberFromRunId(runId);
+  if (issueNumber === null) return discoverAllRuns(repo, options);
+
+  const issue = ghApiOne(`repos/${repo}/issues/${issueNumber}`);
+  if (issue.pull_request) return [];
+  return harvestRunsForIssue(repo, issueNumber, options);
+}
+
 // ---------------------------------------------------------------------------
 // Closed-cohort unattended-success metric (specs/dev-flow-v2.md § Success
 // metric). "Reached ready-for-review" requires the run record's own
@@ -2120,7 +2143,7 @@ function invokeExitScript(exitScriptPath, { runDir, stage, policyPath, currentHe
   const result = spawnSync(
     process.execPath,
     [exitScriptPath, "--run", runDir, "--stage", stage, "--policy", policyPath, "--current-head", currentHead, "--repo-root", repoRoot, "--json"],
-    { encoding: "utf8" },
+    { encoding: "utf8", maxBuffer: MAX_SYNC_BUFFER_BYTES },
   );
   if (result.error) {
     return { error: `could not exec exit script: ${result.error.message}` };
@@ -2664,14 +2687,18 @@ function cliRun(args) {
 
   let runs;
   try {
-    runs = discoverAllRuns(args.repo, { trustedActorIds, asOf });
+    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf });
   } catch (err) {
     console.error(`dev-flow-stats: ${err.message}`);
     return err instanceof EvidenceError ? 3 : 2;
   }
   const run = runs.find((r) => r.runId === args.run);
   if (!run) {
-    console.error(`dev-flow-stats: run "${args.run}" not found (searched every issue's run record in ${args.repo})`);
+    const issueNumber = issueNumberFromRunId(args.run);
+    const searched = issueNumber === null
+      ? `searched every issue's run record in ${args.repo}`
+      : `searched issue #${issueNumber} in ${args.repo}`;
+    console.error(`dev-flow-stats: run "${args.run}" not found (${searched})`);
     return 1;
   }
   if (run.status === "indeterminate") {

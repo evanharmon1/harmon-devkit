@@ -47,6 +47,7 @@ import path from 'node:path'
 import process from 'node:process'
 
 const TOOL = 'retro-run-report'
+const MAX_SYNC_BUFFER_BYTES = 64 * 1024 * 1024
 
 const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options]
 
@@ -189,7 +190,7 @@ function validateArgs(args) {
 // prepended to PATH shadows the real gh — the shim pattern the rest of this
 // repository's suites already use.
 function gh(argv) {
-  const result = spawnSync('gh', argv, { encoding: 'utf8' })
+  const result = spawnSync('gh', argv, { encoding: 'utf8', maxBuffer: MAX_SYNC_BUFFER_BYTES })
   if (result.error) {
     throw new OperationalError(`gh ${argv[0]} failed to execute: ${result.error.message}`)
   }
@@ -237,7 +238,10 @@ function fetchComments(repo, number, asOf) {
 
 function repoRoot() {
   try {
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      maxBuffer: MAX_SYNC_BUFFER_BYTES
+    }).trim()
   } catch {
     return null
   }
@@ -525,7 +529,10 @@ function resolveTrustedActorArgs(args) {
 function harvestTrajectory(stats, args, runId, trusted) {
   const argv = [...stats.prefix, '--repo', args.repo, '--run', runId, '--json', ...trusted.passthrough]
   if (args.asOf) argv.push('--as-of', args.asOf)
-  const result = spawnSync(stats.command, argv, { encoding: 'utf8' })
+  const result = spawnSync(stats.command, argv, {
+    encoding: 'utf8',
+    maxBuffer: MAX_SYNC_BUFFER_BYTES
+  })
   if (result.error) {
     throw new OperationalError(`${stats.display} failed to execute: ${result.error.message}`)
   }
