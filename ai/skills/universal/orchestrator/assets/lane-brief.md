@@ -156,8 +156,10 @@ report BLOCKED instead of inventing a procedure.
 
 ## Long-running gate invocations
 
-Always run `task challenge` and `task review` in the background and poll them;
-they normally take 5–15 minutes. A foreground invocation at an ordinary tool
+When the resolved confidence procedure is the inline fallback, always run its
+`task challenge` and `task review` invocations in the background and poll them;
+they normally take 5–15 minutes. Do not run these tasks in addition to a
+compatible `/review` procedure. A foreground invocation at an ordinary tool
 timeout can receive SIGTERM (exit 143), which is not an environmental gate
 failure. Why: a foreground challenge was terminated and mistakenly retried
 during the milestone handoff (lesson 3).
