@@ -338,8 +338,12 @@ apply_label() {
     done < <(jq -r '.remove // [] | .[]' <<<"$row")
 
     if [ "$execute" -eq 0 ]; then
+        # Print the PLAN line only — validate_label (pass 1) already invoked
+        # this exact triage-apply.sh dry run to validate this row, so calling
+        # it again here would be a second, redundant subprocess/API round
+        # trip for identical validation with no functional difference
+        # (challenge round 3 finding 6).
         echo "PLAN $triage_apply ${args[*]}"
-        "$triage_apply" "${args[@]}"
         return 0
     fi
     log_write "$log" "$triage_apply ${args[*]} --execute"

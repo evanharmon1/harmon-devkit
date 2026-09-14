@@ -134,6 +134,32 @@ run() {
     echo "$_rc"
 }
 
+# pty_exec CMD... — run CMD under a pseudo-terminal, so it sees a TTY on
+# stdin and stdout. Needed to get past the wrapper's own --execute
+# interactivity gate and exercise the confirmed exec path. Two allocators,
+# in preference order (the same pattern as scripts/test-setup-gh-scopes.sh):
+# python3's pty.spawn calls openpty directly and works in a sandbox/CI shell
+# with no controlling terminal, where `script` fails outright; `script` is
+# the fallback for a host with no python3, and its BSD (macOS) / util-linux
+# (Linux) argument orders differ.
+pty_exec() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import os,pty,sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))' "$@" 2>&1
+    elif [ "$(uname -s)" = "Darwin" ]; then
+        script -q /dev/null "$@" 2>&1
+    else
+        script -qec "$*" /dev/null 2>&1
+    fi
+}
+
+# Whether a pty can be allocated at all. Skipped with a note (never silently
+# dropped) when it cannot — the same treatment test-status.sh gives a missing
+# `timeout` binary.
+PTY_OK=false
+if [ "$(pty_exec printf PTYPROBE 2>/dev/null | tr -dc 'A-Z')" = "PTYPROBE" ]; then
+    PTY_OK=true
+fi
+
 cat >"$stub_dir/labels.json" <<'JSON'
 [{"name":"needs-triage","description":""}]
 JSON
@@ -734,64 +760,78 @@ echo "==> wrapper: the run's output directory is created 0700 (findings 6, 9)"
 audit_scratch_mode="$(stat -c '%a' "$audit_scratch" 2>/dev/null || stat -f '%Lp' "$audit_scratch")"
 [ "$audit_scratch_mode" = "700" ] || fail "run directory must be mode 700 (got $audit_scratch_mode)"
 
-echo "==> wrapper: apply mode requires --run (finding 1)"
-apply_plan_file="$tmp/apply-plan.jsonl"
-printf '%s\n' '{"op":"close","issue":30,"reason":"completed","bot_owned":false}' >"$apply_plan_file"
-[ "$(run "$wrapper" --plan "$apply_plan_file")" = 2 ] || fail "--plan without --run must exit 2"
-grep -q -- "--run" "$tmp/err" || fail "refusal must name --run"
-
-echo "==> wrapper: apply mode requires --plan (finding 1)"
-apply_run_dir="$tmp/apply-run"
-mkdir -p "$apply_run_dir"
-cat >"$apply_run_dir/dispositions.json" <<JSON
-{"repo":"$repo","dispositions":[{"number":30,"title":"(ci): Fix parser bug","verdict":"CLOSE-done","priority":"high","reason":"merged","group":"ci","bot_owned":false}],"stats":{"open_total":1,"close_candidates":1,"decisions":0,"high_priority":1},"milestones":[]}
-JSON
-[ "$(run "$wrapper" --run "$apply_run_dir")" = 2 ] || fail "--run without --plan must exit 2"
-grep -q -- "--plan" "$tmp/err" || fail "refusal must name --plan"
-
-echo "==> wrapper: --execute without a terminal is refused (once --run/--plan are given)"
-[ "$(run "$wrapper" --execute --run "$apply_run_dir" --plan "$apply_plan_file")" = 2 ] ||
-    fail "non-interactive --execute must exit 2"
-
-echo "==> wrapper: apply mode's dry-run (--run/--plan, no --execute) runs the deterministic sequence with no model (findings 1, 2)"
+echo "==> wrapper: --execute needs a script name (challenge round 3: no --run/--plan/--decisions orchestration left)"
 : >"$GH_STUB_LOG"
-[ "$(run "$wrapper" --run "$apply_run_dir" --plan "$apply_plan_file")" = 0 ] ||
-    fail "wrapper apply dry-run should succeed: $(cat "$tmp/out" "$tmp/err")"
-grep -q "^PLAN gh issue close 30" "$tmp/out" || fail "dry-run must print the plan's PLAN line"
-grep -qE "^issue close 30 " "$GH_STUB_LOG" && fail "dry-run must never call a gh write command"
-grep -q "^ARGS:" "$GH_STUB_LOG" && fail "apply mode must never invoke claude — no model in the write path"
-[ -f "$apply_run_dir/report.html" ] || fail "apply mode must (re-)render the report into --run DIR"
-[ -f "$apply_run_dir/report.md" ] || fail "apply mode must (re-)render the report into --run DIR"
-[ -f "$apply_run_dir/outcomes.jsonl" ] || fail "apply mode must ensure the outcomes sink exists for the render"
-grep -q "#30 — (ci): Fix parser bug" "$apply_run_dir/report.md" ||
-    fail "the re-rendered report must still carry the audit run's own dispositions"
+[ "$(run "$wrapper" --execute)" = 2 ] || fail "--execute with no script name must exit 2"
+for allowed in groom-apply.sh groom-decide.sh groom-report.sh; do
+    grep -qF "$allowed" "$tmp/err" ||
+        fail "the missing-script refusal must name '$allowed' as allowed: $(cat "$tmp/err")"
+done
 
-echo "==> wrapper: apply mode's --decisions sidecar files are threaded into groom-decide.sh (Step 6)"
-apply_decisions_dir="$tmp/apply-decisions"
-mkdir -p "$apply_decisions_dir"
-printf 'We are closing #40 in favor of #12.\n' >"$apply_decisions_dir/12.md"
-printf '40\n' >"$apply_decisions_dir/12.supersedes"
-printf '7\n' >"$apply_decisions_dir/12.blocked-by"
-noop_apply_plan="$tmp/wrapper-empty-plan.jsonl"
-: >"$noop_apply_plan"
-: >"$GH_STUB_LOG"
-[ "$(run "$wrapper" --run "$apply_run_dir" --plan "$noop_apply_plan" \
-    --decisions "$apply_decisions_dir")" = 0 ] ||
-    fail "wrapper apply dry-run with --decisions should succeed: $(cat "$tmp/out" "$tmp/err")"
-grep -q "^PLAN gh issue comment 12 " "$tmp/out" || fail "dry-run must print the decision's PLAN line"
-grep -q "^PLAN gh issue close 40 .*not planned" "$tmp/out" ||
-    fail "dry-run must print the supersedes sibling's PLAN line"
-grep -q "^PLAN gh api repos/$repo/issues/12/dependencies/blocked_by" "$tmp/out" ||
-    fail "dry-run must print the blocked-by edge's PLAN line"
-grep -qE "^issue (close|comment) " "$GH_STUB_LOG" && fail "dry-run must never call a gh write command"
+echo "==> wrapper: --execute refuses any script name outside the allowed set"
+[ "$(run "$wrapper" --execute bogus.sh --repo "$repo")" = 2 ] ||
+    fail "an unknown script name must exit 2"
+grep -qF "bogus.sh" "$tmp/err" || fail "the refusal must name the rejected script: $(cat "$tmp/err")"
+for allowed in groom-apply.sh groom-decide.sh groom-report.sh; do
+    grep -qF "$allowed" "$tmp/err" ||
+        fail "the unknown-script refusal must name '$allowed' as allowed: $(cat "$tmp/err")"
+done
 
-echo "==> wrapper: apply mode's re-render reflects outcomes already recorded in --run DIR (finding 2)"
-printf '%s\n' '{"issue":30,"op":"close","status":"DONE","at":"2026-01-01T00:00:00Z"}' \
-    >"$apply_run_dir/outcomes.jsonl"
-: >"$GH_STUB_LOG"
-[ "$(run "$wrapper" --run "$apply_run_dir" --plan "$noop_apply_plan")" = 0 ] ||
-    fail "wrapper apply dry-run should succeed: $(cat "$tmp/out" "$tmp/err")"
-grep -q "^| #30 .*| DONE |" "$apply_run_dir/report.md" ||
-    fail "the re-render must merge the audit run's own outcomes.jsonl into the Status column"
+echo "==> wrapper: --execute with a valid script name still requires an interactive terminal"
+[ "$(run "$wrapper" --execute groom-apply.sh apply-plan --repo "$repo")" = 2 ] ||
+    fail "non-interactive --execute must exit 2 even with a valid script name"
+grep -qi "interactive terminal" "$tmp/err" ||
+    fail "refusal must name the interactive-terminal requirement: $(cat "$tmp/err")"
+
+echo "==> wrapper: a confirmed --execute execs the named script verbatim, with GROOM_EXECUTE=1 and GROOM_REPO set, and nothing else in between"
+if [ "$PTY_OK" = true ]; then
+    # Point skill_dir at a fixture rather than the real ai/skills/universal/
+    # groom/assets/*.sh: the wrapper no longer validates or interprets
+    # anything about its target beyond the name, so a fixture that just
+    # records its own basename/argv/env is enough to prove the exec contract
+    # without touching the real write-path scripts.
+    fake_root="$tmp/fake-repo"
+    mkdir -p "$fake_root/scripts" "$fake_root/ai/skills/universal/groom/assets"
+    cp "$wrapper" "$fake_root/scripts/groom.sh"
+    chmod +x "$fake_root/scripts/groom.sh"
+    : >"$fake_root/ai/skills/universal/groom/SKILL.md"
+    git -C "$fake_root" init -q
+    git -C "$fake_root" remote add origin https://github.com/testowner/testrepo.git
+
+    for stub_script in groom-apply.sh groom-decide.sh groom-report.sh; do
+        cat >"$fake_root/ai/skills/universal/groom/assets/$stub_script" <<'STUB'
+#!/usr/bin/env bash
+{
+    printf 'SCRIPT=%s\n' "$(basename "$0")"
+    printf 'GROOM_EXECUTE=%s\n' "${GROOM_EXECUTE:-unset}"
+    printf 'GROOM_REPO=%s\n' "${GROOM_REPO:-unset}"
+    printf 'ARGV:'
+    printf ' %s' "$@"
+    printf '\n'
+} >>"${EXEC_LOG:?}"
+STUB
+        chmod +x "$fake_root/ai/skills/universal/groom/assets/$stub_script"
+    done
+
+    exec_log="$tmp/exec.log"
+    for script_name in groom-apply.sh groom-decide.sh groom-report.sh; do
+        : >"$exec_log"
+        {
+            printf 'yes\n' | pty_exec env PATH="$tmp/bin:$PATH" EXEC_LOG="$exec_log" \
+                "$fake_root/scripts/groom.sh" --execute "$script_name" \
+                --marker "$script_name-arg" --outcomes "/tmp/does-not-need-to-exist.jsonl"
+        } >"$tmp/pty-out" 2>&1 || true
+        grep -q "SCRIPT=$script_name" "$exec_log" ||
+            fail "confirmed apply mode must exec $script_name verbatim: $(cat "$tmp/pty-out" "$exec_log")"
+        grep -q "GROOM_EXECUTE=1" "$exec_log" ||
+            fail "$script_name must see GROOM_EXECUTE=1: $(cat "$exec_log")"
+        grep -q "GROOM_REPO=$repo" "$exec_log" ||
+            fail "$script_name must see GROOM_REPO=$repo: $(cat "$exec_log")"
+        grep -q "ARGV: --marker $script_name-arg --outcomes /tmp/does-not-need-to-exist.jsonl" "$exec_log" ||
+            fail "$script_name must receive the operator's arguments verbatim: $(cat "$exec_log")"
+    done
+else
+    echo "   (skipped: no pty allocator available in this environment)"
+fi
 
 echo "All groom skill tests passed."
