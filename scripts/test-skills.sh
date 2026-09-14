@@ -236,6 +236,30 @@ expect_ok "orchestrator planning refuses a second plan writer" \
 expect_ok "orchestrator planning publishes expansions as complete revisions" \
     grep -qF 'accepted expansion is a recomputation reason' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
+    grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation gates the ready report on the post-promotion watch" \
+    grep -qF '`POST-PROMOTION-ACTIVITY` event as the signal' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation never reports promotion itself as readiness" \
+    grep -qF 'Promotion itself is never reported as readiness' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation names the interim promoted/watch status line" \
+    grep -qF '"promoted at T, post-promotion watch until T+15", never "ready".' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation announces a withdrawn promotion before anything else" \
+    grep -qF '"#n is no longer ready: `<reason>`; back to draft on `<head>`"' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator withdrawal announcement leads the next maintainer-facing message" \
+    grep -qF 'ahead of any other status in that same message' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "lane-brief READY sentinel carries the same post-promotion-watch precondition" \
+    grep -qF "emit this sentinel only after that promotion's post-promotion" \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "lane-brief READY sentinel is never emitted at the moment of promotion itself" \
+    grep -qF 'never at the moment of promotion itself' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
 expect_ok "retro compares validated planned and actual lane execution" \
     grep -qF 'planned versus actual waves and interventions for each lane' \
     "$repo/ai/skills/universal/retro/SKILL.md"

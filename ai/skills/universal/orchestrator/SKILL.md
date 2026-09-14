@@ -237,6 +237,19 @@ produce evidence and did not; when the condition fails and the skill
 path is available for the lane's topology, the routing failed and the
 lane must be re-run before the PR is promoted.
 
+The maintainer-facing ready report is the last message about a promoted PR,
+not the first one after promotion. Once `gh pr ready` confirms non-draft on
+the verified head, run the post-promotion watch — 15 minutes on the trusted
+Codex actor and on humans, using `assets/lane-watch.sh`'s
+`POST-PROMOTION-ACTIVITY` event as the signal — and send the ready report
+only once that watch closes with no new activity, naming the head SHA and
+the gate fingerprint. Promotion itself is never reported as readiness: a
+status sent during the watch instead reads "promoted at T, post-promotion watch until T+15", never "ready".
+
+If the orchestrator reverses its own promotion (`gh pr ready --undo`, for any
+reason, including mid-watch), the withdrawal is announced before anything
+else in the next maintainer-facing message — "#n is no longer ready: `<reason>`; back to draft on `<head>`" — ahead of any other status in that same message.
+
 ## Implementer selection
 
 Select implementers only from

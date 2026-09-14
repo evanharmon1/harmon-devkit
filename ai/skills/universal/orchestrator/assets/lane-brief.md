@@ -274,7 +274,12 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
   substring match is never completion evidence. Append exactly one of the
   following to `{{report-path}}` and print the same value as the final line of
   the final message:
-  - `{{ready-sentinel}}-{{attempt-nonce}}` — the orchestrator promoted the PR through the readiness gate.
+  - `{{ready-sentinel}}-{{attempt-nonce}}` — the orchestrator promoted the PR
+    through the readiness gate. For a lane that integrates and promotes its
+    own PR, emit this sentinel only after that promotion's post-promotion
+    watch (15 minutes on the trusted Codex actor and on humans;
+    `POST-PROMOTION-ACTIVITY` from the watcher is the signal) closes with no
+    new activity — never at the moment of promotion itself.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
 
