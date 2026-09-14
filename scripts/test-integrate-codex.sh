@@ -1956,6 +1956,93 @@ mv "${state}.next" "$state"
 [ "$(jq -r '.boundary_source' "$state")" = "check-run" ] ||
     fail "the state did not record the check-run boundary source: $(jq -c . "$state")"
 
+echo "==> a trigger posted before any check starts is not hidden by a later check-run boundary (harmon-devkit#1014 challenge round 1, finding challenge-r1-codex-adversarial-1)"
+trigger_id=161
+request_time='2026-07-31T08:10:00Z'
+write_defaults
+rm -f "$state"
+# The commit's own dates are genuinely early (not spoofed) -- the check run
+# just hasn't started yet when the real trigger below was posted, which is
+# ordinary CI latency, not an attack. Unconditionally preferring the later
+# check-run boundary (the pre-round-1 shape of this fix) would hide this
+# real trigger; min(commit-date, check-run) must not.
+printf '%s\n' '2026-07-31T07:55:00Z' >"${fixtures}/head-authored-at"
+printf '%s\n' '2026-07-31T07:55:00Z' >"${fixtures}/head-committed-at"
+jq -cn '[{total_count:1,check_runs:[{started_at:"2026-07-31T08:05:00Z"}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn \
+    --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {
+        id:160,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T07:58:00Z"
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq '.reserved_at = "2026-07-31T07:56:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+[ "$(jq -r '.requires_full_window' "$state")" = true ] ||
+    fail "a check-run start later than a genuine prior trigger must not hide it: $(jq -c . "$state")"
+[ "$(jq -r '.previous_trigger_comment_id' "$state")" = 160 ] ||
+    fail "the pre-check-start prior trigger was not recorded: $(jq -c . "$state")"
+[ "$(jq -r '.boundary_source' "$state")" = "commit-date" ] ||
+    fail "the earlier commit-date boundary should have won the comparison: $(jq -c . "$state")"
+[ "$(jq -r '.check_run_boundary' "$state")" = "2026-07-31T08:05:00Z" ] ||
+    fail "the check-run boundary was not recorded even though it lost the comparison: $(jq -c . "$state")"
+
+echo "==> the earliest of several check runs bounds reconstruction, not just the newest (harmon-devkit#1014 challenge round 1, finding challenge-r1-codex-adversarial-1)"
+trigger_id=171
+request_time='2026-07-31T08:40:00Z'
+write_defaults
+rm -f "$state"
+# Commit dates are deliberately late so the check-run boundary must win this
+# comparison on its own -- isolates the multi-run handling from the previous
+# case's commit-date-vs-check-run comparison. Two check runs simulate a
+# rerun: the fixture lists the LATER one first, so a bug trusting array
+# order rather than sorting would miss the true (earlier) boundary. The
+# `filter=all` assertion below is the assertion that actually discriminates
+# this fix from its pre-round-1 shape: this harness's stub returns the same
+# fixture regardless of query string, so it cannot reproduce GitHub's own
+# `filter=latest` default (which collapses each check name to its most
+# recent run and would silently drop the earlier entry this code depends on
+# seeing) -- only a real API call proves that end to end. What this harness
+# CAN prove, and does: the request now explicitly asks for every run, and
+# given every run, the code correctly finds the true minimum rather than the
+# most recently listed one.
+printf '%s\n' '2026-07-31T09:00:00Z' >"${fixtures}/head-authored-at"
+printf '%s\n' '2026-07-31T09:00:00Z' >"${fixtures}/head-committed-at"
+jq -cn '[{total_count:2,check_runs:[
+    {started_at:"2026-07-31T08:30:00Z"},
+    {started_at:"2026-07-31T07:00:00Z"}
+  ]}]' >"${fixtures}/check-runs.pages.json"
+jq -cn \
+    --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {
+        id:170,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T07:15:00Z"
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq '.reserved_at = "2026-07-31T07:10:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+[ "$(jq -r '.requires_full_window' "$state")" = true ] ||
+    fail "the earliest of several check runs must bound reconstruction, not the latest: $(jq -c . "$state")"
+[ "$(jq -r '.previous_trigger_comment_id' "$state")" = 170 ] ||
+    fail "a prior trigger after the earliest (but before the latest) check run was not recorded: $(jq -c . "$state")"
+[ "$(jq -r '.boundary_source' "$state")" = "check-run" ] ||
+    fail "the earlier check-run boundary should have won the comparison: $(jq -c . "$state")"
+[ "$(jq -r '.check_run_boundary' "$state")" = "2026-07-31T07:00:00Z" ] ||
+    fail "the earliest check run's start time was not recorded: $(jq -c . "$state")"
+grep -Fq 'filter=all' "$log" ||
+    fail "attach did not request every check run (filter=all), only the endpoint's default-filtered subset: $(cat "$log")"
+
 echo "==> re-reserving attempt 2 carries the replaced trigger id forward (harmon-devkit#1014 ruling 2)"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'

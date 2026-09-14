@@ -410,7 +410,9 @@ read_state() {
         (.previous_trigger_comment_id | type == "number" and . > 0)) and
       (.timeout_min == null or (.timeout_min | type == "number")) and
       (.boundary_source == null or
-        (.boundary_source == "check-run" or .boundary_source == "commit-date"))
+        (.boundary_source == "check-run" or .boundary_source == "commit-date")) and
+      (.commit_date_boundary == null or (.commit_date_boundary | type == "string")) and
+      (.check_run_boundary == null or (.check_run_boundary | type == "string"))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
 
@@ -971,15 +973,36 @@ attach)
     # head field, so harmon-devkit#1014's original version fell back to the
     # current commit's author/committer dates as a "conservative" boundary —
     # but those are client-controlled: a commit dated at or after a real
-    # prior trigger hides that trigger from reconstruction entirely. The
-    # head's earliest check-run `started_at` is server time — assigned the
-    # moment some check actually ran against this exact head — so it is
-    # preferred whenever at least one check run exists; `boundary_source`
-    # records which one was used (`check-run` or `commit-date`) so a later
-    # reader can tell which boundary a given reconstruction trusted. The
-    # commit-date pair is still fetched unconditionally: it remains the
-    # fallback for a head with no check runs at all (checks not yet
-    # configured, or not yet started).
+    # prior trigger hides that trigger from reconstruction entirely.
+    #
+    # The head's earliest check-run `started_at` is server time, un-spoofable
+    # by the committer — but challenge round 1 (2026-09-14, confirmed
+    # harmon-devkit#1014 finding challenge-r1-codex-adversarial-1) found that
+    # PREFERRING it outright whenever any check run exists — replacing the
+    # commit-date boundary rather than combining the two — reopens the exact
+    # regression class this boundary exists to close, via ordinary CI timing
+    # rather than a spoofed date: (1) a trusted trigger posted immediately
+    # after push, before CI has started any check, lands the earliest
+    # check-run start AFTER that real trigger; (2) a rerun of an existing
+    # check — GitHub's `GET .../check-runs` defaults to `filter=latest`,
+    # which drops the original (earlier) run's `started_at` once that check
+    # is rerun, moving the earliest run this code can see later than the
+    # truth.
+    #
+    # The fix is `min(commit-date boundary, earliest check-run started_at)`,
+    # requesting `filter=all` so a rerun cannot hide the original run's
+    # earlier start. This is provably at least as safe as either boundary
+    # alone: a check run's `started_at` can never predate the commit's own
+    # author/committer dates in any legitimate sequence (CI cannot check a
+    # commit before that commit exists and was pushed), so in the ordinary,
+    # unspoofed case `min()` always equals the commit-date boundary — today's
+    # behavior, unchanged. It defers to the check-run boundary only when the
+    # commit date has been inflated past reality, which is exactly the
+    # original adversarial case this boundary exists to close.
+    # `commit_date_boundary`/`check_run_boundary` name both compared inputs in
+    # state (the latter `null` when no check run exists), and `boundary_source`
+    # names only which one actually won the comparison — a later reader can
+    # audit the comparison itself rather than trust a single opaque label.
     head_payload=$(run_gh api "repos/$state_repo/commits/$state_head") ||
         die "cannot fetch the current head commit for trigger reconstruction"
     printf '%s' "$head_payload" | jq -e --arg head "$state_head" \
@@ -995,22 +1018,26 @@ attach)
         die "current head commit has no usable committer timestamp"
     valid_time "$head_committed_at" ||
         die "current head commit has a malformed committer timestamp"
-    head_trigger_boundary=$head_committed_at
-    if [ "$head_authored_at" \< "$head_trigger_boundary" ]; then
-        head_trigger_boundary=$head_authored_at
+    commit_date_boundary=$head_committed_at
+    if [ "$head_authored_at" \< "$commit_date_boundary" ]; then
+        commit_date_boundary=$head_authored_at
     fi
-    boundary_source=commit-date
     check_run_pages=$(run_gh api --paginate --slurp \
-        "repos/$state_repo/commits/$state_head/check-runs?per_page=100") ||
+        "repos/$state_repo/commits/$state_head/check-runs?filter=all&per_page=100") ||
         die "cannot fetch check runs for trigger reconstruction"
-    earliest_check_run=$(printf '%s' "$check_run_pages" | jq -r '
+    check_run_boundary=$(printf '%s' "$check_run_pages" | jq -r '
           [.[] | (.check_runs // [])[] | .started_at |
             select(type == "string")] | sort | first // empty
         ') || die "cannot classify check-run start times"
-    if [ -n "$earliest_check_run" ]; then
-        valid_time "$earliest_check_run" ||
+    if [ -n "$check_run_boundary" ]; then
+        valid_time "$check_run_boundary" ||
             die "GitHub returned a malformed check-run start time"
-        head_trigger_boundary=$earliest_check_run
+    fi
+    head_trigger_boundary=$commit_date_boundary
+    boundary_source=commit-date
+    if [ -n "$check_run_boundary" ] &&
+        [ "$check_run_boundary" \< "$head_trigger_boundary" ]; then
+        head_trigger_boundary=$check_run_boundary
         boundary_source=check-run
     fi
     issue_comments=$(run_gh api --paginate --slurp \
@@ -1090,14 +1117,19 @@ attach)
         --arg requested_at "$requested_at" \
         --argjson previous_trigger_comment_id "$previous_trigger_comment_id" \
         --argjson requires_full_window "$requires_full_window" \
-        --arg boundary_source "$boundary_source" '
+        --arg boundary_source "$boundary_source" \
+        --arg commit_date_boundary "$commit_date_boundary" \
+        --arg check_run_boundary "$check_run_boundary" '
           .version = 2 |
           .phase = "attached" |
           .trigger_comment_id = $id |
           .requested_at = $requested_at |
           .previous_trigger_comment_id = $previous_trigger_comment_id |
           .requires_full_window = $requires_full_window |
-          .boundary_source = $boundary_source
+          .boundary_source = $boundary_source |
+          .commit_date_boundary = $commit_date_boundary |
+          .check_run_boundary = (if $check_run_boundary == ""
+            then null else $check_run_boundary end)
         ' "$state_file")
     write_state "$state_file" "$payload"
     release_state_lock
