@@ -212,8 +212,9 @@ judgment. The bar, concretely:
   `(<scope>): <imperative outcome>` from `track-work` §5. Generate the
   free-form scope from the chunk's concern, independently of labels; the scope
   is not a request to mint or find a matching taxonomy value. Keep the complete
-  title within 70 Unicode code points and reject a proposed chunk whose title
-  does not pass the canonical title checker.
+  title within the 100-code-point soft limit (hard limit 120; rewrite rather
+  than truncate) and reject a proposed chunk whose title does not pass the
+  canonical title checker.
 - **Acceptance criteria as `- [ ]` task-list items** — what `track-work`'s
   tick machinery and its closing-keyword guard read. Each criterion must be
   adjudicable from the PR's diff and gates; "works well" is not a criterion.

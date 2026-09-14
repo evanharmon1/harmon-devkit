@@ -18,7 +18,7 @@ Usage: check-issue-metadata.sh --repo OWNER/REPO --repo-root PATH
           [--issue-type TYPE] (--agent-authored|--human-authored)
           [--inapplicable area|layer|domain]...
 
-       check-issue-metadata.sh --title-only --title TITLE
+       check-issue-metadata.sh --title-only --title TITLE [--previous-title PREV_TITLE]
 
 Validates a proposed issue without writing to GitHub. The target checkout's
 label-registry.json is authoritative when present; otherwise the checker makes
@@ -28,18 +28,19 @@ have a GitHub remote matching --repo. A proposed member of a manifest
 label exists; the manifest still supplies its policy.
 
 Personal-account example:
-  check-issue-metadata.sh --repo me/project --repo-root . --owner-type personal \\
-    --title '(cache): Reject stale entries' --body-file issue.md \\
-    --work-type-label bug --label area:build --inapplicable layer \\
+  check-issue-metadata.sh --repo me/project --repo-root . --owner-type personal \
+    --title '(cache): Reject stale entries' --body-file issue.md \
+    --work-type-label bug --label area:build --inapplicable layer \
     --label domain:platform --label ai-generated --agent-authored
 
 Organization example:
-  check-issue-metadata.sh --repo org/project --repo-root . --owner-type organization \\
-    --issue-type Bug --title '(cache): Reject stale entries' --body-file issue.md \\
+  check-issue-metadata.sh --repo org/project --repo-root . --owner-type organization \
+    --issue-type Bug --title '(cache): Reject stale entries' --body-file issue.md \
     --label area:build --inapplicable layer --label domain:platform --human-authored
 
 Title-only example (for a proposed retitle):
-  check-issue-metadata.sh --title-only --title '(cache): Reject stale entries'
+  check-issue-metadata.sh --title-only --title '(cache): Reject stale entries' \
+    --previous-title '(cache): Reject stale entries when cache is cold'
 
 Exit: 0 = verified, 1 = authoring-contract violation,
       2 = usage error or indeterminate repository/vocabulary read.
@@ -62,12 +63,18 @@ violation() {
     violations=1
 }
 
+warn() {
+    echo "check-issue-metadata: warning: $*" >&2
+}
+
 repo=""
 repo_root=""
 owner_type=""
 title=""
 title_set=0
 title_only=0
+previous_title=""
+previous_title_set=0
 body_file=""
 issue_type=""
 work_type_label=""
@@ -81,7 +88,7 @@ while [ "$#" -gt 0 ]; do
         help_text
         exit 0
         ;;
-    --repo | --repo-root | --owner-type | --title | --body-file | --issue-type | --work-type-label | --label | --inapplicable)
+    --repo | --repo-root | --owner-type | --title | --body-file | --issue-type | --work-type-label | --label | --inapplicable | --previous-title)
         [ "$#" -ge 2 ] || usage
         case "$1" in
         --repo) repo="$2" ;;
@@ -90,6 +97,11 @@ while [ "$#" -gt 0 ]; do
         --title)
             title="$2"
             title_set=1
+            ;;
+        --previous-title)
+            [ -n "$2" ] || die "--previous-title requires a non-empty title argument"
+            previous_title="$2"
+            previous_title_set=1
             ;;
         --body-file) body_file="$2" ;;
         --issue-type) issue_type="$2" ;;
@@ -118,26 +130,62 @@ while [ "$#" -gt 0 ]; do
 done
 
 validate_title() {
-    local rc=0
     [ -r "$title_module_dir/issue-title.jq" ] ||
         die "shared issue-title predicate is missing"
-    jq -e -n -L "$title_module_dir" --arg value "$title" \
-        'include "issue-title"; $value | issue_title_valid' \
-        >/dev/null 2>&1 || rc=$?
-    case "$rc" in
-    0) ;;
-    1) violation "title violates the canonical '(scope): imperative outcome' contract" ;;
-    *) die "could not evaluate the shared issue-title predicate" ;;
-    esac
+    local diag_json rc=0
+    diag_json="$(jq -n -L "$title_module_dir" --arg value "$title" \
+        'include "issue-title"; $value | issue_title_diagnostics' 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$diag_json" ]; then
+        die "could not evaluate the shared issue-title predicate"
+    fi
+
+    local line
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        warn "$line"
+    done < <(jq -r '.warnings[]' <<<"$diag_json")
+
+    local err_count=0
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        violation "$line"
+        err_count=$((err_count + 1))
+    done < <(jq -r '.errors[]' <<<"$diag_json")
+
+    if [ "$err_count" -eq 0 ]; then
+        local is_valid
+        is_valid="$(jq -r '.valid' <<<"$diag_json")"
+        if [ "$is_valid" != "true" ]; then
+            violation "title violates the canonical '(scope): imperative outcome' contract"
+        fi
+    fi
+}
+
+validate_previous_title() {
+    [ -r "$title_module_dir/issue-title.jq" ] ||
+        die "shared issue-title predicate is missing"
+    local is_trunc rc=0
+    is_trunc="$(jq -r -n -L "$title_module_dir" \
+        --arg prop "$title" --arg prev "$previous_title" \
+        'include "issue-title"; $prop | issue_title_is_truncation($prev)' 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        die "could not evaluate truncation against previous title"
+    fi
+    if [ "$is_trunc" = "true" ]; then
+        violation "proposed title is a truncated prefix of the previous title (rewrite to shorten; never truncate)"
+    fi
 }
 
 if [ "$title_only" -eq 1 ]; then
     [ "$title_set" -eq 1 ] || usage
     [ -z "$repo$repo_root$owner_type$body_file$issue_type$work_type_label$author_type" ] ||
-        die "--title-only accepts only --title"
+        die "--title-only accepts only --title and optional --previous-title"
     [ "${#labels[@]}" -eq 0 ] && [ "${#inapplicable[@]}" -eq 0 ] ||
-        die "--title-only accepts only --title"
+        die "--title-only accepts only --title and optional --previous-title"
     validate_title
+    if [ "$previous_title_set" -eq 1 ]; then
+        validate_previous_title
+    fi
     [ "$violations" -eq 0 ] || exit 1
     echo "check-issue-metadata: issue title verified"
     exit 0
@@ -414,6 +462,9 @@ bash "$asset_dir/parse-issue-markdown.sh" --tasks "$body_file" >>"$rendered_task
 # Title syntax is mechanical. Whether the words form an imperative
 # problem/outcome statement remains a semantic judgment owned by the prose.
 validate_title
+if [ "$previous_title_set" -eq 1 ]; then
+    validate_previous_title
+fi
 
 # Enumerate level-two headings outside fenced code blocks. Unknown level-two
 # headings are rejected: the contract is a skeleton, not a partial ordering
