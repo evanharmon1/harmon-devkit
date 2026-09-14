@@ -140,7 +140,10 @@ repos/*/pulls/*/comments?per_page=100) file=inline.pages.json ;;
 # would otherwise shadow.
 repos/*/pulls/*) file=pr.json ;;
 repos/*/commits/*)
-    jq -cn --arg sha "$(cat "$GH_FIXTURES/resolved-head")" '{sha:$sha}'
+    jq -cn \
+        --arg sha "$(cat "$GH_FIXTURES/resolved-head")" \
+        --arg committed "$(cat "$GH_FIXTURES/head-committed-at")" \
+        '{sha:$sha,commit:{committer:{date:$committed}}}'
     exit 0
     ;;
 *) exit 93 ;;
@@ -217,6 +220,8 @@ write_defaults() {
     printf '%s\n' "$head_sha" >"${fixtures}/head"
     printf '%s\n' "$head_sha" >"${fixtures}/base-head"
     printf '%s\n' "$head_sha" >"${fixtures}/resolved-head"
+    printf '%s\n' '2026-07-31T07:59:00Z' \
+        >"${fixtures}/head-committed-at"
     jq -cn --argjson id "$trusted_trigger_actor_id" \
         '{finders:[],trusted_orchestrator_actor_ids:[$id]}' |
         base64 | tr -d '\n' >"${fixtures}/registry.b64"
@@ -628,6 +633,31 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_accepted review 202
 
+echo "==> a newer valid clean review supersedes an older unrecognized top-level result"
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" '
+    [[{
+      id:203,user:{id:$id,login:$login},
+      created_at:"2026-07-31T08:00:04Z",
+      body:("Codex Review: Didn\u0027t find any major issues.\n\nBut a race remains.\n\n**Reviewed commit:** `" + $prefix + "`")
+    }]]' >"${fixtures}/comments.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+      id:204,user:{id:$id,login:$login},
+      submitted_at:"2026-07-31T08:00:05Z",commit_id:$head,
+      body:"Codex Review: Didn\u0027t find any major issues. Keep it up!"
+    }]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted review 204
+
 # A severity marker anywhere in the body is a finding outright, whatever the
 # verdict line says. This is the protection that still covers the verdict
 # line's own tail: the classifier does not parse that tail, so a badge is what
@@ -968,6 +998,39 @@ assert_accepted review 120
 # here did a human write the rationale that now stands on the PR.
 printf '%s' "$check_out" | jq -e '.detail | test("adjudicated")' >/dev/null ||
     fail "adjudicated-clean did not report a distinct detail: $check_out"
+
+echo "==> an attributed empty-body review with answered inline findings is clean after the window"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+      id:120,user:{id:$id,login:$login},
+      submitted_at:"2026-07-31T08:00:04Z",commit_id:$head,body:""
+    }]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" '
+    [[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$owner,login:"repo-owner"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: the retry path is bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 0 clean
+assert_accepted review 120
 
 # The dangling-shell barrier at the adjudicated-clean exit reads ONLY the
 # adjudication evidence — the bot's current-head findings and the in-thread
@@ -1610,7 +1673,7 @@ jq --arg reserved '2026-07-31T08:15:00Z' '.reserved_at = $reserved' \
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
 if ! jq -e '. as $state |
-    ["acknowledgements", "cycle_requested_at", "previous_trigger_comment_id"] as $keys |
+    ["acknowledgements", "cycle_requested_at"] as $keys |
     all($keys[]; . as $key | $state | has($key) | not)' "$state" >/dev/null; then
     fail "attempt state retained deleted attribution machinery: $(jq -c . "$state")"
 fi
@@ -1738,6 +1801,54 @@ assert_status 11 pending
 run_check '2026-07-31T08:15:00Z'
 assert_status 0 clean
 assert_accepted review 166
+
+echo "==> reconstructed state detects a distinct trusted same-head trigger before attachment"
+trigger_id=124
+request_time='2026-07-31T08:02:00Z'
+write_defaults
+rm -f "$state"
+jq -cn \
+    --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {
+        id:122,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T07:58:00Z"
+      },
+      {
+        id:123,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T08:00:00Z"
+      },
+      {
+        id:125,user:{id:5150,login:"passer-by"},
+        body:"@codex review",created_at:"2026-07-31T08:01:00Z"
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq '.reserved_at = "2026-07-31T08:01:30Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+[ "$(jq -r '.requires_full_window' "$state")" = true ] ||
+    fail "distinct trusted same-head trigger did not enable the full-window rule"
+[ "$(jq -r '.previous_trigger_comment_id' "$state")" = 123 ] ||
+    fail "distinct trusted same-head trigger was not recorded: $(jq -c . "$state")"
+[ "$(grep -Fc 'issues/493/comments?per_page=100' "$log")" -eq 1 ] ||
+    fail "attachment did not read the PR issue comments exactly once: $(cat "$log")"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+      id:167,user:{id:$id,login:$login},
+      submitted_at:"2026-07-31T08:02:04Z",commit_id:$head,
+      body:"Codex Review: Didn\u0027t find any major issues."
+    }]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:03:00Z'
+assert_status 11 pending
+run_check '2026-07-31T08:17:00Z'
+assert_status 0 clean
+assert_accepted review 167
 
 echo "==> pending window uses the attached request clock"
 request_time='2026-07-31T08:01:01Z'
