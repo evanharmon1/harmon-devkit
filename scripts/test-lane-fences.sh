@@ -229,6 +229,97 @@ case "$out" in
 *) fail "copy refusal did not name its out-of-fence source: $out" ;;
 esac
 
+# Introduced one commit at a time (never together), and last among the
+# $fixture-based cases: fence-check's diff is cumulative from the fixture's
+# one fixed comparison base, so either a sibling added before its own
+# assertion, or a later test's fence omitting it, would make it an unfenced
+# offender for the wrong assertion. Reuses every path still live in that
+# cumulative diff at this point (mirrors $copy_fence, plus the copy's own
+# source, which --find-copies-harder keeps re-attributing on every later
+# diff even though its own content never changed).
+bracket_fence="$(jq -cn --arg newline_path "$newline_path" \
+    '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/**"},{"path":"copy-destination.txt"},{"path":"copy-source.txt"},{"path":$newline_path},{"path":"app/[id]/page.tsx"}]')"
+mkdir -p "$fixture/app/[id]"
+printf '%s\n' base >"$fixture/app/[id]/page.tsx"
+git -C "$fixture" add "app/[id]/page.tsx"
+git -C "$fixture" commit -qm "test: add a literal bracketed path"
+make_brief "$tmp/bracket-literal.md" "$bracket_fence"
+(
+    cd "$fixture"
+    "$fence_check" --brief "$tmp/bracket-literal.md"
+) >/dev/null || fail "a literal fence entry containing bracket characters rejected its own exact path"
+
+mkdir -p "$fixture/app/i"
+printf '%s\n' base >"$fixture/app/i/page.tsx"
+git -C "$fixture" add "app/i/page.tsx"
+git -C "$fixture" commit -qm "test: add a path a bracket-glob would collapse the literal entry onto"
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/bracket-literal.md" 2>&1)"; then
+    fail "a literal bracketed fence entry was glob-interpreted to admit a different path"
+fi
+case "$out" in
+*'app/i/page.tsx'*) ;;
+*) fail "bracket-glob refusal did not name the unfenced sibling path: $out" ;;
+esac
+
+echo "== fence-check.sh: resolves the comparison base from the target remote in a fork topology =="
+fork_fixture="$tmp/fork-repo"
+git init -q "$fork_fixture"
+mkdir -p "$fork_fixture/scripts"
+ln -s "$repo/scripts/validate-result-schemas.mjs" "$fork_fixture/scripts/validate-result-schemas.mjs"
+git -C "$fork_fixture" config user.name "Lane Fence Test"
+git -C "$fork_fixture" config user.email "lane-fence@example.invalid"
+printf '%s\n' base >"$fork_fixture/allowed.txt"
+git -C "$fork_fixture" add .
+git -C "$fork_fixture" commit -qm "test: seed fork fixture"
+fork_base="$(git -C "$fork_fixture" rev-parse HEAD)"
+fork_branch="$(git -C "$fork_fixture" branch --show-current)"
+
+# origin is the writable fork and lacks the default branch entirely — no
+# refs/remotes/origin/main at all, the historical bug's exact trigger.
+# upstream carries the real default branch and is what a faked `gh repo
+# view` resolves the PR target to, matching the supported fork topology.
+git -C "$fork_fixture" remote add origin "https://github.com/example-fork/harmon-devkit.git"
+git -C "$fork_fixture" remote add upstream "https://github.com/example-upstream/harmon-devkit.git"
+git -C "$fork_fixture" update-ref refs/remotes/upstream/main "$fork_base"
+
+printf '%s\n' changed >"$fork_fixture/allowed.txt"
+git -C "$fork_fixture" add allowed.txt
+git -C "$fork_fixture" commit -qm "test: change allowed path in fork topology"
+
+awk '
+  /^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=1; next }
+  /^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=0; next }
+  inside && /^```json$/ { fenced=1; next }
+  inside && fenced && /^```$/ { fenced=0; next }
+  inside && fenced { print }
+' "$brief_source" | jq --argjson fence '[{"path":"allowed.txt"}]' --arg base "$fork_base" \
+    --arg worktree "$fork_fixture" --arg report "$tmp/fork-report.md" --arg branch "$fork_branch" \
+    '.fence = $fence | .base_sha = $base | .default_branch = "main" | .worktree_path = $worktree | .report_path = $report | .branch = $branch | .claim_handoff.branch = $branch' \
+    >"$tmp/fork-envelope.json"
+sed -n '1,/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/p' "$brief_source" >"$tmp/fork.md"
+printf '\n```json\n' >>"$tmp/fork.md"
+cat "$tmp/fork-envelope.json" >>"$tmp/fork.md"
+printf '```\n\n' >>"$tmp/fork.md"
+sed -n '/^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/,$p' "$brief_source" >>"$tmp/fork.md"
+
+mkdir -p "$tmp/fakegh"
+cat >"$tmp/fakegh/gh" <<'FAKEGH'
+#!/bin/sh
+if [ "$*" = "repo view --json nameWithOwner --jq .nameWithOwner" ]; then
+    echo "example-upstream/harmon-devkit"
+    exit 0
+fi
+exit 1
+FAKEGH
+chmod +x "$tmp/fakegh/gh"
+
+out="$(cd "$fork_fixture" && PATH="$tmp/fakegh:$PATH" "$fence_check" --brief "$tmp/fork.md" 2>&1)" ||
+    fail "a two-remote fork-topology change was rejected: $out"
+case "$out" in
+*"using remote 'upstream'"*) ;;
+*) fail "fork-topology comparison base did not report the resolved remote: $out" ;;
+esac
+
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
 scan_fixture="$tmp/scan-repo"
 git init -q "$scan_fixture"
@@ -253,9 +344,13 @@ printf '%s\n' 'status baseSha' >"$scan_fixture/scripts/short-key-consumer.sh"
 printf '%s\n' 'go' >"$scan_fixture/scripts/short-enum-consumer.sh"
 printf '%s\n' 'id: short' >"$scan_fixture/short-keys.yaml"
 printf '%s\n' '- name: fixture' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' '"critical-key": value' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' 'id name' >"$scan_fixture/scripts/yaml-key-consumer.sh"
+printf '%s\n' 'critical-key' >"$scan_fixture/scripts/yaml-quoted-key-consumer.sh"
 printf '%s\n' 'id = "short"' >"$scan_fixture/short-keys.toml"
+printf '%s\n' '_secret = "shh"' >>"$scan_fixture/short-keys.toml"
 printf '%s\n' 'id' >"$scan_fixture/scripts/toml-key-consumer.sh"
+printf '%s\n' '_secret' >"$scan_fixture/scripts/toml-underscore-key-consumer.sh"
 isolated_scan_out="$(cd "$scan_fixture" && "$scanner" agent-registry.json)" ||
     fail "isolated dependency scan failed"
 for consumer in \
@@ -280,10 +375,14 @@ yaml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.yaml)" ||
     fail "YAML-key dependency scan failed"
 grep -Fxq scripts/yaml-key-consumer.sh <<<"$yaml_scan_out" ||
     fail "dependency scan missed short or list-mapping YAML keys"
+grep -Fxq scripts/yaml-quoted-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan missed a quoted YAML key"
 toml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.toml)" ||
     fail "TOML-key dependency scan failed"
 grep -Fxq scripts/toml-key-consumer.sh <<<"$toml_scan_out" ||
     fail "dependency scan missed a short TOML key"
+grep -Fxq scripts/toml-underscore-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed an underscore-leading TOML key"
 
 scan_out="$("$scanner" agent-registry.json)" || fail "real-tree dependency scan failed"
 for consumer in \

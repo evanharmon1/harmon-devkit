@@ -74,10 +74,22 @@ for supplied in "$@"; do
             ' "$target"
             ;;
         *.yaml | *.yml)
-            sed -nE 's/^[[:space:]]*(-[[:space:]]+)?([A-Za-z][A-Za-z0-9_.-]{0,79})[[:space:]]*:.*/\2/p' "$target"
+            # Bare keys accept the full [A-Za-z0-9_-] leading charset (dots
+            # allowed inside); a "quoted" or 'quoted' key emits its unquoted
+            # term. Each alternative mutates the matched line on success, so
+            # a line matching one never also matches another.
+            sed -nE \
+                -e 's/^[[:space:]]*(-[[:space:]]+)?"([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})"[[:space:]]*:.*/\2/p' \
+                -e 's/^[[:space:]]*(-[[:space:]]+)?'"'"'([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})'"'"'[[:space:]]*:.*/\2/p' \
+                -e 's/^[[:space:]]*(-[[:space:]]+)?([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})[[:space:]]*:.*/\2/p' \
+                "$target"
             ;;
         *.toml)
-            sed -nE 's/^[[:space:]]*([A-Za-z][A-Za-z0-9_.-]{0,79})[[:space:]]*=.*/\1/p' "$target"
+            sed -nE \
+                -e 's/^[[:space:]]*"([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})"[[:space:]]*=.*/\1/p' \
+                -e 's/^[[:space:]]*'"'"'([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})'"'"'[[:space:]]*=.*/\1/p' \
+                -e 's/^[[:space:]]*([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})[[:space:]]*=.*/\1/p' \
+                "$target"
             ;;
         esac
     } | while IFS= read -r term; do

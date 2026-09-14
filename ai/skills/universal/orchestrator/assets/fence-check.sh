@@ -92,8 +92,60 @@ current_branch="$(git -C "$worktree_path" branch --show-current)" || {
     echo "fence-check: envelope branch $expected_branch does not match worktree branch ${current_branch:-<detached>}" >&2
     exit 1
 }
-comparison_base="$(git -C "$worktree_path" merge-base HEAD "origin/$default_branch" 2>/dev/null)" || {
-    echo "fence-check: could not derive a merge base against origin/$default_branch" >&2
+
+# github.com only, matching this repo's own normalization set
+# (docs/conventions.md § Git transport): a remote's fetch URL is compared
+# against a resolved owner/repo by stripping the same protocol/host forms
+# that set already needs to handle.
+remote_name_with_owner() {
+    local url="$1"
+    case "$url" in
+    https://github.com/*) url="${url#https://github.com/}" ;;
+    http://github.com/*) url="${url#http://github.com/}" ;;
+    git@github.com:*) url="${url#git@github.com:}" ;;
+    ssh://git@github.com/*) url="${url#ssh://git@github.com/}" ;;
+    ssh://git@ssh.github.com:443/*) url="${url#ssh://git@ssh.github.com:443/}" ;;
+    ssh://git@ssh.github.com/*) url="${url#ssh://git@ssh.github.com/}" ;;
+    *) return 1 ;;
+    esac
+    printf '%s\n' "${url%.git}"
+}
+
+# origin is the writable remote in the supported fork topology, not
+# necessarily the PR target — prefer an explicit envelope hint (none of the
+# schema's properties carry one today; this is a no-op read against a future
+# addition, never one added here), else match a configured remote against
+# `gh repo view`'s own fork-aware resolution of the target repo, else fall
+# back to origin so an ordinary non-fork checkout is unaffected.
+resolve_comparison_remote() {
+    local worktree="$1" envelope="$2"
+    local hint target_nwo remote url candidate
+
+    hint="$(jq -r '.target_repo // empty' "$envelope" 2>/dev/null || true)"
+    if [ -n "$hint" ]; then
+        target_nwo="$hint"
+    else
+        target_nwo="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+    fi
+
+    if [ -n "$target_nwo" ]; then
+        while IFS= read -r remote; do
+            url="$(git -C "$worktree" remote get-url "$remote" 2>/dev/null)" || continue
+            candidate="$(remote_name_with_owner "$url")" || continue
+            if [ "$candidate" = "$target_nwo" ]; then
+                printf '%s\n' "$remote"
+                return 0
+            fi
+        done < <(git -C "$worktree" remote)
+    fi
+
+    printf '%s\n' "origin"
+}
+
+comparison_remote="$(resolve_comparison_remote "$worktree_path" "$envelope")"
+echo "fence-check: using remote '$comparison_remote' for the comparison base" >&2
+comparison_base="$(git -C "$worktree_path" merge-base HEAD "$comparison_remote/$default_branch" 2>/dev/null)" || {
+    echo "fence-check: could not derive a merge base against $comparison_remote/$default_branch" >&2
     exit 1
 }
 git -C "$worktree_path" merge-base --is-ancestor "$recorded_base" "$comparison_base" || {
@@ -147,6 +199,29 @@ git -C "$worktree_path" diff -C --find-copies-harder --name-status -z \
 _fence_pattern_parts=()
 _fence_path_parts=()
 
+# A fence entry component matches literally first (exact string compare), so
+# a literal path segment containing glob metacharacters — most commonly a
+# bracket expression such as a Next.js `[id]` route segment — is never
+# glob-interpreted. Pattern matching is a fallback tried only when the
+# component itself contains `*` or `?`; a component made only of `[`...`]`
+# with no `*`/`?` anywhere in it never falls back, so it can only ever match
+# itself.
+component_matches() {
+    local path_part="$1" pattern_part="$2"
+
+    [ "$path_part" = "$pattern_part" ] && return 0
+
+    case "$pattern_part" in
+    *'*'* | *'?'*)
+        case "$path_part" in
+        $pattern_part) return 0 ;;
+        *) return 1 ;;
+        esac
+        ;;
+    *) return 1 ;;
+    esac
+}
+
 match_path_components() {
     local pattern_index="$1"
     local path_index="$2"
@@ -169,12 +244,11 @@ match_path_components() {
     fi
 
     [ "$path_index" -lt "${#_fence_path_parts[@]}" ] || return 1
-    case "${_fence_path_parts[$path_index]}" in
-    $pattern_part)
+    if component_matches "${_fence_path_parts[$path_index]}" "$pattern_part"; then
         match_path_components "$((pattern_index + 1))" "$((path_index + 1))"
-        ;;
-    *) return 1 ;;
-    esac
+    else
+        return 1
+    fi
 }
 
 path_matches_pattern() {
