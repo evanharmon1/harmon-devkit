@@ -196,10 +196,10 @@ valid_time() {
 #
 # Adopting is safe to do retroactively (not just before any `check` has run)
 # because nothing about a `check` verdict is durable: every command
-# re-derives `elapsed` from `reserved_at` and `timeout_min` fresh, on its own
+# re-derives `elapsed` from `requested_at` and `timeout_min` fresh, on its own
 # invocation, against the real clock. There is no cached "attempt 1 timed
 # out" decision anywhere in state for a later adoption to contradict — only
-# `reserved_at` (fixed at reservation) and `timeout_min` (this cycle's
+# `requested_at` (fixed at attachment) and `timeout_min` (this cycle's
 # budget) are persisted, and adoption keeps those two mutually consistent for
 # every command that reads them afterward. The one case that DOES get a
 # second vote is two conflicting EXPLICIT flags — that is not absence
@@ -318,14 +318,21 @@ provider_head() {
 
 run_gh() {
     call_timeout=60
-    if [ -n "${state_reserved:-}" ] && valid_time "$state_reserved"; then
-        reserved_epoch=$(jq -nr \
-            --arg value "$state_reserved" '$value | fromdateiso8601') ||
+    window_anchor=${state_requested:-${state_reserved:-}}
+    if [ -n "$window_anchor" ] && valid_time "$window_anchor"; then
+        anchor_epoch=$(jq -nr \
+            --arg value "$window_anchor" '$value | fromdateiso8601') ||
             return 1
         current_epoch=$(date -u '+%s')
-        remaining=$((reserved_epoch + timeout_min * 60 - current_epoch))
+        remaining=$((anchor_epoch + timeout_min * 60 - current_epoch))
         if [ "$remaining" -le 0 ]; then
-            call_timeout=1
+            # A post-window check still owes one terminal evidence sweep. Give
+            # that sweep an independent normal request budget; reducing every
+            # call to one second here makes a completed remote review look
+            # absent precisely when the checker is deciding its final result.
+            if [ "$command_name" != "check" ]; then
+                call_timeout=1
+            fi
         elif [ "$remaining" -lt "$call_timeout" ]; then
             call_timeout=$remaining
         fi
@@ -397,6 +404,8 @@ read_state() {
       (.head | type == "string") and
       (.attempt == 1 or .attempt == 2) and
       (.phase == "reserved" or .phase == "attached") and
+      (.requires_full_window == null or
+        (.requires_full_window | type == "boolean")) and
       (.timeout_min == null or (.timeout_min | type == "number"))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
@@ -477,14 +486,14 @@ bounded_wait() {
         now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     fi
     valid_time "$now" || die "--now must be an ISO-8601 UTC second"
-    reserved_epoch=$(jq -nr \
-        --arg value "$state_reserved" '$value | fromdateiso8601') ||
-        die "cannot parse reservation time"
+    requested_epoch=$(jq -nr \
+        --arg value "$state_requested" '$value | fromdateiso8601') ||
+        die "cannot parse request time"
     now_epoch=$(jq -nr --arg value "$now" '$value | fromdateiso8601') ||
         die "cannot parse current time"
-    [ "$now_epoch" -ge "$reserved_epoch" ] ||
-        die "--now predates the local reservation"
-    elapsed=$((now_epoch - reserved_epoch))
+    [ "$now_epoch" -ge "$requested_epoch" ] ||
+        die "--now predates the review request"
+    elapsed=$((now_epoch - requested_epoch))
     timeout_seconds=$((timeout_min * 60))
     if [ "$elapsed" -lt "$timeout_seconds" ]; then
         emit pending "$detail"
@@ -499,19 +508,20 @@ bounded_wait() {
 }
 
 require_latest_window_elapsed() {
-    [ "$state_attempt" = "1" ] && return
+    requires_full_window=$(jq -r '.requires_full_window // false' "$state_file")
+    [ "$state_attempt" = "1" ] && [ "$requires_full_window" != "true" ] && return
     if [ -z "$now" ]; then
         now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     fi
     valid_time "$now" || die "--now must be an ISO-8601 UTC second"
-    reserved_epoch=$(jq -nr \
-        --arg value "$state_reserved" '$value | fromdateiso8601') ||
-        die "cannot parse reservation time"
+    requested_epoch=$(jq -nr \
+        --arg value "$state_requested" '$value | fromdateiso8601') ||
+        die "cannot parse request time"
     now_epoch=$(jq -nr --arg value "$now" '$value | fromdateiso8601') ||
         die "cannot parse current time"
-    [ "$now_epoch" -ge "$reserved_epoch" ] ||
-        die "--now predates the local reservation"
-    elapsed=$((now_epoch - reserved_epoch))
+    [ "$now_epoch" -ge "$requested_epoch" ] ||
+        die "--now predates the review request"
+    elapsed=$((now_epoch - requested_epoch))
     timeout_seconds=$((timeout_min * 60))
     if [ "$elapsed" -lt "$timeout_seconds" ]; then
         emit pending "latest attempt window has not elapsed"
@@ -732,12 +742,12 @@ reserve)
         carried_settled=$(jq -c '.settled // []' "$state_file")
     fi
     if [ "$attempt" = "2" ]; then
-        previous_reserved_at=$(jq -r '.reserved_at' "$state_file")
-        valid_time "$previous_reserved_at" ||
-            die "attempt 1 state has an invalid reservation time"
-        previous_reserved_epoch=$(jq -nr \
-            --arg value "$previous_reserved_at" '$value | fromdateiso8601') ||
-            die "cannot parse attempt 1 reservation time"
+        previous_requested_at=$(jq -r '.requested_at' "$state_file")
+        valid_time "$previous_requested_at" ||
+            die "attempt 1 state has an invalid request time"
+        previous_requested_epoch=$(jq -nr \
+            --arg value "$previous_requested_at" '$value | fromdateiso8601') ||
+            die "cannot parse attempt 1 request time"
         # harmon-devkit#223: attempt 2 has no --timeout-min of its own in the
         # documented flow, and even when one is passed it must not silently
         # open a second window — a timeout already persisted on the attempt-1
@@ -756,7 +766,7 @@ reserve)
         persist_adopted_timeout
         current_epoch=$(date -u '+%s')
         [ "$current_epoch" -ge \
-            "$((previous_reserved_epoch + timeout_min * 60))" ] ||
+            "$((previous_requested_epoch + timeout_min * 60))" ] ||
             die "attempt 1 window has not elapsed"
     fi
     # harmon-devkit#223: attempt 1 of a fresh cycle persists a CHOICE only
@@ -826,6 +836,7 @@ reserve)
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
           trigger_comment_id:null,requested_at:null,
+          requires_full_window:false,
           timeout_min:$timeout_min,
           settled:$settled,
           finder:$finder
@@ -924,13 +935,42 @@ attach)
     requested_at=$(printf '%s' "$comment" | jq -er '.created_at')
     valid_time "$requested_at" || die "trigger has a malformed creation time"
 
+    requires_full_window=false
+    if [ "$requested_at" \< "$state_reserved" ]; then
+        # A trigger that predates this local reservation is state-recovery
+        # evidence, not a newly posted first attempt. Accept that inference
+        # only for a trigger author trusted by the merge-base registry, then
+        # conservatively apply the re-trigger full-window rule.
+        trigger_author_id=$(printf '%s' "$comment" |
+            jq -er '.user.id | select(type == "number" and . > 0)') ||
+            die "pre-existing trigger has no usable author identity"
+        # shellcheck source=trusted-registry.sh
+        . "$SCRIPT_DIR/trusted-registry.sh"
+        trigger_registry_dir=$(mktemp -d -t codex-trigger-registry-XXXXXX)
+        resolve_trusted_registry "$state_repo" "$state_pr" \
+            "$trigger_registry_dir/registry.json" || {
+            rm -rf "$trigger_registry_dir"
+            die "cannot authenticate a pre-existing trigger against the trusted actor set"
+        }
+        jq -e --argjson id "$trigger_author_id" '
+          (.trusted_orchestrator_actor_ids // []) | index($id) != null
+        ' "$trigger_registry_dir/registry.json" >/dev/null || {
+            rm -rf "$trigger_registry_dir"
+            die "pre-existing trigger author is not in the trusted actor set"
+        }
+        rm -rf "$trigger_registry_dir"
+        requires_full_window=true
+    fi
+
     payload=$(jq \
         --argjson id "$trigger_id" \
-        --arg requested_at "$requested_at" '
+        --arg requested_at "$requested_at" \
+        --argjson requires_full_window "$requires_full_window" '
           .version = 2 |
           .phase = "attached" |
           .trigger_comment_id = $id |
-          .requested_at = $requested_at
+          .requested_at = $requested_at |
+          .requires_full_window = $requires_full_window
         ' "$state_file")
     write_state "$state_file" "$payload"
     release_state_lock
@@ -1938,19 +1978,20 @@ check)
             # review, which keep their own reply-based path above.
             (if (($review.id? | type) == "number") and
                 ($disposed | index($review.id))
-             then "settled"
+             then {class:"settled",time:$review.submitted_at}
              elif (($review.id? | type) == "number") and
                 ($settled | index($review.id)) and
                 ((has_severity_marker) | not) and
                 is_carrier_only
-             then "settled" else "findings" end)
-           else $class end
-          else "none" end
-          ] |
-          if index("findings") then "findings"
-          elif index("unrecognized") then "unrecognized"
-          elif index("clean") then "clean"
-          else "none" end
+             then {class:"settled",time:$review.submitted_at}
+             else {class:"findings",time:$review.submitted_at} end)
+           else {class:$class,time:$review.submitted_at} end
+          else {class:"none",time:$review.submitted_at} end
+          ] as $classified |
+          if any($classified[]; .class == "findings") then "findings"
+          else ([$classified[] |
+                  select(.class == "unrecognized" or .class == "clean")] |
+                sort_by(.time) | last | .class // "none") end
         ' "$workdir/reviews.json")
     # The reviews this check actually saw for the current head, by ID. The
     # adjudicated-clean fallback below reconciles the two endpoints against
