@@ -817,7 +817,7 @@ jq -n -L "$title_module_dir" \
                  then "blocked-candidate" else empty end),
                 (if ($needs | length) > 0 and $days > $needs_stale
                  then "aging-needs-candidate" else empty end),
-                (if (.title | length) > 70
+                (if (.title | length) > 100
                  then "title-long" else empty end),
                 (if (.title | issue_title_valid | not)
                  then "title-malformed" else empty end),

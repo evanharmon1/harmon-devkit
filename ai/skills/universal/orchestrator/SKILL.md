@@ -27,6 +27,39 @@ explicit merge dependency in both lane briefs.
 
 ## Lane briefs
 
+### File-scope fences
+
+A file-scope fence is the closed list of paths and globs a lane may write. Derive
+it from the issue's named surface, every repository test that asserts on those
+files, and the consumers reported by
+`assets/validator-dependency-scan.sh <path>...` for each manifest, schema, or
+registry in that surface. The scan is a read-only, grep-based inventory of
+consumers under `scripts/`, `ai/skills/**/assets`, `taskfiles/`, and
+`Taskfile.yml`; it finds file names and hard-coded keys, not YAML/TOML scalar
+values. Inspect its candidates and add the validators and tests that would
+reject the lane's change. Release-please's `CHANGELOG.md` is never
+lane-owned and never belongs in a fence; lockfiles are ordinary fence entries.
+
+Across live lanes, enforce one writer per file. When an overlap is unavoidable,
+name the shared file and disjoint sections in both lane briefs' overlap lists
+and record the branch-update or merge dependency that serializes them. A worker
+has one bounded self-expansion route: a validator or test that rejects its
+change and that no other live lane touches, recorded once for that file as
+`YYYY-MM-DD fence expansion: path:line[-line] — reason` in its lane report.
+Verify the dated entry and line scope, reject it if another live fence owns the
+file, and record the accepted expansion as a `run.json` intervention with `kind: asked`.
+The Planning section owns recording the same fact in `plan.json`.
+Every other expansion requires an ownership check and an attributed re-brief
+before the worker edits the file.
+
+Before evaluating the readiness gate, run
+`assets/fence-check.sh --brief <rendered.md>`.
+It derives the comparison base from the brief's default branch, then reports
+whether both sides of every changed path are covered by the rendered envelope
+fence or a labelled expansion in the envelope's `report_path`. Its advisory
+refusal is visible to the orchestrator.
+This pre-gate subset check is not a readiness-gate condition.
+
 The source catalog below is the complete render contract. It deliberately lives
 in this procedure rather than in the dispatched template: substituting free-form
 values into a catalog inside the output would duplicate them into a Markdown
@@ -34,6 +67,7 @@ table before their intended sections.
 
 | Placeholder | Source |
 | --- | --- |
+| `{{brief-envelope-json}}` | JSON serialization of the exact `brief.envelope.schema.json` fact fields; `body` is omitted from the block because the validator derives it from all Markdown outside the delimiters |
 | `{{lane-name}}` | Orchestrator lane plan |
 | `{{run-id}}` | Active run's `run.json` |
 | `{{branch}}` | Lane plan and `git branch --show-current` |
@@ -102,10 +136,16 @@ and bounded remediation implementers, use their schema-bound role briefs and
 return the artifact or fix their dispatch requested; they do not receive this
 draft-publication contract. For a PR-owning lane, the source catalog above is
 the complete input contract: source every value, select the harness procedure
-named by the rendered brief, and refuse dispatch if any `{{name}}` placeholder
-remains. Provision the lane branch/worktree, transactionally refresh the existing
-claim so its record names that exact branch, then authenticate the refreshed
-claim into the handoff snapshot without transferring its ownership.
+named by the rendered brief. Provision the lane branch/worktree, then
+transactionally refresh the existing claim so its record names that exact branch.
+Authenticate the refreshed claim into the handoff snapshot without transferring
+its ownership.
+As a render-time completeness check, scan the entire rendered file and refuse
+dispatch if any unreplaced `{{name}}` token remains. This is the renderer's
+check, not content validation of the opaque body; the `brief` validator checks
+double-brace tokens only inside the envelope block.
+Validate the rendered brief before dispatch and refuse dispatch on any failure:
+`node scripts/validate-result-schemas.mjs brief "$brief_path"`.
 Place the per-attempt report under the common Git directory, or install and
 verify its worktree exclusion before dispatch; an assertion that it is excluded
 is not evidence. Preserve its nonce-scoped sentinels. Prompts sent after dispatch
@@ -164,6 +204,20 @@ exits before the overall run reaches a terminal outcome, re-arm it immediately;
 never interpret monitor termination as human cancellation. If no persistent
 primitive is available, block instead of silently falling back to occasional
 manual polling.
+
+Use `assets/lane-watch.sh` for that polling. Harness monitor primitives may run
+their command under a non-Bash shell, so always invoke the file as
+`bash <skill-dir>/assets/lane-watch.sh --state-file <run-dir>/lane-watch.state --registry
+<kickoff-registry-snapshot> <deadline> <lane:branch:nonce:owner/repo>...`;
+never paste its loop inline. Keep the state file across re-arms so reported
+sentinels and post-promotion activity remain deduplicated. The watcher bounds
+every `herdr` and `gh` read, prefers each lane's `.lane-report.md` sentinel,
+tags pane-only fallback results, and watches reviews plus top-level and inline
+comments for 15 minutes after a draft becomes ready. Keep the registry argument
+bound to the immutable kickoff snapshot across every re-arm. It only reports
+events; the orchestrator remains responsible for every action. The watcher-owned
+`lane-watch.state` is separate from the run's canonical `monitor.json`; never
+pass that JSON monitor state to `--state-file`.
 
 Every emitted transition terminates in a recorded action: idle reads and
 adjudicates the lane status (including any unsupported claim that the user was

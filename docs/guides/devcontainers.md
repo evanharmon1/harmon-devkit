@@ -151,8 +151,10 @@ bot's `apply` still installs its flag-injecting wrapper
 over whatever this installer
 leaves. It is gated on the rendered
 `containerEnv.HARMON_BOT_AUTONOMY_ANTIGRAVITY` marker — turning the Copier
-answer off leaves both files absent rather than downloading anything. The
-settings helper backs up the six policy keys it owns and tracks its
+answer off downloads nothing and removes only a launcher or executable whose
+own durable identity-and-content proof still matches; independent user files
+and symlinks at either name are preserved. The settings helper backs up the
+six policy keys it owns and tracks its
 workspace-trust entry, so turning the Copier option off restores them while
 preserving unrelated settings.
 

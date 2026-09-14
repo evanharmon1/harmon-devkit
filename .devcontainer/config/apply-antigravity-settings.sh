@@ -127,7 +127,9 @@ apply)
     trap 'rm -f "${backup_tmp:-}" "${settings_tmp:-}"' EXIT
     if ! jq -s --arg workspace "$workspace" --argjson keys "$managed_keys" '
         .[0] as $current | .[1] as $policy |
-        ($policy * $current * ($policy | with_entries(select(.key as $k | $keys | index($k) != null)))) |
+        # `+` replaces policy-owned top-level values atomically. A recursive
+        # `*` here would retain stale nested keys from the current settings.
+        (($policy * $current) + ($policy | with_entries(select(.key as $k | $keys | index($k) != null)))) |
         .trustedWorkspaces = (
             (if ($current.trustedWorkspaces | type) == "array"
              then $current.trustedWorkspaces else [] end) + [$workspace] |

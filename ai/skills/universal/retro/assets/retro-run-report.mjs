@@ -47,6 +47,7 @@ import path from 'node:path'
 import process from 'node:process'
 
 const TOOL = 'retro-run-report'
+const MAX_SYNC_BUFFER_BYTES = 64 * 1024 * 1024
 
 const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options]
 
@@ -63,7 +64,7 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
                                evidence as of this instant. Discovery inputs
                                GitHub does not version are NOT reconstructed
                                and stay current-state: the linked-issue set
-                               (the PR's closing references) and the PR body
+                               (the PR's closing and body references) and the PR body
                                the disclosed caps are read from. The report
                                says so wherever it uses one.
   --stats-script <path>        Override harvester discovery (tests, or a
@@ -74,7 +75,14 @@ class UsageError extends Error {}
 class OperationalError extends Error {}
 // Evidence that exists but does not authenticate, or cannot be attributed to
 // one run. Distinct from "no evidence" — see the exit-code table above.
-class IndeterminateError extends Error {}
+class IndeterminateError extends Error {
+  constructor(message, { ignoredHints = [], untrusted = [], malformed = [] } = {}) {
+    super(message)
+    this.ignoredHints = [...ignoredHints]
+    this.untrusted = [...untrusted]
+    this.malformed = [...malformed]
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Arguments
@@ -189,7 +197,7 @@ function validateArgs(args) {
 // prepended to PATH shadows the real gh — the shim pattern the rest of this
 // repository's suites already use.
 function gh(argv) {
-  const result = spawnSync('gh', argv, { encoding: 'utf8' })
+  const result = spawnSync('gh', argv, { encoding: 'utf8', maxBuffer: MAX_SYNC_BUFFER_BYTES })
   if (result.error) {
     throw new OperationalError(`gh ${argv[0]} failed to execute: ${result.error.message}`)
   }
@@ -237,7 +245,10 @@ function fetchComments(repo, number, asOf) {
 
 function repoRoot() {
   try {
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      maxBuffer: MAX_SYNC_BUFFER_BYTES
+    }).trim()
   } catch {
     return null
   }
@@ -378,10 +389,119 @@ function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
   return found
 }
 
-// Prefer the PR's own evidence comments over the issue's: a re-run posts a
-// second run record on the same issue, so "which run is this PR's" is only
-// answerable from PR-bound evidence. Fall back to the linked issues, which is
-// where a run that capped before its PR existed keeps everything.
+function parseBodyDiscovery(body, repo) {
+  const issueNumbers = new Set()
+  const runTokens = new Map()
+  const ignoredHints = []
+  if (typeof body !== 'string') return { issueNumbers, runTokens, ignoredHints }
+
+  // These are the non-closing reference forms the track-work contract emits.
+  // The declaration must own the line (with an optional list marker), so prose,
+  // quotations, and lazy blockquote continuations cannot become lookup inputs.
+  // An explicit owner/repo prefix is accepted only for this repository.
+  const declarationRe = /^[ \t]*(?:(?:[-*+]|[0-9]+[.)])[ \t]+)?(?:refs|addresses|part[ \t]+of)[ \t]+(?=(?:(?:https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull)\/)|(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#)[1-9][0-9]*\b)[^\r\n]*$/gim
+  const referenceRe = /(?<url>https:\/\/github\.com\/(?<urlRepo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?<urlKind>issues|pull)\/(?<urlNumber>[1-9][0-9]*)\b)|(?:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#|#)(?<number>[1-9][0-9]*)\b/gi
+  const declarationLines = []
+  for (const declaration of body.matchAll(declarationRe)) {
+    declarationLines.push(declaration[0])
+    for (const match of declaration[0].matchAll(referenceRe)) {
+      const hintRepo = match.groups.urlRepo || match.groups.repo
+      const issueNumber = Number(match.groups.urlNumber || match.groups.number)
+      const hint = match.groups.url || `${match.groups.repo || ''}#${match.groups.number}`
+      if (hintRepo && hintRepo.toLowerCase() !== repo.toLowerCase()) {
+        ignoredHints.push({
+          hint,
+          tier: 'non-closing reference',
+          reason: `cross-repository reference does not belong to ${repo}`
+        })
+      } else if (match.groups.urlKind && match.groups.urlKind.toLowerCase() === 'pull') {
+        ignoredHints.push({
+          hint,
+          tier: 'non-closing reference',
+          reason: `#${issueNumber} is a pull request, not an issue`
+        })
+      } else {
+        issueNumbers.add(issueNumber)
+      }
+    }
+  }
+
+  // A contributor-controlled body token is only a lookup hint. Its issue
+  // number says where the trusted marker must live; the exact run id still
+  // has to be named by that marker before this tier can select it.
+  const runIdRe = /\brun-(?<number>[1-9][0-9]*)-(?<slug>[A-Za-z0-9._-]+)/g
+  const policyRunLines = body.match(/^[ \t]*(?:[-*][ \t]+)?run(?:[ \t]+(?:id|identity))?[ \t]*:[^\r\n]*$/gim) || []
+  for (const line of [...declarationLines, ...policyRunLines]) {
+    for (const match of line.matchAll(runIdRe)) {
+      const runId = match[0]
+      runTokens.set(runId, Number(match.groups.number))
+    }
+  }
+  return { issueNumbers, runTokens, ignoredHints }
+}
+
+function addIssueRuns(target, issueNumber, runIds) {
+  for (const runId of runIds) {
+    const seen = target.get(runId) || new Set()
+    seen.add(issueNumber)
+    target.set(runId, seen)
+  }
+}
+
+function selectIssueTier(prNumber, tier, runs, sourceSuffix, context) {
+  if (runs.size > 1) {
+    throw new IndeterminateError(
+      `${tier} for PR #${prNumber} carry trusted evidence for more than one run (${[...runs.keys()].sort().join(', ')}) — rerun with --run <run_id>`,
+      context
+    )
+  }
+  if (runs.size === 0) return null
+  const [runId, seen] = [...runs.entries()][0]
+  const where = [...seen].sort((a, b) => a - b).map((n) => `#${n}`).join(', ')
+  return { runId, source: `evidence marker on issue ${where} (${sourceSuffix})` }
+}
+
+function fetchHintRunIds(args, issueNumber, tier, trustedActorIds, untrusted, malformed, ignoredHints) {
+  try {
+    const item = ghJson(['api', `repos/${args.repo}/issues/${issueNumber}`])
+    if (item && item.pull_request) {
+      ignoredHints.push({
+        hint: `issue #${issueNumber}`,
+        tier,
+        reason: `#${issueNumber} is a pull request, not an issue`
+      })
+      return new Set()
+    }
+    return collectRunIds(
+      fetchComments(args.repo, issueNumber, args.asOf || null),
+      trustedActorIds,
+      `issue #${issueNumber}`,
+      untrusted,
+      malformed
+    )
+  } catch (error) {
+    if (!(error instanceof OperationalError)) throw error
+    // Challenge round 2 restructures the round-1 catch-all to the invariant:
+    // only a durable, unusable hint can be ignored. A transient failure leaves
+    // discovery retry-dependent and therefore cannot be treated as absence.
+    if (/\bHTTP (?:404|410)\b/i.test(error.message)) {
+      ignoredHints.push({
+        hint: `issue #${issueNumber}`,
+        tier,
+        reason: error.message
+      })
+      return new Set()
+    }
+    throw new IndeterminateError(
+      `${tier} issue #${issueNumber} could not be read reliably (${error.message}); rerun after GitHub recovers or use --run <run_id>`,
+      { ignoredHints, untrusted, malformed }
+    )
+  }
+}
+
+// Prefer the PR's own evidence comments over closing references, then body
+// non-closing references, then an authenticated body run-id token. Lower tiers
+// can contribute anomaly reporting, but never override a run selected above.
 function discoverRun(args, trustedActorIds) {
   const asOf = args.asOf || null
   const untrusted = []
@@ -398,30 +518,36 @@ function discoverRun(args, trustedActorIds) {
   const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number, asOf), trustedActorIds, `PR #${pr.number}`, untrusted, malformed)].sort()
   if (fromPr.length > 1) {
     throw new IndeterminateError(
-      `PR #${pr.number} carries trusted evidence for more than one run (${fromPr.join(', ')}) — rerun with --run <run_id>`
+      `PR #${pr.number} carries trusted evidence for more than one run (${fromPr.join(', ')}) — rerun with --run <run_id>`,
+      { untrusted, malformed }
     )
   }
   // NOT reconstructed by --as-of, and the report says so. The linked-issue
-  // set comes from the PR's closing references as they stand NOW: GitHub does
-  // not version that link, so a re-link after the cutoff changes which issues
-  // a historical read searches. Rather than patch a fourth current-state
+  // set comes from the PR's closing references and current body as they stand
+  // NOW: GitHub does not version those inputs, so a re-link or body edit after
+  // the cutoff changes which issues a historical read searches. Rather than
+  // patch a fourth current-state
   // input into the cutoff (review round 4's P1, after r2's comment filter and
   // r3's cutoff validation), --as-of is restructured to the invariant it can
   // actually keep: it reconstructs the RUN RECORD and its comment evidence at
   // the cutoff, and every discovery input GitHub does not version is
   // current-state and disclosed as such in the output.
-  const issues = Array.isArray(pr.closingIssuesReferences) ? pr.closingIssuesReferences : []
+  const closingIssues = Array.isArray(pr.closingIssuesReferences) ? pr.closingIssuesReferences : []
+  const closingNumbers = new Set(
+    closingIssues.map((issue) => Number(issue && issue.number)).filter((number) => Number.isInteger(number) && number > 0)
+  )
+  const bodyDiscovery = parseBodyDiscovery(pr.body, args.repo)
+  const ignoredHints = [...bodyDiscovery.ignoredHints]
+  const nonClosingNumbers = new Set([...bodyDiscovery.issueNumbers].filter((number) => !closingNumbers.has(number)))
   // Which issues carried a given run id, not just which ids exist: a run whose
   // record sits on a different issue than the reader expects is worth naming
   // in the report's provenance line rather than reducing to "an issue".
-  const fromIssues = new Map()
-  for (const issue of issues) {
-    const comments = fetchComments(args.repo, issue.number, asOf)
-    for (const runId of collectRunIds(comments, trustedActorIds, `issue #${issue.number}`, untrusted, malformed)) {
-      const seen = fromIssues.get(runId) || new Set()
-      seen.add(issue.number)
-      fromIssues.set(runId, seen)
-    }
+  const closingRuns = new Map()
+  for (const issueNumber of closingNumbers) {
+    closingRuns.set(
+      issueNumber,
+      collectRunIds(fetchComments(args.repo, issueNumber, asOf), trustedActorIds, `issue #${issueNumber}`, untrusted, malformed)
+    )
   }
   // The PR's own run wins, but the linked issues are still SCANNED — the
   // early return that used to skip them meant a redirect attempt or a
@@ -430,19 +556,107 @@ function discoverRun(args, trustedActorIds) {
   // reported (cloud review round 1, confirmed P2). Selection preference and
   // anomaly reporting are different jobs; only the first one short-circuits.
   if (fromPr.length === 1) {
-    return { pr, runId: fromPr[0], source: `evidence marker on PR #${pr.number}`, untrusted, malformed }
+    return {
+      pr,
+      runId: fromPr[0],
+      source: `evidence marker on PR #${pr.number}`,
+      untrusted,
+      malformed,
+      ignoredHints,
+      unverifiedBodyRunIds: []
+    }
   }
-  if (fromIssues.size === 1) {
-    const [runId, seen] = [...fromIssues.entries()][0]
-    const where = [...seen].sort((a, b) => a - b).map((n) => `#${n}`).join(', ')
-    return { pr, runId, source: `evidence marker on issue ${where}`, untrusted, malformed }
+
+  const fromClosing = new Map()
+  for (const issueNumber of closingNumbers) addIssueRuns(fromClosing, issueNumber, closingRuns.get(issueNumber))
+  const closingSelection = selectIssueTier(pr.number, 'the closing references', fromClosing, 'closing reference', {
+    ignoredHints,
+    untrusted,
+    malformed
+  })
+  if (closingSelection) {
+    return { pr, ...closingSelection, untrusted, malformed, ignoredHints, unverifiedBodyRunIds: [] }
   }
-  if (fromIssues.size > 1) {
+
+  const hintIssueNumbers = new Set([...nonClosingNumbers, ...bodyDiscovery.runTokens.values()])
+  if (hintIssueNumbers.size > 10) {
     throw new IndeterminateError(
-      `the issues linked to PR #${pr.number} carry trusted evidence for more than one run (${[...fromIssues.keys()].sort().join(', ')}) — rerun with --run <run_id>`
+      `PR #${pr.number} body carries ${hintIssueNumbers.size} unique non-closing/token issue hints; the discovery limit is 10 — rerun with --run <run_id>`,
+      { ignoredHints, untrusted, malformed }
     )
   }
-  return { pr, runId: null, source: null, untrusted, malformed }
+
+  const hintIssueRuns = new Map(closingRuns)
+  const fromNonClosing = new Map()
+  for (const issueNumber of nonClosingNumbers) {
+    const runIds = fetchHintRunIds(
+      args,
+      issueNumber,
+      'non-closing reference',
+      trustedActorIds,
+      untrusted,
+      malformed,
+      ignoredHints
+    )
+    hintIssueRuns.set(issueNumber, runIds)
+    addIssueRuns(fromNonClosing, issueNumber, runIds)
+  }
+  const nonClosingSelection = selectIssueTier(
+    pr.number,
+    'the non-closing issue references',
+    fromNonClosing,
+    'non-closing reference',
+    { ignoredHints, untrusted, malformed }
+  )
+  if (nonClosingSelection) {
+    return { pr, ...nonClosingSelection, untrusted, malformed, ignoredHints, unverifiedBodyRunIds: [] }
+  }
+
+  const fromBodyTokens = new Map()
+  for (const [runId, issueNumber] of bodyDiscovery.runTokens) {
+    const runIds = hintIssueRuns.has(issueNumber)
+      ? hintIssueRuns.get(issueNumber)
+      : fetchHintRunIds(
+          args,
+          issueNumber,
+          'PR-body run-id token',
+          trustedActorIds,
+          untrusted,
+          malformed,
+          ignoredHints
+        )
+    hintIssueRuns.set(issueNumber, runIds)
+    if (runIds.has(runId)) addIssueRuns(fromBodyTokens, issueNumber, [runId])
+  }
+  const bodyTokenSelection = selectIssueTier(
+    pr.number,
+    'the authenticated PR-body run-id tokens',
+    fromBodyTokens,
+    'PR-body run-id token',
+    { ignoredHints, untrusted, malformed }
+  )
+  if (bodyTokenSelection) {
+    return { pr, ...bodyTokenSelection, untrusted, malformed, ignoredHints, unverifiedBodyRunIds: [] }
+  }
+  const mismatchedBodyTokens = [...bodyDiscovery.runTokens.entries()].flatMap(([runId, issueNumber]) => {
+    const otherRuns = [...(hintIssueRuns.get(issueNumber) || [])].filter((candidate) => candidate !== runId).sort()
+    return otherRuns.length === 0 ? [] : [`${runId} vs ${otherRuns.join(', ')} on issue #${issueNumber}`]
+  })
+  if (mismatchedBodyTokens.length > 0) {
+    throw new IndeterminateError(
+      `PR #${pr.number} carries body run-id token(s) that do not match the trusted evidence on their named issues (${mismatchedBodyTokens.join('; ')}) — rerun with --run <run_id>`,
+      { ignoredHints, untrusted, malformed }
+    )
+  }
+  return {
+    pr,
+    runId: null,
+    source: null,
+    untrusted,
+    malformed,
+    ignoredHints,
+    unverifiedBodyRunIds: [...bodyDiscovery.runTokens.keys()].sort()
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -525,7 +739,10 @@ function resolveTrustedActorArgs(args) {
 function harvestTrajectory(stats, args, runId, trusted) {
   const argv = [...stats.prefix, '--repo', args.repo, '--run', runId, '--json', ...trusted.passthrough]
   if (args.asOf) argv.push('--as-of', args.asOf)
-  const result = spawnSync(stats.command, argv, { encoding: 'utf8' })
+  const result = spawnSync(stats.command, argv, {
+    encoding: 'utf8',
+    maxBuffer: MAX_SYNC_BUFFER_BYTES
+  })
   if (result.error) {
     throw new OperationalError(`${stats.display} failed to execute: ${result.error.message}`)
   }
@@ -804,7 +1021,7 @@ function renderMarkdown(report) {
   if (report.as_of) {
     l.push(`- Reconstructed as of: ${safe(report.as_of)} — **the run record and its comment evidence only.**`)
     l.push(
-      '  Discovery inputs GitHub does not version are **not** reconstructed and are read as they stand now: the **linked-issue set** (the PR\'s closing references, which decide which issues a fallback search reaches) and the **PR body** the disclosed caps above come from. Re-linking an issue, or editing the body, changes those even for a fixed cutoff.'
+      '  Discovery inputs GitHub does not version are **not** reconstructed and are read as they stand now: the **linked-issue set** (the PR\'s closing references plus same-repository non-closing references and run-id issue numbers parsed from its body, which decide which issues a fallback search reaches) and the **PR body** the disclosed caps above come from. Re-linking an issue, or editing the body, changes those even for a fixed cutoff.'
     )
   }
   l.push('')
@@ -986,6 +1203,14 @@ function renderMarkdown(report) {
       )
     }
   }
+  if (report.source.ignored_hints.length === 0) {
+    l.push('- Body discovery hints ignored: 0')
+  } else {
+    l.push(`- Body discovery hints ignored: ${report.source.ignored_hints.length}`)
+    for (const hint of report.source.ignored_hints) {
+      l.push(`  - ${cell(hint.hint)} (${cell(hint.tier)}): ${cell(hint.reason)}`)
+    }
+  }
   l.push('')
 
   l.push('### Not measurable from this run\'s evidence')
@@ -1015,6 +1240,12 @@ function reportIgnoredMarkers(untrusted, malformed) {
   }
 }
 
+function reportIgnoredHints(ignoredHints) {
+  for (const hint of ignoredHints) {
+    console.error(`${TOOL}: ignoring body discovery hint ${hint.hint} (${hint.tier}): ${hint.reason}`)
+  }
+}
+
 function run(argv) {
   const args = parseArgs(argv)
   if (args.help) {
@@ -1037,6 +1268,8 @@ function run(argv) {
   let runIdFrom = args.run ? '--run on the command line' : null
   let untrustedMarkers = []
   let malformedMarkers = []
+  let ignoredHints = []
+  let unverifiedBodyRunIds = []
   if (!runId) {
     try {
       const discovered = discoverRun(args, trusted.ids)
@@ -1045,14 +1278,19 @@ function run(argv) {
       runIdFrom = discovered.source
       untrustedMarkers = discovered.untrusted
       malformedMarkers = discovered.malformed
+      ignoredHints = discovered.ignoredHints
+      unverifiedBodyRunIds = discovered.unverifiedBodyRunIds
     } catch (error) {
       if (!(error instanceof IndeterminateError)) throw error
+      reportIgnoredMarkers(error.untrusted, error.malformed)
+      reportIgnoredHints(error.ignoredHints)
       console.error(`${TOOL}: indeterminate — ${error.message}`)
       return 11
     }
     // Before the no-run-record return, not after: "nothing was found" and
     // "something was found and refused" must never look the same on stderr.
     reportIgnoredMarkers(untrustedMarkers, malformedMarkers)
+    reportIgnoredHints(ignoredHints)
     if (!runId) {
       // "No trusted marker" and "no marker at all" are different answers, and
       // only the second one licenses the fallback. Markers that exist but do
@@ -1084,7 +1322,7 @@ function run(argv) {
         return 11
       }
       console.error(
-        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker at all; use the retro's fallback procedure`
+        `${TOOL}: no-run-record — PR #${args.pr} and its linked issues carry no Dev flow v2 evidence marker at all${unverifiedBodyRunIds.length > 0 ? `; PR-body run-id token(s) ${unverifiedBodyRunIds.join(', ')} had no matching trusted marker and cannot bind a run` : ''}; use the retro's fallback procedure`
       )
       return 10
     }
@@ -1193,7 +1431,8 @@ function run(argv) {
       trusted_actors: trusted.source,
       pr_binding: prBinding,
       ignored_markers: untrustedMarkers,
-      malformed_markers: malformedMarkers
+      malformed_markers: malformedMarkers,
+      ignored_hints: ignoredHints
     },
     trajectory: harvested.trajectory,
     policy,

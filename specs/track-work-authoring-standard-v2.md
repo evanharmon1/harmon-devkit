@@ -57,7 +57,8 @@ Ship one portable issue-authoring contract in `track-work` that:
       independent of labels and `):` followed by exactly one space. Spaces, punctuation,
       Unicode, and capitalization are permitted in the scope; parentheses,
       control characters, and surrounding whitespace are not.
-- [ ] The complete title is at most 70 Unicode code points and the outcome
+- [ ] The complete title is at most 120 Unicode code points (soft limit 100 with
+      a warning; hard limit 120 with an error) and the outcome
       cannot nest an issue-form, Conventional Commit, priority, or bracket
       prefix.
 - [ ] §5 defines this heading order:
@@ -249,8 +250,9 @@ Ship one portable issue-authoring contract in `track-work` that:
 
 ## Open questions
 
-- The mechanically enforced title cap is exactly 70 Unicode code points,
-  including the scope and separator.
+- The mechanically enforced title cap is 120 Unicode code points (soft limit
+  100 with a warning; hard limit 120 with an error), including the scope and
+  separator.
 - Should explicit classification inapplicability be represented by repeatable
   checker flags, a draft metadata file, or another portable input shape? The
   interface must remain easy to invoke immediately before `gh issue create`.

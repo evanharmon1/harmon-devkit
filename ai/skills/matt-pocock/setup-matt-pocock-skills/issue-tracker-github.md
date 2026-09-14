@@ -8,8 +8,8 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
   `(<free-form scope>): <imperative outcome>`. The scope is required and
   independent of labels; it may contain spaces, punctuation, Unicode, and
   capitalization, but not parentheses, control characters, or surrounding
-whitespace. Use `):` followed by exactly one space and keep the whole title within 70
-  Unicode code points. Do not nest `[Bug]:`, `fix:`, `P1:`, or similar prefixes
+whitespace. Use `):` followed by exactly one space and keep the whole title within the 100
+  Unicode code point soft limit (120 hard limit; rewrite, never truncate). Do not nest `[Bug]:`, `fix:`, `P1:`, or similar prefixes
   in the outcome.
 - **Create an issue**: `gh issue create --title "(<scope>): <imperative outcome>" --body "..."`. Use a heredoc for multi-line bodies.
 - **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.

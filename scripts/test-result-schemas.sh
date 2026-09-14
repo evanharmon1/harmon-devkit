@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-result-schemas.sh — schema-check the dev-flow-v2 result/record fixture
+# test-result-schemas.sh — schema-check the dev-flow-v2 brief/result/record fixture
 # corpus (ai/schemas/fixtures/) and exercise the receipt-validation semantic
 # checks scripts/validate-result-schemas.mjs layers on top of raw schema
 # validation.
@@ -33,6 +33,202 @@ command -v node >/dev/null 2>&1 || fail "node is required to validate the result
 [ -f "$validator" ] || fail "missing required asset: $validator"
 
 node scripts/test-result-schema-composition.mjs
+
+# Briefs are rendered Markdown rather than JSON documents. Exercise their
+# dedicated corpus separately so the established result/run fixture walker
+# below remains unchanged apart from skipping this non-JSON directory.
+brief_fixture_dir="$fixtures_dir/brief.envelope"
+brief_valid_count=0
+brief_invalid_count=0
+for f in "$brief_fixture_dir"/valid/*.md; do
+    [ -f "$f" ] || continue
+    brief_valid_count=$((brief_valid_count + 1))
+    if ! out="$(node "$validator" brief "$f" 2>&1)"; then
+        fail "valid brief fixture rejected: $f -> $out"
+    fi
+done
+for f in "$brief_fixture_dir"/invalid/*.md; do
+    [ -f "$f" ] || continue
+    reason_file="${f%.md}.reason"
+    [ -f "$reason_file" ] || fail "invalid brief fixture $f has no sibling .reason file"
+    expected="$(<"$reason_file")"
+    [ -n "$expected" ] || fail "$reason_file is empty"
+    brief_invalid_count=$((brief_invalid_count + 1))
+    if out="$(node "$validator" brief "$f" 2>&1)"; then
+        fail "invalid brief fixture accepted: $f"
+    fi
+    case "$out" in
+    *"$expected"*) ;;
+    *) fail "$f rejected for the wrong reason — expected substring '$expected', got: $out" ;;
+    esac
+done
+[ "$brief_valid_count" -ge 3 ] || fail "brief corpus requires at least 3 valid fixtures"
+[ "$brief_invalid_count" -ge 6 ] || fail "brief corpus requires at least 6 invalid fixtures"
+echo "PASS: brief envelope corpus OK ($brief_valid_count valid, $brief_invalid_count invalid)"
+
+# The deadline cross-check is contextual: it activates only when the rendered
+# record_directory exists. Materialize that context without making a fixture
+# depend on a repository-local absolute path.
+brief_run_dir="$test_tmp/brief-run"
+mkdir -p "$brief_run_dir"
+printf '%s\n' '{"started_at":"2026-09-13T12:01:00Z"}' >"$brief_run_dir/run.json"
+sed "s#/nonexistent/r#$brief_run_dir#" \
+    "$brief_fixture_dir/valid/minimal.md" >"$test_tmp/deadline-before-start.md"
+if out="$(node "$validator" brief "$test_tmp/deadline-before-start.md" 2>&1)"; then
+    fail "brief deadline before run started_at was accepted"
+fi
+case "$out" in
+*'is before run started_at'*) ;;
+*) fail "brief deadline cross-check rejected for the wrong reason: $out" ;;
+esac
+echo "PASS: brief deadline is checked against an existing run record"
+
+# brief.envelope uses rendered Markdown fixtures, so it cannot participate in
+# the JSON fixture/reason coverage walker below. Mutate the valid rendered
+# fixtures instead: every required property is removed once, and every enum is
+# replaced once, then the real brief validator must reject the mutation at the
+# expected schema location.
+node --input-type=module - "$schemas_dir/brief.envelope.schema.json" \
+    "$brief_fixture_dir/valid" "$validator" "$test_tmp/brief-mutations" <<'NODE'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import path from 'node:path'
+
+const [schemaFile, validDir, validator, mutationDir] = process.argv.slice(2)
+const beginMarker = '<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->'
+const endMarker = '<!-- END SCHEMA-BOUND ENVELOPE FACTS -->'
+const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
+
+function loadFixture(file) {
+  const source = readFileSync(file, 'utf8')
+  const begin = source.indexOf(beginMarker)
+  const blockStart = begin + beginMarker.length
+  const openingFence = /^\s*```json\s*\n/.exec(source.slice(blockStart))
+  const jsonStart = openingFence ? blockStart + openingFence[0].length : -1
+  const closingFence = jsonStart === -1 ? null : /\n```[\t ]*(?=\r?\n|$)/.exec(source.slice(jsonStart))
+  const closingFenceEnd = closingFence ? jsonStart + closingFence.index + closingFence[0].length : -1
+  const end = closingFenceEnd === -1 ? -1 : source.indexOf(endMarker, closingFenceEnd)
+  const block = source.slice(begin + beginMarker.length, end).trim()
+  const match = /^```json\s*\n([\s\S]*)\n```$/.exec(block)
+  if (begin === -1 || !openingFence || !closingFence || end === -1 || !match) {
+    throw new Error(`cannot parse valid brief fixture ${file}`)
+  }
+  return { source, begin, end, envelope: JSON.parse(match[1]) }
+}
+
+function collect(node, currentPath, required, enums) {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return
+  for (const name of node.required ?? []) required.push({ parent: currentPath, name })
+  if (Array.isArray(node.enum)) enums.push(currentPath)
+  for (const [name, child] of Object.entries(node.properties ?? {})) {
+    collect(child, [...currentPath, name], required, enums)
+  }
+  if (node.items) collect(node.items, [...currentPath, '*'], required, enums)
+}
+
+function concretePaths(value, pattern, prefix = []) {
+  if (pattern.length === 0) return [prefix]
+  const [part, ...rest] = pattern
+  if (part === '*') {
+    if (!Array.isArray(value)) return []
+    return value.flatMap((entry, index) => concretePaths(entry, rest, [...prefix, index]))
+  }
+  if (value === null || typeof value !== 'object' || !Object.hasOwn(value, part)) return []
+  return concretePaths(value[part], rest, [...prefix, part])
+}
+
+function valueAt(value, concretePath) {
+  return concretePath.reduce((current, part) => current[part], value)
+}
+
+function location(concretePath) {
+  return concretePath.reduce(
+    (result, part) => (typeof part === 'number' ? `${result}[${part}]` : `${result}.${part}`),
+    '$brief'
+  )
+}
+
+function renderMutation(fixture, envelope) {
+  const block = `\n\`\`\`json\n${JSON.stringify(envelope)}\n\`\`\`\n`
+  return fixture.source.slice(0, fixture.begin + beginMarker.length) + block + fixture.source.slice(fixture.end)
+}
+
+const fixtures = readdirSync(validDir)
+  .filter((entry) => entry.endsWith('.md'))
+  .sort()
+  .map((entry) => loadFixture(path.join(validDir, entry)))
+const required = []
+const enums = []
+collect(schema, [], required, enums)
+mkdirSync(mutationDir, { recursive: true })
+
+let failures = 0
+let caseNumber = 0
+function runMutation(kind, pattern, name = null) {
+  let selected
+  const derivedBody = kind === 'required' && pattern.length === 0 && name === 'body'
+  for (const fixture of fixtures) {
+    if (derivedBody) {
+      selected = { fixture, concrete: [] }
+      break
+    }
+    const targets = concretePaths(fixture.envelope, pattern)
+    const concrete = targets.find((candidate) => {
+      const value = valueAt(fixture.envelope, candidate)
+      return name === null || (value !== null && typeof value === 'object' && Object.hasOwn(value, name))
+    })
+    if (concrete) {
+      selected = { fixture, concrete }
+      break
+    }
+  }
+  if (!selected) {
+    console.error(`FAIL: no valid brief fixture contains mutation target ${location(pattern)}${name ? `.${name}` : ''}`)
+    failures += 1
+    return
+  }
+
+  const envelope = structuredClone(selected.fixture.envelope)
+  const target = valueAt(envelope, selected.concrete)
+  const expectedLocation = location(selected.concrete) + (name === null ? '' : `.${name}`)
+  const expected =
+    derivedBody
+      ? '$brief.body: body is absent'
+      : kind === 'required'
+      ? `${location(selected.concrete)}: missing required property ${name}`
+      : `${expectedLocation}: must be one of`
+  if (kind === 'required' && !derivedBody) delete target[name]
+  else {
+    if (!derivedBody) {
+      const parent = valueAt(envelope, selected.concrete.slice(0, -1))
+      parent[selected.concrete.at(-1)] = '__invalid_enum__'
+    }
+  }
+
+  const mutationFile = path.join(mutationDir, `${String(++caseNumber).padStart(3, '0')}-${kind}.md`)
+  const mutation = derivedBody
+    ? selected.fixture.source.slice(
+        selected.fixture.begin,
+        selected.fixture.end + endMarker.length
+      )
+    : renderMutation(selected.fixture, envelope)
+  writeFileSync(mutationFile, mutation)
+  const result = spawnSync(process.execPath, [validator, 'brief', mutationFile], { encoding: 'utf8' })
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
+  if (result.status === 0 || !output.includes(expected)) {
+    console.error(`FAIL: ${kind} mutation at ${expectedLocation} did not produce ${JSON.stringify(expected)}: ${output.trim()}`)
+    failures += 1
+  }
+}
+
+for (const entry of required) runMutation('required', entry.parent, entry.name)
+for (const enumPath of enums) runMutation('enum', enumPath)
+
+if (failures > 0) process.exit(1)
+console.log(
+  `PASS: brief.envelope.schema.json mutation coverage complete (${required.length} required, ${enums.length} enum)`
+)
+NODE
 
 # is_context_only_fixture PATH — true for a fixture the generic per-directory
 # valid/invalid loops below must not validate directly (checked in BOTH —
@@ -148,6 +344,8 @@ for dir in "$fixtures_dir"/*/; do
     # kind, so scripts/test-finder-normalization.sh (task
     # test:finder-normalization) owns it and it is not iterated here.
     [ "$base" = "finder-normalization" ] && continue
+    # brief.envelope is the rendered-Markdown corpus exercised above.
+    [ "$base" = "brief.envelope" ] && continue
     kind="$(kind_for_dir "$base")"
     fixture_dirs_found=$((fixture_dirs_found + 1))
 
@@ -623,9 +821,28 @@ function expect(description, condition) {
   )
 }
 
+// oneOf — exclusive composition. Two matching children must fail, which is
+// the semantic difference from anyOf and the path the disjoint receipt
+// variants cannot exercise themselves.
+{
+  const schema = {
+    oneOf: [
+      { type: 'object', required: ['shared'] },
+      { type: 'object', properties: { shared: { type: 'number' } } }
+    ]
+  }
+  const engine = createSchemaValidator(schema)
+  expect(
+    'oneOf: rejects a value matching two members',
+    engine
+      .validate({ shared: 1 }, schema, '$x')
+      .some((e) => e.includes('must match exactly one schema in oneOf (matched 2)'))
+  )
+}
+
 process.exit(failures === 0 ? 0 : 1)
 NODE
-echo "PASS: engine-level minimum/maximum and if/then/else keyword tests"
+echo "PASS: engine-level minimum/maximum, condition, and composition keyword tests"
 
 # --- Receipt-validation regression tests requiring run context -------------
 # These need an argument no single fixture file can carry on its own (a set
@@ -986,11 +1203,112 @@ accept_context_case \
     "$fixtures_dir/run.schema/valid/ready-with-settled-deferral.json" \
     --adjudication "$settlement_cross_check_adjudication"
 
+# harmon-devkit#961: receipts are part of the run record in every run-kind
+# mode. The generic corpus loop above proves plain `run`; these explicit cases
+# prove the receipt-required and receipt-binding modes accept the same records.
+for receipt_fixture in \
+    "$fixtures_dir/run.schema/valid/receipts-transition-only.json" \
+    "$fixtures_dir/run.schema/valid/receipts-transition-pass.json" \
+    "$fixtures_dir/run.schema/valid/receipts-transition-no-entered-at.json"; do
+    accept_context_case \
+        "a receipt-bearing run is accepted by run --receipt ($(basename "$receipt_fixture"))" \
+        run \
+        "$receipt_fixture" \
+        --no-adjudications --receipt
+
+    accept_context_case \
+        "a receipt-bearing run is accepted by run --receipts ($(basename "$receipt_fixture"))" \
+        run \
+        "$receipt_fixture" \
+        --no-adjudications --receipts "$receipt_fixture"
+done
+
+# Each item-shape violation is already rejected by plain `run` in the corpus
+# loop. Exercise the two flag modes too and require their diagnostics to retain
+# the receipt's array index rather than collapsing to an unlocated oneOf error.
+for malformed_receipt in \
+    receipts-unknown-kind \
+    receipts-missing-stage \
+    receipts-missing-file \
+    receipts-extra-property; do
+    malformed_file="$fixtures_dir/run.schema/invalid/$malformed_receipt.json"
+    run_context_case \
+        "$malformed_receipt is rejected by run --receipt with an indexed diagnostic" \
+        run \
+        "$malformed_file" \
+        '$run.receipts[0]' \
+        --no-adjudications --receipt
+
+    run_context_case \
+        "$malformed_receipt is rejected by run --receipts with an indexed diagnostic" \
+        run \
+        "$malformed_file" \
+        '$run.receipts[0]' \
+        --no-adjudications --receipts "$malformed_file"
+done
+
+receipts_not_array="$fixtures_dir/run.schema/invalid/receipts-not-array.json"
+run_context_case \
+    "a non-array receipts value is rejected by run --receipt" \
+    run \
+    "$receipts_not_array" \
+    '$run.receipts' \
+    --no-adjudications --receipt
+
+run_context_case \
+    "a non-array receipts value is rejected by run --receipts before binding" \
+    run \
+    "$receipts_not_array" \
+    'has a non-array receipts field' \
+    --no-adjudications --receipts "$receipts_not_array"
+
 # harmon-devkit#821: --receipts strict mode — an adjudication whose stage has
 # no transition receipt in the --receipts record is rejected; without the flag,
 # the same fixture is accepted (the adjudication's stage IS in stage_transitions).
 receipts_strict_adjudication="$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.adjudication.json"
 receipts_strict_receipts="$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.receipts.json"
+receipts_split_valid="$test_tmp/receipts-split-valid.json"
+receipts_split_malformed="$test_tmp/receipts-split-malformed.json"
+receipts_split_impossible="$test_tmp/receipts-split-impossible.json"
+
+jq -n \
+    --arg run_id "run-0821-receipts-strict" \
+    '{run_id: $run_id, receipts: [{kind: "transition", stage: "challenge", entered_at: "2026-09-01T00:30:00Z"}]}' \
+    >"$receipts_split_valid"
+jq 'del(.receipts[0].stage)' "$receipts_split_valid" >"$receipts_split_malformed"
+jq '.receipts[0].entered_at = "2026-02-30T00:00:00Z"' \
+    "$receipts_split_valid" >"$receipts_split_impossible"
+
+run_context_case \
+    "a malformed independent --receipts entry is rejected with its index" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    '$receipts.receipts[0]' \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$receipts_split_malformed"
+
+run_context_case \
+    "an impossible independent --receipts timestamp is rejected with its index" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    '$receipts.receipts[0].entered_at' \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$receipts_split_impossible"
+
+accept_context_case \
+    "valid independent --receipts entries authorize their adjudication stage" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$receipts_split_valid"
+
+run_context_case \
+    "an independent --receipts transition must name a stage the run entered" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    '$receipts.receipts[0].stage' \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$fixtures_dir/run.schema/invalid/receipts-stage-not-visited.json"
 
 run_context_case \
     "an --adjudication whose stage has no transition receipt is rejected in --receipts strict mode (#821)" \
@@ -1384,6 +1702,9 @@ function collect(root, schema, currentPath, required, enums, seen) {
     collect(root, child, `${currentPath}.${key}`, required, enums, seen)
   }
   if (schema.items) collect(root, schema.items, `${currentPath}[]`, required, enums, seen)
+  for (const child of schema.oneOf ?? []) {
+    collect(root, child, currentPath, required, enums, seen)
+  }
   for (const key of ['if', 'then', 'else']) {
     if (schema[key]) collect(root, schema[key], currentPath, required, enums, seen)
   }

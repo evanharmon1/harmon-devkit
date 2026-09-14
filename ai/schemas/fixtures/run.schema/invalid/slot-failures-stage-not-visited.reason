@@ -1,0 +1,1 @@
+$run.slot_failures[0].stage: stage review never appears in this run's stage_transitions

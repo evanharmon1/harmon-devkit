@@ -9,7 +9,10 @@
 // Usage:
 //   validate-result-schemas.mjs <kind> <file> [options]
 //
-//   kind: envelope | implementer | challenger | reviewer | integrator | adjudication | run
+//   kind: brief | envelope | implementer | challenger | reviewer | integrator | adjudication | run
+//   `brief` accepts rendered Markdown, extracts the fenced JSON fact block
+//   between the schema-bound-envelope delimiters, derives `body` from every
+//   byte outside that block, then validates brief.envelope.schema.json.
 //   `envelope` dispatches on the instance's own `role` field (after the
 //   envelope schema itself passes) and runs exactly the same payload +
 //   receipt checks as invoking the role's own kind name directly — it is
@@ -148,9 +151,12 @@ import { fileURLToPath } from 'node:url'
 import { createSchemaValidator } from './lib/json-schema-subset.mjs'
 
 const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'ai', 'schemas')
-const KINDS = ['envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run']
+const KINDS = ['brief', 'envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run']
 const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
 const SHA_PATTERN = /^[0-9a-f]{40}$/
+const BRIEF_BEGIN = '<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->'
+const BRIEF_END = '<!-- END SCHEMA-BOUND ENVELOPE FACTS -->'
+const DOUBLE_BRACE_PLACEHOLDER = /\{\{[A-Za-z0-9_-]+\}\}/
 // A bare positive integer (same-repo follow-up) or an owner/repo#N qualified
 // form (a cross-repository follow-up) -- the same qualification track-work's
 // own convention already requires for a bare #<n> anywhere it could mean two
@@ -161,7 +167,7 @@ const ISSUE_NUMBER_PATTERN = /^(?:[1-9][0-9]*|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[
 
 function usage() {
   console.error(
-    'usage: validate-result-schemas.mjs <envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> ' +
+    'usage: validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> ' +
       '[--known-ids <file.json>] [--run-id <id> --initiated-by <human|foreman>] ' +
       '[--pass <file.json> ...] [--known-adjudicated <file.json>] [--adjudication <file.json> ...] ' +
       '[--no-adjudications] [--schemas-dir <dir>] [--receipt] [--receipts <run.json>]'
@@ -203,6 +209,125 @@ function loadJson(file) {
 
 function loadSchema(basename) {
   return loadJson(path.join(SCHEMAS_DIR, basename))
+}
+
+// loadBrief FILE — the Markdown wire format has one machine-readable JSON
+// object and one deliberately opaque body. The body is everything outside
+// the delimited block; it is attached only after parsing so the schema can
+// validate the complete envelope without forcing Markdown through JSON
+// escaping or content rules.
+function loadBrief(file) {
+  let source
+  try {
+    source = fs.readFileSync(file, 'utf8')
+  } catch (error) {
+    return { instance: null, errors: [`$brief: cannot read ${file}: ${error.message}`] }
+  }
+
+  const errors = []
+
+  const begin = source.indexOf(BRIEF_BEGIN)
+  if (begin === -1) {
+    errors.push('$brief: expected an ordered schema-bound envelope delimiter pair')
+    return { instance: null, errors }
+  }
+
+  const blockStart = begin + BRIEF_BEGIN.length
+  const openingFence = /^\s*```json\s*\n/.exec(source.slice(blockStart))
+  if (!openingFence) {
+    errors.push('$brief: envelope block must contain exactly one fenced ```json object')
+    return { instance: null, errors }
+  }
+
+  const jsonStart = blockStart + openingFence[0].length
+  const closingFence = /\n```[\t ]*(?=\r?\n|$)/.exec(source.slice(jsonStart))
+  if (!closingFence) {
+    errors.push('$brief: envelope block must contain exactly one fenced ```json object')
+    return { instance: null, errors }
+  }
+
+  const closingFenceEnd = jsonStart + closingFence.index + closingFence[0].length
+  const end = source.indexOf(BRIEF_END, closingFenceEnd)
+  if (end === -1) {
+    errors.push('$brief: expected an ordered schema-bound envelope delimiter pair')
+    return { instance: null, errors }
+  }
+
+  const block = source.slice(begin + BRIEF_BEGIN.length, end).trim()
+  if (DOUBLE_BRACE_PLACEHOLDER.test(block)) {
+    errors.push('$brief: unresolved double-brace placeholder remains in envelope block')
+  }
+
+  const match = /^```json\s*\n([\s\S]*)\n```$/.exec(block)
+  if (!match) {
+    errors.push('$brief: envelope block must contain exactly one fenced ```json object')
+    return { instance: null, errors }
+  }
+
+  let instance
+  try {
+    instance = JSON.parse(match[1])
+  } catch (error) {
+    errors.push(`$brief: envelope block is not valid JSON: ${error.message}`)
+    return { instance: null, errors }
+  }
+  if (instance === null || typeof instance !== 'object' || Array.isArray(instance)) {
+    errors.push('$brief: envelope block must parse to a JSON object')
+    return { instance: null, errors }
+  }
+  if (Object.hasOwn(instance, 'body')) {
+    errors.push('$brief.body: must be supplied as Markdown outside the envelope block')
+  }
+
+  const body = source.slice(0, begin) + source.slice(end + BRIEF_END.length)
+  if (body.trim() === '') {
+    errors.push('$brief.body: body is absent; Markdown must exist outside the envelope block')
+  } else {
+    instance.body = body
+  }
+  return { instance, errors }
+}
+
+function checkBriefFacts(instance, errors) {
+  if (instance.branch !== instance.claim_handoff.branch) {
+    errors.push(
+      `$brief.branch: ${JSON.stringify(instance.branch)} does not match claim_handoff.branch ${JSON.stringify(instance.claim_handoff.branch)}`
+    )
+  }
+
+  const nonce = instance.sentinels.attempt_nonce
+  const terminalFields = ['ready', 'handoff', 'blocked']
+  for (const field of terminalFields) {
+    if (!instance.sentinels[field].endsWith(`-${nonce}`)) {
+      errors.push(`$brief.sentinels.${field}: sentinel ${JSON.stringify(instance.sentinels[field])} must end with -${nonce}`)
+    }
+  }
+  const terminalValues = terminalFields.map((field) => instance.sentinels[field])
+  if (new Set(terminalValues).size !== terminalValues.length) {
+    errors.push('$brief.sentinels: ready, handoff, and blocked must be pairwise distinct')
+  }
+
+  if (!isRealInstant(instance.deadline)) {
+    errors.push(`$brief.deadline: ${JSON.stringify(instance.deadline)} is not a real instant`)
+    return
+  }
+
+  if (!fs.existsSync(instance.record_directory)) return
+  const runFile = path.join(instance.record_directory, 'run.json')
+  let run
+  try {
+    run = JSON.parse(fs.readFileSync(runFile, 'utf8'))
+  } catch (error) {
+    errors.push(`$brief.record_directory: cannot read a valid run.json from ${instance.record_directory}: ${error.message}`)
+    return
+  }
+  if (!run || typeof run.started_at !== 'string' || !isRealInstant(run.started_at)) {
+    errors.push(`$brief.record_directory: ${runFile} has no real started_at instant`)
+    return
+  }
+  if (Date.parse(instance.deadline) < Date.parse(run.started_at)) {
+    errors.push(`$brief.deadline: ${instance.deadline} is before run started_at ${run.started_at}`)
+  }
 }
 
 // loadIdArray FILE FLAG — a JSON array of strings, or exit 1 naming exactly
@@ -2235,6 +2360,98 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
   }
 }
 
+// checkReceiptVariants — oneOf deliberately reports only its stable indexed
+// summary, so validate the discriminated receipt branch as well. Besides a
+// useful field-level diagnostic, this keeps the negative-fixture coverage
+// audit capable of proving every variant requirement and enum constraint.
+function checkReceiptVariants(document, runSchema, location, errors) {
+  if (!Array.isArray(document.receipts)) return
+  const branches = runSchema.properties.receipts.items.oneOf
+  for (const [index, receipt] of document.receipts.entries()) {
+    if (receipt === null || typeof receipt !== 'object' || Array.isArray(receipt)) continue
+    const candidates = Object.hasOwn(receipt, 'kind')
+      ? branches.filter((branch) => branch.properties.kind.const === receipt.kind)
+      : branches
+    for (const branch of candidates) {
+      errors.push(...validateAgainst(branch, receipt, `${location}.receipts[${index}]`))
+    }
+  }
+}
+
+// checkEvidenceStagesVisited — receipts and slot failures are trusted stage
+// evidence, so neither may name a confidence stage absent from the run's
+// canonical stage history. Membership is deliberately the whole contract:
+// occurrence ordering and timestamp binding remain the exit engine's job.
+function checkEvidenceStagesVisited(document, receiptsRecord, receiptLocation, errors) {
+  const visitedStages = new Set((document.stage_transitions ?? []).map((transition) => transition.stage))
+  for (const [index, receipt] of (receiptsRecord.receipts ?? []).entries()) {
+    if (
+      receipt !== null &&
+      typeof receipt === 'object' &&
+      receipt.kind === 'transition' &&
+      typeof receipt.stage === 'string' &&
+      !visitedStages.has(receipt.stage)
+    ) {
+      errors.push(
+        `${receiptLocation}.receipts[${index}].stage: stage ${receipt.stage} never appears in this run's stage_transitions`
+      )
+    }
+  }
+  if (receiptsRecord !== document) return
+  for (const [index, failure] of (document.slot_failures ?? []).entries()) {
+    if (typeof failure.stage === 'string' && !visitedStages.has(failure.stage)) {
+      errors.push(
+        `$run.slot_failures[${index}].stage: stage ${failure.stage} never appears in this run's stage_transitions`
+      )
+    }
+  }
+}
+
+// checkSlotFailureKeys — a slot has at most one terminal failure record per
+// logical round. Conflicting records cannot be resolved by array order because
+// both reason and head feed the exit decision.
+function checkSlotFailureKeys(document, errors) {
+  const firstIndexByKey = new Map()
+  for (const [index, failure] of (document.slot_failures ?? []).entries()) {
+    const key = JSON.stringify([failure.stage, failure.round, failure.slot])
+    const firstIndex = firstIndexByKey.get(key)
+    if (firstIndex !== undefined) {
+      errors.push(
+        `$run.slot_failures[${index}]: duplicates slot_failures[${firstIndex}] key (${failure.stage}, ${failure.round}, ${failure.slot})`
+      )
+      continue
+    }
+    firstIndexByKey.set(key, index)
+  }
+}
+
+// checkReceiptsRecord — an independent --receipts file is a run-directory
+// subset, not necessarily a complete persisted run record. Validate the two
+// fields strict mode trusts with the canonical run schema definitions before
+// using that file to authorize any adjudication stage.
+function checkReceiptsRecord(document, receiptsRecord, runSchema, errors) {
+  const contextSchema = {
+    type: 'object',
+    required: ['run_id', 'receipts'],
+    properties: {
+      run_id: runSchema.properties.run_id,
+      receipts: runSchema.properties.receipts
+    }
+  }
+  errors.push(...validateAgainst(contextSchema, receiptsRecord, '$receipts'))
+  checkReceiptVariants(receiptsRecord, runSchema, '$receipts', errors)
+  checkTimestampRealness(receiptsRecord, errors, '$receipts')
+  checkEvidenceStagesVisited(document, receiptsRecord, '$receipts', errors)
+  if (
+    typeof receiptsRecord.run_id === 'string' &&
+    receiptsRecord.run_id !== document.run_id
+  ) {
+    errors.push(
+      `$run: --receipts record has run_id ${receiptsRecord.run_id}, not this run's own run_id ${document.run_id}`
+    )
+  }
+}
+
 // checkAdjudicationsAgainstReceipts — strict mode (--receipts): every supplied
 // --adjudication document's stage must have a corresponding transition receipt
 // in the run record's receipts array. This mirrors how dev-flow-exit.mjs
@@ -2243,15 +2460,6 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
 // is a document about an event the log never recorded. Without --receipts,
 // this check does not run and adjudications are trusted as-is.
 function checkAdjudicationsAgainstReceipts(document, receiptsRecord, adjudications, errors) {
-  if (typeof receiptsRecord.run_id !== 'string' || receiptsRecord.run_id === '') {
-    errors.push('$run: --receipts record has no valid run_id (must be a non-empty string)')
-    return
-  }
-  if (receiptsRecord.run_id !== document.run_id) {
-    errors.push(
-      `$run: --receipts record has run_id ${receiptsRecord.run_id}, not this run's own run_id ${document.run_id}`
-    )
-  }
   const receipts = Array.isArray(receiptsRecord.receipts) ? receiptsRecord.receipts : []
   const transitionStages = new Set(
     receipts
@@ -2622,6 +2830,18 @@ function checkTimestampRealness(value, errors, location) {
 
 function main() {
   const { kind, file, options } = parseArgs(process.argv.slice(2))
+  if (kind === 'brief') {
+    const loaded = loadBrief(file)
+    const errors = loaded.errors
+    if (loaded.instance && errors.length === 0) {
+      const schema = loadSchema('brief.envelope.schema.json')
+      errors.push(...validateAgainst(schema, loaded.instance, '$brief'))
+      if (errors.length === 0) checkBriefFacts(loaded.instance, errors)
+      checkTimestampRealness(loaded.instance, errors, '$brief')
+    }
+    report(errors, 'brief envelope OK')
+    return
+  }
   const instance = loadJson(file)
   const role = kind === 'envelope' ? instance.role : kind
   checkReceiptRequirements(kind, role, options)
@@ -2642,7 +2862,13 @@ function main() {
   if (kind === 'run') {
     const schema = loadSchema('run.schema.json')
     const errors = validateAgainst(schema, instance, '$run')
+    checkReceiptVariants(instance, schema, '$run', errors)
     if (errors.length === 0) {
+      checkEvidenceStagesVisited(instance, instance, '$run', errors)
+      checkSlotFailureKeys(instance, errors)
+      if (options.receiptsRecord) {
+        checkReceiptsRecord(instance, options.receiptsRecord, schema, errors)
+      }
       checkSettlements(instance, errors)
       checkSplits(instance, errors)
       checkEvidenceMarkerRunId(instance, errors)

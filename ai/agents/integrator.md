@@ -298,6 +298,7 @@ command and check its exit status before the next external write — never
 collapse them into one `&&`/`;` chain. A chain that fails partway hides which
 link broke, and a `;`-separated tail keeps running after a failure and
 reports on a cycle that never happened.
+Run the poll loop strictly sequentially in the foreground, never as a background task.
 
 **Inspect the state file yourself before calling `reserve` — do not call it
 unconditionally and branch on what it reports.** `reserve --attempt 1`

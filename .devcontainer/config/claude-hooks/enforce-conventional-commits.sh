@@ -11,8 +11,7 @@ input="$(cat)"
 command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 [[ -n "$command" ]] || exit 0
 
-# Only police `git commit` invocations.
-grep -qE 'git[[:space:]]+commit\b' <<<"$command" || exit 0
+grep -E 'git[[:space:]]+commit\b' <<<"$command" >/dev/null || exit 0
 
 # Extract the -m / --message argument. Supports single and double quotes,
 # and the heredoc form `git commit -m "$(cat <<'EOF' ... EOF)"`.

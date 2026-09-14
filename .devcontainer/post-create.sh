@@ -11,7 +11,7 @@ export DEVCONTAINER_GH_AUTH="token"
 
 # Ordering is load-bearing (AGENTS.md;
 # https://github.com/evanharmon1/harmon-init/tree/main/openspec/changes/archive/2026-09-05-bot-autonomy-bootstrap):
-#   (i)   post-create-common.sh — ownership fixing and, on Coder, the
+#   (i)   post-create-common.sh — workspace permissions and, on Coder, the
 #         persistent-volume symlink setup MUST run before anything below
 #         writes into those directories, or a write lands as the wrong owner
 #         or into container-local storage the Coder block would later
@@ -36,9 +36,19 @@ bash .devcontainer/scripts/bot-autonomy.sh verify
 
 # Install repo-managed git hooks (source of truth: .devcontainer/hooks/).
 # This replaces the default git-lfs hooks with versions that also handle
-# auto-installing node_modules in new worktrees.
-if [ -d .devcontainer/hooks ]; then
+# auto-installing node_modules in new worktrees. Only these named hooks are
+# copied or chmodded; Git's sample hooks are left untouched.
+install_repo_managed_hooks() {
+    local hook hook_name target
+
+    [ -d .devcontainer/hooks ] || return 0
     echo "==> Installing git hooks from .devcontainer/hooks/..."
-    cp .devcontainer/hooks/* .git/hooks/
-    chmod +x .git/hooks/*
-fi
+    for hook in .devcontainer/hooks/*; do
+        [ -f "$hook" ] || continue
+        hook_name="$(basename "$hook")"
+        target=".git/hooks/$hook_name"
+        cp "$hook" "$target"
+        chmod +x "$target" || true
+    done
+}
+install_repo_managed_hooks

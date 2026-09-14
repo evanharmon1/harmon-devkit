@@ -12,7 +12,7 @@ command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 [[ -n "$command" ]] || exit 0
 
 # Only police `git commit` invocations.
-grep -qE 'git[[:space:]]+commit\b' <<<"$command" || exit 0
+grep -E 'git[[:space:]]+commit\b' <<<"$command" >/dev/null || exit 0
 
 msg=""
 
@@ -56,8 +56,7 @@ for seg in segments:
         sys.exit(0)
 ' "$command")"
 else
-    # Fallback if Python is unavailable
-    if grep -q "<<'EOF'" <<<"$command"; then
+    if grep "<<'EOF'" <<<"$command" >/dev/null; then
         msg="$(printf '%s' "$command" | awk "/<<'\''?EOF'\''?/{flag=1; next} /^EOF\$/{flag=0} flag" | head -n1)"
     fi
     if [[ -z "$msg" ]]; then

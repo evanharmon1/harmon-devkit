@@ -122,8 +122,8 @@ module_executable() {
 
 # module_always_dispatch <module-slug>  — true when apply/verify must run
 # regardless of whether the module's declared executable is currently on
-# PATH. Antigravity's own agy presence is exactly what apply/verify manage
-# (ensure-antigravity-cli.sh removes it when the Copier option is disabled)
+# PATH. Antigravity's managed agy state is exactly what apply/verify manage
+# (ensure-antigravity-cli.sh removes owned remnants when the option is disabled)
 # — gating dispatch on "agy is on PATH" skips the disabled branch's
 # settings restore precisely when the option is being disabled, the
 # opposite of the intent. A module opts in via an `always_dispatch`

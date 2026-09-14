@@ -292,7 +292,7 @@ grep -q '\.claude' <<<"$warn_output" ||
 
 echo "==> post-create wires Coder persistence before the helper and the seed"
 post_create=".devcontainer/scripts/post-create-common.sh"
-line_of() { grep -n "$1" "$post_create" | head -1 | cut -d: -f1; }
+line_of() { grep -m1 -n "$1" "$post_create" | cut -d: -f1; }
 coder_line="$(line_of 'Coder persistent volume symlinks')"
 opencode_line="$(line_of 'persist-opencode\.sh')"
 helper_line="$(line_of 'link-claude-json\.sh$')"

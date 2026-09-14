@@ -6,10 +6,11 @@ tests against at a pinned tag ([foreman#182](https://github.com/ponderousdev/for
 Filenames and field names are a contract on merge — [#635](https://github.com/evanharmon1/harmon-devkit/issues/635)–[#639](https://github.com/evanharmon1/harmon-devkit/issues/639)
 reference them.
 
-## The eight schemas
+## The nine schemas
 
 | File | Validates | Authored by |
 |---|---|---|
+| `brief.envelope.schema.json` | The closed machine-fact envelope around an orchestrator lane brief's opaque Markdown body. | orchestrator |
 | `result.envelope.schema.json` | The common envelope every agent result returns: `schema`, `role`, `status`, `head`, `produced_at`, `producer`, `run`, `payload`. **Envelope-only, on purpose** — `payload` stays untyped here; it deliberately does not dispatch to a per-role payload shape (see "Composition" below). | An agent (implementer/challenger/reviewer/integrator role) |
 | `result.implementer.schema.json` | The shape of `payload` when `role: implementer`. Backward-compatible with Foreman v1's flat `result.json`. | implementer |
 | `result.challenger.schema.json` | The shape of `payload` when `role: challenger` — one **pass** (one finder's contribution to the challenge stage): attack scenarios, design-level findings, and de-scaffolding recommendations. Shares its finding core field-for-field with `result.reviewer.schema.json` (agent-registry.json #635) so one evaluator computes over both. | challenger |
@@ -25,6 +26,26 @@ agent file under `ai/agents/` (see the spec's "Roles and authority" table) — s
 `adjudication.schema.json` and `run.schema.json` are validated as complete
 top-level documents, never as an envelope's `payload`.
 
+## Brief envelope and Markdown body
+
+Rendered lane briefs keep their human-facing format. Between the existing
+`BEGIN SCHEMA-BOUND ENVELOPE FACTS` and `END SCHEMA-BOUND ENVELOPE FACTS`
+comments, one fenced `json` object serializes every machine-read fact except
+`body`. The `brief` validator kind derives `body` from all Markdown outside the
+delimiters, then validates the combined object against
+`brief.envelope.schema.json`. This preserves arbitrary body headings, prose,
+and instructions without JSON escaping or content lint while keeping the fact
+set closed.
+
+In addition to schema validation, the `brief` kind rejects any unresolved
+double-brace placeholder inside the envelope block, requires the brief branch
+to equal `claim_handoff.branch`, requires all three terminal sentinels to end
+in `-<attempt_nonce>`, and—when `record_directory` exists—requires the deadline
+to be no earlier than that run's `run.json.started_at`. The body remains opaque
+to this validator, including when it quotes a literal double-brace example.
+The orchestrator renderer separately checks its entire rendered output for
+unreplaced template tokens before dispatch.
+
 ## Composition: how envelope and payload fit together
 
 `result.envelope.schema.json` declares `payload: { type: "object" }` —
@@ -37,7 +58,7 @@ resolves which one applies:
 3. Validate `instance.payload` against `result.<role>.schema.json`'s own root.
 
 This is `scripts/validate-result-schemas.mjs`'s job (`<kind> <file>`, where
-`kind` is `envelope | implementer | challenger | reviewer | integrator |
+`kind` is `brief | envelope | implementer | challenger | reviewer | integrator |
 adjudication | run`). **`kind: envelope` is a convenience for "I don't already
 know the role," not a payload-blind mode** — it runs steps 2 and 3 (and every
 receipt check the role-named `kind` would) by reading `role` off the instance
@@ -143,6 +164,17 @@ instance entirely (another document in the same run, a run_id the caller
 already knows is active). The spec calls this layer **receipt validation**
 (§ Results) and it is deliberately a script responsibility, not a schema
 keyword, for every one of these:
+
+`run.schema.json` does validate the structure of the evidence collections it
+can see. Its optional `receipts[]` is a closed `oneOf`: a transition is exactly
+`{kind: "transition", stage, entered_at?}` and a pass is exactly
+`{kind: "pass", file}`. The optional `entered_at` preserves compatibility with
+pre-schema receipt producers; when present, it keeps the shared timestamp
+shape and real-instant semantics. Its optional `slot_failures[]` entries are exactly
+`{stage, round, slot, reason, head?}`, with confidence-stage names, the two
+engine reasons, and an optional 40-character lowercase-hex head. Structural
+validation therefore rejects malformed entries before the cross-document and
+sequence checks below run; those later checks remain script responsibilities.
 
 - **Head agreement** — a reviewer payload's `reviewed_head`, and an
   integrator payload's `codex_cycle.head` / `codex_cycle.accepted.reviewed_commit`
@@ -1288,7 +1320,7 @@ commit; `finder` is `codex-cli` throughout, matching the ledger.
 ## Running the validator
 
 ```sh
-node scripts/validate-result-schemas.mjs <envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> \
+node scripts/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> \
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
   [--pass <envelope.json> ...] [--known-adjudicated <ids.json>] \
   [--adjudication <file.json> ... | --no-adjudications] \
@@ -2036,7 +2068,8 @@ order").
 (`specs/dev-flow-v2.md`'s "Producer-supplied `produced_at` SHALL be only a
 bounded sanity check ... never an ordering ... boundary" — ordering is the
 orchestrator's own receipt order, recorded as it happens, not reconstructed
-from timestamps): an ordered list of `{kind: "transition", stage}` and
+from timestamps): an ordered list of
+`{kind: "transition", stage, entered_at?}` and
 `{kind: "pass", file}` entries. A pass with no `"pass"` receipt entry, one
 naming a `run_id`/`initiated_by` other than `run.json`'s own, or one with no
 preceding `"transition"` receipt into its own `payload.stage`, is rejected
@@ -2474,20 +2507,16 @@ commit.
   field as present. Value-type validation for a genuine v2 field stays a
   separate, already-enforced concern (`resolveRounds`'s own checks).
 
-Two findings were confirmed but filed as follow-ups rather than resolved
-in this final round, both requiring cross-lane coordination this lane
-cannot resolve unilaterally: the canonical `ai/schemas/run.schema.json`
-has `additionalProperties: false` and defines neither `receipts` nor
-`slot_failures` — the exact fields `dev-flow-exit.mjs`'s `validateReceipts`
-requires — so a schema-valid production `run.json` cannot actually supply
-the evidence this reader needs, and this reader's own fixture `run.json`
-files would themselves fail validation against the canonical schema as it
-stands today
-([#727](https://github.com/evanharmon1/harmon-devkit/issues/727)). And a
-request to validate the complete strategy vocabulary (noncanonical
-strategy names, malformed `topology`/`planning`/`delegation` values, not
-only the `coordination`/`synthesis` fields the anchor-rule check actually
-reads) was declined rather than filed — round 3 already made this an
+One of the two findings deferred from this final round is now resolved:
+`ai/schemas/run.schema.json` defines the `receipts` and `slot_failures`
+collections that `dev-flow-exit.mjs` consumes, so a structurally valid
+production `run.json` can retain that evidence instead of deleting it to pass
+schema validation. The engine still owns cross-entry chronology and backing
+pass checks, which require the run directory rather than one JSON document.
+The other finding requested validation of the complete strategy vocabulary
+(noncanonical strategy names and malformed `topology`/`planning`/`delegation`
+values, not only the `coordination`/`synthesis` fields the anchor-rule check
+actually reads) and was declined rather than filed — round 3 already made this an
 explicit, reasoned scope decision (validate only the fields a
 demonstrated exploit path reads, not the full vocabulary), and re-raising
 the same boundary a round later doesn't change that reasoning.
