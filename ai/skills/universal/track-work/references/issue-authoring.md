@@ -10,9 +10,9 @@ Write `(<scope>): <imperative problem/outcome statement>`. The required scope
 is free-form and independent of labels. It may contain spaces, punctuation,
 Unicode, and capitalization, but not parentheses, control characters, or
 surrounding whitespace. Use `):` followed by exactly one space. The required outcome
-also has no surrounding whitespace. The checker enforces a hard ceiling of 70
-Unicode code points over the whole title and rejects these nested prefixes in
-the outcome:
+also has no surrounding whitespace. The checker enforces a soft limit of 100
+Unicode code points (warn) and a hard limit of 120 Unicode code points (fail)
+over the whole title and rejects these nested prefixes in the outcome:
 
 - issue-form prefixes such as `[Bug]:`;
 - Conventional Commit prefixes such as `fix:` or `feat(parser):`;
@@ -22,11 +22,16 @@ the outcome:
 Whether the wording is genuinely imperative is a semantic authoring judgment,
 not something the checker guesses from natural language.
 
-For a proposed retitle, validate only the title:
+Shorten an over-long title by rewriting and moving detail into the body, never
+by truncating or cutting characters off the end. A retitle of an issue whose
+body is empty must first copy the full original title into the body.
+
+For a proposed retitle, validate the title and guard against truncation:
 
 ```sh
 <skill-dir>/assets/check-issue-metadata.sh --title-only \
-  --title '(delivery queue): Reject stale dispatches'
+  --title '(delivery queue): Drop expired payloads' \
+  --previous-title '(delivery queue): Reject stale dispatches when queue is full'
 ```
 
 ## Canonical body

@@ -396,7 +396,9 @@ tasks:
       - test:finder-normalization
       - test:finder-review
       - test:lane-brief-template
+      - test:lane-fences
       - test:lint-shell-robustness
+      - test:lane-watch
 
   test:agent-registry:
     desc: Schema-check the machine-readable agent registry and its cross-record invariants
@@ -422,6 +424,11 @@ tasks:
     desc: Trust contract regression tests for dev-flow-monitor.sh (integer actor IDs, per-write governing revision, fail-closed)
     cmds:
       - ./scripts/test-dev-flow-monitor.sh
+
+  test:lane-watch:
+    desc: Fixture-driven regression tests for the orchestrator lane watcher
+    cmds:
+      - ./scripts/test-lane-watch.sh
 
   test:render-dev-flow:
     desc: Golden-fixture + fake-gh regression tests for the dev-flow-v2 renderer/publisher
@@ -457,6 +464,11 @@ tasks:
     desc: Render and validate the orchestrator lane-brief template contract
     cmds:
       - ./scripts/test-lane-brief-template.sh
+
+  test:lane-fences:
+    desc: Verify orchestrated lane fence derivation and enforcement
+    cmds:
+      - ./scripts/test-lane-fences.sh
 
   devflow:render:
     desc: 'Render a dev-flow-v2 projection or publish generated sections (task devflow:render -- <projection|publish> --record <dir> ...)'
