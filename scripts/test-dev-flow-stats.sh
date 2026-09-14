@@ -223,6 +223,14 @@ function evidenceSummaryComment(actorId, login, runId, stage, dest, round, seq, 
   );
 }
 
+function writeCleanAdjudication(runDir, runId, stage = "review", round = 1) {
+  mkdirSync(path.join(runDir, "adjudications"), { recursive: true });
+  writeFileSync(path.join(runDir, "adjudications", stage + "-r" + round + ".json"), JSON.stringify({
+    schema: 2, run_id: runId, stage, round,
+    reviewed_head: "0".repeat(40), adjudications: [],
+  }, null, 2));
+}
+
 // Builds the evidence_comments[] entry naming a comment created by
 // evidenceComment() above — discovery is list-driven now, so every real
 // round comment in a fixture needs a matching entry or it is simply never
@@ -2774,7 +2782,7 @@ function writeScenario(name, db) {
     OTHER_TRUSTED, "other-orchestrator", runId, "review", "issue", 1, 1, "2026-09-01T00:25:00Z",
   );
   const prEv = evidenceSummaryComment(
-    OTHER_TRUSTED, "other-orchestrator", runId, "integration", "pr", null, 2, "2026-09-01T00:26:00Z",
+    OTHER_TRUSTED, "other-orchestrator", runId, "integration", "pr", null, 1, "2026-09-01T00:26:00Z",
   );
   const revoked = evidenceSummaryComment(
     TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, "2026-09-01T00:00:30Z",
@@ -2795,7 +2803,7 @@ function writeScenario(name, db) {
       },
       {
         id: String(prEv.id), author_actor_id: OTHER_TRUSTED, login: "other-orchestrator",
-        digest: payloadDigest(prEv.body), marker: { run_id: runId, stage: "integration", destination: "pr", round: null, sequence: 2 },
+        digest: payloadDigest(prEv.body), marker: { run_id: runId, stage: "integration", destination: "pr", round: null, sequence: 1 },
       },
     ],
     receipts: [
@@ -2862,6 +2870,7 @@ function writeScenario(name, db) {
   const localRunDir = path.join("${tmp}", "local-records", runId);
   mkdirSync(localRunDir, { recursive: true });
   writeFileSync(path.join(localRunDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+  writeCleanAdjudication(localRunDir, runId);
   writeScenario("arbitrary-evidence-run", {
     issues: [{ number: 187, pull_request: null }], comments: { "187": [ev] }, commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 187 },
@@ -2898,13 +2907,14 @@ function writeScenario(name, db) {
     interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
     evidence_comments: [
       { id: String(issueMarker.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(issueMarker.body), marker: { run_id: unverifiedRunId, stage: "review", destination: "issue", round: 1, sequence: 1 } },
-      { id: "999998", author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: "not-fetched", marker: { run_id: unverifiedRunId, stage: "integration", destination: "pr", round: null, sequence: 2 } },
+      { id: "999998", author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: "not-fetched", marker: { run_id: unverifiedRunId, stage: "integration", destination: "pr", round: null, sequence: 1 } },
     ],
     promotion: null,
   };
   const unverifiedDir = path.join("${tmp}", "local-records", unverifiedRunId);
   mkdirSync(unverifiedDir, { recursive: true });
   writeFileSync(path.join(unverifiedDir, "run.json"), JSON.stringify({ ...unverifiedBody, ...deriveDefaultChains(unverifiedBody) }, null, 2));
+  writeCleanAdjudication(unverifiedDir, unverifiedRunId);
   writeScenario("evidence-unverified-pr", {
     issues: [{ number: 189, pull_request: null }], comments: { "189": [issueMarker] }, commits: {},
     meta: { runId: unverifiedRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 189 },
@@ -2923,6 +2933,7 @@ function writeScenario(name, db) {
   const currentDir = path.join("${tmp}", "local-records", malformedRunId);
   mkdirSync(currentDir, { recursive: true });
   writeFileSync(path.join(currentDir, "run.json"), JSON.stringify({ ...currentBody, ...deriveDefaultChains(currentBody) }, null, 2));
+  writeCleanAdjudication(currentDir, malformedRunId);
   writeScenario("evidence-current-first", {
     issues: [{ number: 190, pull_request: null }], comments: { "190": [malformedLegacy, current] }, commits: {},
     meta: { runId: malformedRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 190 },
@@ -2930,7 +2941,7 @@ function writeScenario(name, db) {
 
   const arbitraryPrRunId = "evidence-pr-only-arbitrary";
   const arbitraryPr = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", arbitraryPrRunId, "integration", "pr", null, 1, at);
-  const arbitraryIssue = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", arbitraryPrRunId, "review", "issue", 1, 2, at);
+  const arbitraryIssue = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", arbitraryPrRunId, "review", "issue", 1, 1, at);
   const arbitraryPrBody = {
     schema: 2, run_id: arbitraryPrRunId, initiated_by: "human", started_at: at,
     stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "integration", entered_at: at }]),
@@ -2938,13 +2949,14 @@ function writeScenario(name, db) {
     pr: { number: 9191, url: "https://github.com/o/r/pull/9191" },
     evidence_comments: [
       { id: String(arbitraryPr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(arbitraryPr.body), marker: { run_id: arbitraryPrRunId, stage: "integration", destination: "pr", round: null, sequence: 1 } },
-      { id: String(arbitraryIssue.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(arbitraryIssue.body), marker: { run_id: arbitraryPrRunId, stage: "review", destination: "issue", round: 1, sequence: 2 } },
+      { id: String(arbitraryIssue.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(arbitraryIssue.body), marker: { run_id: arbitraryPrRunId, stage: "review", destination: "issue", round: 1, sequence: 1 } },
     ],
     promotion: null,
   };
   const arbitraryPrDir = path.join("${tmp}", "local-records", arbitraryPrRunId);
   mkdirSync(arbitraryPrDir, { recursive: true });
   writeFileSync(path.join(arbitraryPrDir, "run.json"), JSON.stringify({ ...arbitraryPrBody, ...deriveDefaultChains(arbitraryPrBody) }, null, 2));
+  writeCleanAdjudication(arbitraryPrDir, arbitraryPrRunId);
   writeScenario("evidence-pr-only-arbitrary", {
     issues: [{ number: 191, pull_request: null }, { number: 192, pull_request: null }], comments: { "191": [], "192": [arbitraryIssue], "9191": [arbitraryPr] }, commits: {},
     meta: { runId: arbitraryPrRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR] },
@@ -2967,6 +2979,34 @@ function writeScenario(name, db) {
     issues: [{ number: 193, pull_request: null }, { number: 194, pull_request: null }], comments: { "193": [], "194": [], "9193": [unboundPr] }, commits: {},
     meta: { runId: unboundRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR] },
   });
+
+  const writeSegmentScenario = (name, issueNumber, sequences, withAdjudication) => {
+    const runId = "run-" + issueNumber + "-" + name;
+    const comments = sequences.map((sequence) => evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, sequence, at));
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "review", entered_at: at }]),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: comments.map((item, index) => ({
+        id: String(item.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(item.body),
+        marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: sequences[index] },
+      })),
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    if (withAdjudication) writeCleanAdjudication(runDir, runId);
+    writeScenario(name, {
+      issues: [{ number: issueNumber, pull_request: null }], comments: { [String(issueNumber)]: comments }, commits: {},
+      meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber },
+    });
+  };
+  writeSegmentScenario("evidence-sequence-two-only", 195, [2], true);
+  writeSegmentScenario("evidence-sequence-gap", 196, [1, 3], true);
+  writeSegmentScenario("evidence-sequence-valid", 197, [1, 2], true);
+  writeSegmentScenario("evidence-adjudication-missing", 198, [1], false);
+  writeSegmentScenario("evidence-adjudication-clean", 199, [1], true);
 }
 
 console.log("fixtures built");
@@ -3173,8 +3213,44 @@ echo "== current-marker discovery supports schema-valid run ids without an encod
 export DFSTATS_DB="$tmp/scenarios/arbitrary-evidence-run.json"
 run_id="$(meta arbitrary-evidence-run .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 187 and .rounds == [{stage:"review",round:1,pass_count:0,finding_count:0,has_adjudication:false}]' >/dev/null ||
+echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 187 and .rounds == [{stage:"review",round:1,pass_count:0,finding_count:0,has_adjudication:true}]' >/dev/null ||
     fail "evidence grammar: expected all-issue lookup to find the arbitrary run id, got: $out"
+
+for scenario in evidence-sequence-two-only evidence-sequence-gap; do
+    echo "== current-marker groups reject a non-contiguous sequence: $scenario =="
+    export DFSTATS_DB="$tmp/scenarios/$scenario.json"
+    run_id="$(meta "$scenario" .meta.runId)"
+    set +e
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] && grep -Fq 'unique contiguous sequences starting at 1' <<<"$out" ||
+        fail "evidence sequence: expected indeterminate contiguous-sequence refusal, got rc=$rc: $out"
+done
+
+echo "== a valid multi-segment current-marker group reconstructs one complete round =="
+export DFSTATS_DB="$tmp/scenarios/evidence-sequence-valid.json"
+run_id="$(meta evidence-sequence-valid .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:0,finding_count:0,has_adjudication:true}]' >/dev/null ||
+    fail "evidence sequence: valid multi-segment group did not reconstruct: $out"
+
+echo "== an authenticated issue round with no adjudication is indeterminate =="
+export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-missing.json"
+run_id="$(meta evidence-adjudication-missing .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'exactly one adjudication for authenticated review round 1; found 0' <<<"$out" ||
+    fail "evidence adjudication: expected missing document to be indeterminate, got rc=$rc: $out"
+
+echo "== a clean empty adjudication satisfies the authenticated issue round =="
+export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-clean.json"
+run_id="$(meta evidence-adjudication-clean .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:0,finding_count:0,has_adjudication:true}]' >/dev/null ||
+    fail "evidence adjudication: clean empty document was not accepted: $out"
 
 echo "== current-marker parsing rejects trailing content and invalid destination/round pairs =="
 node --input-type=module -e 'import { parseMarker } from "./scripts/dev-flow-stats.mjs"; const body = (destination, round, tail = "") => `<!-- dev-flow-v2-evidence: {"run_id":"r","stage":"review","round":${round},"sequence":1,"destination":"${destination}"} -->${tail}`; if ([body("issue", 1, " trailing"), body("issue", "null"), body("pr", 1)].some((value) => parseMarker(value) !== null)) process.exit(1)'

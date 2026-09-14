@@ -1771,6 +1771,25 @@ function markerFacts(markers) {
     .sort((a, b) => `${a.stage}|${a.round}|${a.sequence}`.localeCompare(`${b.stage}|${b.round}|${b.sequence}`));
 }
 
+function assertEvidenceMarkerSequenceContiguity(entries, label) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const marker = entry.marker;
+    const destination = marker.dest ?? marker.destination;
+    const sequence = marker.seq ?? marker.sequence;
+    const key = `${destination}|${marker.stage}|${marker.round}`;
+    const group = groups.get(key) || { destination, stage: marker.stage, round: marker.round, sequences: [] };
+    group.sequences.push(sequence);
+    groups.set(key, group);
+  }
+  for (const { destination, stage, round, sequences } of groups.values()) {
+    const sorted = [...sequences].sort((a, b) => a - b);
+    if (sorted.some((sequence, index) => sequence !== index + 1)) {
+      throw new EvidenceError(`${label} marker group destination=${destination}, stage=${stage}, round=${round} must have unique contiguous sequences starting at 1; found [${sorted.join(", ")}]`);
+    }
+  }
+}
+
 function resolveContainedPath(root, candidate, label, { allowMissing = false } = {}) {
   const lexical = path.resolve(candidate);
   if (lexical !== root && !lexical.startsWith(`${root}${path.sep}`)) {
@@ -1838,6 +1857,8 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, unt
       throw new EvidenceError(`local run record does not authenticate evidence comment ${observed.comment.id}`);
     }
   }
+  assertEvidenceMarkerSequenceContiguity(body.evidence_comments, `${runId} registered evidence`);
+  assertEvidenceMarkerSequenceContiguity(visibleMarkers, `${runId} visible evidence`);
   const jsonFilesIn = (name) => {
     const candidate = path.join(runDir, name);
     if (!existsSync(candidate)) return { dir: candidate, files: [] };
@@ -1903,15 +1924,17 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, unt
   const byRound = new Map();
   for (const observed of visibleMarkers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
     const key = `${observed.marker.stage}|${observed.marker.round}`;
-    const current = byRound.get(key);
-    if (!current || observed.comment.id < current.comment.id) byRound.set(key, observed);
+    const group = byRound.get(key) || [];
+    group.push(observed);
+    byRound.set(key, group);
   }
-  const rounds = [...byRound.values()].map((observed) => {
+  const rounds = [...byRound.values()].map((group) => {
+    const observed = group[0];
     const { stage, round } = observed.marker;
     const matchingPasses = passes.filter((envelope) => envelope && envelope.run && envelope.run.run_id === runId && envelope.payload && envelope.payload.stage === stage && envelope.payload.round === round);
     const matchingAdjudications = adjudications.filter((doc) => doc && doc.run_id === runId && doc.stage === stage && doc.round === round);
-    if (matchingAdjudications.length > 1) throw new EvidenceError(`${runDir} has more than one adjudication for ${stage} round ${round}`);
-    return { stage, dest: "issue", round, payload: { passes: matchingPasses, adjudication: matchingAdjudications[0] || null }, commentIds: [observed.comment.id] };
+    if (matchingAdjudications.length !== 1) throw new EvidenceError(`${runDir} must have exactly one adjudication for authenticated ${stage} round ${round}; found ${matchingAdjudications.length}`);
+    return { stage, dest: "issue", round, payload: { passes: matchingPasses, adjudication: matchingAdjudications[0] }, commentIds: group.map((entry) => entry.comment.id) };
   });
   return { status: "ok", runId, issueNumber, record: { body }, state, rounds, untrusted: [], forged: allUntrustedMarkers, unreceiptedPassFiles, legacyAlsoPresent, unverifiedEvidenceDestinations: [...unverifiedEvidenceDestinations] };
 }

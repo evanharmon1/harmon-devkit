@@ -865,7 +865,7 @@ removing a worktree deletes nothing) with a
 `dev-flow-v2/branches/<branch>` pointer naming the current run — worktree-safe,
 invisible to `git status`, and immune to a reused branch name or an abandoned
 run: a new run gets a new directory, and the exit script only ever reads the
-run the pointer names. GitHub receives authenticated `review-evidence/v1`
+run the pointer names. GitHub receives authenticated `dev-flow-v2-evidence`
 summary markers, not the local record itself. The legacy fenced-payload model
 below describes only pre-v2 comments retained for backward-compatible reads.
 
