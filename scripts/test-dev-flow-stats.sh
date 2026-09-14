@@ -4721,6 +4721,31 @@ logged_repo_root="$(jq -r '.repo_root' "$FAKE_EXIT_HEAD_LOG")"
 [ "$logged_repo_root" = "$tmp" ] || fail "--repo-root: expected the exit script to receive the explicit --repo-root value ($tmp), got: $logged_repo_root"
 unset FAKE_EXIT_HEAD_LOG
 
+echo "== harmon-devkit#1001 challenge round 6/7: --repo-root is honored on the --run (local-record) path too, not hardcoded to cwd (fixed round 7/7) =="
+# The --run path has no --policy escape hatch (unlike --replay above) — it
+# always resolves <repo-root>/.devflow.toml, so proving the flag is honored
+# needs a genuine, valid policy file at an alternate root, not a fake script.
+export DFSTATS_DB="$tmp/scenarios/arbitrary-evidence-run.json"
+run_id="$(meta arbitrary-evidence-run .meta.runId)"
+mkdir -p "$tmp/altroot-repo-root"
+cp "$repo/.devflow.toml" "$tmp/altroot-repo-root/.devflow.toml"
+# Invoked from a cwd with no .devflow.toml and no --repo-root at all: fails
+# closed (indeterminate), rather than silently resolving the real repo's
+# policy via a lucky cwd.
+set +e
+out="$(cd "$tmp" && node "$repo/scripts/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'requires the exit engine' <<<"$out" && grep -Fq 'does not exist' <<<"$out" ||
+    fail "repo-root (run path): expected a missing-policy indeterminate when invoked from a directory with no .devflow.toml and no --repo-root, got rc=$rc: $out"
+# An explicit --repo-root naming a directory that DOES have .devflow.toml,
+# invoked from that same unrelated cwd, must reproduce the real repo root's
+# output exactly.
+baseline_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+altroot_out="$(cd "$tmp" && node "$repo/scripts/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --repo-root "$tmp/altroot-repo-root" --json)"
+[ "$baseline_out" = "$altroot_out" ] ||
+    fail "repo-root (run path): explicit --repo-root from another cwd did not reproduce the baseline output. baseline=$baseline_out altroot=$altroot_out"
+
 echo "== shepherd round 1: a comment physically posted on the PR but whose marker claims dest=issue fails closed =="
 export DFSTATS_DB="$tmp/scenarios/marker-dest-mismatch.json"
 run_id="$(meta marker-dest-mismatch .meta.runId)"

@@ -2046,7 +2046,7 @@ function invokeExitScriptVerificationOnly(exitScriptPath, { runDir, stage, polic
   return { verification: parsed };
 }
 
-function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false) {
+function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false, repoRoot = process.cwd()) {
   const root = realpathSync(recordRoot);
   const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
   const runFileCandidate = path.join(runDir, "run.json");
@@ -2264,7 +2264,11 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     // validation for a run whose only evidence is some other role entirely)
     // as a side effect.
     const localSlotFailures = Array.isArray(body.slot_failures) ? body.slot_failures : [];
-    const repoRoot = process.cwd();
+    // harmon-devkit#1001 challenge round 6/7 (P2), confirmed and fixed: this
+    // used to hardcode process.cwd(), ignoring the already-accepted,
+    // already-validated --repo-root flag the --replay path respects (and
+    // failing when invoked from a repository subdirectory even without the
+    // flag) — repoRoot is now threaded in from the CLI's own resolution.
     const policyPath = path.join(repoRoot, ".devflow.toml");
     if (!existsSync(policyPath)) {
       throw new EvidenceError(`local-record trajectory requires the exit engine's policy at ${policyPath}, which does not exist`);
@@ -2512,7 +2516,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
   }
 }
 
-function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null }) {
+function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null, repoRoot = process.cwd() }) {
   const issueComments = fetchIssueComments(repo, issueNumber);
   const cutoffEpoch = asOf ? Date.parse(asOf) : Infinity;
   const withinCutoff = (comment) => Date.parse(comment.created_at) <= cutoffEpoch;
@@ -2550,7 +2554,7 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
     } else {
       try {
         const effectiveTrustAt = createRegistryTrustResolver(repo, trustedActorIds);
-        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false);
+        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false, repoRoot);
         if (loaded.status !== "no-current-evidence" && (loaded.status !== "record-missing" || summaries.trusted.length > 0)) currentRun = loaded;
       } catch (err) {
         if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
@@ -3625,10 +3629,20 @@ function cliRun(args) {
     console.error(`dev-flow-stats: --record-dir path does not exist: ${recordDirRequired.value}`);
     return 2;
   }
+  // harmon-devkit#1001 challenge round 6/7 (P2), confirmed and fixed: this
+  // path used to hardcode process.cwd() for the local-record trajectory's
+  // repository root, ignoring this same flag the --replay path already
+  // accepts and validates (below), and failing when invoked from a
+  // repository subdirectory even without the flag.
+  const repoRoot = args["repo-root"] || process.cwd();
+  if (typeof repoRoot !== "string" || !existsSync(repoRoot)) {
+    console.error(`dev-flow-stats: --repo-root path does not exist: ${repoRoot}`);
+    return 2;
+  }
 
   let runs;
   try {
-    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value });
+    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value, repoRoot });
   } catch (err) {
     console.error(`dev-flow-stats: ${err.message}`);
     return err instanceof EvidenceError ? 3 : 2;
