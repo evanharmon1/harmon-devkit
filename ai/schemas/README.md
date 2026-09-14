@@ -167,8 +167,10 @@ keyword, for every one of these:
 
 `run.schema.json` does validate the structure of the evidence collections it
 can see. Its optional `receipts[]` is a closed `oneOf`: a transition is exactly
-`{kind: "transition", stage, entered_at}` and a pass is exactly
-`{kind: "pass", file}`. Its optional `slot_failures[]` entries are exactly
+`{kind: "transition", stage, entered_at?}` and a pass is exactly
+`{kind: "pass", file}`. The optional `entered_at` preserves compatibility with
+pre-schema receipt producers; when present, it keeps the shared timestamp
+shape and real-instant semantics. Its optional `slot_failures[]` entries are exactly
 `{stage, round, slot, reason, head?}`, with confidence-stage names, the two
 engine reasons, and an optional 40-character lowercase-hex head. Structural
 validation therefore rejects malformed entries before the cross-document and
@@ -2067,7 +2069,7 @@ order").
 bounded sanity check ... never an ordering ... boundary" — ordering is the
 orchestrator's own receipt order, recorded as it happens, not reconstructed
 from timestamps): an ordered list of
-`{kind: "transition", stage, entered_at}` and
+`{kind: "transition", stage, entered_at?}` and
 `{kind: "pass", file}` entries. A pass with no `"pass"` receipt entry, one
 naming a `run_id`/`initiated_by` other than `run.json`'s own, or one with no
 preceding `"transition"` receipt into its own `payload.stage`, is rejected

@@ -85,7 +85,7 @@
           {
             "type": "object",
             "additionalProperties": false,
-            "required": ["kind", "stage", "entered_at"],
+            "required": ["kind", "stage"],
             "properties": {
               "kind": { "const": "transition" },
               "stage": {

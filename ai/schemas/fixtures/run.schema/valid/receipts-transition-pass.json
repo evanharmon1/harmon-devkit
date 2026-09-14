@@ -6,7 +6,37 @@
   "stage_transitions": [
     {
       "stage": "kickoff",
-      "entered_at": "2026-09-13T15:25:05Z"
+      "entered_at": "2026-09-13T15:25:05Z",
+      "exit": "claimed"
+    },
+    {
+      "stage": "claim",
+      "entered_at": "2026-09-13T15:30:00Z",
+      "exit": "planned"
+    },
+    {
+      "stage": "plan",
+      "entered_at": "2026-09-13T15:35:00Z",
+      "exit": "briefed"
+    },
+    {
+      "stage": "implement",
+      "entered_at": "2026-09-13T15:40:00Z",
+      "exit": "verified"
+    },
+    {
+      "stage": "verify",
+      "entered_at": "2026-09-13T15:45:00Z",
+      "exit": "green"
+    },
+    {
+      "stage": "challenge",
+      "entered_at": "2026-09-13T15:50:00Z",
+      "exit": "converged"
+    },
+    {
+      "stage": "review",
+      "entered_at": "2026-09-13T16:00:00Z"
     }
   ],
   "receipts": [

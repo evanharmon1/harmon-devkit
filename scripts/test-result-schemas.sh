@@ -1208,7 +1208,8 @@ accept_context_case \
 # prove the receipt-required and receipt-binding modes accept the same records.
 for receipt_fixture in \
     "$fixtures_dir/run.schema/valid/receipts-transition-only.json" \
-    "$fixtures_dir/run.schema/valid/receipts-transition-pass.json"; do
+    "$fixtures_dir/run.schema/valid/receipts-transition-pass.json" \
+    "$fixtures_dir/run.schema/valid/receipts-transition-no-entered-at.json"; do
     accept_context_case \
         "a receipt-bearing run is accepted by run --receipt ($(basename "$receipt_fixture"))" \
         run \
@@ -1228,7 +1229,6 @@ done
 for malformed_receipt in \
     receipts-unknown-kind \
     receipts-missing-stage \
-    receipts-missing-entered-at \
     receipts-missing-file \
     receipts-extra-property; do
     malformed_file="$fixtures_dir/run.schema/invalid/$malformed_receipt.json"
@@ -1275,7 +1275,7 @@ jq -n \
     --arg run_id "run-0821-receipts-strict" \
     '{run_id: $run_id, receipts: [{kind: "transition", stage: "challenge", entered_at: "2026-09-01T00:30:00Z"}]}' \
     >"$receipts_split_valid"
-jq 'del(.receipts[0].entered_at)' "$receipts_split_valid" >"$receipts_split_malformed"
+jq 'del(.receipts[0].stage)' "$receipts_split_valid" >"$receipts_split_malformed"
 jq '.receipts[0].entered_at = "2026-02-30T00:00:00Z"' \
     "$receipts_split_valid" >"$receipts_split_impossible"
 
@@ -1301,6 +1301,14 @@ accept_context_case \
     "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
     --adjudication "$receipts_strict_adjudication" \
     --receipts "$receipts_split_valid"
+
+run_context_case \
+    "an independent --receipts transition must name a stage the run entered" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    '$receipts.receipts[0].stage' \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$fixtures_dir/run.schema/invalid/receipts-stage-not-visited.json"
 
 run_context_case \
     "an --adjudication whose stage has no transition receipt is rejected in --receipts strict mode (#821)" \

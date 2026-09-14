@@ -2378,6 +2378,35 @@ function checkReceiptVariants(document, runSchema, location, errors) {
   }
 }
 
+// checkEvidenceStagesVisited — receipts and slot failures are trusted stage
+// evidence, so neither may name a confidence stage absent from the run's
+// canonical stage history. Membership is deliberately the whole contract:
+// occurrence ordering and timestamp binding remain the exit engine's job.
+function checkEvidenceStagesVisited(document, receiptsRecord, receiptLocation, errors) {
+  const visitedStages = new Set((document.stage_transitions ?? []).map((transition) => transition.stage))
+  for (const [index, receipt] of (receiptsRecord.receipts ?? []).entries()) {
+    if (
+      receipt !== null &&
+      typeof receipt === 'object' &&
+      receipt.kind === 'transition' &&
+      typeof receipt.stage === 'string' &&
+      !visitedStages.has(receipt.stage)
+    ) {
+      errors.push(
+        `${receiptLocation}.receipts[${index}].stage: stage ${receipt.stage} never appears in this run's stage_transitions`
+      )
+    }
+  }
+  if (receiptsRecord !== document) return
+  for (const [index, failure] of (document.slot_failures ?? []).entries()) {
+    if (typeof failure.stage === 'string' && !visitedStages.has(failure.stage)) {
+      errors.push(
+        `$run.slot_failures[${index}].stage: stage ${failure.stage} never appears in this run's stage_transitions`
+      )
+    }
+  }
+}
+
 // checkReceiptsRecord — an independent --receipts file is a run-directory
 // subset, not necessarily a complete persisted run record. Validate the two
 // fields strict mode trusts with the canonical run schema definitions before
@@ -2394,6 +2423,7 @@ function checkReceiptsRecord(document, receiptsRecord, runSchema, errors) {
   errors.push(...validateAgainst(contextSchema, receiptsRecord, '$receipts'))
   checkReceiptVariants(receiptsRecord, runSchema, '$receipts', errors)
   checkTimestampRealness(receiptsRecord, errors, '$receipts')
+  checkEvidenceStagesVisited(document, receiptsRecord, '$receipts', errors)
   if (
     typeof receiptsRecord.run_id === 'string' &&
     receiptsRecord.run_id !== document.run_id
@@ -2816,6 +2846,7 @@ function main() {
     const errors = validateAgainst(schema, instance, '$run')
     checkReceiptVariants(instance, schema, '$run', errors)
     if (errors.length === 0) {
+      checkEvidenceStagesVisited(instance, instance, '$run', errors)
       if (options.receiptsRecord) {
         checkReceiptsRecord(instance, options.receiptsRecord, schema, errors)
       }
