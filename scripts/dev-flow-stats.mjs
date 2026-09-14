@@ -2202,33 +2202,61 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
   const engineRoundsByStage = new Map();
   const diagnostics = [];
   const seenDiagnostics = new Set();
-  for (const stage of ["challenge", "review"]) {
-    if (!hasAnyLocalEvidenceForStage(localPasses, localAdjudications, localSlotFailures, stage)) continue;
-    const currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage);
-    if (!currentHead) {
-      throw new EvidenceError(`local-record trajectory for ${stage}: evidence exists but no pass, adjudication, or slot failure carries a usable head to evaluate it against`);
+  // harmon-devkit#1001 challenge round 1 (P1), confirmed: two separate
+  // dev-flow-exit.mjs invocations (one per confidence stage) each spawn a
+  // fresh process that reads the run directory from disk independently. If
+  // local evidence changes between the two spawns — this directory can
+  // legitimately be written to by a still-in-progress orchestration while
+  // the harvester is reading it — the two trajectories would be computed
+  // from two different snapshots, producing one report assembled from
+  // inconsistent state. Before this redesign, loadRunDir ran exactly once
+  // and both stages' assembleLogicalRounds calls shared that single
+  // in-memory snapshot; restore the same guarantee by freezing the
+  // already-read run.json/passes/adjudications content into a throwaway
+  // directory once, and pointing both invocations at that frozen copy
+  // rather than the live one.
+  const engineSnapshotDir = mkdtempSync(path.join(tmpdir(), "dev-flow-stats-snapshot-"));
+  try {
+    writeFileSync(path.join(engineSnapshotDir, "run.json"), JSON.stringify(body, null, 2));
+    mkdirSync(path.join(engineSnapshotDir, "passes"), { recursive: true });
+    for (const pass of localPasses) {
+      writeFileSync(path.join(engineSnapshotDir, "passes", `${pass.name}.json`), JSON.stringify(pass.content, null, 2));
     }
-    const { verification, error } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
-      runDir, stage, policyPath, rigor, currentHead, repoRoot,
-    });
-    // A malformed/truncated retained artifact, an over-cap trajectory, or
-    // any other reason the engine cannot certify this record all surface
-    // through the SAME structured "indeterminate" contract inside
-    // invokeExitScriptVerificationOnly — translated here to evidence-
-    // indeterminate rather than a raw crash (harmon-devkit#1001 item 2).
-    if (error) throw new EvidenceError(`local-record trajectory for ${stage}: ${error}`);
-    engineRoundsByStage.set(stage, Array.isArray(verification.rounds) ? verification.rounds : []);
-    // validateReceipts (inside the spawned process) is not itself stage-
-    // scoped — it validates every pass on disk regardless of --stage — so
-    // two successful invocations report byte-identical diagnostics for
-    // anything outside the stage under computation. Dedup by (pass, reason)
-    // rather than concatenating.
-    for (const d of Array.isArray(verification.diagnostics) ? verification.diagnostics : []) {
-      const key = JSON.stringify([d.pass, d.reason]);
-      if (seenDiagnostics.has(key)) continue;
-      seenDiagnostics.add(key);
-      diagnostics.push(d);
+    mkdirSync(path.join(engineSnapshotDir, "adjudications"), { recursive: true });
+    for (const adjudication of localAdjudications) {
+      writeFileSync(path.join(engineSnapshotDir, "adjudications", `${adjudication.name}.json`), JSON.stringify(adjudication.content, null, 2));
     }
+
+    for (const stage of ["challenge", "review"]) {
+      if (!hasAnyLocalEvidenceForStage(localPasses, localAdjudications, localSlotFailures, stage)) continue;
+      const currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage);
+      if (!currentHead) {
+        throw new EvidenceError(`local-record trajectory for ${stage}: evidence exists but no pass, adjudication, or slot failure carries a usable head to evaluate it against`);
+      }
+      const { verification, error } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+        runDir: engineSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot,
+      });
+      // A malformed/truncated retained artifact, an over-cap trajectory, or
+      // any other reason the engine cannot certify this record all surface
+      // through the SAME structured "indeterminate" contract inside
+      // invokeExitScriptVerificationOnly — translated here to evidence-
+      // indeterminate rather than a raw crash (harmon-devkit#1001 item 2).
+      if (error) throw new EvidenceError(`local-record trajectory for ${stage}: ${error}`);
+      engineRoundsByStage.set(stage, Array.isArray(verification.rounds) ? verification.rounds : []);
+      // validateReceipts (inside the spawned process) is not itself stage-
+      // scoped — it validates every pass on disk regardless of --stage — so
+      // two successful invocations report byte-identical diagnostics for
+      // anything outside the stage under computation. Dedup by (pass, reason)
+      // rather than concatenating.
+      for (const d of Array.isArray(verification.diagnostics) ? verification.diagnostics : []) {
+        const key = JSON.stringify([d.pass, d.reason]);
+        if (seenDiagnostics.has(key)) continue;
+        seenDiagnostics.add(key);
+        diagnostics.push(d);
+      }
+    }
+  } finally {
+    rmSync(engineSnapshotDir, { recursive: true, force: true });
   }
 
   // harmon-devkit#1001 item 10: the blocked-pass count must reflect only
@@ -2307,20 +2335,39 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     }
   }
 
+  // harmon-devkit#1001 challenge round 1 (P1), confirmed: building coverage
+  // from raw, engine-unvalidated files let a marker whose only backing pass
+  // the engine REJECTED (e.g. "stage was not active when this pass
+  // arrived") still read as covered — the raw file's own payload.stage/
+  // round satisfied this set even though assembleLogicalRounds never
+  // admitted it, so the round silently vanished from the final `rounds`
+  // projection instead of failing closed. For challenge/review, coverage
+  // now means the engine's own trajectory actually produced this round
+  // (complete or a recognized incomplete/slot-failure round alike) — never
+  // a raw file's own unverified claim. Integration is the one exception:
+  // the engine's confidence-stage trajectory never reports on that role at
+  // all, so raw file presence remains its only available coverage signal.
   const artifactRoundKeys = new Set();
+  for (const stage of ["challenge", "review"]) {
+    for (const round of engineRoundsByStage.get(stage) || []) {
+      artifactRoundKeys.add(`${stage}|${round.round}`);
+    }
+  }
   for (const pass of localPasses) {
     const envelope = pass.content;
+    if (envelope.role !== "integrator") continue;
     const payload = envelope.payload || {};
-    const stage = envelope.role === "integrator" ? "integration" : payload.stage;
-    const round = envelope.role === "integrator" ? payload.integration_round : payload.round;
-    if (typeof stage === "string" && Number.isInteger(round)) artifactRoundKeys.add(`${stage}|${round}`);
+    if (Number.isInteger(payload.integration_round)) artifactRoundKeys.add(`integration|${payload.integration_round}`);
   }
   for (const adjudication of localAdjudications) {
-    if (typeof adjudication.content.stage === "string" && Number.isInteger(adjudication.content.round)) {
-      artifactRoundKeys.add(`${adjudication.content.stage}|${adjudication.content.round}`);
+    const stage = adjudication.content.stage;
+    if (stage === "challenge" || stage === "review") continue; // engine-validated coverage above is authoritative for these
+    if (typeof stage === "string" && Number.isInteger(adjudication.content.round)) {
+      artifactRoundKeys.add(`${stage}|${adjudication.content.round}`);
     }
   }
   for (const slotFailure of localSlotFailures) {
+    if (slotFailure.stage === "challenge" || slotFailure.stage === "review") continue; // ditto
     if (typeof slotFailure.stage === "string" && Number.isInteger(slotFailure.round)) {
       artifactRoundKeys.add(`${slotFailure.stage}|${slotFailure.round}`);
     }

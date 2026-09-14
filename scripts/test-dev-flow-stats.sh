@@ -3430,8 +3430,14 @@ for receipt_case in before-transition wrong-stage; do
     rc=$?
     set -e
     if [ "$receipt_case" = before-transition ]; then
-        [ "$rc" -eq 0 ] && echo "$out" | jq -e '.rounds == [] and (.trajectory_diagnostics[0].reason | contains("was not the active stage"))' >/dev/null ||
-            fail "evidence grammar: exit engine did not reject the pass arriving before its transition, rc=$rc: $out"
+        # harmon-devkit#1001 challenge round 1 (P1), confirmed: a marker
+        # whose only backing pass the engine rejects (stage not active when
+        # it arrived) must fail closed (record-missing), not silently
+        # succeed with an empty rounds array — the marker still authenticates
+        # that a review round 1 exists, and the trusted evidence chain
+        # cannot actually back it.
+        [ "$rc" -eq 3 ] && grep -Fq 'record-missing: authenticated review round 1 marker group has no retained pass, adjudication, or slot failure' <<<"$out" ||
+            fail "evidence grammar: exit engine did not fail closed for the pass arriving before its transition, rc=$rc: $out"
     else
         [ "$rc" -eq 3 ] && grep -Fq 'failed exit-engine validation: FAIL:' <<<"$out" ||
             fail "evidence grammar: complete validation did not reject the wrong-stage receipt sequence, rc=$rc: $out"
@@ -3775,9 +3781,17 @@ for invalid_case in missing-identity duplicate-finding-id; do
     else
         jq '.payload.findings = [{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:1,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"one"},{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:2,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"two"}] | .payload.counts = {P0:0,P1:0,P2:2,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
     fi
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-    echo "$out" | jq -e '.rounds == [] and (.trajectory_diagnostics | length) > 0 and ([.trajectory_diagnostics[].level] | all(. == "reject"))' >/dev/null ||
-        fail "retained pass validation ($invalid_case): exit engine accepted invalid evidence: $out"
+    # harmon-devkit#1001 challenge round 1 (P1), confirmed: a marker whose
+    # only backing pass is schema/receipt-invalid must fail closed
+    # (record-missing), not silently succeed with an empty rounds array —
+    # same fix as the before-transition case above, for a different
+    # rejection cause.
+    set +e
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] && grep -Fq 'record-missing: authenticated review round 1 marker group has no retained pass, adjudication, or slot failure' <<<"$out" ||
+        fail "retained pass validation ($invalid_case): exit engine did not fail closed for invalid evidence, rc=$rc: $out"
 done
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 
