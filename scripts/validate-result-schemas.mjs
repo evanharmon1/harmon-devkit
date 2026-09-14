@@ -2171,7 +2171,6 @@ function checkPlanCoherence(document, errors) {
   }
 
   const policyCap = document.policy?.breadth?.max_parallel_agents
-  const agentRunCap = document.policy?.breadth?.max_agent_runs
   const dispatcher = document.dispatcher
   if (dispatcher && typeof policyCap === 'number') {
     if (dispatcher.kind === 'interactive') {
@@ -2197,10 +2196,6 @@ function checkPlanCoherence(document, errors) {
       }
     }
   }
-  if (typeof agentRunCap === 'number' && lanes.length > agentRunCap) {
-    errors.push(`$plan.lanes: initial lane count ${lanes.length} exceeds policy max_agent_runs ${agentRunCap}`)
-  }
-
   for (const issue of issues) {
     const issueWave = waveByIssue.get(issue.number)
     for (const blocker of issue.blocked_by || []) {
@@ -2293,7 +2288,12 @@ function checkPlanCoherence(document, errors) {
       ],
     ]),
   )
-  const candidateUniverse = [...new Set(activeIssues.flatMap((issue) => issue.candidate_files || []))]
+  const candidateUniverse = [
+    ...new Set([
+      ...activeIssues.flatMap((issue) => issue.candidate_files || []),
+      ...lanes.flatMap((lane) => (lane.expansions || []).map((expansion) => expansion.path)),
+    ]),
+  ]
   for (const path of candidateUniverse) {
     const owners = lanes.filter((lane) =>
       (effectiveFenceByLane.get(lane.lane) || []).some((pattern) => fencePatternMatchesPath(pattern, path)),
@@ -2343,7 +2343,12 @@ function checkDispatchPlan(document, errors) {
   const revisions = checkPlanRevisionChain(document, errors)
   if (!revisions) return
   const firstTime = Date.parse(revisions[0].at)
-  for (const revision of revisions) {
+  const runIds = new Set(revisions.flatMap((revision) => (revision.plan.lanes || []).map((lane) => lane.run_id)))
+  const agentRunCap = revisions[0].plan.policy?.breadth?.max_agent_runs
+  if (typeof agentRunCap === 'number' && runIds.size > agentRunCap) {
+    errors.push(`$plan.revisions: history uses ${runIds.size} distinct run_id values, exceeding policy max_agent_runs ${agentRunCap}`)
+  }
+  for (const [revisionIndex, revision] of revisions.entries()) {
     const revisionErrors = []
     checkPlanCoherence(revision.plan, revisionErrors)
     errors.push(...revisionErrors.map((error) => error.replace('$plan', `$plan.revisions[${revision.seq}].plan`)))
@@ -2353,6 +2358,20 @@ function checkDispatchPlan(document, errors) {
         if (expansionTime < firstTime || expansionTime > Date.parse(revision.at)) {
           errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must fall between the first revision and its containing revision`)
         }
+      }
+    }
+    if (revisionIndex === 0) continue
+    const priorLanes = new Map((revisions[revisionIndex - 1].plan.lanes || []).map((lane) => [lane.run_id, lane]))
+    for (const [laneIndex, lane] of (revision.plan.lanes || []).entries()) {
+      const priorLane = priorLanes.get(lane.run_id)
+      if (!priorLane) continue
+      if (canonicalJsonForDigest(lane.fence) !== canonicalJsonForDigest(priorLane.fence)) {
+        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].fence: must remain unchanged while run_id ${JSON.stringify(lane.run_id)} continues`)
+      }
+      const priorExpansions = priorLane.expansions || []
+      const expansionPrefix = (lane.expansions || []).slice(0, priorExpansions.length)
+      if (canonicalJsonForDigest(expansionPrefix) !== canonicalJsonForDigest(priorExpansions)) {
+        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions: must retain the prior revision's expansions as an unchanged prefix while run_id ${JSON.stringify(lane.run_id)} continues`)
       }
     }
   }

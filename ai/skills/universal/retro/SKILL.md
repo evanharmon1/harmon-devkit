@@ -156,7 +156,7 @@ planned versus actual waves and interventions for each lane in the report;
 name assignments that moved, serialization or fence decisions that changed,
 and the recorded reason rather than reconstructing the original plan from lane
 briefs or memory. The plan for a run is the unique validated slate whose
-current revision lists that `run_id` in `lanes[]`.
+revision history lists that `run_id` in `lanes[]`.
 
 1. `## Run evidence` — run id, issue, PR, who initiated it, outcome, promotion,
    and where the run id was discovered.
