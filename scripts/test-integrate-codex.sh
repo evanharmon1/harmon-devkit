@@ -36,7 +36,6 @@ fail() {
 # `gtimeout` (coreutils), Linux ships `timeout`.
 real_timeout_bin="$(command -v timeout 2>/dev/null || true)"
 real_gtimeout_bin="$(command -v gtimeout 2>/dev/null || true)"
-real_mv_bin="$(command -v mv)"
 
 # Watchdog for run_check/run_reap below (not a budget assertion — see those
 # functions). Resolved the same way the helper itself resolves it, since the
@@ -180,25 +179,9 @@ SHIM
     chmod +x "${bin_dir}/gtimeout"
 fi
 
-cat >"${bin_dir}/mv" <<'SHIM'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ -n "${MV_PAUSE_SOURCE:-}" ] && [ "${1:-}" = "$MV_PAUSE_SOURCE" ]; then
-    "$REAL_MV_BIN" "$@"
-    : >"$MV_PAUSED_MARKER"
-    while [ ! -f "$MV_RELEASE_MARKER" ]; do
-        sleep 0.05
-    done
-    exit 0
-fi
-exec "$REAL_MV_BIN" "$@"
-SHIM
-chmod +x "${bin_dir}/mv"
-
 export PATH="${bin_dir}:$PATH"
 export GH_FIXTURES="$fixtures"
 export GH_LOG="$log"
-export REAL_MV_BIN="$real_mv_bin"
 # Where a recorded-budget assertion writes/reads if it opts in below by
 # exporting TIMEOUT_ARGS_LOG=$timeout_args_log around its one run_check/
 # run_reap call. Unexported and unset otherwise, so the shims above are a
@@ -316,18 +299,12 @@ assert_accepted() {
         fail "expected accepted.reviewed_commit $head_sha, got '$actual_reviewed_commit': $check_out"
 }
 
-assert_accounting() {
-    expected_acked=$1
-    expected_results=$2
-    expected_condition=$3
-    actual_accounting="$(printf '%s' "$check_out" |
-        jq -r '[.acked,.results,.terminal_condition] | @tsv')"
-    expected_accounting="${expected_acked}"$'\t'"${expected_results}"$'\t'"${expected_condition}"
-    [ "$actual_accounting" = "$expected_accounting" ] ||
-        fail "expected accounting '$expected_accounting', got '$actual_accounting': $check_out"
+assert_no_attempt_machinery() {
     printf '%s' "$check_out" |
-        jq -e 'has("result_attempt") | not' >/dev/null ||
-        fail "check output retained result-to-attempt attribution: $check_out"
+        jq -e '. as $result |
+          ["acked", "results", "terminal_condition", "result_attempt"] as $keys |
+          all($keys[]; . as $key | $result | has($key) | not)' >/dev/null ||
+        fail "check output retained attempt accounting machinery: $check_out"
     printf '%s' "$check_out" |
         jq -e '(.accepted? // {}) | has("attempt") | not' >/dev/null ||
         fail "accepted evidence retained result-to-attempt attribution: $check_out"
@@ -1562,7 +1539,7 @@ jq -cn \
     ]]' >"${fixtures}/reactions.pages.json"
 run_check '2026-07-31T08:16:00Z'
 assert_status 12 retry
-assert_accounting 1 0 window-expired
+assert_no_attempt_machinery
 
 echo "==> attempt 2 cannot be reserved before attempt 1 expires"
 request_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -1579,19 +1556,6 @@ set -e
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 new_cycle
-jq -cn \
-    --argjson id "$actor_id" \
-    --arg login "$actor_login" '
-    [[{
-      id:9123,user:{id:$id,login:$login},content:"eyes",
-      created_at:"2026-07-31T08:00:01Z"
-    }]]' >"${fixtures}/reactions.pages.json"
-run_check '2026-07-31T08:01:00Z'
-assert_status 11 pending
-assert_accounting 1 0 not-terminal
-[ "$(jq -r '.acknowledgements | length' "$state")" = 1 ] ||
-    fail "attempt-1 acknowledgement was not persisted on first observation"
-first_acked_at="$(jq -r '.acknowledgements[0].acked_at' "$state")"
 trigger_id=124
 request_time='2026-07-31T08:16:01Z'
 jq -cn \
@@ -1608,14 +1572,11 @@ jq --arg reserved "$request_time" '.reserved_at = $reserved' \
     "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
-jq -cn \
-    --argjson id "$actor_id" \
-    --arg login "$actor_login" '
-    [[{
-      id:9124,user:{id:$id,login:$login},content:"eyes",
-      created_at:"2026-07-31T08:16:02Z"
-    }]]' >"${fixtures}/reactions.pages.json"
-printf '%s\n' '[[]]' >"${fixtures}/reactions-123.pages.json"
+if ! jq -e '. as $state |
+    ["acknowledgements", "cycle_requested_at", "previous_trigger_comment_id"] as $keys |
+    all($keys[]; . as $key | $state | has($key) | not)' "$state" >/dev/null; then
+    fail "attempt state retained deleted attribution machinery: $(jq -c . "$state")"
+fi
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
@@ -1628,33 +1589,28 @@ jq -cn \
 jq -c '[[.]]' "${fixtures}/review-78.json" >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:17:00Z'
 assert_status 11 pending
-assert_accounting 2 1 not-terminal
-[ "$(jq -r '.acknowledgements | length' "$state")" = 2 ] ||
-    fail "attempt-2 acknowledgement did not extend persisted monotonic state"
-[ "$(jq -r '.acknowledgements[] | select(.attempt == 1) | .acked_at' "$state")" = \
-    "$first_acked_at" ] ||
-    fail "a later snapshot rewrote attempt 1's first-observed acked_at"
+assert_no_attempt_machinery
 
-# The cycle terminates only once distinct results catch up with both exact,
-# authenticated acknowledgements. No result is assigned to an attempt.
+echo "==> exact latest-trigger +1 terminates a re-trigger immediately"
 jq -cn \
     --argjson id "$actor_id" \
-    --arg login "$actor_login" \
-    --arg head "$head_sha" \
-    --slurpfile earlier "${fixtures}/review-78.json" \
-    '[[$earlier[0],
-      {
-        id:79,user:{id:$id,login:$login},
-        submitted_at:"2026-07-31T08:16:20Z",commit_id:$head,
-        body:"Codex Review: Didn\u0027t find any major issues."
-      }
-    ]]' >"${fixtures}/reviews.pages.json"
+    --arg login "$actor_login" '
+    [[{
+      id:9124,user:{id:$id,login:$login},content:"+1",
+      created_at:"2026-07-31T08:16:11Z"
+    }]]' >"${fixtures}/reactions.pages.json"
 run_check '2026-07-31T08:17:00Z'
 assert_status 0 clean
-assert_accepted review 79
-assert_accounting 2 2 result-count
+assert_accepted reaction 9124
 
-echo "==> adjudicated late findings do not satisfy a second acknowledged request"
+echo "==> newest clean result terminates only after the latest full window"
+printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:31:01Z'
+assert_status 0 clean
+assert_accepted review 78
+assert_no_attempt_machinery
+
+echo "==> a newer current-head finding is surfaced during the re-trigger window"
 codex_findings_review
 jq '.[][] | .submitted_at = "2026-07-31T08:16:30Z"' \
     "${fixtures}/reviews.pages.json" | jq -s '[.]' >"${fixtures}/reviews.next.json"
@@ -1662,25 +1618,15 @@ mv "${fixtures}/reviews.next.json" "${fixtures}/reviews.pages.json"
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
-    --argjson owner "$owner_id" \
     --arg head "$head_sha" '
-    [[
-      {
+    [[{
         id:188,user:{id:$id,login:$login},
         created_at:"2026-07-31T08:16:31Z",updated_at:"2026-07-31T08:16:31Z",
         commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
-        body:"P1: late finding from the first acknowledged request"
-      },
-      {
-        id:189,user:{id:$owner,login:"repo-owner"},
-        created_at:"2026-07-31T08:16:40Z",updated_at:"2026-07-31T08:16:40Z",
-        author_association:"OWNER",in_reply_to_id:188,
-        body:"Fixed in the current head."
-      }
-    ]]' >"${fixtures}/inline.pages.json"
+        body:"P1: newer finding observed during the latest window"
+      }]]' >"${fixtures}/inline.pages.json"
 run_check '2026-07-31T08:17:00Z'
-assert_status 11 pending
-assert_accounting 2 1 not-terminal
+assert_status 10 findings
 
 echo "==> attached head refuses uncontrolled duplicate reservation"
 set +e
@@ -1764,116 +1710,37 @@ rm -f "${state}.lock/pid"
 rmdir "${state}.lock"
 [ "$locked_rc" -eq 2 ] ||
     fail "locked reservation should fail closed: $locked_out"
-grep -Fq "lock-held: holder_pid=$$ visible=yes age=" <<<"$locked_out" ||
+grep -Fq "lock-held: holder_pid=$$ age=" <<<"$locked_out" ||
     fail "live-lock refusal did not identify its holder: $locked_out"
 
-echo "==> an invisible lock holder is stale-suspected and never auto-reclaimed"
+echo "==> every existing lock is held and never auto-reclaimed"
 write_defaults
 rm -f "$state"
 mkdir "${state}.lock"
 printf '%s\n' 99999999 >"${state}.lock/pid"
 set +e
-stale_out="$("$helper" reserve \
+held_out="$("$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 2>&1)"
-stale_rc=$?
+held_rc=$?
 set -e
-[ "$stale_rc" -eq 2 ] ||
-    fail "stale-suspected lock should fail closed: $stale_out"
-grep -Fq "lock-stale-suspected: holder_pid=99999999 visible=no age=" <<<"$stale_out" ||
-    fail "stale-suspected lock did not report its evidence: $stale_out"
+[ "$held_rc" -eq 2 ] ||
+    fail "existing lock should fail closed: $held_out"
+grep -Fq "lock-held: holder_pid=99999999 age=" <<<"$held_out" ||
+    fail "held lock did not report its PID and age: $held_out"
 [ -f "${state}.lock/pid" ] ||
-    fail "stale-suspected lock was modified without --break-lock"
+    fail "held lock was modified by an automatic recovery path"
 
-echo "==> --break-lock explicitly removes an invisible holder and continues"
-"$helper" reserve \
-    --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --break-lock >/dev/null
-[ -f "$state" ] || fail "explicit lock break did not complete the reservation"
-[ ! -d "${state}.lock" ] || fail "explicit lock break left the lock directory behind"
-
-echo "==> overlapping --break-lock calls preserve the winner's canonical lock"
-write_defaults
-rm -f "$state"
-mkdir "${state}.lock"
-printf '%s\n' 99999999 >"${state}.lock/pid"
-export MV_PAUSE_SOURCE="${state}.lock"
-export MV_PAUSED_MARKER="${test_tmp}/mv-paused"
-export MV_RELEASE_MARKER="${test_tmp}/mv-release"
-rm -f "$MV_PAUSED_MARKER" "$MV_RELEASE_MARKER"
-: >"${fixtures}/slow-pr"
-"$helper" reserve \
-    --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --break-lock \
-    >"${test_tmp}/first-break.out" 2>&1 &
-first_break_pid=$!
-for _ in $(seq 1 200); do
-    [ ! -f "$MV_PAUSED_MARKER" ] || break
-    sleep 0.05
-done
-[ -f "$MV_PAUSED_MARKER" ] || fail "first lock takeover never reached its rename barrier"
-"$helper" reserve \
-    --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 --break-lock \
-    >"${test_tmp}/second-break.out" 2>&1 &
-second_break_pid=$!
-for _ in $(seq 1 200); do
-    [ ! -f "${state}.lock/pid" ] || break
-    sleep 0.05
-done
-[ -f "${state}.lock/pid" ] || fail "second lock takeover never claimed the canonical lock"
-: >"$MV_RELEASE_MARKER"
+echo "==> --break-lock is not an accepted option"
 set +e
-wait "$first_break_pid"
-first_break_rc=$?
-wait "$second_break_pid"
-second_break_rc=$?
-set -e
-unset MV_PAUSE_SOURCE MV_PAUSED_MARKER MV_RELEASE_MARKER
-rm -f "${fixtures}/slow-pr"
-[ "$first_break_rc" -eq 2 ] ||
-    fail "takeover race loser should fail closed: $(cat "${test_tmp}/first-break.out")"
-grep -Fq "lock-held" "${test_tmp}/first-break.out" ||
-    fail "takeover race loser did not report lock-held"
-[ "$second_break_rc" -eq 0 ] ||
-    fail "takeover race winner failed: $(cat "${test_tmp}/second-break.out")"
-[ -f "$state" ] || fail "takeover race winner did not complete its reservation"
-[ ! -d "${state}.lock" ] || fail "takeover race left the canonical lock behind"
-
-echo "==> rename-first cleanup cannot delete an interleaved replacement lock"
-write_defaults
-rm -f "$state"
-export MV_PAUSE_SOURCE="${state}.lock"
-export MV_PAUSED_MARKER="${test_tmp}/release-mv-paused"
-export MV_RELEASE_MARKER="${test_tmp}/release-mv-resume"
-rm -f "$MV_PAUSED_MARKER" "$MV_RELEASE_MARKER"
-: >"${fixtures}/slow-pr"
-"$helper" reserve \
+break_out="$("$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 \
-    >"${test_tmp}/old-holder.out" 2>&1 &
-old_holder_pid=$!
-for _ in $(seq 1 200); do
-    [ ! -f "$MV_PAUSED_MARKER" ] || break
-    sleep 0.05
-done
-[ -f "$MV_PAUSED_MARKER" ] || fail "cleanup never reached its atomic rename barrier"
-[ ! -d "${state}.lock" ] || fail "cleanup did not rename its owned lock before removal"
-mkdir "${state}.lock"
-printf '%s\n' replacement-token >"${state}.lock/owner"
-printf '%s\n' 99999999 >"${state}.lock/pid"
-: >"$MV_RELEASE_MARKER"
-set +e
-wait "$old_holder_pid"
-old_holder_rc=$?
+    --head "$head_sha" --attempt 1 --break-lock 2>&1)"
+break_rc=$?
 set -e
-unset MV_PAUSE_SOURCE MV_PAUSED_MARKER MV_RELEASE_MARKER
-rm -f "${fixtures}/slow-pr"
-[ "$old_holder_rc" -eq 0 ] ||
-    fail "old holder failed after the simulated takeover: $(cat "${test_tmp}/old-holder.out")"
-[ "$(cat "${state}.lock/owner")" = replacement-token ] ||
-    fail "old holder cleanup removed or changed the replacement ownership token"
-rm -f "${state}.lock/pid" "${state}.lock/owner"
+[ "$break_rc" -eq 2 ] || fail "deleted --break-lock option was accepted: $break_out"
+[ -f "${state}.lock/pid" ] || fail "unknown option changed the held lock"
+rm -f "${state}.lock/pid"
 rmdir "${state}.lock"
 
 echo "==> state lock serializes checks with reservations"
@@ -2898,6 +2765,30 @@ assert_accepted comment 77
 printf '%s' "$check_out" | jq -e '.detail | test("settled: declined")' >/dev/null ||
     fail "a disposition-clean must name the disposition applied: $check_out"
 
+echo "==> an earlier settled finding cannot make a re-trigger clean without new evidence"
+trigger_id=124
+request_time='2026-07-31T08:16:01Z'
+jq -cn \
+    --argjson id "$trigger_id" \
+    --arg created "$request_time" '
+    {
+      id:$id,body:"@codex review",created_at:$created,
+      issue_url:"https://api.github.com/repos/example/repo/issues/493"
+    }' >"${fixtures}/trigger.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+run_check '2026-07-31T08:17:00Z'
+assert_status 11 pending
+run_check '2026-07-31T08:31:01Z'
+assert_status 13 escalate
+
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
 echo "==> a rendered P3 badge is a finding and can be settled"
 new_cycle
 write_badged_comment 77 "" "" P3
