@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "slate_id": "milestone-9",
+  "revisions": [
+    {
+      "seq": 0,
+      "prev_digest": "genesis",
+      "digest": "a3130fb8ce22da0a552df71acffb690d9cd9ff83adf03ceb9b7a6c418381cf4b",
+      "at": "2026-09-13T17:00:00Z",
+      "reason": "initial slate plan",
+      "plan": {
+        "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
+        "policy": {
+          "rigor": "standard",
+          "rigor_source": "default_rigor",
+          "caps": {
+            "challenge": 3,
+            "review": 3,
+            "integration": 4,
+            "remediation": 4,
+            "min_rounds": 1,
+            "wall_clock_min": 240
+          },
+          "breadth": {
+            "max_agent_runs": 12,
+            "max_parallel_agents": 4
+          },
+          "strategy": "swarm",
+          "strategy_source": "default_strategy",
+          "role_tiers": {
+            "orchestrator": "frontier",
+            "implementer": "standard",
+            "challenger": "frontier",
+            "reviewer": "standard",
+            "integrator": "economy"
+          },
+          "operator_pins": []
+        },
+        "dispatcher": {
+          "kind": "foreman",
+          "parallel_cap": 3,
+          "foreman_max_parallel": 3
+        },
+        "issues": [
+          {
+            "number": 100,
+            "title": "Independent work",
+            "url": "https://github.com/example/repo/issues/100",
+            "verdict": "valid",
+            "candidate_files": [
+              "a.md"
+            ],
+            "blocked_by": []
+          }
+        ],
+        "overlaps": [],
+        "waves": [
+          {
+            "number": 1,
+            "issues": [
+              100
+            ]
+          }
+        ],
+        "lanes": [
+          {
+            "lane": "one",
+            "issue": 100,
+            "wave": 1,
+            "branch": "100-one",
+            "run_id": "run-100-one",
+            "fence": [
+              "a.md"
+            ],
+            "expansions": []
+          }
+        ]
+      }
+    }
+  ]
+}

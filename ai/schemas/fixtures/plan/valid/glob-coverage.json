@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "slate_id": "glob-coverage",
+  "revisions": [
+    {
+      "seq": 0,
+      "prev_digest": "genesis",
+      "digest": "5729e9934c5ae58ef4c1e56d12a7e6f5b3c667effb898dfd0ea33810147a93f9",
+      "at": "2026-09-14T12:00:00Z",
+      "reason": "initial slate plan",
+      "plan": {
+        "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
+        "policy": {
+          "rigor": "deep",
+          "rigor_source": "default",
+          "caps": {
+            "challenge": 1,
+            "review": 1,
+            "integration": 1,
+            "remediation": 1,
+            "min_rounds": 1,
+            "wall_clock_min": 60
+          },
+          "breadth": { "max_agent_runs": 1, "max_parallel_agents": 1 },
+          "strategy": "plan",
+          "strategy_source": "default",
+          "role_tiers": {
+            "orchestrator": "apex",
+            "implementer": "frontier",
+            "challenger": "apex",
+            "reviewer": "frontier",
+            "integrator": "economy"
+          },
+          "operator_pins": []
+        },
+        "dispatcher": {
+          "kind": "interactive",
+          "parallel_cap": 1,
+          "foreman_max_parallel": null
+        },
+        "issues": [
+          {
+            "number": 1,
+            "title": "Glob coverage",
+            "url": "https://example.test/1",
+            "verdict": "valid",
+            "candidate_files": [
+              "scripts/deploy.sh",
+              "ai/skills/example/SKILL.md"
+            ],
+            "blocked_by": []
+          }
+        ],
+        "overlaps": [],
+        "waves": [{ "number": 1, "issues": [1] }],
+        "lanes": [
+          {
+            "lane": "glob",
+            "issue": 1,
+            "wave": 1,
+            "branch": "glob",
+            "run_id": "run-glob",
+            "fence": ["scripts/*.sh", "ai/**/SKILL.md"],
+            "expansions": []
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/evanharmon1/harmon-devkit/ai/schemas/plan.schema.json",
+  "title": "Dev flow v2 dispatch plan",
+  "$comment": "Orchestrator-authored durable slate plan. Every digest-chained revision carries one complete plan snapshot; scripts/validate-result-schemas.mjs enforces the chain, dispatcher cap, graph references, wave/lane projection, ownership, and complete pairwise overlap set for every revision.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "slate_id", "revisions"],
+  "properties": {
+    "schema": { "const": 1 },
+    "slate_id": { "type": "string", "minLength": 1 },
+    "revisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["seq", "prev_digest", "digest", "at", "reason", "plan"],
+        "properties": {
+          "seq": { "type": "integer", "minimum": 0 },
+          "prev_digest": { "type": "string", "pattern": "^(genesis|[0-9a-f]{64})$" },
+          "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+          "reason": { "type": "string", "minLength": 1 },
+          "plan": { "$ref": "#/$defs/planContent" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "planContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_sha", "policy", "dispatcher", "issues", "overlaps", "waves", "lanes"],
+      "properties": {
+        "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rigor", "rigor_source", "caps", "breadth", "strategy", "strategy_source", "role_tiers", "operator_pins"],
+          "properties": {
+            "rigor": { "type": "string", "minLength": 1 },
+            "rigor_source": { "type": "string", "minLength": 1 },
+            "caps": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["challenge", "review", "integration", "remediation", "min_rounds", "wall_clock_min"],
+              "properties": {
+                "challenge": { "type": "integer", "minimum": 0 },
+                "review": { "type": "integer", "minimum": 0 },
+                "integration": { "type": "integer", "minimum": 0 },
+                "remediation": { "type": "integer", "minimum": 0 },
+                "min_rounds": { "type": "integer", "minimum": 0 },
+                "wall_clock_min": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "breadth": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["max_agent_runs", "max_parallel_agents"],
+              "properties": {
+                "max_agent_runs": { "type": "integer", "minimum": 1 },
+                "max_parallel_agents": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "strategy": { "type": "string", "minLength": 1 },
+            "strategy_source": { "type": "string", "minLength": 1 },
+            "role_tiers": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["orchestrator", "implementer", "challenger", "reviewer", "integrator"],
+              "properties": {
+                "orchestrator": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+                "implementer": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+                "challenger": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+                "reviewer": { "enum": ["local", "economy", "standard", "frontier", "apex"] },
+                "integrator": { "enum": ["local", "economy", "standard", "frontier", "apex"] }
+              }
+            },
+            "operator_pins": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "dispatcher": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "parallel_cap", "foreman_max_parallel"],
+          "properties": {
+            "kind": { "enum": ["interactive", "foreman"] },
+            "parallel_cap": { "type": "integer", "minimum": 1 },
+            "foreman_max_parallel": { "type": ["integer", "null"], "minimum": 1 }
+          }
+        },
+        "issues": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["number", "title", "url", "verdict", "candidate_files", "blocked_by"],
+            "properties": {
+              "number": { "type": "integer", "minimum": 1 },
+              "title": { "type": "string", "minLength": 1 },
+              "url": { "type": "string", "minLength": 1 },
+              "verdict": { "enum": ["valid", "partial", "done"] },
+              "candidate_files": { "type": "array", "items": { "$ref": "#/$defs/canonicalPath" } },
+              "blocked_by": { "type": "array", "items": { "type": "integer", "minimum": 1 } }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "verdict": { "enum": ["valid", "partial"] } } },
+                "then": { "properties": { "candidate_files": { "minItems": 1 } } }
+              }
+            ]
+          }
+        },
+        "overlaps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["issue_a", "issue_b", "paths", "resolution", "merge_dependency"],
+            "properties": {
+              "issue_a": { "type": "integer", "minimum": 1 },
+              "issue_b": { "type": "integer", "minimum": 1 },
+              "paths": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/canonicalPath" } },
+              "resolution": { "enum": ["serialize", "split"] },
+              "merge_dependency": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["before", "after"],
+                "properties": {
+                  "before": { "type": "integer", "minimum": 1 },
+                  "after": { "type": "integer", "minimum": 1 }
+                }
+              }
+            }
+          }
+        },
+        "waves": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["number", "issues"],
+            "properties": {
+              "number": { "type": "integer", "minimum": 1 },
+              "issues": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 1 } }
+            }
+          }
+        },
+        "lanes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lane", "issue", "wave", "branch", "run_id", "fence", "expansions"],
+            "properties": {
+              "lane": { "type": "string", "minLength": 1 },
+              "issue": { "type": "integer", "minimum": 1 },
+              "wave": { "type": "integer", "minimum": 1 },
+              "branch": { "type": "string", "minLength": 1 },
+              "run_id": { "type": "string", "minLength": 1 },
+              "fence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/fenceItem" } },
+              "expansions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["path", "at", "reason"],
+                  "properties": {
+                    "path": { "$ref": "#/$defs/canonicalPath" },
+                    "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+                    "reason": { "type": "string", "minLength": 1 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "canonicalPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!\\./)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\/$).+$"
+    },
+    "fenceItem": {
+      "type": ["string", "object"],
+      "minLength": 1,
+      "pattern": "^(?!/)(?!\\./)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\/$).+$",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "$ref": "#/$defs/canonicalPath" },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

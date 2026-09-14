@@ -191,6 +191,57 @@ expect_ok "cross-repo filing runs the full pre-create contract" \
 expect_ok "breakdown applies scoped titles to every issue shape" \
     grep -qF 'every parent, child, and flat issue uses' \
     "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "breakdown authors a dispatch-planning surface per issue" \
+    grep -qF 'Each authored issue also carries a `## Surface` section' \
+    "$repo/ai/skills/universal/breakdown/SKILL.md"
+expect_ok "orchestrator planning precedes lane briefs" \
+    sh -c 'test "$(grep -n "^## Planning$" "$1" | cut -d: -f1)" -lt "$(grep -n "^## Lane briefs$" "$1" | cut -d: -f1)"' sh \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning emits the durable slate plan" \
+    grep -qF '<git-common-dir>/dev-flow-v2/slates/<slate-id>/plan.json' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning consumes Foreman's graph" \
+    grep -qF 'task foreman:plan -- --milestone <n>' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning documents the blocked-by fallback" \
+    grep -qF 'native blocked-by edges and the fixed `Blocked by:` fallback lines' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "interactive planning uses the resolved policy cap directly" \
+    grep -qF 'interactive orchestrator uses the resolved' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "only Foreman intersects its configured parallel cap" \
+    grep -qF 'Only when Foreman is the dispatcher' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning validates the emitted plan" \
+    grep -qF 'validate-result-schemas.mjs plan <plan.json>' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning rechecks target-head freshness before dispatch" \
+    grep -qF 'compare the live target head with the' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning appends recomputations after external merges" \
+    grep -qF '**Recompute after every external merge.**' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning keeps each revision reconstructable" \
+    grep -qF 'earlier revisions remain' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning publishes recomputations through validated replacement" \
+    grep -qF 'write the complete candidate beside' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning validates the canonical recomputation readback" \
+    grep -qF 'validate the canonical readback' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning refuses a second plan writer" \
+    grep -qF 'A second writer of the same `plan.json` is a blocker' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning publishes expansions as complete revisions" \
+    grep -qF 'accepted expansion is a recomputation reason' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "retro compares validated planned and actual lane execution" \
+    grep -qF 'planned versus actual waves and interventions for each lane' \
+    "$repo/ai/skills/universal/retro/SKILL.md"
+expect_ok "retro selects the unique validated slate for a run" \
+    grep -qF 'revision history lists that `run_id` in `lanes[]`' \
+    "$repo/ai/skills/universal/retro/SKILL.md"
 expect_ok "breakdown keeps execution behind interactive human approval" \
     grep -qF 'human turn in an interactive session' \
     "$repo/ai/skills/universal/breakdown/SKILL.md"

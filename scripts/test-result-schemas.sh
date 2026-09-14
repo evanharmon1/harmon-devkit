@@ -291,6 +291,7 @@ kind_for_dir() {
     result.integrator.schema) echo "integrator" ;;
     adjudication.schema) echo "adjudication" ;;
     run.schema) echo "run" ;;
+    plan) echo "plan" ;;
     *) fail "fixtures directory does not map to a known schema kind: $1" ;;
     esac
 }
@@ -304,6 +305,7 @@ schema_file_for_dir() {
     result.integrator.schema) echo "result.integrator.schema.json" ;;
     adjudication.schema) echo "adjudication.schema.json" ;;
     run.schema) echo "run.schema.json" ;;
+    plan) echo "plan.schema.json" ;;
     *) fail "fixtures directory does not map to a known schema file: $1" ;;
     esac
 }
@@ -385,6 +387,121 @@ done
 
 [ "$fixture_dirs_found" -gt 0 ] || fail "no fixture directories found under $fixtures_dir"
 echo "PASS: fixture corpus OK ($valid_count valid, $invalid_count invalid, $fixture_dirs_found schema(s))"
+
+# These named plan-history regressions are the contract behind the generic
+# fixture walk above: a run keeps its original fence, can only append expansion
+# records after first appearing, and split dependencies follow wave order.
+for regression in \
+    plan/valid/recomputed.json \
+    plan/invalid/rewritten-run-fence.json \
+    plan/invalid/removed-run-expansion.json \
+    plan/invalid/reversed-split-wave-dependency.json \
+    plan/invalid/first-snapshot-expansion.json; do
+    [ -f "$fixtures_dir/$regression" ] || fail "missing plan-history regression fixture: $regression"
+done
+echo "PASS: plan-history regression fixture set is complete"
+
+# plan.schema.json is a new closed top-level record with nested required fields.
+# Mutate one complete valid plan so every required property and enum is proved
+# through the real `plan` entry point without maintaining dozens of repetitive
+# hand-copied fixtures; the curated corpus above retains reason-sidecar cases
+# for structural and cross-record semantic failures.
+node --input-type=module - "$schemas_dir/plan.schema.json" \
+    "$fixtures_dir/plan/valid/interactive.json" \
+    "$fixtures_dir/plan/valid/recomputed.json" \
+    "$validator" "$test_tmp/plan-mutations" <<'NODE'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import path from 'node:path'
+
+const [schemaFile, fixtureFile, expansionFixtureFile, validator, mutationDir] = process.argv.slice(2)
+const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
+const fixtures = [fixtureFile, expansionFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
+
+function resolveRef(ref) {
+  if (typeof ref !== 'string' || !ref.startsWith('#/')) return null
+  return ref
+    .slice(2)
+    .split('/')
+    .reduce((node, part) => node?.[part], schema)
+}
+
+function collect(node, currentPath, required, enums, stack = new Set()) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return
+  if (node.$ref) {
+    const target = resolveRef(node.$ref)
+    if (target && !stack.has(target)) collect(target, currentPath, required, enums, new Set([...stack, target]))
+    return
+  }
+  for (const name of node.required ?? []) required.push({ parent: currentPath, name })
+  if (Array.isArray(node.enum)) enums.push(currentPath)
+  for (const [name, child] of Object.entries(node.properties ?? {})) {
+    collect(child, [...currentPath, name], required, enums, stack)
+  }
+  if (node.items) collect(node.items, [...currentPath, '*'], required, enums, stack)
+}
+
+function concretePaths(value, pattern, prefix = []) {
+  if (pattern.length === 0) return [prefix]
+  const [part, ...rest] = pattern
+  if (part === '*') {
+    if (!Array.isArray(value)) return []
+    return value.flatMap((entry, index) => concretePaths(entry, rest, [...prefix, index]))
+  }
+  if (!value || typeof value !== 'object' || !Object.hasOwn(value, part)) return []
+  return concretePaths(value[part], rest, [...prefix, part])
+}
+
+function valueAt(value, concretePath) {
+  return concretePath.reduce((current, part) => current[part], value)
+}
+
+function location(concretePath) {
+  return concretePath.reduce(
+    (result, part) => (typeof part === 'number' ? `${result}[${part}]` : `${result}.${part}`),
+    '$plan'
+  )
+}
+
+const required = []
+const enums = []
+collect(schema, [], required, enums)
+mkdirSync(mutationDir, { recursive: true })
+let failures = 0
+let caseNumber = 0
+
+function runMutation(kind, pattern, name = null) {
+  const fixture = fixtures.find((candidate) => concretePaths(candidate, pattern).length > 0)
+  const concrete = fixture && concretePaths(fixture, pattern)[0]
+  if (!concrete) {
+    console.error(`FAIL: no valid plan fixture contains ${location(pattern)}${name ? `.${name}` : ''}`)
+    failures += 1
+    return
+  }
+  const mutation = structuredClone(fixture)
+  const expected = kind === 'required'
+    ? `${location(concrete)}: missing required property ${name}`
+    : `${location(concrete)}: must be one of`
+  if (kind === 'required') delete valueAt(mutation, concrete)[name]
+  else {
+    const parent = valueAt(mutation, concrete.slice(0, -1))
+    parent[concrete.at(-1)] = '__invalid_enum__'
+  }
+  const file = path.join(mutationDir, `${String(++caseNumber).padStart(3, '0')}-${kind}.json`)
+  writeFileSync(file, `${JSON.stringify(mutation)}\n`)
+  const result = spawnSync(process.execPath, [validator, 'plan', file], { encoding: 'utf8' })
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
+  if (result.status === 0 || !output.includes(expected)) {
+    console.error(`FAIL: plan ${kind} mutation did not produce ${JSON.stringify(expected)}: ${output.trim()}`)
+    failures += 1
+  }
+}
+
+for (const entry of required) runMutation('required', entry.parent, entry.name)
+for (const enumPath of enums) runMutation('enum', enumPath)
+if (failures > 0) process.exit(1)
+console.log(`PASS: plan.schema.json mutation coverage complete (${required.length} required, ${enums.length} enum)`)
+NODE
 
 # --- Native harness composition (result.schema.json) -----------------------
 # result.schema.json is a self-contained composition (envelope properties +
