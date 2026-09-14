@@ -1,0 +1,156 @@
+{
+  "schema": 1,
+  "slate_id": "dispatcher-only-drift",
+  "revisions": [
+    {
+      "seq": 0,
+      "prev_digest": "genesis",
+      "digest": "15d0f26e9cce2ab5a45c445491eeb03f0702891da6e4cd50c6366b82a0de6a88",
+      "at": "2026-09-14T12:00:00Z",
+      "reason": "initial slate plan",
+      "plan": {
+        "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
+        "policy": {
+          "rigor": "deep",
+          "rigor_source": "default",
+          "caps": {
+            "challenge": 1,
+            "review": 1,
+            "integration": 1,
+            "remediation": 1,
+            "min_rounds": 1,
+            "wall_clock_min": 60
+          },
+          "breadth": {
+            "max_agent_runs": 2,
+            "max_parallel_agents": 5
+          },
+          "strategy": "plan",
+          "strategy_source": "default",
+          "role_tiers": {
+            "orchestrator": "apex",
+            "implementer": "frontier",
+            "challenger": "apex",
+            "reviewer": "frontier",
+            "integrator": "economy"
+          },
+          "operator_pins": []
+        },
+        "dispatcher": {
+          "kind": "foreman",
+          "parallel_cap": 2,
+          "foreman_max_parallel": 2
+        },
+        "issues": [
+          {
+            "number": 1,
+            "title": "One",
+            "url": "https://example.test/1",
+            "verdict": "valid",
+            "candidate_files": [
+              "a"
+            ],
+            "blocked_by": []
+          }
+        ],
+        "overlaps": [],
+        "waves": [
+          {
+            "number": 1,
+            "issues": [
+              1
+            ]
+          }
+        ],
+        "lanes": [
+          {
+            "lane": "one",
+            "issue": 1,
+            "wave": 1,
+            "branch": "one",
+            "run_id": "run-one",
+            "fence": [
+              "a"
+            ],
+            "expansions": []
+          }
+        ]
+      }
+    },
+    {
+      "seq": 1,
+      "prev_digest": "15d0f26e9cce2ab5a45c445491eeb03f0702891da6e4cd50c6366b82a0de6a88",
+      "digest": "0a49749d0043c48a6c6e5f8a4689836857f15e57d577dbef5d871aa869822422",
+      "at": "2026-09-14T12:05:00Z",
+      "reason": "recompute raises the Foreman cap only",
+      "plan": {
+        "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
+        "policy": {
+          "rigor": "deep",
+          "rigor_source": "default",
+          "caps": {
+            "challenge": 1,
+            "review": 1,
+            "integration": 1,
+            "remediation": 1,
+            "min_rounds": 1,
+            "wall_clock_min": 60
+          },
+          "breadth": {
+            "max_agent_runs": 2,
+            "max_parallel_agents": 5
+          },
+          "strategy": "plan",
+          "strategy_source": "default",
+          "role_tiers": {
+            "orchestrator": "apex",
+            "implementer": "frontier",
+            "challenger": "apex",
+            "reviewer": "frontier",
+            "integrator": "economy"
+          },
+          "operator_pins": []
+        },
+        "dispatcher": {
+          "kind": "foreman",
+          "parallel_cap": 3,
+          "foreman_max_parallel": 3
+        },
+        "issues": [
+          {
+            "number": 1,
+            "title": "One",
+            "url": "https://example.test/1",
+            "verdict": "valid",
+            "candidate_files": [
+              "a"
+            ],
+            "blocked_by": []
+          }
+        ],
+        "overlaps": [],
+        "waves": [
+          {
+            "number": 1,
+            "issues": [
+              1
+            ]
+          }
+        ],
+        "lanes": [
+          {
+            "lane": "one",
+            "issue": 1,
+            "wave": 1,
+            "branch": "one",
+            "run_id": "run-one",
+            "fence": [
+              "a"
+            ],
+            "expansions": []
+          }
+        ]
+      }
+    }
+  ]
+}

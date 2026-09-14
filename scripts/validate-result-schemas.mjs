@@ -2291,12 +2291,36 @@ function checkDispatchPlan(document, errors) {
   const revisions = checkPlanRevisionChain(document, errors)
   if (!revisions) return
   const runBindings = new Map()
+  // Tracks revisions[seq-1].at across the loop below (this whole document is
+  // one plan's revision history, so "the preceding revision" is unambiguous)
+  // and the first revision's canonical policy/dispatcher, so a newly
+  // appended expansion or a later revision's policy/dispatcher can be
+  // checked against them without re-deriving state already walked once.
+  let previousRevisionTime = null
+  let pinnedPolicyJson = null
+  let pinnedDispatcherJson = null
   for (const revision of revisions) {
     const revisionTime = Date.parse(revision.at)
     const revisionErrors = []
     checkPlanCoherence(revision.plan, revisionErrors)
     errors.push(...revisionErrors.map((error) => error.replace('$plan', `$plan.revisions[${revision.seq}].plan`)))
+    const policyJson = canonicalJsonForDigest(revision.plan.policy)
+    const dispatcherJson = canonicalJsonForDigest(revision.plan.dispatcher)
+    if (pinnedPolicyJson === null) {
+      pinnedPolicyJson = policyJson
+      pinnedDispatcherJson = dispatcherJson
+    } else {
+      if (policyJson !== pinnedPolicyJson) {
+        errors.push(`$plan.revisions[${revision.seq}].plan.policy: must remain byte-identical to revision 0's policy across revision history`)
+      }
+      if (dispatcherJson !== pinnedDispatcherJson) {
+        errors.push(`$plan.revisions[${revision.seq}].plan.dispatcher: must remain byte-identical to revision 0's dispatcher across revision history`)
+      }
+    }
     for (const [laneIndex, lane] of (revision.plan.lanes || []).entries()) {
+      if (lane.run_id === '.' || lane.run_id === '..') {
+        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].run_id: must not be ${JSON.stringify(lane.run_id)}`)
+      }
       const binding = runBindings.get(lane.run_id)
       if (binding && (binding.issue !== lane.issue || binding.branch !== lane.branch)) {
         errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].run_id: ${JSON.stringify(lane.run_id)} must remain bound to issue ${binding.issue} and branch ${JSON.stringify(binding.branch)} across revision history`)
@@ -2313,6 +2337,11 @@ function checkDispatchPlan(document, errors) {
       if (binding && canonicalJsonForDigest(lane.fence || []) !== canonicalJsonForDigest(binding.fence)) {
         errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].fence: must remain immutable for run_id ${JSON.stringify(lane.run_id)} across revision history`)
       }
+      // Captured before the append-only-prefix check below may advance
+      // binding.expansions to this revision's list, so it stays "how many
+      // of this revision's expansions already existed as of the previous
+      // revision" for the newly-appended lower bound further down.
+      const priorExpansionsLength = binding ? binding.expansions.length : 0
       if (binding) {
         const expansions = lane.expansions || []
         const prefixIsUnchanged =
@@ -2329,19 +2358,40 @@ function checkDispatchPlan(document, errors) {
       } else if ((lane.expansions || []).length > 0) {
         errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions: must be empty in run_id ${JSON.stringify(lane.run_id)}'s first revision`)
       }
-      for (const [expansionIndex, expansion] of (lane.expansions || []).entries()) {
+      const currentExpansions = lane.expansions || []
+      for (const [expansionIndex, expansion] of currentExpansions.entries()) {
         const expansionTime = Date.parse(expansion.at)
         if (!Number.isFinite(expansionTime)) {
           errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must parse as a finite instant`)
-        } else if (
+          continue
+        }
+        if (
           Number.isFinite(stableBinding.firstTime) &&
           Number.isFinite(revisionTime) &&
           (expansionTime < stableBinding.firstTime || expansionTime > revisionTime)
         ) {
           errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must fall between the first revision and its containing revision for run_id ${JSON.stringify(lane.run_id)}`)
         }
+        // The check above bounds every expansion by the lane's very first
+        // revision, which never advances — so a newly appended expansion can
+        // still be backdated to just after that first revision, well before
+        // the revision (or the previous expansion) it actually follows. Only
+        // apply this stricter pair to indices this revision actually added;
+        // an unchanged prefix already satisfied it when it was first added.
+        if (expansionIndex >= priorExpansionsLength) {
+          if (Number.isFinite(previousRevisionTime) && expansionTime < previousRevisionTime) {
+            errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: newly appended expansion must not precede revision ${revision.seq - 1} for run_id ${JSON.stringify(lane.run_id)}`)
+          }
+          if (expansionIndex > 0) {
+            const priorExpansionTime = Date.parse(currentExpansions[expansionIndex - 1].at)
+            if (Number.isFinite(priorExpansionTime) && expansionTime < priorExpansionTime) {
+              errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: newly appended expansion must not precede the previous expansion for run_id ${JSON.stringify(lane.run_id)}`)
+            }
+          }
+        }
       }
     }
+    previousRevisionTime = revisionTime
   }
 }
 
