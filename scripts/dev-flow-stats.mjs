@@ -1977,7 +1977,13 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
       canonicalRun[field] = (canonicalRun[field] || []).map(({ seq: _seq, digest: _digest, prev_digest: _previous, ...entry }) => entry);
     }
     writeFileSync(canonicalRunFile, `${JSON.stringify(canonicalRun, null, 2)}\n`);
-    const runValidationArgs = ["run", canonicalRunFile, "--receipts", runFile, "--receipt"];
+    const runValidationArgs = ["run", canonicalRunFile];
+    // --receipts now requires the bound file to carry a receipts array
+    // (harmon-devkit#1000): bind strictly only when this record actually has
+    // one, and fall back to the validator's plain-run mode otherwise, same as
+    // any other caller that omits --receipts.
+    if (Array.isArray(body.receipts)) runValidationArgs.push("--receipts", runFile);
+    runValidationArgs.push("--receipt");
     if (exitRun.adjudications.length === 0) {
       runValidationArgs.push("--no-adjudications");
     } else {
