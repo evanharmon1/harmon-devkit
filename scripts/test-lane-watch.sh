@@ -162,6 +162,11 @@ if [ "${1:-}" = api ]; then
         esac
         exit 0
     fi
+    if [ -f "$WATCH_FIXTURES/fast-path-expected" ]; then
+        printf '%s\n' "$endpoint" >>"$WATCH_FIXTURES/fast-path-calls"
+        printf '%s\n' '[]'
+        exit 0
+    fi
     phase=0
     [ ! -f "$WATCH_FIXTURES/phase" ] || phase="$(<"$WATCH_FIXTURES/phase")"
     activity_phase=3
@@ -389,6 +394,39 @@ assert_count "$tail_out" 1 '^POST-PROMOTION-ACTIVITY '
 assert_count "$test_tmp/tail-window.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$test_tmp/tail-window.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
 
+# CLOSING durably means "done," never "in progress": a window whose CLOSING
+# flag and the corresponding row's ACTIVITY key are BOTH already durably
+# recorded -- exactly the state a crash can leave once poll_activity()'s
+# reorder (set CLOSING, persist, THEN delete WINDOW/CLOSING) has completed
+# its persist but not yet its deletes -- must skip re-fetching entirely via
+# the fast path, not merely avoid re-emitting a row it already knows about.
+# Tracking every `gh api` call is the point: ACTIVITY-key dedup alone would
+# also suppress a duplicate POST-PROMOTION-ACTIVITY line even if the fast
+# path were broken and a re-fetch happened anyway, so counting emitted lines
+# cannot distinguish "CLOSING correctly means done" from "CLOSING might be a
+# premature lie." Only proving the endpoint was never called can.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase" "$fixture_dir/fast-path-calls"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+closing_now="$(date -u +%s)"
+closing_until=$((closing_now - 1200))
+closing_since=$((closing_until - 900))
+touch "$fixture_dir/fast-path-expected"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s\nCLOSING\talpha\t1\t\nACTIVITY\talpha\treview\t501:%s\nWALLCLOCK\trun\t0\t\n' \
+    "$closing_until" "$closing_since" "$closing_until" >"$test_tmp/closing-durable.state"
+closing_out="$test_tmp/closing-durable.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/closing-durable.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$closing_out"
+rm "$fixture_dir/fast-path-expected"
+assert_count "$closing_out" 0 '^POST-PROMOTION-ACTIVITY '
+assert_count "$closing_out" 0 '^POST-PROMOTION-INDETERMINATE '
+[ ! -f "$fixture_dir/fast-path-calls" ] ||
+    fail 'watcher re-fetched activity for a window already closed durably'
+assert_count "$test_tmp/closing-durable.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
+assert_count "$test_tmp/closing-durable.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
+
 # A cold-start window whose epoch resolves to a real, already-past deadline
 # (the provisional deadline had already passed too) still takes exactly one
 # snapshot over the REAL [since,until] before the window is torn down --
@@ -586,7 +624,7 @@ assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
-    "$tail_out" "$cold_resolve_out" "$cold_never_out" "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
+    "$tail_out" "$closing_out" "$cold_resolve_out" "$cold_never_out" "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
 

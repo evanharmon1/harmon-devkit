@@ -241,9 +241,17 @@ The maintainer-facing ready report is the last message about a promoted PR,
 not the first one after promotion. Once `gh pr ready` confirms non-draft on
 the verified head, run the post-promotion watch — 15 minutes on the trusted
 review-bot actors (the `trusted_actor_id` of every finder in `agent-registry.json`)
-and on humans — and send the ready report only once those 15 minutes pass
-with no `assets/lane-watch.sh` `POST-PROMOTION-ACTIVITY` event, naming the
-head SHA and the gate fingerprint.
+and on humans — and send the ready report only once that watch closes clean:
+`assets/lane-watch.sh` takes its one closing snapshot at window expiry and
+that snapshot finds no activity — not merely "no `POST-PROMOTION-ACTIVITY`
+event was ever seen," which a window whose promotion epoch never resolves
+also satisfies, precisely because its closing snapshot is never taken.
+A `POST-PROMOTION-INDETERMINATE` result is never a pass: it means nothing
+was checked, not that nothing was found. On indeterminate, re-arm the
+window or resolve the stuck promotion epoch by hand, and send the ready
+report only once a closed, quiet window is actually achieved, naming the
+head SHA and the gate fingerprint; escalate instead of reporting ready if
+the watch can never be made to close clean.
 Promotion itself is never reported as readiness: a status sent during the
 watch instead reads "promoted at T, post-promotion watch until T+15", never "ready".
 This maintainer-facing report is distinct from § Persistent supervision's

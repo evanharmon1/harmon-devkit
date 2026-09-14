@@ -420,20 +420,6 @@ poll_activity() {
 
     rows="$(activity_snapshot "$repo" "$pr_number")" || return 1
 
-    # CLOSING is recorded only once the snapshot data is actually in hand,
-    # never before attempting the fetch: a lane-keyed flag set BEFORE the
-    # attempt would still read back as 1 after a crash or bounded-timeout
-    # failure mid-fetch, so a restart would skip the still-needed retry and
-    # silently lose whatever that failed attempt never got to read -- the
-    # exact silent-abandonment failure mode this restructure exists to
-    # remove, just reachable via a different trigger. Setting it here means
-    # a restart only ever skips a fetch that has already, verifiably,
-    # succeeded.
-    if [ "$expired" -eq 1 ]; then
-        state_set CLOSING "$lane" 1
-        persist_state
-    fi
-
     while IFS=$'\t' read -r actor kind id activity_at; do
         [ -n "$id" ] || continue
         [ "$activity_at" -ge "$since" ] || continue
@@ -446,7 +432,18 @@ poll_activity() {
         fi
     done <<<"$rows"
 
+    # CLOSING is recorded only once every row from this fetch has already
+    # been durably persisted (the loop above), never before or during the
+    # fetch/processing itself: a flag set earlier would still read back as 1
+    # after a crash mid-fetch or mid-loop, letting a restart skip the
+    # still-needed retry and silently lose whatever hadn't been recorded yet
+    # -- the exact gap round 4 found via live repro. Recording it only here,
+    # then persisting BEFORE the cleanup delete, means a restart's fast path
+    # only ever skips a fetch+process cycle that has already, verifiably,
+    # completed in full.
     if [ "$expired" -eq 1 ]; then
+        state_set CLOSING "$lane" 1
+        persist_state
         state_delete WINDOW "$lane"
         state_delete CLOSING "$lane"
     fi

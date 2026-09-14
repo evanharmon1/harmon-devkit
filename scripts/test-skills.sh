@@ -239,8 +239,8 @@ expect_ok "orchestrator planning publishes expansions as complete revisions" \
 expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
     grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
-expect_ok "orchestrator PR-open confirmation gates the ready report on the absence of post-promotion activity" \
-    grep -qF 'with no `assets/lane-watch.sh` `POST-PROMOTION-ACTIVITY` event' \
+expect_ok "orchestrator PR-open confirmation gates the ready report on the watch closing clean" \
+    grep -qF 'send the ready report only once that watch closes clean' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
 expect_ok "orchestrator PR-open confirmation never reports promotion itself as readiness" \
     grep -qF 'Promotion itself is never reported as readiness' \
@@ -271,6 +271,15 @@ expect_ok "orchestrator PR-open confirmation names the same post-promotion-activ
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
 expect_ok "lane-brief READY sentinel names the same post-promotion-activity source as orchestrator PR-open confirmation" \
     grep -qF '`assets/lane-watch.sh`' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "lane-brief READY sentinel gates on the watch closing clean, not bare silence" \
+    grep -qF 'closes clean: `assets/lane-watch.sh` takes its one closing' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "orchestrator PR-open confirmation never treats an indeterminate watch as a pass" \
+    grep -qF '`POST-PROMOTION-INDETERMINATE` result is never a pass' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "lane-brief READY sentinel never treats an indeterminate watch as a pass" \
+    grep -qF '`POST-PROMOTION-INDETERMINATE` result is never a pass' \
     "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
 expect_ok "retro compares validated planned and actual lane execution" \
     grep -qF 'planned versus actual waves and interventions for each lane' \

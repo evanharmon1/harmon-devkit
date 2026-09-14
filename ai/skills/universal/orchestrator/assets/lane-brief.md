@@ -280,7 +280,15 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     orchestrator appends it to `{{report-path}}` only once its own
     post-promotion watch — 15 minutes on the trusted review-bot actors (the
     `trusted_actor_id` of every finder in `agent-registry.json`) and on
-    humans — passes with no `POST-PROMOTION-ACTIVITY` event from `assets/lane-watch.sh`,
+    humans — closes clean: `assets/lane-watch.sh` takes its one closing
+    snapshot and that snapshot finds no activity, not just "no
+    `POST-PROMOTION-ACTIVITY` event ever showed up" — a window whose
+    promotion epoch never resolves shows no event either, precisely because
+    its closing snapshot never happens.
+    A `POST-PROMOTION-INDETERMINATE` result is never a pass: the orchestrator
+    re-arms the window or resolves the stuck promotion epoch by hand and
+    waits for a closed, quiet window before appending this sentinel,
+    escalating instead of reporting ready if it never gets there —
     never at the moment of promotion itself.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
