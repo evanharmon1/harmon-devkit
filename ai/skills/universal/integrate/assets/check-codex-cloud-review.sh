@@ -403,6 +403,15 @@ read_state() {
           ((.content_fingerprint | length) > 0) and
           (.attempt == null or .attempt == 1 or .attempt == 2) and
           (.settled_at | type == "string"))))) and
+      (.acknowledgements == null or
+        ((.acknowledgements | type == "array") and
+         (.acknowledgements | length) <= 2 and
+         (.acknowledgements | all(
+           type == "object" and
+           (.attempt == 1 or .attempt == 2) and
+           (.acked_at | type == "string"))) and
+         (([.acknowledgements[].attempt] | unique | length) ==
+          (.acknowledgements | length)))) and
       (.repo | type == "string") and
       (.pr | type == "number") and
       (.head | type == "string") and
@@ -414,6 +423,9 @@ read_state() {
         (.previous_trigger_comment_id | type == "number")) and
       (.timeout_min == null or (.timeout_min | type == "number"))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
+    while IFS= read -r acked_at; do
+        valid_time "$acked_at" || die "malformed state file: $state_file"
+    done < <(jq -r '(.acknowledgements // [])[].acked_at' "$state_file")
 }
 
 acquire_state_lock() {
@@ -461,10 +473,15 @@ acquire_state_lock() {
 
 cleanup_state_lock() {
     [ -n "$lock_dir" ] && [ -n "$lock_token" ] || return 0
-    recorded_token=$(cat "$lock_dir/owner" 2>/dev/null || true)
-    [ "$recorded_token" = "$lock_token" ] || return 0
-    rm -f "$lock_dir/pid" "$lock_dir/owner"
-    rmdir "$lock_dir" 2>/dev/null || true
+    releasing_dir="${lock_dir}.releasing.${lock_token}"
+    mv "$lock_dir" "$releasing_dir" 2>/dev/null || return 0
+    recorded_token=$(cat "$releasing_dir/owner" 2>/dev/null || true)
+    if [ "$recorded_token" != "$lock_token" ]; then
+        mv "$releasing_dir" "$lock_dir" 2>/dev/null || true
+        return 0
+    fi
+    rm -f "$releasing_dir/pid" "$releasing_dir/owner"
+    rmdir "$releasing_dir" 2>/dev/null || true
 }
 
 release_state_lock() {
@@ -769,8 +786,10 @@ reserve)
     # cycle re-block on findings a human already disposed of. A different head
     # invalidates them, and this payload starts them empty.
     carried_settled='[]'
+    carried_acknowledgements='[]'
     if [ -f "$state_file" ] && [ "$(jq -r '.head' "$state_file")" = "$head" ]; then
         carried_settled=$(jq -c '.settled // []' "$state_file")
+        carried_acknowledgements=$(jq -c '.acknowledgements // []' "$state_file")
     fi
     if [ "$attempt" = "2" ]; then
         cycle_requested_at=$(jq -r '.cycle_requested_at' "$state_file")
@@ -875,6 +894,7 @@ reserve)
         --argjson previous_trigger_id "$previous_trigger_id" \
         --argjson timeout_min "$payload_timeout_min" \
         --argjson settled "$carried_settled" \
+        --argjson acknowledgements "$carried_acknowledgements" \
         --argjson finder "$finder_payload" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
@@ -885,6 +905,7 @@ reserve)
           previous_trigger_comment_id:$previous_trigger_id,
           timeout_min:$timeout_min,
           settled:$settled,
+          acknowledgements:$acknowledgements,
           finder:$finder
         }')
     write_state "$state_file" "$payload"
@@ -1411,21 +1432,46 @@ check)
           [(.id? // "" | tostring), (.submitted_at? // "")] | @tsv
         ' "$workdir/reviews.json")
 
-    # Acknowledgements are bound to exact trigger-comment IDs, so no temporal
-    # attribution is needed: an authenticated eyes reaction counts whenever it
-    # appears. Results are distinct authenticated current-head objects created
-    # after the cycle's first trigger. A clean result can terminate only when
-    # the result count has caught up with every acknowledged request.
-    acked=$(jq -nr \
+    # Acknowledgements are monotonic state, not a property of GitHub's mutable
+    # reaction snapshot. The first authenticated pending or success reaction
+    # observed on an exact trigger records acked_at for that attempt; removal
+    # of the live reaction can never decrement the cycle's required results.
+    observed_acknowledgements=$(jq -nr \
         --argjson id "$actor_id" \
         --arg pending "$finder_pending_reaction" \
+        --arg success "$finder_success_reaction" \
+        --argjson current_attempt "$state_attempt" \
         --slurpfile current "$workdir/reactions.json" \
         --slurpfile previous "$workdir/previous-reactions.json" '
-          (if any($current[0][]; .user.id? == $id and .content? == $pending)
-           then 1 else 0 end) +
-          (if any($previous[0][]; .user.id? == $id and .content? == $pending)
-           then 1 else 0 end)
+          ([if any($current[0][];
+                .user.id? == $id and
+                (.content? == $pending or .content? == $success))
+             then $current_attempt else empty end] +
+           [if any($previous[0][];
+                .user.id? == $id and
+                (.content? == $pending or .content? == $success))
+             then 1 else empty end]) | unique
         ')
+    previous_acked=$(jq -r '(.acknowledgements // []) | length' "$state_file")
+    acknowledgement_payload=$(jq \
+        --argjson observed "$observed_acknowledgements" \
+        --arg observed_at "$(now_utc)" '
+          .version = 2 |
+          .acknowledgements =
+            (reduce $observed[] as $attempt (.acknowledgements // [];
+              if any(.[]; .attempt == $attempt) then .
+              else . + [{attempt:$attempt,acked_at:$observed_at}] end) |
+            sort_by(.attempt))
+        ' "$state_file")
+    acked=$(printf '%s' "$acknowledgement_payload" |
+        jq -r '.acknowledgements | length')
+    if [ "$acked" -gt "$previous_acked" ]; then
+        write_state "$state_file" "$acknowledgement_payload"
+    fi
+
+    # Results are distinct authenticated current-head objects created after
+    # the cycle's first trigger. A clean result can terminate only when the
+    # result count has caught up with every persisted acknowledgement.
 
     while IFS= read -r reaction_time; do
         valid_time "$reaction_time" || {

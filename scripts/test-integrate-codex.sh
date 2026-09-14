@@ -1579,6 +1579,19 @@ set -e
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" '
+    [[{
+      id:9123,user:{id:$id,login:$login},content:"eyes",
+      created_at:"2026-07-31T08:00:01Z"
+    }]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+assert_accounting 1 0 not-terminal
+[ "$(jq -r '.acknowledgements | length' "$state")" = 1 ] ||
+    fail "attempt-1 acknowledgement was not persisted on first observation"
+first_acked_at="$(jq -r '.acknowledgements[0].acked_at' "$state")"
 trigger_id=124
 request_time='2026-07-31T08:16:01Z'
 jq -cn \
@@ -1602,13 +1615,7 @@ jq -cn \
       id:9124,user:{id:$id,login:$login},content:"eyes",
       created_at:"2026-07-31T08:16:02Z"
     }]]' >"${fixtures}/reactions.pages.json"
-jq -cn \
-    --argjson id "$actor_id" \
-    --arg login "$actor_login" '
-    [[{
-      id:9123,user:{id:$id,login:$login},content:"eyes",
-      created_at:"2026-07-31T08:16:05Z"
-    }]]' >"${fixtures}/reactions-123.pages.json"
+printf '%s\n' '[[]]' >"${fixtures}/reactions-123.pages.json"
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
@@ -1622,6 +1629,11 @@ jq -c '[[.]]' "${fixtures}/review-78.json" >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:17:00Z'
 assert_status 11 pending
 assert_accounting 2 1 not-terminal
+[ "$(jq -r '.acknowledgements | length' "$state")" = 2 ] ||
+    fail "attempt-2 acknowledgement did not extend persisted monotonic state"
+[ "$(jq -r '.acknowledgements[] | select(.attempt == 1) | .acked_at' "$state")" = \
+    "$first_acked_at" ] ||
+    fail "a later snapshot rewrote attempt 1's first-observed acked_at"
 
 # The cycle terminates only once distinct results catch up with both exact,
 # authenticated acknowledgements. No result is assigned to an attempt.
@@ -1828,9 +1840,13 @@ grep -Fq "lock-held" "${test_tmp}/first-break.out" ||
 [ -f "$state" ] || fail "takeover race winner did not complete its reservation"
 [ ! -d "${state}.lock" ] || fail "takeover race left the canonical lock behind"
 
-echo "==> an old holder cleanup cannot delete a replacement lock"
+echo "==> rename-first cleanup cannot delete an interleaved replacement lock"
 write_defaults
 rm -f "$state"
+export MV_PAUSE_SOURCE="${state}.lock"
+export MV_PAUSED_MARKER="${test_tmp}/release-mv-paused"
+export MV_RELEASE_MARKER="${test_tmp}/release-mv-resume"
+rm -f "$MV_PAUSED_MARKER" "$MV_RELEASE_MARKER"
 : >"${fixtures}/slow-pr"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
@@ -1838,26 +1854,27 @@ rm -f "$state"
     >"${test_tmp}/old-holder.out" 2>&1 &
 old_holder_pid=$!
 for _ in $(seq 1 200); do
-    [ ! -f "${state}.lock/owner" ] || break
+    [ ! -f "$MV_PAUSED_MARKER" ] || break
     sleep 0.05
 done
-[ -f "${state}.lock/owner" ] || fail "old holder never recorded lock ownership"
-old_lock="${state}.lock.displaced"
-"$real_mv_bin" "${state}.lock" "$old_lock"
+[ -f "$MV_PAUSED_MARKER" ] || fail "cleanup never reached its atomic rename barrier"
+[ ! -d "${state}.lock" ] || fail "cleanup did not rename its owned lock before removal"
 mkdir "${state}.lock"
 printf '%s\n' replacement-token >"${state}.lock/owner"
 printf '%s\n' 99999999 >"${state}.lock/pid"
-rm -f "${fixtures}/slow-pr"
+: >"$MV_RELEASE_MARKER"
 set +e
 wait "$old_holder_pid"
 old_holder_rc=$?
 set -e
+unset MV_PAUSE_SOURCE MV_PAUSED_MARKER MV_RELEASE_MARKER
+rm -f "${fixtures}/slow-pr"
 [ "$old_holder_rc" -eq 0 ] ||
     fail "old holder failed after the simulated takeover: $(cat "${test_tmp}/old-holder.out")"
 [ "$(cat "${state}.lock/owner")" = replacement-token ] ||
     fail "old holder cleanup removed or changed the replacement ownership token"
-rm -f "${state}.lock/pid" "${state}.lock/owner" "$old_lock/pid" "$old_lock/owner"
-rmdir "${state}.lock" "$old_lock"
+rm -f "${state}.lock/pid" "${state}.lock/owner"
+rmdir "${state}.lock"
 
 echo "==> state lock serializes checks with reservations"
 new_cycle
