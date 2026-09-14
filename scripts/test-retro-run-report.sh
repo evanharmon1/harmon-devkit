@@ -1149,9 +1149,9 @@ contains "$OUT" '### Stage `plan`' &&
 contains "$OUT" "- Rounds spent: 0 / no cap recorded" &&
     bad "a stage with neither a cap nor a round still printed round lines" ||
     ok "a stage with neither a cap nor a round prints no round lines"
-contains "$OUT" "- Rounds spent: 0 / cap 4 (disclosed, unverified)" &&
-    ok "a capped stage that ran no round still reports 0 against its cap" ||
-    bad "a capped stage with no rounds dropped its round line"
+contains "$OUT" "- Rounds/passes/findings: not measured from local evidence (cap 4 (disclosed, unverified)) — integration passes carry no authenticated evidence marker today." &&
+    ok "the integration stage discloses its cap without a fabricated zero round count" ||
+    bad "the integration stage printed a round-count line instead of the not-measured disclosure"
 contains "$OUT" "- Rounds with no adjudication record: 1" &&
     ok "a round with no adjudication is named" || bad "unadjudicated round not reported"
 contains "$OUT" "- Round 1 evidence: 1 pass(es), 0 blocked pass(es), 1 adjudication(s)" &&
@@ -1721,6 +1721,26 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --run made-up --record-dir "$d" --stats-script "$d/stats.mjs"
 [ "$RC" -eq 11 ] && contains "$ERR" "record-missing" && contains "$ERR" "Authenticated evidence exists" &&
     ok "exit 11 preserves structured record-missing" || bad "expected exit 11 / record-missing, got $RC: $ERR"
+
+echo "==> a --run id containing the text 'record-missing' is not misclassified without a structured status"
+d="$TMPROOT/notfound-explicit-collision"
+scaffold "$d" further-along "body"
+# Mirrors the real harvester's plain not-found message, which echoes the
+# requested run id verbatim and emits no structured JSON status. The run id
+# below contains the literal substring "record-missing" so a stderr-substring
+# classifier (the pre-fix behavior) would misclassify this as record-missing
+# and return exit 11 instead of the correct run-not-found fallback (exit 10).
+cat >"$d/stats.mjs" <<'STATS_MJS'
+#!/usr/bin/env node
+process.stderr.write('dev-flow-stats: run "run-804-record-missing" not found (searched every issue run record in o/r)\n')
+process.exitCode = 1
+STATS_MJS
+chmod +x "$d/stats.mjs"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --run run-804-record-missing --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
+    ok "a stderr substring match on 'record-missing' no longer forces exit 11 without a structured status" ||
+    bad "expected exit 10 / run-not-found (stderr-substring collision), got $RC: $ERR"
 
 echo "==> a harvester crash is an operational error, never a silent fallback"
 d="$TMPROOT/crash"

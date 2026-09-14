@@ -2022,41 +2022,6 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     );
   }
 
-  const receiptedPassNames = new Set((body.receipts || [])
-    .filter((receipt) => receipt.kind === "pass" && typeof receipt.file === "string")
-    .map((receipt) => receipt.file));
-  const retainedIntegrationPasses = exitRun.passes.filter(
-    (pass) => pass.envelope.role === "integrator" && receiptedPassNames.has(pass.name),
-  );
-  const integrationPasses = retainedIntegrationPasses.map((pass) => {
-    runExitValidator(
-      ["envelope", pass.file, "--run-id", body.run_id, "--initiated-by", body.initiated_by],
-      `integration pass ${pass.name}`,
-    );
-    const envelope = pass.envelope;
-    const verificationRound = {
-      findings: (envelope.payload.findings || []).map((finding) => ({
-        ...finding,
-        round: envelope.payload.integration_round,
-      })),
-    };
-    applyExitVerification([verificationRound], null);
-    return {
-      file: pass.name,
-      status: envelope.status,
-      head: envelope.head,
-      integration_round: envelope.payload.integration_round,
-      findings: verificationRound.findings.map((finding) => ({
-        id: finding.id,
-        class: finding.class,
-        provenance: finding.verifiedProvenance,
-        provenance_status: finding.provenanceStatus,
-        fingerprint: finding.verifiedFingerprint,
-        fingerprint_status: finding.fingerprintStatus,
-      })),
-    };
-  });
-
   const byRound = new Map();
   for (const observed of authenticatedMarkers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
     const key = `${observed.marker.stage}|${observed.marker.round}`;
@@ -2138,7 +2103,6 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     record: { body },
     state,
     rounds,
-    integrationPasses,
     slotFailures: Array.isArray(body.slot_failures) ? body.slot_failures : [],
     slotFailuresUnavailable: false,
     futureAdjudicationFiles: [],
@@ -2616,12 +2580,11 @@ function renderTrajectory(run) {
     future_adjudication_files: run.futureAdjudicationFiles || [],
     local_record_current_state: Boolean(run.localRecordCurrentState),
     trajectory_diagnostics: run.trajectoryDiagnostics || [],
-    integration_passes: {
-      count: Array.isArray(run.integrationPasses) ? run.integrationPasses.length : 0,
-      heads: [...new Set((run.integrationPasses || []).map((pass) => pass.head))],
-      passes: run.integrationPasses || [],
-      findings: (run.integrationPasses || []).flatMap((pass) => pass.findings || []),
-    },
+    // Integration passes carry no authenticated evidence marker today (unlike
+    // challenge/review, which the review skill posts to the issue), so there
+    // is no trustworthy local-evidence count to report — disclose that
+    // plainly rather than a count that would always read as zero.
+    integration_evidence: "not-measured",
     // Renamed from the misleading untrusted_comments — shepherd round 2,
     // Codex-confirmed (P2): this field has only ever held TRUSTED-but-
     // unlisted orphans, never untrusted ones. forged_comments is the new,
@@ -2648,7 +2611,7 @@ function renderTrajectoryTable(trajectory) {
   for (const r of trajectory.rounds) {
     lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.blocked_passes} blocked pass(es), ${r.adjudication_count} adjudication(s), ${r.finding_count} finding(s), provenance=${r.provenance_measurement}`);
   }
-  lines.push(`integration passes: ${trajectory.integration_passes.count}; heads=${trajectory.integration_passes.heads.join(",") || "none"}`);
+  lines.push("integration: not measured from local evidence");
   if (Object.keys(trajectory.findings_by_class_and_provenance).length > 0) {
     lines.push("");
     lines.push("findings by class/provenance:");

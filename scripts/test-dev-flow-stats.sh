@@ -3441,12 +3441,15 @@ set -e
     fail "run-record validation: invalid first transition was accepted, rc=$rc: $out"
 mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 
-echo "== the exit-engine trajectory does not synthesize integration rounds =="
+echo "== the exit-engine trajectory does not synthesize integration rounds, and discloses integration as not measured from local evidence =="
 export DFSTATS_DB="$tmp/scenarios/integration-envelope.json"
 run_id="$(meta integration-envelope .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds == [] and .integration_passes.count == 1 and (.integration_passes.heads | length) == 1 and .integration_passes.passes[0].integration_round == 1 and .integration_passes.passes[0].status == "completed" and .integration_passes.findings == [{id:"integration-r1-human-1",provenance_status:"unverified",fingerprint_status:"unverified"}]' >/dev/null ||
-    fail "integration envelope coordinates: harvester did not disclose the retained integration pass separately: $out"
+echo "$out" | jq -e '.rounds == [] and .integration_evidence == "not-measured" and (has("integration_passes") | not)' >/dev/null ||
+    fail "integration envelope coordinates: harvester did not disclose integration as not measured from local evidence (never a count, never zero): $out"
+out_table="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
+grep -Fq 'integration: not measured from local evidence' <<<"$out_table" ||
+    fail "integration envelope coordinates: the table renderer did not disclose integration as not measured: $out_table"
 
 echo "== --as-of reports retained adjudications from the local record's current state =="
 export DFSTATS_DB="$tmp/scenarios/future-adjudication.json"

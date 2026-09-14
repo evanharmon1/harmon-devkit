@@ -795,10 +795,12 @@ function harvestTrajectory(stats, args, runId, trusted) {
     try {
       structuredStatus = JSON.parse(result.stdout || 'null')?.status || null
     } catch {
-      // Older harvesters do not emit a structured missing status. Preserve
-      // their stderr classification until every consumer has upgraded.
+      // No structured status on stdout — classify as an ordinary not-found
+      // below. A stderr substring is not a fallback: the not-found message
+      // echoes the requested run id verbatim, so a --run value that merely
+      // CONTAINS the text "record-missing" would otherwise self-misclassify.
     }
-    const kind = structuredStatus === 'record-missing' || stderr.includes('record-missing') ? 'record-missing' : 'run-not-found'
+    const kind = structuredStatus === 'record-missing' ? 'record-missing' : 'run-not-found'
     return { missingKind: kind, missing: `${kind} — ${stderr || `the harvester does not know run ${runId}`}` }
   }
   if (result.status === 3) {
@@ -931,11 +933,24 @@ function measure(trajectory, policy) {
   const stages = order.map((stage) => {
     const own = rounds.filter((round) => round.stage === stage)
     const cap = policy.present && policy.rounds[stage] !== undefined ? policy.rounds[stage] : null
+    const entries = transitions
+      .filter((transition) => transition.stage === stage)
+      .map((transition) => ({ entered_at: transition.entered_at, exit: transition.exit ?? null }))
+    const stageInterventions = interventions
+      .filter((entry) => stageAt(transitions, entry.at) === stage)
+      .map((entry) => ({ at: entry.at, kind: entry.kind, note: entry.note }))
+    // Unlike challenge/review, the review skill posts no evidence marker for
+    // integration passes, so local evidence can never authenticate a round,
+    // pass, or finding count here. Disclose that plainly instead of a count
+    // that — since `rounds` never carries an "integration" entry — would
+    // always read as a misleading zero (harmon-devkit#962 maintainer
+    // extension: never a count, never zero).
+    if (stage === 'integration') {
+      return { stage, entries, cap, integration_evidence: trajectory.integration_evidence || 'unavailable', interventions: stageInterventions }
+    }
     return {
       stage,
-      entries: transitions
-        .filter((transition) => transition.stage === stage)
-        .map((transition) => ({ entered_at: transition.entered_at, exit: transition.exit ?? null })),
+      entries,
       rounds_spent: own.length,
       cap,
       findings: own.reduce((total, round) => total + (round.finding_count || 0), 0),
@@ -962,9 +977,7 @@ function measure(trajectory, policy) {
       future_adjudication_files: futureAdjudicationFiles.filter((file) =>
         typeof file === 'string' && file.startsWith(`${stage}-r`)
       ),
-      interventions: interventions
-        .filter((entry) => stageAt(transitions, entry.at) === stage)
-        .map((entry) => ({ at: entry.at, kind: entry.kind, note: entry.note }))
+      interventions: stageInterventions
     }
   })
 
@@ -1133,7 +1146,13 @@ function renderMarkdown(report) {
     // noise on a stage that has neither a cap nor a round — `plan` reporting
     // "0 rounds, 0 findings" three times over buries the transition and
     // intervention lines that are the only thing it actually measures.
-    if (stage.cap !== null || stage.rounds_spent > 0) {
+    // Integration is different: it carries no evidence marker at all, so
+    // local evidence can never authenticate a round/pass/finding count for
+    // it — disclose that instead of a count that would always read as zero.
+    if (stage.stage === 'integration') {
+      const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
+      l.push(`- Rounds/passes/findings: not measured from local evidence (${cap}) — integration passes carry no authenticated evidence marker today.`)
+    } else if (stage.cap !== null || stage.rounds_spent > 0) {
       const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
       l.push(`- Rounds spent: ${stage.rounds_spent} / ${cap}`)
       l.push(`- Findings: ${stage.findings} across ${stage.passes} pass(es)`)
