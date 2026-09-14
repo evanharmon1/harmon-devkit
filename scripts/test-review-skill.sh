@@ -94,6 +94,7 @@ for text in 'Before replacing `run.json`, write the complete candidate beside it
     'scripts/validate-result-schemas.mjs run <run.json>' \
     'Operational `run.json` records validate under the schema with their trusted' \
     '`receipts` sequence intact' \
+    'enforcing the binding here at write time rather than only later' \
     'First recognize and' \
     'validate an exact already-applied current-to-next transition; adopt it' \
     'appending a second transition' \

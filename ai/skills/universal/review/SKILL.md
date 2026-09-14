@@ -228,13 +228,17 @@ history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
 Before replacing `run.json`, write the complete candidate beside it and run
-`scripts/validate-result-schemas.mjs run <candidate>` with every adjudication
+`scripts/validate-result-schemas.mjs run <candidate> --receipts <candidate>` with every adjudication
 document the candidate depends on. Rename the candidate over `run.json` only
 after that validation passes. Immediately after every replacement of
-`run.json`, run `scripts/validate-result-schemas.mjs run <run.json>` with those
-same adjudication documents to validate the canonical readback. Either
-validation failure fails the round and is a terminal blocker; never publish an
-invalid candidate or defer validation until publication or promotion.
+`run.json`, run `scripts/validate-result-schemas.mjs run <run.json> --receipts <run.json>` with those
+same adjudication documents to validate the canonical readback.
+`--receipts <same-record>` binds the stage named by every supplied
+adjudication document to a transition receipt already present in that
+record, enforcing the binding here at write time rather than only later
+by the exit engine. Either validation failure fails the round and is a
+terminal blocker; never publish an invalid candidate or defer validation
+until publication or promotion.
 Operational `run.json` records validate under the schema with their trusted
 `receipts` sequence intact.
 
