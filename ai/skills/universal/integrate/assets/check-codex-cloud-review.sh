@@ -106,6 +106,8 @@ reap_deadline_epoch=
 finder_slug=
 requested_at_arg=
 break_lock=0
+attempt1_outstanding=0
+fifo_first_result_time=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -431,11 +433,14 @@ acquire_state_lock() {
         fi
         [ "$break_lock" = 1 ] ||
             die "lock-stale-suspected: holder_pid=$lock_holder visible=no age=$lock_age; lock left untouched (retry with --break-lock only after inspection)"
-        rm -f "$lock_dir/pid"
-        rmdir "$lock_dir" 2>/dev/null ||
-            die "lock-stale-suspected: explicit break refused because the lock changed or contains unexpected entries"
+        stale_lock_dir="${lock_dir}.stale.${lock_holder}.${lock_now}.$$"
+        mv "$lock_dir" "$stale_lock_dir" 2>/dev/null ||
+            die "lock-held: explicit break lost the lock takeover race"
+        rm -f "$stale_lock_dir/pid"
+        rmdir "$stale_lock_dir" 2>/dev/null ||
+            die "lock-stale-suspected: renamed lock contains unexpected entries"
         mkdir "$lock_dir" 2>/dev/null ||
-            die "lock-stale-suspected: state lock was claimed during explicit break; inspect before retrying"
+            die "lock-held: another holder claimed the lock during explicit break"
     fi
     printf '%s\n' "$$" >"$lock_dir/pid" || {
         rmdir "$lock_dir" 2>/dev/null || true
@@ -498,19 +503,26 @@ emit() {
             else {} end)'
 }
 
-# Reviews and top-level results are provider-timestamped. During attempt 2,
-# evidence after attempt 1's request but not after attempt 2's request belongs
-# to attempt 1 even when GitHub delivers it after the re-trigger. Callers first
-# validate that the timestamp is inside this cycle; this helper only chooses
-# between the two authenticated attempt windows.
+# Reviews and top-level results are provider-timestamped. When attempt 1 was
+# acknowledged and remains outstanding at the re-trigger, results bind FIFO:
+# the first result after the original request belongs to attempt 1 even if it
+# arrives after attempt 2 was requested. Without that positive outstanding
+# signal, the latest request boundary remains the fail-closed attribution rule.
 result_attempt_for_time() {
     result_time=$1
-    if [ "${state_attempt:-}" = "2" ] &&
-        ! [ "$result_time" \> "$state_requested" ]; then
-        printf '%s' 1
-    else
-        printf '%s' "$state_attempt"
+    if [ "${state_attempt:-}" = "2" ]; then
+        if [ "$attempt1_outstanding" = 1 ] &&
+            [ -n "$fifo_first_result_time" ] &&
+            [ "$result_time" = "$fifo_first_result_time" ]; then
+            printf '%s' 1
+            return
+        fi
+        if ! [ "$result_time" \> "$state_requested" ]; then
+            printf '%s' 1
+            return
+        fi
     fi
+    printf '%s' "$state_attempt"
 }
 
 bounded_wait() {
@@ -1217,6 +1229,7 @@ check)
     state_reserved=$(jq -r '.reserved_at' "$state_file")
     state_requested=$(jq -r '.requested_at' "$state_file")
     cycle_requested=$(jq -r '.cycle_requested_at' "$state_file")
+    previous_trigger=$(jq -r '.previous_trigger_comment_id // empty' "$state_file")
     # trigger_comment_id is null for requested-reviewer finders
     if [ "$finder_trigger_mechanism" = "review-comment" ]; then
         valid_uint "$state_trigger" || die "state has an invalid trigger ID"
@@ -1224,6 +1237,8 @@ check)
     valid_time "$state_reserved" || die "state has an invalid reservation time"
     valid_time "$state_requested" || die "state has an invalid request time"
     valid_time "$cycle_requested" || die "state has an invalid cycle request time"
+    [ -z "$previous_trigger" ] || valid_uint "$previous_trigger" ||
+        die "state has an invalid previous trigger ID"
     # harmon-devkit#223: the window `bounded_wait` and `run_gh`'s per-call
     # budget measure against `state_reserved` must be the one this cycle was
     # actually reserved under, not whatever `--timeout-min` this particular
@@ -1290,12 +1305,19 @@ check)
 
     # Fetch only the surfaces this finder uses.
     printf '%s\n' '[]' >"$workdir/reactions.json"
+    printf '%s\n' '[]' >"$workdir/previous-reactions.json"
     if finder_has_surface reaction && [ "$finder_trigger_mechanism" = "review-comment" ] && [ -n "$state_trigger" ]; then
         fetch_evidence \
             "repos/$state_repo/issues/comments/$state_trigger/reactions?per_page=100" \
             "$workdir/current-reactions.json" \
             "exact-trigger reactions"
         cp "$workdir/current-reactions.json" "$workdir/reactions.json"
+        if [ "$state_attempt" = 2 ] && [ -n "$previous_trigger" ]; then
+            fetch_evidence \
+                "repos/$state_repo/issues/comments/$previous_trigger/reactions?per_page=100" \
+                "$workdir/previous-reactions.json" \
+                "previous-trigger reactions"
+        fi
     fi
     printf '%s\n' '[]' >"$workdir/comments.json"
     if finder_has_surface comment; then
@@ -1351,6 +1373,66 @@ check)
             exit 2
         }
     done
+
+    while IFS=$'\t' read -r review_id review_time; do
+        [ -n "$review_id" ] || review_id=unknown
+        valid_time "$review_time" || {
+            emit indeterminate "current-head review $review_id carries a malformed submitted_at timestamp"
+            exit 2
+        }
+    done < <(jq -r \
+        --argjson id "$actor_id" \
+        --arg head "$state_head" '
+          .[] | select(.user.id? == $id and .commit_id? == $head) |
+          [(.id? // "" | tostring), (.submitted_at? // "")] | @tsv
+        ' "$workdir/reviews.json")
+
+    if [ "$state_attempt" = 2 ] && [ -n "$previous_trigger" ]; then
+        previous_ack_time=$(jq -r \
+            --argjson id "$actor_id" \
+            --arg pending "$finder_pending_reaction" \
+            --arg requested "$state_requested" '
+              [.[] | select(
+                .user.id? == $id and .content? == $pending and
+                ((.created_at? // "") <= $requested)
+              ) | .created_at] | max // ""
+            ' "$workdir/previous-reactions.json")
+        if [ -n "$previous_ack_time" ]; then
+            valid_time "$previous_ack_time" || {
+                emit indeterminate "previous-attempt acknowledgement carries a malformed timestamp"
+                exit 2
+            }
+            attempt1_outstanding=1
+        fi
+    fi
+
+    if [ "$attempt1_outstanding" = 1 ]; then
+        fifo_first_result_time=$(jq -nr \
+            --argjson id "$actor_id" \
+            --arg head "$state_head" \
+            --arg cycle "$cycle_requested" \
+            --slurpfile reviews "$workdir/reviews.json" \
+            --slurpfile comments "$workdir/comments.json" '
+              ([
+                $reviews[0][] | select(
+                  .user.id? == $id and .commit_id? == $head and
+                  ((.body? // "") != "") and
+                  ((.submitted_at? // "") > $cycle)
+                ) | .submitted_at
+              ] + [
+                $comments[0][] | select(.user.id? == $id) |
+                ((.body // "") |
+                  try match(
+                    "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
+                    "i"
+                  ).captures[0].string catch "") as $prefix |
+                select($prefix != "") |
+                select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
+                select((.created_at? // "") > $cycle) |
+                .created_at
+              ]) | sort | first // ""
+            ')
+    fi
 
     result_attempt_for() {
         result_surface=$1
@@ -2192,8 +2274,13 @@ check)
             exit 11
         fi
         [ -n "$newest_clean" ] || bounded_wait "the latest attempt has no terminal current-head evidence yet"
+        newest_clean_attempt=$(result_attempt_for \
+            "$newest_clean_surface" "$newest_clean_id")
+        if [ "$newest_clean_attempt" != "$state_attempt" ]; then
+            bounded_wait "attempt $newest_clean_attempt returned clean; attempt $state_attempt still has no terminal result"
+        fi
         emit clean "attempt $state_attempt authenticated bot posted a current-head clean result" \
-            "$newest_clean_surface" "$newest_clean_id" "$state_attempt"
+            "$newest_clean_surface" "$newest_clean_id" "$newest_clean_attempt"
         exit 0
     fi
 

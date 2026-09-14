@@ -36,6 +36,7 @@ fail() {
 # `gtimeout` (coreutils), Linux ships `timeout`.
 real_timeout_bin="$(command -v timeout 2>/dev/null || true)"
 real_gtimeout_bin="$(command -v gtimeout 2>/dev/null || true)"
+real_mv_bin="$(command -v mv)"
 
 # Watchdog for run_check/run_reap below (not a budget assertion — see those
 # functions). Resolved the same way the helper itself resolves it, since the
@@ -104,7 +105,12 @@ fi
 
 case "$endpoint" in
 users/*) file=actor.json ;;
-*/reactions?per_page=100) file=reactions.pages.json ;;
+*/reactions?per_page=100)
+    reaction_id="${endpoint%/reactions?per_page=100}"
+    reaction_id="${reaction_id##*/}"
+    file="reactions-${reaction_id}.pages.json"
+    [ -f "$GH_FIXTURES/$file" ] || file=reactions.pages.json
+    ;;
 # `settle` fetches one comment or one review by ID. A per-ID fixture answers
 # it when the case under test wrote one; otherwise this stays the trigger
 # comment, exactly as before settlement existed. `settle` against an ID with
@@ -174,9 +180,25 @@ SHIM
     chmod +x "${bin_dir}/gtimeout"
 fi
 
+cat >"${bin_dir}/mv" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -n "${MV_PAUSE_SOURCE:-}" ] && [ "${1:-}" = "$MV_PAUSE_SOURCE" ]; then
+    "$REAL_MV_BIN" "$@"
+    : >"$MV_PAUSED_MARKER"
+    while [ ! -f "$MV_RELEASE_MARKER" ]; do
+        sleep 0.05
+    done
+    exit 0
+fi
+exec "$REAL_MV_BIN" "$@"
+SHIM
+chmod +x "${bin_dir}/mv"
+
 export PATH="${bin_dir}:$PATH"
 export GH_FIXTURES="$fixtures"
 export GH_LOG="$log"
+export REAL_MV_BIN="$real_mv_bin"
 # Where a recorded-budget assertion writes/reads if it opts in below by
 # exporting TIMEOUT_ARGS_LOG=$timeout_args_log around its one run_check/
 # run_reap call. Unexported and unset otherwise, so the shims above are a
@@ -225,6 +247,7 @@ write_defaults() {
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
     rm -f "${fixtures}/slow-pr"
     rm -f "${fixtures}"/comment-*.json "${fixtures}"/review-*.json
+    rm -f "${fixtures}"/reactions-*.pages.json
     rm -f "${fixtures}"/missing-*
     : >"$log"
 }
@@ -800,6 +823,23 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
 assert_accepted review 77
 assert_result_attempt 1
+
+echo "==> a malformed current-head review timestamp is indeterminate"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:78,user:{id:$id,login:$login},submitted_at:"zz",
+        commit_id:$head,body:"Codex Review: Didn\u0027t find any major issues."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+grep -Fq "malformed submitted_at timestamp" <<<"$check_out" ||
+    fail "malformed review timestamp did not name the field: $check_out"
 
 echo "==> paginated current-head inline comment is a finding"
 new_cycle
@@ -1551,31 +1591,26 @@ mv "${state}.next" "$state"
 printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
 jq -cn \
     --argjson id "$actor_id" \
+    --arg login "$actor_login" '
+    [[{
+      user:{id:$id,login:$login},content:"eyes",
+      created_at:"2026-07-31T08:00:01Z"
+    }]]' >"${fixtures}/reactions-123.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
     --arg login "$actor_login" \
-    --arg head "$head_sha" \
-    '{
+    --arg head "$head_sha" '
+    {
       id:78,user:{id:$id,login:$login},
-      submitted_at:"2026-07-31T08:10:00Z",commit_id:$head,
-      body:"P1: late attempt-one finding"
+      submitted_at:"2026-07-31T08:16:10Z",commit_id:$head,
+      body:"Codex Review: Didn\u0027t find any major issues."
     }' >"${fixtures}/review-78.json"
 jq -c '[[.]]' "${fixtures}/review-78.json" >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:17:00Z'
-assert_status 10 findings
-assert_accepted review 78
-assert_result_attempt 1
-set +e
-settle_out="$("$helper" settle --state "$state" --actor-id "$actor_id" \
-    --surface review --id 78 --disposition declined \
-    --note "attempt 1 finding adjudicated; attempt 2 remains outstanding" 2>&1)"
-settle_rc=$?
-set -e
-[ "$settle_rc" -eq 0 ] || fail "late attempt-1 finding should settle: $settle_out"
-[ "$(printf '%s' "$settle_out" | jq -r '.settled[-1].attempt // empty')" = "1" ] ||
-    fail "settle output did not bind the result to attempt 1: $settle_out"
-run_check '2026-07-31T08:17:00Z'
 assert_status 11 pending
 
-# Attempt 2 becomes terminal only on evidence created after its own request.
+# FIFO attribution binds the first post-retrigger result to acknowledged,
+# outstanding attempt 1. Only the second result can terminate attempt 2.
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
@@ -1584,7 +1619,7 @@ jq -cn \
     '[[$earlier[0],
       {
         id:79,user:{id:$id,login:$login},
-        submitted_at:"2026-07-31T08:16:10Z",commit_id:$head,
+        submitted_at:"2026-07-31T08:16:20Z",commit_id:$head,
         body:"Codex Review: Didn\u0027t find any major issues."
       }
     ]]' >"${fixtures}/reviews.pages.json"
@@ -1702,6 +1737,54 @@ echo "==> --break-lock explicitly removes an invisible holder and continues"
     --head "$head_sha" --attempt 1 --break-lock >/dev/null
 [ -f "$state" ] || fail "explicit lock break did not complete the reservation"
 [ ! -d "${state}.lock" ] || fail "explicit lock break left the lock directory behind"
+
+echo "==> overlapping --break-lock calls preserve the winner's canonical lock"
+write_defaults
+rm -f "$state"
+mkdir "${state}.lock"
+printf '%s\n' 99999999 >"${state}.lock/pid"
+export MV_PAUSE_SOURCE="${state}.lock"
+export MV_PAUSED_MARKER="${test_tmp}/mv-paused"
+export MV_RELEASE_MARKER="${test_tmp}/mv-release"
+rm -f "$MV_PAUSED_MARKER" "$MV_RELEASE_MARKER"
+: >"${fixtures}/slow-pr"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --break-lock \
+    >"${test_tmp}/first-break.out" 2>&1 &
+first_break_pid=$!
+for _ in $(seq 1 200); do
+    [ ! -f "$MV_PAUSED_MARKER" ] || break
+    sleep 0.05
+done
+[ -f "$MV_PAUSED_MARKER" ] || fail "first lock takeover never reached its rename barrier"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --break-lock \
+    >"${test_tmp}/second-break.out" 2>&1 &
+second_break_pid=$!
+for _ in $(seq 1 200); do
+    [ ! -f "${state}.lock/pid" ] || break
+    sleep 0.05
+done
+[ -f "${state}.lock/pid" ] || fail "second lock takeover never claimed the canonical lock"
+: >"$MV_RELEASE_MARKER"
+set +e
+wait "$first_break_pid"
+first_break_rc=$?
+wait "$second_break_pid"
+second_break_rc=$?
+set -e
+unset MV_PAUSE_SOURCE MV_PAUSED_MARKER MV_RELEASE_MARKER
+rm -f "${fixtures}/slow-pr"
+[ "$first_break_rc" -eq 2 ] ||
+    fail "takeover race loser should fail closed: $(cat "${test_tmp}/first-break.out")"
+grep -Fq "lock-held" "${test_tmp}/first-break.out" ||
+    fail "takeover race loser did not report lock-held"
+[ "$second_break_rc" -eq 0 ] ||
+    fail "takeover race winner failed: $(cat "${test_tmp}/second-break.out")"
+[ -f "$state" ] || fail "takeover race winner did not complete its reservation"
+[ ! -d "${state}.lock" ] || fail "takeover race left the canonical lock behind"
 
 echo "==> state lock serializes checks with reservations"
 new_cycle
