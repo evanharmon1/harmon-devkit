@@ -238,7 +238,12 @@ validated by `ai/schemas/result.envelope.schema.json` and its per-role
 `result.{implementer,challenger,reviewer,integrator}.schema.json` and nothing
 more; that result is **immutable**, its adjudication a separate record keyed by
 finding id that every consumer reads. A delegate of either kind never merges,
-never promotes, never widens its scope, nor adjudicates its own findings.
+never promotes, nor adjudicates its own findings, and never widens its scope —
+with one sanctioned exception: a lane worker may add to its file fence, once
+per file, a validator or test that rejects its change and that no other live
+lane touches, by recording a dated one-line entry in its lane report; the
+orchestrator verifies that entry against every live fence and may reject it
+(the bounded self-expansion in the orchestrator skill's § Lane briefs).
 **The current-head Codex contract** is policy and outlives whatever polls it. A
 result is terminal for the head you captured only when it is a clean review or
 top-level comment by GitHub actor ID `199175422` (`chatgpt-codex-connector[bot]`,
