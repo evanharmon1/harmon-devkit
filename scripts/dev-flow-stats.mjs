@@ -21,7 +21,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -490,7 +490,14 @@ function isActuallyPullRequest(repo, number) {
     const result = ghApiOne(`repos/${repo}/issues/${number}`);
     return Boolean(result && result.pull_request);
   } catch (err) {
-    if (err instanceof GhError) return false;
+    // harmon-devkit#1001 challenge round 2 (P2), confirmed: collapsing
+    // every GhError to false conflated "confirmed 404, genuinely not a
+    // pull request" with an operational failure (auth, rate limit,
+    // timeout, server error) — the latter would misreport as a
+    // data-integrity accusation instead of surfacing as the transient
+    // failure it actually is. Mirrors discoverRunsForId's own 404-only
+    // check just below.
+    if (err instanceof GhError && /\bHTTP 404\b/.test(err.message)) return false;
     throw err;
   }
 }
@@ -2211,20 +2218,36 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
   // from two different snapshots, producing one report assembled from
   // inconsistent state. Before this redesign, loadRunDir ran exactly once
   // and both stages' assembleLogicalRounds calls shared that single
-  // in-memory snapshot; restore the same guarantee by freezing the
-  // already-read run.json/passes/adjudications content into a throwaway
-  // directory once, and pointing both invocations at that frozen copy
-  // rather than the live one.
+  // in-memory snapshot; restore the same guarantee by freezing the run
+  // directory into a throwaway copy once, and pointing both invocations at
+  // that frozen copy rather than the live one.
+  //
+  // harmon-devkit#1001 challenge round 2 (P1), confirmed — restructured,
+  // not hardened: round 1's first attempt at this snapshot serialized only
+  // `localPasses`/`localAdjudications` (the entries readLocalJsonEntries
+  // successfully PARSED), so a malformed file — one that fails JSON.parse,
+  // or parses to null/an array/a primitive — silently never reached the
+  // snapshot at all, and the engine could never apply its own fail-closed
+  // rejection to evidence it never saw. Copying every file's raw bytes
+  // verbatim, unconditionally, is what lets a malformed file reach the
+  // engine's own loadRunDir unchanged and get rejected exactly as it would
+  // on the live directory.
   const engineSnapshotDir = mkdtempSync(path.join(tmpdir(), "dev-flow-stats-snapshot-"));
   try {
-    writeFileSync(path.join(engineSnapshotDir, "run.json"), JSON.stringify(body, null, 2));
+    copyFileSync(runFile, path.join(engineSnapshotDir, "run.json"));
+    const passesDir = path.join(runDir, "passes");
     mkdirSync(path.join(engineSnapshotDir, "passes"), { recursive: true });
-    for (const pass of localPasses) {
-      writeFileSync(path.join(engineSnapshotDir, "passes", `${pass.name}.json`), JSON.stringify(pass.content, null, 2));
+    if (existsSync(passesDir)) {
+      for (const file of readdirSync(passesDir).filter((f) => f.endsWith(".json"))) {
+        copyFileSync(path.join(passesDir, file), path.join(engineSnapshotDir, "passes", file));
+      }
     }
+    const adjudicationsDir = path.join(runDir, "adjudications");
     mkdirSync(path.join(engineSnapshotDir, "adjudications"), { recursive: true });
-    for (const adjudication of localAdjudications) {
-      writeFileSync(path.join(engineSnapshotDir, "adjudications", `${adjudication.name}.json`), JSON.stringify(adjudication.content, null, 2));
+    if (existsSync(adjudicationsDir)) {
+      for (const file of readdirSync(adjudicationsDir).filter((f) => f.endsWith(".json"))) {
+        copyFileSync(path.join(adjudicationsDir, file), path.join(engineSnapshotDir, "adjudications", file));
+      }
     }
 
     for (const stage of ["challenge", "review"]) {

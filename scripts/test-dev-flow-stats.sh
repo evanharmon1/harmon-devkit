@@ -3795,6 +3795,22 @@ for invalid_case in missing-identity duplicate-finding-id; do
 done
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 
+echo "== a JSON-malformed retained artifact reaches the engine and fails closed (harmon-devkit#1001 challenge round 2) =="
+# The engine snapshot must copy every file's raw bytes verbatim, not just the
+# entries the harvester's own best-effort scan could parse — otherwise a
+# truncated/malformed file is silently absent from what the engine ever
+# reads, and the engine can never apply its own fail-closed rejection to
+# evidence it never saw.
+cp "$tmp/local-records/$run_id/adjudications/review-r1.json" "$tmp/local-records/$run_id/adjudications/review-r1.json.saved"
+printf '{"schema": 2, "run_id":' >"$tmp/local-records/$run_id/adjudications/review-r1.json"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'local-record trajectory for review' <<<"$out" ||
+    fail "malformed artifact snapshot: a truncated adjudication file was not rejected by the engine, rc=$rc: $out"
+mv "$tmp/local-records/$run_id/adjudications/review-r1.json.saved" "$tmp/local-records/$run_id/adjudications/review-r1.json"
+
 echo "== an adjudication with no completed pass or slot failure is indeterminate =="
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 mv "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
