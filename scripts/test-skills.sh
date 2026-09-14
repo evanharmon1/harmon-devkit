@@ -266,6 +266,12 @@ expect_ok "orchestrator PR-open confirmation names the same trusted-actor source
 expect_ok "lane-brief READY sentinel names the same trusted-actor source as orchestrator PR-open confirmation" \
     grep -qF '`trusted_actor_id` of every finder in `agent-registry.json`' \
     "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "orchestrator PR-open confirmation names the same post-promotion-activity source as the lane-brief READY sentinel" \
+    grep -qF '`assets/lane-watch.sh`' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "lane-brief READY sentinel names the same post-promotion-activity source as orchestrator PR-open confirmation" \
+    grep -qF '`assets/lane-watch.sh`' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
 expect_ok "retro compares validated planned and actual lane execution" \
     grep -qF 'planned versus actual waves and interventions for each lane' \
     "$repo/ai/skills/universal/retro/SKILL.md"

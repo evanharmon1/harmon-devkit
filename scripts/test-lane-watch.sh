@@ -128,6 +128,16 @@ fi
 
 if [ "${1:-}" = api ]; then
     endpoint=${*: -1}
+    if [ -f "$WATCH_FIXTURES/tail-activity-at" ]; then
+        case "$endpoint" in
+        */reviews?per_page=100)
+            tail_at="$(<"$WATCH_FIXTURES/tail-activity-at")"
+            printf '%s\n' "[{\"id\":901,\"submitted_at\":\"$tail_at\",\"user\":{\"id\":999,\"login\":\"trusted-codex\",\"type\":\"Bot\"}}]"
+            ;;
+        *) printf '%s\n' '[]' ;;
+        esac
+        exit 0
+    fi
     phase=0
     [ ! -f "$WATCH_FIXTURES/phase" ] || phase="$(<"$WATCH_FIXTURES/phase")"
     activity_phase=3
@@ -310,6 +320,30 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/expired.state" \
 assert_count "$expired_out" 0 '^POST-PROMOTION-ACTIVITY '
 rm "$fixture_dir/fail-api"
 
+# A window found expired within one poll interval of `until` still takes one
+# closing snapshot before the state is torn down, so activity in the tail of
+# the window a poll never lands inside is still caught.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+tail_now="$(date -u +%s)"
+tail_until=$((tail_now - 5))
+tail_since=$((tail_until - 300))
+tail_activity_at="$tail_until"
+tail_activity_iso="$(date -u -d "@$tail_activity_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$tail_activity_iso" ] || tail_activity_iso="$(date -u -r "$tail_activity_at" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$tail_activity_iso" >"$fixture_dir/tail-activity-at"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s\nWALLCLOCK\trun\t0\t\n' \
+    "$tail_until" "$tail_since" >"$test_tmp/tail-window.state"
+tail_out="$test_tmp/tail-window.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/tail-window.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 15 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$tail_out"
+rm "$fixture_dir/tail-activity-at"
+assert_count "$tail_out" 1 '^POST-PROMOTION-ACTIVITY '
+assert_count "$test_tmp/tail-window.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
+
 # The same asset resolves the repository root and registry in the flattened
 # consumer layout when the lane spec supplies its required repository.
 flattened_root="$test_tmp/consumer"
@@ -450,7 +484,7 @@ assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
-    "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
+    "$tail_out" "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
 

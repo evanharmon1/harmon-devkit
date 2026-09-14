@@ -280,7 +280,7 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     orchestrator appends it to `{{report-path}}` only once its own
     post-promotion watch — 15 minutes on the trusted review-bot actors (the
     `trusted_actor_id` of every finder in `agent-registry.json`) and on
-    humans — passes with no `POST-PROMOTION-ACTIVITY` event from the watcher,
+    humans — passes with no `POST-PROMOTION-ACTIVITY` event from `assets/lane-watch.sh`,
     never at the moment of promotion itself.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.

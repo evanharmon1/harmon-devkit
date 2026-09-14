@@ -394,9 +394,13 @@ poll_activity() {
         until=$((since + post_promotion_seconds))
         state_set WINDOW "$lane" "$pr_number" "$until" "$since"
     fi
+    close_after=0
     if [ "$now" -gt "$until" ]; then
-        state_delete WINDOW "$lane"
-        return 0
+        if [ $((now - until)) -gt "$interval_seconds" ]; then
+            state_delete WINDOW "$lane"
+            return 0
+        fi
+        close_after=1
     fi
 
     rows="$(activity_snapshot "$repo" "$pr_number")" || return 1
@@ -413,6 +417,9 @@ poll_activity() {
         fi
     done <<<"$rows"
 
+    if [ "$close_after" -eq 1 ]; then
+        state_delete WINDOW "$lane"
+    fi
 }
 
 promotion_epoch() {
