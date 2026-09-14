@@ -298,7 +298,12 @@ never paste its loop inline. Keep the state file across re-arms so reported
 sentinels and post-promotion activity remain deduplicated. The watcher bounds
 every `herdr` and `gh` read, prefers each lane's `.lane-report.md` sentinel,
 tags pane-only fallback results, and watches reviews plus top-level and inline
-comments for 15 minutes after a draft becomes ready. Keep the registry argument
+comments for 15 minutes after a draft becomes ready. When a lane's
+post-promotion window's promotion event cannot be resolved before that
+window's own deadline passes, the watcher emits
+`POST-PROMOTION-INDETERMINATE <lane>: #<pr>` instead of silently abandoning
+the window — the event means only that the promotion epoch could not be
+confirmed in time. Keep the registry argument
 bound to the immutable kickoff snapshot across every re-arm. It only reports
 events; the orchestrator remains responsible for every action. The watcher-owned
 `lane-watch.state` is separate from the run's canonical `monitor.json`; never

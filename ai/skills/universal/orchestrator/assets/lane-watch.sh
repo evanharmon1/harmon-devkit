@@ -4,6 +4,7 @@
 #   SENTINEL <lane>: <value>[ (pane only)]
 #   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id>
+#   POST-PROMOTION-INDETERMINATE <lane>: #<pr_number>
 #   USAGE-PAUSED <lane>
 #   WALLCLOCK <lane|run>: <text>
 #
@@ -208,7 +209,7 @@ load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
-        AGENT | PR | USAGE) state_set "$kind" "$lane" "$value" ;;
+        AGENT | PR | USAGE | CLOSING) state_set "$kind" "$lane" "$value" ;;
         SENTINEL) state_set SENTINEL "$lane:$value" 1 ;;
         WINDOW) state_set WINDOW "$lane" "$value" "$extra" "$detail" ;;
         ACTIVITY) state_set ACTIVITY "$lane:$value:$extra" 1 ;;
@@ -232,7 +233,7 @@ save_state() {
             extra=${state_extras[$index]}
             detail=${state_details[$index]}
             case "$kind" in
-            AGENT | PR | USAGE)
+            AGENT | PR | USAGE | CLOSING)
                 printf '%s\t%s\t%s\t\n' "$kind" "$key" "$value"
                 ;;
             SENTINEL) printf 'SENTINEL\t%s\t%s\t\n' "${key%%:*}" "${key#*:}" ;;
@@ -380,30 +381,58 @@ poll_activity() {
     now=$4
     since="$(state_get WINDOW "$lane" detail || true)"
     until="$(state_get WINDOW "$lane" extra || printf 0)"
-    if [ -z "$since" ]; then
-        if [ "$now" -gt "$until" ]; then
-            state_delete WINDOW "$lane"
-            return 0
-        fi
+    cold_start=0
+    [ -n "$since" ] || cold_start=1
+    expired=0
+    [ "$now" -le "$until" ] || expired=1
+
+    if [ "$cold_start" -eq 1 ]; then
         since="$(promotion_epoch "$repo" "$pr_number")"
         promotion_status=$?
         if [ "$promotion_status" -eq 10 ]; then
+            if [ "$expired" -eq 1 ]; then
+                state_delete WINDOW "$lane"
+                state_delete CLOSING "$lane"
+                echo "POST-PROMOTION-INDETERMINATE $lane: #$pr_number"
+            fi
             return 0
         fi
         [ "$promotion_status" -eq 0 ] || return 1
         until=$((since + post_promotion_seconds))
-        state_set WINDOW "$lane" "$pr_number" "$until" "$since"
+        if [ "$expired" -eq 0 ]; then
+            state_set WINDOW "$lane" "$pr_number" "$until" "$since"
+        fi
+        # A real `until` (from the resolved epoch) can only be <= the
+        # provisional one used to compute `expired` above, never later:
+        # detection (observe_pr's own `now` at cold-start time) cannot
+        # precede the actual GitHub event promotion_epoch resolves. So
+        # `expired`, computed before the real epoch was known, remains a
+        # correct signal for the real window too.
     fi
-    close_after=0
-    if [ "$now" -gt "$until" ]; then
-        if [ $((now - until)) -gt "$interval_seconds" ]; then
+
+    if [ "$expired" -eq 1 ]; then
+        if [ "$(state_get CLOSING "$lane" || printf 0)" = 1 ]; then
             state_delete WINDOW "$lane"
+            state_delete CLOSING "$lane"
             return 0
         fi
-        close_after=1
     fi
 
     rows="$(activity_snapshot "$repo" "$pr_number")" || return 1
+
+    # CLOSING is recorded only once the snapshot data is actually in hand,
+    # never before attempting the fetch: a lane-keyed flag set BEFORE the
+    # attempt would still read back as 1 after a crash or bounded-timeout
+    # failure mid-fetch, so a restart would skip the still-needed retry and
+    # silently lose whatever that failed attempt never got to read -- the
+    # exact silent-abandonment failure mode this restructure exists to
+    # remove, just reachable via a different trigger. Setting it here means
+    # a restart only ever skips a fetch that has already, verifiably,
+    # succeeded.
+    if [ "$expired" -eq 1 ]; then
+        state_set CLOSING "$lane" 1
+        persist_state
+    fi
 
     while IFS=$'\t' read -r actor kind id activity_at; do
         [ -n "$id" ] || continue
@@ -417,8 +446,9 @@ poll_activity() {
         fi
     done <<<"$rows"
 
-    if [ "$close_after" -eq 1 ]; then
+    if [ "$expired" -eq 1 ]; then
         state_delete WINDOW "$lane"
+        state_delete CLOSING "$lane"
     fi
 }
 

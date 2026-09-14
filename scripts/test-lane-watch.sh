@@ -138,6 +138,30 @@ if [ "${1:-}" = api ]; then
         esac
         exit 0
     fi
+    if [ -f "$WATCH_FIXTURES/cold-resolve-since" ]; then
+        case "$endpoint" in
+        */events?per_page=100)
+            cold_since="$(<"$WATCH_FIXTURES/cold-resolve-since")"
+            printf '%s\n' "[{\"id\":401,\"event\":\"ready_for_review\",\"created_at\":\"$cold_since\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
+            ;;
+        */reviews?per_page=100)
+            cold_activity="$(<"$WATCH_FIXTURES/cold-resolve-activity-at")"
+            printf '%s\n' "[{\"id\":901,\"submitted_at\":\"$cold_activity\",\"user\":{\"id\":999,\"login\":\"trusted-codex\",\"type\":\"Bot\"}}]"
+            ;;
+        *) printf '%s\n' '[]' ;;
+        esac
+        exit 0
+    fi
+    if [ -f "$WATCH_FIXTURES/cold-never-resolves" ]; then
+        case "$endpoint" in
+        */events?per_page=100) printf '%s\n' '[]' ;;
+        *)
+            printf '%s\n' "$endpoint" >>"$WATCH_FIXTURES/cold-never-resolves-calls"
+            printf '%s\n' '[]'
+            ;;
+        esac
+        exit 0
+    fi
     phase=0
     [ ! -f "$WATCH_FIXTURES/phase" ] || phase="$(<"$WATCH_FIXTURES/phase")"
     activity_phase=3
@@ -305,28 +329,48 @@ assert_line "$activity_failure_err" 'lane-watch: GitHub activity observation fai
 assert_count "$test_tmp/activity-failure.state" 1 '^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+'
 rm "$fixture_dir/fail-api"
 
-# An expired authoritative window hard-stops without another API snapshot.
+# A cold-start window whose provisional deadline has passed now always
+# retries promotion_epoch() rather than abandoning the window unexamined --
+# so a genuine hard API failure during that retry (not a clean "no such
+# event" response; see the cold-start-never-resolves case below) surfaces as
+# an observation failure instead of being silently swallowed the way the old
+# short-circuit-before-any-API-call code used to swallow it. pr-count is
+# seeded to 2 so this iteration's single `gh pr list` call lands on phase 3,
+# matching activity_phase, so `fail-api` genuinely fires on the retried
+# `gh api` events call. (Verified live: seeding pr-count to 1 instead lands
+# on phase 2, which never matches activity_phase, so the exact same
+# fail-api fixture is never consulted and this scenario resolves to a clean
+# POST-PROMOTION-INDETERMINATE instead -- that is regression (c) below, not
+# a hard failure -- which is why pr-count must land on phase 3 here.)
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
-printf '%s\n' 1 >"$fixture_dir/pr-count"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
 printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaa\t\nWINDOW\talpha\t77\t1\t\nWALLCLOCK\trun\t0\t\n' \
     >"$test_tmp/expired.state"
 touch "$fixture_dir/fail-api"
 expired_out="$test_tmp/activity-expired.out"
-bash "$watcher" --iterations 1 --state-file "$test_tmp/expired.state" \
+expired_err="$test_tmp/activity-expired.err"
+if bash "$watcher" --iterations 1 --state-file "$test_tmp/expired.state" \
     --registry "$registry" --workspace-root "$workspace_root" \
     --interval-seconds 0 --post-promotion-seconds 900 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
-    >"$expired_out"
+    >"$expired_out" 2>"$expired_err"; then
+    fail 'watcher accepted a hard API failure while resolving a cold-start expired window'
+fi
+assert_line "$expired_err" 'lane-watch: GitHub activity observation failed for lane alpha'
 assert_count "$expired_out" 0 '^POST-PROMOTION-ACTIVITY '
+assert_count "$expired_out" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$test_tmp/expired.state" 1 '^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+'
 rm "$fixture_dir/fail-api"
 
-# A window found expired within one poll interval of `until` still takes one
-# closing snapshot before the state is torn down, so activity in the tail of
-# the window a poll never lands inside is still caught.
+# A window observed long after `until` -- regardless of how stale, not just
+# within one poll interval, now that no interval-based tolerance exists --
+# still takes exactly one closing snapshot before the state is torn down, so
+# activity in the tail of the window a poll never lands inside is still
+# caught.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 tail_now="$(date -u +%s)"
-tail_until=$((tail_now - 5))
+tail_until=$((tail_now - 1200))
 tail_since=$((tail_until - 300))
 tail_activity_at="$tail_until"
 tail_activity_iso="$(date -u -d "@$tail_activity_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
@@ -337,12 +381,70 @@ printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbb
 tail_out="$test_tmp/tail-window.out"
 bash "$watcher" --iterations 1 --state-file "$test_tmp/tail-window.state" \
     --registry "$registry" --workspace-root "$workspace_root" \
-    --interval-seconds 15 --post-promotion-seconds 900 --timeout-seconds 1 \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$tail_out"
 rm "$fixture_dir/tail-activity-at"
 assert_count "$tail_out" 1 '^POST-PROMOTION-ACTIVITY '
 assert_count "$test_tmp/tail-window.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
+assert_count "$test_tmp/tail-window.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
+
+# A cold-start window whose epoch resolves to a real, already-past deadline
+# (the provisional deadline had already passed too) still takes exactly one
+# snapshot over the REAL [since,until] before the window is torn down --
+# resolving late does not abandon the window.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+resolve_now="$(date -u +%s)"
+resolve_provisional_until=$((resolve_now - 1200))
+resolve_real_since=$((resolve_now - 2200))
+resolve_real_until=$((resolve_real_since + 900))
+resolve_since_iso="$(date -u -d "@$resolve_real_since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$resolve_since_iso" ] || resolve_since_iso="$(date -u -r "$resolve_real_since" +%Y-%m-%dT%H:%M:%SZ)"
+resolve_activity_iso="$(date -u -d "@$resolve_real_until" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$resolve_activity_iso" ] || resolve_activity_iso="$(date -u -r "$resolve_real_until" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$resolve_since_iso" >"$fixture_dir/cold-resolve-since"
+printf '%s\n' "$resolve_activity_iso" >"$fixture_dir/cold-resolve-activity-at"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t\nWALLCLOCK\trun\t0\t\n' \
+    "$resolve_provisional_until" >"$test_tmp/cold-resolve.state"
+cold_resolve_out="$test_tmp/cold-resolve.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/cold-resolve.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$cold_resolve_out"
+rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
+assert_line "$cold_resolve_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
+assert_count "$cold_resolve_out" 1 '^POST-PROMOTION-ACTIVITY '
+assert_count "$cold_resolve_out" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$test_tmp/cold-resolve.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
+assert_count "$test_tmp/cold-resolve.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
+
+# A cold-start window whose epoch never resolves (a clean, valid response
+# with no ready_for_review event -- ordinary GitHub eventual consistency,
+# not a hard API failure) emits exactly one POST-PROMOTION-INDETERMINATE
+# line, zero POST-PROMOTION-ACTIVITY lines, and never calls any activity
+# endpoint (reviews, comments, or inline) at all.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase" "$fixture_dir/cold-never-resolves-calls"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+never_now="$(date -u +%s)"
+never_until=$((never_now - 1200))
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t\nWALLCLOCK\trun\t0\t\n' \
+    "$never_until" >"$test_tmp/cold-never.state"
+touch "$fixture_dir/cold-never-resolves"
+cold_never_out="$test_tmp/cold-never.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/cold-never.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$cold_never_out"
+rm "$fixture_dir/cold-never-resolves"
+assert_line "$cold_never_out" 'POST-PROMOTION-INDETERMINATE alpha: #77'
+assert_count "$cold_never_out" 1 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$cold_never_out" 0 '^POST-PROMOTION-ACTIVITY '
+[ ! -f "$fixture_dir/cold-never-resolves-calls" ] ||
+    fail 'watcher called an activity endpoint for an unresolved cold-start window'
+assert_count "$test_tmp/cold-never.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 
 # The same asset resolves the repository root and registry in the flattened
 # consumer layout when the lane spec supplies its required repository.
@@ -482,9 +584,9 @@ rm "$fixture_dir/hang-pr-list"
 assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 
 # Every emitted line belongs to one of the stable event grammars.
-if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
+if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
-    "$tail_out" "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
+    "$tail_out" "$cold_resolve_out" "$cold_never_out" "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
 
