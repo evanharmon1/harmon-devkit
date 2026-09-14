@@ -2379,7 +2379,7 @@ function checkDispatchPlan(document, errors) {
         // apply this stricter pair to indices this revision actually added;
         // an unchanged prefix already satisfied it when it was first added.
         if (expansionIndex >= priorExpansionsLength) {
-          if (previousRevisionTime !== null && expansionTime < previousRevisionTime) {
+          if (Number.isFinite(previousRevisionTime) && expansionTime < previousRevisionTime) {
             errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: newly appended expansion must not precede revision ${revision.seq - 1} for run_id ${JSON.stringify(lane.run_id)}`)
           }
           if (expansionIndex > 0) {
