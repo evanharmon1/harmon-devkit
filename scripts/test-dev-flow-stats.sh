@@ -3305,6 +3305,62 @@ function writeScenario(name, db) {
     writeFileSync(path.join(runDir, "passes", "review-r3.json"), JSON.stringify(p3, null, 2));
     writeScenario("round-gap", { issues: [{ number: 215, pull_request: null }], comments: { "215": [r1, r3] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
+
+  // harmon-devkit#1001 item 3 (challenge round 3): a run whose only "review"
+  // evidence is a truncated/malformed pass file, with no other confidence
+  // evidence at all, must not silently report success — neither confidence
+  // stage would otherwise invoke the engine, so nothing would ever open the
+  // malformed file to reject it.
+  {
+    const runId = "run-216-malformed-only-evidence";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    // No receipts, no valid pass/adjudication/slot-failure for "review" at
+    // all — only a truncated file that will never parse.
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    writeFileSync(path.join(runDir, "passes", "review-r1.json"), '{"schema": 2, "role":');
+    writeScenario("malformed-only-evidence", { issues: [{ number: 216, pull_request: null }], comments: { "216": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // harmon-devkit#1001 round 2's deferred finding #3, now fixed as a side
+  // effect of challenge round 4's restructure: a run whose only evidence is
+  // integration (no challenge/review pass at all) still has every one of
+  // its passes schema/receipt-validated, because the engine is now invoked
+  // for both confidence stages unconditionally — validateReceipts (inside
+  // either invocation) checks every pass on disk regardless of --stage.
+  {
+    const runId = "run-217-integration-only-unreceipted";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "integration", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("integration", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "integration", destination: "issue", round: 1, sequence: 1 } }],
+      // Deliberately no receipts array at all — this integrator pass is
+      // never receipted, matching exactly what the deferred finding
+      // described disappearing: "the previous unconditional receipt/schema
+      // validation of every pass".
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    const envelope = JSON.parse(readFileSync(path.join("${repo}", "ai/schemas/fixtures/result.integrator.schema/valid/verdict-findings.json"), "utf8"));
+    envelope.run.run_id = runId;
+    writeFileSync(path.join(runDir, "passes", "integration-r1.json"), JSON.stringify(envelope, null, 2));
+    writeScenario("integration-only-unreceipted", { issues: [{ number: 217, pull_request: null }], comments: { "217": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -3618,15 +3674,32 @@ set -e
     fail "run-record validation: invalid first transition was accepted, rc=$rc: $out"
 mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 
-echo "== the exit-engine trajectory does not synthesize integration rounds, and discloses integration as not measured from local evidence =="
+# harmon-devkit#1001 challenge round 3/4: the per-stage "does this stage
+# have evidence" gate was deleted (the engine is now invoked for both
+# confidence stages unconditionally whenever the record directory exists),
+# which changed this fixture's own outcome. The engine's orphan-adjudication
+# guard is not itself stage-scoped — it checks every adjudication document
+# in the run directory against every "dispatched round" any pass (of any
+# role) names, regardless of which --stage is under computation — and an
+# integrator envelope's payload has no stage/round fields shaped like a
+# confidence pass's, so this run's own "integration-r1" adjudication reads
+# as orphaned (no matching dispatched round) the moment the engine is
+# invoked at all. The old imported-helper path avoided this by filtering
+# validAdjudications down to challenge/review before ever calling
+# assembleLogicalRounds; the whole point of this redesign is to stop
+# maintaining that kind of filtering by hand and trust the engine's own
+# checks instead, so this fixture now correctly reports the inconsistency
+# as evidence-indeterminate rather than silently reporting a clean
+# "not measured" trajectory over a run.json the engine itself would refuse.
+echo "== an integration-only record with no confidence evidence is indeterminate once the engine sees its orphaned integration adjudication (harmon-devkit#1001 challenge round 4) =="
 export DFSTATS_DB="$tmp/scenarios/integration-envelope.json"
 run_id="$(meta integration-envelope .meta.runId)"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds == [] and .integration_evidence == "not-measured" and (has("integration_passes") | not)' >/dev/null ||
-    fail "integration envelope coordinates: harvester did not disclose integration as not measured from local evidence (never a count, never zero): $out"
-out_table="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
-grep -Fq 'integration: not measured from local evidence' <<<"$out_table" ||
-    fail "integration envelope coordinates: the table renderer did not disclose integration as not measured: $out_table"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'no pass or slot_failures record in this run ever named that round' <<<"$out" ||
+    fail "integration envelope coordinates: expected the orphaned integration adjudication to be indeterminate, got rc=$rc: $out"
 
 echo "== --as-of excludes a round whose marker was posted after the cutoff (harmon-devkit#1001 item 11) =="
 # Round 2's marker was posted at 01:00, after this --as-of cutoff of 00:30 —
@@ -3691,6 +3764,37 @@ rc=$?
 set -e
 [ "$rc" -eq 3 ] && grep -Fq 'not contiguous from 1' <<<"$out" ||
     fail "round gap: expected indeterminate rejection, got rc=$rc: $out"
+
+# harmon-devkit#1001 challenge round 4: the per-stage evidence gate this
+# regression originally targeted was deleted (challenge round 3 found a real
+# gap in it; the disposition restructured further rather than patching the
+# gate again) — the engine is now invoked unconditionally, so "challenge"
+# (evaluated first) reads this run directory's malformed review-r1.json via
+# its own loadRunDir before either stage's own evidence is even considered,
+# and fails there directly.
+echo "== a malformed pass that is the only confidence evidence is indeterminate, not silently absent (harmon-devkit#1001 challenge round 3/4) =="
+export DFSTATS_DB="$tmp/scenarios/malformed-only-evidence.json"
+run_id="$(meta malformed-only-evidence .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'local-record trajectory for challenge:' <<<"$out" ||
+    fail "malformed-only evidence: expected indeterminate rejection, got rc=$rc: $out"
+
+# harmon-devkit#1001 round 2's deferred finding #3, settled fixed as a side
+# effect of challenge round 4's restructure: an integration-only run (no
+# challenge/review pass or adjudication at all) still gets its integrator
+# pass receipt-validated, because the engine is now invoked once per
+# confidence stage unconditionally and validateReceipts checks every pass on
+# disk regardless of --stage — there is no longer a separate "does this run
+# have any confidence-stage evidence" gate standing in front of it.
+echo "== an integration-only run's unreceipted pass is still caught by the engine's receipt validation (harmon-devkit#1001 round 2 deferred #3, fixed round 4) =="
+export DFSTATS_DB="$tmp/scenarios/integration-only-unreceipted.json"
+run_id="$(meta integration-only-unreceipted .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.unreceipted_pass_files == ["integration-r1"] and .rounds == []' >/dev/null ||
+    fail "integration-only unreceipted: expected the integrator pass to be reported unreceipted with no confidence rounds: $out"
 
 echo "== two authoritative issue bindings for one arbitrary run are indeterminate =="
 export DFSTATS_DB="$tmp/scenarios/duplicate-authoritative-binding.json"
@@ -3807,7 +3911,12 @@ set +e
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
-[ "$rc" -eq 3 ] && grep -Fq 'local-record trajectory for review' <<<"$out" ||
+# harmon-devkit#1001 challenge round 4: the engine is now invoked
+# unconditionally for "challenge" before "review", and loadRunDir loads
+# every file under adjudications/ regardless of --stage, so the malformed
+# file is now caught by the FIRST invocation rather than specifically by
+# "review"'s own.
+[ "$rc" -eq 3 ] && grep -Fq 'local-record trajectory for challenge' <<<"$out" ||
     fail "malformed artifact snapshot: a truncated adjudication file was not rejected by the engine, rc=$rc: $out"
 mv "$tmp/local-records/$run_id/adjudications/review-r1.json.saved" "$tmp/local-records/$run_id/adjudications/review-r1.json"
 

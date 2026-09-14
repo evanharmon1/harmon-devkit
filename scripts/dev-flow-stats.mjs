@@ -1927,20 +1927,6 @@ function readLocalJsonEntries(dir) {
   return entries;
 }
 
-// Whether this stage has ANY local evidence at all — a pass, an
-// adjudication, or a slot failure. An orphan adjudication (one with no
-// backing pass or slot failure) is exactly the case the engine's own
-// orphan-adjudication guard exists to reject: skipping the CLI invocation
-// whenever no PASS exists would silence that guard entirely for a stage
-// whose only evidence is the orphan itself, so presence is checked across
-// all three artifact kinds, not passes alone.
-function hasAnyLocalEvidenceForStage(passEntries, adjudicationEntries, slotFailures, stage) {
-  if (passEntries.some((e) => e.content.payload && e.content.payload.stage === stage)) return true;
-  if (adjudicationEntries.some((e) => e.content.stage === stage)) return true;
-  if (slotFailures.some((sf) => sf && sf.stage === stage)) return true;
-  return false;
-}
-
 // dev-flow-exit.mjs's --current-head must be "an independently captured
 // value" of the head actually under evaluation, never derived from the
 // evidence being certified (its own header comment). For a live PR that is
@@ -2189,16 +2175,13 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     rmSync(engineTmp, { recursive: true, force: true });
   }
 
-  // ONE dev-flow-exit.mjs CLI invocation per confidence stage that has any
-  // local evidence at all (harmon-devkit#1001 ruling 1) — replacing the
-  // loadRunDir/validateReceipts/validateAdjudicationSchema/
+  // ONE dev-flow-exit.mjs CLI invocation per confidence stage, unconditionally,
+  // whenever this run directory exists at all (harmon-devkit#1001 ruling 1) —
+  // replacing the loadRunDir/validateReceipts/validateAdjudicationSchema/
   // assembleLogicalRounds/applyVerification sequence this file used to call
-  // directly. A stage with no local evidence at all (no pass, adjudication,
-  // or slot failure) has nothing for the engine to check and is skipped
-  // rather than invoked with a fabricated --current-head; a stage that DOES
-  // have evidence is always invoked, even an orphan adjudication with no
-  // backing pass — that is exactly the trajectory the engine's own
-  // orphan-adjudication guard exists to reject.
+  // directly. See challenge round 3/4's rationale below for why the earlier
+  // per-stage "does this stage have evidence" gate was deleted rather than
+  // hardened further.
   const localSlotFailures = Array.isArray(body.slot_failures) ? body.slot_failures : [];
   const repoRoot = process.cwd();
   const policyPath = path.join(repoRoot, ".devflow.toml");
@@ -2250,12 +2233,31 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
       }
     }
 
+    // harmon-devkit#1001 challenge round 3 (P1), confirmed, restructured —
+    // deleted the per-stage "does this stage have evidence" gate entirely,
+    // rather than hardening it further. That gate (round 1) and its
+    // attempted repair (round 3's now-deleted hasUnparseableArtifacts) both
+    // tried to decide, from PARSED content, whether a stage was worth
+    // invoking the engine for — but a file that fails to parse carries no
+    // readable payload.stage, so no amount of pre-parsing can attribute it
+    // correctly, and skipping an invocation on that basis is exactly how a
+    // malformed file already copied into the snapshot goes unopened. The
+    // engine is invoked once per confidence stage unconditionally whenever
+    // this run directory exists at all: loadRunDir (inside every
+    // invocation) loads and parses every file under passes/ and
+    // adjudications/ regardless of --stage, so a malformed file anywhere is
+    // now always caught, and — as a side effect — this also restores the
+    // unconditional pass/receipt validation for a run whose only evidence
+    // is some other role entirely (e.g. integration-only), closing round
+    // 2's deferred finding #3 without any separate mechanism for it.
     for (const stage of ["challenge", "review"]) {
-      if (!hasAnyLocalEvidenceForStage(localPasses, localAdjudications, localSlotFailures, stage)) continue;
-      const currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage);
-      if (!currentHead) {
-        throw new EvidenceError(`local-record trajectory for ${stage}: evidence exists but no pass, adjudication, or slot failure carries a usable head to evaluate it against`);
-      }
+      // A stage with no local evidence of its own has no round to be
+      // ancestry-sensitive about (computeVerdict short-circuits to
+      // outcome:"continue"/"no_rounds_yet" before ancestry is ever
+      // consulted when there are zero rounds), so an all-zero placeholder
+      // is safe here specifically — never for a stage that has real
+      // rounds, which still uses its own genuine head below.
+      const currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage) ?? "0".repeat(40);
       const { verification, error } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
         runDir: engineSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot,
       });
