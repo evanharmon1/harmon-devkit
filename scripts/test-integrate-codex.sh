@@ -316,14 +316,21 @@ assert_accepted() {
         fail "expected accepted.reviewed_commit $head_sha, got '$actual_reviewed_commit': $check_out"
 }
 
-assert_result_attempt() {
-    expected_attempt=$1
-    actual_attempt="$(printf '%s' "$check_out" | jq -r '.result_attempt // empty')"
-    [ "$actual_attempt" = "$expected_attempt" ] ||
-        fail "expected result_attempt $expected_attempt, got '$actual_attempt': $check_out"
-    accepted_attempt="$(printf '%s' "$check_out" | jq -r '.accepted.attempt // empty')"
-    [ "$accepted_attempt" = "$expected_attempt" ] ||
-        fail "expected accepted.attempt $expected_attempt, got '$accepted_attempt': $check_out"
+assert_accounting() {
+    expected_acked=$1
+    expected_results=$2
+    expected_condition=$3
+    actual_accounting="$(printf '%s' "$check_out" |
+        jq -r '[.acked,.results,.terminal_condition] | @tsv')"
+    expected_accounting="${expected_acked}"$'\t'"${expected_results}"$'\t'"${expected_condition}"
+    [ "$actual_accounting" = "$expected_accounting" ] ||
+        fail "expected accounting '$expected_accounting', got '$actual_accounting': $check_out"
+    printf '%s' "$check_out" |
+        jq -e 'has("result_attempt") | not' >/dev/null ||
+        fail "check output retained result-to-attempt attribution: $check_out"
+    printf '%s' "$check_out" |
+        jq -e '(.accepted? // {}) | has("attempt") | not' >/dev/null ||
+        fail "accepted evidence retained result-to-attempt attribution: $check_out"
 }
 
 echo "==> exact-trigger current-request +1 is clean"
@@ -822,7 +829,6 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
 assert_accepted review 77
-assert_result_attempt 1
 
 echo "==> a malformed current-head review timestamp is indeterminate"
 new_cycle
@@ -1556,6 +1562,7 @@ jq -cn \
     ]]' >"${fixtures}/reactions.pages.json"
 run_check '2026-07-31T08:16:00Z'
 assert_status 12 retry
+assert_accounting 1 0 window-expired
 
 echo "==> attempt 2 cannot be reserved before attempt 1 expires"
 request_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -1588,13 +1595,19 @@ jq --arg reserved "$request_time" '.reserved_at = $reserved' \
     "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
-printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" '
     [[{
-      user:{id:$id,login:$login},content:"eyes",
-      created_at:"2026-07-31T08:00:01Z"
+      id:9124,user:{id:$id,login:$login},content:"eyes",
+      created_at:"2026-07-31T08:16:02Z"
+    }]]' >"${fixtures}/reactions.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" '
+    [[{
+      id:9123,user:{id:$id,login:$login},content:"eyes",
+      created_at:"2026-07-31T08:16:05Z"
     }]]' >"${fixtures}/reactions-123.pages.json"
 jq -cn \
     --argjson id "$actor_id" \
@@ -1608,9 +1621,10 @@ jq -cn \
 jq -c '[[.]]' "${fixtures}/review-78.json" >"${fixtures}/reviews.pages.json"
 run_check '2026-07-31T08:17:00Z'
 assert_status 11 pending
+assert_accounting 2 1 not-terminal
 
-# FIFO attribution binds the first post-retrigger result to acknowledged,
-# outstanding attempt 1. Only the second result can terminate attempt 2.
+# The cycle terminates only once distinct results catch up with both exact,
+# authenticated acknowledgements. No result is assigned to an attempt.
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
@@ -1626,7 +1640,35 @@ jq -cn \
 run_check '2026-07-31T08:17:00Z'
 assert_status 0 clean
 assert_accepted review 79
-assert_result_attempt 2
+assert_accounting 2 2 result-count
+
+echo "==> adjudicated late findings do not satisfy a second acknowledged request"
+codex_findings_review
+jq '.[][] | .submitted_at = "2026-07-31T08:16:30Z"' \
+    "${fixtures}/reviews.pages.json" | jq -s '[.]' >"${fixtures}/reviews.next.json"
+mv "${fixtures}/reviews.next.json" "${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" '
+    [[
+      {
+        id:188,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:16:31Z",updated_at:"2026-07-31T08:16:31Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P1: late finding from the first acknowledged request"
+      },
+      {
+        id:189,user:{id:$owner,login:"repo-owner"},
+        created_at:"2026-07-31T08:16:40Z",updated_at:"2026-07-31T08:16:40Z",
+        author_association:"OWNER",in_reply_to_id:188,
+        body:"Fixed in the current head."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:17:00Z'
+assert_status 11 pending
+assert_accounting 2 1 not-terminal
 
 echo "==> attached head refuses uncontrolled duplicate reservation"
 set +e
@@ -1785,6 +1827,37 @@ grep -Fq "lock-held" "${test_tmp}/first-break.out" ||
     fail "takeover race winner failed: $(cat "${test_tmp}/second-break.out")"
 [ -f "$state" ] || fail "takeover race winner did not complete its reservation"
 [ ! -d "${state}.lock" ] || fail "takeover race left the canonical lock behind"
+
+echo "==> an old holder cleanup cannot delete a replacement lock"
+write_defaults
+rm -f "$state"
+: >"${fixtures}/slow-pr"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 \
+    >"${test_tmp}/old-holder.out" 2>&1 &
+old_holder_pid=$!
+for _ in $(seq 1 200); do
+    [ ! -f "${state}.lock/owner" ] || break
+    sleep 0.05
+done
+[ -f "${state}.lock/owner" ] || fail "old holder never recorded lock ownership"
+old_lock="${state}.lock.displaced"
+"$real_mv_bin" "${state}.lock" "$old_lock"
+mkdir "${state}.lock"
+printf '%s\n' replacement-token >"${state}.lock/owner"
+printf '%s\n' 99999999 >"${state}.lock/pid"
+rm -f "${fixtures}/slow-pr"
+set +e
+wait "$old_holder_pid"
+old_holder_rc=$?
+set -e
+[ "$old_holder_rc" -eq 0 ] ||
+    fail "old holder failed after the simulated takeover: $(cat "${test_tmp}/old-holder.out")"
+[ "$(cat "${state}.lock/owner")" = replacement-token ] ||
+    fail "old holder cleanup removed or changed the replacement ownership token"
+rm -f "${state}.lock/pid" "${state}.lock/owner" "$old_lock/pid" "$old_lock/owner"
+rmdir "${state}.lock" "$old_lock"
 
 echo "==> state lock serializes checks with reservations"
 new_cycle

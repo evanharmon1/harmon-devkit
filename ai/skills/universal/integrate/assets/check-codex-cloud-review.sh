@@ -99,6 +99,7 @@ disposition=
 note=
 covers=
 lock_dir=
+lock_token=
 reap_entries=
 reap_lock=
 reap_budget_sec=60
@@ -106,8 +107,10 @@ reap_deadline_epoch=
 finder_slug=
 requested_at_arg=
 break_lock=0
-attempt1_outstanding=0
-fifo_first_result_time=
+acked=0
+results=0
+terminal_condition=not-terminal
+latest_result_time=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -437,22 +440,37 @@ acquire_state_lock() {
         mv "$lock_dir" "$stale_lock_dir" 2>/dev/null ||
             die "lock-held: explicit break lost the lock takeover race"
         rm -f "$stale_lock_dir/pid"
+        rm -f "$stale_lock_dir/owner"
         rmdir "$stale_lock_dir" 2>/dev/null ||
             die "lock-stale-suspected: renamed lock contains unexpected entries"
         mkdir "$lock_dir" 2>/dev/null ||
             die "lock-held: another holder claimed the lock during explicit break"
     fi
+    lock_token="$$.$(date -u '+%s').${RANDOM:-0}"
+    printf '%s\n' "$lock_token" >"$lock_dir/owner" || {
+        rmdir "$lock_dir" 2>/dev/null || true
+        die "cannot record state-lock ownership"
+    }
     printf '%s\n' "$$" >"$lock_dir/pid" || {
+        rm -f "$lock_dir/owner"
         rmdir "$lock_dir" 2>/dev/null || true
         die "cannot record the state-lock holder PID"
     }
-    trap 'rm -f "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
+    trap 'cleanup_state_lock' EXIT
+}
+
+cleanup_state_lock() {
+    [ -n "$lock_dir" ] && [ -n "$lock_token" ] || return 0
+    recorded_token=$(cat "$lock_dir/owner" 2>/dev/null || true)
+    [ "$recorded_token" = "$lock_token" ] || return 0
+    rm -f "$lock_dir/pid" "$lock_dir/owner"
+    rmdir "$lock_dir" 2>/dev/null || true
 }
 
 release_state_lock() {
-    rm -f "$lock_dir/pid"
-    rmdir "$lock_dir" 2>/dev/null || true
+    cleanup_state_lock
     lock_dir=
+    lock_token=
     trap - EXIT
 }
 
@@ -482,47 +500,21 @@ emit() {
     detail=$2
     surface=${3:-}
     accepted_id=${4:-}
-    result_attempt=${5:-}
     jq -cn \
         --arg status "$result" \
         --arg detail "$detail" \
         --arg head "${state_head:-}" \
         --argjson attempt "${state_attempt:-0}" \
+        --argjson acked "$acked" \
+        --argjson results "$results" \
+        --arg terminal_condition "$terminal_condition" \
         --arg surface "$surface" \
         --arg accepted_id "$accepted_id" \
-        --arg result_attempt "$result_attempt" \
-        '{status:$status,detail:$detail,head:$head,attempt:$attempt}
+        '{status:$status,detail:$detail,head:$head,attempt:$attempt,
+          acked:$acked,results:$results,terminal_condition:$terminal_condition}
          + (if $surface != "" and $accepted_id != "" then
               {accepted:{surface:$surface,id:$accepted_id,reviewed_commit:$head}}
-              + (if $result_attempt != "" then
-                   {result_attempt:($result_attempt | tonumber),
-                    accepted:{surface:$surface,id:$accepted_id,
-                              reviewed_commit:$head,
-                              attempt:($result_attempt | tonumber)}}
-                 else {} end)
             else {} end)'
-}
-
-# Reviews and top-level results are provider-timestamped. When attempt 1 was
-# acknowledged and remains outstanding at the re-trigger, results bind FIFO:
-# the first result after the original request belongs to attempt 1 even if it
-# arrives after attempt 2 was requested. Without that positive outstanding
-# signal, the latest request boundary remains the fail-closed attribution rule.
-result_attempt_for_time() {
-    result_time=$1
-    if [ "${state_attempt:-}" = "2" ]; then
-        if [ "$attempt1_outstanding" = 1 ] &&
-            [ -n "$fifo_first_result_time" ] &&
-            [ "$result_time" = "$fifo_first_result_time" ]; then
-            printf '%s' 1
-            return
-        fi
-        if ! [ "$result_time" \> "$state_requested" ]; then
-            printf '%s' 1
-            return
-        fi
-    fi
-    printf '%s' "$state_attempt"
 }
 
 bounded_wait() {
@@ -544,12 +536,26 @@ bounded_wait() {
         emit pending "$detail"
         exit 11
     fi
+    terminal_condition=window-expired
     if [ "$state_attempt" = "1" ]; then
         emit retry "$detail; attempt 1 window elapsed"
         exit 12
     fi
     emit escalate "$detail; both attempt windows elapsed"
     exit 13
+}
+
+require_result_quorum() {
+    if [ "$results" -lt "$acked" ]; then
+        bounded_wait "result quorum not reached (acked=$acked results=$results)"
+    fi
+    terminal_condition=result-count
+}
+
+mark_result_terminal() {
+    if [ "$results" -gt 0 ] && [ "$results" -ge "$acked" ]; then
+        terminal_condition=result-count
+    fi
 }
 
 flatten_pages() {
@@ -1267,7 +1273,7 @@ check)
     }
 
     workdir=$(mktemp -d -t codex-cloud-review-XXXXXX)
-    trap 'rm -rf "$workdir"; rm -f "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
+    trap 'rm -rf "$workdir"; cleanup_state_lock' EXIT
 
     actor=$(run_gh api "users/$actor_login") || {
         bounded_wait "cannot authenticate the configured finder actor"
@@ -1306,6 +1312,7 @@ check)
     # Fetch only the surfaces this finder uses.
     printf '%s\n' '[]' >"$workdir/reactions.json"
     printf '%s\n' '[]' >"$workdir/previous-reactions.json"
+    printf '%s\n' '[]' >"$workdir/all-trigger-reactions.json"
     if finder_has_surface reaction && [ "$finder_trigger_mechanism" = "review-comment" ] && [ -n "$state_trigger" ]; then
         fetch_evidence \
             "repos/$state_repo/issues/comments/$state_trigger/reactions?per_page=100" \
@@ -1318,6 +1325,9 @@ check)
                 "$workdir/previous-reactions.json" \
                 "previous-trigger reactions"
         fi
+        jq -s '.[0] + .[1]' \
+            "$workdir/reactions.json" "$workdir/previous-reactions.json" \
+            >"$workdir/all-trigger-reactions.json"
     fi
     printf '%s\n' '[]' >"$workdir/comments.json"
     if finder_has_surface comment; then
@@ -1374,6 +1384,20 @@ check)
         }
     done
 
+    jq -e \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" '
+          all(.[];
+            ((.user.id? == $id) | not) or (.user.login? == $login)
+          ) and
+          all(.[];
+            ((.user.login? == $login) | not) or (.user.id? == $id)
+          )
+        ' "$workdir/all-trigger-reactions.json" >/dev/null || {
+        emit indeterminate "finder-looking trigger reaction has an unexpected immutable actor identity"
+        exit 2
+    }
+
     while IFS=$'\t' read -r review_id review_time; do
         [ -n "$review_id" ] || review_id=unknown
         valid_time "$review_time" || {
@@ -1387,78 +1411,79 @@ check)
           [(.id? // "" | tostring), (.submitted_at? // "")] | @tsv
         ' "$workdir/reviews.json")
 
-    if [ "$state_attempt" = 2 ] && [ -n "$previous_trigger" ]; then
-        previous_ack_time=$(jq -r \
-            --argjson id "$actor_id" \
-            --arg pending "$finder_pending_reaction" \
-            --arg requested "$state_requested" '
-              [.[] | select(
-                .user.id? == $id and .content? == $pending and
-                ((.created_at? // "") <= $requested)
-              ) | .created_at] | max // ""
-            ' "$workdir/previous-reactions.json")
-        if [ -n "$previous_ack_time" ]; then
-            valid_time "$previous_ack_time" || {
-                emit indeterminate "previous-attempt acknowledgement carries a malformed timestamp"
-                exit 2
-            }
-            attempt1_outstanding=1
-        fi
-    fi
+    # Acknowledgements are bound to exact trigger-comment IDs, so no temporal
+    # attribution is needed: an authenticated eyes reaction counts whenever it
+    # appears. Results are distinct authenticated current-head objects created
+    # after the cycle's first trigger. A clean result can terminate only when
+    # the result count has caught up with every acknowledged request.
+    acked=$(jq -nr \
+        --argjson id "$actor_id" \
+        --arg pending "$finder_pending_reaction" \
+        --slurpfile current "$workdir/reactions.json" \
+        --slurpfile previous "$workdir/previous-reactions.json" '
+          (if any($current[0][]; .user.id? == $id and .content? == $pending)
+           then 1 else 0 end) +
+          (if any($previous[0][]; .user.id? == $id and .content? == $pending)
+           then 1 else 0 end)
+        ')
 
-    if [ "$attempt1_outstanding" = 1 ]; then
-        fifo_first_result_time=$(jq -nr \
-            --argjson id "$actor_id" \
-            --arg head "$state_head" \
-            --arg cycle "$cycle_requested" \
-            --slurpfile reviews "$workdir/reviews.json" \
-            --slurpfile comments "$workdir/comments.json" '
-              ([
-                $reviews[0][] | select(
-                  .user.id? == $id and .commit_id? == $head and
-                  ((.body? // "") != "") and
-                  ((.submitted_at? // "") > $cycle)
-                ) | .submitted_at
-              ] + [
-                $comments[0][] | select(.user.id? == $id) |
-                ((.body // "") |
-                  try match(
-                    "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
-                    "i"
-                  ).captures[0].string catch "") as $prefix |
-                select($prefix != "") |
-                select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
-                select((.created_at? // "") > $cycle) |
-                .created_at
-              ]) | sort | first // ""
-            ')
-    fi
-
-    result_attempt_for() {
-        result_surface=$1
-        result_id=$2
-        case "$result_surface" in
-        comment)
-            result_time=$(jq -r --argjson id "$result_id" \
-                '[.[] | select(.id? == $id)] | first | .created_at? // ""' \
-                "$workdir/comments.json")
-            ;;
-        review)
-            result_time=$(jq -r --argjson id "$result_id" \
-                '[.[] | select(.id? == $id)] | first | .submitted_at? // ""' \
-                "$workdir/reviews.json")
-            ;;
-        *)
-            printf '%s' "$state_attempt"
-            return
-            ;;
-        esac
-        valid_time "$result_time" || {
-            printf '%s' "$state_attempt"
-            return
+    while IFS= read -r reaction_time; do
+        valid_time "$reaction_time" || {
+            emit indeterminate "trigger success reaction carries a malformed timestamp"
+            exit 2
         }
-        result_attempt_for_time "$result_time"
-    }
+    done < <(jq -r \
+        --argjson id "$actor_id" \
+        --arg success "$finder_success_reaction" '
+          .[] | select(.user.id? == $id and .content? == $success) |
+          (.created_at? // "")
+        ' "$workdir/all-trigger-reactions.json")
+
+    result_summary=$(jq -nr \
+        --argjson id "$actor_id" \
+        --arg head "$state_head" \
+        --arg cycle "$cycle_requested" \
+        --arg success "$finder_success_reaction" \
+        --slurpfile reviews "$workdir/reviews.json" \
+        --slurpfile comments "$workdir/comments.json" \
+        --slurpfile current_reactions "$workdir/reactions.json" \
+        --slurpfile previous_reactions "$workdir/previous-reactions.json" '
+          ([
+            $reviews[0][] | select(
+              .user.id? == $id and .commit_id? == $head and
+              ((.body? // "") != "") and
+              ((.submitted_at? // "") > $cycle) and
+              ((.id? | type) == "number")
+            ) | {key:("review:" + (.id | tostring)), time:.submitted_at}
+          ] + [
+            $comments[0][] | select(.user.id? == $id) |
+            ((.body // "") |
+              try match(
+                "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
+                "i"
+              ).captures[0].string catch "") as $prefix |
+            select($prefix != "") |
+            select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
+            select((.created_at? // "") > $cycle) |
+            select((.id? | type) == "number") |
+            {key:("comment:" + (.id | tostring)), time:.created_at}
+          ] + [
+            $current_reactions[0][] | select(
+              .user.id? == $id and .content? == $success and
+              # A reaction is causally after the exact trigger it belongs to;
+              # GitHub second precision can give both the same timestamp.
+              ((.created_at? // "") >= $cycle)
+            ) | {key:"reaction:current", time:.created_at}
+          ] + [
+            $previous_reactions[0][] | select(
+              .user.id? == $id and .content? == $success and
+              ((.created_at? // "") >= $cycle)
+            ) | {key:"reaction:previous", time:.created_at}
+          ]) | unique_by(.key) as $results |
+          {count:($results | length), newest_time:([$results[].time] | max // "")}
+        ')
+    results=$(printf '%s' "$result_summary" | jq -r '.count')
+    latest_result_time=$(printf '%s' "$result_summary" | jq -r '.newest_time')
 
     # Settled dispositions are re-verified against the evidence just fetched,
     # never trusted from the state file alone. An entry is honoured only while
@@ -1588,7 +1613,6 @@ check)
         ' "$workdir/inline.json")
 
     adjudicated_findings=0
-    current_adjudicated_reviews=0
     settled_reviews='[]'
     attributed_reviews='[]'
     unattributed_findings=0
@@ -1734,27 +1758,12 @@ check)
                       ) | .id | tostring] | last // ""
                     ' "$workdir/reviews.json")
             fi
-            inline_findings_attempt=$state_attempt
-            if [ -n "$inline_findings_review_id" ]; then
-                inline_findings_attempt=$(result_attempt_for review "$inline_findings_review_id")
-            fi
-            emit findings "attempt $inline_findings_attempt current-head inline review findings are unanswered by a trusted in-thread reply" \
-                review "$inline_findings_review_id" "$inline_findings_attempt"
+            mark_result_terminal
+            emit findings "current-head inline review findings are unanswered by a trusted in-thread reply (acked=$acked results=$results)" \
+                review "$inline_findings_review_id"
             exit 10
         fi
         adjudicated_findings=1
-        current_adjudicated_reviews=$(jq -r \
-            --argjson id "$actor_id" \
-            --arg head "$state_head" \
-            --arg requested "$state_requested" \
-            --argjson settled "$settled_reviews" '
-              [.[] | select(
-                .user.id? == $id and (.commit_id? == $head) and
-                ((.submitted_at? // "") > $requested) and
-                ((.id? | type) == "number") and
-                (.id as $rid | $settled | index($rid))
-              )] | length
-            ' "$workdir/reviews.json")
     fi
 
     # --- Per-finder verdict classification (#804) ---
@@ -1786,16 +1795,19 @@ check)
             ' "$workdir/reviews.json" 2>/dev/null)
 
         if [ "$adjudicated_findings" = "1" ] && [ -n "$actionable_review_id" ]; then
+            require_result_quorum
             emit clean "current-head findings are all adjudicated by trusted in-thread replies" \
                 review "$actionable_review_id"
             exit 0
         fi
 
         if [ "$actionable_count" -gt 0 ]; then
+            mark_result_terminal
             emit findings "actionable review comments reported by finder" \
                 review "$actionable_review_id"
             exit 10
         elif [ "$actionable_count" -eq 0 ]; then
+            require_result_quorum
             emit clean "finder reported zero actionable comments" \
                 review "$actionable_review_id"
             exit 0
@@ -1810,7 +1822,7 @@ check)
         copilot_review_id=$(jq -r \
             --argjson id "$actor_id" \
             --arg head "$state_head" \
-            --arg after "$state_requested" '
+            --arg after "$cycle_requested" '
               [.[] | select(
                 .user.id? == $id and
                 (.commit_id? == $head) and
@@ -1820,6 +1832,7 @@ check)
 
         if [ -n "$copilot_review_id" ]; then
             if [ "$adjudicated_findings" = "1" ] || [ "$inline_head_findings" -eq 0 ]; then
+                require_result_quorum
                 emit clean "requested-reviewer finder submitted a review with no unadjudicated findings" \
                     review "$copilot_review_id"
                 exit 0
@@ -1973,7 +1986,7 @@ check)
     shell_barrier=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
-        --arg requested "$state_requested" \
+        --arg requested "$cycle_requested" \
         --argjson attributed "$attributed_reviews" '
           [.[] | select(
             .user.id? == $id and
@@ -1993,7 +2006,6 @@ check)
     # through to the bounded wait and escalated, which is the deadlock `settle`
     # exists to end.
     disposed_applied=0
-    disposed_current_applied=0
     disposed_review_hits=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
@@ -2010,29 +2022,10 @@ check)
           ] | length
         ' "$workdir/reviews.json") || die "cannot evaluate recorded dispositions"
     [ "$disposed_review_hits" -eq 0 ] || disposed_applied=1
-    disposed_current_review_hits=$(jq -r \
-        --argjson id "$actor_id" \
-        --arg head "$state_head" \
-        --arg requested "$state_requested" \
-        --argjson disposed "$disposed_reviews" \
-        "$codex_verdict_defs"'
-          [.[] | select(
-            .user.id? == $id and
-            (.commit_id? == $head) and
-            ((.submitted_at? // "") > $requested) and
-            (body_text != "")
-          ) | . as $review |
-          select(verdict_class == "findings") |
-          select((($review.id? | type) == "number") and
-                 (($disposed | index($review.id)) != null))
-          ] | length
-        ' "$workdir/reviews.json") || die "cannot evaluate current-attempt dispositions"
-    [ "$disposed_current_review_hits" -eq 0 ] || disposed_current_applied=1
-
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
-        --arg requested "$state_requested" \
+        --arg requested "$cycle_requested" \
         --argjson settled "$settled_reviews" \
         --argjson disposed "$disposed_reviews" \
         "$codex_verdict_defs"'
@@ -2102,9 +2095,9 @@ check)
               ) |
               .id | tostring] | first // ""
             ' "$workdir/reviews.json")
-        findings_review_attempt=$(result_attempt_for review "$findings_review_id")
-        emit findings "attempt $findings_review_attempt current-head review requires adjudication" \
-            review "$findings_review_id" "$findings_review_attempt"
+        mark_result_terminal
+        emit findings "current-head review requires adjudication (acked=$acked results=$results)" \
+            review "$findings_review_id"
         exit 10
     fi
     if [ "$review_result" = "unrecognized" ]; then
@@ -2141,9 +2134,8 @@ check)
             emit indeterminate "bot review comment carries a malformed creation time"
             exit 2
         }
-        comment_attempt=$(result_attempt_for_time "$comment_created")
         if [ "$classification" != "findings" ] &&
-            ! [ "$comment_created" \> "$state_requested" ]; then
+            ! [ "$comment_created" \> "$cycle_requested" ]; then
             continue
         fi
         grep -Eq '^[0-9a-fA-F]{7,40}$' <<<"$prefix" || {
@@ -2163,9 +2155,6 @@ check)
             printf '%s' "$disposed_comments" |
             jq -e --argjson id "$comment_id" 'index($id) != null' >/dev/null; then
             disposed_applied=1
-            if [ "$comment_attempt" = "$state_attempt" ]; then
-                disposed_current_applied=1
-            fi
             continue
         fi
         resolved_payload=$(run_gh api "repos/$state_repo/commits/$prefix") ||
@@ -2200,9 +2189,9 @@ check)
     done <"$comment_candidates"
 
     if [ "$comment_result" = "findings" ]; then
-        findings_comment_attempt=$(result_attempt_for comment "$findings_comment_id")
-        emit findings "attempt $findings_comment_attempt current-head conversation finding requires adjudication" \
-            comment "$findings_comment_id" "$findings_comment_attempt"
+        mark_result_terminal
+        emit findings "current-head conversation finding requires adjudication (acked=$acked results=$results)" \
+            comment "$findings_comment_id"
         exit 10
     fi
     if [ "$comment_result" = "unrecognized" ]; then
@@ -2218,23 +2207,9 @@ check)
         # whole seconds, so a shell and the verdict can tie, and a tie is
         # undecidable — the verdict may belong to the shell's review or
         # predate a review that is now in flight. `>` reads a tie as pending:
-        # fail closed, and not permanent, because the attempt machinery
-        # re-triggers and Codex then posts strictly newer evidence for this
-        # head that resolves the cycle either way. `>=` would trade that
-        # bounded delay for a promote-during-the-gap race inside the
-        # coincidence second.
-        #
-        # Accepted residual, stated so nobody rediscovers it: attempt 2 can
-        # post a clean verdict while attempt 1's review — same head, same
-        # diff, declared dead a full window ago — is somehow still running,
-        # and that newer verdict clears attempt 1's shell. Timestamps cannot
-        # correlate a verdict with a shell, so no comparison closes this
-        # without reopening the abandoned-shell deadlock on the other side.
-        # The exposure requires Codex to contradict itself on identical
-        # input, is caught by the caller's mandatory pre-promotion re-check
-        # when the late findings land before promotion, and beyond that a
-        # reviewer that may post arbitrarily late defeats any polling design
-        # — which is why the gate promotes to ready-for-review, not merge.
+        # fail closed. The acknowledgement/result invariant bounds that delay:
+        # every acknowledged request still needs its own distinct result, so
+        # a tied clean verdict cannot erase another outstanding review.
         clean_review_time=""
         clean_review_id=""
         if [ "$review_result" = "clean" ]; then
@@ -2247,7 +2222,7 @@ check)
             clean_review_evidence=$(jq -c \
                 --argjson id "$actor_id" \
                 --arg head "$state_head" \
-                --arg requested "$state_requested" \
+                --arg requested "$cycle_requested" \
                 "$codex_verdict_defs"'
                   [.[] | select(
                     .user.id? == $id and
@@ -2273,35 +2248,33 @@ check)
             emit pending "a newer empty review shell is still in flight for this head"
             exit 11
         fi
-        [ -n "$newest_clean" ] || bounded_wait "the latest attempt has no terminal current-head evidence yet"
-        newest_clean_attempt=$(result_attempt_for \
-            "$newest_clean_surface" "$newest_clean_id")
-        if [ "$newest_clean_attempt" != "$state_attempt" ]; then
-            bounded_wait "attempt $newest_clean_attempt returned clean; attempt $state_attempt still has no terminal result"
-        fi
-        emit clean "attempt $state_attempt authenticated bot posted a current-head clean result" \
-            "$newest_clean_surface" "$newest_clean_id" "$newest_clean_attempt"
+        [ -n "$newest_clean" ] || bounded_wait "the cycle has no terminal current-head evidence yet"
+        [ "$newest_clean" = "$latest_result_time" ] ||
+            bounded_wait "the newest cycle result is not clean (acked=$acked results=$results)"
+        require_result_quorum
+        emit clean "authenticated bot posted the newest current-head result; terminal by result count (acked=$acked results=$results)" \
+            "$newest_clean_surface" "$newest_clean_id"
         exit 0
     fi
 
     like_time=$(jq -r \
         --argjson id "$actor_id" \
-        --arg requested "$state_requested" '
+        --arg requested "$cycle_requested" '
           [.[] | select(
             .user.id? == $id and
             .content? == "+1" and
             (.created_at? >= $requested)
           ) | .created_at? | select(type == "string")] | max // ""
-        ' "$workdir/reactions.json")
+        ' "$workdir/all-trigger-reactions.json")
     exact_like=$(jq \
         --argjson id "$actor_id" \
-        --arg requested "$state_requested" '
+        --arg requested "$cycle_requested" '
           [.[] | select(
             .user.id? == $id and
             .content? == "+1" and
             (.created_at? >= $requested)
           )] | length
-        ' "$workdir/reactions.json")
+        ' "$workdir/all-trigger-reactions.json")
     if [ "$exact_like" -gt 0 ]; then
         if [ -n "$shell_barrier" ] && ! [ "$like_time" \> "$shell_barrier" ]; then
             emit pending "a newer empty review shell is still in flight for this head"
@@ -2315,7 +2288,7 @@ check)
         # gauntlet challenge round 4).
         like_id=$(jq -r \
             --argjson id "$actor_id" \
-            --arg requested "$state_requested" \
+            --arg requested "$cycle_requested" \
             --arg newest "$like_time" '
               [.[] | select(
                 .user.id? == $id and
@@ -2324,9 +2297,12 @@ check)
                 (.created_at? == $newest) and
                 ((.id? | type) == "number")
               ) | .id] | max // empty | tostring
-            ' "$workdir/reactions.json")
-        emit clean "attempt $state_attempt authenticated bot reacted +1 on the exact current-head trigger" \
-            reaction "$like_id" "$state_attempt"
+            ' "$workdir/all-trigger-reactions.json")
+        [ "$like_time" = "$latest_result_time" ] ||
+            bounded_wait "the newest cycle result is not the success reaction (acked=$acked results=$results)"
+        require_result_quorum
+        emit clean "authenticated bot posted the newest success reaction; terminal by result count (acked=$acked results=$results)" \
+            reaction "$like_id"
         exit 0
     fi
 
@@ -2381,21 +2357,16 @@ check)
         # above through its own time-ordered gate — so a shell that is still
         # dangling at this point is a review in flight or an abandoned one,
         # and both are pending: fail closed, bounded by the attempt window.
-        # Attempt 2's newer evidence resolves the cycle when it is a clean
-        # verdict or reaction (the time-ordered exits above accept it). When
-        # attempt 2 instead returns findings and an ABANDONED attempt-1
-        # shell still dangles, this exit stays pending after those findings
-        # are adjudicated, and the cycle ends in the attempt machinery's
-        # escalation. Deliberate, not a gap: an actor shell nobody can
+        # Newer clean evidence resolves the cycle only after distinct results
+        # catch up with acknowledged requests. If an abandoned shell still
+        # dangles, this exit stays pending after findings are adjudicated and
+        # the bounded window escalates. Deliberate, not a gap: an actor shell nobody can
         # explain plus adjudicated findings is incomplete evidence, and the
         # checker's discipline for incomplete evidence is a human hand-off,
         # never a green it cannot support.
         if [ -n "$shell_barrier" ]; then
             emit pending "an empty review shell is still unresolved for this head"
             exit 11
-        fi
-        if [ "$current_adjudicated_reviews" -eq 0 ]; then
-            bounded_wait "attempt 1 findings are adjudicated; attempt $state_attempt still has no terminal result"
         fi
         adjudicated_review_id=$(jq -r \
             --argjson settled "$settled_reviews" '
@@ -2404,8 +2375,15 @@ check)
                {id: ($r.id | tostring), time: ($r.submitted_at // "")}] |
               sort_by(.time) | last // null | .id // ""
             ' "$workdir/reviews.json")
-        emit clean "attempt $state_attempt current-head findings are all adjudicated by trusted in-thread replies" \
-            review "$adjudicated_review_id" "$state_attempt"
+        adjudicated_review_time=$(jq -r \
+            --argjson id "$adjudicated_review_id" '
+              [.[] | select(.id? == $id)] | first | .submitted_at? // ""
+            ' "$workdir/reviews.json")
+        [ "$adjudicated_review_time" = "$latest_result_time" ] ||
+            bounded_wait "the newest cycle result is not the adjudicated review (acked=$acked results=$results)"
+        require_result_quorum
+        emit clean "newest current-head findings are adjudicated by trusted in-thread replies; terminal by result count (acked=$acked results=$results)" \
+            review "$adjudicated_review_id"
         exit 0
     fi
 
@@ -2420,9 +2398,6 @@ check)
             emit pending "an empty review shell is still unresolved for this head"
             exit 11
         fi
-        if [ "$disposed_current_applied" != "1" ]; then
-            bounded_wait "attempt 1 findings are settled; attempt $state_attempt still has no terminal result"
-        fi
         # The detail names the DISPOSITIONS actually applied, not just that
         # some existed: "declined" and "filed" mean different things to
         # whoever reads this result, and a mixture means both happened.
@@ -2430,7 +2405,7 @@ check)
         disposed_id=""
         disposed_review_latest=$(jq -r \
             --argjson disposed "$disposed_reviews" \
-            --arg requested "$state_requested" '
+            --arg requested "$cycle_requested" '
               [.[] | select((.id? | type) == "number") |
                . as $r | select($disposed | index($r.id)) |
                select((.submitted_at // "") > $requested) |
@@ -2439,7 +2414,7 @@ check)
             ' "$workdir/reviews.json")
         disposed_comment_latest=$(jq -r \
             --argjson disposed "$disposed_comments" \
-            --arg requested "$state_requested" '
+            --arg requested "$cycle_requested" '
               [.[] | select((.id? | type) == "number") |
                . as $r | select($disposed | index($r.id)) |
                select((.created_at // "") > $requested) |
@@ -2451,13 +2426,33 @@ check)
             disposed_id=$disposed_review_latest
         fi
         if [ -n "$disposed_comment_latest" ]; then
-            if [ -z "$disposed_surface" ]; then
+            disposed_comment_time=$(jq -r \
+                --argjson id "$disposed_comment_latest" '
+                  [.[] | select(.id? == $id)] | first | .created_at? // ""
+                ' "$workdir/comments.json")
+            disposed_review_time=""
+            if [ -n "$disposed_review_latest" ]; then
+                disposed_review_time=$(jq -r \
+                    --argjson id "$disposed_review_latest" '
+                      [.[] | select(.id? == $id)] | first | .submitted_at? // ""
+                    ' "$workdir/reviews.json")
+            fi
+            if [ -z "$disposed_surface" ] ||
+                [ "$disposed_comment_time" \> "$disposed_review_time" ]; then
                 disposed_surface=comment
                 disposed_id=$disposed_comment_latest
             fi
         fi
-        emit clean "attempt $state_attempt current-head non-thread findings are all settled: ${applied_dispositions:-recorded dispositions}" \
-            "$disposed_surface" "$disposed_id" "$state_attempt"
+        case "$disposed_surface" in
+        review) disposed_latest_time=${disposed_review_time:-$(jq -r --argjson id "$disposed_id" '[.[] | select(.id? == $id)] | first | .submitted_at? // ""' "$workdir/reviews.json")} ;;
+        comment) disposed_latest_time=$disposed_comment_time ;;
+        *) disposed_latest_time= ;;
+        esac
+        [ "$disposed_latest_time" = "$latest_result_time" ] ||
+            bounded_wait "the newest cycle result is not the settled finding (acked=$acked results=$results)"
+        require_result_quorum
+        emit clean "newest current-head non-thread findings are settled: ${applied_dispositions:-recorded dispositions}; terminal by result count (acked=$acked results=$results)" \
+            "$disposed_surface" "$disposed_id"
         exit 0
     fi
 
@@ -2567,8 +2562,6 @@ settle)
     esac
     valid_time "$target_result_time" ||
         die "target $target_id has no usable result timestamp"
-    target_attempt=$(result_attempt_for_time "$target_result_time")
-
     # The badge is the only machine-emitted signal that this is a finding at
     # all. Requiring it keeps settlement off every other shape the surfaces
     # carry — a clean verdict, a carrier body, an unrecognized one — none of
@@ -2627,7 +2620,6 @@ settle)
         --argjson id "$target_id" \
         --arg disposition "$disposition" \
         --arg note "$note" \
-        --argjson attempt "$target_attempt" \
         --arg fingerprint "$settle_fingerprint" \
         --arg settled_at "$settled_at" '
           .version = 2 |
@@ -2645,7 +2637,7 @@ settle)
                          (.content_fingerprint != $fingerprint)))) +
             [{
               surface:$surface,id:$id,disposition:$disposition,note:$note,
-              attempt:$attempt,content_fingerprint:$fingerprint,
+              content_fingerprint:$fingerprint,
               settled_at:$settled_at
             }]
           )
