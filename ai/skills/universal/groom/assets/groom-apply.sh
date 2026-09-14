@@ -27,7 +27,7 @@
 #   {"op":"close","issue":N,"reason":"completed|not planned|duplicate","comment":"...","bot_owned":false}
 #   {"op":"retitle","issue":N,"title":"...","previous_title":"...","bot_owned":false}
 #   {"op":"label","issue":N,"add":["..."],"remove":["needs-triage"],"bot_owned":false}
-#   {"op":"milestone-assign","issue":N,"milestone_number":N,"bot_owned":false}
+#   {"op":"milestone-assign","issue":N,"milestone_title":"...","bot_owned":false}
 #   {"op":"sub-issue-link","parent":N,"child":N}
 #
 # Exit: 0 = dry-run resolved or every write applied, 1 = a write failed,
@@ -120,10 +120,14 @@ cmd_apply_plan() {
     done
     [ -n "$repo" ] && [ -n "$plan_file" ] && [ -n "$log" ] || usage
     guard_repo_binding "$repo"
+    [[ "$max_closes" =~ ^[0-9]+$ ]] ||
+        die 2 "refused: --max-closes must be a nonnegative integer (got '$max_closes')"
     [ -r "$plan_file" ] || die 2 "cannot read plan file: $plan_file"
 
     local close_count
-    close_count="$(jq -s '[.[] | select(.op == "close")] | length' "$plan_file")"
+    close_count="$(jq -s '[.[] | select(.op == "close")] | length' "$plan_file")" ||
+        die 2 "plan file is not valid JSON Lines: $plan_file"
+    [[ "$close_count" =~ ^[0-9]+$ ]] || die 2 "could not count close operations in the plan file"
     if [ "$close_count" -gt "$max_closes" ]; then
         die 2 "refused: plan closes $close_count issues, above --max-closes" \
             "$max_closes — pass an explicit higher --max-closes to proceed"
@@ -253,21 +257,25 @@ apply_label() {
 
 apply_milestone_assign() {
     local repo="$1" row="$2" log="$3" execute="$4"
-    local issue milestone_number
+    local issue milestone_title
     issue="$(jq -r '.issue // empty' <<<"$row")"
     guard_issue_number "$issue"
-    milestone_number="$(jq -r '.milestone_number // empty' <<<"$row")"
-    [[ "$milestone_number" =~ ^[0-9]+$ ]] ||
-        die 2 "refused: #$issue milestone-assign needs a numeric milestone_number"
+    # `gh issue edit --milestone` takes the milestone's NAME, not its number
+    # (confirmed against `gh issue edit --help`, gh 2.98.0: "-m, --milestone
+    # name  Edit the milestone the issue belongs to by name") — there is no
+    # by-number form. groom-scan.sh's milestones[] already carries `title`.
+    milestone_title="$(jq -r '.milestone_title // empty' <<<"$row")"
+    [ -n "$milestone_title" ] ||
+        die 2 "refused: #$issue milestone-assign needs a nonempty milestone_title"
 
-    local cmd=(gh issue edit "$issue" --repo "$repo" --milestone "$milestone_number")
+    local cmd=(gh issue edit "$issue" --repo "$repo" --milestone "$milestone_title")
     if [ "$execute" -eq 0 ]; then
         echo "PLAN ${cmd[*]}"
         return 0
     fi
     log_write "$log" "${cmd[*]}"
     "${cmd[@]}" >/dev/null || die 1 "write failed: milestone-assign $repo#$issue"
-    echo "APPLIED milestone-assign $repo#$issue -> #$milestone_number"
+    echo "APPLIED milestone-assign $repo#$issue -> '$milestone_title'"
 }
 
 apply_sub_issue_link() {

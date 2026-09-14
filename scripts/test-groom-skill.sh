@@ -148,6 +148,12 @@ bad_priority="$tmp/bad-priority.jsonl"
 printf '%s\n' '{"number":12,"verdict":"KEEP","priority":"urgent","reason":"x","evidence":"","group":"ci"}' >"$bad_priority"
 [ "$(run "$verdicts" validate "$bad_priority")" = 1 ] || fail "bad priority must exit 1"
 
+echo "==> validate: CLOSE-wrong-repo accepts a real target, not just the literal word 'target'"
+wrong_repo="$tmp/wrong-repo.jsonl"
+printf '%s\n' '{"number":13,"verdict":"CLOSE-wrong-repo (harmonops/harmon-infra)","priority":"low","reason":"belongs there","evidence":"describes infra config","group":"misc"}' >"$wrong_repo"
+[ "$(run "$verdicts" validate "$wrong_repo")" = 0 ] ||
+    fail "a real target description must validate: $(cat "$tmp/out" "$tmp/err")"
+
 # ── groom-verdicts.sh: join ─────────────────────────────────────────────────
 scan="$tmp/scan.json"
 cat >"$scan" <<'JSON'
@@ -237,6 +243,20 @@ GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$disp" \
     --out-html "$out_html2" --out-md "$tmp/report2.md" >/dev/null
 diff -u "$out_html" "$out_html2" >&2 || fail "re-render of the same dataset must be byte-identical"
 
+echo "==> report: a title containing a literal pipe does not corrupt the Markdown table"
+pipe_disp="$tmp/pipe-disp.json"
+cat >"$pipe_disp" <<'JSON'
+{"repo":"o/r","dispositions":[
+  {"number":9,"title":"Support a | b pipeline syntax","verdict":"KEEP","priority":"low","reason":"still needed | still valid","group":"ci","status":"PENDING"}
+],"stats":{"open_total":1,"close_candidates":0,"decisions":0,"high_priority":0},"milestones":[]}
+JSON
+run "$report" render --dispositions "$pipe_disp" --out-html "$tmp/pipe.html" \
+    --out-md "$tmp/pipe.md" >/dev/null
+pipe_row="$(grep '^| #9 ' "$tmp/pipe.md")"
+[ -n "$pipe_row" ] || fail "the #9 table row must be a single line"
+[ "$(printf '%s\n' "$pipe_row" | awk -F' \\| ' '{print NF}')" = 6 ] ||
+    fail "an escaped pipe must not add a phantom table column: $pipe_row"
+
 echo "==> apply-plan / groom-decide: a mismatched --repo is refused when the run is bound"
 noop_plan="$tmp/noop-plan.jsonl"
 : >"$noop_plan"
@@ -264,7 +284,7 @@ plan="$tmp/plan.jsonl"
 cat >"$plan" <<'JSONL'
 {"op":"close","issue":30,"reason":"completed","comment":"done","bot_owned":false}
 {"op":"retitle","issue":30,"title":"(ci): Fix the parser","previous_title":"(ci): Fix parser bug","bot_owned":false}
-{"op":"milestone-assign","issue":30,"milestone_number":1,"bot_owned":false}
+{"op":"milestone-assign","issue":30,"milestone_title":"v1","bot_owned":false}
 {"op":"sub-issue-link","parent":1,"child":30}
 JSONL
 : >"$GH_STUB_LOG"
@@ -288,7 +308,7 @@ echo "==> apply-plan: --execute with the env gate applies and logs every write"
     fail "gated execute should succeed: $(cat "$tmp/out" "$tmp/err")"
 grep -q "^WRITE gh issue close 30" "$tmp/apply.log" || fail "close must be logged before running"
 grep -q "^WRITE gh issue edit 30 .*--title" "$tmp/apply.log" || fail "retitle must be logged"
-grep -q "^WRITE gh issue edit 30 .*--milestone 1" "$tmp/apply.log" || fail "milestone-assign must be logged"
+grep -q "^WRITE gh issue edit 30 .*--milestone v1" "$tmp/apply.log" || fail "milestone-assign must be logged"
 grep -q "^WRITE gh api repos/$repo/issues/1/sub_issues" "$tmp/apply.log" || fail "sub-issue-link must be logged"
 grep -q "^issue close 30 " "$GH_STUB_LOG" || fail "close must actually run"
 
@@ -313,6 +333,18 @@ done
 [ "$(run "$apply" apply-plan --repo "$repo" --plan-file "$many_plan" --log "$tmp/apply.log" \
     --max-closes 5)" = 0 ] || fail "an explicit higher --max-closes must be honored"
 
+echo "==> apply-plan: a non-numeric --max-closes is refused, never silently ignored"
+: >"$GH_STUB_LOG"
+[ "$(run "$apply" apply-plan --repo "$repo" --plan-file "$many_plan" --log "$tmp/apply.log" \
+    --max-closes abc)" = 2 ] || fail "non-numeric --max-closes must exit 2"
+[ -s "$GH_STUB_LOG" ] && fail "a refused --max-closes must not touch gh at all"
+
+echo "==> apply-plan: a malformed plan file is refused with a documented exit code"
+: >"$GH_STUB_LOG"
+printf 'not valid json at all\n' >"$tmp/malformed-plan.jsonl"
+[ "$(run "$apply" apply-plan --repo "$repo" --plan-file "$tmp/malformed-plan.jsonl" \
+    --log "$tmp/apply.log")" = 2 ] || fail "a malformed plan file must exit 2 (documented), not a raw jq code"
+
 # ── groom-decide.sh ──────────────────────────────────────────────────────────
 decision_file="$tmp/decision.md"
 printf 'We are closing #40 in favor of #12 because it duplicates the same fix.\n' >"$decision_file"
@@ -322,7 +354,22 @@ echo "==> groom-decide: dry-run prints PLAN lines and writes nothing"
 [ "$(run "$decide" --repo "$repo" --issue 12 --decision-file "$decision_file" \
     --supersedes 40 --blocked-by 7)" = 0 ] || fail "dry-run decide should succeed: $(cat "$tmp/out" "$tmp/err")"
 grep -q "^PLAN " "$tmp/out" || fail "dry-run decide must print PLAN lines"
-[ -s "$GH_STUB_LOG" ] && fail "dry-run decide must not touch gh"
+grep -qE "^issue (close|comment|edit) " "$GH_STUB_LOG" &&
+    fail "dry-run decide must not call a gh write command"
+
+echo "==> groom-decide: a bot-owned --supersedes sibling is refused, even in dry-run"
+cat >"$stub_dir/issue-41.json" <<'JSON'
+{"labels":[],"author":{"login":"renovate[bot]","type":"Bot","is_bot":true}}
+JSON
+: >"$GH_STUB_LOG"
+[ "$(run "$decide" --repo "$repo" --issue 12 --decision-file "$decision_file" \
+    --supersedes 41)" = 4 ] || fail "bot-owned supersedes must exit 4 (dry-run)"
+grep -q "bot-authored" "$tmp/err" || fail "refusal must say why"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$decide" --repo "$repo" --issue 12 \
+    --decision-file "$decision_file" --supersedes 41 --execute)" = 4 ] ||
+    fail "bot-owned supersedes must exit 4 (execute)"
+grep -qE "^issue close 41 " "$GH_STUB_LOG" && fail "a bot-owned sibling must never be closed"
 
 echo "==> groom-decide: --execute without the env gate is refused"
 [ "$(run "$decide" --repo "$repo" --issue 12 --decision-file "$decision_file" --execute)" = 2 ] ||

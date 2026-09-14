@@ -37,8 +37,12 @@ die() {
     exit 2
 }
 
-CLOSE_RE='^CLOSE-(done|obsolete|wrong-repo \(target\)|dup-of-#[0-9]+)$'
-VERDICT_RE='^(CLOSE-done|CLOSE-obsolete|CLOSE-wrong-repo \(target\)|CLOSE-dup-of-#[0-9]+|KEEP|NEEDS-DECISION|NEEDS-INFO)$'
+# CLOSE-wrong-repo carries a real target description in its parens (e.g.
+# "CLOSE-wrong-repo (harmonops/harmon-infra)"), per references/verdict-
+# vocabulary.md and references/subagent-brief.md — a literal word "target"
+# is the placeholder in the docs, not a value to match verbatim.
+CLOSE_RE='^CLOSE-(done|obsolete|wrong-repo \([^)]+\)|dup-of-#[0-9]+)$'
+VERDICT_RE='^(CLOSE-done|CLOSE-obsolete|CLOSE-wrong-repo \([^)]+\)|CLOSE-dup-of-#[0-9]+|KEEP|NEEDS-DECISION|NEEDS-INFO)$'
 
 # Validate every line of every file. Prints one "groom-verdicts: refused: ..."
 # line per violation (never stops early) so a subagent's whole file can be

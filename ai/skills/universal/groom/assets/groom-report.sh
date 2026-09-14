@@ -57,7 +57,13 @@ cmd_render() {
     now="${GROOM_NOW:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
 
     jq -r --arg now "$now" '
-      def esc: if . == null then "" else (. | tostring) end;
+      # Markdown-safe: collapse embedded newlines (which would otherwise
+      # split a table row or bullet across lines) and escape a literal "|"
+      # (which would otherwise insert a phantom table-cell boundary) in any
+      # free text sourced from an issue title, a subagent reason/question, or
+      # a process finding.
+      def mdesc: if . == null then "" else
+        (. | tostring | gsub("\r\n|\r|\n"; " ") | gsub("\\|"; "\\|")) end;
       . as $d
       | ($d.dispositions // []) as $rows
       | ([$rows[] | select(.verdict | startswith("CLOSE-"))]) as $close
@@ -92,13 +98,13 @@ cmd_render() {
          else ($close | group_by(.verdict) | .[] |
                "### \(.[0].verdict)",
                "",
-               (.[] | "- #\(.number) — \(.title // "(title unavailable)") — \(.reason)"),
+               (.[] | "- #\(.number) — \(.title // "(title unavailable)" | mdesc) — \(.reason | mdesc)"),
                "")
          end),
         "## Milestones",
         "",
         (if ($milestones|length) == 0 then "No milestone proposals this run."
-         else ($milestones[] | "- #\(.number) \(.title) (\(.state)) — \(.open_issues // 0) open, \(.closed_issues // 0) closed")
+         else ($milestones[] | "- #\(.number) \(.title | mdesc) (\(.state)) — \(.open_issues // 0) open, \(.closed_issues // 0) closed")
          end),
         "",
         "## Parent issues",
@@ -109,26 +115,26 @@ cmd_render() {
         "",
         (if ($decisions|length) == 0 then "None this run."
          else ($decisions[] |
-               "- #\(.number) — \(.title // "(title unavailable)") — \(.question // "") — recommendation: \(.reason) — status: \(.status // "PENDING")")
+               "- #\(.number) — \(.title // "(title unavailable)" | mdesc) — \(.question // "" | mdesc) — recommendation: \(.reason | mdesc) — status: \(.status // "PENDING" | mdesc)")
          end),
         "",
         "## Process findings",
         "",
         (if ($findings|length) == 0 then "None recorded this run."
-         else ($findings[] | "- \(.)")
+         else ($findings[] | "- \(. | mdesc)")
          end),
         "",
         "## Bot-owned issues (excluded from retitle/close/relabel)",
         "",
         (if ($bots|length) == 0 then "None this run."
-         else ($bots[] | "- #\(.number) — \(.title // "(title unavailable)")")
+         else ($bots[] | "- #\(.number) — \(.title // "(title unavailable)" | mdesc)")
          end),
         "",
         "## Every issue",
         "",
         "| # | Title | Verdict | Priority | Group | Status |",
         "| --- | --- | --- | --- | --- | --- |",
-        ($rows[] | "| #\(.number) | \(.title // "") | \(.verdict) | \(.priority) | \(.group) | \(.status // "PENDING") |")
+        ($rows[] | "| #\(.number) | \(.title // "" | mdesc) | \(.verdict | mdesc) | \(.priority | mdesc) | \(.group | mdesc) | \(.status // "PENDING" | mdesc) |")
     ' "$dispositions" >"$out_md"
 
     jq -r --arg now "$now" '

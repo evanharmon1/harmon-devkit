@@ -117,6 +117,20 @@ else
 fi
 
 for m in "${supersedes[@]+"${supersedes[@]}"}"; do
+    # SKILL.md's contract is unqualified: bot-authored issues are never
+    # closed by groom, whatever the write path. Check live, always — a
+    # maintainer decision names issue numbers, not authors, and a bot
+    # (Renovate/Dependabot) routinely files near-duplicates that would
+    # otherwise fit a "superseded by" close.
+    author_json="$(gh issue view "$m" --repo "$repo" --json author)" ||
+        die 2 "could not read the author of $repo#$m"
+    if jq -e '
+        (.author.type == "Bot") or (.author.is_bot == true)
+        or (.author.login == "app/renovate")
+        or ((.author.login // "") | test("^app/|\\[bot\\]$"))
+      ' <<<"$author_json" >/dev/null; then
+        die 4 "refused: $repo#$m is bot-authored — groom never closes a bot-owned issue"
+    fi
     pointer="Superseded by the decision on #$issue."
     if [ "$execute" -eq 0 ]; then
         echo "PLAN gh issue close $m --repo $repo --reason 'not planned' --comment '$pointer'"
