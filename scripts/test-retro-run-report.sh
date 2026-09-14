@@ -1832,14 +1832,40 @@ printf '%s\n' '{"status":"evidence-only","run_id":"run-6001-further-along","issu
 make_stats "$d/stats.mjs" 0 "$d/evidence-only.json"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
-[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.status == "evidence-only" and .marker_facts[0].stage == "review" and .untrusted_marker_facts[0].round == 2 and .legacy_also_present == true' >/dev/null &&
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e --argjson pr "$PR" '.status == "evidence-only" and .marker_facts[0].stage == "review" and .untrusted_marker_facts[0].round == 2 and .legacy_also_present == true and .source.pr_binding == ("bound to PR #" + ($pr | tostring))' >/dev/null &&
     ok "the report preserves authenticated marker facts and stops before trajectory measurement" ||
     bad "evidence-only output was not preserved: rc=$RC, out=$OUT, err=$ERR"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
-[ "$RC" -eq 0 ] && contains "$OUT" 'Untrusted marker facts' && contains "$OUT" '"round":2' && contains "$OUT" 'Legacy also present: `true`' &&
+[ "$RC" -eq 0 ] && contains "$OUT" 'Untrusted marker facts' && contains "$OUT" '"round":2' && contains "$OUT" 'Legacy also present: `true`' && contains "$OUT" "PR binding: bound to PR #$PR" &&
     ok "the text report preserves untrusted marker anomaly facts" ||
     bad "evidence-only text output dropped untrusted marker facts: rc=$RC, out=$OUT, err=$ERR"
+
+echo "==> an explicitly selected evidence-only run discloses that it is unbound"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --run run-6001-further-along --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.source.pr_binding | startswith("unbound")' >/dev/null &&
+    ok "the absent evidence-only PR binding is disclosed" ||
+    bad "an unbound evidence-only run claimed a binding: rc=$RC, out=$OUT, err=$ERR"
+
+echo "==> evidence-only output rejects a retained binding to another PR"
+jq --argjson pr "$((PR + 1))" '.pr_binding = {number:$pr}' "$d/evidence-only.json" >"$d/evidence-only-bound.json"
+make_stats "$d/stats.mjs" 0 "$d/evidence-only-bound.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --run run-6001-further-along --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "bound to PR #$((PR + 1)), not the requested #$PR" &&
+    ok "the retained evidence-only PR binding is authoritative" ||
+    bad "a differently-bound evidence-only run was accepted: rc=$RC, out=$OUT, err=$ERR"
+
+echo "==> evidence-only Markdown folds a newline-bearing run id"
+newline_run_id=$'run-6001\ninjected-heading'
+jq --arg run "$newline_run_id" '.run_id = $run | del(.pr_binding)' "$d/evidence-only.json" >"$d/evidence-only-newline.json"
+make_stats "$d/stats.mjs" 0 "$d/evidence-only-newline.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --run "$newline_run_id" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = '## Run evidence — run `run-6001 injected-heading`' ] &&
+    ok "the evidence-only heading neutralizes embedded newlines" ||
+    bad "a newline-bearing run id broke the Markdown heading: rc=$RC, out=$OUT, err=$ERR"
 
 echo "==> discovery accepts the review skill's evidence-marker grammar"
 d="$TMPROOT/evidence-marker-grammar"

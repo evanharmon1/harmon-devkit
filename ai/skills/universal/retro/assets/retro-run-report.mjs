@@ -1481,6 +1481,22 @@ function run(argv) {
   }
 
   if (harvested.trajectory && harvested.trajectory.status === 'evidence-only') {
+    const markerPrMatch = !args.run && /^evidence marker on PR #(\d+)$/.exec(runIdFrom || '')
+    const harvestedPr = harvested.trajectory.pr_binding && Number(harvested.trajectory.pr_binding.number)
+    const evidencePr = Number.isInteger(harvestedPr) && harvestedPr > 0
+      ? harvestedPr
+      : markerPrMatch
+        ? Number(markerPrMatch[1])
+        : null
+    if (args.pr !== undefined && evidencePr !== null && evidencePr !== args.pr) {
+      console.error(
+        `${TOOL}: indeterminate — evidence-only run \`${safe(runId)}\` is bound to PR #${evidencePr}, not the requested #${args.pr}`
+      )
+      return 11
+    }
+    const prBinding = evidencePr === null
+      ? 'unbound — authenticated markers identify the run, but no retained run record or PR marker binds it to a PR'
+      : `bound to PR #${evidencePr}`
     const evidenceOnly = {
       schema: 'retro-run-report.v1',
       run_id: runId,
@@ -1489,17 +1505,18 @@ function run(argv) {
       marker_facts: harvested.trajectory.marker_facts || [],
       untrusted_marker_facts: harvested.trajectory.untrusted_marker_facts || [],
       legacy_also_present: Boolean(harvested.trajectory.legacy_also_present),
-      source: { harvester: stats.display, run_id_from: runIdFrom, trusted_actors: trusted.source }
+      source: { harvester: stats.display, run_id_from: runIdFrom, trusted_actors: trusted.source, pr_binding: prBinding }
     }
     if (args.json) console.log(JSON.stringify(evidenceOnly, null, 2))
     else {
-      console.log(`## Run evidence — run \`${runId}\``)
+      console.log(`## Run evidence — run \`${safe(runId)}\``)
       console.log('')
       console.log(`- Status: \`evidence-only\``)
       console.log(`- Issue: #${evidenceOnly.issue}`)
       console.log(`- Authenticated marker facts: \`${JSON.stringify(evidenceOnly.marker_facts)}\``)
       console.log(`- Untrusted marker facts: \`${JSON.stringify(evidenceOnly.untrusted_marker_facts)}\``)
       console.log(`- Legacy also present: \`${evidenceOnly.legacy_also_present}\``)
+      console.log(`- PR binding: ${safe(prBinding)}`)
       console.log('- Full trajectory unavailable: rerun with `--record-dir <path>` containing `<path>/<run_id>/run.json`.')
     }
     return 0

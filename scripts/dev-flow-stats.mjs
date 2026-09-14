@@ -1749,6 +1749,20 @@ function readJsonFile(file) {
   }
 }
 
+function runExitValidator(args, label) {
+  const result = spawnSync(process.execPath, [EXIT_VALIDATOR, ...args], {
+    encoding: "utf8",
+    maxBuffer: MAX_SYNC_BUFFER_BYTES,
+  });
+  if (result.error) throw new EvidenceError(`${label} validator could not run: ${result.error.message}`);
+  if (result.status === 0) return;
+  const firstError = `${result.stderr || ""}\n${result.stdout || ""}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) || `validator exited ${result.status}`;
+  throw new EvidenceError(`${label} failed exit-engine validation: ${firstError}`);
+}
+
 function collectTrustedEvidenceSummaries(comments, runId, { trustedActorIds, asOf, fetchedFrom }) {
   const cutoff = asOf ? Date.parse(asOf) : Infinity;
   const candidates = [];
@@ -1952,6 +1966,26 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
   const engineTmp = mkdtempSync(path.join(tmpdir(), "dev-flow-stats-exit-"));
   try {
     exitRun = loadExitRunDir(runDir);
+    // The durable run directory adds the exit engine's `receipts` and
+    // `slot_failures` trajectory inputs to the canonical run-record document.
+    // Validate the canonical projection while supplying the original file as
+    // the validator's trusted receipt sequence; this is the same split the
+    // validator's run/--receipts contract defines.
+    const canonicalRunFile = path.join(engineTmp, "run-record.json");
+    const { receipts: _receipts, slot_failures: _slotFailures, ...canonicalRun } = exitRun.runRecord;
+    for (const field of ["stage_transitions", "interventions", "settlements"]) {
+      canonicalRun[field] = (canonicalRun[field] || []).map(({ seq: _seq, digest: _digest, prev_digest: _previous, ...entry }) => entry);
+    }
+    writeFileSync(canonicalRunFile, `${JSON.stringify(canonicalRun, null, 2)}\n`);
+    const runValidationArgs = ["run", canonicalRunFile, "--receipts", runFile, "--receipt"];
+    if (exitRun.adjudications.length === 0) {
+      runValidationArgs.push("--no-adjudications");
+    } else {
+      for (const adjudication of exitRun.adjudications) {
+        runValidationArgs.push("--adjudication", adjudication.file);
+      }
+    }
+    runExitValidator(runValidationArgs, `${runId}/run.json`);
     ({ validPasses, diagnostics } = validateExitReceipts(exitRun.runRecord, exitRun.passes, {
       validatorPath: EXIT_VALIDATOR,
       tmpDir: engineTmp,
@@ -1974,6 +2008,55 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     validAdjudications.push(adjudication);
   }
 
+  const blockedConfidencePasses = exitRun.passes.filter((pass) => {
+    const envelope = pass.envelope;
+    return envelope.status === "blocked" &&
+      (envelope.role === "challenger" || envelope.role === "reviewer") &&
+      (envelope.payload.stage === "challenge" || envelope.payload.stage === "review") &&
+      Number.isInteger(envelope.payload.round);
+  });
+  for (const pass of blockedConfidencePasses) {
+    runExitValidator(
+      ["envelope", pass.file, "--run-id", body.run_id, "--initiated-by", body.initiated_by],
+      `blocked pass ${pass.name}`,
+    );
+  }
+
+  const receiptedPassNames = new Set((body.receipts || [])
+    .filter((receipt) => receipt.kind === "pass" && typeof receipt.file === "string")
+    .map((receipt) => receipt.file));
+  const retainedIntegrationPasses = exitRun.passes.filter(
+    (pass) => pass.envelope.role === "integrator" && receiptedPassNames.has(pass.name),
+  );
+  const integrationPasses = retainedIntegrationPasses.map((pass) => {
+    runExitValidator(
+      ["envelope", pass.file, "--run-id", body.run_id, "--initiated-by", body.initiated_by],
+      `integration pass ${pass.name}`,
+    );
+    const envelope = pass.envelope;
+    const verificationRound = {
+      findings: (envelope.payload.findings || []).map((finding) => ({
+        ...finding,
+        round: envelope.payload.integration_round,
+      })),
+    };
+    applyExitVerification([verificationRound], null);
+    return {
+      file: pass.name,
+      status: envelope.status,
+      head: envelope.head,
+      integration_round: envelope.payload.integration_round,
+      findings: verificationRound.findings.map((finding) => ({
+        id: finding.id,
+        class: finding.class,
+        provenance: finding.verifiedProvenance,
+        provenance_status: finding.provenanceStatus,
+        fingerprint: finding.verifiedFingerprint,
+        fingerprint_status: finding.fingerprintStatus,
+      })),
+    };
+  });
+
   const byRound = new Map();
   for (const observed of authenticatedMarkers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
     const key = `${observed.marker.stage}|${observed.marker.round}`;
@@ -1993,6 +2076,9 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
         const group = byRound.get(key);
         if (!group) continue;
         const passes = validPasses.filter((pass) => pass.payload.stage === stage && pass.payload.round === round.round);
+        const blockedPasses = blockedConfidencePasses.filter(
+          (pass) => pass.envelope.payload.stage === stage && pass.envelope.payload.round === round.round,
+        );
         const adjudication = validAdjudications.find((entry) => entry.doc.stage === stage && entry.doc.round === round.round);
         rounds.push({
           stage,
@@ -2000,12 +2086,14 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
           round: round.round,
           payload: {
             passes: passes.map((pass) => pass.envelope),
-            blockedPasses: [],
+            blockedPasses: blockedPasses.map((pass) => pass.envelope),
             adjudication: adjudication ? adjudication.doc : null,
-            verifiedFindings: round.findings.length === 0 ? null : round.findings.map((finding) => ({
+            findingAttributions: round.findings.length === 0 ? null : round.findings.map((finding) => ({
               id: finding.id,
-              verified_provenance: finding.verifiedProvenance,
-              verified_fingerprint: finding.verifiedFingerprint,
+              provenance: finding.verifiedProvenance,
+              provenance_status: finding.provenanceStatus,
+              fingerprint: finding.verifiedFingerprint,
+              fingerprint_status: finding.fingerprintStatus,
             })),
             incomplete: round.status !== "complete",
           },
@@ -2018,6 +2106,28 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     if (err instanceof ExitIndeterminate) throw new EvidenceError(err.message);
     throw err;
   }
+  const artifactRoundKeys = new Set();
+  for (const pass of exitRun.passes) {
+    const envelope = pass.envelope;
+    const stage = envelope.role === "integrator" ? "integration" : envelope.payload.stage;
+    const round = envelope.role === "integrator" ? envelope.payload.integration_round : envelope.payload.round;
+    if (typeof stage === "string" && Number.isInteger(round)) artifactRoundKeys.add(`${stage}|${round}`);
+  }
+  for (const adjudication of exitRun.adjudications) {
+    if (typeof adjudication.doc.stage === "string" && Number.isInteger(adjudication.doc.round)) {
+      artifactRoundKeys.add(`${adjudication.doc.stage}|${adjudication.doc.round}`);
+    }
+  }
+  for (const slotFailure of Array.isArray(body.slot_failures) ? body.slot_failures : []) {
+    if (typeof slotFailure.stage === "string" && Number.isInteger(slotFailure.round)) {
+      artifactRoundKeys.add(`${slotFailure.stage}|${slotFailure.round}`);
+    }
+  }
+  const missingMarkerKey = [...byRound.keys()].find((key) => !artifactRoundKeys.has(key));
+  if (missingMarkerKey) {
+    const [stage, round] = missingMarkerKey.split("|");
+    throw new EvidenceError(`record-missing: authenticated ${stage} round ${round} marker group has no retained pass, adjudication, or slot failure`);
+  }
   const unreceiptedPassFiles = diagnostics
     .filter((entry) => entry.reason === "no receipt entry for this pass in run.receipts")
     .map((entry) => entry.pass);
@@ -2028,6 +2138,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     record: { body },
     state,
     rounds,
+    integrationPasses,
     slotFailures: Array.isArray(body.slot_failures) ? body.slot_failures : [],
     slotFailuresUnavailable: false,
     futureAdjudicationFiles: [],
@@ -2422,24 +2533,32 @@ function verifiedFindingMeasurements(rounds) {
   for (const round of rounds) {
     const passes = Array.isArray(round.payload.passes) ? round.payload.passes : [];
     const findingCount = passes.reduce((total, pass) => total + (((pass.payload && pass.payload.findings) || []).length), 0);
-    if (findingCount > 0 && !Array.isArray(round.payload.verifiedFindings)) {
+    if (findingCount > 0 && !Array.isArray(round.payload.findingAttributions)) {
       unavailableRounds.push({ stage: round.stage, round: round.round });
       continue;
     }
     if (findingCount === 0) continue;
-    const verifiedById = new Map(round.payload.verifiedFindings.map((finding) => [finding.id, finding]));
+    const attributionById = new Map(round.payload.findingAttributions.map((finding) => [finding.id, finding]));
+    let unavailable = false;
     for (const pass of passes) {
       const findings = (pass.payload && pass.payload.findings) || [];
       for (const f of findings) {
-        const verified = verifiedById.get(f.id);
+        const attribution = attributionById.get(f.id);
         const cls = f.class || "unclassified";
-        const prov = verified && verified.verified_provenance ? verified.verified_provenance : "unavailable";
-        const key = `${cls}/${prov}`;
-        counts[key] = (counts[key] || 0) + 1;
-        const fingerprint = verified && verified.verified_fingerprint ? verified.verified_fingerprint : "unavailable";
-        fingerprints[fingerprint] = (fingerprints[fingerprint] || 0) + 1;
+        if (attribution && attribution.provenance_status !== "unverified") {
+          const key = `${cls}/${attribution.provenance}`;
+          counts[key] = (counts[key] || 0) + 1;
+        } else {
+          unavailable = true;
+        }
+        if (attribution && attribution.fingerprint_status !== "unverified") {
+          fingerprints[attribution.fingerprint] = (fingerprints[attribution.fingerprint] || 0) + 1;
+        } else {
+          unavailable = true;
+        }
       }
     }
+    if (unavailable) unavailableRounds.push({ stage: round.stage, round: round.round });
   }
   return { counts, fingerprints, unavailableRounds };
 }
@@ -2477,9 +2596,12 @@ function renderTrajectory(run) {
         ? r.payload.passes.reduce((n, p) => n + ((p.payload && p.payload.findings && p.payload.findings.length) || 0), 0)
         : 0,
       has_adjudication: Boolean(r.payload.adjudication),
+      ...(Array.isArray(r.payload.findingAttributions) && r.payload.findingAttributions.length > 0
+        ? { finding_attributions: r.payload.findingAttributions }
+        : {}),
       ...(r.payload.incomplete ? { status: "capped" } : {}),
-      provenance_measurement: Array.isArray(r.payload.verifiedFindings)
-        ? "verified"
+      provenance_measurement: Array.isArray(r.payload.findingAttributions)
+        ? (r.payload.findingAttributions.every((finding) => finding.provenance_status !== "unverified") ? "verified" : "unverified")
         : ((Array.isArray(r.payload.passes)
             ? r.payload.passes.reduce((n, p) => n + (((p.payload && p.payload.findings) || []).length), 0)
             : 0) === 0 ? "not-applicable" : "unavailable"),
@@ -2494,6 +2616,12 @@ function renderTrajectory(run) {
     future_adjudication_files: run.futureAdjudicationFiles || [],
     local_record_current_state: Boolean(run.localRecordCurrentState),
     trajectory_diagnostics: run.trajectoryDiagnostics || [],
+    integration_passes: {
+      count: Array.isArray(run.integrationPasses) ? run.integrationPasses.length : 0,
+      heads: [...new Set((run.integrationPasses || []).map((pass) => pass.head))],
+      passes: run.integrationPasses || [],
+      findings: (run.integrationPasses || []).flatMap((pass) => pass.findings || []),
+    },
     // Renamed from the misleading untrusted_comments — shepherd round 2,
     // Codex-confirmed (P2): this field has only ever held TRUSTED-but-
     // unlisted orphans, never untrusted ones. forged_comments is the new,
@@ -2520,6 +2648,7 @@ function renderTrajectoryTable(trajectory) {
   for (const r of trajectory.rounds) {
     lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.blocked_passes} blocked pass(es), ${r.adjudication_count} adjudication(s), ${r.finding_count} finding(s), provenance=${r.provenance_measurement}`);
   }
+  lines.push(`integration passes: ${trajectory.integration_passes.count}; heads=${trajectory.integration_passes.heads.join(",") || "none"}`);
   if (Object.keys(trajectory.findings_by_class_and_provenance).length > 0) {
     lines.push("");
     lines.push("findings by class/provenance:");
@@ -3154,7 +3283,7 @@ function cliRun(args) {
     return 1;
   }
   if (run.status === "evidence-only") {
-    const report = { status: "evidence-only", run_id: run.runId, issue: run.issueNumber, marker_facts: run.markerFacts, untrusted_marker_facts: run.untrustedMarkerFacts || [], legacy_also_present: Boolean(run.legacyAlsoPresent) };
+    const report = { status: "evidence-only", run_id: run.runId, issue: run.issueNumber, pr_binding: null, marker_facts: run.markerFacts, untrusted_marker_facts: run.untrustedMarkerFacts || [], legacy_also_present: Boolean(run.legacyAlsoPresent) };
     console.log(args.json ? JSON.stringify(report, null, 2) : `run ${run.runId} (issue #${run.issueNumber}) — evidence-only\nmarkers: ${JSON.stringify(run.markerFacts)}${report.legacy_also_present ? "\nlegacy-also-present: true" : ""}`);
     return 0;
   }
