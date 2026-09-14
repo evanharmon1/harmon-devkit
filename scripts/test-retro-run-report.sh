@@ -205,7 +205,8 @@ STATS_SH
 
 # make_trajectory FIXTURE OUT — compose the trajectory the harvester would
 # return for FIXTURE: run-record fields read from the fixture, harvest fields
-# supplied by $ROUNDS_JSON / $CLASSES_JSON / $ORPHANS_JSON / $ISSUE_NUMBER.
+# supplied by $ROUNDS_JSON / $CLASSES_JSON / $ORPHANS_JSON /
+# $SLOT_FAILURES_JSON / $ISSUE_NUMBER.
 make_trajectory() {
     # One-shot overrides. A `VAR=x helper` prefix on a shell FUNCTION persists
     # in bash (unlike on an external command), so without this each override
@@ -213,11 +214,11 @@ make_trajectory() {
     # pass for a reason its own setup never established. Captured, then
     # cleared, so the prefix means what it looks like it means.
     local issue="${ISSUE_NUMBER:-0}" rounds="${ROUNDS_JSON:-[]}" classes="${CLASSES_JSON:-{\}}"
-    local orphans="${ORPHANS_JSON:-[]}" forged="${FORGED_JSON:-[]}"
+    local orphans="${ORPHANS_JSON:-[]}" forged="${FORGED_JSON:-[]}" slot_failures="${SLOT_FAILURES_JSON:-[]}"
     local run_id="${RUN_ID_OVERRIDE:-}"
-    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON RUN_ID_OVERRIDE
+    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON SLOT_FAILURES_JSON RUN_ID_OVERRIDE
     ISSUE_NUMBER="$issue" ROUNDS_JSON="$rounds" CLASSES_JSON="$classes" RUN_ID_OVERRIDE="$run_id" \
-        ORPHANS_JSON="$orphans" FORGED_JSON="$forged" node -e '
+        ORPHANS_JSON="$orphans" FORGED_JSON="$forged" SLOT_FAILURES_JSON="$slot_failures" node -e '
       const fs = require("node:fs")
       const [fixture, out] = process.argv.slice(1)
       const run = JSON.parse(fs.readFileSync(fixture, "utf8"))
@@ -233,6 +234,7 @@ make_trajectory() {
         interventions: run.interventions,
         settlements: run.settlements,
         rounds: JSON.parse(process.env.ROUNDS_JSON || "[]"),
+        slot_failures: JSON.parse(process.env.SLOT_FAILURES_JSON || "[]"),
         findings_by_class_and_provenance: JSON.parse(process.env.CLASSES_JSON || "{}"),
         orphan_comments: JSON.parse(process.env.ORPHANS_JSON || "[]"),
         forged_comments: JSON.parse(process.env.FORGED_JSON || "[]")
@@ -1094,10 +1096,11 @@ mkdir -p "$d"
 make_gh "$d"
 ISSUE_NUMBER="$ISSUE" \
     ROUNDS_JSON='[
-      {"stage":"challenge","round":1,"pass_count":1,"finding_count":3,"has_adjudication":true},
-      {"stage":"challenge","round":2,"pass_count":1,"finding_count":1,"has_adjudication":true},
-      {"stage":"review","round":1,"pass_count":1,"finding_count":0,"has_adjudication":false}
+      {"stage":"challenge","round":1,"pass_count":1,"adjudication_count":1,"finding_count":3,"has_adjudication":true},
+      {"stage":"challenge","round":2,"pass_count":1,"adjudication_count":1,"finding_count":1,"has_adjudication":true},
+      {"stage":"review","round":1,"pass_count":1,"adjudication_count":0,"finding_count":0,"has_adjudication":false}
     ]' \
+    SLOT_FAILURES_JSON='[{"stage":"review","round":1,"slot":"codex-verification","reason":"finder_unavailable"}]' \
     CLASSES_JSON='{"correctness/original":2,"hardening/original":1,"design/round:1":1}' \
     ORPHANS_JSON='[{"id":1,"actor_id":9}]' \
     make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
@@ -1147,6 +1150,10 @@ contains "$OUT" "- Rounds spent: 0 / cap 4 (disclosed, unverified)" &&
     bad "a capped stage with no rounds dropped its round line"
 contains "$OUT" "- Rounds with no adjudication record: 1" &&
     ok "a round with no adjudication is named" || bad "unadjudicated round not reported"
+contains "$OUT" "- Round 1 evidence: 1 pass(es), 1 adjudication(s)" &&
+    ok "per-round pass and adjudication counts are disclosed" || bad "per-round evidence counts missing"
+contains "$OUT" 'Slot failures (retained verbatim): `[{"stage":"review","round":1,"slot":"codex-verification","reason":"finder_unavailable"}]`' &&
+    ok "slot failures are retained verbatim" || bad "slot failures were dropped or rewritten"
 contains "$OUT" "| correctness | original | 2 |" &&
     ok "class/provenance counts render" || bad "class/provenance table missing a row"
 contains "$OUT" "| design | round:1 | 1 |" &&

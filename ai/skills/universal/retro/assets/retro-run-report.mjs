@@ -896,6 +896,7 @@ function stageAt(transitions, at) {
 function measure(trajectory, policy) {
   const transitions = Array.isArray(trajectory.stage_transitions) ? trajectory.stage_transitions : []
   const rounds = Array.isArray(trajectory.rounds) ? trajectory.rounds : []
+  const slotFailures = Array.isArray(trajectory.slot_failures) ? trajectory.slot_failures : []
   const interventions = Array.isArray(trajectory.interventions) ? trajectory.interventions : []
   const settlements = Array.isArray(trajectory.settlements) ? trajectory.settlements : []
 
@@ -922,7 +923,19 @@ function measure(trajectory, policy) {
       cap,
       findings: own.reduce((total, round) => total + (round.finding_count || 0), 0),
       passes: own.reduce((total, round) => total + (round.pass_count || 0), 0),
-      rounds_without_adjudication: own.filter((round) => !round.has_adjudication).map((round) => round.round),
+      adjudications: own.reduce(
+        (total, round) => total + (round.adjudication_count ?? (round.has_adjudication ? 1 : 0)),
+        0
+      ),
+      round_evidence_counts: own.map((round) => ({
+        round: round.round,
+        passes: round.pass_count || 0,
+        adjudications: round.adjudication_count ?? (round.has_adjudication ? 1 : 0)
+      })),
+      rounds_without_adjudication: own
+        .filter((round) => (round.adjudication_count ?? (round.has_adjudication ? 1 : 0)) === 0)
+        .map((round) => round.round),
+      slot_failures: slotFailures.filter((failure) => failure && failure.stage === stage),
       interventions: interventions
         .filter((entry) => stageAt(transitions, entry.at) === stage)
         .map((entry) => ({ at: entry.at, kind: entry.kind, note: entry.note }))
@@ -1010,7 +1023,7 @@ function unavailableMeasurements(measured) {
     {
       measurement: 'adjudicated-priority overrides per finding',
       reason:
-        'the run trajectory reduces each round\'s adjudication document to a has_adjudication boolean, dropping reviewer_priority, adjudicated_priority and override',
+        'the run trajectory reduces each round\'s adjudication documents to a count, dropping reviewer_priority, adjudicated_priority and override',
       issue: 'harmon-devkit#753'
     }
   )
@@ -1096,9 +1109,15 @@ function renderMarkdown(report) {
       const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
       l.push(`- Rounds spent: ${stage.rounds_spent} / ${cap}`)
       l.push(`- Findings: ${stage.findings} across ${stage.passes} pass(es)`)
+      for (const evidence of stage.round_evidence_counts) {
+        l.push(`- Round ${evidence.round} evidence: ${evidence.passes} pass(es), ${evidence.adjudications} adjudication(s)`)
+      }
       l.push(
         `- Rounds with no adjudication record: ${stage.rounds_without_adjudication.length === 0 ? 'none' : stage.rounds_without_adjudication.join(', ')}`
       )
+      if (stage.slot_failures.length > 0) {
+        l.push(`- Slot failures (retained verbatim): \`${safe(JSON.stringify(stage.slot_failures))}\``)
+      }
     }
     if (stage.entries.length === 0) {
       l.push('- Entered: never (the run recorded no transition into this stage)')

@@ -9,16 +9,15 @@
 // reads is documented in ai/schemas/README.md "Evidence marker and digest
 // grammar" — read that first if this file is confusing on its own.
 //
-// Trust model: a run record or evidence comment counts only when its
-// immutable GitHub actor id was on agent-registry.json's
+// Trust model: current `dev-flow-v2-evidence` markers count when their
+// immutable GitHub actor id is in the caller's configured
+// --trusted-actor-id set at read time. Legacy run-record/evidence comments
+// additionally require membership in agent-registry.json's historical
 // `trusted_orchestrator_actor_ids` allowlist at the registry revision in
-// effect when that comment was written (issue #741; evaluated per write,
-// fail closed — see createRegistryTrustResolver below), AND is among the
-// caller's configured --trusted-actor-id selection, which only ever narrows
-// that registry set. Evidence comments additionally narrow to the run
-// record's own author. Nothing inside a payload is ever trusted to name its
-// own author — see "Trust" below and ai/schemas/README.md's "Trust root: the
-// registry allowlist, pinned per write".
+// effect when the comment was written (issue #741; evaluated per write,
+// fail closed — see createRegistryTrustResolver below). Legacy evidence
+// comments further narrow to the run record's own author. Nothing inside a
+// payload is ever trusted to name its own author — see "Trust" below.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -1936,7 +1935,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, unt
     if (matchingAdjudications.length !== 1) throw new EvidenceError(`${runDir} must have exactly one adjudication for authenticated ${stage} round ${round}; found ${matchingAdjudications.length}`);
     return { stage, dest: "issue", round, payload: { passes: matchingPasses, adjudication: matchingAdjudications[0] }, commentIds: group.map((entry) => entry.comment.id) };
   });
-  return { status: "ok", runId, issueNumber, record: { body }, state, rounds, untrusted: [], forged: allUntrustedMarkers, unreceiptedPassFiles, legacyAlsoPresent, unverifiedEvidenceDestinations: [...unverifiedEvidenceDestinations] };
+  return { status: "ok", runId, issueNumber, record: { body }, state, rounds, slotFailures: body.slot_failures ?? [], untrusted: [], forged: allUntrustedMarkers, unreceiptedPassFiles, legacyAlsoPresent, unverifiedEvidenceDestinations: [...unverifiedEvidenceDestinations] };
 }
 
 function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null }) {
@@ -2337,12 +2336,16 @@ function renderTrajectory(run) {
       stage: r.stage,
       round: r.round,
       pass_count: Array.isArray(r.payload.passes) ? r.payload.passes.length : 0,
+      adjudication_count: r.payload.adjudication ? 1 : 0,
       finding_count: Array.isArray(r.payload.passes)
         ? r.payload.passes.reduce((n, p) => n + ((p.payload && p.payload.findings && p.payload.findings.length) || 0), 0)
         : 0,
       has_adjudication: Boolean(r.payload.adjudication),
     })),
     findings_by_class_and_provenance: findingCountsByClassAndProvenance(rounds),
+    // Retained exactly as recorded. This projection reports evidence; it
+    // does not re-run the exit engine's finder-slot semantics.
+    slot_failures: run.slotFailures ?? [],
     // Renamed from the misleading untrusted_comments — shepherd round 2,
     // Codex-confirmed (P2): this field has only ever held TRUSTED-but-
     // unlisted orphans, never untrusted ones. forged_comments is the new,
@@ -2367,7 +2370,7 @@ function renderTrajectoryTable(trajectory) {
   lines.push("");
   lines.push("rounds:");
   for (const r of trajectory.rounds) {
-    lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.finding_count} finding(s), adjudication=${r.has_adjudication}`);
+    lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.adjudication_count} adjudication(s), ${r.finding_count} finding(s)`);
   }
   if (Object.keys(trajectory.findings_by_class_and_provenance).length > 0) {
     lines.push("");
@@ -2383,6 +2386,7 @@ function renderTrajectoryTable(trajectory) {
     lines.push("");
     lines.push(`unreceipted pass files: ${trajectory.unreceipted_pass_files.join(", ")}`);
   }
+  if (trajectory.slot_failures.length > 0) lines.push(`slot_failures: ${JSON.stringify(trajectory.slot_failures)}`);
   if (trajectory.legacy_also_present) lines.push("legacy-also-present: true");
   if (trajectory.unverified_evidence_destinations.length > 0) lines.push(`unverified evidence destinations: ${trajectory.unverified_evidence_destinations.join(", ")}`);
   return lines.join("\n");

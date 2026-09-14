@@ -223,12 +223,22 @@ function evidenceSummaryComment(actorId, login, runId, stage, dest, round, seq, 
   );
 }
 
-function writeCleanAdjudication(runDir, runId, stage = "review", round = 1) {
+function writeZeroFindingAdjudication(runDir, runId, stage = "review", round = 1) {
   mkdirSync(path.join(runDir, "adjudications"), { recursive: true });
   writeFileSync(path.join(runDir, "adjudications", stage + "-r" + round + ".json"), JSON.stringify({
     schema: 2, run_id: runId, stage, round,
     reviewed_head: "0".repeat(40), adjudications: [],
   }, null, 2));
+}
+
+function writeCompletedZeroFindingPass(runDir, runId, stage = "review", round = 1) {
+  const envelope = pass("codex-verification", []);
+  envelope.run.run_id = runId;
+  envelope.payload.stage = stage;
+  envelope.payload.round = round;
+  envelope.payload.reviewed_head = envelope.head;
+  mkdirSync(path.join(runDir, "passes"), { recursive: true });
+  writeFileSync(path.join(runDir, "passes", stage + "-r" + round + ".json"), JSON.stringify(envelope, null, 2));
 }
 
 // Builds the evidence_comments[] entry naming a comment created by
@@ -2864,13 +2874,14 @@ function writeScenario(name, db) {
     schema: 2, run_id: runId, initiated_by: "human", started_at: at,
     stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "review", entered_at: at }]),
     interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+    slot_failures: [{ stage: "review", round: 2, slot: "codex-verification", reason: "finder_unavailable" }],
     evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: markerShape }],
     promotion: null,
   };
   const localRunDir = path.join("${tmp}", "local-records", runId);
   mkdirSync(localRunDir, { recursive: true });
   writeFileSync(path.join(localRunDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
-  writeCleanAdjudication(localRunDir, runId);
+  writeZeroFindingAdjudication(localRunDir, runId);
   writeScenario("arbitrary-evidence-run", {
     issues: [{ number: 187, pull_request: null }], comments: { "187": [ev] }, commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 187 },
@@ -2914,7 +2925,7 @@ function writeScenario(name, db) {
   const unverifiedDir = path.join("${tmp}", "local-records", unverifiedRunId);
   mkdirSync(unverifiedDir, { recursive: true });
   writeFileSync(path.join(unverifiedDir, "run.json"), JSON.stringify({ ...unverifiedBody, ...deriveDefaultChains(unverifiedBody) }, null, 2));
-  writeCleanAdjudication(unverifiedDir, unverifiedRunId);
+  writeZeroFindingAdjudication(unverifiedDir, unverifiedRunId);
   writeScenario("evidence-unverified-pr", {
     issues: [{ number: 189, pull_request: null }], comments: { "189": [issueMarker] }, commits: {},
     meta: { runId: unverifiedRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 189 },
@@ -2933,7 +2944,7 @@ function writeScenario(name, db) {
   const currentDir = path.join("${tmp}", "local-records", malformedRunId);
   mkdirSync(currentDir, { recursive: true });
   writeFileSync(path.join(currentDir, "run.json"), JSON.stringify({ ...currentBody, ...deriveDefaultChains(currentBody) }, null, 2));
-  writeCleanAdjudication(currentDir, malformedRunId);
+  writeZeroFindingAdjudication(currentDir, malformedRunId);
   writeScenario("evidence-current-first", {
     issues: [{ number: 190, pull_request: null }], comments: { "190": [malformedLegacy, current] }, commits: {},
     meta: { runId: malformedRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 190 },
@@ -2956,7 +2967,7 @@ function writeScenario(name, db) {
   const arbitraryPrDir = path.join("${tmp}", "local-records", arbitraryPrRunId);
   mkdirSync(arbitraryPrDir, { recursive: true });
   writeFileSync(path.join(arbitraryPrDir, "run.json"), JSON.stringify({ ...arbitraryPrBody, ...deriveDefaultChains(arbitraryPrBody) }, null, 2));
-  writeCleanAdjudication(arbitraryPrDir, arbitraryPrRunId);
+  writeZeroFindingAdjudication(arbitraryPrDir, arbitraryPrRunId);
   writeScenario("evidence-pr-only-arbitrary", {
     issues: [{ number: 191, pull_request: null }, { number: 192, pull_request: null }], comments: { "191": [], "192": [arbitraryIssue], "9191": [arbitraryPr] }, commits: {},
     meta: { runId: arbitraryPrRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR] },
@@ -2996,7 +3007,8 @@ function writeScenario(name, db) {
     const runDir = path.join("${tmp}", "local-records", runId);
     mkdirSync(runDir, { recursive: true });
     writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
-    if (withAdjudication) writeCleanAdjudication(runDir, runId);
+    if (withAdjudication) writeZeroFindingAdjudication(runDir, runId);
+    if (name === "evidence-adjudication-clean") writeCompletedZeroFindingPass(runDir, runId);
     writeScenario(name, {
       issues: [{ number: issueNumber, pull_request: null }], comments: { [String(issueNumber)]: comments }, commits: {},
       meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber },
@@ -3071,12 +3083,12 @@ echo "== review evidence grammar reconstructs its authenticated local record bes
 export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
-echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,finding_count:0,has_adjudication:true}] and .unreceipted_pass_files == ["stale"] and (.forged_comments | length) == 1 and .legacy_also_present == true' >/dev/null ||
+echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,adjudication_count:1,finding_count:0,has_adjudication:true}] and .unreceipted_pass_files == ["stale"] and (.forged_comments | length) == 1 and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected the local run and its authenticated review round, got: $out"
 
 echo "== --as-of presence validation sees later live registrations but assembles only pre-cutoff rounds =="
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z --json)"
-echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,finding_count:0,has_adjudication:true}]' >/dev/null ||
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,adjudication_count:1,finding_count:0,has_adjudication:true}]' >/dev/null ||
     fail "evidence grammar as-of: later PR registration was misreported deleted or assembled into history: $out"
 
 echo "== current evidence wins when legacy evidence names the same run, with migration disclosed =="
@@ -3213,7 +3225,7 @@ echo "== current-marker discovery supports schema-valid run ids without an encod
 export DFSTATS_DB="$tmp/scenarios/arbitrary-evidence-run.json"
 run_id="$(meta arbitrary-evidence-run .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 187 and .rounds == [{stage:"review",round:1,pass_count:0,finding_count:0,has_adjudication:true}]' >/dev/null ||
+echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 187 and .rounds == [{stage:"review",round:1,pass_count:0,adjudication_count:1,finding_count:0,has_adjudication:true}] and .slot_failures == [{stage:"review",round:2,slot:"codex-verification",reason:"finder_unavailable"}]' >/dev/null ||
     fail "evidence grammar: expected all-issue lookup to find the arbitrary run id, got: $out"
 
 for scenario in evidence-sequence-two-only evidence-sequence-gap; do
@@ -3228,11 +3240,11 @@ for scenario in evidence-sequence-two-only evidence-sequence-gap; do
         fail "evidence sequence: expected indeterminate contiguous-sequence refusal, got rc=$rc: $out"
 done
 
-echo "== a valid multi-segment current-marker group reconstructs one complete round =="
+echo "== a valid multi-segment current-marker group projects one retained round =="
 export DFSTATS_DB="$tmp/scenarios/evidence-sequence-valid.json"
 run_id="$(meta evidence-sequence-valid .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:0,finding_count:0,has_adjudication:true}]' >/dev/null ||
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:0,adjudication_count:1,finding_count:0,has_adjudication:true}]' >/dev/null ||
     fail "evidence sequence: valid multi-segment group did not reconstruct: $out"
 
 echo "== an authenticated issue round with no adjudication is indeterminate =="
@@ -3245,12 +3257,12 @@ set -e
 [ "$rc" -eq 3 ] && grep -Fq 'exactly one adjudication for authenticated review round 1; found 0' <<<"$out" ||
     fail "evidence adjudication: expected missing document to be indeterminate, got rc=$rc: $out"
 
-echo "== a clean empty adjudication satisfies the authenticated issue round =="
+echo "== a completed zero-finding pass and adjudication are projected without deriving an exit =="
 export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-clean.json"
 run_id="$(meta evidence-adjudication-clean .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:0,finding_count:0,has_adjudication:true}]' >/dev/null ||
-    fail "evidence adjudication: clean empty document was not accepted: $out"
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,adjudication_count:1,finding_count:0,has_adjudication:true}]' >/dev/null ||
+    fail "evidence adjudication: completed zero-finding pass and adjudication were not projected: $out"
 
 echo "== current-marker parsing rejects trailing content and invalid destination/round pairs =="
 node --input-type=module -e 'import { parseMarker } from "./scripts/dev-flow-stats.mjs"; const body = (destination, round, tail = "") => `<!-- dev-flow-v2-evidence: {"run_id":"r","stage":"review","round":${round},"sequence":1,"destination":"${destination}"} -->${tail}`; if ([body("issue", 1, " trailing"), body("issue", "null"), body("pr", 1)].some((value) => parseMarker(value) !== null)) process.exit(1)'

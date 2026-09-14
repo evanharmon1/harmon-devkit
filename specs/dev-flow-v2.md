@@ -915,15 +915,16 @@ Two rules make the posted evidence trustworthy on a public repository:
   [#741](https://github.com/evanharmon1/harmon-devkit/issues/741)'s to add
   — a dedicated follow-up, after both #634 (result schemas) and #635
   (registry roles/finders) closed without adding it — not a mechanism this
-  anchor re-derives. Trust evaluation for a given run is pinned to an
-  authoritative registry revision, never the registry's current content:
-  trust for each evidence write is evaluated against the registry revision
-  current on the default branch at that write's server-side `created_at`
-  (the run record's `updated_at` likewise), and a kickoff-time snapshot is a
-  permitted implementation only when it resolves to the same revision for
-  every write — so an actor added to the list later does not retroactively
-  authenticate that run's older evidence, and an actor later removed does
-  not invalidate evidence authenticated while they were still trusted. Until a repository configures that
+  anchor re-derives. Current `dev-flow-v2-evidence` summary markers are
+  authenticated against the configured actor set at read time; the report
+  discloses that trust root, so membership changes are visible rather than
+  reconstructed as history. Legacy `devflow:<kind>` run-record and evidence
+  comments retain their historical rule: trust is pinned to the authoritative
+  registry revision on the default branch at each write's server-side
+  `created_at` (and at the run record's `updated_at` when edited). An actor
+  added later therefore does not retroactively authenticate older legacy
+  evidence, and an actor removed later does not invalidate legacy evidence
+  authenticated while they were trusted. Until a repository configures that
   list, a run record has no authority to validate against and its evidence
   is reported unauthenticated rather than silently accepted on an unproven
   identity.
