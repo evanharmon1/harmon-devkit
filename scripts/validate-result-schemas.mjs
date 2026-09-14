@@ -2032,7 +2032,7 @@ function checkPlanRevisionChain(document, errors) {
   const revisions = entries
 
   let prevDigest = 'genesis'
-  let previousAt = null
+  let previousTime = null
   for (let index = 0; index < revisions.length; index += 1) {
     const entry = revisions[index]
     if (entry.seq !== index) {
@@ -2053,10 +2053,13 @@ function checkPlanRevisionChain(document, errors) {
       errors.push(`$plan.revisions[${entry.seq}].digest: does not match its own content — tampered`)
       return null
     }
-    if (previousAt !== null && Date.parse(entry.at) < Date.parse(previousAt)) {
+    const entryTime = Date.parse(entry.at)
+    if (!Number.isFinite(entryTime)) {
+      errors.push(`$plan.revisions[${entry.seq}].at: must parse as a finite instant`)
+    } else if (previousTime !== null && entryTime < previousTime) {
       errors.push(`$plan.revisions[${entry.seq}].at: must not precede revision ${entry.seq - 1}`)
     }
-    previousAt = entry.at
+    if (Number.isFinite(entryTime)) previousTime = entryTime
     prevDigest = entry.digest
   }
   return revisions
@@ -2269,12 +2272,14 @@ function checkPlanCoherence(document, errors) {
       ],
     ]),
   )
-  const literalFenceOwner = new Map()
+  const literalFenceOwnersByWave = new Map()
   for (const lane of lanes) {
+    const literalFenceOwner = literalFenceOwnersByWave.get(lane.wave) || new Map()
+    literalFenceOwnersByWave.set(lane.wave, literalFenceOwner)
     for (const path of effectiveFenceByLane.get(lane.lane) || []) {
       const owner = literalFenceOwner.get(path)
       if (owner) {
-        errors.push(`$plan.lanes: byte-identical effective-fence path ${JSON.stringify(path)} must not belong to lanes ${JSON.stringify(owner)} and ${JSON.stringify(lane.lane)}`)
+        errors.push(`$plan.lanes: byte-identical effective-fence path ${JSON.stringify(path)} must not belong to lanes ${JSON.stringify(owner)} and ${JSON.stringify(lane.lane)} in wave ${lane.wave}`)
       } else {
         literalFenceOwner.set(path, lane.lane)
       }
@@ -2288,6 +2293,7 @@ function checkDispatchPlan(document, errors) {
   const firstTime = Date.parse(revisions[0].at)
   const runBindings = new Map()
   for (const revision of revisions) {
+    const revisionTime = Date.parse(revision.at)
     const revisionErrors = []
     checkPlanCoherence(revision.plan, revisionErrors)
     errors.push(...revisionErrors.map((error) => error.replace('$plan', `$plan.revisions[${revision.seq}].plan`)))
@@ -2300,7 +2306,13 @@ function checkDispatchPlan(document, errors) {
       }
       for (const [expansionIndex, expansion] of (lane.expansions || []).entries()) {
         const expansionTime = Date.parse(expansion.at)
-        if (expansionTime < firstTime || expansionTime > Date.parse(revision.at)) {
+        if (!Number.isFinite(expansionTime)) {
+          errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must parse as a finite instant`)
+        } else if (
+          Number.isFinite(firstTime) &&
+          Number.isFinite(revisionTime) &&
+          (expansionTime < firstTime || expansionTime > revisionTime)
+        ) {
           errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must fall between the first revision and its containing revision`)
         }
       }

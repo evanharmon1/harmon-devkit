@@ -5,7 +5,7 @@
     {
       "seq": 0,
       "prev_digest": "genesis",
-      "digest": "c8cdb273d7f67688970fd38c24099a80e1177e3a56627604b693c2af4c64e09b",
+      "digest": "0187fdb5a9667dc18a49dd85ebae9d330752041013a91e0c8f4aab370b39fcef",
       "at": "2026-09-13T17:00:00Z",
       "reason": "initial slate plan",
       "plan": {
@@ -133,7 +133,13 @@
             "wave": 2,
             "branch": "936-fences",
             "run_id": "run-936-fences",
-            "fence": ["lane-brief.md"],
+            "fence": [
+              {
+                "path": "orchestrator/SKILL.md",
+                "note": "Serialized ownership after issue 935"
+              },
+              "lane-brief.md"
+            ],
             "expansions": []
           }
         ]
