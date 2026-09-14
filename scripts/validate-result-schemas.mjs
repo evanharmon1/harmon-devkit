@@ -2675,6 +2675,98 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
   }
 }
 
+// checkReceiptVariants — oneOf deliberately reports only its stable indexed
+// summary, so validate the discriminated receipt branch as well. Besides a
+// useful field-level diagnostic, this keeps the negative-fixture coverage
+// audit capable of proving every variant requirement and enum constraint.
+function checkReceiptVariants(document, runSchema, location, errors) {
+  if (!Array.isArray(document.receipts)) return
+  const branches = runSchema.properties.receipts.items.oneOf
+  for (const [index, receipt] of document.receipts.entries()) {
+    if (receipt === null || typeof receipt !== 'object' || Array.isArray(receipt)) continue
+    const candidates = Object.hasOwn(receipt, 'kind')
+      ? branches.filter((branch) => branch.properties.kind.const === receipt.kind)
+      : branches
+    for (const branch of candidates) {
+      errors.push(...validateAgainst(branch, receipt, `${location}.receipts[${index}]`))
+    }
+  }
+}
+
+// checkEvidenceStagesVisited — receipts and slot failures are trusted stage
+// evidence, so neither may name a confidence stage absent from the run's
+// canonical stage history. Membership is deliberately the whole contract:
+// occurrence ordering and timestamp binding remain the exit engine's job.
+function checkEvidenceStagesVisited(document, receiptsRecord, receiptLocation, errors) {
+  const visitedStages = new Set((document.stage_transitions ?? []).map((transition) => transition.stage))
+  for (const [index, receipt] of (receiptsRecord.receipts ?? []).entries()) {
+    if (
+      receipt !== null &&
+      typeof receipt === 'object' &&
+      receipt.kind === 'transition' &&
+      typeof receipt.stage === 'string' &&
+      !visitedStages.has(receipt.stage)
+    ) {
+      errors.push(
+        `${receiptLocation}.receipts[${index}].stage: stage ${receipt.stage} never appears in this run's stage_transitions`
+      )
+    }
+  }
+  if (receiptsRecord !== document) return
+  for (const [index, failure] of (document.slot_failures ?? []).entries()) {
+    if (typeof failure.stage === 'string' && !visitedStages.has(failure.stage)) {
+      errors.push(
+        `$run.slot_failures[${index}].stage: stage ${failure.stage} never appears in this run's stage_transitions`
+      )
+    }
+  }
+}
+
+// checkSlotFailureKeys — a slot has at most one terminal failure record per
+// logical round. Conflicting records cannot be resolved by array order because
+// both reason and head feed the exit decision.
+function checkSlotFailureKeys(document, errors) {
+  const firstIndexByKey = new Map()
+  for (const [index, failure] of (document.slot_failures ?? []).entries()) {
+    const key = JSON.stringify([failure.stage, failure.round, failure.slot])
+    const firstIndex = firstIndexByKey.get(key)
+    if (firstIndex !== undefined) {
+      errors.push(
+        `$run.slot_failures[${index}]: duplicates slot_failures[${firstIndex}] key (${failure.stage}, ${failure.round}, ${failure.slot})`
+      )
+      continue
+    }
+    firstIndexByKey.set(key, index)
+  }
+}
+
+// checkReceiptsRecord — an independent --receipts file is a run-directory
+// subset, not necessarily a complete persisted run record. Validate the two
+// fields strict mode trusts with the canonical run schema definitions before
+// using that file to authorize any adjudication stage.
+function checkReceiptsRecord(document, receiptsRecord, runSchema, errors) {
+  const contextSchema = {
+    type: 'object',
+    required: ['run_id', 'receipts'],
+    properties: {
+      run_id: runSchema.properties.run_id,
+      receipts: runSchema.properties.receipts
+    }
+  }
+  errors.push(...validateAgainst(contextSchema, receiptsRecord, '$receipts'))
+  checkReceiptVariants(receiptsRecord, runSchema, '$receipts', errors)
+  checkTimestampRealness(receiptsRecord, errors, '$receipts')
+  checkEvidenceStagesVisited(document, receiptsRecord, '$receipts', errors)
+  if (
+    typeof receiptsRecord.run_id === 'string' &&
+    receiptsRecord.run_id !== document.run_id
+  ) {
+    errors.push(
+      `$run: --receipts record has run_id ${receiptsRecord.run_id}, not this run's own run_id ${document.run_id}`
+    )
+  }
+}
+
 // checkAdjudicationsAgainstReceipts — strict mode (--receipts): every supplied
 // --adjudication document's stage must have a corresponding transition receipt
 // in the run record's receipts array. This mirrors how dev-flow-exit.mjs
@@ -2683,15 +2775,6 @@ function checkAdjudicationStagesVisited(document, adjudications, errors) {
 // is a document about an event the log never recorded. Without --receipts,
 // this check does not run and adjudications are trusted as-is.
 function checkAdjudicationsAgainstReceipts(document, receiptsRecord, adjudications, errors) {
-  if (typeof receiptsRecord.run_id !== 'string' || receiptsRecord.run_id === '') {
-    errors.push('$run: --receipts record has no valid run_id (must be a non-empty string)')
-    return
-  }
-  if (receiptsRecord.run_id !== document.run_id) {
-    errors.push(
-      `$run: --receipts record has run_id ${receiptsRecord.run_id}, not this run's own run_id ${document.run_id}`
-    )
-  }
   const receipts = Array.isArray(receiptsRecord.receipts) ? receiptsRecord.receipts : []
   const transitionStages = new Set(
     receipts
@@ -3094,7 +3177,13 @@ function main() {
   if (kind === 'run') {
     const schema = loadSchema('run.schema.json')
     const errors = validateAgainst(schema, instance, '$run')
+    checkReceiptVariants(instance, schema, '$run', errors)
     if (errors.length === 0) {
+      checkEvidenceStagesVisited(instance, instance, '$run', errors)
+      checkSlotFailureKeys(instance, errors)
+      if (options.receiptsRecord) {
+        checkReceiptsRecord(instance, options.receiptsRecord, schema, errors)
+      }
       checkSettlements(instance, errors)
       checkSplits(instance, errors)
       checkEvidenceMarkerRunId(instance, errors)

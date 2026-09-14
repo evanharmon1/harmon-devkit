@@ -80,6 +80,10 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     if [ -f "$GH_FIXTURES/pr-state-$pr_number" ]; then
         pr_state="$(cat "$GH_FIXTURES/pr-state-$pr_number")"
     fi
+    if [[ "$*" == *baseRefOid* ]]; then
+        cat "$GH_FIXTURES/base-head"
+        exit 0
+    fi
     jq -cn --arg head "$(cat "$GH_FIXTURES/head")" --arg state "$pr_state" \
         '{headRefOid:$head,state:$state}'
     exit 0
@@ -87,6 +91,10 @@ fi
 
 [ "${1:-}" = api ] || exit 90
 shift
+if [[ "$*" == repos/*/contents/agent-registry.json?ref=* ]]; then
+    cat "$GH_FIXTURES/registry.b64"
+    exit 0
+fi
 endpoint=
 for arg in "$@"; do
     case "$arg" in --paginate | --slurp) ;; *) endpoint=$arg ;; esac
@@ -104,7 +112,12 @@ fi
 
 case "$endpoint" in
 users/*) file=actor.json ;;
-*/reactions?per_page=100) file=reactions.pages.json ;;
+*/reactions?per_page=100)
+    reaction_id="${endpoint%/reactions?per_page=100}"
+    reaction_id="${reaction_id##*/}"
+    file="reactions-${reaction_id}.pages.json"
+    [ -f "$GH_FIXTURES/$file" ] || file=reactions.pages.json
+    ;;
 # `settle` fetches one comment or one review by ID. A per-ID fixture answers
 # it when the case under test wrote one; otherwise this stays the trigger
 # comment, exactly as before settlement existed. `settle` against an ID with
@@ -187,6 +200,7 @@ timeout_args_log="${test_tmp}/timeout-args.log"
 head_sha="$(git rev-parse HEAD)"
 actor_id=199175422
 actor_login='chatgpt-codex-connector[bot]'
+trusted_trigger_actor_id=37220977
 request_time='2026-07-31T08:00:00Z'
 trigger_id=123
 # The PR author, and a bystander who is neither the author nor an
@@ -201,16 +215,22 @@ outsider_id=5150
 
 write_defaults() {
     printf '%s\n' "$head_sha" >"${fixtures}/head"
+    printf '%s\n' "$head_sha" >"${fixtures}/base-head"
     printf '%s\n' "$head_sha" >"${fixtures}/resolved-head"
+    jq -cn --argjson id "$trusted_trigger_actor_id" \
+        '{finders:[],trusted_orchestrator_actor_ids:[$id]}' |
+        base64 | tr -d '\n' >"${fixtures}/registry.b64"
     jq -cn \
         --argjson id "$actor_id" \
         --arg login "$actor_login" \
         '{id:$id,login:$login,type:"Bot"}' >"${fixtures}/actor.json"
     jq -cn \
         --argjson id "$trigger_id" \
+        --argjson author "$trusted_trigger_actor_id" \
         --arg created "$request_time" \
         '{
-          id:$id,body:"@codex review",created_at:$created,
+          id:$id,user:{id:$author,login:"trusted-trigger"},
+          body:"@codex review",created_at:$created,
           issue_url:"https://api.github.com/repos/example/repo/issues/493"
         }' >"${fixtures}/trigger.json"
     printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
@@ -225,6 +245,7 @@ write_defaults() {
     rm -f "${fixtures}"/pr-state-* "${fixtures}"/fail-pr-*
     rm -f "${fixtures}/slow-pr"
     rm -f "${fixtures}"/comment-*.json "${fixtures}"/review-*.json
+    rm -f "${fixtures}"/reactions-*.pages.json
     rm -f "${fixtures}"/missing-*
     : >"$log"
 }
@@ -291,6 +312,17 @@ assert_accepted() {
     actual_reviewed_commit="$(printf '%s' "$check_out" | jq -r '.accepted.reviewed_commit // empty')"
     [ "$actual_reviewed_commit" = "$head_sha" ] ||
         fail "expected accepted.reviewed_commit $head_sha, got '$actual_reviewed_commit': $check_out"
+}
+
+assert_no_attempt_machinery() {
+    printf '%s' "$check_out" |
+        jq -e '. as $result |
+          ["acked", "results", "terminal_condition", "result_attempt"] as $keys |
+          all($keys[]; . as $key | $result | has($key) | not)' >/dev/null ||
+        fail "check output retained attempt accounting machinery: $check_out"
+    printf '%s' "$check_out" |
+        jq -e '(.accepted? // {}) | has("attempt") | not' >/dev/null ||
+        fail "accepted evidence retained result-to-attempt attribution: $check_out"
 }
 
 echo "==> exact-trigger current-request +1 is clean"
@@ -574,6 +606,28 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 
+echo "==> a newer valid clean review supersedes an older unrecognized review body"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[
+      {
+        id:201,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues.\n\nBut a race remains."
+      },
+      {
+        id:202,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:05Z",commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues. Keep it up!"
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted review 202
+
 # A severity marker anywhere in the body is a finding outright, whatever the
 # verdict line says. This is the protection that still covers the verdict
 # line's own tail: the classifier does not parse that tail, so a badge is what
@@ -754,7 +808,7 @@ run_check '2026-07-31T08:01:00Z'
 assert_status 10 findings
 assert_accepted review 102
 
-echo "==> exact-head evidence remains valid after local state loss"
+echo "==> exact-head evidence from before a new request does not satisfy that cycle"
 new_cycle
 prefix="${head_sha:0:10}"
 jq -cn \
@@ -770,7 +824,42 @@ jq -cn \
       }
     ]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:01:00Z'
-assert_status 0 clean
+assert_status 11 pending
+
+echo "==> recreated state keeps an earlier current-head finding in the adjudication set"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:77,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T07:00:00Z",
+        commit_id:$head,
+        body:"P1: unresolved finding from the earlier local cycle"
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+assert_accepted review 77
+
+echo "==> a malformed current-head review timestamp is indeterminate"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:78,user:{id:$id,login:$login},submitted_at:"zz",
+        commit_id:$head,body:"Codex Review: Didn\u0027t find any major issues."
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+grep -Fq "malformed submitted_at timestamp" <<<"$check_out" ||
+    fail "malformed review timestamp did not name the field: $check_out"
 
 echo "==> paginated current-head inline comment is a finding"
 new_cycle
@@ -1487,6 +1576,7 @@ jq -cn \
     ]]' >"${fixtures}/reactions.pages.json"
 run_check '2026-07-31T08:16:00Z'
 assert_status 12 retry
+assert_no_attempt_machinery
 
 echo "==> attempt 2 cannot be reserved before attempt 1 expires"
 request_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -1500,9 +1590,11 @@ set -e
 [ "$early_retry_rc" -eq 2 ] ||
     fail "early attempt-2 reservation should fail closed: $early_retry_out"
 
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
 trigger_id=124
 request_time='2026-07-31T08:16:01Z'
-new_cycle
 jq -cn \
     --argjson id "$trigger_id" \
     --arg created "$request_time" \
@@ -1513,28 +1605,69 @@ jq -cn \
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 2 >/dev/null
-jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+jq --arg reserved '2026-07-31T08:15:00Z' '.reserved_at = $reserved' \
     "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
-printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
+if ! jq -e '. as $state |
+    ["acknowledgements", "cycle_requested_at", "previous_trigger_comment_id"] as $keys |
+    all($keys[]; . as $key | $state | has($key) | not)' "$state" >/dev/null; then
+    fail "attempt state retained deleted attribution machinery: $(jq -c . "$state")"
+fi
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
-    --arg head "$head_sha" \
-    '[[
-      {
-        id:78,user:{id:$id,login:$login},
-        created_at:"2026-07-31T08:10:00Z",
-        body:("P1: late attempt-one finding\n\n**Reviewed commit:** `" +
-          ($head[0:10]) + "`")
-      }
-    ]]' >"${fixtures}/comments.pages.json"
+    --arg head "$head_sha" '
+    {
+      id:78,user:{id:$id,login:$login},
+      submitted_at:"2026-07-31T08:16:10Z",commit_id:$head,
+      body:"Codex Review: Didn\u0027t find any major issues."
+    }' >"${fixtures}/review-78.json"
+jq -c '[[.]]' "${fixtures}/review-78.json" >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:17:00Z'
+assert_status 11 pending
+assert_no_attempt_machinery
+
+echo "==> exact latest-trigger +1 terminates a re-trigger immediately"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" '
+    [[{
+      id:9124,user:{id:$id,login:$login},content:"+1",
+      created_at:"2026-07-31T08:16:11Z"
+    }]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:17:00Z'
+assert_status 0 clean
+assert_accepted reaction 9124
+
+echo "==> newest clean result terminates only after the latest full window"
+printf '%s\n' '[[]]' >"${fixtures}/reactions.pages.json"
+run_check '2026-07-31T08:30:30Z'
+assert_status 11 pending
+printf '%s\n' '/reviews' >"${fixtures}/slow-endpoint"
+run_check '2026-07-31T08:31:01Z'
+rm -f "${fixtures}/slow-endpoint"
+assert_status 0 clean
+assert_accepted review 78
+assert_no_attempt_machinery
+
+echo "==> a newer current-head finding is surfaced during the re-trigger window"
+codex_findings_review
+jq '.[][] | .submitted_at = "2026-07-31T08:16:30Z"' \
+    "${fixtures}/reviews.pages.json" | jq -s '[.]' >"${fixtures}/reviews.next.json"
+mv "${fixtures}/reviews.next.json" "${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+        id:188,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:16:31Z",updated_at:"2026-07-31T08:16:31Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P1: newer finding observed during the latest window"
+      }]]' >"${fixtures}/inline.pages.json"
 run_check '2026-07-31T08:17:00Z'
 assert_status 10 findings
-printf '%s\n' '[[]]' >"${fixtures}/comments.pages.json"
-run_check '2026-07-31T08:32:01Z'
-assert_status 13 escalate
 
 echo "==> attached head refuses uncontrolled duplicate reservation"
 set +e
@@ -1575,7 +1708,7 @@ set -e
 [ "$(jq -r '.head' "$state")" = "$old_recorded_head" ] ||
     fail "head-change reservation overwrote unresolved state"
 
-echo "==> server clock skew does not reject the exact trigger"
+echo "==> reconstructed state around a pre-existing trusted trigger uses the full window"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 write_defaults
@@ -1588,9 +1721,25 @@ mv "${state}.next" "$state"
 "$helper" attach \
     --state "$state" --trigger-id "$trigger_id" >/dev/null
 [ "$(jq -r '.trigger_comment_id' "$state")" = "$trigger_id" ] ||
-    fail "clock-skewed exact trigger was not attached"
+    fail "pre-existing trusted trigger was not attached"
+[ "$(jq -r '.requires_full_window' "$state")" = true ] ||
+    fail "pre-existing trusted trigger did not enable the full-window rule"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+      id:166,user:{id:$id,login:$login},
+      submitted_at:"2026-07-31T08:00:04Z",commit_id:$head,
+      body:"Codex Review: Didn\u0027t find any major issues."
+    }]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:02Z'
+assert_status 11 pending
+run_check '2026-07-31T08:15:00Z'
+assert_status 0 clean
+assert_accepted review 166
 
-echo "==> pending window uses the local reservation clock"
+echo "==> pending window uses the attached request clock"
 request_time='2026-07-31T08:01:01Z'
 write_defaults
 rm -f "$state"
@@ -1600,26 +1749,61 @@ rm -f "$state"
 jq '.reserved_at = "2026-07-31T08:00:00Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
-run_check '2026-07-31T08:00:01Z'
+run_check '2026-07-31T08:01:02Z'
 assert_status 11 pending
 
 echo "==> an existing state lock serializes reservations"
 write_defaults
 rm -f "$state"
 mkdir "${state}.lock"
+printf '%s\n' "$$" >"${state}.lock/pid"
 set +e
 locked_out="$("$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
     --head "$head_sha" --attempt 1 2>&1)"
 locked_rc=$?
 set -e
+rm -f "${state}.lock/pid"
 rmdir "${state}.lock"
 [ "$locked_rc" -eq 2 ] ||
     fail "locked reservation should fail closed: $locked_out"
+grep -Fq "lock-held: holder_pid=$$ age=" <<<"$locked_out" ||
+    fail "live-lock refusal did not identify its holder: $locked_out"
+
+echo "==> every existing lock is held and never auto-reclaimed"
+write_defaults
+rm -f "$state"
+mkdir "${state}.lock"
+printf '%s\n' 99999999 >"${state}.lock/pid"
+set +e
+held_out="$("$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)"
+held_rc=$?
+set -e
+[ "$held_rc" -eq 2 ] ||
+    fail "existing lock should fail closed: $held_out"
+grep -Fq "lock-held: holder_pid=99999999 age=" <<<"$held_out" ||
+    fail "held lock did not report its PID and age: $held_out"
+[ -f "${state}.lock/pid" ] ||
+    fail "held lock was modified by an automatic recovery path"
+
+echo "==> --break-lock is not an accepted option"
+set +e
+break_out="$("$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --break-lock 2>&1)"
+break_rc=$?
+set -e
+[ "$break_rc" -eq 2 ] || fail "deleted --break-lock option was accepted: $break_out"
+[ -f "${state}.lock/pid" ] || fail "unknown option changed the held lock"
+rm -f "${state}.lock/pid"
+rmdir "${state}.lock"
 
 echo "==> state lock serializes checks with reservations"
 new_cycle
 mkdir "${state}.lock"
+printf '%s\n' "$$" >"${state}.lock/pid"
 set +e
 locked_check_out="$("$helper" check \
     --state "$state" --actor-id "$actor_id" \
@@ -1627,6 +1811,7 @@ locked_check_out="$("$helper" check \
     --now '2026-07-31T08:01:00Z' 2>&1)"
 locked_check_rc=$?
 set -e
+rm -f "${state}.lock/pid"
 rmdir "${state}.lock"
 [ "$locked_check_rc" -eq 2 ] ||
     fail "locked check should fail closed: $locked_check_out"
@@ -1641,13 +1826,14 @@ assert_status 11 pending
 run_check '2026-07-31T08:16:00Z'
 assert_status 12 retry
 
-echo "==> a stalled GitHub call is bounded by the attempt deadline"
+echo "==> a post-window evidence fetch keeps an independent normal request budget"
 new_cycle
 jq -cn \
     --argjson id "$actor_id" \
     --arg login "$actor_login" \
     '[[
       {
+        id:9300,
         user:{id:$id,login:$login},
         content:"+1",created_at:"2026-07-31T08:00:01Z"
       }
@@ -1657,49 +1843,16 @@ printf '%s\n' '/reviews' >"${fixtures}/slow-endpoint"
 export TIMEOUT_ARGS_LOG="$timeout_args_log"
 run_check '2026-07-31T08:01:00Z'
 unset TIMEOUT_ARGS_LOG
-# No post-return wall-clock bound here — the status assertion below IS the
-# regression signal, and it is a stronger one than timing ever was.
-#
-# This case's reservation clock ("2026-07-31") is far in the past relative to
-# the machine's real clock, so the deadline math yields a deeply negative
-# remaining budget and call_timeout collapses to ~1s: the /reviews sleep-5
-# fixture is meant to be killed almost immediately. If that budget collapse
-# regressed back to the flat 60s ceiling, the call would instead run to
-# completion and return its (empty) reviews page with exit 0 — and
-# `fetch_evidence` would fall through past the reviews fetch instead of
-# hitting `bounded_wait "cannot fetch paginated PR reviews"`. With the
-# reactions fixture above (`+1` from the actor at $head, created after the
-# request), the walk would then reach the `exact_like` check and emit `clean`
-# (exit 0), not `pending` (exit 11) — a regressed budget changes what this
-# check *decides*, not just how long it takes to decide it. `assert_status 11
-# pending` below already catches that flip, deterministically, at any speed.
-#
-# A wall-clock bound was here previously (widened 4s -> 20s in a prior pass
-# to tolerate contention), but 20s was wide enough to let the very regression
-# it existed to catch — the call completing the full 5s sleep instead of
-# being killed at ~1s — pass silently (5s < 20s). Removing it loses nothing:
-# the run's own hang protection is the watchdog wrapped around run_check
-# itself (see its definition), which fires on a genuine hang regardless of
-# which case triggered it.
-assert_status 11 pending
-# Second, independent regression signal for the exact same collapse, with no
-# timing involved at all: the timeout-args shim (see harness setup), opted
-# into above via TIMEOUT_ARGS_LOG, recorded every "-k N DURATION gh ..."
-# invocation the helper actually made to $timeout_args_log before execing the
-# real timeout unchanged. The reviews fetch's own recorded duration is the
-# collapsed clamp itself — 1 — so a regression to the flat 60s ceiling (or any
-# other value) changes a recorded number, deterministically, rather than
-# something inferred from elapsed wall-clock.
+assert_status 0 clean
+assert_accepted reaction 9300
 reviews_budget="$(grep 'reviews?per_page=100' "$timeout_args_log" | awk '{print $3}')"
-[ "$reviews_budget" = "1" ] ||
-    fail "reviews fetch did not use the collapsed 1s clamp: '$reviews_budget' ($timeout_args_log: $(cat "$timeout_args_log"))"
+[ "$reviews_budget" = "60" ] ||
+    fail "post-window reviews fetch did not receive its independent normal budget: '$reviews_budget' ($timeout_args_log: $(cat "$timeout_args_log"))"
 
-echo "==> API budget uses the local reservation clock"
-new_cycle
+echo "==> API budget uses the attached request clock"
 local_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-jq --arg reserved "$local_time" '.reserved_at = $reserved' \
-    "$state" >"${state}.next"
-mv "${state}.next" "$state"
+request_time=$local_time
+new_cycle
 printf '%s\n' '/reviews' >"${fixtures}/slow-endpoint"
 start_seconds=$SECONDS
 run_check "$local_time"
@@ -1751,6 +1904,7 @@ detail="$(printf '%s' "$check_out" | jq -r '.detail' 2>/dev/null || true)"
 # (see its definition): it bounds the whole invocation, including any
 # parent-scheduling delay, and fails loudly with its own message instead of
 # silently blowing a per-case budget.
+request_time='2026-07-31T08:00:00Z'
 
 echo "==> unexpected actor identity is indeterminate"
 new_cycle
@@ -2211,7 +2365,7 @@ epoch_now="$(date -u '+%s')"
 iso_from_offset() { jq -nr --argjson e "$((epoch_now + $1))" '$e | todateiso8601'; }
 
 trigger_id=123
-request_time="$(iso_from_offset 0)"
+request_time="$(iso_from_offset -300)"
 write_defaults
 rm -f "$state"
 "$helper" reserve \
@@ -2240,7 +2394,7 @@ set -e
 # reads the persisted 10 minutes back out of state allows this — a reserve
 # still enforcing the hardcoded default would refuse it for another 4 minutes,
 # reproducing the #223 defect.
-jq --arg reserved "$(iso_from_offset -660)" '.reserved_at = $reserved' \
+jq --arg requested "$(iso_from_offset -660)" '.requested_at = $requested' \
     "$state" >"${state}.next"
 mv "${state}.next" "$state"
 trigger_id=124
@@ -2365,7 +2519,7 @@ assert_status 12 retry
 # 10 minutes, not the unmodified 15-minute default. Uses real relative
 # timestamps, like the reserve-window test above, since attempt-2 `reserve`
 # has no --now and always compares to the real wall clock.
-jq --arg reserved "$(iso_from_offset -660)" '.reserved_at = $reserved' \
+jq --arg requested "$(iso_from_offset -660)" '.requested_at = $requested' \
     "$state" >"${state}.next"
 mv "${state}.next" "$state"
 trigger_id=124
@@ -2516,7 +2670,7 @@ set -e
 # 10-minute window (adopted above) but short of the unmodified 15-minute
 # default. A flagless attempt-2 must now succeed — proving the adoption
 # survived the earlier refusal instead of reverting to "undecided".
-jq --arg reserved "$(iso_from_offset -660)" '.reserved_at = $reserved' \
+jq --arg requested "$(iso_from_offset -660)" '.requested_at = $requested' \
     "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" reserve \
@@ -2637,6 +2791,30 @@ assert_accepted comment 77
 printf '%s' "$check_out" | jq -e '.detail | test("settled: declined")' >/dev/null ||
     fail "a disposition-clean must name the disposition applied: $check_out"
 
+echo "==> an earlier settled finding cannot make a re-trigger clean without new evidence"
+trigger_id=124
+request_time='2026-07-31T08:16:01Z'
+jq -cn \
+    --argjson id "$trigger_id" \
+    --arg created "$request_time" '
+    {
+      id:$id,body:"@codex review",created_at:$created,
+      issue_url:"https://api.github.com/repos/example/repo/issues/493"
+    }' >"${fixtures}/trigger.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+jq --arg reserved "$request_time" '.reserved_at = $reserved' \
+    "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+run_check '2026-07-31T08:17:00Z'
+assert_status 11 pending
+run_check '2026-07-31T08:31:01Z'
+assert_status 13 escalate
+
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
 echo "==> a rendered P3 badge is a finding and can be settled"
 new_cycle
 write_badged_comment 77 "" "" P3

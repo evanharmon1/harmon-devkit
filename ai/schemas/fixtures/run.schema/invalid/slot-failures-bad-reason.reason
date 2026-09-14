@@ -1,0 +1,1 @@
+$run.slot_failures[0].reason: must be one of "finder_unavailable", "breadth_exhausted"
