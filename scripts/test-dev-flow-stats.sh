@@ -2819,10 +2819,11 @@ function writeScenario(name, db) {
     evidence_comments: [], promotion: null,
   };
   const legacy = runRecordComment(OTHER_TRUSTED, "other-orchestrator", legacyRunId, legacyBody, at);
+  const migratedLegacy = runRecordComment(OTHER_TRUSTED, "other-orchestrator", runId, runBody, at);
   const trustBothSha = "8".repeat(40);
   const removeSha = "9".repeat(40);
   writeScenario("evidence-grammar", {
-    issues: [{ number: 186, pull_request: null }], comments: { "186": [legacy.index, legacy.record, revoked, ev] }, commits: {},
+    issues: [{ number: 186, pull_request: null }], comments: { "186": [legacy.index, legacy.record, migratedLegacy.index, migratedLegacy.record, revoked, ev] }, commits: {},
     registry_commits: [{ sha: removeSha }, { sha: trustBothSha }],
     registry_contents: {
       [trustBothSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED] })).toString("base64"),
@@ -2920,8 +2921,58 @@ echo "== review evidence grammar reconstructs its authenticated local record bes
 export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
-echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,finding_count:0,has_adjudication:true}] and .unreceipted_pass_files == ["stale"] and (.forged_comments | length) == 1' >/dev/null ||
+echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,finding_count:0,has_adjudication:true}] and .unreceipted_pass_files == ["stale"] and (.forged_comments | length) == 1 and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected the local run and its authenticated review round, got: $out"
+
+echo "== current evidence wins when legacy evidence names the same run, with migration disclosed =="
+text_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002)"
+grep -Fq 'legacy-also-present: true' <<<"$text_out" ||
+    fail "evidence grammar: expected the text report to disclose legacy-also-present, got: $text_out"
+
+echo "== a local current record fails closed when a registered comment is no longer observed =="
+cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
+node --input-type=module - "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json" <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+import { entryDigest, GENESIS } from "./scripts/dev-flow-stats.mjs";
+const [source, destination] = process.argv.slice(2);
+const body = JSON.parse(readFileSync(source, "utf8"));
+body.evidence_comments.push({ id: "999999", author_actor_id: 9002, login: "other-orchestrator", digest: "missing", marker: { run_id: body.run_id, stage: "review", destination: "issue", round: 2, sequence: 2 } });
+let previous = GENESIS;
+body.evidence_registrations = body.evidence_comments.map((entry, seq) => {
+    const content = { id: entry.id, author_actor_id: entry.author_actor_id, login: entry.login, payload_digest: entry.digest, marker: entry.marker, registered_at: body.started_at };
+    const digest = entryDigest(content, previous);
+    const result = { ...content, seq, digest, prev_digest: previous };
+    previous = digest;
+    return result;
+});
+writeFileSync(destination, JSON.stringify(body, null, 2));
+NODE
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq '999999' <<<"$out" && grep -Fq 'deleted-entry tampering' <<<"$out" ||
+    fail "evidence grammar: expected missing registered comment 999999 to be indeterminate, got rc=$rc: $out"
+mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
+
+echo "== receipt sequence requires the pass to follow a transition into its stage =="
+cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
+for receipt_case in before-transition wrong-stage; do
+    if [ "$receipt_case" = before-transition ]; then
+        jq '.receipts = [{kind:"pass",file:"review-r1"},{kind:"transition",stage:"review",entered_at:.started_at}]' \
+            "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
+    else
+        jq '.receipts = [{kind:"transition",stage:"challenge",entered_at:.started_at},{kind:"pass",file:"review-r1"}]' \
+            "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
+    fi
+    set +e
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] && grep -Fq 'active preceding transition' <<<"$out" ||
+        fail "evidence grammar: expected $receipt_case pass receipt to be indeterminate, got rc=$rc: $out"
+done
+mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 
 echo "== every local-record read target stays beneath --record-dir =="
 printf '%s\n' '{}' >"$tmp/outside-adjudication.json"
@@ -2944,7 +2995,7 @@ set -e
 
 echo "== review evidence grammar without a local input reports evidence-only marker facts =="
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9002 --json)"
-echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run and .marker_facts == [{stage:"review",destination:"issue",round:1,sequence:1}] and (.untrusted_marker_facts | length) == 1' >/dev/null ||
+echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run and .marker_facts == [{stage:"review",destination:"issue",round:1,sequence:1}] and (.untrusted_marker_facts | length) == 1 and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected evidence-only marker facts, got: $out"
 
 echo "== a marker whose named local record is absent reports record-missing =="

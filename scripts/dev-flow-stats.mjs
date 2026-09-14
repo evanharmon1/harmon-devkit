@@ -1795,7 +1795,7 @@ function resolveContainedPath(root, candidate, label, { allowMissing = false } =
   return resolved;
 }
 
-function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrustedMarkers, asOf) {
+function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrustedMarkers, asOf, legacyAlsoPresent = false) {
   const root = realpathSync(recordRoot);
   const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
   const runFileCandidate = path.join(runDir, "run.json");
@@ -1806,6 +1806,12 @@ function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrusted
   if (!Array.isArray(body.evidence_comments)) throw new EvidenceError(`${runFile} does not contain an evidence_comments array`);
   const state = reconstructAsOf(body, asOf, body.started_at);
   const registrations = new Map(body.evidence_comments.map((entry) => [String(entry.id), entry]));
+  const observedIds = new Set(markers.map((observed) => String(observed.comment.id)));
+  for (const entry of body.evidence_comments) {
+    if (!observedIds.has(String(entry.id))) {
+      throw new EvidenceError(`local run record registers evidence comment ${entry.id}, but that comment was not observed — deleted-entry tampering`);
+    }
+  }
   for (const observed of markers) {
     const entry = registrations.get(String(observed.comment.id));
     const listed = entry && entry.marker;
@@ -1831,19 +1837,29 @@ function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrusted
   if (Object.hasOwn(body, "receipts") && !Array.isArray(body.receipts)) {
     throw new EvidenceError(`${runFile} receipts is not an array`);
   }
-  const passReceipts = Array.isArray(body.receipts)
-    ? body.receipts.flatMap((receipt, index) => {
+  // Mirror dev-flow-exit.mjs's activeStageBefore receipt invariant here: a
+  // pass is evidence only when the latest preceding transition entered the
+  // stage its envelope claims. The exit engine is deliberately not imported
+  // because it is a CLI, and it remains the canonical implementation.
+  const passReceipts = [];
+  let activeReceiptStage = null;
+  if (Array.isArray(body.receipts)) {
+    for (const [index, receipt] of body.receipts.entries()) {
       if (!receipt || typeof receipt !== "object" || Array.isArray(receipt) || (receipt.kind !== "pass" && receipt.kind !== "transition")) {
         throw new EvidenceError(`${runFile} receipt ${index} is not a pass or transition receipt`);
       }
-      return receipt.kind === "pass" ? [receipt] : [];
-    })
-    : null;
+      if (receipt.kind === "transition") {
+        activeReceiptStage = receipt.stage;
+      } else {
+        passReceipts.push({ receipt, index, activeStage: activeReceiptStage });
+      }
+    }
+  }
   let unreceiptedPassFiles;
   let passes;
-  if (passReceipts) {
+  if (Array.isArray(body.receipts)) {
     const seen = new Set();
-    passes = passReceipts.map((receipt, index) => {
+    passes = passReceipts.map(({ receipt, index, activeStage }) => {
       if (typeof receipt.file !== "string" || receipt.file.length === 0 || receipt.file === "." || receipt.file === ".." || /[\\/]/.test(receipt.file) || receipt.file.endsWith(".json")) {
         throw new EvidenceError(`${runFile} receipt ${index} has an invalid pass file identity`);
       }
@@ -1853,6 +1869,10 @@ function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrusted
       const envelope = readJsonFile(file);
       if (!envelope || !envelope.run || envelope.run.run_id !== runId || envelope.run.initiated_by !== body.initiated_by) {
         throw new EvidenceError(`pass receipt ${JSON.stringify(receipt.file)} does not identify run ${runId}`);
+      }
+      const passStage = envelope.payload && envelope.payload.stage;
+      if (activeStage === null || passStage !== activeStage) {
+        throw new EvidenceError(`pass receipt ${JSON.stringify(receipt.file)} at sequence ${index} names stage ${JSON.stringify(passStage)}, but the active preceding transition is ${JSON.stringify(activeStage)}`);
       }
       return envelope;
     });
@@ -1876,7 +1896,7 @@ function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrusted
     if (matchingAdjudications.length > 1) throw new EvidenceError(`${runDir} has more than one adjudication for ${stage} round ${round}`);
     return { stage, dest: "issue", round, payload: { passes: matchingPasses, adjudication: matchingAdjudications[0] || null }, commentIds: [observed.comment.id] };
   });
-  return { status: "ok", runId, issueNumber, record: { body }, state, rounds, untrusted: [], forged: untrustedMarkers, unreceiptedPassFiles };
+  return { status: "ok", runId, issueNumber, record: { body }, state, rounds, untrusted: [], forged: untrustedMarkers, unreceiptedPassFiles, legacyAlsoPresent };
 }
 
 function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null }) {
@@ -1908,11 +1928,14 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
   const summaries = requestedRunId
     ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf, effectiveTrustAt })
     : { trusted: [], untrusted: [] };
-  const legacyNamesRequestedRun = records && records.some((record) => record.runId === requestedRunId);
-  if (summaries.trusted.length > 0 && !legacyNamesRequestedRun) {
-    if (!recordDir) return [{ status: "evidence-only", runId: requestedRunId, issueNumber, markerFacts: markerFacts(summaries.trusted), untrustedMarkerFacts: markerFacts(summaries.untrusted) }];
+  const legacyNamesRequestedRun = Boolean(records && records.some((record) => record.runId === requestedRunId));
+  // A current marker is authoritative for reconstruction during migration.
+  // Legacy evidence naming the same run is retained only as an explicit
+  // disclosure; it must never suppress the local current-format trajectory.
+  if (summaries.trusted.length > 0) {
+    if (!recordDir) return [{ status: "evidence-only", runId: requestedRunId, issueNumber, markerFacts: markerFacts(summaries.trusted), untrustedMarkerFacts: markerFacts(summaries.untrusted), legacyAlsoPresent: legacyNamesRequestedRun }];
     try {
-      return [loadLocalEvidenceRun(recordDir, requestedRunId, issueNumber, summaries.trusted, summaries.untrusted, asOf)];
+      return [loadLocalEvidenceRun(recordDir, requestedRunId, issueNumber, summaries.trusted, summaries.untrusted, asOf, legacyNamesRequestedRun)];
     } catch (err) {
       if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
       throw err;
@@ -2274,6 +2297,7 @@ function renderTrajectory(run) {
     orphan_comments: run.untrusted.map((u) => ({ id: u.comment.id, actor_id: u.actorId })),
     forged_comments: run.forged.map((f) => ({ id: f.comment.id, actor_id: f.actorId })),
     unreceipted_pass_files: run.unreceiptedPassFiles || [],
+    legacy_also_present: Boolean(run.legacyAlsoPresent),
   };
 }
 
@@ -2304,6 +2328,7 @@ function renderTrajectoryTable(trajectory) {
     lines.push("");
     lines.push(`unreceipted pass files: ${trajectory.unreceipted_pass_files.join(", ")}`);
   }
+  if (trajectory.legacy_also_present) lines.push("legacy-also-present: true");
   return lines.join("\n");
 }
 
@@ -2915,8 +2940,8 @@ function cliRun(args) {
     return 1;
   }
   if (run.status === "evidence-only") {
-    const report = { status: "evidence-only", run_id: run.runId, issue: run.issueNumber, marker_facts: run.markerFacts, untrusted_marker_facts: run.untrustedMarkerFacts || [] };
-    console.log(args.json ? JSON.stringify(report, null, 2) : `run ${run.runId} (issue #${run.issueNumber}) — evidence-only\nmarkers: ${JSON.stringify(run.markerFacts)}`);
+    const report = { status: "evidence-only", run_id: run.runId, issue: run.issueNumber, marker_facts: run.markerFacts, untrusted_marker_facts: run.untrustedMarkerFacts || [], legacy_also_present: Boolean(run.legacyAlsoPresent) };
+    console.log(args.json ? JSON.stringify(report, null, 2) : `run ${run.runId} (issue #${run.issueNumber}) — evidence-only\nmarkers: ${JSON.stringify(run.markerFacts)}${report.legacy_also_present ? "\nlegacy-also-present: true" : ""}`);
     return 0;
   }
   const trajectory = renderTrajectory(run);
