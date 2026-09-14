@@ -406,6 +406,8 @@ read_state() {
       (.phase == "reserved" or .phase == "attached") and
       (.requires_full_window == null or
         (.requires_full_window | type == "boolean")) and
+      (.previous_trigger_comment_id == null or
+        (.previous_trigger_comment_id | type == "number" and . > 0)) and
       (.timeout_min == null or (.timeout_min | type == "number"))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
@@ -836,6 +838,7 @@ reserve)
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
           trigger_comment_id:null,requested_at:null,
+          previous_trigger_comment_id:null,
           requires_full_window:false,
           timeout_min:$timeout_min,
           settled:$settled,
@@ -936,14 +939,59 @@ attach)
     valid_time "$requested_at" || die "trigger has a malformed creation time"
 
     requires_full_window=false
-    if [ "$requested_at" \< "$state_reserved" ]; then
+    previous_trigger_comment_id=null
+
+    # A reconstructed reservation can be newer than the trigger attached to
+    # it even though an earlier trigger already exists for this head. Detect
+    # that history from one issue-comment read. Since trigger comments do not
+    # carry a head field, the earlier of the current commit's author and
+    # committer times is the conservative lower boundary; a distinct exact
+    # trigger at or after that boundary and before this attached trigger belongs
+    # to the same-head history.
+    head_payload=$(run_gh api "repos/$state_repo/commits/$state_head") ||
+        die "cannot fetch the current head commit for trigger reconstruction"
+    printf '%s' "$head_payload" | jq -e --arg head "$state_head" \
+        '.sha == $head' >/dev/null ||
+        die "GitHub returned the wrong head commit during trigger reconstruction"
+    head_authored_at=$(printf '%s' "$head_payload" |
+        jq -er '.commit.author.date | select(type == "string")') ||
+        die "current head commit has no usable author timestamp"
+    valid_time "$head_authored_at" ||
+        die "current head commit has a malformed author timestamp"
+    head_committed_at=$(printf '%s' "$head_payload" |
+        jq -er '.commit.committer.date | select(type == "string")') ||
+        die "current head commit has no usable committer timestamp"
+    valid_time "$head_committed_at" ||
+        die "current head commit has a malformed committer timestamp"
+    head_trigger_boundary=$head_committed_at
+    if [ "$head_authored_at" \< "$head_trigger_boundary" ]; then
+        head_trigger_boundary=$head_authored_at
+    fi
+    issue_comments=$(run_gh api --paginate --slurp \
+        "repos/$state_repo/issues/$state_pr/comments?per_page=100") ||
+        die "cannot fetch PR comments for trigger reconstruction"
+    prior_trigger_candidates=$(printf '%s' "$issue_comments" | jq -c \
+        --argjson attached "$trigger_id" \
+        --arg expected "$expected_trigger_body" \
+        --arg after "$head_trigger_boundary" \
+        --arg before "$requested_at" '
+          [flatten[] | select(
+            ((.id? | type) == "number") and .id != $attached and
+            ((.user.id? | type) == "number") and
+            (((.body // "") |
+              gsub("^[[:space:]]+|[[:space:]]+$"; "")) == $expected) and
+            ((.created_at? | type) == "string") and
+            (.created_at >= $after) and (.created_at < $before)
+          )]
+        ') || die "cannot classify prior review triggers"
+
+    if [ "$requested_at" \< "$state_reserved" ] ||
+        [ "$(printf '%s' "$prior_trigger_candidates" | jq 'length')" -gt 0 ]; then
         # A trigger that predates this local reservation is state-recovery
-        # evidence, not a newly posted first attempt. Accept that inference
-        # only for a trigger author trusted by the merge-base registry, then
-        # conservatively apply the re-trigger full-window rule.
-        trigger_author_id=$(printf '%s' "$comment" |
-            jq -er '.user.id | select(type == "number" and . > 0)') ||
-            die "pre-existing trigger has no usable author identity"
+        # evidence, not a newly posted first attempt. A distinct same-head
+        # trigger is reconstruction evidence even when this attached trigger
+        # is newer than the reservation. Authenticate either inference only
+        # against the merge-base registry's orchestrator actor set.
         # shellcheck source=trusted-registry.sh
         . "$SCRIPT_DIR/trusted-registry.sh"
         trigger_registry_dir=$(mktemp -d -t codex-trigger-registry-XXXXXX)
@@ -952,24 +1000,43 @@ attach)
             rm -rf "$trigger_registry_dir"
             die "cannot authenticate a pre-existing trigger against the trusted actor set"
         }
-        jq -e --argjson id "$trigger_author_id" '
-          (.trusted_orchestrator_actor_ids // []) | index($id) != null
-        ' "$trigger_registry_dir/registry.json" >/dev/null || {
-            rm -rf "$trigger_registry_dir"
-            die "pre-existing trigger author is not in the trusted actor set"
-        }
+
+        if [ "$requested_at" \< "$state_reserved" ]; then
+            trigger_author_id=$(printf '%s' "$comment" |
+                jq -er '.user.id | select(type == "number" and . > 0)') || {
+                rm -rf "$trigger_registry_dir"
+                die "pre-existing trigger has no usable author identity"
+            }
+            jq -e --argjson id "$trigger_author_id" '
+              (.trusted_orchestrator_actor_ids // []) | index($id) != null
+            ' "$trigger_registry_dir/registry.json" >/dev/null || {
+                rm -rf "$trigger_registry_dir"
+                die "pre-existing trigger author is not in the trusted actor set"
+            }
+            requires_full_window=true
+        fi
+
+        previous_trigger_comment_id=$(jq -nr \
+            --argjson candidates "$prior_trigger_candidates" \
+            --slurpfile registry "$trigger_registry_dir/registry.json" '
+              ($registry[0].trusted_orchestrator_actor_ids // []) as $trusted |
+              [$candidates[] | select(.user.id as $id | $trusted | index($id))] |
+              sort_by(.created_at, .id) | last // null | .id // null
+            ')
         rm -rf "$trigger_registry_dir"
-        requires_full_window=true
+        [ "$previous_trigger_comment_id" = null ] || requires_full_window=true
     fi
 
     payload=$(jq \
         --argjson id "$trigger_id" \
         --arg requested_at "$requested_at" \
+        --argjson previous_trigger_comment_id "$previous_trigger_comment_id" \
         --argjson requires_full_window "$requires_full_window" '
           .version = 2 |
           .phase = "attached" |
           .trigger_comment_id = $id |
           .requested_at = $requested_at |
+          .previous_trigger_comment_id = $previous_trigger_comment_id |
           .requires_full_window = $requires_full_window
         ' "$state_file")
     write_state "$state_file" "$payload"
@@ -1375,45 +1442,6 @@ check)
           (.created_at? // "")
         ' "$workdir/reactions.json")
 
-    # Pick the newest accepted current-head result after the latest trigger.
-    # This is ordering, not attempt attribution: earlier attempts and pending
-    # acknowledgements have no bearing on the decision.
-    newest_result_time=$(jq -nr \
-        --argjson id "$actor_id" \
-        --arg head "$state_head" \
-        --arg requested "$state_requested" \
-        --arg success "$finder_success_reaction" \
-        --slurpfile reviews "$workdir/reviews.json" \
-        --slurpfile comments "$workdir/comments.json" \
-        --slurpfile reactions "$workdir/reactions.json" '
-          ([
-            $reviews[0][] | select(
-              .user.id? == $id and .commit_id? == $head and
-              ((.body? // "") != "") and
-              ((.submitted_at? // "") > $requested) and
-              ((.id? | type) == "number")
-            ) | .submitted_at
-          ] + [
-            $comments[0][] | select(.user.id? == $id) |
-            ((.body // "") |
-              try match(
-                "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
-                "i"
-              ).captures[0].string catch "") as $prefix |
-            select($prefix != "") |
-            select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
-            select((.created_at? // "") > $requested) |
-            select((.id? | type) == "number") |
-            .created_at
-          ] + [
-            $reactions[0][] | select(
-              .user.id? == $id and .content? == $success and
-              ((.created_at? // "") >= $requested) and
-              ((.id? | type) == "number")
-            ) | .created_at
-          ]) | max // ""
-        ')
-
     # Settled dispositions are re-verified against the evidence just fetched,
     # never trusted from the state file alone. An entry is honoured only while
     # the target still reads exactly as it did when the disposition was
@@ -1694,6 +1722,52 @@ check)
         adjudicated_findings=1
     fi
 
+    # Pick the newest accepted current-head result after the latest trigger.
+    # This is ordering, not attempt attribution: earlier attempts and pending
+    # acknowledgements have no bearing on the decision. An empty review is an
+    # ordering result only when current-head inline findings attribute to its
+    # exact ID; an unattributed shell remains pending evidence below.
+    newest_result_record=$(jq -nr \
+        --argjson id "$actor_id" \
+        --arg head "$state_head" \
+        --arg requested "$state_requested" \
+        --arg success "$finder_success_reaction" \
+        --argjson attributed "$attributed_reviews" \
+        --slurpfile reviews "$workdir/reviews.json" \
+        --slurpfile comments "$workdir/comments.json" \
+        --slurpfile reactions "$workdir/reactions.json" '
+          ([
+            $reviews[0][] | select(
+              .user.id? == $id and .commit_id? == $head and
+              (((.body? // "") != "") or
+               (((.id? | type) == "number") and
+                (.id as $rid | $attributed | index($rid) != null))) and
+              ((.submitted_at? // "") > $requested) and
+              ((.id? | type) == "number")
+            ) | {time: .submitted_at, id: .id}
+          ] + [
+            $comments[0][] | select(.user.id? == $id) |
+            ((.body // "") |
+              try match(
+                "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
+                "i"
+              ).captures[0].string catch "") as $prefix |
+            select($prefix != "") |
+            select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
+            select((.created_at? // "") > $requested) |
+            select((.id? | type) == "number") |
+            {time: .created_at, id: .id}
+          ] + [
+            $reactions[0][] | select(
+              .user.id? == $id and .content? == $success and
+              ((.created_at? // "") >= $requested) and
+              ((.id? | type) == "number")
+            ) | {time: .created_at, id: .id}
+          ]) | sort_by(.time, .id) | last // {time:"",id:""} |
+          [.time, (.id | tostring)] | @tsv
+        ')
+    IFS=$'\t' read -r newest_result_time newest_result_id <<<"$newest_result_record"
+
     # --- Per-finder verdict classification (#804) ---
     # Non-codex verdict modes exit here. The codex clean-sentence classification
     # (the massive block below) only runs for clean-sentence mode.
@@ -1896,14 +1970,18 @@ check)
     # pinning the tail deadlocked real PRs — there the strict reading was
     # fail-closed toward *blocking clean work*, here it is fail-closed toward
     # blocking work that still has an open finding.
-    # `body_text != ""` drops EMPTY-BODY reviews from classification, and only
-    # from classification. GitHub auto-creates a body-less COMMENTED review
+    # `body_text != ""` drops EMPTY-BODY reviews from verdict classification,
+    # and only from verdict classification. GitHub auto-creates a body-less
+    # COMMENTED review
     # shell to carry inline comments (reply shells, and Codex's own shell
     # posted before its inline findings land), and an empty body is no
     # evidence in either direction: it has no verdict to be clean and no
     # free-text surface where an unanswered concern could hide — anything it
     # carries is inline comments, which the inline gate above already
-    # classifies on their own. Classifying the shell instead would read it as
+    # classifies on their own. Once those comments attribute to its exact
+    # review ID, the review timestamp orders their adjudicated result; an
+    # unattributed shell remains no result at all. Classifying the shell itself
+    # would read it as
     # `findings` (no clean opening sentence) and hard-block a cycle whose
     # real review has not arrived yet. `fetched_reviews` below deliberately
     # still includes shells: inline comments attribute to them by review ID,
@@ -1957,7 +2035,7 @@ check)
           ] | length
         ' "$workdir/reviews.json") || die "cannot evaluate recorded dispositions"
     [ "$disposed_review_hits" -eq 0 ] || disposed_applied=1
-    review_result=$(jq -r \
+    review_result_record=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
         --arg requested "$state_requested" \
@@ -1978,21 +2056,25 @@ check)
             # review, which keep their own reply-based path above.
             (if (($review.id? | type) == "number") and
                 ($disposed | index($review.id))
-             then {class:"settled",time:$review.submitted_at}
+             then {class:"settled",time:$review.submitted_at,id:$review.id}
              elif (($review.id? | type) == "number") and
                 ($settled | index($review.id)) and
                 ((has_severity_marker) | not) and
                 is_carrier_only
-             then {class:"settled",time:$review.submitted_at}
-             else {class:"findings",time:$review.submitted_at} end)
-           else {class:$class,time:$review.submitted_at} end
-          else {class:"none",time:$review.submitted_at} end
+             then {class:"settled",time:$review.submitted_at,id:$review.id}
+             else {class:"findings",time:$review.submitted_at,id:$review.id} end)
+           else {class:$class,time:$review.submitted_at,id:$review.id} end
+          else {class:"none",time:$review.submitted_at,id:$review.id} end
           ] as $classified |
-          if any($classified[]; .class == "findings") then "findings"
+          if any($classified[]; .class == "findings") then
+            ([$classified[] | select(.class == "findings")] |
+             sort_by(.time, .id) | last)
           else ([$classified[] |
                   select(.class == "unrecognized" or .class == "clean")] |
-                sort_by(.time) | last | .class // "none") end
+                sort_by(.time, .id) | last // {class:"none",time:"",id:""}) end |
+          [.class, .time, (.id | tostring)] | @tsv
         ' "$workdir/reviews.json")
+    IFS=$'\t' read -r review_result review_result_time review_result_id <<<"$review_result_record"
     # The reviews this check actually saw for the current head, by ID. The
     # adjudicated-clean fallback below reconciles the two endpoints against
     # each other with it: an inline comment naming a review nobody fetched is
@@ -2035,11 +2117,6 @@ check)
             review "$findings_review_id"
         exit 10
     fi
-    if [ "$review_result" = "unrecognized" ]; then
-        emit indeterminate "current-head review opens with the clean verdict but carries prose beyond Codex's own metadata"
-        exit 2
-    fi
-
     comment_candidates="$workdir/comment-candidates.tsv"
     jq -r \
         --argjson id "$actor_id" \
@@ -2051,6 +2128,7 @@ check)
               "i"
             ).captures[0].string catch "") as $prefix |
           select($prefix != "") |
+          select((.id? | type) == "number") |
           [
             $prefix,
             verdict_class,
@@ -2060,6 +2138,8 @@ check)
         ' "$workdir/comments.json" >"$comment_candidates"
 
     comment_result=none
+    comment_result_time=""
+    comment_result_id=""
     clean_comment_time=""
     clean_comment_id=""
     findings_comment_id=""
@@ -2109,15 +2189,25 @@ check)
         if [ "$classification" = "findings" ]; then
             comment_result=findings
             [ -n "$findings_comment_id" ] || findings_comment_id=$comment_id
-        elif [ "$classification" = "unrecognized" ]; then
-            # findings outranks unrecognized outranks clean, so a single
-            # unclassifiable verdict is never masked by a clean sibling.
-            [ "$comment_result" = "findings" ] || comment_result=unrecognized
-        elif [ "$comment_result" = "none" ]; then
-            comment_result=clean
+        elif [ "$comment_result" != "findings" ] && {
+            [ "$comment_created" \> "$comment_result_time" ] || {
+                [ "$comment_created" = "$comment_result_time" ] &&
+                    [ "$comment_id" -gt "${comment_result_id:-0}" ]
+            }
+        }; then
+            # Findings dominate. Non-finding classifications use provider
+            # order, matching review bodies: a newer valid clean result may
+            # supersede an older unrecognized one, but never vice versa.
+            comment_result=$classification
+            comment_result_time=$comment_created
+            comment_result_id=$comment_id
         fi
-        if [ "$classification" = "clean" ] &&
-            [ "$comment_created" \> "$clean_comment_time" ]; then
+        if [ "$classification" = "clean" ] && {
+            [ "$comment_created" \> "$clean_comment_time" ] || {
+                [ "$comment_created" = "$clean_comment_time" ] &&
+                    [ "$comment_id" -gt "${clean_comment_id:-0}" ]
+            }
+        }; then
             clean_comment_time=$comment_created
             clean_comment_id=$comment_id
         fi
@@ -2128,8 +2218,16 @@ check)
             comment "$findings_comment_id"
         exit 10
     fi
-    if [ "$comment_result" = "unrecognized" ]; then
+    if [ "$comment_result" = "unrecognized" ] &&
+        [ "$comment_result_time" = "$newest_result_time" ] &&
+        [ "$comment_result_id" = "$newest_result_id" ]; then
         emit indeterminate "current-head result opens with the clean verdict but carries prose beyond Codex's own metadata"
+        exit 2
+    fi
+    if [ "$review_result" = "unrecognized" ] &&
+        [ "$review_result_time" = "$newest_result_time" ] &&
+        [ "$review_result_id" = "$newest_result_id" ]; then
+        emit indeterminate "current-head review opens with the clean verdict but carries prose beyond Codex's own metadata"
         exit 2
     fi
 
@@ -2189,7 +2287,7 @@ check)
                     (body_text != "")
                   ) | select(verdict_class == "clean") |
                   select((.submitted_at? | type) == "string" and (.id? | type) == "number")] |
-                  sort_by(.submitted_at) | last // null
+                  sort_by(.submitted_at, .id) | last // null
                 ' "$workdir/reviews.json")
             clean_review_time=$(printf '%s' "$clean_review_evidence" | jq -r '.submitted_at? // ""')
             clean_review_id=$(printf '%s' "$clean_review_evidence" | jq -r '.id? // "" | tostring')
@@ -2197,7 +2295,10 @@ check)
         newest_clean=$clean_review_time
         newest_clean_surface=review
         newest_clean_id=$clean_review_id
-        if [ "$clean_comment_time" \> "$newest_clean" ]; then
+        if [ "$clean_comment_time" \> "$newest_clean" ] || {
+            [ "$clean_comment_time" = "$newest_clean" ] &&
+                [ "${clean_comment_id:-0}" -gt "${newest_clean_id:-0}" ]
+        }; then
             newest_clean=$clean_comment_time
             newest_clean_surface=comment
             newest_clean_id=$clean_comment_id
@@ -2208,7 +2309,8 @@ check)
         fi
         [ -n "$newest_clean" ] || bounded_wait "the cycle has no terminal current-head evidence yet"
         [ -n "$newest_clean_id" ] || bounded_wait "clean evidence has no accepted object ID"
-        [ "$newest_clean" = "$newest_result_time" ] ||
+        [ "$newest_clean" = "$newest_result_time" ] &&
+            [ "$newest_clean_id" = "$newest_result_id" ] ||
             bounded_wait "the newest current-head result is not clean"
         require_latest_window_elapsed
         emit clean "authenticated bot posted the newest current-head result after the latest trigger" \
@@ -2282,14 +2384,15 @@ check)
               [.[] | select((.id? | type) == "number") |
                . as $r | select($settled | index($r.id)) |
                {id: ($r.id | tostring), time: ($r.submitted_at // "")}] |
-              sort_by(.time) | last // null | .id // ""
+              sort_by(.time, (.id | tonumber)) | last // null | .id // ""
             ' "$workdir/reviews.json")
         adjudicated_review_time=$(jq -r \
             --argjson id "$adjudicated_review_id" '
               [.[] | select(.id? == $id)] | first | .submitted_at? // ""
             ' "$workdir/reviews.json")
         [ -n "$adjudicated_review_id" ] || bounded_wait "adjudicated findings have no accepted review result after the latest trigger"
-        [ "$adjudicated_review_time" = "$newest_result_time" ] ||
+        [ "$adjudicated_review_time" = "$newest_result_time" ] &&
+            [ "$adjudicated_review_id" = "$newest_result_id" ] ||
             bounded_wait "the newest current-head result is not the adjudicated review"
         require_latest_window_elapsed
         emit clean "newest current-head findings after the latest trigger are adjudicated by trusted in-thread replies" \
@@ -2320,7 +2423,7 @@ check)
                . as $r | select($disposed | index($r.id)) |
                select((.submitted_at // "") > $requested) |
                {id: ($r.id | tostring), time: ($r.submitted_at // "")}] |
-              sort_by(.time) | last // null | .id // ""
+              sort_by(.time, (.id | tonumber)) | last // null | .id // ""
             ' "$workdir/reviews.json")
         disposed_comment_latest=$(jq -r \
             --argjson disposed "$disposed_comments" \
@@ -2329,7 +2432,7 @@ check)
                . as $r | select($disposed | index($r.id)) |
                select((.created_at // "") > $requested) |
                {id: ($r.id | tostring), time: ($r.created_at // "")}] |
-              sort_by(.time) | last // null | .id // ""
+              sort_by(.time, (.id | tonumber)) | last // null | .id // ""
             ' "$workdir/comments.json")
         if [ -n "$disposed_review_latest" ]; then
             disposed_surface=review
@@ -2348,7 +2451,10 @@ check)
                     ' "$workdir/reviews.json")
             fi
             if [ -z "$disposed_surface" ] ||
-                [ "$disposed_comment_time" \> "$disposed_review_time" ]; then
+                [ "$disposed_comment_time" \> "$disposed_review_time" ] || {
+                [ "$disposed_comment_time" = "$disposed_review_time" ] &&
+                    [ "$disposed_comment_latest" -gt "$disposed_review_latest" ]
+            }; then
                 disposed_surface=comment
                 disposed_id=$disposed_comment_latest
             fi
@@ -2359,7 +2465,8 @@ check)
         *) disposed_latest_time= ;;
         esac
         [ -n "$disposed_id" ] || bounded_wait "settled findings have no accepted result after the latest trigger"
-        [ "$disposed_latest_time" = "$newest_result_time" ] ||
+        [ "$disposed_latest_time" = "$newest_result_time" ] &&
+            [ "$disposed_id" = "$newest_result_id" ] ||
             bounded_wait "the newest current-head result is not the settled finding"
         require_latest_window_elapsed
         emit clean "newest current-head non-thread findings after the latest trigger are settled: ${applied_dispositions:-recorded dispositions}" \
