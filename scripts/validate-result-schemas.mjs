@@ -2067,6 +2067,29 @@ function duplicates(values) {
   return [...new Set(values.filter((value) => (seen.has(value) ? true : (seen.add(value), false))))]
 }
 
+function fencePatternMatchesPath(pattern, candidatePath) {
+  let expression = '^'
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]
+    if (character !== '*') {
+      expression += character.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+      continue
+    }
+    if (pattern[index + 1] !== '*') {
+      expression += '[^/]*'
+      continue
+    }
+    index += 1
+    if (pattern[index + 1] === '/') {
+      expression += '(?:[^/]+/)*'
+      index += 1
+    } else {
+      expression += '.*'
+    }
+  }
+  return new RegExp(`${expression}$`, 'u').test(candidatePath)
+}
+
 // checkPlanCoherence — the schema closes each record; these checks close the
 // relationships between them so a structurally valid file is also a usable
 // dispatch plan rather than several disagreeing lists.
@@ -2148,6 +2171,7 @@ function checkPlanCoherence(document, errors) {
   }
 
   const policyCap = document.policy?.breadth?.max_parallel_agents
+  const agentRunCap = document.policy?.breadth?.max_agent_runs
   const dispatcher = document.dispatcher
   if (dispatcher && typeof policyCap === 'number') {
     if (dispatcher.kind === 'interactive') {
@@ -2172,6 +2196,9 @@ function checkPlanCoherence(document, errors) {
         errors.push(`$plan.waves: wave ${wave.number} has ${(wave.issues || []).length} issues, exceeding dispatcher cap ${dispatcher.parallel_cap}`)
       }
     }
+  }
+  if (typeof agentRunCap === 'number' && lanes.length > agentRunCap) {
+    errors.push(`$plan.lanes: initial lane count ${lanes.length} exceeds policy max_agent_runs ${agentRunCap}`)
   }
 
   for (const issue of issues) {
@@ -2260,21 +2287,17 @@ function checkPlanCoherence(document, errors) {
   const effectiveFenceByLane = new Map(
     lanes.map((lane) => [
       lane.lane,
-      new Set([
+      [
         ...(lane.fence || []).map((item) => (typeof item === 'string' ? item : item?.path)).filter(Boolean),
         ...(lane.expansions || []).map((entry) => entry.path).filter(Boolean),
-      ]),
+      ],
     ]),
   )
-  const ownersByPath = new Map()
-  for (const lane of lanes) {
-    for (const path of effectiveFenceByLane.get(lane.lane) || []) {
-      const owners = ownersByPath.get(path) || []
-      owners.push(lane)
-      ownersByPath.set(path, owners)
-    }
-  }
-  for (const [path, owners] of ownersByPath) {
+  const candidateUniverse = [...new Set(activeIssues.flatMap((issue) => issue.candidate_files || []))]
+  for (const path of candidateUniverse) {
+    const owners = lanes.filter((lane) =>
+      (effectiveFenceByLane.get(lane.lane) || []).some((pattern) => fencePatternMatchesPath(pattern, path)),
+    )
     for (let left = 0; left < owners.length; left += 1) {
       for (let right = left + 1; right < owners.length; right += 1) {
         if (owners[left].wave === owners[right].wave) {
@@ -2293,7 +2316,10 @@ function checkPlanCoherence(document, errors) {
           (overlap.paths || []).includes(path) &&
           (overlap.issue_a === issue.number || overlap.issue_b === issue.number),
       )
-      if (!isSplit && (!ownLane || !effectiveFenceByLane.get(ownLane.lane)?.has(path))) {
+      const ownFenceMatches =
+        ownLane &&
+        (effectiveFenceByLane.get(ownLane.lane) || []).some((pattern) => fencePatternMatchesPath(pattern, path))
+      if (!isSplit && !ownFenceMatches) {
         errors.push(`$plan.lanes: issue ${issue.number}'s candidate path ${JSON.stringify(path)} must belong to its own lane`)
       }
     }
@@ -2303,7 +2329,9 @@ function checkPlanCoherence(document, errors) {
     const pair = [overlap.issue_a, overlap.issue_b]
     const pairLanes = pair.map((issue) => laneByIssue.get(issue)).filter(Boolean)
     for (const path of overlap.paths || []) {
-      const ownerCount = pairLanes.filter((lane) => effectiveFenceByLane.get(lane.lane)?.has(path)).length
+      const ownerCount = pairLanes.filter((lane) =>
+        (effectiveFenceByLane.get(lane.lane) || []).some((pattern) => fencePatternMatchesPath(pattern, path)),
+      ).length
       if (ownerCount !== 1) {
         errors.push(`$plan.lanes: split candidate path ${JSON.stringify(path)} must belong to exactly one lane in issue pair ${pair.join(':')}`)
       }

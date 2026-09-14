@@ -230,8 +230,17 @@ expect_ok "orchestrator planning publishes recomputations through validated repl
 expect_ok "orchestrator planning validates the canonical recomputation readback" \
     grep -qF 'validate the canonical readback' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning refuses a second plan writer" \
+    grep -qF 'A second writer of the same `plan.json` is a blocker' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator planning publishes expansions as complete revisions" \
+    grep -qF 'accepted expansion is a recomputation reason' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
 expect_ok "retro compares validated planned and actual lane execution" \
     grep -qF 'planned versus actual waves and interventions for each lane' \
+    "$repo/ai/skills/universal/retro/SKILL.md"
+expect_ok "retro selects the unique validated slate for a run" \
+    grep -qF 'unique validated slate whose' \
     "$repo/ai/skills/universal/retro/SKILL.md"
 expect_ok "breakdown keeps execution behind interactive human approval" \
     grep -qF 'human turn in an interactive session' \

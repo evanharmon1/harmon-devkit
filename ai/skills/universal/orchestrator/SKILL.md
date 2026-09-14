@@ -34,6 +34,8 @@ Git directory with `git rev-parse --git-common-dir`; a linked worktree's `.git`
 path is a file and is never the shared-state root. Planning is orchestrator
 judgement written down, not a new autonomous planner: the schema, validator,
 and append-only recompute rule make its deterministic parts checkable.
+A second writer of the same `plan.json` is a blocker, not a race to lock
+against.
 
 Build and publish the plan in this order:
 
@@ -63,7 +65,10 @@ Build and publish the plan in this order:
    resolutions; waves; and lane, issue, branch, run id, and fence assignments.
    Each lane fence uses exactly the `brief.envelope.schema.json` `fence` item
    shape. Later authorized expansions append `{path, at, reason}` entries to
-   that lane's `expansions` array instead of rewriting its original fence.
+   that lane's `expansions` array instead of rewriting its original fence. An
+   accepted expansion is a recomputation reason: before the lane edits the
+   expanded path, publish a complete new revision through the candidate,
+   validate, rename, and canonical-readback sequence in step 7.
 6. **Emit and validate.** Write the closed record and validate it with
    `node scripts/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
    on a structural error, a broken revision digest, an incomplete overlap set,
