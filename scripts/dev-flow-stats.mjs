@@ -2020,7 +2020,11 @@ function adjudicationNamesOtherStage(filePath, stage) {
 // harmon-devkit#1001 item 2: this is exactly the "truncated/malformed
 // retained JSON" case that must surface as evidence-indeterminate rather
 // than a raw crash), or an indeterminate outcome are all reported back as
-// one `error` string for the caller to fold into an EvidenceError.
+// one `error` string for the caller to fold into an EvidenceError. An
+// indeterminate result's additive `code` field (harmon-devkit#1001, review
+// round 1) is passed through alongside `error` so the caller can recognize
+// one specific, EXPECTED indeterminate condition ("review requested while
+// challenge is still active") without string-matching `error`'s free text.
 function invokeExitScriptVerificationOnly(exitScriptPath, { runDir, stage, policyPath, rigor, currentHead, repoRoot }) {
   const argv = [
     exitScriptPath, "--run", runDir, "--stage", stage, "--policy", policyPath,
@@ -2041,7 +2045,7 @@ function invokeExitScriptVerificationOnly(exitScriptPath, { runDir, stage, polic
     return { error: (result.stderr || result.stdout || `exit script exited ${result.status} with no parseable output`).trim() };
   }
   if (parsed.outcome === "indeterminate") {
-    return { error: `exit script could not verify this trajectory: ${parsed.reason || "indeterminate"}` };
+    return { error: `exit script could not verify this trajectory: ${parsed.reason || "indeterminate"}`, code: parsed.code ?? null };
   }
   return { verification: parsed };
 }
@@ -2317,15 +2321,33 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
         // is safe here specifically — never for a stage that has real
         // rounds, which still uses its own genuine head below.
         const currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage) ?? "0".repeat(40);
-        const { verification, error } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+        const { verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
           runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot,
         });
-        // A malformed/truncated retained artifact, an over-cap trajectory, or
-        // any other reason the engine cannot certify this record all surface
-        // through the SAME structured "indeterminate" contract inside
-        // invokeExitScriptVerificationOnly — translated here to evidence-
-        // indeterminate rather than a raw crash (harmon-devkit#1001 item 2).
-        if (error) throw new EvidenceError(`local-record trajectory for ${stage}: ${error}`);
+        if (error) {
+          // harmon-devkit#1001 review round 1 (P1), confirmed and fixed: a
+          // run genuinely still in progress on challenge is the ordinary,
+          // common case, not corruption — the engine's own "review cannot
+          // be active until challenge exits" guard is EXPECTED to fire here
+          // every time, and reporting the whole run indeterminate over it
+          // threw away challenge's own perfectly good trajectory alongside
+          // it. Recognized only via the engine's additive `code` field
+          // (never by re-deriving the receipt-sequence check ourselves,
+          // which would reintroduce exactly the "re-implement pieces of
+          // the engine's own logic" pattern this whole redesign exists to
+          // eliminate) — review is reported as not yet started, nothing
+          // else changes.
+          if (stage === "review" && code === "stage-not-active") {
+            engineRoundsByStage.set("review", []);
+            continue;
+          }
+          // A malformed/truncated retained artifact, an over-cap trajectory,
+          // or any other reason the engine cannot certify this record all
+          // surface through the SAME structured "indeterminate" contract
+          // inside invokeExitScriptVerificationOnly — translated here to
+          // evidence-indeterminate rather than a raw crash (item 2).
+          throw new EvidenceError(`local-record trajectory for ${stage}: ${error}`);
+        }
         engineRoundsByStage.set(stage, Array.isArray(verification.rounds) ? verification.rounds : []);
         // validateReceipts (inside the spawned process) is not itself stage-
         // scoped — it validates every pass on disk regardless of --stage — so

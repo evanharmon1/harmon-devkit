@@ -243,7 +243,14 @@ function writeZeroFindingAdjudication(runDir, runId, stage = "review", round = 1
 }
 
 function writeCompletedZeroFindingPass(runDir, runId, stage = "review", round = 1) {
-  const envelope = pass("codex-verification", []);
+  // The resolved policy's configured primary finder differs by stage
+  // (challenge -> codex-adversarial, review -> codex-verification); every
+  // existing caller passes/defaults to "review", so this preserves their
+  // exact prior output while making a "challenge" pass fill its own
+  // stage's actual primary slot instead of a review-only finder no
+  // challenge round configures.
+  const finder = stage === "challenge" ? "codex-adversarial" : "codex-verification";
+  const envelope = pass(finder, []);
   envelope.run.run_id = runId;
   envelope.payload.stage = stage;
   envelope.payload.round = round;
@@ -3458,6 +3465,36 @@ function writeScenario(name, db) {
     writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
     writeScenario("freeze-race", { issues: [{ number: 219, pull_request: null }], comments: { "219": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
+
+  // harmon-devkit#1001 review round 1 (P1): a run genuinely still IN
+  // PROGRESS on challenge — real evidence for challenge round 1, no review
+  // evidence at all yet, no "transition: review" receipt — is the ordinary,
+  // common shape for any run harvested mid-flight, not an edge case.
+  {
+    const runId = "run-221-challenge-still-active";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "challenge", "issue", 1, 1, at);
+    // lifecycleTo has no "challenge" destination (only "review"/"integration"
+    // ever push it) — built inline here rather than extending a helper 200+
+    // other fixtures share.
+    const challengeStages = ["kickoff", "claim", "implement", "verify", "challenge"];
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: chain(challengeStages.map((stage, index) => ({
+        stage, entered_at: at,
+        ...(index < challengeStages.length - 1 ? { exit: "fixture transition to " + challengeStages[index + 1] } : {}),
+      }))),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "challenge", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "challenge", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "challenge", 1);
+    writeScenario("challenge-still-active", { issues: [{ number: 221, pull_request: null }], comments: { "221": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -4745,6 +4782,13 @@ baseline_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --rec
 altroot_out="$(cd "$tmp" && node "$repo/scripts/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --repo-root "$tmp/altroot-repo-root" --json)"
 [ "$baseline_out" = "$altroot_out" ] ||
     fail "repo-root (run path): explicit --repo-root from another cwd did not reproduce the baseline output. baseline=$baseline_out altroot=$altroot_out"
+
+echo "== harmon-devkit#1001 review round 1: a run still in progress on challenge reports challenge's own trajectory, review not-started (fixed round 2/5) =="
+export DFSTATS_DB="$tmp/scenarios/challenge-still-active.json"
+run_id="$(meta challenge-still-active .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == [{stage:"challenge",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
+    fail "challenge-still-active: expected only challenge round 1, review not yet started: $out"
 
 echo "== shepherd round 1: a comment physically posted on the PR but whose marker claims dest=issue fails closed =="
 export DFSTATS_DB="$tmp/scenarios/marker-dest-mismatch.json"

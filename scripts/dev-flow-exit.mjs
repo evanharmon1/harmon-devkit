@@ -53,6 +53,18 @@
 // "not-measured" for both statuses and null for both verified values,
 // rather than a fabricated verdict. This is purely additive: no predicate,
 // exit code, or verdict depends on it, and it changes no existing check.
+//
+// Every indeterminate result under --json also carries an additive `code`
+// field alongside its existing free-text `reason` (harmon-devkit#1001,
+// review round 1) — a stable, machine-readable classification a caller can
+// switch on instead of string-matching `reason`. Most indeterminate call
+// sites leave it `null` (unchanged from before this field existed); the one
+// call site that currently sets a value is `"stage-not-active"` (`--stage
+// review` requested while the trusted receipt sequence's active stage is
+// still "challenge") — an EXPECTED condition for a run genuinely still in
+// progress, not evidence of corruption, which a caller may choose to
+// recognize and degrade gracefully rather than treat as a fatal error. This
+// changes no exit code, verdict, or existing check.
 
 import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -90,10 +102,21 @@ const EXIT_CODES = { continue: 0, converged: 20, diverging: 21, capped: 22, inde
 // capturing stderr and hoping the exit code survived the caller's own
 // wrapper. Shepherd-stage cloud finding, confirmed. Centralized here rather
 // than duplicated at each of the nine indeterminate call sites in main().
-function indeterminate(args, reason) {
+// harmon-devkit#1001 review round 1 (P1), confirmed and fixed: `reason` is
+// free text, so a caller (the local-record harvester) had no reliable way to
+// distinguish an EXPECTED indeterminate condition — e.g. "--stage review was
+// requested but challenge is still active" is not corruption, it is an
+// ordinary run genuinely still in progress — from a real one, short of
+// fragile string-matching. `code` is optional and additive: most call sites
+// pass none (so `code` stays null, exactly as this JSON shape always was for
+// them); only the one call site a caller needs to recognize sets one. No
+// exit code, verdict, or existing check changes — this is the same
+// machine-readable-output-only allowance the `rounds[]` trajectory field
+// already used.
+function indeterminate(args, reason, code = null) {
   console.error(`dev-flow-exit: indeterminate: ${reason}`);
   if (args && args.json) {
-    console.log(JSON.stringify({ outcome: "indeterminate", reason, rounds_counted: null, next_round: null }, null, 2));
+    console.log(JSON.stringify({ outcome: "indeterminate", reason, code, rounds_counted: null, next_round: null }, null, 2));
   }
   return EXIT_CODES.indeterminate;
 }
@@ -1880,6 +1903,7 @@ async function main() {
     return indeterminate(
       args,
       `--stage review was requested but the trusted receipt sequence's active stage is still "challenge" (cap ${resolved.rounds.challenge}, not disabled) — review cannot be active until challenge exits`,
+      "stage-not-active",
     );
   }
 

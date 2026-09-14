@@ -462,6 +462,39 @@ node -e '
 }
 rm -f "${scratch}/dfe-rounds-$$.out" "${scratch}/dfe-rounds-$$.err"
 
+echo "== harmon-devkit#1001 review round 1: indeterminate results carry an additive machine-readable code =="
+# --stage review requested while the trusted receipt sequence's active stage
+# is still "challenge" (a nonzero-cap stage, not disabled) is the one call
+# site that currently sets a value: "stage-not-active" — a caller (the
+# local-record harvester) needs to recognize this EXPECTED condition without
+# string-matching the free-text reason.
+code_dir="$(mktemp -d)"
+cp -r "ai/schemas/fixtures/exit/single-round-clean-converge/." "${code_dir}/"
+node -e '
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  const run = JSON.parse(fs.readFileSync(file, "utf8"));
+  run.receipts.push({ kind: "transition", stage: "challenge" });
+  fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
+' "${code_dir}/run/run.json"
+node scripts/dev-flow-exit.mjs --run "${code_dir}/run" --stage review \
+    --policy "${code_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 --json \
+    >"${scratch}/dfe-code-$$.out" 2>/dev/null || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.equal(body.outcome, "indeterminate");
+  assert.equal(body.code, "stage-not-active");
+  assert.match(body.reason, /active stage is still "challenge"/);
+  console.log("indeterminate code field OK");
+' "${scratch}/dfe-code-$$.out" || {
+    cat "${scratch}/dfe-code-$$.out" >&2
+    rm -rf "${code_dir}" "${scratch}/dfe-code-$$.out"
+    fail "review-requested-while-challenge-active did not carry code:\"stage-not-active\""
+}
+rm -rf "${code_dir}" "${scratch}/dfe-code-$$.out"
+echo "OK: --stage review while challenge is still active carries code:\"stage-not-active\""
+
 # `|| true` on every dev-flow-exit.mjs invocation below: its exit code IS
 # its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
 # 22 capped), so under this file's `set -e` a converged control run would
