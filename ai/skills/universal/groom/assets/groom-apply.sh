@@ -19,16 +19,33 @@
 # from the scan); --execute additionally re-checks the issue's live author
 # immediately before writing, since the plan may be stale by apply time.
 #
-# apply-plan runs in TWO PASSES (challenge round 1 finding 5). Pass 1
-# validates every row — op recognized, required fields present, close reason
-# valid, plan-carried bot_owned, and in --execute mode the live bot re-check
-# AND a live retitle-conflict re-check (finding 6: the issue's current title
-# must still match the plan's previous_title, or the retitle is refused
-# rather than silently overwriting a concurrent edit) — and performs no
-# writes at all. Only once every row in the plan has validated does pass 2
-# run, applying (or, in dry-run, PLAN-printing) each write in order. A row
-# that fails validation therefore aborts before ANY row has been written,
-# instead of leaving the earlier rows in the plan already applied.
+# apply-plan runs in TWO PASSES (challenge round 1 finding 5). Pass 0 refuses
+# a plan carrying two rows for the same op+issue outright (challenge round 2
+# finding 4 — a plan-authoring duplicate/leftover, e.g. two retitles for the
+# same issue, must never resolve to "whichever pass 2 happens to apply last").
+# Pass 1 then validates every remaining row — op recognized, required fields
+# present, close reason valid, plan-carried bot_owned, a label op's full
+# never-list/allowlist/axis/repo-kind validation via triage-apply.sh's own
+# dry run (challenge round 2 finding 3 — validate_label used to check only
+# bot ownership, so a label pass-1 accepted could still be refused for real
+# in pass 2, after earlier rows in the same plan had already been written),
+# and in --execute mode the live bot re-check — and performs no writes at
+# all. Only once every row in the plan has validated does pass 2 run,
+# applying (or, in dry-run, PLAN-printing) each write in order. A row that
+# fails validation therefore aborts before ANY row has been written, instead
+# of leaving the earlier rows in the plan already applied.
+#
+# A retitle's live-title re-check (finding 6: the issue's current title must
+# still match the plan's previous_title, or the retitle is refused rather
+# than silently overwriting a concurrent edit) runs in BOTH pass 1 and pass 2
+# in --execute mode (challenge round 2 finding 4 — pass 1's own validation
+# loop can itself take long enough, across every other row's live checks,
+# for a concurrent edit to land in the gap before pass 2 writes; re-checking
+# immediately adjacent to the write closes that window). A pass-2 refusal is
+# reported as a conflict naming the plan-file row number — pass 1 already
+# accepted the plan, so this is new information for whoever is watching the
+# run, not a validation gap — and the run stops with whatever pass 2 already
+# wrote recorded in the log.
 #
 # The write log (--log) is opened in APPEND mode with a
 # "# run <UTC timestamp> apply" header line for every --execute invocation —
@@ -40,6 +57,11 @@
 #  "status":"DONE","at":"<UTC>"} (sub-issue-link records against the CHILD
 # issue number) — for groom-report.sh render --outcomes to merge into each
 # row's `status` column (issue #1015 finding 8). Dry-run never writes to it.
+# In --execute mode pass 1 verifies the sink is appendable (same as --log);
+# once writes are underway, a write_outcome failure warns and continues
+# rather than aborting the run under set -e (challenge round 2 finding 8 —
+# the outcome record is a convenience for the report, not itself a write
+# whose loss should strand a plan partway through).
 #
 # Usage:
 #   groom-apply.sh apply-plan --repo owner/repo --plan-file PATH --log PATH
@@ -54,9 +76,11 @@
 #
 # Exit: 0 = dry-run resolved or every write applied, 1 = a write failed,
 #       2 = usage/environment error (including --execute without the env gate,
-#       or more "close" rows than --max-closes allows), 4 = refused (bot-owned
-#       issue, an unknown op, or a retitle whose live title no longer matches
-#       the plan's previous_title).
+#       more "close" rows than --max-closes allows, an unwritable --outcomes
+#       sink in --execute mode, or two plan rows naming the same op+issue),
+#       4 = refused (bot-owned issue, an unknown op, a label op triage-
+#       apply.sh's own dry run would reject, or a retitle whose live title no
+#       longer matches the plan's previous_title).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -118,8 +142,16 @@ write_outcome() {
     [ -n "$outcomes" ] || return 0
     local at
     at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    # Best-effort (challenge round 2 finding 8): pass 1 already checked the
+    # sink is appendable, but a failure here (disk full, sink removed mid-run)
+    # must warn and continue rather than abort under set -e — the live
+    # GitHub write this outcome describes has already happened, and losing
+    # its record must never look like the partial-application failure the
+    # two-pass restructuring (finding 5) exists to prevent.
     jq -nc --argjson issue "$issue" --arg op "$op" --arg status "$status" --arg at "$at" \
-        '{issue: $issue, op: $op, status: $status, at: $at}' >>"$outcomes"
+        '{issue: $issue, op: $op, status: $status, at: $at}' >>"$outcomes" 2>/dev/null ||
+        echo "groom-apply: warning: could not record the outcome for" \
+            "#$issue ($op) to $outcomes" >&2
 }
 
 refuse_if_bot() {
@@ -190,6 +222,25 @@ validate_label() {
     guard_issue_number "$issue"
     refuse_if_bot "$repo" "$issue" "$row" "$execute" relabel
     [ -x "$triage_apply" ] || die 2 "triage-apply.sh is missing: $triage_apply"
+
+    # Delegate to triage-apply.sh's OWN dry run (challenge round 2 finding 3):
+    # its never-list, allowlist, exclusive-axis, and repo-kind checks (exit
+    # 4/5/6) run unconditionally, before its own --execute gate, so calling it
+    # here without --execute performs exactly the same validation depth pass
+    # 2 would hit for real — uniform with every other op's pass-1 check.
+    local args=(label --repo "$repo" --issue "$issue")
+    local a
+    while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        args+=(--add "$a")
+    done < <(jq -r '.add // [] | .[]' <<<"$row")
+    while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        args+=(--remove "$a")
+    done < <(jq -r '.remove // [] | .[]' <<<"$row")
+    "$triage_apply" "${args[@]}" >/dev/null ||
+        die 4 "refused: #$issue label op failed triage-apply.sh's own" \
+            "dry-run validation (never-list, allowlist, axis, or repo-kind)"
 }
 
 validate_milestone_assign() {
@@ -234,16 +285,36 @@ apply_close() {
 }
 
 apply_retitle() {
-    local repo="$1" row="$2" log="$3" execute="$4" outcomes="$5"
-    local issue title
+    local repo="$1" row="$2" log="$3" execute="$4" outcomes="$5" lineno="$6"
+    local issue title previous_title
     issue="$(jq -r '.issue // empty' <<<"$row")"
     title="$(jq -r '.title // empty' <<<"$row")"
+    previous_title="$(jq -r '.previous_title // empty' <<<"$row")"
 
     local cmd=(gh issue edit "$issue" --repo "$repo" --title "$title")
     if [ "$execute" -eq 0 ]; then
         echo "PLAN ${cmd[*]}"
         return 0
     fi
+
+    # Re-check immediately adjacent to the write (challenge round 2 finding
+    # 4): pass 1 already ran this same comparison, but pass 1's own
+    # validation loop can take long enough — across every other row's live
+    # checks — for a concurrent edit to land in the gap before pass 2 gets
+    # here. Pass 1 already accepted the plan, so this is reported as a
+    # conflict naming the row, not a fresh validation failure; whatever pass 2
+    # already wrote for earlier rows is recorded in $log.
+    local live_json live_title
+    live_json="$(gh issue view "$issue" --repo "$repo" --json title)" ||
+        die 2 "could not re-read the live title of $repo#$issue"
+    live_title="$(jq -r '.title // empty' <<<"$live_json")"
+    [ "$live_title" = "$previous_title" ] ||
+        die 4 "refused: plan row $lineno (#$issue retitle) conflicts with a" \
+            "concurrent edit — the live title changed since pass 1 validated" \
+            "this plan (expected '$previous_title', found '$live_title')." \
+            "Refresh the plan and re-approve; writes already applied by this" \
+            "run are recorded in $log."
+
     log_write "$log" "${cmd[*]}"
     "${cmd[@]}" >/dev/null || die 1 "write failed: retitle $repo#$issue"
     echo "APPLIED retitle $repo#$issue"
@@ -375,15 +446,51 @@ cmd_apply_plan() {
                 "(set by the task groom wrapper for supervised runs)"
         printf '# run %s apply\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >>"$log" ||
             die 2 "could not open log file: $log"
+        # Verify the outcomes sink is appendable up front too (challenge
+        # round 2 finding 8) — the same reasoning as the log check above: a
+        # write_outcome failure discovered mid-run, after live GitHub writes
+        # have already happened, must never be the thing that aborts the run.
+        if [ -n "$outcomes" ]; then
+            : >>"$outcomes" 2>/dev/null ||
+                die 2 "could not open --outcomes file: $outcomes"
+        fi
     fi
 
     # Read every line into an array FIRST, then iterate it — not a
     # `while read < "$plan_file"` loop. A write op below (gh, or another
     # asset script) may itself read stdin (e.g. a stubbed `gh issue edit`
     # draining `--body-file -`); with a live redirect still open on fd 0 that
-    # silently truncates the loop's remaining plan-file input mid-run.
+    # silently truncates the loop's remaining plan-file input mid-run. Read
+    # via a dedicated fd (3), not `mapfile` (bash 4+ only — this script must
+    # stay portable to macOS's shipped bash 3.2, challenge round 2 finding 5).
     local lines=() lineno=0 line op
-    mapfile -t lines <"$plan_file"
+    exec 3<"$plan_file"
+    while IFS= read -r line <&3 || [ -n "$line" ]; do
+        lines+=("$line")
+    done
+    exec 3<&-
+
+    # Pass 0 — refuse a plan naming the same op+issue twice outright
+    # (challenge round 2 finding 4): a plan-authoring duplicate or leftover
+    # row (two retitles for the same issue, say) must never resolve to
+    # "whichever pass 2 happens to apply last, silently discarding the
+    # other" — no live checks have run yet, so this is cheap to catch first.
+    # A plain string list stands in for an associative array (bash 3.2 has
+    # none) keyed "op:issue"; sub-issue-link has no single "issue" field and
+    # is not covered by this check.
+    local seen_keys="" issue_field key
+    for line in "${lines[@]+"${lines[@]}"}"; do
+        [ -n "$line" ] || continue
+        op="$(jq -r '.op // empty' <<<"$line")"
+        issue_field="$(jq -r '.issue // empty' <<<"$line")"
+        [ -n "$issue_field" ] || continue
+        key="$op:$issue_field"
+        if grep -qxF "$key" <<<"$seen_keys"; then
+            die 2 "refused: plan file has more than one '$op' row for" \
+                "#$issue_field — remove the duplicate/leftover and re-approve"
+        fi
+        seen_keys="$(printf '%s\n%s' "$seen_keys" "$key")"
+    done
 
     # Pass 1 — validate every row; write NOTHING (finding 5). A refusal here
     # aborts before pass 2 has run at all, so no earlier row in the plan has
@@ -411,7 +518,7 @@ cmd_apply_plan() {
         op="$(jq -r '.op // empty' <<<"$line")"
         case "$op" in
         close) apply_close "$repo" "$line" "$log" "$execute" "$outcomes" </dev/null ;;
-        retitle) apply_retitle "$repo" "$line" "$log" "$execute" "$outcomes" </dev/null ;;
+        retitle) apply_retitle "$repo" "$line" "$log" "$execute" "$outcomes" "$lineno" </dev/null ;;
         label) apply_label "$repo" "$line" "$log" "$execute" "$outcomes" </dev/null ;;
         milestone-assign) apply_milestone_assign "$repo" "$line" "$log" "$execute" "$outcomes" </dev/null ;;
         sub-issue-link) apply_sub_issue_link "$repo" "$line" "$log" "$execute" "$outcomes" </dev/null ;;

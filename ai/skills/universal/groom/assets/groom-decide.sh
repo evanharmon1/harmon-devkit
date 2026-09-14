@@ -22,7 +22,10 @@
 # for the decided issue, and {"issue":<sibling>,"op":"close","status":"DONE",
 # "at":"<UTC>"} for each closed --supersedes sibling — for groom-report.sh
 # render --outcomes to merge into each row's `status` column (finding 8).
-# Blocked-by edges are not disposition rows and get no outcome record.
+# Blocked-by edges are not disposition rows and get no outcome record. In
+# --execute mode the sink's appendability is checked before any write; once
+# writes are underway a write_outcome failure warns and continues rather than
+# aborting the run (challenge round 2 finding 8).
 #
 # Blocked-by edges use GitHub's issue-dependency REST endpoint, id-not-number
 # (the same call ai/skills/universal/breakdown/SKILL.md §7 documents — no
@@ -74,8 +77,13 @@ write_outcome() {
     [ -n "$outcomes" ] || return 0
     local at
     at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    # Best-effort (challenge round 2 finding 8) — see groom-apply.sh's
+    # write_outcome for the full reasoning: a failure here must warn and
+    # continue, never abort a run whose live GitHub write already happened.
     jq -nc --argjson issue "$issue" --arg op "$op" --arg status "$status" --arg at "$at" \
-        '{issue: $issue, op: $op, status: $status, at: $at}' >>"$outcomes"
+        '{issue: $issue, op: $op, status: $status, at: $at}' >>"$outcomes" 2>/dev/null ||
+        echo "groom-decide: warning: could not record the outcome for" \
+            "#$issue ($op) to $outcomes" >&2
 }
 
 repo=""
@@ -132,6 +140,15 @@ if [ "$execute" -eq 1 ]; then
     [ "${GROOM_EXECUTE:-0}" = "1" ] ||
         die 2 "--execute requires GROOM_EXECUTE=1 in the environment" \
             "(set by the task groom wrapper for supervised runs)"
+    # Verify the outcomes sink is appendable up front (challenge round 2
+    # finding 8) — the same reasoning as groom-apply.sh's log/outcomes
+    # preflight: a write_outcome failure discovered mid-run, after live
+    # GitHub writes have already happened, must never be the thing that
+    # aborts the run.
+    if [ -n "$outcomes" ]; then
+        : >>"$outcomes" 2>/dev/null ||
+            die 2 "could not open --outcomes file: $outcomes"
+    fi
 fi
 
 # ── Preflight (finding 7): resolve everything that can fail BEFORE the first
@@ -139,7 +156,12 @@ fi
 # (Renovate/Dependabot) routinely files near-duplicates that would otherwise
 # fit a "superseded by" close — SKILL.md's contract is unqualified that a
 # bot-authored issue is never closed by groom, whatever the write path.
-declare -A blocked_by_id=()
+#
+# blocked_by_ids is a plain indexed array, positionally parallel to
+# blocked_by (index i's id belongs to blocked_by[i]) — not `declare -A`,
+# which is bash 4+ only and breaks this script on macOS's shipped bash 3.2
+# (challenge round 2 finding 5).
+blocked_by_ids=()
 for m in "${supersedes[@]+"${supersedes[@]}"}"; do
     author_json="$(gh issue view "$m" --repo "$repo" --json author)" ||
         die 2 "could not read the author of $repo#$m"
@@ -153,8 +175,9 @@ for m in "${supersedes[@]+"${supersedes[@]}"}"; do
 done
 if [ "$execute" -eq 1 ]; then
     for k in "${blocked_by[@]+"${blocked_by[@]}"}"; do
-        blocked_by_id["$k"]="$(gh api "repos/$repo/issues/$k" --jq .id)" ||
+        id="$(gh api "repos/$repo/issues/$k" --jq .id)" ||
             die 1 "could not resolve the numeric id of $repo#$k"
+        blocked_by_ids+=("$id")
     done
 fi
 
@@ -190,14 +213,16 @@ for m in "${supersedes[@]+"${supersedes[@]}"}"; do
     fi
 done
 
+blocked_by_i=0
 for k in "${blocked_by[@]+"${blocked_by[@]}"}"; do
     if [ "$execute" -eq 0 ]; then
         echo "PLAN gh api repos/$repo/issues/$issue/dependencies/blocked_by -F issue_id=<id of #$k>"
     else
-        blocker_id="${blocked_by_id[$k]}"
+        blocker_id="${blocked_by_ids[$blocked_by_i]}"
         gh api "repos/$repo/issues/$issue/dependencies/blocked_by" \
             -F issue_id="$blocker_id" >/dev/null ||
             die 1 "write failed: blocked-by edge $repo#$issue <- $repo#$k"
         echo "APPLIED blocked-by $repo#$issue <- $repo#$k"
     fi
+    blocked_by_i=$((blocked_by_i + 1))
 done

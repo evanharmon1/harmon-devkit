@@ -36,12 +36,18 @@ recommending a `/triage` run.
 - **`--execute` is refused unless `GROOM_EXECUTE=1`** is in the environment —
   set only by the `task groom` wrapper for a supervised run. A model cannot
   promote itself to write mode by adding a flag.
-- **The wrapper's apply mode never fans out.** `task groom -- --execute` needs
-  `--plan FILE` (and accepts an optional `--decisions DIR`); it grants only
-  the write-capable scripts and read-only `gh` calls — no `Agent`, `Task`,
-  `Glob`, or `Grep`, so nothing in apply mode ever re-reads an issue body.
-  Only audit mode fans out to read-only subagents, and it never has
-  `GROOM_EXECUTE=1`.
+- **The wrapper's apply mode runs no model at all.** `task groom -- --run DIR
+  --plan FILE [--decisions DIR] [--execute]` is a deterministic bash sequence
+  — `groom-apply.sh`, then `groom-decide.sh` once per decision file, then
+  `groom-report.sh render` — with no Claude session, no tool grant, and no
+  prompt to bind. `--run DIR` names the AUDIT run this applies against (the
+  directory that already holds `dispositions.json`); omitting `--execute`
+  dry-runs the exact same sequence. A prompt-injected finding from an earlier
+  audit run has no path to a live write here, because there is no model in
+  the write path to inject at all (issue #1015 finding 10 / challenge round
+  1 — closed by deleting the model from this path entirely in challenge
+  round 2, findings 1 and 2). Only audit mode ever runs a model, and it
+  never has `GROOM_EXECUTE=1`.
 - **A `CLOSE-*` verdict needs concrete evidence.** When unsure, `KEEP` with a
   note. See `references/verdict-vocabulary.md`.
 - **Bot-authored issues are never retitled, closed, or relabelled.**
@@ -167,62 +173,56 @@ requests. **Do not proceed to Step 6 without that go-ahead** — the contract's
 Turn the maintainer's approvals into a plan file (JSON Lines, one op per
 line — see `groom-apply.sh`'s header for the exact shape: `close`, `retitle`,
 `label`, `milestone-assign`, `sub-issue-link`) and, for any answered
-decisions, a decisions directory (see Step 6). Both live under `$SCRATCH`.
+decisions, a decisions directory (see Step 6). Both live under `$SCRATCH` —
+apply's `--run` flag points straight back at this same directory (Step 6).
+This is where the session's job stops: applying is a deterministic script a
+human runs directly, with no model involved, so there is nothing further for
+this session to do once the plan and decisions files are written.
 
 ## Step 6 — Apply
 
-Applying is its OWN, separately supervised run: `task groom -- --execute
---plan "$SCRATCH/plan.jsonl" [--decisions "$SCRATCH/decisions"]`. That
-wrapper invocation grants only `groom-apply.sh`, `groom-decide.sh`,
-`groom-report.sh`, and read-only `gh` calls — no fan-out, no re-reading of
-issue text — so build the plan file and decisions directory from what the
-maintainer approved, in this scratch directory, then hand them to that
-separate invocation (do not try to reach `--execute` from inside an audit
-run's own tool grant — it does not have the write scripts' `--execute`
-path armed, by design; see the contract's "wrapper's apply mode never fans
-out" bullet).
+Applying is its OWN, separately supervised run — a deterministic, model-free
+sequence with no Claude session involved (issue #1015 challenge round 2,
+findings 1 and 2): `task groom -- --execute --run "$SCRATCH" --plan
+"$SCRATCH/plan.jsonl" [--decisions "$SCRATCH/decisions"]`. `--run` names THIS
+audit run's own output directory — that is where `dispositions.json` already
+lives and where `apply.log`, `outcomes.jsonl`, and the re-rendered report are
+written. A human runs this command directly; there is no tool grant to worry
+about because there is no model in this path at all.
 
 Decisions directory shape: one `<issue>.md` file per answered
 `NEEDS-DECISION` row (the maintainer's decision text), plus optional
 `<issue>.supersedes` / `<issue>.blocked-by` sidecar files — one issue number
 per line — naming the siblings/blockers that decision names.
 
-Dry-run the plan first — never skip straight to `--execute`:
+Dry-run the plan first — omit `--execute` and the wrapper runs the exact same
+sequence, printing every `PLAN` line and writing nothing:
 
 ```sh
-"$DIR/assets/groom-apply.sh" apply-plan --repo "$REPO" \
-  --plan-file "$SCRATCH/plan.jsonl" --log "$SCRATCH/apply.log"
+task groom -- --run "$SCRATCH" --plan "$SCRATCH/plan.jsonl" \
+    [--decisions "$SCRATCH/decisions"]
 ```
 
 Review the `PLAN` lines against what the maintainer actually approved, then
-re-run with `--execute --outcomes "$SCRATCH/outcomes.jsonl"` only when your
-runner's mode is APPLY. Closes above `--max-closes` (default 25) in one run
-are refused without an explicit higher value — a large wholesale approval is
-still applied in bounded batches by default. apply-plan validates every row
-before writing any of them — a bad row anywhere in the plan aborts before the
-first write, never partway through.
+re-run with `--execute` added — only when your runner's mode is APPLY. The
+wrapper asks for an interactive "yes" first, then runs, in order:
 
-For each answered decision row, run `groom-decide.sh` once per issue (dry-run
-first, same rule), reading that issue's `.supersedes` / `.blocked-by`
-sidecar files from the decisions directory into repeated flags:
+1. `groom-apply.sh apply-plan --repo "$REPO" --plan-file "$SCRATCH/plan.jsonl"
+   --log "$SCRATCH/apply.log" --outcomes "$SCRATCH/outcomes.jsonl" --execute`
+   — validates every row (pass 1) before writing any of them (pass 2); a bad
+   row anywhere aborts before the first write. Closes above `--max-closes`
+   (default 25) in one run are refused without an explicit higher value — a
+   large wholesale approval is still applied in bounded batches by default.
+2. `groom-decide.sh` once per `$SCRATCH/decisions/<issue>.md`, reading that
+   issue's `.supersedes` / `.blocked-by` sidecar files into repeated flags,
+   also with `--outcomes` and `--execute`.
+3. `groom-report.sh render --dispositions "$SCRATCH/dispositions.json"
+   --outcomes "$SCRATCH/outcomes.jsonl" --out-html "$SCRATCH/report.html"
+   --out-md "$SCRATCH/report.md"` — re-renders the SAME report so its Status
+   column reflects what actually happened, not a snapshot of the plan.
 
-```sh
-"$DIR/assets/groom-decide.sh" --repo "$REPO" --issue <n> \
-  --decision-file <path-to-one-decision's-text> \
-  [--supersedes <m>]... [--blocked-by <k>]... \
-  [--outcomes "$SCRATCH/outcomes.jsonl"]
-```
-
-After applying, **re-render and republish the report** (Step 4, same
-Artifact URL) with `--outcomes "$SCRATCH/outcomes.jsonl"` added, so its
-Status column reflects what actually happened — the report is the single
-view of what is done, not a snapshot of the plan:
-
-```sh
-"$DIR/assets/groom-report.sh" render --dispositions "$SCRATCH/dispositions.json" \
-  --outcomes "$SCRATCH/outcomes.jsonl" \
-  --out-html "$SCRATCH/report.html" --out-md "$SCRATCH/report.md"
-```
+After applying, republish the re-rendered report (Step 4, same Artifact URL,
+or the committed path) — the report is the single view of what is done.
 
 ## Step 7 — Hand-off
 

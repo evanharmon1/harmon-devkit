@@ -58,7 +58,24 @@ case "${1:-} ${2:-}" in
     ;;
 "issue view")
     n="$3"
-    if [ -f "${GH_STUB_DIR:?}/issue-$n.json" ]; then
+    # Simulates a concurrent edit landing between two live re-reads of the
+    # SAME issue within one apply-plan invocation (pass 1's validation and
+    # pass 2's write-adjacent re-check — challenge round 2 finding 4). Scoped
+    # to --json title reads of one designated issue so it never perturbs the
+    # bot-ownership (--json author) reads every other test relies on.
+    if [ -n "${GH_STUB_RACE_ISSUE:-}" ] && [ "$n" = "${GH_STUB_RACE_ISSUE}" ] &&
+        grep -q -- '--json title' <<<"$*"; then
+        count_file="${GH_STUB_RACE_COUNTER:?}"
+        count=0
+        [ -f "$count_file" ] && count="$(cat "$count_file")"
+        count=$((count + 1))
+        printf '%s' "$count" >"$count_file"
+        if [ "$count" -ge 2 ]; then
+            cat "${GH_STUB_DIR:?}/issue-$n-race.json"
+        else
+            cat "${GH_STUB_DIR:?}/issue-$n.json"
+        fi
+    elif [ -f "${GH_STUB_DIR:?}/issue-$n.json" ]; then
         cat "${GH_STUB_DIR:?}/issue-$n.json"
     else
         echo '{"labels":[],"author":{"login":"someone","type":"User","is_bot":false}}'
@@ -510,6 +527,65 @@ echo "==> apply-plan: retitle's live-title check does not run in dry-run mode"
     fail "dry-run must not perform the live-title re-check: $(cat "$tmp/out" "$tmp/err")"
 grep -q "^PLAN " "$tmp/out" || fail "dry-run must still print the PLAN line"
 
+echo "==> apply-plan: pass 1 refuses (exit 2) two plan rows naming the same op+issue (finding 4)"
+dup_op_plan="$tmp/dup-op-plan.jsonl"
+cat >"$dup_op_plan" <<'JSONL'
+{"op":"retitle","issue":50,"title":"New A","previous_title":"Original title","bot_owned":false}
+{"op":"retitle","issue":50,"title":"New B","previous_title":"Original title","bot_owned":false}
+JSONL
+: >"$GH_STUB_LOG"
+dup_op_log="$tmp/dup-op.log"
+: >"$dup_op_log"
+[ "$(run "$apply" apply-plan --repo "$repo" --plan-file "$dup_op_plan" --log "$dup_op_log")" = 2 ] ||
+    fail "two retitle rows for the same issue must exit 2: $(cat "$tmp/out" "$tmp/err")"
+grep -q "#50" "$tmp/err" || fail "duplicate refusal must name the issue number"
+[ ! -s "$dup_op_log" ] || fail "a pass-0 duplicate refusal must not write the log file"
+
+echo "==> apply-plan: retitle refuses (exit 4) as a pass-2 conflict when a concurrent edit lands between pass 1 and pass 2 (finding 4)"
+cat >"$stub_dir/issue-50.json" <<'JSON'
+{"title":"(ci): Original title","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+cat >"$stub_dir/issue-50-race.json" <<'JSON'
+{"title":"(ci): Changed by someone else","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+race_plan="$tmp/race-plan.jsonl"
+printf '%s\n' '{"op":"retitle","issue":50,"title":"(ci): New title","previous_title":"(ci): Original title","bot_owned":false}' >"$race_plan"
+race_counter="$tmp/race-counter"
+rm -f "$race_counter"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 GH_STUB_RACE_ISSUE=50 GH_STUB_RACE_COUNTER="$race_counter" \
+    "$apply" apply-plan --repo "$repo" --plan-file "$race_plan" \
+    --log "$tmp/race.log" --execute)" = 4 ] ||
+    fail "a pass-2 title conflict must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q "conflicts with a" "$tmp/err" || fail "pass-2 refusal must report a conflict, not a plain validation failure"
+grep -q "plan row 1" "$tmp/err" || fail "pass-2 refusal must name the plan row number"
+grep -qE "^issue edit 50" "$GH_STUB_LOG" && fail "a pass-2-refused retitle must never call gh issue edit"
+
+echo "==> apply-plan: pass 1 refuses (exit 4) a label op triage-apply.sh's own dry run would reject, before any write (finding 3)"
+label_never_plan="$tmp/label-never-list-plan.jsonl"
+cat >"$label_never_plan" <<'JSONL'
+{"op":"close","issue":30,"reason":"completed","bot_owned":false}
+{"op":"label","issue":30,"add":["rigor:high"],"bot_owned":false}
+JSONL
+: >"$GH_STUB_LOG"
+label_never_log="$tmp/label-never.log"
+: >"$label_never_log"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$label_never_plan" \
+    --log "$label_never_log" --execute)" = 4 ] ||
+    fail "a never-list label op must exit 4 in pass 1: $(cat "$tmp/out" "$tmp/err")"
+grep -qE "^issue close" "$GH_STUB_LOG" &&
+    fail "a pass-1-refused label op must prevent the earlier valid close from writing too"
+grep -q "^WRITE " "$label_never_log" && fail "no WRITE lines should be logged when pass 1 refuses"
+
+echo "==> apply-plan: an unwritable --outcomes sink is refused in pass 1, before any write (finding 8)"
+: >"$GH_STUB_LOG"
+outcomes_refuse_log="$tmp/outcomes-refuse.log"
+: >"$outcomes_refuse_log"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$plan" \
+    --log "$outcomes_refuse_log" --outcomes "$tmp/does-not-exist/outcomes.jsonl" --execute)" = 2 ] ||
+    fail "an unwritable --outcomes path must exit 2: $(cat "$tmp/out" "$tmp/err")"
+grep -qE "^issue (close|edit)" "$GH_STUB_LOG" && fail "a refused --outcomes sink must prevent every write"
+
 echo "==> apply-plan: a bot-owned issue is refused for close/retitle/label"
 bot_plan="$tmp/bot-plan.jsonl"
 printf '%s\n' '{"op":"close","issue":31,"reason":"completed","bot_owned":true}' >"$bot_plan"
@@ -606,6 +682,14 @@ decide_outcomes="$tmp/decide-outcomes.jsonl"
 [ "$(jq -s '[.[] | select(.issue == 40 and .op == "close" and .status == "DONE")] | length' \
     "$decide_outcomes")" -ge 1 ] || fail "superseded-sibling close outcome must be recorded"
 
+echo "==> groom-decide: an unwritable --outcomes sink is refused before any write (finding 8)"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$decide" --repo "$repo" --issue 12 \
+    --decision-file "$decision_file" --supersedes 40 \
+    --outcomes "$tmp/does-not-exist-2/outcomes.jsonl" --execute)" = 2 ] ||
+    fail "an unwritable --outcomes path must exit 2: $(cat "$tmp/out" "$tmp/err")"
+grep -qE "^issue (close|comment) " "$GH_STUB_LOG" && fail "a refused --outcomes sink must prevent every write"
+
 echo "==> groom-decide: dry-run never writes to --outcomes"
 dry_decide_outcomes="$tmp/dry-decide-outcomes.jsonl"
 [ "$(run "$decide" --repo "$repo" --issue 12 --decision-file "$decision_file" \
@@ -631,11 +715,14 @@ grep -q -- "--model sonnet" "$GH_STUB_LOG" || fail "default model must be sonnet
 grep -q "GROOM_SCRATCH=/" "$GH_STUB_LOG" || fail "run must bind a scratch dir"
 grep -q "GROOM_SCRATCH=$GROOM_OUT_DIR/" "$GH_STUB_LOG" ||
     fail "the scratch dir must be created under GROOM_OUT_DIR"
-for grant in "groom-scan.sh" "groom-verdicts.sh" "groom-report.sh" \
-    "groom-apply.sh" "groom-decide.sh" "Agent,Task,Glob,Grep"; do
+for grant in "groom-scan.sh" "groom-verdicts.sh" "groom-report.sh" "Agent,Task,Glob,Grep"; do
     grep -qF "$grant" "$GH_STUB_LOG" ||
         fail "audit mode's tool grant must be unchanged — missing '$grant'"
 done
+grep -qF "groom-apply.sh" "$GH_STUB_LOG" &&
+    fail "audit mode's tool grant must not include groom-apply.sh (finding 7 — a fan-out session never applies)"
+grep -qF "groom-decide.sh" "$GH_STUB_LOG" &&
+    fail "audit mode's tool grant must not include groom-decide.sh (finding 7 — a fan-out session never decides)"
 
 echo "==> wrapper: the run's report survives the wrapper process (finding 1 — no more rm -rf EXIT trap)"
 audit_scratch="$(grep -o 'GROOM_SCRATCH=/[^[:space:]]*' "$GH_STUB_LOG" | tail -1 | cut -d= -f2)"
@@ -643,32 +730,68 @@ audit_scratch="$(grep -o 'GROOM_SCRATCH=/[^[:space:]]*' "$GH_STUB_LOG" | tail -1
 [ -f "$audit_scratch/report.html" ] || fail "report.html must still exist after the wrapper returns"
 [ -f "$audit_scratch/report.md" ] || fail "report.md must still exist after the wrapper returns"
 
-echo "==> wrapper: --execute without --plan is refused (finding 10)"
-[ "$(run "$wrapper" --execute)" = 2 ] || fail "--execute without --plan must exit 2"
+echo "==> wrapper: the run's output directory is created 0700 (findings 6, 9)"
+audit_scratch_mode="$(stat -c '%a' "$audit_scratch" 2>/dev/null || stat -f '%Lp' "$audit_scratch")"
+[ "$audit_scratch_mode" = "700" ] || fail "run directory must be mode 700 (got $audit_scratch_mode)"
+
+echo "==> wrapper: apply mode requires --run (finding 1)"
+apply_plan_file="$tmp/apply-plan.jsonl"
+printf '%s\n' '{"op":"close","issue":30,"reason":"completed","bot_owned":false}' >"$apply_plan_file"
+[ "$(run "$wrapper" --plan "$apply_plan_file")" = 2 ] || fail "--plan without --run must exit 2"
+grep -q -- "--run" "$tmp/err" || fail "refusal must name --run"
+
+echo "==> wrapper: apply mode requires --plan (finding 1)"
+apply_run_dir="$tmp/apply-run"
+mkdir -p "$apply_run_dir"
+cat >"$apply_run_dir/dispositions.json" <<JSON
+{"repo":"$repo","dispositions":[{"number":30,"title":"(ci): Fix parser bug","verdict":"CLOSE-done","priority":"high","reason":"merged","group":"ci","bot_owned":false}],"stats":{"open_total":1,"close_candidates":1,"decisions":0,"high_priority":1},"milestones":[]}
+JSON
+[ "$(run "$wrapper" --run "$apply_run_dir")" = 2 ] || fail "--run without --plan must exit 2"
 grep -q -- "--plan" "$tmp/err" || fail "refusal must name --plan"
 
-echo "==> wrapper: --execute without a terminal is refused (once --plan is given)"
-noop_apply_plan="$tmp/wrapper-plan.jsonl"
-: >"$noop_apply_plan"
-[ "$(run "$wrapper" --execute --plan "$noop_apply_plan")" = 2 ] ||
+echo "==> wrapper: --execute without a terminal is refused (once --run/--plan are given)"
+[ "$(run "$wrapper" --execute --run "$apply_run_dir" --plan "$apply_plan_file")" = 2 ] ||
     fail "non-interactive --execute must exit 2"
 
-echo "==> wrapper: apply mode's tool grant excludes Agent/Task/Glob/Grep (finding 10)"
-apply_grant_block="$(awk '
-    /# start apply-mode tool grant/ { flag = 1 }
-    flag { print }
-    flag && /# end apply-mode tool grant/ { exit }
-' "$wrapper")"
-[ -n "$apply_grant_block" ] || fail "could not locate the apply-mode tool grant block in $wrapper"
-apply_grant_code="$(printf '%s\n' "$apply_grant_block" | grep -vE '^\s*#')"
-grep -qE 'Agent|Task|Glob|Grep' <<<"$apply_grant_code" &&
-    fail "apply mode's tool grant must not include Agent/Task/Glob/Grep:
-$apply_grant_code"
-grep -q "groom-apply.sh" <<<"$apply_grant_code" ||
-    fail "apply mode's tool grant must include groom-apply.sh"
-grep -q "groom-decide.sh" <<<"$apply_grant_code" ||
-    fail "apply mode's tool grant must include groom-decide.sh"
-grep -q "groom-scan.sh" <<<"$apply_grant_code" &&
-    fail "apply mode's tool grant must not include groom-scan.sh (no re-scanning in apply mode)"
+echo "==> wrapper: apply mode's dry-run (--run/--plan, no --execute) runs the deterministic sequence with no model (findings 1, 2)"
+: >"$GH_STUB_LOG"
+[ "$(run "$wrapper" --run "$apply_run_dir" --plan "$apply_plan_file")" = 0 ] ||
+    fail "wrapper apply dry-run should succeed: $(cat "$tmp/out" "$tmp/err")"
+grep -q "^PLAN gh issue close 30" "$tmp/out" || fail "dry-run must print the plan's PLAN line"
+grep -qE "^issue close 30 " "$GH_STUB_LOG" && fail "dry-run must never call a gh write command"
+grep -q "^ARGS:" "$GH_STUB_LOG" && fail "apply mode must never invoke claude — no model in the write path"
+[ -f "$apply_run_dir/report.html" ] || fail "apply mode must (re-)render the report into --run DIR"
+[ -f "$apply_run_dir/report.md" ] || fail "apply mode must (re-)render the report into --run DIR"
+[ -f "$apply_run_dir/outcomes.jsonl" ] || fail "apply mode must ensure the outcomes sink exists for the render"
+grep -q "#30 — (ci): Fix parser bug" "$apply_run_dir/report.md" ||
+    fail "the re-rendered report must still carry the audit run's own dispositions"
+
+echo "==> wrapper: apply mode's --decisions sidecar files are threaded into groom-decide.sh (Step 6)"
+apply_decisions_dir="$tmp/apply-decisions"
+mkdir -p "$apply_decisions_dir"
+printf 'We are closing #40 in favor of #12.\n' >"$apply_decisions_dir/12.md"
+printf '40\n' >"$apply_decisions_dir/12.supersedes"
+printf '7\n' >"$apply_decisions_dir/12.blocked-by"
+noop_apply_plan="$tmp/wrapper-empty-plan.jsonl"
+: >"$noop_apply_plan"
+: >"$GH_STUB_LOG"
+[ "$(run "$wrapper" --run "$apply_run_dir" --plan "$noop_apply_plan" \
+    --decisions "$apply_decisions_dir")" = 0 ] ||
+    fail "wrapper apply dry-run with --decisions should succeed: $(cat "$tmp/out" "$tmp/err")"
+grep -q "^PLAN gh issue comment 12 " "$tmp/out" || fail "dry-run must print the decision's PLAN line"
+grep -q "^PLAN gh issue close 40 .*not planned" "$tmp/out" ||
+    fail "dry-run must print the supersedes sibling's PLAN line"
+grep -q "^PLAN gh api repos/$repo/issues/12/dependencies/blocked_by" "$tmp/out" ||
+    fail "dry-run must print the blocked-by edge's PLAN line"
+grep -qE "^issue (close|comment) " "$GH_STUB_LOG" && fail "dry-run must never call a gh write command"
+
+echo "==> wrapper: apply mode's re-render reflects outcomes already recorded in --run DIR (finding 2)"
+printf '%s\n' '{"issue":30,"op":"close","status":"DONE","at":"2026-01-01T00:00:00Z"}' \
+    >"$apply_run_dir/outcomes.jsonl"
+: >"$GH_STUB_LOG"
+[ "$(run "$wrapper" --run "$apply_run_dir" --plan "$noop_apply_plan")" = 0 ] ||
+    fail "wrapper apply dry-run should succeed: $(cat "$tmp/out" "$tmp/err")"
+grep -q "^| #30 .*| DONE |" "$apply_run_dir/report.md" ||
+    fail "the re-render must merge the audit run's own outcomes.jsonl into the Status column"
 
 echo "All groom skill tests passed."
