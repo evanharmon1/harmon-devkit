@@ -782,6 +782,25 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 11 pending
 
+echo "==> recreated state keeps an earlier current-head finding in the adjudication set"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" \
+    '[[
+      {
+        id:77,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T07:00:00Z",
+        commit_id:$head,
+        body:"P1: unresolved finding from the earlier local cycle"
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+assert_accepted review 77
+assert_result_attempt 1
+
 echo "==> paginated current-head inline comment is a finding"
 new_cycle
 jq -cn \
@@ -1656,19 +1675,33 @@ rm -f "${state}.lock/pid"
 rmdir "${state}.lock"
 [ "$locked_rc" -eq 2 ] ||
     fail "locked reservation should fail closed: $locked_out"
-grep -Fq "live shepherd PID $$" <<<"$locked_out" ||
+grep -Fq "lock-held: holder_pid=$$ visible=yes age=" <<<"$locked_out" ||
     fail "live-lock refusal did not identify its holder: $locked_out"
 
-echo "==> a stale state lock is recovered using its recorded PID"
+echo "==> an invisible lock holder is stale-suspected and never auto-reclaimed"
 write_defaults
 rm -f "$state"
 mkdir "${state}.lock"
 printf '%s\n' 99999999 >"${state}.lock/pid"
+set +e
+stale_out="$("$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 2>&1)"
+stale_rc=$?
+set -e
+[ "$stale_rc" -eq 2 ] ||
+    fail "stale-suspected lock should fail closed: $stale_out"
+grep -Fq "lock-stale-suspected: holder_pid=99999999 visible=no age=" <<<"$stale_out" ||
+    fail "stale-suspected lock did not report its evidence: $stale_out"
+[ -f "${state}.lock/pid" ] ||
+    fail "stale-suspected lock was modified without --break-lock"
+
+echo "==> --break-lock explicitly removes an invisible holder and continues"
 "$helper" reserve \
     --state "$state" --repo example/repo --pr 493 \
-    --head "$head_sha" --attempt 1 >/dev/null
-[ -f "$state" ] || fail "stale-lock recovery did not complete the reservation"
-[ ! -d "${state}.lock" ] || fail "stale-lock recovery left the lock directory behind"
+    --head "$head_sha" --attempt 1 --break-lock >/dev/null
+[ -f "$state" ] || fail "explicit lock break did not complete the reservation"
+[ ! -d "${state}.lock" ] || fail "explicit lock break left the lock directory behind"
 
 echo "==> state lock serializes checks with reservations"
 new_cycle

@@ -33,11 +33,11 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
-  check-codex-cloud-review.sh attach --state FILE --trigger-id N
-  check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
-  check-codex-cloud-review.sh check --state FILE [--actor-id N] [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
-  check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--covers N] [--now ISO8601]
+  check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG] [--break-lock]
+  check-codex-cloud-review.sh attach --state FILE --trigger-id N [--break-lock]
+  check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601 [--break-lock]
+  check-codex-cloud-review.sh check --state FILE [--actor-id N] [--actor-login LOGIN] [--timeout-min N] [--now ISO8601] [--break-lock]
+  check-codex-cloud-review.sh settle --state FILE --actor-id N --surface comment|review --id N --disposition declined|filed --note TEXT [--covers N] [--now ISO8601] [--break-lock]
   check-codex-cloud-review.sh show --state FILE
   check-codex-cloud-review.sh reap --root DIR [--budget-sec N]
 
@@ -105,9 +105,14 @@ reap_budget_sec=60
 reap_deadline_epoch=
 finder_slug=
 requested_at_arg=
+break_lock=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+    --break-lock)
+        break_lock=1
+        shift
+        ;;
     --state | --root | --repo | --pr | --head | --attempt | --trigger-id | --actor-id | --actor-login | --timeout-min | --budget-sec | --now | --surface | --id | --disposition | --note | --covers | --finder | --requested-at)
         [ "$#" -ge 2 ] || usage
         case "$1" in
@@ -146,6 +151,10 @@ done
 case "$command_name" in
 reap) [ -n "$root_dir" ] || usage ;;
 *) [ -n "$state_file" ] || usage ;;
+esac
+case "$command_name" in
+reserve | attach | check | settle) ;;
+*) [ "$break_lock" = 0 ] || usage ;;
 esac
 
 valid_repo() {
@@ -408,16 +417,25 @@ acquire_state_lock() {
     lock_dir="${state_file}.lock"
     if ! mkdir "$lock_dir" 2>/dev/null; then
         lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
-        valid_uint "$lock_pid" ||
-            die "state lock has no usable holder PID; inspect before retrying"
-        if kill -0 "$lock_pid" 2>/dev/null; then
-            die "state is locked by live shepherd PID $lock_pid; inspect before retrying"
+        lock_mtime=$(stat -c %Y "$lock_dir" 2>/dev/null ||
+            stat -f %m "$lock_dir" 2>/dev/null || true)
+        lock_now=$(date -u '+%s')
+        lock_age=unknown
+        if grep -Eq '^[0-9]+$' <<<"$lock_mtime" &&
+            [ "$lock_now" -ge "$lock_mtime" ]; then
+            lock_age="$((lock_now - lock_mtime))s"
         fi
+        lock_holder=${lock_pid:-unknown}
+        if valid_uint "$lock_pid" && kill -0 "$lock_pid" 2>/dev/null; then
+            die "lock-held: holder_pid=$lock_pid visible=yes age=$lock_age"
+        fi
+        [ "$break_lock" = 1 ] ||
+            die "lock-stale-suspected: holder_pid=$lock_holder visible=no age=$lock_age; lock left untouched (retry with --break-lock only after inspection)"
         rm -f "$lock_dir/pid"
         rmdir "$lock_dir" 2>/dev/null ||
-            die "stale state lock for PID $lock_pid changed during recovery; inspect before retrying"
+            die "lock-stale-suspected: explicit break refused because the lock changed or contains unexpected entries"
         mkdir "$lock_dir" 2>/dev/null ||
-            die "state lock was claimed during stale-lock recovery; inspect before retrying"
+            die "lock-stale-suspected: state lock was claimed during explicit break; inspect before retrying"
     fi
     printf '%s\n' "$$" >"$lock_dir/pid" || {
         rmdir "$lock_dir" 2>/dev/null || true
@@ -1480,12 +1498,10 @@ check)
     # letting an unattributable finding be counted against some other review.
     inline_head_findings=$(jq \
         --argjson id "$actor_id" \
-        --arg head "$state_head" \
-        --arg cycle "$cycle_requested" '
+        --arg head "$state_head" '
           [.[] | select(
             .user.id? == $id and
-            (.original_commit_id? == $head) and
-            ((.created_at? // "") > $cycle)
+            (.original_commit_id? == $head)
           )] | length
         ' "$workdir/inline.json")
 
@@ -1539,8 +1555,7 @@ check)
         inline_partition=$(jq -c \
             --argjson id "$actor_id" \
             --argjson author "$pr_author_id" \
-            --arg head "$state_head" \
-            --arg cycle "$cycle_requested" '
+            --arg head "$state_head" '
               def ts($value):
                 if ($value | type) == "string" and
                    ($value | test(
@@ -1552,8 +1567,7 @@ check)
                 else ts(.updated_at) end;
               . as $all |
               [$all[] | select(
-                .user.id? == $id and (.original_commit_id? == $head) and
-                ((.created_at? // "") > $cycle)
+                .user.id? == $id and (.original_commit_id? == $head)
               )] as $bot |
               [$bot[] |
                 . as $comment |
@@ -1901,13 +1915,11 @@ check)
     disposed_review_hits=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
-        --arg cycle "$cycle_requested" \
         --argjson disposed "$disposed_reviews" \
         "$codex_verdict_defs"'
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head) and
-            ((.submitted_at? // "") > $cycle) and
             (body_text != "")
           ) | . as $review |
           select(verdict_class == "findings") |
@@ -1938,7 +1950,6 @@ check)
     review_result=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
-        --arg cycle "$cycle_requested" \
         --arg requested "$state_requested" \
         --argjson settled "$settled_reviews" \
         --argjson disposed "$disposed_reviews" \
@@ -1946,7 +1957,6 @@ check)
           [.[] | select(
             .user.id? == $id and
             (.commit_id? == $head) and
-            ((.submitted_at? // "") > $cycle) and
             (body_text != "")
           ) |
           . as $review | verdict_class as $class |
@@ -1990,14 +2000,12 @@ check)
         findings_review_id=$(jq -r \
             --argjson id "$actor_id" \
             --arg head "$state_head" \
-            --arg cycle "$cycle_requested" \
             --argjson disposed "$disposed_reviews" \
             --argjson settled "$settled_reviews" \
             "$codex_verdict_defs"'
               [.[] | select(
                 .user.id? == $id and
                 (.commit_id? == $head) and
-                ((.submitted_at? // "") > $cycle) and
                 (body_text != "")
               ) | . as $review | verdict_class as $class |
               select($class == "findings") |
@@ -2051,10 +2059,9 @@ check)
             emit indeterminate "bot review comment carries a malformed creation time"
             exit 2
         }
-        [ "$comment_created" \> "$cycle_requested" ] || continue
         comment_attempt=$(result_attempt_for_time "$comment_created")
-        if [ "$comment_attempt" != "$state_attempt" ] &&
-            [ "$classification" != "findings" ]; then
+        if [ "$classification" != "findings" ] &&
+            ! [ "$comment_created" \> "$state_requested" ]; then
             continue
         fi
         grep -Eq '^[0-9a-fA-F]{7,40}$' <<<"$prefix" || {
@@ -2400,12 +2407,10 @@ settle)
     state_head=$(jq -r '.head' "$state_file")
     state_attempt=$(jq -r '.attempt' "$state_file")
     state_requested=$(jq -r '.requested_at // empty' "$state_file")
-    cycle_requested=$(jq -r '.cycle_requested_at // empty' "$state_file")
     valid_repo "$state_repo" || die "state has an invalid repository"
     valid_uint "$state_pr" || die "state has an invalid PR number"
     valid_sha "$state_head" || die "state has an invalid head"
     valid_time "$state_requested" || die "state has an invalid request time"
-    valid_time "$cycle_requested" || die "state has an invalid cycle request time"
     # `state_reserved` is deliberately left unset, which gives `run_gh` its flat
     # per-call budget: settlement is a human act that lands after the cycle
     # reported findings, often long after the attempt window closed, and
@@ -2475,8 +2480,6 @@ settle)
     esac
     valid_time "$target_result_time" ||
         die "target $target_id has no usable result timestamp"
-    [ "$target_result_time" \> "$cycle_requested" ] ||
-        die "target $target_id predates this review cycle"
     target_attempt=$(result_attempt_for_time "$target_result_time")
 
     # The badge is the only machine-emitted signal that this is a finding at
