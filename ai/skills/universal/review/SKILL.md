@@ -227,6 +227,17 @@ after that write, run the exit command again with the same trusted repository
 history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
+Before replacing `run.json`, write the complete candidate beside it and run
+`scripts/validate-result-schemas.mjs run <candidate>` with every adjudication
+document the candidate depends on. Rename the candidate over `run.json` only
+after that validation passes. Immediately after every replacement of
+`run.json`, run `scripts/validate-result-schemas.mjs run <run.json>` with those
+same adjudication documents to validate the canonical readback. Either
+validation failure fails the round and is a terminal blocker; never publish an
+invalid candidate or defer validation until publication or promotion.
+Operational `run.json` records validate under the schema with their trusted
+`receipts` sequence intact.
+
 After each adjudication, keep the immutable source envelopes locally, but build
 the fenced JSON public comment only from a verification-bound projection. Join
 the validated source facts to `verdict.json.verified_findings` by finding ID and
@@ -293,6 +304,32 @@ operator may override it upward to exactly one additional pass while the
 resolved stage cap still has headroom. Before dispatch, append that operator's
 reason and attribution to `run.json.interventions` as `kind: other`; refuse the
 override when no round remains. Never override an exit downward or reinterpret
-the script's outcome. Without that recorded upward override, a terminal
-`challenge` clean transitions to `review` and a terminal `review` clean names
-security as next. Deferred P2s remain recorded for integration.
+the script's outcome.
+
+### Stage advance write
+
+Without that recorded upward override, an `action: advance` result is the sole
+authority to advance the run record. Re-read `run.json`. First recognize and
+validate an exact already-applied current-to-next transition; adopt it and
+complete the remaining readback, publication, and next-stage steps without
+appending a second transition. Otherwise require the last transition to name
+the current stage and have no `exit`; any other state blocks.
+Close the current transition by setting its `exit` to
+`"<rule>: <detail>"`, where the rule is the verdict outcome and therefore starts
+with one of `continue`, `converged`, `diverging`, or `capped`; the detail names
+the verdict's exit reason and qualifying round. Capture one UTC timestamp. In
+the same complete candidate, append exactly
+`{"stage":"<next>","entered_at":"<timestamp>"}` to `stage_transitions` and its
+matching `{"kind":"transition","stage":"<next>","entered_at":"<same timestamp>"}`
+receipt to `receipts`. Never
+append `{from,to,at,reason}`: those are verdict concepts, not the run schema's
+transition shape. Write the close and append to a complete candidate beside
+`run.json`, validate that candidate with every adjudication document it
+depends on, then atomically rename it over `run.json` only after validation
+passes. Validate the canonical readback as required above before publishing
+evidence or entering the next stage.
+
+This advance recipe covers stages whose resolved cap is at least `1`. The next
+stage is `review` after a terminal `challenge`; a terminal `review` enters
+`security`. A cap-zero advance is outside this recipe and tracked in #957.
+Deferred P2s remain recorded for integration.

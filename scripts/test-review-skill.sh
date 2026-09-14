@@ -85,6 +85,71 @@ for text in 'mandatory round-two scaffolding checkpoint' \
 done
 grep -Fq 'resolved cap is `0`' "$skill" ||
     fail "review skill does not skip finder dispatch for a disabled stage"
+
+echo "==> review stage advance writes and validates schema-shaped transitions"
+for text in 'Before replacing `run.json`, write the complete candidate beside it' \
+    'scripts/validate-result-schemas.mjs run <candidate>' \
+    'Rename the candidate over `run.json` only' \
+    'after that validation passes' \
+    'scripts/validate-result-schemas.mjs run <run.json>' \
+    'Operational `run.json` records validate under the schema with their trusted' \
+    '`receipts` sequence intact' \
+    'First recognize and' \
+    'validate an exact already-applied current-to-next transition; adopt it' \
+    'appending a second transition' \
+    'Otherwise require the last transition to name' \
+    'Close the current transition by setting its `exit` to' \
+    '`"<rule>: <detail>"`' \
+    'therefore starts' \
+    'with one of `continue`, `converged`, `diverging`, or `capped`' \
+    'Capture one UTC timestamp. In' \
+    'the same complete candidate, append exactly' \
+    '`{"stage":"<next>","entered_at":"<timestamp>"}` to `stage_transitions` and its' \
+    'matching `{"kind":"transition","stage":"<next>","entered_at":"<same timestamp>"}`' \
+    'receipt to `receipts`' \
+    'append `{from,to,at,reason}`' \
+    'resolved cap is at least `1`'; do
+    grep -Fq "$text" "$skill" || fail "review stage-advance recipe is missing: $text"
+done
+advance_fixture="ai/schemas/fixtures/run.schema/valid/empty-round-challenge-to-review.json"
+node scripts/validate-result-schemas.mjs run "$advance_fixture" --receipt --no-adjudications ||
+    fail "empty-round challenge-to-review transition fixture is invalid"
+jq -e '
+    .stage_transitions[-2] == {
+      stage: "challenge",
+      entered_at: "2026-09-13T12:04:00Z",
+      exit: "converged: empty_round after round 1"
+    } and
+    .stage_transitions[-1] == {
+      stage: "review",
+      entered_at: "2026-09-13T12:05:00Z"
+    } and
+    ([.stage_transitions[] | has("from") or has("to") or has("at") or has("reason")] | any | not)
+' "$advance_fixture" >/dev/null || fail "empty-round advance fixture does not pin the writer shape"
+
+reentry_fixture="ai/schemas/fixtures/run.schema/valid/reentered-challenge-to-review.json"
+echo "==> post-rename crash re-entry adopts the applied transition before fresh-write checks"
+node scripts/validate-result-schemas.mjs run "$reentry_fixture" --receipt --no-adjudications ||
+    fail "re-entered challenge-to-review transition fixture is invalid"
+jq -e '
+    ([.stage_transitions[] | select(.stage == "challenge")] | length) == 1 and
+    ([.stage_transitions[] | select(.stage == "review")] | length) == 1 and
+    .stage_transitions[-2] == {
+      stage: "challenge",
+      entered_at: "2026-09-13T12:04:00Z",
+      exit: "converged: two_consecutive rounds 3 and 4"
+    } and
+    .stage_transitions[-1] == {
+      stage: "review",
+      entered_at: "2026-09-13T12:05:00Z"
+    }
+' "$reentry_fixture" >/dev/null || fail "re-entry fixture does not adopt exactly one applied transition"
+
+adopt_line=$(grep -nF 'validate an exact already-applied current-to-next transition; adopt it' "$skill" | cut -d: -f1)
+fresh_line=$(grep -nF 'Otherwise require the last transition to name' "$skill" | cut -d: -f1)
+[ -n "$adopt_line" ] && [ -n "$fresh_line" ] && [ "$adopt_line" -lt "$fresh_line" ] ||
+    fail "post-rename adoption is not ordered before the fresh-write precondition"
+
 grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
     fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"
 grep -Fq 'validate-result-schemas.mjs brief "$brief_path"' \
