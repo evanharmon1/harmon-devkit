@@ -317,8 +317,11 @@ the current stage and have no `exit`; any other state blocks.
 Close the current transition by setting its `exit` to
 `"<rule>: <detail>"`, where the rule is the verdict outcome and therefore starts
 with one of `continue`, `converged`, `diverging`, or `capped`; the detail names
-the verdict's exit reason and qualifying round. Then
-append exactly `{"stage":"<next>","entered_at":"<UTC timestamp>"}`. Never
+the verdict's exit reason and qualifying round. Capture one UTC timestamp. In
+the same complete candidate, append exactly
+`{"stage":"<next>","entered_at":"<timestamp>"}` to `stage_transitions` and its
+matching `{"kind":"transition","stage":"<next>","entered_at":"<same timestamp>"}`
+receipt to `receipts`. Never
 append `{from,to,at,reason}`: those are verdict concepts, not the run schema's
 transition shape. Write the close and append to a complete candidate beside
 `run.json`, validate that candidate with every adjudication document it

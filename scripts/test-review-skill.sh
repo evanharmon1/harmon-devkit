@@ -102,7 +102,11 @@ for text in 'Before replacing `run.json`, write the complete candidate beside it
     '`"<rule>: <detail>"`' \
     'therefore starts' \
     'with one of `continue`, `converged`, `diverging`, or `capped`' \
-    'append exactly `{"stage":"<next>","entered_at":"<UTC timestamp>"}`' \
+    'Capture one UTC timestamp. In' \
+    'the same complete candidate, append exactly' \
+    '`{"stage":"<next>","entered_at":"<timestamp>"}` to `stage_transitions` and its' \
+    'matching `{"kind":"transition","stage":"<next>","entered_at":"<same timestamp>"}`' \
+    'receipt to `receipts`' \
     'append `{from,to,at,reason}`' \
     'resolved cap is at least `1`'; do
     grep -Fq "$text" "$skill" || fail "review stage-advance recipe is missing: $text"
