@@ -781,8 +781,15 @@ function harvestTrajectory(stats, args, runId, trusted) {
   }
   const stderr = (result.stderr || '').trim()
   if (result.status === 1) {
-    const kind = stderr.includes('record-missing') ? 'record-missing' : 'run-not-found'
-    return { missing: `${kind} — ${stderr || `the harvester does not know run ${runId}`}` }
+    let structuredStatus = null
+    try {
+      structuredStatus = JSON.parse(result.stdout || 'null')?.status || null
+    } catch {
+      // Older harvesters do not emit a structured missing status. Preserve
+      // their stderr classification until every consumer has upgraded.
+    }
+    const kind = structuredStatus === 'record-missing' || stderr.includes('record-missing') ? 'record-missing' : 'run-not-found'
+    return { missingKind: kind, missing: `${kind} — ${stderr || `the harvester does not know run ${runId}`}` }
   }
   if (result.status === 3) {
     throw new IndeterminateError(stderr || `the harvester reports run ${runId} indeterminate`)
@@ -1397,11 +1404,12 @@ function run(argv) {
     // A trusted marker naming a run the harvester cannot find is the evidence
     // spec's deleted-entry case — "reject it as deleted-entry tampering, never
     // reinterpret it as a run that did not happen" — so it is indeterminate,
-    // not a fallback (review round 1, confirmed P1). An id that came from
-    // --run carries no such claim: nothing said that run ever existed.
-    if (!args.run) {
+    // not a fallback (review round 1, confirmed P1). A plain run-not-found id
+    // from --run carries no such claim, but structured record-missing does:
+    // the harvester authenticated its marker before finding the local gap.
+    if (harvested.missingKind === 'record-missing' || !args.run) {
       console.error(
-        `${TOOL}: indeterminate — ${harvested.missing}, but a trusted evidence marker (${runIdFrom}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.`
+        `${TOOL}: indeterminate — ${harvested.missing}${!args.run ? `, but a trusted evidence marker (${runIdFrom}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.` : '. Authenticated evidence exists, but its named local record is absent.'}`
       )
       return 11
     }

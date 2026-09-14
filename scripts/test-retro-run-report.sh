@@ -1699,6 +1699,16 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 [ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
     ok "exit 10 naming run-not-found" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
 
+echo "==> record-missing for an explicit --run remains authenticated and indeterminate"
+d="$TMPROOT/record-missing-explicit"
+scaffold "$d" further-along "body"
+printf '%s\n' '{"status":"record-missing","run_id":"made-up"}' >"$d/record-missing.json"
+make_stats "$d/stats.mjs" 1 "$d/record-missing.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --run made-up --record-dir "$d" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "record-missing" && contains "$ERR" "Authenticated evidence exists" &&
+    ok "exit 11 preserves structured record-missing" || bad "expected exit 11 / record-missing, got $RC: $ERR"
+
 echo "==> a harvester crash is an operational error, never a silent fallback"
 d="$TMPROOT/crash"
 scaffold "$d" further-along "body"

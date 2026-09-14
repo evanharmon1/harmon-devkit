@@ -1816,7 +1816,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, unt
   if (visibleMarkers.length === 0) return { status: "no-current-evidence" };
   const hasIssueBinding = visibleMarkers.some((observed) => observed.marker.dest === "issue") || issueNumberFromRunId(runId) === issueNumber;
   if (!hasIssueBinding && visibleMarkers.some((observed) => observed.marker.dest === "pr")) {
-    return { status: "indeterminate", runId, issueNumber, reason: `PR-only evidence for noncanonical run ${JSON.stringify(runId)} is unverified for issue #${issueNumber}; an authenticated issue marker or canonical run-id issue binding is required` };
+    return { status: "indeterminate", runId, issueNumber, unverifiedPrOnly: true, reason: `PR-only evidence for noncanonical run ${JSON.stringify(runId)} is unverified for issue #${issueNumber}; an authenticated issue marker or canonical run-id issue binding is required` };
   }
   const registrations = new Map(body.evidence_comments.map((entry) => [String(entry.id), entry]));
   const observedIds = new Set(allMarkers.map((observed) => String(observed.comment.id)));
@@ -1991,7 +1991,14 @@ function discoverAllRuns(repo, options) {
 
 function discoverRunsForId(repo, runId, options) {
   const issueNumber = issueNumberFromRunId(runId);
-  if (issueNumber === null) return discoverAllRuns(repo, { ...options, requestedRunId: runId });
+  if (issueNumber === null) {
+    const discovered = discoverAllRuns(repo, { ...options, requestedRunId: runId });
+    const matching = discovered.filter((run) => run.runId === runId);
+    const authoritativelyBound = matching.filter((run) => !run.unverifiedPrOnly);
+    if (authoritativelyBound.length > 0) return authoritativelyBound;
+    const unverifiedPrOnly = matching.find((run) => run.unverifiedPrOnly);
+    return unverifiedPrOnly ? [unverifiedPrOnly] : discovered;
+  }
 
   let issue;
   try {
@@ -2962,6 +2969,7 @@ function cliRun(args) {
     return 3;
   }
   if (run.status === "record-missing") {
+    if (args.json) console.log(JSON.stringify({ status: "record-missing", run_id: run.runId, issue: run.issueNumber, run_dir: run.runDir }));
     console.error(`dev-flow-stats: record-missing: authenticated evidence names run "${args.run}", but ${run.runDir}/run.json does not exist`);
     return 1;
   }
