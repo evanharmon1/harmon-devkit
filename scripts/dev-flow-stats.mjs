@@ -1984,7 +1984,9 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
   const rounds = [];
   try {
     for (const stage of ["challenge", "review"]) {
-      const assembled = assembleExitRounds(stage, validPasses, validAdjudications, { finders: [], finder_fallbacks: [] }, exitRun.runRecord);
+      const assembled = assembleExitRounds(stage, validPasses, validAdjudications, { finders: [], finder_fallbacks: [] }, exitRun.runRecord, {
+        allPasses: exitRun.passes,
+      });
       applyExitVerification(assembled, null);
       for (const round of assembled) {
         const key = `${stage}|${round.round}`;

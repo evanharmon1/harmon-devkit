@@ -3507,14 +3507,17 @@ done
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 
 echo "== an adjudication with no completed pass or slot failure is indeterminate =="
+cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 mv "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
+jq '.receipts |= map(select(.kind != "pass" or .file != "review-r1"))' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
 set +e
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
-[ "$rc" -eq 3 ] && grep -Eq 'no completed pass or retained slot failure|receipt without evidence' <<<"$out" ||
+[ "$rc" -eq 3 ] && grep -Fq 'adjudication document "review-r1"' <<<"$out" ||
     fail "evidence adjudication source: expected indeterminate, got rc=$rc: $out"
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
+mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 
 echo "== the exit engine excludes blocked envelopes from retained round evidence =="
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"

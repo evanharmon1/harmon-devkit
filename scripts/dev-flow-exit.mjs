@@ -527,7 +527,33 @@ function validateReceipts(runRecord, passes, { validatorPath, tmpDir }) {
 // Logical round assembly
 // ---------------------------------------------------------------------------
 
-function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage, runRecord) {
+function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage, runRecord, { allPasses = validPasses } = {}) {
+  // The pass -> adjudication direction is checked after assembly. This is
+  // adjudication -> pass: an adjudication for a round that was never
+  // dispatched is malformed trajectory evidence, not a document to ignore.
+  // Measure against every retained pass, including ones receipt validation
+  // rejected, because those still prove the round was dispatched.
+  const dispatchedRounds = new Set();
+  for (const pass of allPasses) {
+    const payload = pass.envelope ? pass.envelope.payload : pass.payload;
+    if (payload && typeof payload.stage === "string" && typeof payload.round === "number") {
+      dispatchedRounds.add(`${payload.stage}:${payload.round}`);
+    }
+  }
+  for (const slotFailure of Array.isArray(runRecord.slot_failures) ? runRecord.slot_failures : []) {
+    if (typeof slotFailure.stage === "string" && typeof slotFailure.round === "number") {
+      dispatchedRounds.add(`${slotFailure.stage}:${slotFailure.round}`);
+    }
+  }
+  const orphanAdjudication = adjudications.find(
+    (entry) => !dispatchedRounds.has(`${entry.doc.stage}:${entry.doc.round}`),
+  );
+  if (orphanAdjudication) {
+    throw new ExitIndeterminate(
+      `adjudication document "${orphanAdjudication.name}" names ${orphanAdjudication.doc.stage} round ${orphanAdjudication.doc.round}, but no pass or slot_failures record in this run ever named that round — an adjudication with no source pass is an error, not something to ignore`,
+    );
+  }
+
   const stagePasses = validPasses.filter((p) => p.payload.stage === stage);
   // Two individually-valid adjudication files naming the same (stage, round)
   // may assign conflicting adjudicated priorities — silently keeping
@@ -1978,7 +2004,9 @@ async function main() {
 
   let rounds;
   try {
-    rounds = assembleLogicalRounds(args.stage, validPasses, validAdjudications, resolved.stages[args.stage], runDir.runRecord);
+    rounds = assembleLogicalRounds(args.stage, validPasses, validAdjudications, resolved.stages[args.stage], runDir.runRecord, {
+      allPasses: runDir.passes,
+    });
   } catch (err) {
     if (err instanceof ExitIndeterminate) {
       return indeterminate(args, err.message);
@@ -2038,66 +2066,6 @@ async function main() {
     if (presentRoundNumbers[i] !== i + 1) {
       return indeterminate(args, `${args.stage} rounds are not contiguous from 1 (present: ${presentRoundNumbers.join(", ")}) — trajectory inconsistent with its own policy`);
     }
-  }
-
-  // The OTHER direction of the one-to-one pass/adjudication requirement
-  // (harmon-devkit#685: "every retained pass has exactly one adjudication
-  // document and vice versa (both directions); an unmatched pass is an
-  // error, not ignored"). The pass -> adjudication direction is the
-  // `missingAdjudication` check below; this is adjudication -> pass, and
-  // nothing enforced it: assembleLogicalRounds derives its round numbers
-  // from the stage's passes and slot_failures ONLY, so an adjudication
-  // naming a round the run has no evidence of at all was silently dropped
-  // and the trajectory converged as if the document did not exist —
-  // adjudicating findings no pass ever produced.
-  //
-  // Deliberately measured against every pass the run directory HOLDS
-  // (plus its slot_failures), not against the assembled/
-  // retained rounds: a round whose every pass was REJECTED by receipt
-  // validation legitimately assembles no logical round while its
-  // adjudication document survives, and the considered behavior there is
-  // to continue with a diagnostic so the round can be re-dispatched (the
-  // no-receipt-transition-rejected and stale-run-id-rejected fixtures).
-  // What has no legitimate reading is an adjudication for a round that
-  // was never dispatched at all.
-  //
-  // Placed with the other cap-integrity checks so it applies before BOTH
-  // output modes: --verification-only is a pre-adjudication projection,
-  // not permission to hold an adjudication the trajectory cannot account
-  // for.
-  //
-  // Cross-stage, for exactly the reason the cap-0 emptiness rule and the
-  // over-cap rule above are: an orphan adjudication is a malformed
-  // trajectory wherever in the run it sits. Scoping BOTH the candidate set
-  // and the dispatched-round index to args.stage made a challenge orphan
-  // invisible while review's exit was computed, so review converged and
-  // returned action "advance" on a trajectory it had never validated —
-  // authorizing the next stage off a run whose earlier stage adjudicated
-  // findings no pass ever produced (integrate cycle 5 on PR #800,
-  // confirmed and reproduced). The index is keyed "<stage>:<round>" rather
-  // than by round number alone so a challenge round 1 can never satisfy a
-  // review round 1 adjudication: widening the scan must not weaken the
-  // match it performs.
-  const dispatchedRounds = new Set();
-  for (const p of runDir.passes) {
-    const payload = p.envelope.payload;
-    if (payload && typeof payload.stage === "string" && typeof payload.round === "number") {
-      dispatchedRounds.add(`${payload.stage}:${payload.round}`);
-    }
-  }
-  for (const sf of Array.isArray(runDir.runRecord.slot_failures) ? runDir.runRecord.slot_failures : []) {
-    if (typeof sf.stage === "string" && typeof sf.round === "number") {
-      dispatchedRounds.add(`${sf.stage}:${sf.round}`);
-    }
-  }
-  const orphanAdjudication = validAdjudications.find(
-    (a) => !dispatchedRounds.has(`${a.doc.stage}:${a.doc.round}`),
-  );
-  if (orphanAdjudication) {
-    return indeterminate(
-      args,
-      `adjudication document "${orphanAdjudication.name}" names ${orphanAdjudication.doc.stage} round ${orphanAdjudication.doc.round}, but no pass or slot_failures record in this run ever named that round — an adjudication with no source pass is an error, not something to ignore`,
-    );
   }
 
   // Every retained COMPLETE round needs its own adjudication document,
