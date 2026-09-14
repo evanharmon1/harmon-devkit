@@ -165,6 +165,17 @@ already knows is active). The spec calls this layer **receipt validation**
 (§ Results) and it is deliberately a script responsibility, not a schema
 keyword, for every one of these:
 
+`run.schema.json` does validate the structure of the evidence collections it
+can see. Its optional `receipts[]` is a closed `oneOf`: a transition is exactly
+`{kind: "transition", stage, entered_at?}` and a pass is exactly
+`{kind: "pass", file}`. The optional `entered_at` preserves compatibility with
+pre-schema receipt producers; when present, it keeps the shared timestamp
+shape and real-instant semantics. Its optional `slot_failures[]` entries are exactly
+`{stage, round, slot, reason, head?}`, with confidence-stage names, the two
+engine reasons, and an optional 40-character lowercase-hex head. Structural
+validation therefore rejects malformed entries before the cross-document and
+sequence checks below run; those later checks remain script responsibilities.
+
 - **Head agreement** — a reviewer payload's `reviewed_head`, and an
   integrator payload's `codex_cycle.head` / `codex_cycle.accepted.reviewed_commit`
   and every `finder_cycles[].head` / `.accepted.reviewed_commit`,
@@ -2057,7 +2068,8 @@ order").
 (`specs/dev-flow-v2.md`'s "Producer-supplied `produced_at` SHALL be only a
 bounded sanity check ... never an ordering ... boundary" — ordering is the
 orchestrator's own receipt order, recorded as it happens, not reconstructed
-from timestamps): an ordered list of `{kind: "transition", stage}` and
+from timestamps): an ordered list of
+`{kind: "transition", stage, entered_at?}` and
 `{kind: "pass", file}` entries. A pass with no `"pass"` receipt entry, one
 naming a `run_id`/`initiated_by` other than `run.json`'s own, or one with no
 preceding `"transition"` receipt into its own `payload.stage`, is rejected
@@ -2495,20 +2507,16 @@ commit.
   field as present. Value-type validation for a genuine v2 field stays a
   separate, already-enforced concern (`resolveRounds`'s own checks).
 
-Two findings were confirmed but filed as follow-ups rather than resolved
-in this final round, both requiring cross-lane coordination this lane
-cannot resolve unilaterally: the canonical `ai/schemas/run.schema.json`
-has `additionalProperties: false` and defines neither `receipts` nor
-`slot_failures` — the exact fields `dev-flow-exit.mjs`'s `validateReceipts`
-requires — so a schema-valid production `run.json` cannot actually supply
-the evidence this reader needs, and this reader's own fixture `run.json`
-files would themselves fail validation against the canonical schema as it
-stands today
-([#727](https://github.com/evanharmon1/harmon-devkit/issues/727)). And a
-request to validate the complete strategy vocabulary (noncanonical
-strategy names, malformed `topology`/`planning`/`delegation` values, not
-only the `coordination`/`synthesis` fields the anchor-rule check actually
-reads) was declined rather than filed — round 3 already made this an
+One of the two findings deferred from this final round is now resolved:
+`ai/schemas/run.schema.json` defines the `receipts` and `slot_failures`
+collections that `dev-flow-exit.mjs` consumes, so a structurally valid
+production `run.json` can retain that evidence instead of deleting it to pass
+schema validation. The engine still owns cross-entry chronology and backing
+pass checks, which require the run directory rather than one JSON document.
+The other finding requested validation of the complete strategy vocabulary
+(noncanonical strategy names and malformed `topology`/`planning`/`delegation`
+values, not only the `coordination`/`synthesis` fields the anchor-rule check
+actually reads) and was declined rather than filed — round 3 already made this an
 explicit, reasoned scope decision (validate only the fields a
 demonstrated exploit path reads, not the full vocabulary), and re-raising
 the same boundary a round later doesn't change that reasoning.
