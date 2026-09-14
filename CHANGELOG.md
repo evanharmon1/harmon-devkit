@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.45.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.44.0...v0.45.0) (2026-09-14)
+
+
+### Features
+
+* **backend:** vendor official Convex agent skills from get-convex ([#943](https://github.com/evanharmon1/harmon-devkit/issues/943)) ([ec246e2](https://github.com/evanharmon1/harmon-devkit/commit/ec246e24016e3bc8d561e1e1caadc9a63cb29a0f))
+* **dev-flow:** add the brief envelope schema and bind the spec and skill contracts to it ([#964](https://github.com/evanharmon1/harmon-devkit/issues/964)) ([9a4c043](https://github.com/evanharmon1/harmon-devkit/commit/9a4c043817cc0a97e2de1f3416bafc95b3303499))
+* **integrate:** drive a cloud cycle per configured PR-side finder ([#804](https://github.com/evanharmon1/harmon-devkit/issues/804)) ([#946](https://github.com/evanharmon1/harmon-devkit/issues/946)) ([9f61ff4](https://github.com/evanharmon1/harmon-devkit/commit/9f61ff49f23d53e00bd59fb311b670dc485f79df))
+* **orchestrator:** define lane fences with a dependency scan and a pre-gate subset check ([#984](https://github.com/evanharmon1/harmon-devkit/issues/984)) ([b131dba](https://github.com/evanharmon1/harmon-devkit/commit/b131dba3ac922390b4354e8632c361e095125e57))
+* **orchestrator:** ship persistent lane watcher ([#963](https://github.com/evanharmon1/harmon-devkit/issues/963)) ([8e10734](https://github.com/evanharmon1/harmon-devkit/commit/8e10734f0b15672bc7aa7d3c67fcb1580b0c8302))
+* **orchestrator:** ship policy-bound lane brief template ([#954](https://github.com/evanharmon1/harmon-devkit/issues/954)) ([008138e](https://github.com/evanharmon1/harmon-devkit/commit/008138e4a9b9a3f2322fde01bb813c015612f978))
+* **skills:** make breakdown model-invocable ([#945](https://github.com/evanharmon1/harmon-devkit/issues/945)) ([f0aade7](https://github.com/evanharmon1/harmon-devkit/commit/f0aade7e671d40d36c1f0f0003fb88928932407b))
+
+
+### Bug Fixes
+
+* **agent-registry:** refresh model inventory ([#947](https://github.com/evanharmon1/harmon-devkit/issues/947)) ([878a08b](https://github.com/evanharmon1/harmon-devkit/commit/878a08bfcbcda2d55e4b86948f29b9a2482e31f6))
+* **dev-flow-stats:** bound gh output buffers and look runs up by id instead of listing every issue ([#967](https://github.com/evanharmon1/harmon-devkit/issues/967)) ([3f6e4c1](https://github.com/evanharmon1/harmon-devkit/commit/3f6e4c13e332fcaec39bc9249335161d2175d4d8))
+* **orchestrator:** carry the head OID in lane-watch PR snapshots and key activity on updated_at ([#989](https://github.com/evanharmon1/harmon-devkit/issues/989)) ([0f1220b](https://github.com/evanharmon1/harmon-devkit/commit/0f1220b7d88a6a2649da58d45e600ca6e3de6b03))
+* **retro:** discover runs through non-closing references and body run ids ([#982](https://github.com/evanharmon1/harmon-devkit/issues/982)) ([e61f545](https://github.com/evanharmon1/harmon-devkit/commit/e61f5450ea0c532c44994358627ed7e0f0c29b26))
+* **template:** update harmon-init to v4.43.3 ([#956](https://github.com/evanharmon1/harmon-devkit/issues/956)) ([2c0d5ed](https://github.com/evanharmon1/harmon-devkit/commit/2c0d5edadd70827a66ec07d5fd4144e340d8ab43))
+* **track-work:** enforce 100 soft and 120 hard issue title limits with never-truncate remedy ([#983](https://github.com/evanharmon1/harmon-devkit/issues/983)) ([9cb8d05](https://github.com/evanharmon1/harmon-devkit/commit/9cb8d05e169a10ce798344dce9099518ed62e827))
+
 ## [0.44.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.43.0...v0.44.0) (2026-09-13)
 
 

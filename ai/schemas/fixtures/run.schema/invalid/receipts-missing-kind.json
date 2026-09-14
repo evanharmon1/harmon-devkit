@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "run_id": "run-961-missing-kind",
+  "initiated_by": "human",
+  "started_at": "2026-09-13T15:25:05Z",
+  "stage_transitions": [{ "stage": "kickoff", "entered_at": "2026-09-13T15:25:05Z" }],
+  "receipts": [{ "stage": "challenge", "entered_at": "2026-09-13T16:00:00Z", "file": "challenge-r1" }],
+  "interventions": [],
+  "outcome": null,
+  "pr": null,
+  "evidence_comments": [],
+  "evidence_registrations": [],
+  "pr_bindings": [],
+  "outcome_transitions": [],
+  "settlements": [],
+  "promotion": null
+}

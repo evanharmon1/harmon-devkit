@@ -821,9 +821,28 @@ function expect(description, condition) {
   )
 }
 
+// oneOf — exclusive composition. Two matching children must fail, which is
+// the semantic difference from anyOf and the path the disjoint receipt
+// variants cannot exercise themselves.
+{
+  const schema = {
+    oneOf: [
+      { type: 'object', required: ['shared'] },
+      { type: 'object', properties: { shared: { type: 'number' } } }
+    ]
+  }
+  const engine = createSchemaValidator(schema)
+  expect(
+    'oneOf: rejects a value matching two members',
+    engine
+      .validate({ shared: 1 }, schema, '$x')
+      .some((e) => e.includes('must match exactly one schema in oneOf (matched 2)'))
+  )
+}
+
 process.exit(failures === 0 ? 0 : 1)
 NODE
-echo "PASS: engine-level minimum/maximum and if/then/else keyword tests"
+echo "PASS: engine-level minimum/maximum, condition, and composition keyword tests"
 
 # --- Receipt-validation regression tests requiring run context -------------
 # These need an argument no single fixture file can carry on its own (a set
@@ -1184,11 +1203,112 @@ accept_context_case \
     "$fixtures_dir/run.schema/valid/ready-with-settled-deferral.json" \
     --adjudication "$settlement_cross_check_adjudication"
 
+# harmon-devkit#961: receipts are part of the run record in every run-kind
+# mode. The generic corpus loop above proves plain `run`; these explicit cases
+# prove the receipt-required and receipt-binding modes accept the same records.
+for receipt_fixture in \
+    "$fixtures_dir/run.schema/valid/receipts-transition-only.json" \
+    "$fixtures_dir/run.schema/valid/receipts-transition-pass.json" \
+    "$fixtures_dir/run.schema/valid/receipts-transition-no-entered-at.json"; do
+    accept_context_case \
+        "a receipt-bearing run is accepted by run --receipt ($(basename "$receipt_fixture"))" \
+        run \
+        "$receipt_fixture" \
+        --no-adjudications --receipt
+
+    accept_context_case \
+        "a receipt-bearing run is accepted by run --receipts ($(basename "$receipt_fixture"))" \
+        run \
+        "$receipt_fixture" \
+        --no-adjudications --receipts "$receipt_fixture"
+done
+
+# Each item-shape violation is already rejected by plain `run` in the corpus
+# loop. Exercise the two flag modes too and require their diagnostics to retain
+# the receipt's array index rather than collapsing to an unlocated oneOf error.
+for malformed_receipt in \
+    receipts-unknown-kind \
+    receipts-missing-stage \
+    receipts-missing-file \
+    receipts-extra-property; do
+    malformed_file="$fixtures_dir/run.schema/invalid/$malformed_receipt.json"
+    run_context_case \
+        "$malformed_receipt is rejected by run --receipt with an indexed diagnostic" \
+        run \
+        "$malformed_file" \
+        '$run.receipts[0]' \
+        --no-adjudications --receipt
+
+    run_context_case \
+        "$malformed_receipt is rejected by run --receipts with an indexed diagnostic" \
+        run \
+        "$malformed_file" \
+        '$run.receipts[0]' \
+        --no-adjudications --receipts "$malformed_file"
+done
+
+receipts_not_array="$fixtures_dir/run.schema/invalid/receipts-not-array.json"
+run_context_case \
+    "a non-array receipts value is rejected by run --receipt" \
+    run \
+    "$receipts_not_array" \
+    '$run.receipts' \
+    --no-adjudications --receipt
+
+run_context_case \
+    "a non-array receipts value is rejected by run --receipts before binding" \
+    run \
+    "$receipts_not_array" \
+    'has a non-array receipts field' \
+    --no-adjudications --receipts "$receipts_not_array"
+
 # harmon-devkit#821: --receipts strict mode — an adjudication whose stage has
 # no transition receipt in the --receipts record is rejected; without the flag,
 # the same fixture is accepted (the adjudication's stage IS in stage_transitions).
 receipts_strict_adjudication="$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.adjudication.json"
 receipts_strict_receipts="$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.receipts.json"
+receipts_split_valid="$test_tmp/receipts-split-valid.json"
+receipts_split_malformed="$test_tmp/receipts-split-malformed.json"
+receipts_split_impossible="$test_tmp/receipts-split-impossible.json"
+
+jq -n \
+    --arg run_id "run-0821-receipts-strict" \
+    '{run_id: $run_id, receipts: [{kind: "transition", stage: "challenge", entered_at: "2026-09-01T00:30:00Z"}]}' \
+    >"$receipts_split_valid"
+jq 'del(.receipts[0].stage)' "$receipts_split_valid" >"$receipts_split_malformed"
+jq '.receipts[0].entered_at = "2026-02-30T00:00:00Z"' \
+    "$receipts_split_valid" >"$receipts_split_impossible"
+
+run_context_case \
+    "a malformed independent --receipts entry is rejected with its index" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    '$receipts.receipts[0]' \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$receipts_split_malformed"
+
+run_context_case \
+    "an impossible independent --receipts timestamp is rejected with its index" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    '$receipts.receipts[0].entered_at' \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$receipts_split_impossible"
+
+accept_context_case \
+    "valid independent --receipts entries authorize their adjudication stage" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$receipts_split_valid"
+
+run_context_case \
+    "an independent --receipts transition must name a stage the run entered" \
+    run \
+    "$fixtures_dir/run.schema/invalid/adjudication-not-in-receipts.json" \
+    '$receipts.receipts[0].stage' \
+    --adjudication "$receipts_strict_adjudication" \
+    --receipts "$fixtures_dir/run.schema/invalid/receipts-stage-not-visited.json"
 
 run_context_case \
     "an --adjudication whose stage has no transition receipt is rejected in --receipts strict mode (#821)" \
@@ -1582,6 +1702,9 @@ function collect(root, schema, currentPath, required, enums, seen) {
     collect(root, child, `${currentPath}.${key}`, required, enums, seen)
   }
   if (schema.items) collect(root, schema.items, `${currentPath}[]`, required, enums, seen)
+  for (const child of schema.oneOf ?? []) {
+    collect(root, child, currentPath, required, enums, seen)
+  }
   for (const key of ['if', 'then', 'else']) {
     if (schema[key]) collect(root, schema[key], currentPath, required, enums, seen)
   }
