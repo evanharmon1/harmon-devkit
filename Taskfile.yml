@@ -383,6 +383,7 @@ tasks:
       - test:track-work
       - test:claim-label-resolution
       - test:triage-skill
+      - test:groom-skill
       - test:skill-index-lifecycle
       - test:independence
       - test:confirm-answers
@@ -625,6 +626,11 @@ tasks:
     cmds:
       - ./scripts/test-triage-skill.sh
 
+  test:groom-skill:
+    desc: "Unit-test the groom skill's contract scripts (offline, stubbed gh/claude)"
+    cmds:
+      - ./scripts/test-groom-skill.sh
+
   test:sync-devkit-release:
     desc: "Unit-test the harmon-devkit release→sync-PR automation (offline, stubbed gh/task)"
     cmds:
@@ -766,6 +772,18 @@ tasks:
     interactive: true
     cmds:
       - ./scripts/triage.sh {{.CLI_ARGS}}
+
+  groom:
+    # Backlog groom: verify open issues against the live code and merged PRs,
+    # propose dispositions, publish a report, and (once approved) apply
+    # through the checked write paths. Audit (dry-run) by default;
+    # `task groom -- --execute` is the supervised apply mode (interactive
+    # terminal required, same [HUMAN]-gate shape as triage). The skill
+    # contract and its enforcement live in ai/skills/universal/groom.
+    desc: "Groom the issue backlog (audit by default; task groom -- --execute to apply, supervised)"
+    interactive: true
+    cmds:
+      - ./scripts/groom.sh {{.CLI_ARGS}}
 
   review:codex:
     desc: "Codex verification review (usage: task review:codex -- [--base <ref>|--uncommitted] [focus text])"

@@ -371,3 +371,8 @@ Triage run — <DRY-RUN | EXECUTE> over <repo>
 - refused by scripts: <list each refusal line, or "none">
 - skipped as unsure: <count> (they keep needs-triage)
 ```
+
+Triage classifies; it never decides what the tracker should contain. When the
+backlog needs issues verified against live code and closed, regrouped, or
+escalated to the maintainer as a decision, that is `/groom`'s job — a groom
+run ends by recommending a triage run, not the other way around.
