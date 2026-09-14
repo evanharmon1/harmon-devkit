@@ -240,11 +240,15 @@ lane must be re-run before the PR is promoted.
 The maintainer-facing ready report is the last message about a promoted PR,
 not the first one after promotion. Once `gh pr ready` confirms non-draft on
 the verified head, run the post-promotion watch — 15 minutes on the trusted
-Codex actor and on humans, using `assets/lane-watch.sh`'s
-`POST-PROMOTION-ACTIVITY` event as the signal — and send the ready report
-only once that watch closes with no new activity, naming the head SHA and
-the gate fingerprint. Promotion itself is never reported as readiness: a
-status sent during the watch instead reads "promoted at T, post-promotion watch until T+15", never "ready".
+review-bot actors (the `trusted_actor_id` of every finder in `agent-registry.json`)
+and on humans — and send the ready report only once those 15 minutes pass
+with no `assets/lane-watch.sh` `POST-PROMOTION-ACTIVITY` event, naming the
+head SHA and the gate fingerprint.
+Promotion itself is never reported as readiness: a status sent during the
+watch instead reads "promoted at T, post-promotion watch until T+15", never "ready".
+This maintainer-facing report is distinct from § Persistent supervision's
+internal per-lane ledger entry ("a ready PR is reported"), which is
+orchestrator bookkeeping, not the maintainer-facing message this rule defines.
 
 If the orchestrator reverses its own promotion (`gh pr ready --undo`, for any
 reason, including mid-watch), the withdrawal is announced before anything

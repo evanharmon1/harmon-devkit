@@ -275,11 +275,13 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
   following to `{{report-path}}` and print the same value as the final line of
   the final message:
   - `{{ready-sentinel}}-{{attempt-nonce}}` — the orchestrator promoted the PR
-    through the readiness gate. For a lane that integrates and promotes its
-    own PR, emit this sentinel only after that promotion's post-promotion
-    watch (15 minutes on the trusted Codex actor and on humans;
-    `POST-PROMOTION-ACTIVITY` from the watcher is the signal) closes with no
-    new activity — never at the moment of promotion itself.
+    through the readiness gate. This sentinel is the orchestrator's own mark:
+    a lane never promotes its own PR and never writes this sentinel. The
+    orchestrator appends it to `{{report-path}}` only once its own
+    post-promotion watch — 15 minutes on the trusted review-bot actors (the
+    `trusted_actor_id` of every finder in `agent-registry.json`) and on
+    humans — passes with no `POST-PROMOTION-ACTIVITY` event from the watcher,
+    never at the moment of promotion itself.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
 
