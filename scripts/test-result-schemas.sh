@@ -388,20 +388,35 @@ done
 [ "$fixture_dirs_found" -gt 0 ] || fail "no fixture directories found under $fixtures_dir"
 echo "PASS: fixture corpus OK ($valid_count valid, $invalid_count invalid, $fixture_dirs_found schema(s))"
 
+# These named plan-history regressions are the contract behind the generic
+# fixture walk above: a run keeps its original fence, can only append expansion
+# records after first appearing, and split dependencies follow wave order.
+for regression in \
+    plan/valid/recomputed.json \
+    plan/invalid/rewritten-run-fence.json \
+    plan/invalid/removed-run-expansion.json \
+    plan/invalid/reversed-split-wave-dependency.json \
+    plan/invalid/first-snapshot-expansion.json; do
+    [ -f "$fixtures_dir/$regression" ] || fail "missing plan-history regression fixture: $regression"
+done
+echo "PASS: plan-history regression fixture set is complete"
+
 # plan.schema.json is a new closed top-level record with nested required fields.
 # Mutate one complete valid plan so every required property and enum is proved
 # through the real `plan` entry point without maintaining dozens of repetitive
 # hand-copied fixtures; the curated corpus above retains reason-sidecar cases
 # for structural and cross-record semantic failures.
 node --input-type=module - "$schemas_dir/plan.schema.json" \
-    "$fixtures_dir/plan/valid/interactive.json" "$validator" "$test_tmp/plan-mutations" <<'NODE'
+    "$fixtures_dir/plan/valid/interactive.json" \
+    "$fixtures_dir/plan/valid/recomputed.json" \
+    "$validator" "$test_tmp/plan-mutations" <<'NODE'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
-const [schemaFile, fixtureFile, validator, mutationDir] = process.argv.slice(2)
+const [schemaFile, fixtureFile, expansionFixtureFile, validator, mutationDir] = process.argv.slice(2)
 const schema = JSON.parse(readFileSync(schemaFile, 'utf8'))
-const fixture = JSON.parse(readFileSync(fixtureFile, 'utf8'))
+const fixtures = [fixtureFile, expansionFixtureFile].map((file) => JSON.parse(readFileSync(file, 'utf8')))
 
 function resolveRef(ref) {
   if (typeof ref !== 'string' || !ref.startsWith('#/')) return null
@@ -456,7 +471,8 @@ let failures = 0
 let caseNumber = 0
 
 function runMutation(kind, pattern, name = null) {
-  const concrete = concretePaths(fixture, pattern)[0]
+  const fixture = fixtures.find((candidate) => concretePaths(candidate, pattern).length > 0)
+  const concrete = fixture && concretePaths(fixture, pattern)[0]
   if (!concrete) {
     console.error(`FAIL: no valid plan fixture contains ${location(pattern)}${name ? `.${name}` : ''}`)
     failures += 1

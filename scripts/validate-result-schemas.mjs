@@ -2228,11 +2228,11 @@ function checkPlanCoherence(document, errors) {
     if (dependency && dependency.before === dependency.after) {
       errors.push(`$plan.overlaps[${index}].merge_dependency: before and after must differ`)
     }
-    if (dependency && overlap.resolution === 'serialize') {
+    if (dependency && (overlap.resolution === 'serialize' || overlap.resolution === 'split')) {
       const beforeWave = waveByIssue.get(dependency.before)
       const afterWave = waveByIssue.get(dependency.after)
       if (beforeWave !== undefined && afterWave !== undefined && beforeWave >= afterWave) {
-        errors.push(`$plan.overlaps[${index}].merge_dependency: serialized pair must use increasing waves`)
+        errors.push(`$plan.overlaps[${index}].merge_dependency: must use increasing waves`)
       }
     }
   }
@@ -2290,7 +2290,6 @@ function checkPlanCoherence(document, errors) {
 function checkDispatchPlan(document, errors) {
   const revisions = checkPlanRevisionChain(document, errors)
   if (!revisions) return
-  const firstTime = Date.parse(revisions[0].at)
   const runBindings = new Map()
   for (const revision of revisions) {
     const revisionTime = Date.parse(revision.at)
@@ -2302,18 +2301,44 @@ function checkDispatchPlan(document, errors) {
       if (binding && (binding.issue !== lane.issue || binding.branch !== lane.branch)) {
         errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].run_id: ${JSON.stringify(lane.run_id)} must remain bound to issue ${binding.issue} and branch ${JSON.stringify(binding.branch)} across revision history`)
       } else if (!binding) {
-        runBindings.set(lane.run_id, { issue: lane.issue, branch: lane.branch })
+        runBindings.set(lane.run_id, {
+          issue: lane.issue,
+          branch: lane.branch,
+          fence: lane.fence || [],
+          expansions: lane.expansions || [],
+          firstTime: revisionTime,
+        })
+      }
+      const stableBinding = binding || runBindings.get(lane.run_id)
+      if (binding && canonicalJsonForDigest(lane.fence || []) !== canonicalJsonForDigest(binding.fence)) {
+        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].fence: must remain immutable for run_id ${JSON.stringify(lane.run_id)} across revision history`)
+      }
+      if (binding) {
+        const expansions = lane.expansions || []
+        const prefixIsUnchanged =
+          expansions.length >= binding.expansions.length &&
+          binding.expansions.every(
+            (expansion, index) =>
+              canonicalJsonForDigest(expansion) === canonicalJsonForDigest(expansions[index]),
+          )
+        if (!prefixIsUnchanged) {
+          errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions: must append to the prior expansion list verbatim for run_id ${JSON.stringify(lane.run_id)}`)
+        } else {
+          binding.expansions = expansions
+        }
+      } else if ((lane.expansions || []).length > 0) {
+        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions: must be empty in run_id ${JSON.stringify(lane.run_id)}'s first revision`)
       }
       for (const [expansionIndex, expansion] of (lane.expansions || []).entries()) {
         const expansionTime = Date.parse(expansion.at)
         if (!Number.isFinite(expansionTime)) {
           errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must parse as a finite instant`)
         } else if (
-          Number.isFinite(firstTime) &&
+          Number.isFinite(stableBinding.firstTime) &&
           Number.isFinite(revisionTime) &&
-          (expansionTime < firstTime || expansionTime > revisionTime)
+          (expansionTime < stableBinding.firstTime || expansionTime > revisionTime)
         ) {
-          errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must fall between the first revision and its containing revision`)
+          errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must fall between the first revision and its containing revision for run_id ${JSON.stringify(lane.run_id)}`)
         }
       }
     }

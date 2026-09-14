@@ -5,7 +5,7 @@
     {
       "seq": 0,
       "prev_digest": "genesis",
-      "digest": "0187fdb5a9667dc18a49dd85ebae9d330752041013a91e0c8f4aab370b39fcef",
+      "digest": "46aaff2421b6778d52e5dd5c1b82267d7d0da462ac335b0e0b3e3b112112eeec",
       "at": "2026-09-13T17:00:00Z",
       "reason": "initial slate plan",
       "plan": {
@@ -119,13 +119,7 @@
               },
               "plan.schema.json"
             ],
-            "expansions": [
-              {
-                "path": "scripts/test-skills.sh",
-                "at": "2026-09-13T17:00:00Z",
-                "reason": "prose validator rejected the new contract"
-              }
-            ]
+            "expansions": []
           },
           {
             "lane": "fences",
