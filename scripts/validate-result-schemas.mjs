@@ -2407,6 +2407,24 @@ function checkEvidenceStagesVisited(document, receiptsRecord, receiptLocation, e
   }
 }
 
+// checkSlotFailureKeys — a slot has at most one terminal failure record per
+// logical round. Conflicting records cannot be resolved by array order because
+// both reason and head feed the exit decision.
+function checkSlotFailureKeys(document, errors) {
+  const firstIndexByKey = new Map()
+  for (const [index, failure] of (document.slot_failures ?? []).entries()) {
+    const key = JSON.stringify([failure.stage, failure.round, failure.slot])
+    const firstIndex = firstIndexByKey.get(key)
+    if (firstIndex !== undefined) {
+      errors.push(
+        `$run.slot_failures[${index}]: duplicates slot_failures[${firstIndex}] key (${failure.stage}, ${failure.round}, ${failure.slot})`
+      )
+      continue
+    }
+    firstIndexByKey.set(key, index)
+  }
+}
+
 // checkReceiptsRecord — an independent --receipts file is a run-directory
 // subset, not necessarily a complete persisted run record. Validate the two
 // fields strict mode trusts with the canonical run schema definitions before
@@ -2847,6 +2865,7 @@ function main() {
     checkReceiptVariants(instance, schema, '$run', errors)
     if (errors.length === 0) {
       checkEvidenceStagesVisited(instance, instance, '$run', errors)
+      checkSlotFailureKeys(instance, errors)
       if (options.receiptsRecord) {
         checkReceiptsRecord(instance, options.receiptsRecord, schema, errors)
       }
