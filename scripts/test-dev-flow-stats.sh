@@ -2927,6 +2927,24 @@ function writeScenario(name, db) {
     issues: [{ number: 190, pull_request: null }], comments: { "190": [malformedLegacy, current] }, commits: {},
     meta: { runId: malformedRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 190 },
   });
+
+  const arbitraryPrRunId = "evidence-pr-only-arbitrary";
+  const arbitraryPr = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", arbitraryPrRunId, "integration", "pr", null, 1, at);
+  const arbitraryPrBody = {
+    schema: 2, run_id: arbitraryPrRunId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "integration", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]), outcome: null,
+    pr: { number: 9191, url: "https://github.com/o/r/pull/9191" },
+    evidence_comments: [{ id: String(arbitraryPr.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(arbitraryPr.body), marker: { run_id: arbitraryPrRunId, stage: "integration", destination: "pr", round: null, sequence: 1 } }],
+    promotion: null,
+  };
+  const arbitraryPrDir = path.join("${tmp}", "local-records", arbitraryPrRunId);
+  mkdirSync(arbitraryPrDir, { recursive: true });
+  writeFileSync(path.join(arbitraryPrDir, "run.json"), JSON.stringify({ ...arbitraryPrBody, ...deriveDefaultChains(arbitraryPrBody) }, null, 2));
+  writeScenario("evidence-pr-only-arbitrary", {
+    issues: [{ number: 191, pull_request: null }, { number: 192, pull_request: null }], comments: { "191": [], "192": [], "9191": [arbitraryPr] }, commits: {},
+    meta: { runId: arbitraryPrRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR] },
+  });
 }
 
 console.log("fixtures built");
@@ -2993,6 +3011,11 @@ run_id="$(meta evidence-grammar .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
 echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,finding_count:0,has_adjudication:true}] and .unreceipted_pass_files == ["stale"] and (.forged_comments | length) == 1 and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected the local run and its authenticated review round, got: $out"
+
+echo "== --as-of presence validation sees later live registrations but assembles only pre-cutoff rounds =="
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z --json)"
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,finding_count:0,has_adjudication:true}]' >/dev/null ||
+    fail "evidence grammar as-of: later PR registration was misreported deleted or assembled into history: $out"
 
 echo "== current evidence wins when legacy evidence names the same run, with migration disclosed =="
 text_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002)"
@@ -3081,6 +3104,16 @@ run_id="$(meta evidence-pr-only .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 188 and .rounds == [] and .unverified_evidence_destinations == []' >/dev/null ||
     fail "PR-only current marker: expected authenticated local trajectory, got: $out"
+
+echo "== arbitrary-id PR-only evidence cannot bind itself to the first issue in an all-issue scan =="
+export DFSTATS_DB="$tmp/scenarios/evidence-pr-only-arbitrary.json"
+run_id="$(meta evidence-pr-only-arbitrary .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'unverified for issue #191' <<<"$out" && grep -Fq 'issue marker or canonical run-id issue binding' <<<"$out" ||
+    fail "arbitrary PR-only binding: expected an unverified issue-binding refusal, got rc=$rc: $out"
 
 echo "== registrations for a destination not fetched are disclosed as unverified, not deleted =="
 export DFSTATS_DB="$tmp/scenarios/evidence-unverified-pr.json"

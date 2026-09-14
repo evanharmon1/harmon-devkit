@@ -1806,12 +1806,18 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, unt
   const allMarkers = markers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
   const allUntrustedMarkers = untrustedMarkers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
   if (body.pr && Number.isInteger(body.pr.number) && body.pr.number > 0) {
-    const prSummaries = collectTrustedEvidenceSummaries(fetchPrComments(repo, body.pr.number), runId, { trustedActorIds, asOf });
+    const prSummaries = collectTrustedEvidenceSummaries(fetchPrComments(repo, body.pr.number), runId, { trustedActorIds, asOf: null });
     allMarkers.push(...prSummaries.trusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
     allUntrustedMarkers.push(...prSummaries.untrusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
     fetchedDestinations.add("pr");
   }
-  if (allMarkers.length === 0) return { status: "no-current-evidence" };
+  const cutoff = asOf ? Date.parse(asOf) : Infinity;
+  const visibleMarkers = allMarkers.filter((observed) => Date.parse(observed.comment.created_at) <= cutoff);
+  if (visibleMarkers.length === 0) return { status: "no-current-evidence" };
+  const hasIssueBinding = visibleMarkers.some((observed) => observed.marker.dest === "issue") || issueNumberFromRunId(runId) === issueNumber;
+  if (!hasIssueBinding && visibleMarkers.some((observed) => observed.marker.dest === "pr")) {
+    return { status: "indeterminate", runId, issueNumber, reason: `PR-only evidence for noncanonical run ${JSON.stringify(runId)} is unverified for issue #${issueNumber}; an authenticated issue marker or canonical run-id issue binding is required` };
+  }
   const registrations = new Map(body.evidence_comments.map((entry) => [String(entry.id), entry]));
   const observedIds = new Set(allMarkers.map((observed) => String(observed.comment.id)));
   const unverifiedEvidenceDestinations = new Set();
@@ -1895,7 +1901,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, unt
   const adjudicationFiles = jsonFilesIn("adjudications");
   const adjudications = adjudicationFiles.files.map((file) => readJsonFile(resolveContainedPath(root, path.join(adjudicationFiles.dir, file), `${runId}/adjudications/${file}`)));
   const byRound = new Map();
-  for (const observed of allMarkers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
+  for (const observed of visibleMarkers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
     const key = `${observed.marker.stage}|${observed.marker.round}`;
     const current = byRound.get(key);
     if (!current || observed.comment.id < current.comment.id) byRound.set(key, observed);
@@ -1925,12 +1931,15 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
   const summaries = requestedRunId
     ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf })
     : { trusted: [], untrusted: [] };
+  const liveSummaries = requestedRunId && recordDir
+    ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf: null })
+    : summaries;
   let currentRun = null;
   if (summaries.trusted.length > 0 && !recordDir) {
     currentRun = { status: "evidence-only", runId: requestedRunId, issueNumber, markerFacts: markerFacts(summaries.trusted), untrustedMarkerFacts: markerFacts(summaries.untrusted), legacyAlsoPresent: false };
   } else if (requestedRunId && recordDir) {
     try {
-      const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, summaries.trusted, summaries.untrusted, asOf, trustedActorIds, false);
+      const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, false);
       if (loaded.status !== "no-current-evidence" && (loaded.status !== "record-missing" || summaries.trusted.length > 0)) currentRun = loaded;
     } catch (err) {
       if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
