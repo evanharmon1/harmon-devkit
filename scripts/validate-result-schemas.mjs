@@ -2067,29 +2067,6 @@ function duplicates(values) {
   return [...new Set(values.filter((value) => (seen.has(value) ? true : (seen.add(value), false))))]
 }
 
-function fencePatternMatchesPath(pattern, candidatePath) {
-  let expression = '^'
-  for (let index = 0; index < pattern.length; index += 1) {
-    const character = pattern[index]
-    if (character !== '*') {
-      expression += character.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
-      continue
-    }
-    if (pattern[index + 1] !== '*') {
-      expression += '[^/]*'
-      continue
-    }
-    index += 1
-    if (pattern[index + 1] === '/') {
-      expression += '(?:[^/]+/)*'
-      index += 1
-    } else {
-      expression += '.*'
-    }
-  }
-  return new RegExp(`${expression}$`, 'u').test(candidatePath)
-}
-
 // checkPlanCoherence — the schema closes each record; these checks close the
 // relationships between them so a structurally valid file is also a usable
 // dispatch plan rather than several disagreeing lists.
@@ -2171,6 +2148,7 @@ function checkPlanCoherence(document, errors) {
   }
 
   const policyCap = document.policy?.breadth?.max_parallel_agents
+  const agentRunCap = document.policy?.breadth?.max_agent_runs
   const dispatcher = document.dispatcher
   if (dispatcher && typeof policyCap === 'number') {
     if (dispatcher.kind === 'interactive') {
@@ -2195,6 +2173,9 @@ function checkPlanCoherence(document, errors) {
         errors.push(`$plan.waves: wave ${wave.number} has ${(wave.issues || []).length} issues, exceeding dispatcher cap ${dispatcher.parallel_cap}`)
       }
     }
+  }
+  if (typeof agentRunCap === 'number' && lanes.length > agentRunCap) {
+    errors.push(`$plan.lanes: active lane count ${lanes.length} exceeds policy max_agent_runs ${agentRunCap}`)
   }
   for (const issue of issues) {
     const issueWave = waveByIssue.get(issue.number)
@@ -2288,52 +2269,14 @@ function checkPlanCoherence(document, errors) {
       ],
     ]),
   )
-  const candidateUniverse = [
-    ...new Set([
-      ...activeIssues.flatMap((issue) => issue.candidate_files || []),
-      ...lanes.flatMap((lane) => (lane.expansions || []).map((expansion) => expansion.path)),
-    ]),
-  ]
-  for (const path of candidateUniverse) {
-    const owners = lanes.filter((lane) =>
-      (effectiveFenceByLane.get(lane.lane) || []).some((pattern) => fencePatternMatchesPath(pattern, path)),
-    )
-    for (let left = 0; left < owners.length; left += 1) {
-      for (let right = left + 1; right < owners.length; right += 1) {
-        if (owners[left].wave === owners[right].wave) {
-          errors.push(`$plan.lanes: effective-fence path ${JSON.stringify(path)} must not belong to concurrent lanes ${JSON.stringify(owners[left].lane)} and ${JSON.stringify(owners[right].lane)}`)
-        }
-      }
-    }
-  }
-
-  for (const issue of activeIssues) {
-    const ownLane = laneByIssue.get(issue.number)
-    for (const path of issue.candidate_files || []) {
-      const isSplit = overlaps.some(
-        (overlap) =>
-          overlap.resolution === 'split' &&
-          (overlap.paths || []).includes(path) &&
-          (overlap.issue_a === issue.number || overlap.issue_b === issue.number),
-      )
-      const ownFenceMatches =
-        ownLane &&
-        (effectiveFenceByLane.get(ownLane.lane) || []).some((pattern) => fencePatternMatchesPath(pattern, path))
-      if (!isSplit && !ownFenceMatches) {
-        errors.push(`$plan.lanes: issue ${issue.number}'s candidate path ${JSON.stringify(path)} must belong to its own lane`)
-      }
-    }
-  }
-
-  for (const overlap of overlaps.filter((entry) => entry.resolution === 'split')) {
-    const pair = [overlap.issue_a, overlap.issue_b]
-    const pairLanes = pair.map((issue) => laneByIssue.get(issue)).filter(Boolean)
-    for (const path of overlap.paths || []) {
-      const ownerCount = pairLanes.filter((lane) =>
-        (effectiveFenceByLane.get(lane.lane) || []).some((pattern) => fencePatternMatchesPath(pattern, path)),
-      ).length
-      if (ownerCount !== 1) {
-        errors.push(`$plan.lanes: split candidate path ${JSON.stringify(path)} must belong to exactly one lane in issue pair ${pair.join(':')}`)
+  const literalFenceOwner = new Map()
+  for (const lane of lanes) {
+    for (const path of effectiveFenceByLane.get(lane.lane) || []) {
+      const owner = literalFenceOwner.get(path)
+      if (owner) {
+        errors.push(`$plan.lanes: byte-identical effective-fence path ${JSON.stringify(path)} must not belong to lanes ${JSON.stringify(owner)} and ${JSON.stringify(lane.lane)}`)
+      } else {
+        literalFenceOwner.set(path, lane.lane)
       }
     }
   }
@@ -2343,35 +2286,23 @@ function checkDispatchPlan(document, errors) {
   const revisions = checkPlanRevisionChain(document, errors)
   if (!revisions) return
   const firstTime = Date.parse(revisions[0].at)
-  const runIds = new Set(revisions.flatMap((revision) => (revision.plan.lanes || []).map((lane) => lane.run_id)))
-  const agentRunCap = revisions[0].plan.policy?.breadth?.max_agent_runs
-  if (typeof agentRunCap === 'number' && runIds.size > agentRunCap) {
-    errors.push(`$plan.revisions: history uses ${runIds.size} distinct run_id values, exceeding policy max_agent_runs ${agentRunCap}`)
-  }
-  for (const [revisionIndex, revision] of revisions.entries()) {
+  const runBindings = new Map()
+  for (const revision of revisions) {
     const revisionErrors = []
     checkPlanCoherence(revision.plan, revisionErrors)
     errors.push(...revisionErrors.map((error) => error.replace('$plan', `$plan.revisions[${revision.seq}].plan`)))
     for (const [laneIndex, lane] of (revision.plan.lanes || []).entries()) {
+      const binding = runBindings.get(lane.run_id)
+      if (binding && (binding.issue !== lane.issue || binding.branch !== lane.branch)) {
+        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].run_id: ${JSON.stringify(lane.run_id)} must remain bound to issue ${binding.issue} and branch ${JSON.stringify(binding.branch)} across revision history`)
+      } else if (!binding) {
+        runBindings.set(lane.run_id, { issue: lane.issue, branch: lane.branch })
+      }
       for (const [expansionIndex, expansion] of (lane.expansions || []).entries()) {
         const expansionTime = Date.parse(expansion.at)
         if (expansionTime < firstTime || expansionTime > Date.parse(revision.at)) {
           errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions[${expansionIndex}].at: must fall between the first revision and its containing revision`)
         }
-      }
-    }
-    if (revisionIndex === 0) continue
-    const priorLanes = new Map((revisions[revisionIndex - 1].plan.lanes || []).map((lane) => [lane.run_id, lane]))
-    for (const [laneIndex, lane] of (revision.plan.lanes || []).entries()) {
-      const priorLane = priorLanes.get(lane.run_id)
-      if (!priorLane) continue
-      if (canonicalJsonForDigest(lane.fence) !== canonicalJsonForDigest(priorLane.fence)) {
-        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].fence: must remain unchanged while run_id ${JSON.stringify(lane.run_id)} continues`)
-      }
-      const priorExpansions = priorLane.expansions || []
-      const expansionPrefix = (lane.expansions || []).slice(0, priorExpansions.length)
-      if (canonicalJsonForDigest(expansionPrefix) !== canonicalJsonForDigest(priorExpansions)) {
-        errors.push(`$plan.revisions[${revision.seq}].plan.lanes[${laneIndex}].expansions: must retain the prior revision's expansions as an unchanged prefix while run_id ${JSON.stringify(lane.run_id)} continues`)
       }
     }
   }

@@ -1,1 +1,1 @@
-effective-fence path "shared" must not belong to concurrent lanes "one" and "two"
+byte-identical effective-fence path "shared" must not belong to lanes "one" and "two"

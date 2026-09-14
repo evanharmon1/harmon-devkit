@@ -1,1 +1,1 @@
-history uses 3 distinct run_id values, exceeding policy max_agent_runs 2
+active lane count 3 exceeds policy max_agent_runs 2

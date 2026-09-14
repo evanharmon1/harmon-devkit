@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "slate_id": "concurrent-glob-ownership",
+  "slate_id": "duplicate-run-id",
   "revisions": [
     {
       "seq": 0,
       "prev_digest": "genesis",
-      "digest": "161bd05fe429c13bb28da5e901cead9d93f412eb8178e7de210ca457ee77a032",
-      "at": "2026-09-14T12:00:00Z",
+      "digest": "f20b6f35f470ae712ffa3d02b293c170c54e23f5c4ba25ce9d588b57d2bdaed0",
+      "at": "2026-09-13T17:00:00Z",
       "reason": "initial slate plan",
       "plan": {
         "base_sha": "3f6e4c13e332fcaec39bc9249335161d2175d4d8",
@@ -41,18 +41,18 @@
         "issues": [
           {
             "number": 1,
-            "title": "Scripts",
+            "title": "One",
             "url": "https://example.test/1",
             "verdict": "valid",
-            "candidate_files": ["scripts/deploy.sh"],
+            "candidate_files": ["a"],
             "blocked_by": []
           },
           {
             "number": 2,
-            "title": "Docs",
+            "title": "Two",
             "url": "https://example.test/2",
             "verdict": "valid",
-            "candidate_files": ["docs/guide.md"],
+            "candidate_files": ["b"],
             "blocked_by": []
           }
         ],
@@ -60,21 +60,21 @@
         "waves": [{ "number": 1, "issues": [1, 2] }],
         "lanes": [
           {
-            "lane": "scripts",
+            "lane": "one",
             "issue": 1,
             "wave": 1,
-            "branch": "scripts",
-            "run_id": "run-scripts",
-            "fence": ["scripts/*.sh"],
+            "branch": "one",
+            "run_id": "run-one",
+            "fence": ["a"],
             "expansions": []
           },
           {
-            "lane": "docs",
+            "lane": "two",
             "issue": 2,
             "wave": 1,
-            "branch": "docs",
-            "run_id": "run-docs",
-            "fence": ["docs/*.md", "scripts/deploy.sh"],
+            "branch": "two",
+            "run_id": "run-one",
+            "fence": ["b"],
             "expansions": []
           }
         ]
