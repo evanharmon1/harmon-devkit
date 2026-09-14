@@ -230,7 +230,8 @@ belongs in a separate user, container, or VM, not a sibling pane.
    its state file deduplicates report-first sentinels across re-arms and it
    continues watching review activity briefly after promotion. Never paste the
    loop inline, because the primitive may execute it under a non-Bash login
-   shell. `done`/`idle` means *stopped*, not *succeeded*: the sentinel and the
+   shell. Its PR transition grammar is `PR <lane>: #<n> draft=<bool> <STATE>
+   head=<sha8>`. `done`/`idle` means *stopped*, not *succeeded*: the sentinel and the
    report file are the success signals.
 5. **Harvest and verify** — `agent read` / read the report files, then
    **verify ground truth yourself** (the diff, the labels on GitHub, the test
