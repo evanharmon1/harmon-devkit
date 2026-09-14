@@ -2,11 +2,12 @@
 # Watch orchestrated lanes and emit stable, one-line transition events:
 #   AGENT <lane>: <from> -> <to>
 #   SENTINEL <lane>: <value>[ (pane only)]
-#   PR <lane>: #<n> draft=<bool> <STATE>
+#   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id>
 #   USAGE-PAUSED <lane>
 #   WALLCLOCK <lane|run>: <text>
 #
+# Timestamp-versioned activity keys may emit one duplicate when adopting legacy state.
 # Every herdr/gh call is bounded. Failures mean indeterminate/no event; this watcher
 # never writes through either CLI. Pass --state-file so a re-armed watcher does
 # not repeat sentinels, transitions, or post-promotion activity.
@@ -346,8 +347,11 @@ activity_rows() {
       (if (.[0]? | type) == "array" then add else . end)[]?
       | (.user.id | tostring) as $actor_id
       | select(.user.type == "User" or ($trusted | split("\n") | index($actor_id)))
-      | (.submitted_at // .created_at // empty | fromdateiso8601) as $created
-      | [.user.login, $kind, (.id | tostring), ($created | tostring)] | @tsv
+      | (if $kind == "review"
+          then .submitted_at // .updated_at // .created_at
+          else .updated_at // .created_at
+        end // empty | fromdateiso8601) as $activity_at
+      | [.user.login, $kind, (.id | tostring), ($activity_at | tostring)] | @tsv
     ' <<<"$payload" 2>/dev/null
 }
 
@@ -397,11 +401,11 @@ poll_activity() {
 
     rows="$(activity_snapshot "$repo" "$pr_number")" || return 1
 
-    while IFS=$'\t' read -r actor kind id created; do
+    while IFS=$'\t' read -r actor kind id activity_at; do
         [ -n "$id" ] || continue
-        [ "$created" -ge "$since" ] || continue
-        [ "$created" -le "$until" ] || continue
-        key="$lane:$kind:$id"
+        [ "$activity_at" -ge "$since" ] || continue
+        [ "$activity_at" -le "$until" ] || continue
+        key="$lane:$kind:$id:$activity_at"
         if ! state_get ACTIVITY "$key" >/dev/null; then
             state_set ACTIVITY "$key" 1
             persist_state
@@ -432,7 +436,7 @@ discover_pr() {
     repo=$1
     branch=$2
     payload="$(bounded "$timeout_seconds" gh pr list --repo "$repo" --head "$branch" --state all \
-        --limit 1 --json number,isDraft,state)" || return 1
+        --limit 1 --json number,isDraft,state,headRefOid)" || return 1
     jq -e '
       type == "array"
       and length <= 1
@@ -441,11 +445,13 @@ discover_pr() {
         and (.number | floor) == .number
         and .number > 0
         and (.isDraft | type) == "boolean"
-        and (.state == "OPEN" or .state == "CLOSED" or .state == "MERGED"))
+        and (.state == "OPEN" or .state == "CLOSED" or .state == "MERGED")
+        and (.headRefOid | type) == "string"
+        and (.headRefOid | test("^[0-9A-Fa-f]{8,64}$")))
     ' >/dev/null 2>&1 <<<"$payload" || return 1
     jq -r '
       .[0] // empty
-      | "#\(.number) draft=\(.isDraft) \(.state)"
+      | "#\(.number) draft=\(.isDraft) \(.state) head=\(.headRefOid)"
     ' <<<"$payload" 2>/dev/null
 }
 
@@ -457,14 +463,15 @@ observe_pr() {
     old_pr="$(state_get PR "$lane" || true)"
     [ "$old_pr" != "$pr" ] || return 0
     state_set PR "$lane" "$pr"
-    if [[ "$pr" =~ ^#([0-9]+)\ draft=false\ (OPEN|CLOSED|MERGED)$ ]]; then
+    if [[ "$pr" =~ ^#([0-9]+)\ draft=false\ (OPEN|CLOSED|MERGED)\ head=[0-9A-Fa-f]{8,64}$ ]]; then
         promoted_pr=${BASH_REMATCH[1]}
-        if [ -z "$old_pr" ] || [[ "$old_pr" =~ draft=true\ OPEN$ ]]; then
+        if [ -z "$old_pr" ] || [[ "$old_pr" =~ draft=true\ OPEN(\ head=[0-9A-Fa-f]{8,64})?$ ]]; then
             state_set WINDOW "$lane" "$promoted_pr" "$((now + post_promotion_seconds))" ""
         fi
     fi
     persist_state
-    echo "PR $lane: $pr"
+    head_oid=${pr##* head=}
+    echo "PR $lane: ${pr%head=*}head=${head_oid:0:8}"
 }
 
 load_state

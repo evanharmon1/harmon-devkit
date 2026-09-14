@@ -1132,6 +1132,21 @@ jq -n --rawfile b "$tmp/livebody" \
 grep -q "skipping edit" "$tmp/out" || fail "unchanged body must skip the edit"
 grep -q "issue edit" "$GH_STUB_LOG" && fail "unchanged body must not edit"
 
+echo "==> report sync: will not retitle a bot-authored issue"
+cat >"$stub_dir/issues-open.json" <<JSON
+[{"number": 99, "body": "$marker", "author": {"login": "app/renovate", "type": "Bot"}}]
+JSON
+jq -n --rawfile b "$tmp/livebody" \
+    '{"labels": [], "title": "Dependency Dashboard", "body": $b, "author": {"login": "app/renovate", "type": "Bot"}}' \
+    >"$stub_dir/issue-99.json"
+: >"$GH_STUB_LOG"
+[ "$(run env TRIAGE_EXECUTE=1 TRIAGE_NOW=2026-02-02 "$report" sync \
+    --repo "$repo" --entries-file "$entries" --execute)" = 4 ] ||
+    fail "bot-authored report issue must be refused (exit 4): $(cat "$tmp/out")"
+grep -q "refused: will not retitle bot-authored issue" "$tmp/out" ||
+    fail "bot-authored report issue must explain refusal: $(cat "$tmp/out")"
+grep -q "issue edit" "$GH_STUB_LOG" && fail "bot-authored issue must not edit"
+
 # ── scan ─────────────────────────────────────────────────────────────────────
 cat >"$stub_dir/issues-open.json" <<JSON
 [{"number": 99, "title": "Triage report", "body": "$marker",
