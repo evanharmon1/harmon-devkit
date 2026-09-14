@@ -1150,7 +1150,7 @@ contains "$OUT" "- Rounds spent: 0 / cap 4 (disclosed, unverified)" &&
     bad "a capped stage with no rounds dropped its round line"
 contains "$OUT" "- Rounds with no adjudication record: 1" &&
     ok "a round with no adjudication is named" || bad "unadjudicated round not reported"
-contains "$OUT" "- Round 1 evidence: 1 pass(es), 1 adjudication(s)" &&
+contains "$OUT" "- Round 1 evidence: 1 pass(es), 0 blocked pass(es), 1 adjudication(s)" &&
     ok "per-round pass and adjudication counts are disclosed" || bad "per-round evidence counts missing"
 contains "$OUT" 'Slot failures (retained verbatim): `[{"stage":"review","round":1,"slot":"codex-verification","reason":"finder_unavailable"}]`' &&
     ok "slot failures are retained verbatim" || bad "slot failures were dropped or rewritten"

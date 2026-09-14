@@ -1740,11 +1740,11 @@ function readJsonFile(file) {
   }
 }
 
-function collectTrustedEvidenceSummaries(issueComments, runId, { trustedActorIds, asOf }) {
+function collectTrustedEvidenceSummaries(comments, runId, { trustedActorIds, asOf, fetchedFrom }) {
   const cutoff = asOf ? Date.parse(asOf) : Infinity;
   const candidates = [];
   const untrusted = [];
-  for (const comment of issueComments) {
+  for (const comment of comments) {
     const marker = parseEvidenceSummaryMarker(comment.body || "");
     const actorId = commentActorId(comment);
     if (Date.parse(comment.created_at) > cutoff) continue;
@@ -1755,13 +1755,33 @@ function collectTrustedEvidenceSummaries(issueComments, runId, { trustedActorIds
       continue;
     }
     if (marker.runId !== runId) continue;
-    if (!trustedActorIds.has(actorId)) {
+    if (!trustedActorIds.has(actorId) || marker.dest !== fetchedFrom) {
       untrusted.push({ comment, marker, actorId });
       continue;
     }
     candidates.push({ comment, marker, actorId });
   }
   return { trusted: [...resolveCanonical(candidates).values()], untrusted };
+}
+
+// A PR-only current marker needs the run's PR binding before it can be
+// discovered. This probe is deliberately non-authoritative: malformed or
+// stale local data cannot suppress a valid legacy GitHub record. Full local
+// parsing happens only after a trusted marker selects the current run.
+function probeLocalPrEvidence(repo, recordRoot, runId, options) {
+  try {
+    const root = realpathSync(recordRoot);
+    const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
+    const candidate = path.join(runDir, "run.json");
+    if (!existsSync(candidate)) return { trusted: [], untrusted: [] };
+    const body = readJsonFile(resolveContainedPath(root, candidate, `${runId}/run.json`));
+    const prNumber = body && body.pr && body.pr.number;
+    if (!Number.isInteger(prNumber) || prNumber <= 0) return { trusted: [], untrusted: [] };
+    return collectTrustedEvidenceSummaries(fetchPrComments(repo, prNumber), runId, { ...options, fetchedFrom: "pr" });
+  } catch (err) {
+    if (err instanceof EvidenceError) return { trusted: [], untrusted: [] };
+    throw err;
+  }
 }
 
 function markerFacts(markers) {
@@ -1824,20 +1844,29 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, unt
   const allMarkers = markers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
   const allUntrustedMarkers = untrustedMarkers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
   if (body.pr && Number.isInteger(body.pr.number) && body.pr.number > 0) {
-    const prSummaries = collectTrustedEvidenceSummaries(fetchPrComments(repo, body.pr.number), runId, { trustedActorIds, asOf: null });
+    const prSummaries = collectTrustedEvidenceSummaries(fetchPrComments(repo, body.pr.number), runId, { trustedActorIds, asOf: null, fetchedFrom: "pr" });
     allMarkers.push(...prSummaries.trusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
     allUntrustedMarkers.push(...prSummaries.untrusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
     fetchedDestinations.add("pr");
   }
   const cutoff = asOf ? Date.parse(asOf) : Infinity;
-  const visibleMarkers = allMarkers.filter((observed) => Date.parse(observed.comment.created_at) <= cutoff);
+  const visitedStages = new Set((state.stage_transitions || []).map((transition) => transition.stage));
+  const authenticatedMarkers = allMarkers.filter((observed) => visitedStages.has(observed.marker.stage));
+  allUntrustedMarkers.push(...allMarkers.filter((observed) => !visitedStages.has(observed.marker.stage)));
+  const visibleMarkers = authenticatedMarkers.filter((observed) => Date.parse(observed.comment.created_at) <= cutoff);
   if (visibleMarkers.length === 0) return { status: "no-current-evidence" };
   const hasIssueBinding = visibleMarkers.some((observed) => observed.marker.dest === "issue") || issueNumberFromRunId(runId) === issueNumber;
   if (!hasIssueBinding && visibleMarkers.some((observed) => observed.marker.dest === "pr")) {
     return { status: "indeterminate", runId, issueNumber, unverifiedPrOnly: true, reason: `PR-only evidence for noncanonical run ${JSON.stringify(runId)} is unverified for issue #${issueNumber}; an authenticated issue marker or canonical run-id issue binding is required` };
   }
+  const registrationIds = new Set();
+  for (const entry of body.evidence_comments) {
+    const id = String(entry && entry.id);
+    if (registrationIds.has(id)) throw new EvidenceError(`local run record repeats evidence comment id ${JSON.stringify(id)}`);
+    registrationIds.add(id);
+  }
   const registrations = new Map(body.evidence_comments.map((entry) => [String(entry.id), entry]));
-  const observedIds = new Set(allMarkers.map((observed) => String(observed.comment.id)));
+  const observedIds = new Set([...authenticatedMarkers, ...allUntrustedMarkers].map((observed) => String(observed.comment.id)));
   const unverifiedEvidenceDestinations = new Set();
   for (const entry of body.evidence_comments) {
     const destination = entry && entry.marker && entry.marker.destination;
@@ -1847,7 +1876,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, unt
       throw new EvidenceError(`local run record registers evidence comment ${entry.id}, but that comment was not observed — deleted-entry tampering`);
     }
   }
-  for (const observed of allMarkers) {
+  for (const observed of authenticatedMarkers) {
     const entry = registrations.get(String(observed.comment.id));
     const listed = entry && entry.marker;
     if (observed.marker.dest !== observed.comment._fetchedFrom || !entry || Number(entry.author_actor_id) !== observed.actorId || entry.digest !== payloadDigest(observed.comment.body || "") ||
@@ -1920,6 +1949,10 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, unt
   }
   const adjudicationFiles = jsonFilesIn("adjudications");
   const adjudications = adjudicationFiles.files.map((file) => readJsonFile(resolveContainedPath(root, path.join(adjudicationFiles.dir, file), `${runId}/adjudications/${file}`)));
+  const verdictCandidate = path.join(runDir, "verdict.json");
+  const verdict = existsSync(verdictCandidate)
+    ? readJsonFile(resolveContainedPath(root, verdictCandidate, `${runId}/verdict.json`))
+    : null;
   const byRound = new Map();
   for (const observed of visibleMarkers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
     const key = `${observed.marker.stage}|${observed.marker.round}`;
@@ -1927,15 +1960,42 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, unt
     group.push(observed);
     byRound.set(key, group);
   }
+  for (const doc of adjudications) {
+    if (doc && Number.isInteger(doc.round) && (doc.stage === "challenge" || doc.stage === "review") && !byRound.has(`${doc.stage}|${doc.round}`)) {
+      throw new EvidenceError(`${runDir} retains an adjudication for ${doc.stage} round ${doc.round} without an authenticated issue marker group`);
+    }
+  }
+  if (Array.isArray(body.receipts)) {
+    for (const envelope of passes) {
+      const stage = envelope && envelope.payload && envelope.payload.stage;
+      const round = envelope && envelope.payload && envelope.payload.round;
+      if (Number.isInteger(round) && (stage === "challenge" || stage === "review") && !byRound.has(`${stage}|${round}`)) {
+        throw new EvidenceError(`${runDir} retains a receipted pass for ${stage} round ${round} without an authenticated issue marker group`);
+      }
+    }
+  }
+  const retainedSlotFailures = asOf ? [] : (Array.isArray(body.slot_failures) ? body.slot_failures : []);
   const rounds = [...byRound.values()].map((group) => {
     const observed = group[0];
     const { stage, round } = observed.marker;
-    const matchingPasses = passes.filter((envelope) => envelope && envelope.run && envelope.run.run_id === runId && envelope.payload && envelope.payload.stage === stage && envelope.payload.round === round);
+    const matchingPassCandidates = passes.filter((envelope) => envelope && envelope.run && envelope.run.run_id === runId && envelope.payload && envelope.payload.stage === stage && envelope.payload.round === round);
+    const matchingPasses = matchingPassCandidates.filter((envelope) => envelope.status === "completed");
+    const blockedPasses = matchingPassCandidates.filter((envelope) => envelope.status === "blocked");
     const matchingAdjudications = adjudications.filter((doc) => doc && doc.run_id === runId && doc.stage === stage && doc.round === round);
     if (matchingAdjudications.length !== 1) throw new EvidenceError(`${runDir} must have exactly one adjudication for authenticated ${stage} round ${round}; found ${matchingAdjudications.length}`);
-    return { stage, dest: "issue", round, payload: { passes: matchingPasses, adjudication: matchingAdjudications[0] }, commentIds: group.map((entry) => entry.comment.id) };
+    if (matchingPasses.length === 0 && !retainedSlotFailures.some((failure) => failure && failure.stage === stage && failure.round === round)) {
+      throw new EvidenceError(`${runDir} has an adjudication for authenticated ${stage} round ${round} but no completed pass or retained slot failure`);
+    }
+    const rawFindings = matchingPasses.flatMap((envelope) => (envelope.payload && envelope.payload.findings) || []);
+    let verifiedFindings = null;
+    if (verdict && verdict.stage === stage && Array.isArray(verdict.verified_findings)) {
+      const verifiedById = new Map(verdict.verified_findings.map((finding) => [finding.id, finding]));
+      const joined = rawFindings.map((finding) => verifiedById.get(finding.id));
+      if (joined.every(Boolean)) verifiedFindings = joined;
+    }
+    return { stage, dest: "issue", round, payload: { passes: matchingPasses, blockedPasses, adjudication: matchingAdjudications[0], verifiedFindings }, commentIds: group.map((entry) => entry.comment.id) };
   });
-  return { status: "ok", runId, issueNumber, record: { body }, state, rounds, slotFailures: body.slot_failures ?? [], untrusted: [], forged: allUntrustedMarkers, unreceiptedPassFiles, legacyAlsoPresent, unverifiedEvidenceDestinations: [...unverifiedEvidenceDestinations] };
+  return { status: "ok", runId, issueNumber, record: { body }, state, rounds, slotFailures: retainedSlotFailures, slotFailuresUnavailable: Boolean(asOf), untrusted: [], forged: allUntrustedMarkers.filter((observed) => Date.parse(observed.comment.created_at) <= cutoff), unreceiptedPassFiles, legacyAlsoPresent, unverifiedEvidenceDestinations: [...unverifiedEvidenceDestinations] };
 }
 
 function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null }) {
@@ -1951,21 +2011,36 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
   // just round evidence, needs the cutoff filter — challenge round 1,
   // confirmed.
   const summaries = requestedRunId
-    ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf })
+    ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf, fetchedFrom: "issue" })
     : { trusted: [], untrusted: [] };
   const liveSummaries = requestedRunId && recordDir
-    ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf: null })
+    ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf: null, fetchedFrom: "issue" })
     : summaries;
   let currentRun = null;
   if (summaries.trusted.length > 0 && !recordDir) {
-    currentRun = { status: "evidence-only", runId: requestedRunId, issueNumber, markerFacts: markerFacts(summaries.trusted), untrustedMarkerFacts: markerFacts(summaries.untrusted), legacyAlsoPresent: false };
-  } else if (requestedRunId && recordDir) {
     try {
-      const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, false);
-      if (loaded.status !== "no-current-evidence" && (loaded.status !== "record-missing" || summaries.trusted.length > 0)) currentRun = loaded;
+      assertEvidenceMarkerSequenceContiguity(summaries.trusted, `${requestedRunId} visible evidence`);
+      currentRun = { status: "evidence-only", runId: requestedRunId, issueNumber, markerFacts: markerFacts(summaries.trusted), untrustedMarkerFacts: markerFacts(summaries.untrusted), legacyAlsoPresent: false };
     } catch (err) {
       if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
       throw err;
+    }
+  } else if (requestedRunId && recordDir) {
+    const prSelection = summaries.trusted.length === 0
+      ? probeLocalPrEvidence(repo, recordDir, requestedRunId, { trustedActorIds, asOf })
+      : { trusted: [], untrusted: [] };
+    const selectedByCurrentEvidence = summaries.trusted.length > 0 || prSelection.trusted.length > 0;
+    if (!selectedByCurrentEvidence) {
+      // Fall through to legacy discovery. Local bytes are not authority to
+      // select a current run and therefore are not fully parsed here.
+    } else {
+      try {
+        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, false);
+        if (loaded.status !== "no-current-evidence" && (loaded.status !== "record-missing" || summaries.trusted.length > 0)) currentRun = loaded;
+      } catch (err) {
+        if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
+        throw err;
+      }
     }
   }
   if (currentRun && currentRun.status === "record-missing") return [currentRun];
@@ -2293,21 +2368,31 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
 // Per-run trajectory rendering
 // ---------------------------------------------------------------------------
 
-function findingCountsByClassAndProvenance(rounds) {
+function verifiedFindingMeasurements(rounds) {
   const counts = {};
+  const fingerprints = {};
+  const unavailableRounds = [];
   for (const round of rounds) {
+    if (!Array.isArray(round.payload.verifiedFindings)) {
+      unavailableRounds.push({ stage: round.stage, round: round.round });
+      continue;
+    }
     const passes = Array.isArray(round.payload.passes) ? round.payload.passes : [];
+    const verifiedById = new Map(round.payload.verifiedFindings.map((finding) => [finding.id, finding]));
     for (const pass of passes) {
       const findings = (pass.payload && pass.payload.findings) || [];
       for (const f of findings) {
+        const verified = verifiedById.get(f.id);
         const cls = f.class || "unclassified";
-        const prov = f.provenance || "unspecified";
+        const prov = verified && verified.verified_provenance ? verified.verified_provenance : "unavailable";
         const key = `${cls}/${prov}`;
         counts[key] = (counts[key] || 0) + 1;
+        const fingerprint = verified && verified.verified_fingerprint ? verified.verified_fingerprint : "unavailable";
+        fingerprints[fingerprint] = (fingerprints[fingerprint] || 0) + 1;
       }
     }
   }
-  return counts;
+  return { counts, fingerprints, unavailableRounds };
 }
 
 function renderTrajectory(run) {
@@ -2320,6 +2405,7 @@ function renderTrajectory(run) {
   const rounds = run.rounds
     .filter((r) => r.dest === "issue" && r.round !== null)
     .sort((a, b) => Math.min(...a.commentIds) - Math.min(...b.commentIds));
+  const verifiedMeasurements = verifiedFindingMeasurements(rounds);
   return {
     run_id: run.runId,
     issue: run.issueNumber,
@@ -2336,16 +2422,21 @@ function renderTrajectory(run) {
       stage: r.stage,
       round: r.round,
       pass_count: Array.isArray(r.payload.passes) ? r.payload.passes.length : 0,
+      blocked_passes: Array.isArray(r.payload.blockedPasses) ? r.payload.blockedPasses.length : 0,
       adjudication_count: r.payload.adjudication ? 1 : 0,
       finding_count: Array.isArray(r.payload.passes)
         ? r.payload.passes.reduce((n, p) => n + ((p.payload && p.payload.findings && p.payload.findings.length) || 0), 0)
         : 0,
       has_adjudication: Boolean(r.payload.adjudication),
+      provenance_measurement: Array.isArray(r.payload.verifiedFindings) ? "verified" : "unavailable",
     })),
-    findings_by_class_and_provenance: findingCountsByClassAndProvenance(rounds),
+    findings_by_class_and_provenance: verifiedMeasurements.counts,
+    findings_by_verified_fingerprint: verifiedMeasurements.fingerprints,
+    provenance_unavailable_rounds: verifiedMeasurements.unavailableRounds,
     // Retained exactly as recorded. This projection reports evidence; it
     // does not re-run the exit engine's finder-slot semantics.
     slot_failures: run.slotFailures ?? [],
+    slot_failures_unavailable: Boolean(run.slotFailuresUnavailable),
     // Renamed from the misleading untrusted_comments — shepherd round 2,
     // Codex-confirmed (P2): this field has only ever held TRUSTED-but-
     // unlisted orphans, never untrusted ones. forged_comments is the new,
@@ -2370,13 +2461,14 @@ function renderTrajectoryTable(trajectory) {
   lines.push("");
   lines.push("rounds:");
   for (const r of trajectory.rounds) {
-    lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.adjudication_count} adjudication(s), ${r.finding_count} finding(s)`);
+    lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.blocked_passes} blocked pass(es), ${r.adjudication_count} adjudication(s), ${r.finding_count} finding(s), provenance=${r.provenance_measurement}`);
   }
   if (Object.keys(trajectory.findings_by_class_and_provenance).length > 0) {
     lines.push("");
     lines.push("findings by class/provenance:");
     for (const [k, v] of Object.entries(trajectory.findings_by_class_and_provenance)) lines.push(`  ${k}: ${v}`);
   }
+  if (trajectory.provenance_unavailable_rounds.length > 0) lines.push(`provenance unavailable for: ${trajectory.provenance_unavailable_rounds.map((entry) => `${entry.stage} r${entry.round}`).join(", ")}`);
   if (trajectory.interventions.length > 0) {
     lines.push("");
     lines.push("interventions:");
@@ -2386,7 +2478,8 @@ function renderTrajectoryTable(trajectory) {
     lines.push("");
     lines.push(`unreceipted pass files: ${trajectory.unreceipted_pass_files.join(", ")}`);
   }
-  if (trajectory.slot_failures.length > 0) lines.push(`slot_failures: ${JSON.stringify(trajectory.slot_failures)}`);
+  if (trajectory.slot_failures_unavailable) lines.push("slot_failures: unavailable under --as-of");
+  else if (trajectory.slot_failures.length > 0) lines.push(`slot_failures: ${JSON.stringify(trajectory.slot_failures)}`);
   if (trajectory.legacy_also_present) lines.push("legacy-also-present: true");
   if (trajectory.unverified_evidence_destinations.length > 0) lines.push(`unverified evidence destinations: ${trajectory.unverified_evidence_destinations.join(", ")}`);
   return lines.join("\n");

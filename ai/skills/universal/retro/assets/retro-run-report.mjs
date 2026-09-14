@@ -897,6 +897,10 @@ function measure(trajectory, policy) {
   const transitions = Array.isArray(trajectory.stage_transitions) ? trajectory.stage_transitions : []
   const rounds = Array.isArray(trajectory.rounds) ? trajectory.rounds : []
   const slotFailures = Array.isArray(trajectory.slot_failures) ? trajectory.slot_failures : []
+  const slotFailuresUnavailable = trajectory.slot_failures_unavailable === true
+  const provenanceUnavailableRounds = Array.isArray(trajectory.provenance_unavailable_rounds)
+    ? trajectory.provenance_unavailable_rounds
+    : []
   const interventions = Array.isArray(trajectory.interventions) ? trajectory.interventions : []
   const settlements = Array.isArray(trajectory.settlements) ? trajectory.settlements : []
 
@@ -923,6 +927,7 @@ function measure(trajectory, policy) {
       cap,
       findings: own.reduce((total, round) => total + (round.finding_count || 0), 0),
       passes: own.reduce((total, round) => total + (round.pass_count || 0), 0),
+      blocked_passes: own.reduce((total, round) => total + (round.blocked_passes || 0), 0),
       adjudications: own.reduce(
         (total, round) => total + (round.adjudication_count ?? (round.has_adjudication ? 1 : 0)),
         0
@@ -930,12 +935,17 @@ function measure(trajectory, policy) {
       round_evidence_counts: own.map((round) => ({
         round: round.round,
         passes: round.pass_count || 0,
+        blocked_passes: round.blocked_passes || 0,
         adjudications: round.adjudication_count ?? (round.has_adjudication ? 1 : 0)
       })),
       rounds_without_adjudication: own
         .filter((round) => (round.adjudication_count ?? (round.has_adjudication ? 1 : 0)) === 0)
         .map((round) => round.round),
       slot_failures: slotFailures.filter((failure) => failure && failure.stage === stage),
+      slot_failures_unavailable: slotFailuresUnavailable,
+      provenance_unavailable_rounds: provenanceUnavailableRounds
+        .filter((entry) => entry && entry.stage === stage)
+        .map((entry) => entry.round),
       interventions: interventions
         .filter((entry) => stageAt(transitions, entry.at) === stage)
         .map((entry) => ({ at: entry.at, kind: entry.kind, note: entry.note }))
@@ -960,7 +970,9 @@ function measure(trajectory, policy) {
   // the remedy is a harvester change this lane may not make).
   const stagesWithFindings = [...new Set(stages.filter((st) => st.findings > 0).map((st) => st.stage))]
   const attribution =
-    classProvenance.length === 0
+    provenanceUnavailableRounds.length > 0
+      ? { scope: classProvenance.length > 0 ? 'partial' : 'unavailable', stage: null }
+      : classProvenance.length === 0
       ? { scope: 'none', stage: null }
       : stagesWithFindings.length === 1
         ? { scope: 'stage', stage: stagesWithFindings[0] }
@@ -1005,7 +1017,7 @@ function unavailableMeasurements(measured) {
   // anyway would manufacture a follow-up for a measurement the report just
   // made — the skill carries every listed gap into improvements (cloud review
   // round 1, confirmed P2).
-  if (measured.class_provenance_attribution.scope !== 'stage') {
+  if (measured.class_provenance_attribution.scope === 'run') {
     gaps.push({
       measurement: 'findings by class and provenance, keyed by stage',
       reason:
@@ -1110,13 +1122,17 @@ function renderMarkdown(report) {
       l.push(`- Rounds spent: ${stage.rounds_spent} / ${cap}`)
       l.push(`- Findings: ${stage.findings} across ${stage.passes} pass(es)`)
       for (const evidence of stage.round_evidence_counts) {
-        l.push(`- Round ${evidence.round} evidence: ${evidence.passes} pass(es), ${evidence.adjudications} adjudication(s)`)
+        l.push(`- Round ${evidence.round} evidence: ${evidence.passes} pass(es), ${evidence.blocked_passes} blocked pass(es), ${evidence.adjudications} adjudication(s)`)
       }
       l.push(
         `- Rounds with no adjudication record: ${stage.rounds_without_adjudication.length === 0 ? 'none' : stage.rounds_without_adjudication.join(', ')}`
       )
       if (stage.slot_failures.length > 0) {
         l.push(`- Slot failures (retained verbatim): \`${safe(JSON.stringify(stage.slot_failures))}\``)
+      }
+      if (stage.slot_failures_unavailable) l.push('- Slot failures: unavailable under --as-of')
+      if (stage.provenance_unavailable_rounds.length > 0) {
+        l.push(`- Verified provenance/fingerprint unavailable for round(s): ${stage.provenance_unavailable_rounds.join(', ')}`)
       }
     }
     if (stage.entries.length === 0) {
@@ -1135,7 +1151,11 @@ function renderMarkdown(report) {
     )
     const attribution = report.measurements.class_provenance_attribution
     if (stage.findings > 0) {
-      if (attribution.scope === 'stage' && attribution.stage === stage.stage) {
+      if (stage.provenance_unavailable_rounds.length > 0) {
+        l.push(
+          `- Findings by class and provenance: unavailable for round(s) ${stage.provenance_unavailable_rounds.join(', ')} — no matching verified \`verdict.json\` projection exists; raw producer assertions are not substituted.`
+        )
+      } else if (attribution.scope === 'stage' && attribution.stage === stage.stage) {
         l.push('- Findings by class and provenance:')
         for (const row of report.measurements.findings_by_class_and_provenance) {
           l.push(`  - ${cell(row.class)} / ${cell(row.provenance)}: ${row.count}`)
@@ -1155,7 +1175,12 @@ function renderMarkdown(report) {
 
   l.push('### Findings by class and provenance')
   l.push('')
-  if (report.measurements.findings_by_class_and_provenance.length === 0) {
+  if (report.measurements.class_provenance_attribution.scope === 'unavailable') {
+    l.push('Unavailable: no affected round has a matching verified `verdict.json` projection; raw producer assertions are not reported as verified provenance.')
+  } else if (report.measurements.class_provenance_attribution.scope === 'partial') {
+    l.push('Partial verified projection only: rounds named unavailable above are excluded rather than counted from raw producer assertions.')
+    l.push('')
+  } else if (report.measurements.findings_by_class_and_provenance.length === 0) {
     l.push('No findings recorded for this run.')
   } else if (report.measurements.class_provenance_attribution.scope === 'stage') {
     l.push(

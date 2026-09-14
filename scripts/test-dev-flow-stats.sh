@@ -2798,6 +2798,9 @@ function writeScenario(name, db) {
     TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, "2026-09-01T00:00:30Z",
   );
   revoked.updated_at = "2026-09-01T00:20:00Z";
+  const wrongDestination = evidenceSummaryComment(
+    OTHER_TRUSTED, "other-orchestrator", runId, "integration", "pr", null, 1, "2026-09-01T00:24:00Z",
+  );
   const markerShape = { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 };
   const runBody = {
     schema: 2, run_id: runId, initiated_by: "human", started_at: at,
@@ -2850,7 +2853,7 @@ function writeScenario(name, db) {
   const trustBothSha = "8".repeat(40);
   const removeSha = "9".repeat(40);
   writeScenario("evidence-grammar", {
-    issues: [{ number: 186, pull_request: null }], comments: { "186": [legacy.index, legacy.record, migratedLegacy.index, migratedLegacy.record, revoked, ev], "9186": [prEv] }, commits: {},
+    issues: [{ number: 186, pull_request: null }], comments: { "186": [legacy.index, legacy.record, migratedLegacy.index, migratedLegacy.record, revoked, wrongDestination, ev], "9186": [prEv] }, commits: {},
     registry_commits: [{ sha: removeSha }, { sha: trustBothSha }],
     registry_contents: {
       [trustBothSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED] })).toString("base64"),
@@ -2860,7 +2863,7 @@ function writeScenario(name, db) {
       [trustBothSha]: [{ number: 625, merged_at: "2026-08-01T00:00:00Z" }],
       [removeSha]: [{ number: 626, merged_at: "2026-09-01T00:10:00Z" }],
     },
-    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 186 },
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 186, wrongDestinationId: wrongDestination.id, unvisitedStageId: prEv.id },
   });
 }
 
@@ -2882,6 +2885,7 @@ function writeScenario(name, db) {
   mkdirSync(localRunDir, { recursive: true });
   writeFileSync(path.join(localRunDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
   writeZeroFindingAdjudication(localRunDir, runId);
+  writeCompletedZeroFindingPass(localRunDir, runId);
   writeScenario("arbitrary-evidence-run", {
     issues: [{ number: 187, pull_request: null }], comments: { "187": [ev] }, commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 187 },
@@ -2926,6 +2930,7 @@ function writeScenario(name, db) {
   mkdirSync(unverifiedDir, { recursive: true });
   writeFileSync(path.join(unverifiedDir, "run.json"), JSON.stringify({ ...unverifiedBody, ...deriveDefaultChains(unverifiedBody) }, null, 2));
   writeZeroFindingAdjudication(unverifiedDir, unverifiedRunId);
+  writeCompletedZeroFindingPass(unverifiedDir, unverifiedRunId);
   writeScenario("evidence-unverified-pr", {
     issues: [{ number: 189, pull_request: null }], comments: { "189": [issueMarker] }, commits: {},
     meta: { runId: unverifiedRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 189 },
@@ -2945,6 +2950,7 @@ function writeScenario(name, db) {
   mkdirSync(currentDir, { recursive: true });
   writeFileSync(path.join(currentDir, "run.json"), JSON.stringify({ ...currentBody, ...deriveDefaultChains(currentBody) }, null, 2));
   writeZeroFindingAdjudication(currentDir, malformedRunId);
+  writeCompletedZeroFindingPass(currentDir, malformedRunId);
   writeScenario("evidence-current-first", {
     issues: [{ number: 190, pull_request: null }], comments: { "190": [malformedLegacy, current] }, commits: {},
     meta: { runId: malformedRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 190 },
@@ -2955,7 +2961,7 @@ function writeScenario(name, db) {
   const arbitraryIssue = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", arbitraryPrRunId, "review", "issue", 1, 1, at);
   const arbitraryPrBody = {
     schema: 2, run_id: arbitraryPrRunId, initiated_by: "human", started_at: at,
-    stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "integration", entered_at: at }]),
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "review", entered_at: at }, { stage: "integration", entered_at: at }]),
     interventions: chain([]), settlements: chain([]), outcome: null,
     pr: { number: 9191, url: "https://github.com/o/r/pull/9191" },
     evidence_comments: [
@@ -2968,6 +2974,7 @@ function writeScenario(name, db) {
   mkdirSync(arbitraryPrDir, { recursive: true });
   writeFileSync(path.join(arbitraryPrDir, "run.json"), JSON.stringify({ ...arbitraryPrBody, ...deriveDefaultChains(arbitraryPrBody) }, null, 2));
   writeZeroFindingAdjudication(arbitraryPrDir, arbitraryPrRunId);
+  writeCompletedZeroFindingPass(arbitraryPrDir, arbitraryPrRunId);
   writeScenario("evidence-pr-only-arbitrary", {
     issues: [{ number: 191, pull_request: null }, { number: 192, pull_request: null }], comments: { "191": [], "192": [arbitraryIssue], "9191": [arbitraryPr] }, commits: {},
     meta: { runId: arbitraryPrRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR] },
@@ -3008,7 +3015,7 @@ function writeScenario(name, db) {
     mkdirSync(runDir, { recursive: true });
     writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
     if (withAdjudication) writeZeroFindingAdjudication(runDir, runId);
-    if (name === "evidence-adjudication-clean") writeCompletedZeroFindingPass(runDir, runId);
+    if (name === "evidence-sequence-valid" || name === "evidence-adjudication-clean") writeCompletedZeroFindingPass(runDir, runId);
     writeScenario(name, {
       issues: [{ number: issueNumber, pull_request: null }], comments: { [String(issueNumber)]: comments }, commits: {},
       meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber },
@@ -3083,12 +3090,12 @@ echo "== review evidence grammar reconstructs its authenticated local record bes
 export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
-echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,adjudication_count:1,finding_count:0,has_adjudication:true}] and .unreceipted_pass_files == ["stale"] and (.forged_comments | length) == 1 and .legacy_also_present == true' >/dev/null ||
+echo "$out" | jq -e --arg run "$run_id" --argjson wrong "$(meta evidence-grammar .meta.wrongDestinationId)" --argjson stage "$(meta evidence-grammar .meta.unvisitedStageId)" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"unavailable"}] and .provenance_unavailable_rounds == [{stage:"review",round:1}] and .unreceipted_pass_files == ["stale"] and ([.forged_comments[].id] | index($wrong) != null and index($stage) != null) and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected the local run and its authenticated review round, got: $out"
 
 echo "== --as-of presence validation sees later live registrations but assembles only pre-cutoff rounds =="
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z --json)"
-echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,adjudication_count:1,finding_count:0,has_adjudication:true}]' >/dev/null ||
+echo "$out" | jq -e --argjson future "$(meta evidence-grammar .meta.unvisitedStageId)" '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"unavailable"}] and .slot_failures == [] and .slot_failures_unavailable == true and ([.forged_comments[].id] | index($future) == null)' >/dev/null ||
     fail "evidence grammar as-of: later PR registration was misreported deleted or assembled into history: $out"
 
 echo "== current evidence wins when legacy evidence names the same run, with migration disclosed =="
@@ -3162,7 +3169,7 @@ set -e
 
 echo "== review evidence grammar without a local input reports evidence-only marker facts =="
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9002 --json)"
-echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run and .marker_facts == [{stage:"review",destination:"issue",round:1,sequence:1}] and (.untrusted_marker_facts | length) == 1 and .legacy_also_present == true' >/dev/null ||
+echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run and .marker_facts == [{stage:"review",destination:"issue",round:1,sequence:1}] and (.untrusted_marker_facts | length) == 2 and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected evidence-only marker facts, got: $out"
 
 echo "== current-marker trust uses the configured read-time set without registry history =="
@@ -3210,6 +3217,16 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "
 echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 190 and (.rounds | length) == 1' >/dev/null ||
     fail "current-first migration: malformed legacy evidence suppressed the current run: $out"
 
+echo "== malformed unselected local bytes cannot suppress authenticated legacy evidence =="
+export DFSTATS_DB="$tmp/scenarios/happy.json"
+run_id="$(meta happy .meta.runId)"
+mkdir -p "$tmp/local-records/$run_id"
+printf '%s\n' '{not-json' >"$tmp/local-records/$run_id/run.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.outcome == "ready-for-review" and .issue == 101' >/dev/null ||
+    fail "current selection: unselected malformed local bytes suppressed the legacy run: $out"
+rm -rf "$tmp/local-records/$run_id"
+
 echo "== a marker whose named local record is absent reports record-missing =="
 export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
@@ -3225,8 +3242,11 @@ echo "== current-marker discovery supports schema-valid run ids without an encod
 export DFSTATS_DB="$tmp/scenarios/arbitrary-evidence-run.json"
 run_id="$(meta arbitrary-evidence-run .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 187 and .rounds == [{stage:"review",round:1,pass_count:0,adjudication_count:1,finding_count:0,has_adjudication:true}] and .slot_failures == [{stage:"review",round:2,slot:"codex-verification",reason:"finder_unavailable"}]' >/dev/null ||
+echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 187 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"unavailable"}] and .slot_failures == [{stage:"review",round:2,slot:"codex-verification",reason:"finder_unavailable"}]' >/dev/null ||
     fail "evidence grammar: expected all-issue lookup to find the arbitrary run id, got: $out"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+echo "$out" | jq -e '.slot_failures == [] and .slot_failures_unavailable == true' >/dev/null ||
+    fail "evidence grammar as-of: slot failures were not omitted with explicit unavailability: $out"
 
 for scenario in evidence-sequence-two-only evidence-sequence-gap; do
     echo "== current-marker groups reject a non-contiguous sequence: $scenario =="
@@ -3238,13 +3258,19 @@ for scenario in evidence-sequence-two-only evidence-sequence-gap; do
     set -e
     [ "$rc" -eq 3 ] && grep -Fq 'unique contiguous sequences starting at 1' <<<"$out" ||
         fail "evidence sequence: expected indeterminate contiguous-sequence refusal, got rc=$rc: $out"
+    set +e
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] && grep -Fq 'unique contiguous sequences starting at 1' <<<"$out" ||
+        fail "evidence-only sequence: expected indeterminate contiguous-sequence refusal, got rc=$rc: $out"
 done
 
 echo "== a valid multi-segment current-marker group projects one retained round =="
 export DFSTATS_DB="$tmp/scenarios/evidence-sequence-valid.json"
 run_id="$(meta evidence-sequence-valid .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:0,adjudication_count:1,finding_count:0,has_adjudication:true}]' >/dev/null ||
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"unavailable"}]' >/dev/null ||
     fail "evidence sequence: valid multi-segment group did not reconstruct: $out"
 
 echo "== an authenticated issue round with no adjudication is indeterminate =="
@@ -3261,8 +3287,88 @@ echo "== a completed zero-finding pass and adjudication are projected without de
 export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-clean.json"
 run_id="$(meta evidence-adjudication-clean .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,adjudication_count:1,finding_count:0,has_adjudication:true}]' >/dev/null ||
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"unavailable"}]' >/dev/null ||
     fail "evidence adjudication: completed zero-finding pass and adjudication were not projected: $out"
+
+echo "== an adjudication with no completed pass or slot failure is indeterminate =="
+mv "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'no completed pass or retained slot failure' <<<"$out" ||
+    fail "evidence adjudication source: expected indeterminate, got rc=$rc: $out"
+mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
+
+echo "== blocked envelopes are disclosed but excluded from completed pass and finding counts =="
+cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
+cp "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
+jq '.slot_failures = [{stage:"review",round:1,slot:"codex-verification",reason:"finder_unavailable"}]' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
+jq '.status = "blocked" | .payload.findings = [{id:"blocked-finding",class:"correctness",provenance:"original"}]' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds[0].pass_count == 0 and .rounds[0].blocked_passes == 1 and .rounds[0].finding_count == 0' >/dev/null ||
+    fail "blocked pass projection: blocked envelope counted as completed evidence: $out"
+mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
+mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
+
+echo "== verifier-corrected provenance and fingerprint replace raw producer assertions =="
+export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
+run_id="$(meta evidence-grammar .meta.runId)"
+cp "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
+jq '.payload.findings = [{id:"review-r1-corrected-1",class:"correctness",provenance:"original",fingerprint:"new",priority:"P2"}]' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
+printf '%s\n' '{"stage":"review","verified_findings":[{"id":"review-r1-corrected-1","provenance_status":"corrected","verified_provenance":"round:1","fingerprint_status":"corrected","verified_fingerprint":"repeat-of:review-r0-origin"}]}' >"$tmp/local-records/$run_id/verdict.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
+echo "$out" | jq -e '.rounds[0].provenance_measurement == "verified" and .findings_by_class_and_provenance == {"correctness/round:1":1} and .findings_by_verified_fingerprint == {"repeat-of:review-r0-origin":1} and .provenance_unavailable_rounds == []' >/dev/null ||
+    fail "verified finding projection: raw producer assertions survived verdict correction: $out"
+rm "$tmp/local-records/$run_id/verdict.json"
+mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
+
+echo "== retained adjudications and receipted passes require authenticated issue marker groups =="
+printf '%s\n' '{"schema":2,"run_id":"run-186-evidence-grammar","stage":"review","round":2,"reviewed_head":"0000000000000000000000000000000000000000","adjudications":[]}' >"$tmp/local-records/$run_id/adjudications/review-r2.json"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'retains an adjudication for review round 2 without an authenticated issue marker group' <<<"$out" ||
+    fail "reverse adjudication coverage: expected indeterminate, got rc=$rc: $out"
+rm "$tmp/local-records/$run_id/adjudications/review-r2.json"
+cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
+jq '.payload.round = 2' "$tmp/local-records/$run_id/passes/review-r1.json" >"$tmp/local-records/$run_id/passes/review-r2.json"
+jq '.receipts += [{kind:"pass",file:"review-r2"}]' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'retains a receipted pass for review round 2 without an authenticated issue marker group' <<<"$out" ||
+    fail "reverse pass coverage: expected indeterminate, got rc=$rc: $out"
+rm "$tmp/local-records/$run_id/passes/review-r2.json"
+mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
+
+echo "== duplicate evidence-comment ids are indeterminate before registration indexing =="
+cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
+node --input-type=module - "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json" <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+import { entryDigest, GENESIS } from "./scripts/dev-flow-stats.mjs";
+const [source, destination] = process.argv.slice(2);
+const body = JSON.parse(readFileSync(source, "utf8"));
+body.evidence_comments.push({ ...body.evidence_comments[0] });
+let previous = GENESIS;
+body.evidence_registrations = body.evidence_comments.map((entry, seq) => {
+  const content = { id: entry.id, author_actor_id: entry.author_actor_id, login: entry.login, payload_digest: entry.digest, marker: entry.marker, registered_at: body.started_at };
+  const digest = entryDigest(content, previous);
+  const result = { ...content, seq, digest, prev_digest: previous };
+  previous = digest;
+  return result;
+});
+writeFileSync(destination, JSON.stringify(body, null, 2));
+NODE
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'repeats evidence comment id' <<<"$out" ||
+    fail "duplicate evidence-comment id: expected indeterminate, got rc=$rc: $out"
+mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 
 echo "== current-marker parsing rejects trailing content and invalid destination/round pairs =="
 node --input-type=module -e 'import { parseMarker } from "./scripts/dev-flow-stats.mjs"; const body = (destination, round, tail = "") => `<!-- dev-flow-v2-evidence: {"run_id":"r","stage":"review","round":${round},"sequence":1,"destination":"${destination}"} -->${tail}`; if ([body("issue", 1, " trailing"), body("issue", "null"), body("pr", 1)].some((value) => parseMarker(value) !== null)) process.exit(1)'
