@@ -944,26 +944,36 @@ attach)
     # A reconstructed reservation can be newer than the trigger attached to
     # it even though an earlier trigger already exists for this head. Detect
     # that history from one issue-comment read. Since trigger comments do not
-    # carry a head field, the current head commit time is the lower boundary;
-    # a distinct exact trigger after that boundary and before this attached
-    # trigger belongs to the same-head history.
+    # carry a head field, the earlier of the current commit's author and
+    # committer times is the conservative lower boundary; a distinct exact
+    # trigger at or after that boundary and before this attached trigger belongs
+    # to the same-head history.
     head_payload=$(run_gh api "repos/$state_repo/commits/$state_head") ||
         die "cannot fetch the current head commit for trigger reconstruction"
     printf '%s' "$head_payload" | jq -e --arg head "$state_head" \
         '.sha == $head' >/dev/null ||
         die "GitHub returned the wrong head commit during trigger reconstruction"
+    head_authored_at=$(printf '%s' "$head_payload" |
+        jq -er '.commit.author.date | select(type == "string")') ||
+        die "current head commit has no usable author timestamp"
+    valid_time "$head_authored_at" ||
+        die "current head commit has a malformed author timestamp"
     head_committed_at=$(printf '%s' "$head_payload" |
         jq -er '.commit.committer.date | select(type == "string")') ||
-        die "current head commit has no usable timestamp"
+        die "current head commit has no usable committer timestamp"
     valid_time "$head_committed_at" ||
-        die "current head commit has a malformed timestamp"
+        die "current head commit has a malformed committer timestamp"
+    head_trigger_boundary=$head_committed_at
+    if [ "$head_authored_at" \< "$head_trigger_boundary" ]; then
+        head_trigger_boundary=$head_authored_at
+    fi
     issue_comments=$(run_gh api --paginate --slurp \
         "repos/$state_repo/issues/$state_pr/comments?per_page=100") ||
         die "cannot fetch PR comments for trigger reconstruction"
     prior_trigger_candidates=$(printf '%s' "$issue_comments" | jq -c \
         --argjson attached "$trigger_id" \
         --arg expected "$expected_trigger_body" \
-        --arg after "$head_committed_at" \
+        --arg after "$head_trigger_boundary" \
         --arg before "$requested_at" '
           [flatten[] | select(
             ((.id? | type) == "number") and .id != $attached and
@@ -971,7 +981,7 @@ attach)
             (((.body // "") |
               gsub("^[[:space:]]+|[[:space:]]+$"; "")) == $expected) and
             ((.created_at? | type) == "string") and
-            (.created_at > $after) and (.created_at < $before)
+            (.created_at >= $after) and (.created_at < $before)
           )]
         ') || die "cannot classify prior review triggers"
 
@@ -2023,7 +2033,7 @@ check)
           ] | length
         ' "$workdir/reviews.json") || die "cannot evaluate recorded dispositions"
     [ "$disposed_review_hits" -eq 0 ] || disposed_applied=1
-    review_result=$(jq -r \
+    review_result_record=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
         --arg requested "$state_requested" \
@@ -2054,11 +2064,15 @@ check)
            else {class:$class,time:$review.submitted_at} end
           else {class:"none",time:$review.submitted_at} end
           ] as $classified |
-          if any($classified[]; .class == "findings") then "findings"
+          if any($classified[]; .class == "findings") then
+            ([$classified[] | select(.class == "findings")] |
+             sort_by(.time) | last)
           else ([$classified[] |
                   select(.class == "unrecognized" or .class == "clean")] |
-                sort_by(.time) | last | .class // "none") end
+                sort_by(.time) | last // {class:"none",time:""}) end |
+          [.class, .time] | @tsv
         ' "$workdir/reviews.json")
+    IFS=$'\t' read -r review_result review_result_time <<<"$review_result_record"
     # The reviews this check actually saw for the current head, by ID. The
     # adjudicated-clean fallback below reconciles the two endpoints against
     # each other with it: an inline comment naming a review nobody fetched is
@@ -2101,11 +2115,6 @@ check)
             review "$findings_review_id"
         exit 10
     fi
-    if [ "$review_result" = "unrecognized" ]; then
-        emit indeterminate "current-head review opens with the clean verdict but carries prose beyond Codex's own metadata"
-        exit 2
-    fi
-
     comment_candidates="$workdir/comment-candidates.tsv"
     jq -r \
         --argjson id "$actor_id" \
@@ -2199,6 +2208,11 @@ check)
     if [ "$comment_result" = "unrecognized" ] &&
         [ "$comment_result_time" = "$newest_result_time" ]; then
         emit indeterminate "current-head result opens with the clean verdict but carries prose beyond Codex's own metadata"
+        exit 2
+    fi
+    if [ "$review_result" = "unrecognized" ] &&
+        [ "$review_result_time" = "$newest_result_time" ]; then
+        emit indeterminate "current-head review opens with the clean verdict but carries prose beyond Codex's own metadata"
         exit 2
     fi
 

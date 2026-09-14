@@ -142,8 +142,9 @@ repos/*/pulls/*) file=pr.json ;;
 repos/*/commits/*)
     jq -cn \
         --arg sha "$(cat "$GH_FIXTURES/resolved-head")" \
+        --arg authored "$(cat "$GH_FIXTURES/head-authored-at")" \
         --arg committed "$(cat "$GH_FIXTURES/head-committed-at")" \
-        '{sha:$sha,commit:{committer:{date:$committed}}}'
+        '{sha:$sha,commit:{author:{date:$authored},committer:{date:$committed}}}'
     exit 0
     ;;
 *) exit 93 ;;
@@ -220,6 +221,8 @@ write_defaults() {
     printf '%s\n' "$head_sha" >"${fixtures}/head"
     printf '%s\n' "$head_sha" >"${fixtures}/base-head"
     printf '%s\n' "$head_sha" >"${fixtures}/resolved-head"
+    printf '%s\n' '2026-07-31T07:59:00Z' \
+        >"${fixtures}/head-authored-at"
     printf '%s\n' '2026-07-31T07:59:00Z' \
         >"${fixtures}/head-committed-at"
     jq -cn --argjson id "$trusted_trigger_actor_id" \
@@ -657,6 +660,35 @@ jq -cn \
 run_check '2026-07-31T08:01:00Z'
 assert_status 0 clean
 assert_accepted review 204
+
+echo "==> a newer clean top-level result supersedes an older unrecognized review after the window"
+new_cycle
+jq '.requires_full_window = true' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+      id:205,user:{id:$id,login:$login},
+      submitted_at:"2026-07-31T08:00:04Z",commit_id:$head,
+      body:"Codex Review: Didn\u0027t find any major issues.\n\nBut a race remains."
+    }]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" '
+    [[{
+      id:206,user:{id:$id,login:$login},
+      created_at:"2026-07-31T08:00:05Z",
+      body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n**Reviewed commit:** `" + $prefix + "`")
+    }]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+run_check '2026-07-31T08:15:00Z'
+assert_status 0 clean
+assert_accepted comment 206
 
 # A severity marker anywhere in the body is a finding outright, whatever the
 # verdict line says. This is the protection that still covers the verdict
@@ -1807,6 +1839,10 @@ trigger_id=124
 request_time='2026-07-31T08:02:00Z'
 write_defaults
 rm -f "$state"
+printf '%s\n' '2026-07-31T08:00:00Z' \
+    >"${fixtures}/head-authored-at"
+printf '%s\n' '2026-07-31T08:01:00Z' \
+    >"${fixtures}/head-committed-at"
 jq -cn \
     --argjson trusted "$trusted_trigger_actor_id" '
     [[
