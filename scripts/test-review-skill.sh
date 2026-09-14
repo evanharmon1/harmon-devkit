@@ -88,10 +88,10 @@ grep -Fq 'resolved cap is `0`' "$skill" ||
 
 echo "==> review stage advance writes and validates schema-shaped transitions"
 for text in 'Before replacing `run.json`, write the complete candidate beside it' \
-    'scripts/validate-result-schemas.mjs run <candidate>' \
+    'scripts/validate-result-schemas.mjs run <candidate> --receipts <candidate>' \
     'Rename the candidate over `run.json` only' \
     'after that validation passes' \
-    'scripts/validate-result-schemas.mjs run <run.json>' \
+    'scripts/validate-result-schemas.mjs run <run.json> --receipts <run.json>' \
     'Operational `run.json` records validate under the schema with their trusted' \
     '`receipts` sequence intact' \
     'enforcing the binding here at write time rather than only later' \
