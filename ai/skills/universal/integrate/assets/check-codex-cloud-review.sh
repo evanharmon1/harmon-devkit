@@ -1727,7 +1727,7 @@ check)
     # acknowledgements have no bearing on the decision. An empty review is an
     # ordering result only when current-head inline findings attribute to its
     # exact ID; an unattributed shell remains pending evidence below.
-    newest_result_time=$(jq -nr \
+    newest_result_record=$(jq -nr \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
         --arg requested "$state_requested" \
@@ -1744,7 +1744,7 @@ check)
                 (.id as $rid | $attributed | index($rid) != null))) and
               ((.submitted_at? // "") > $requested) and
               ((.id? | type) == "number")
-            ) | .submitted_at
+            ) | {time: .submitted_at, id: .id}
           ] + [
             $comments[0][] | select(.user.id? == $id) |
             ((.body // "") |
@@ -1756,15 +1756,17 @@ check)
             select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
             select((.created_at? // "") > $requested) |
             select((.id? | type) == "number") |
-            .created_at
+            {time: .created_at, id: .id}
           ] + [
             $reactions[0][] | select(
               .user.id? == $id and .content? == $success and
               ((.created_at? // "") >= $requested) and
               ((.id? | type) == "number")
-            ) | .created_at
-          ]) | max // ""
+            ) | {time: .created_at, id: .id}
+          ]) | sort_by(.time, .id) | last // {time:"",id:""} |
+          [.time, (.id | tostring)] | @tsv
         ')
+    IFS=$'\t' read -r newest_result_time newest_result_id <<<"$newest_result_record"
 
     # --- Per-finder verdict classification (#804) ---
     # Non-codex verdict modes exit here. The codex clean-sentence classification
@@ -2054,25 +2056,25 @@ check)
             # review, which keep their own reply-based path above.
             (if (($review.id? | type) == "number") and
                 ($disposed | index($review.id))
-             then {class:"settled",time:$review.submitted_at}
+             then {class:"settled",time:$review.submitted_at,id:$review.id}
              elif (($review.id? | type) == "number") and
                 ($settled | index($review.id)) and
                 ((has_severity_marker) | not) and
                 is_carrier_only
-             then {class:"settled",time:$review.submitted_at}
-             else {class:"findings",time:$review.submitted_at} end)
-           else {class:$class,time:$review.submitted_at} end
-          else {class:"none",time:$review.submitted_at} end
+             then {class:"settled",time:$review.submitted_at,id:$review.id}
+             else {class:"findings",time:$review.submitted_at,id:$review.id} end)
+           else {class:$class,time:$review.submitted_at,id:$review.id} end
+          else {class:"none",time:$review.submitted_at,id:$review.id} end
           ] as $classified |
           if any($classified[]; .class == "findings") then
             ([$classified[] | select(.class == "findings")] |
-             sort_by(.time) | last)
+             sort_by(.time, .id) | last)
           else ([$classified[] |
                   select(.class == "unrecognized" or .class == "clean")] |
-                sort_by(.time) | last // {class:"none",time:""}) end |
-          [.class, .time] | @tsv
+                sort_by(.time, .id) | last // {class:"none",time:"",id:""}) end |
+          [.class, .time, (.id | tostring)] | @tsv
         ' "$workdir/reviews.json")
-    IFS=$'\t' read -r review_result review_result_time <<<"$review_result_record"
+    IFS=$'\t' read -r review_result review_result_time review_result_id <<<"$review_result_record"
     # The reviews this check actually saw for the current head, by ID. The
     # adjudicated-clean fallback below reconciles the two endpoints against
     # each other with it: an inline comment naming a review nobody fetched is
@@ -2126,6 +2128,7 @@ check)
               "i"
             ).captures[0].string catch "") as $prefix |
           select($prefix != "") |
+          select((.id? | type) == "number") |
           [
             $prefix,
             verdict_class,
@@ -2136,6 +2139,7 @@ check)
 
     comment_result=none
     comment_result_time=""
+    comment_result_id=""
     clean_comment_time=""
     clean_comment_id=""
     findings_comment_id=""
@@ -2185,16 +2189,25 @@ check)
         if [ "$classification" = "findings" ]; then
             comment_result=findings
             [ -n "$findings_comment_id" ] || findings_comment_id=$comment_id
-        elif [ "$comment_result" != "findings" ] &&
-            [ "$comment_created" \> "$comment_result_time" ]; then
+        elif [ "$comment_result" != "findings" ] && {
+            [ "$comment_created" \> "$comment_result_time" ] || {
+                [ "$comment_created" = "$comment_result_time" ] &&
+                    [ "$comment_id" -gt "${comment_result_id:-0}" ]
+            }
+        }; then
             # Findings dominate. Non-finding classifications use provider
             # order, matching review bodies: a newer valid clean result may
             # supersede an older unrecognized one, but never vice versa.
             comment_result=$classification
             comment_result_time=$comment_created
+            comment_result_id=$comment_id
         fi
-        if [ "$classification" = "clean" ] &&
-            [ "$comment_created" \> "$clean_comment_time" ]; then
+        if [ "$classification" = "clean" ] && {
+            [ "$comment_created" \> "$clean_comment_time" ] || {
+                [ "$comment_created" = "$clean_comment_time" ] &&
+                    [ "$comment_id" -gt "${clean_comment_id:-0}" ]
+            }
+        }; then
             clean_comment_time=$comment_created
             clean_comment_id=$comment_id
         fi
@@ -2206,12 +2219,14 @@ check)
         exit 10
     fi
     if [ "$comment_result" = "unrecognized" ] &&
-        [ "$comment_result_time" = "$newest_result_time" ]; then
+        [ "$comment_result_time" = "$newest_result_time" ] &&
+        [ "$comment_result_id" = "$newest_result_id" ]; then
         emit indeterminate "current-head result opens with the clean verdict but carries prose beyond Codex's own metadata"
         exit 2
     fi
     if [ "$review_result" = "unrecognized" ] &&
-        [ "$review_result_time" = "$newest_result_time" ]; then
+        [ "$review_result_time" = "$newest_result_time" ] &&
+        [ "$review_result_id" = "$newest_result_id" ]; then
         emit indeterminate "current-head review opens with the clean verdict but carries prose beyond Codex's own metadata"
         exit 2
     fi
@@ -2272,7 +2287,7 @@ check)
                     (body_text != "")
                   ) | select(verdict_class == "clean") |
                   select((.submitted_at? | type) == "string" and (.id? | type) == "number")] |
-                  sort_by(.submitted_at) | last // null
+                  sort_by(.submitted_at, .id) | last // null
                 ' "$workdir/reviews.json")
             clean_review_time=$(printf '%s' "$clean_review_evidence" | jq -r '.submitted_at? // ""')
             clean_review_id=$(printf '%s' "$clean_review_evidence" | jq -r '.id? // "" | tostring')
@@ -2280,7 +2295,10 @@ check)
         newest_clean=$clean_review_time
         newest_clean_surface=review
         newest_clean_id=$clean_review_id
-        if [ "$clean_comment_time" \> "$newest_clean" ]; then
+        if [ "$clean_comment_time" \> "$newest_clean" ] || {
+            [ "$clean_comment_time" = "$newest_clean" ] &&
+                [ "${clean_comment_id:-0}" -gt "${newest_clean_id:-0}" ]
+        }; then
             newest_clean=$clean_comment_time
             newest_clean_surface=comment
             newest_clean_id=$clean_comment_id
@@ -2291,7 +2309,8 @@ check)
         fi
         [ -n "$newest_clean" ] || bounded_wait "the cycle has no terminal current-head evidence yet"
         [ -n "$newest_clean_id" ] || bounded_wait "clean evidence has no accepted object ID"
-        [ "$newest_clean" = "$newest_result_time" ] ||
+        [ "$newest_clean" = "$newest_result_time" ] &&
+            [ "$newest_clean_id" = "$newest_result_id" ] ||
             bounded_wait "the newest current-head result is not clean"
         require_latest_window_elapsed
         emit clean "authenticated bot posted the newest current-head result after the latest trigger" \
@@ -2365,14 +2384,15 @@ check)
               [.[] | select((.id? | type) == "number") |
                . as $r | select($settled | index($r.id)) |
                {id: ($r.id | tostring), time: ($r.submitted_at // "")}] |
-              sort_by(.time) | last // null | .id // ""
+              sort_by(.time, (.id | tonumber)) | last // null | .id // ""
             ' "$workdir/reviews.json")
         adjudicated_review_time=$(jq -r \
             --argjson id "$adjudicated_review_id" '
               [.[] | select(.id? == $id)] | first | .submitted_at? // ""
             ' "$workdir/reviews.json")
         [ -n "$adjudicated_review_id" ] || bounded_wait "adjudicated findings have no accepted review result after the latest trigger"
-        [ "$adjudicated_review_time" = "$newest_result_time" ] ||
+        [ "$adjudicated_review_time" = "$newest_result_time" ] &&
+            [ "$adjudicated_review_id" = "$newest_result_id" ] ||
             bounded_wait "the newest current-head result is not the adjudicated review"
         require_latest_window_elapsed
         emit clean "newest current-head findings after the latest trigger are adjudicated by trusted in-thread replies" \
@@ -2403,7 +2423,7 @@ check)
                . as $r | select($disposed | index($r.id)) |
                select((.submitted_at // "") > $requested) |
                {id: ($r.id | tostring), time: ($r.submitted_at // "")}] |
-              sort_by(.time) | last // null | .id // ""
+              sort_by(.time, (.id | tonumber)) | last // null | .id // ""
             ' "$workdir/reviews.json")
         disposed_comment_latest=$(jq -r \
             --argjson disposed "$disposed_comments" \
@@ -2412,7 +2432,7 @@ check)
                . as $r | select($disposed | index($r.id)) |
                select((.created_at // "") > $requested) |
                {id: ($r.id | tostring), time: ($r.created_at // "")}] |
-              sort_by(.time) | last // null | .id // ""
+              sort_by(.time, (.id | tonumber)) | last // null | .id // ""
             ' "$workdir/comments.json")
         if [ -n "$disposed_review_latest" ]; then
             disposed_surface=review
@@ -2431,7 +2451,10 @@ check)
                     ' "$workdir/reviews.json")
             fi
             if [ -z "$disposed_surface" ] ||
-                [ "$disposed_comment_time" \> "$disposed_review_time" ]; then
+                [ "$disposed_comment_time" \> "$disposed_review_time" ] || {
+                [ "$disposed_comment_time" = "$disposed_review_time" ] &&
+                    [ "$disposed_comment_latest" -gt "$disposed_review_latest" ]
+            }; then
                 disposed_surface=comment
                 disposed_id=$disposed_comment_latest
             fi
@@ -2442,7 +2465,8 @@ check)
         *) disposed_latest_time= ;;
         esac
         [ -n "$disposed_id" ] || bounded_wait "settled findings have no accepted result after the latest trigger"
-        [ "$disposed_latest_time" = "$newest_result_time" ] ||
+        [ "$disposed_latest_time" = "$newest_result_time" ] &&
+            [ "$disposed_id" = "$newest_result_id" ] ||
             bounded_wait "the newest current-head result is not the settled finding"
         require_latest_window_elapsed
         emit clean "newest current-head non-thread findings after the latest trigger are settled: ${applied_dispositions:-recorded dispositions}" \

@@ -690,6 +690,28 @@ run_check '2026-07-31T08:15:00Z'
 assert_status 0 clean
 assert_accepted comment 206
 
+echo "==> a higher-id unrecognized top-level result wins a same-second tie"
+new_cycle
+prefix="${head_sha:0:10}"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" '
+    [[
+      {
+        id:201,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:05Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Keep it up!\n\n**Reviewed commit:** `" + $prefix + "`")
+      },
+      {
+        id:202,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:05Z",
+        body:("Codex Review: Didn\u0027t find any major issues.\n\nBut a race remains.\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 2 indeterminate
+
 # A severity marker anywhere in the body is a finding outright, whatever the
 # verdict line says. This is the protection that still covers the verdict
 # line's own tail: the classifier does not parse that tail, so a badge is what
