@@ -1805,16 +1805,16 @@ STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 echo "==> evidence-only harvester output is reported without fabricating a trajectory"
 d="$TMPROOT/evidence-only"
 scaffold "$d" further-along "body"
-printf '%s\n' '{"status":"evidence-only","run_id":"run-6001-further-along","issue":6001,"marker_facts":[{"stage":"review","destination":"issue","round":1,"sequence":1}],"untrusted_marker_facts":[{"stage":"review","destination":"issue","round":2,"sequence":2}]}' >"$d/evidence-only.json"
+printf '%s\n' '{"status":"evidence-only","run_id":"run-6001-further-along","issue":6001,"marker_facts":[{"stage":"review","destination":"issue","round":1,"sequence":1}],"untrusted_marker_facts":[{"stage":"review","destination":"issue","round":2,"sequence":2}],"legacy_also_present":true}' >"$d/evidence-only.json"
 make_stats "$d/stats.mjs" 0 "$d/evidence-only.json"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
-[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.status == "evidence-only" and .marker_facts[0].stage == "review" and .untrusted_marker_facts[0].round == 2' >/dev/null &&
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.status == "evidence-only" and .marker_facts[0].stage == "review" and .untrusted_marker_facts[0].round == 2 and .legacy_also_present == true' >/dev/null &&
     ok "the report preserves authenticated marker facts and stops before trajectory measurement" ||
     bad "evidence-only output was not preserved: rc=$RC, out=$OUT, err=$ERR"
 GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
-[ "$RC" -eq 0 ] && contains "$OUT" 'Untrusted marker facts' && contains "$OUT" '"round":2' &&
+[ "$RC" -eq 0 ] && contains "$OUT" 'Untrusted marker facts' && contains "$OUT" '"round":2' && contains "$OUT" 'Legacy also present: `true`' &&
     ok "the text report preserves untrusted marker anomaly facts" ||
     bad "evidence-only text output dropped untrusted marker facts: rc=$RC, out=$OUT, err=$ERR"
 

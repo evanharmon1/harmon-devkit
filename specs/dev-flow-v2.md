@@ -843,7 +843,7 @@ The v2 shape is:
 ## Evidence
 
 The current evidence-marker grammar is the review skill's first-line JSON
-marker, documented byte-for-byte in `ai/schemas/README.md`:
+marker, documented in `ai/schemas/README.md`; readers accept any valid JSON serialization of the one marker object, while the review skill emits this canonical form:
 
 ```text
 <!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n|null>,"sequence":<n>,"destination":"<issue|pr>"} -->

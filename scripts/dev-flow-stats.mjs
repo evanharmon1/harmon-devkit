@@ -1741,7 +1741,7 @@ function readJsonFile(file) {
   }
 }
 
-function collectTrustedEvidenceSummaries(issueComments, runId, { trustedActorIds, asOf, effectiveTrustAt }) {
+function collectTrustedEvidenceSummaries(issueComments, runId, { trustedActorIds, asOf }) {
   const cutoff = asOf ? Date.parse(asOf) : Infinity;
   const candidates = [];
   const untrusted = [];
@@ -1750,7 +1750,7 @@ function collectTrustedEvidenceSummaries(issueComments, runId, { trustedActorIds
     const actorId = commentActorId(comment);
     if (Date.parse(comment.created_at) > cutoff) continue;
     if (!marker) {
-      if (EVIDENCE_SUMMARY_PREFIX_RE.test(comment.body || "") && trustedActorIds.has(actorId) && effectiveTrustAt(comment.created_at).has(actorId)) {
+      if (EVIDENCE_SUMMARY_PREFIX_RE.test(comment.body || "") && trustedActorIds.has(actorId)) {
         throw new EvidenceError(`trusted evidence comment ${comment.id} has a malformed dev-flow-v2-evidence marker`);
       }
       continue;
@@ -1759,9 +1759,6 @@ function collectTrustedEvidenceSummaries(issueComments, runId, { trustedActorIds
     if (!trustedActorIds.has(actorId)) {
       untrusted.push({ comment, marker, actorId });
       continue;
-    }
-    if (!effectiveTrustAt(comment.created_at).has(actorId)) {
-      throw new EvidenceError(`evidence comment ${comment.id} was not authored by an actor trusted at its write time`);
     }
     candidates.push({ comment, marker, actorId });
   }
@@ -1795,7 +1792,7 @@ function resolveContainedPath(root, candidate, label, { allowMissing = false } =
   return resolved;
 }
 
-function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrustedMarkers, asOf, legacyAlsoPresent = false) {
+function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, markers, untrustedMarkers, asOf, trustedActorIds, legacyAlsoPresent = false) {
   const root = realpathSync(recordRoot);
   const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
   const runFileCandidate = path.join(runDir, "run.json");
@@ -1805,17 +1802,31 @@ function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrusted
   if (body.run_id !== runId) throw new EvidenceError(`${runFile} declares run_id ${JSON.stringify(body.run_id)}, expected ${runId}`);
   if (!Array.isArray(body.evidence_comments)) throw new EvidenceError(`${runFile} does not contain an evidence_comments array`);
   const state = reconstructAsOf(body, asOf, body.started_at);
+  const fetchedDestinations = new Set(["issue"]);
+  const allMarkers = markers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
+  const allUntrustedMarkers = untrustedMarkers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
+  if (body.pr && Number.isInteger(body.pr.number) && body.pr.number > 0) {
+    const prSummaries = collectTrustedEvidenceSummaries(fetchPrComments(repo, body.pr.number), runId, { trustedActorIds, asOf });
+    allMarkers.push(...prSummaries.trusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
+    allUntrustedMarkers.push(...prSummaries.untrusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
+    fetchedDestinations.add("pr");
+  }
+  if (allMarkers.length === 0) return { status: "no-current-evidence" };
   const registrations = new Map(body.evidence_comments.map((entry) => [String(entry.id), entry]));
-  const observedIds = new Set(markers.map((observed) => String(observed.comment.id)));
+  const observedIds = new Set(allMarkers.map((observed) => String(observed.comment.id)));
+  const unverifiedEvidenceDestinations = new Set();
   for (const entry of body.evidence_comments) {
-    if (!observedIds.has(String(entry.id))) {
+    const destination = entry && entry.marker && entry.marker.destination;
+    if (!fetchedDestinations.has(destination)) {
+      unverifiedEvidenceDestinations.add(destination);
+    } else if (!observedIds.has(String(entry.id))) {
       throw new EvidenceError(`local run record registers evidence comment ${entry.id}, but that comment was not observed — deleted-entry tampering`);
     }
   }
-  for (const observed of markers) {
+  for (const observed of allMarkers) {
     const entry = registrations.get(String(observed.comment.id));
     const listed = entry && entry.marker;
-    if (observed.marker.dest !== "issue" || !entry || Number(entry.author_actor_id) !== observed.actorId || entry.digest !== payloadDigest(observed.comment.body || "") ||
+    if (observed.marker.dest !== observed.comment._fetchedFrom || !entry || Number(entry.author_actor_id) !== observed.actorId || entry.digest !== payloadDigest(observed.comment.body || "") ||
         !listed || listed.run_id !== runId || listed.stage !== observed.marker.stage || listed.destination !== observed.marker.dest ||
         listed.round !== observed.marker.round || listed.sequence !== observed.marker.seq) {
       throw new EvidenceError(`local run record does not authenticate evidence comment ${observed.comment.id}`);
@@ -1884,7 +1895,7 @@ function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrusted
   const adjudicationFiles = jsonFilesIn("adjudications");
   const adjudications = adjudicationFiles.files.map((file) => readJsonFile(resolveContainedPath(root, path.join(adjudicationFiles.dir, file), `${runId}/adjudications/${file}`)));
   const byRound = new Map();
-  for (const observed of markers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
+  for (const observed of allMarkers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
     const key = `${observed.marker.stage}|${observed.marker.round}`;
     const current = byRound.get(key);
     if (!current || observed.comment.id < current.comment.id) byRound.set(key, observed);
@@ -1896,7 +1907,7 @@ function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrusted
     if (matchingAdjudications.length > 1) throw new EvidenceError(`${runDir} has more than one adjudication for ${stage} round ${round}`);
     return { stage, dest: "issue", round, payload: { passes: matchingPasses, adjudication: matchingAdjudications[0] || null }, commentIds: [observed.comment.id] };
   });
-  return { status: "ok", runId, issueNumber, record: { body }, state, rounds, untrusted: [], forged: untrustedMarkers, unreceiptedPassFiles, legacyAlsoPresent };
+  return { status: "ok", runId, issueNumber, record: { body }, state, rounds, untrusted: [], forged: allUntrustedMarkers, unreceiptedPassFiles, legacyAlsoPresent, unverifiedEvidenceDestinations: [...unverifiedEvidenceDestinations] };
 }
 
 function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null }) {
@@ -1911,35 +1922,39 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
   // exist yet, not merely to reconstruct in-flight. Discovery itself, not
   // just round evidence, needs the cutoff filter — challenge round 1,
   // confirmed.
-  // One resolver per issue harvest, shared by run-record discovery and
-  // evidence assembly (same per-timestamp cache; see
-  // createRegistryTrustResolver). The registry revision HISTORY is cached
-  // per repo at module level, so this costs nothing across issues.
+  const summaries = requestedRunId
+    ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf })
+    : { trusted: [], untrusted: [] };
+  let currentRun = null;
+  if (summaries.trusted.length > 0 && !recordDir) {
+    currentRun = { status: "evidence-only", runId: requestedRunId, issueNumber, markerFacts: markerFacts(summaries.trusted), untrustedMarkerFacts: markerFacts(summaries.untrusted), legacyAlsoPresent: false };
+  } else if (requestedRunId && recordDir) {
+    try {
+      const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, summaries.trusted, summaries.untrusted, asOf, trustedActorIds, false);
+      if (loaded.status !== "no-current-evidence" && (loaded.status !== "record-missing" || summaries.trusted.length > 0)) currentRun = loaded;
+    } catch (err) {
+      if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
+      throw err;
+    }
+  }
+  if (currentRun && currentRun.status === "record-missing") return [currentRun];
+
+  // Current evidence is resolved before legacy discovery. A malformed legacy
+  // record cannot suppress an authenticated current run; when legacy parsing
+  // succeeds it contributes only this migration disclosure. With no current
+  // evidence, the historical legacy trust path remains unchanged.
   const effectiveTrustAt = createRegistryTrustResolver(repo, trustedActorIds);
   let records;
   try {
     records = findRunRecord(issueComments.filter(withinCutoff), { trustedActorIds, repo, effectiveTrustAt });
   } catch (err) {
-    if (err instanceof EvidenceError) {
-      return [{ status: "indeterminate", runId: null, issueNumber, reason: err.message }];
-    }
+    if (currentRun && err instanceof EvidenceError) return [currentRun];
+    if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: null, issueNumber, reason: err.message }];
     throw err;
   }
-  const summaries = requestedRunId
-    ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf, effectiveTrustAt })
-    : { trusted: [], untrusted: [] };
-  const legacyNamesRequestedRun = Boolean(records && records.some((record) => record.runId === requestedRunId));
-  // A current marker is authoritative for reconstruction during migration.
-  // Legacy evidence naming the same run is retained only as an explicit
-  // disclosure; it must never suppress the local current-format trajectory.
-  if (summaries.trusted.length > 0) {
-    if (!recordDir) return [{ status: "evidence-only", runId: requestedRunId, issueNumber, markerFacts: markerFacts(summaries.trusted), untrustedMarkerFacts: markerFacts(summaries.untrusted), legacyAlsoPresent: legacyNamesRequestedRun }];
-    try {
-      return [loadLocalEvidenceRun(recordDir, requestedRunId, issueNumber, summaries.trusted, summaries.untrusted, asOf, legacyNamesRequestedRun)];
-    } catch (err) {
-      if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
-      throw err;
-    }
+  if (currentRun) {
+    currentRun.legacyAlsoPresent = Boolean(records && records.some((record) => record.runId === requestedRunId));
+    return [currentRun];
   }
   if (!records) return [];
 
@@ -2298,6 +2313,7 @@ function renderTrajectory(run) {
     forged_comments: run.forged.map((f) => ({ id: f.comment.id, actor_id: f.actorId })),
     unreceipted_pass_files: run.unreceiptedPassFiles || [],
     legacy_also_present: Boolean(run.legacyAlsoPresent),
+    unverified_evidence_destinations: run.unverifiedEvidenceDestinations || [],
   };
 }
 
@@ -2329,6 +2345,7 @@ function renderTrajectoryTable(trajectory) {
     lines.push(`unreceipted pass files: ${trajectory.unreceipted_pass_files.join(", ")}`);
   }
   if (trajectory.legacy_also_present) lines.push("legacy-also-present: true");
+  if (trajectory.unverified_evidence_destinations.length > 0) lines.push(`unverified evidence destinations: ${trajectory.unverified_evidence_destinations.join(", ")}`);
   return lines.join("\n");
 }
 

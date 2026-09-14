@@ -2773,6 +2773,9 @@ function writeScenario(name, db) {
   const ev = evidenceSummaryComment(
     OTHER_TRUSTED, "other-orchestrator", runId, "review", "issue", 1, 1, "2026-09-01T00:25:00Z",
   );
+  const prEv = evidenceSummaryComment(
+    OTHER_TRUSTED, "other-orchestrator", runId, "integration", "pr", null, 2, "2026-09-01T00:26:00Z",
+  );
   const revoked = evidenceSummaryComment(
     TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, "2026-09-01T00:00:30Z",
   );
@@ -2784,16 +2787,22 @@ function writeScenario(name, db) {
       { stage: "kickoff", entered_at: at, exit: "resolved" },
       { stage: "review", entered_at: at, exit: "converged" },
     ]),
-    interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
-    evidence_comments: [{
-      id: String(ev.id), author_actor_id: OTHER_TRUSTED, login: "other-orchestrator",
-      digest: payloadDigest(ev.body), marker: markerShape,
-    }],
+    interventions: chain([]), settlements: chain([]), outcome: null,
+    evidence_comments: [
+      {
+        id: String(ev.id), author_actor_id: OTHER_TRUSTED, login: "other-orchestrator",
+        digest: payloadDigest(ev.body), marker: markerShape,
+      },
+      {
+        id: String(prEv.id), author_actor_id: OTHER_TRUSTED, login: "other-orchestrator",
+        digest: payloadDigest(prEv.body), marker: { run_id: runId, stage: "integration", destination: "pr", round: null, sequence: 2 },
+      },
+    ],
     receipts: [
       { kind: "transition", stage: "review", entered_at: at },
       { kind: "pass", file: "review-r1" },
     ],
-    promotion: null,
+    pr: { number: 9186, url: "https://github.com/o/r/pull/9186" }, promotion: null,
   };
   const localRunDir = path.join("${tmp}", "local-records", runId);
   mkdirSync(path.join(localRunDir, "passes"), { recursive: true });
@@ -2823,7 +2832,7 @@ function writeScenario(name, db) {
   const trustBothSha = "8".repeat(40);
   const removeSha = "9".repeat(40);
   writeScenario("evidence-grammar", {
-    issues: [{ number: 186, pull_request: null }], comments: { "186": [legacy.index, legacy.record, migratedLegacy.index, migratedLegacy.record, revoked, ev] }, commits: {},
+    issues: [{ number: 186, pull_request: null }], comments: { "186": [legacy.index, legacy.record, migratedLegacy.index, migratedLegacy.record, revoked, ev], "9186": [prEv] }, commits: {},
     registry_commits: [{ sha: removeSha }, { sha: trustBothSha }],
     registry_contents: {
       [trustBothSha]: Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [TRUSTED_ORCHESTRATOR, OTHER_TRUSTED] })).toString("base64"),
@@ -2856,6 +2865,67 @@ function writeScenario(name, db) {
   writeScenario("arbitrary-evidence-run", {
     issues: [{ number: 187, pull_request: null }], comments: { "187": [ev] }, commits: {},
     meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 187 },
+  });
+}
+
+// --- #962 challenge r3: destination-scoped presence and current-first migration.
+{
+  const at = "2026-09-01T00:00:00Z";
+
+  const prOnlyRunId = "run-188-pr-only";
+  const prOnly = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", prOnlyRunId, "integration", "pr", null, 1, at);
+  const prOnlyBody = {
+    schema: 2, run_id: prOnlyRunId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "integration", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]), outcome: null,
+    pr: { number: 9188, url: "https://github.com/o/r/pull/9188" },
+    evidence_comments: [{ id: String(prOnly.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(prOnly.body), marker: { run_id: prOnlyRunId, stage: "integration", destination: "pr", round: null, sequence: 1 } }],
+    promotion: null,
+  };
+  const prOnlyDir = path.join("${tmp}", "local-records", prOnlyRunId);
+  mkdirSync(prOnlyDir, { recursive: true });
+  writeFileSync(path.join(prOnlyDir, "run.json"), JSON.stringify({ ...prOnlyBody, ...deriveDefaultChains(prOnlyBody) }, null, 2));
+  writeScenario("evidence-pr-only", {
+    issues: [{ number: 188, pull_request: null }], comments: { "188": [], "9188": [prOnly] }, commits: {},
+    meta: { runId: prOnlyRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 188 },
+  });
+
+  const unverifiedRunId = "run-189-unverified-pr";
+  const issueMarker = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", unverifiedRunId, "review", "issue", 1, 1, at);
+  const unverifiedBody = {
+    schema: 2, run_id: unverifiedRunId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "review", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+    evidence_comments: [
+      { id: String(issueMarker.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(issueMarker.body), marker: { run_id: unverifiedRunId, stage: "review", destination: "issue", round: 1, sequence: 1 } },
+      { id: "999998", author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: "not-fetched", marker: { run_id: unverifiedRunId, stage: "integration", destination: "pr", round: null, sequence: 2 } },
+    ],
+    promotion: null,
+  };
+  const unverifiedDir = path.join("${tmp}", "local-records", unverifiedRunId);
+  mkdirSync(unverifiedDir, { recursive: true });
+  writeFileSync(path.join(unverifiedDir, "run.json"), JSON.stringify({ ...unverifiedBody, ...deriveDefaultChains(unverifiedBody) }, null, 2));
+  writeScenario("evidence-unverified-pr", {
+    issues: [{ number: 189, pull_request: null }], comments: { "189": [issueMarker] }, commits: {},
+    meta: { runId: unverifiedRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 189 },
+  });
+
+  const malformedRunId = "run-190-current-first";
+  const current = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", malformedRunId, "review", "issue", 1, 1, at);
+  const malformedLegacy = comment(TRUSTED_ORCHESTRATOR, "orchestrator", marker("run-index", malformedRunId, "kickoff", "issue", null, 1), at);
+  const currentBody = {
+    schema: 2, run_id: malformedRunId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "review", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+    evidence_comments: [{ id: String(current.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(current.body), marker: { run_id: malformedRunId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+    promotion: null,
+  };
+  const currentDir = path.join("${tmp}", "local-records", malformedRunId);
+  mkdirSync(currentDir, { recursive: true });
+  writeFileSync(path.join(currentDir, "run.json"), JSON.stringify({ ...currentBody, ...deriveDefaultChains(currentBody) }, null, 2));
+  writeScenario("evidence-current-first", {
+    issues: [{ number: 190, pull_request: null }], comments: { "190": [malformedLegacy, current] }, commits: {},
+    meta: { runId: malformedRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 190 },
   });
 }
 
@@ -2998,7 +3068,37 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-acto
 echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run and .marker_facts == [{stage:"review",destination:"issue",round:1,sequence:1}] and (.untrusted_marker_facts | length) == 1 and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected evidence-only marker facts, got: $out"
 
+echo "== current-marker trust uses the configured read-time set without registry history =="
+export DFSTATS_DB="$tmp/scenarios/arbitrary-evidence-run.json"
+run_id="$(meta arbitrary-evidence-run .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.status == "evidence-only" and (.marker_facts | length) == 1' >/dev/null ||
+    fail "current configured-set trust: expected evidence without registry history, got: $out"
+
+echo "== a PR-only current marker is fetched and authenticated through the local PR binding =="
+export DFSTATS_DB="$tmp/scenarios/evidence-pr-only.json"
+run_id="$(meta evidence-pr-only .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 188 and .rounds == [] and .unverified_evidence_destinations == []' >/dev/null ||
+    fail "PR-only current marker: expected authenticated local trajectory, got: $out"
+
+echo "== registrations for a destination not fetched are disclosed as unverified, not deleted =="
+export DFSTATS_DB="$tmp/scenarios/evidence-unverified-pr.json"
+run_id="$(meta evidence-unverified-pr .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.unverified_evidence_destinations == ["pr"] and (.rounds | length) == 1' >/dev/null ||
+    fail "unfetched PR registration: expected unverified disclosure, got: $out"
+
+echo "== malformed legacy evidence cannot suppress an authenticated current marker =="
+export DFSTATS_DB="$tmp/scenarios/evidence-current-first.json"
+run_id="$(meta evidence-current-first .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 190 and (.rounds | length) == 1' >/dev/null ||
+    fail "current-first migration: malformed legacy evidence suppressed the current run: $out"
+
 echo "== a marker whose named local record is absent reports record-missing =="
+export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
+run_id="$(meta evidence-grammar .meta.runId)"
 mkdir -p "$tmp/empty-records"
 set +e
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/empty-records" --trusted-actor-id 9002 --json 2>&1)"

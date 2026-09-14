@@ -1417,6 +1417,7 @@ function run(argv) {
       issue: harvested.trajectory.issue,
       marker_facts: harvested.trajectory.marker_facts || [],
       untrusted_marker_facts: harvested.trajectory.untrusted_marker_facts || [],
+      legacy_also_present: Boolean(harvested.trajectory.legacy_also_present),
       source: { harvester: stats.display, run_id_from: runIdFrom, trusted_actors: trusted.source }
     }
     if (args.json) console.log(JSON.stringify(evidenceOnly, null, 2))
@@ -1427,6 +1428,7 @@ function run(argv) {
       console.log(`- Issue: #${evidenceOnly.issue}`)
       console.log(`- Authenticated marker facts: \`${JSON.stringify(evidenceOnly.marker_facts)}\``)
       console.log(`- Untrusted marker facts: \`${JSON.stringify(evidenceOnly.untrusted_marker_facts)}\``)
+      console.log(`- Legacy also present: \`${evidenceOnly.legacy_also_present}\``)
       console.log('- Full trajectory unavailable: rerun with `--record-dir <path>` containing `<path>/<run_id>/run.json`.')
     }
     return 0
