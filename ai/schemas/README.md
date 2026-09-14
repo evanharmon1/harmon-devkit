@@ -60,7 +60,7 @@ resolves which one applies:
 
 This is `scripts/validate-result-schemas.mjs`'s job (`<kind> <file>`, where
 `kind` is `brief | envelope | implementer | challenger | reviewer | integrator |
-adjudication | run`). **`kind: envelope` is a convenience for "I don't already
+adjudication | run | plan`). **`kind: envelope` is a convenience for "I don't already
 know the role," not a payload-blind mode** — it runs steps 2 and 3 (and every
 receipt check the role-named `kind` would) by reading `role` off the instance
 itself; the only thing `kind: implementer/challenger/reviewer/integrator`
@@ -1310,7 +1310,7 @@ commit; `finder` is `codex-cli` throughout, matching the ledger.
 ## Running the validator
 
 ```sh
-node scripts/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run> <file> \
+node scripts/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan> <file> \
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
   [--pass <envelope.json> ...] [--known-adjudicated <ids.json>] \
   [--adjudication <file.json> ... | --no-adjudications] \
