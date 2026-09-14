@@ -11,7 +11,7 @@
 // Usage:
 //   retro-run-report.mjs --repo <owner/repo> --pr <n> [--run <run_id>]
 //     [--trusted-actor-id <id>]... [--trusted-actors-file <path>]
-//     [--as-of <iso8601>] [--stats-script <path>] [--json]
+//     [--record-dir <path>] [--as-of <iso8601>] [--stats-script <path>] [--json]
 //
 // Exit codes — the caller (the /retro skill) branches on these:
 //   0   a report was rendered on stdout.
@@ -69,6 +69,8 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
                                says so wherever it uses one.
   --stats-script <path>        Override harvester discovery (tests, or a
                                checkout that keeps it somewhere else).
+  --record-dir <path>          Parent directory containing <run_id>/run.json;
+                               passed through unchanged to the harvester.
   --json                       Emit the machine form instead of Markdown.`
 
 class UsageError extends Error {}
@@ -126,6 +128,9 @@ function parseArgs(argv) {
       case '--stats-script':
         args.statsScript = take()
         break
+      case '--record-dir':
+        args.recordDir = take()
+        break
       case '--json':
         args.json = true
         break
@@ -174,6 +179,9 @@ function validateArgs(args) {
   // path is a usage error before the first `gh` call rather than after it.
   if (args.statsScript !== undefined && !existsSync(args.statsScript)) {
     throw new UsageError(`--stats-script path does not exist: ${args.statsScript}`)
+  }
+  if (args.recordDir !== undefined && !existsSync(args.recordDir)) {
+    throw new UsageError(`--record-dir path does not exist: ${args.recordDir}`)
   }
   // Validated here for the same reason, and it became load-bearing the moment
   // the cutoff started filtering discovery: an unparseable value makes
@@ -290,6 +298,7 @@ function statsCommandFor(file) {
 // what stops a marker quoted inside prose — a real risk on a PR that discusses
 // this protocol — from inventing a run.
 const EVIDENCE_MARKER_RE = /^<!--\s+devflow:([a-z][a-z-]*)\s+v2\s+([^>]*?)-->/
+const REVIEW_EVIDENCE_MARKER_RE = /^<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->/
 
 // Only these three kinds are evidence. An earlier revision accepted any
 // lowercase kind carrying a run_id, so a trusted `devflow:example` comment on
@@ -327,7 +336,27 @@ function parseMarker(body) {
   // that opens with blank lines and then quotes a marker would read as one
   // (review round 1, confirmed P2). The grammar says first LINE, so only
   // leading spaces/tabs on that line may be skipped.
-  const marker = EVIDENCE_MARKER_RE.exec(body.replace(/\r/g, '').replace(/^[ \t]+/, ''))
+  const firstLine = body.replace(/\r/g, '').replace(/^[ \t]+/, '')
+  const reviewMarker = REVIEW_EVIDENCE_MARKER_RE.exec(firstLine)
+  if (reviewMarker) {
+    let value
+    try {
+      value = JSON.parse(reviewMarker[1])
+    } catch {
+      return { malformed: 'dev-flow-v2-evidence payload is not valid JSON' }
+    }
+    const keys = value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).sort() : []
+    if (JSON.stringify(keys) !== JSON.stringify(['destination', 'round', 'run_id', 'sequence', 'stage'])) {
+      return { malformed: 'dev-flow-v2-evidence payload does not contain exactly run_id, stage, round, sequence, destination' }
+    }
+    if (typeof value.run_id !== 'string' || value.run_id.length === 0) return { malformed: 'run_id is not a non-empty string' }
+    if (!MARKER_STAGES.has(value.stage)) return { malformed: `stage "${value.stage}" is not a run stage` }
+    if (value.destination !== 'issue' && value.destination !== 'pr') return { malformed: `destination "${value.destination}" is not issue or pr` }
+    if (value.round !== null && (!Number.isInteger(value.round) || value.round < 1)) return { malformed: 'round is neither null nor a positive integer' }
+    if (!Number.isInteger(value.sequence) || value.sequence < 1) return { malformed: 'sequence is not a positive integer' }
+    return { kind: 'evidence', runId: value.run_id }
+  }
+  const marker = EVIDENCE_MARKER_RE.exec(firstLine)
   if (!marker) return null
   const kind = marker[1]
   if (!EVIDENCE_KINDS.has(kind)) return { malformed: `kind "${kind}" is not run-index, run-record or evidence` }
@@ -739,6 +768,7 @@ function resolveTrustedActorArgs(args) {
 function harvestTrajectory(stats, args, runId, trusted) {
   const argv = [...stats.prefix, '--repo', args.repo, '--run', runId, '--json', ...trusted.passthrough]
   if (args.asOf) argv.push('--as-of', args.asOf)
+  if (args.recordDir) argv.push('--record-dir', args.recordDir)
   const result = spawnSync(stats.command, argv, {
     encoding: 'utf8',
     maxBuffer: MAX_SYNC_BUFFER_BYTES
@@ -748,7 +778,8 @@ function harvestTrajectory(stats, args, runId, trusted) {
   }
   const stderr = (result.stderr || '').trim()
   if (result.status === 1) {
-    return { missing: `run-not-found — ${stderr || `the harvester does not know run ${runId}`}` }
+    const kind = stderr.includes('record-missing') ? 'record-missing' : 'run-not-found'
+    return { missing: `${kind} — ${stderr || `the harvester does not know run ${runId}`}` }
   }
   if (result.status === 3) {
     throw new IndeterminateError(stderr || `the harvester reports run ${runId} indeterminate`)
@@ -1373,6 +1404,27 @@ function run(argv) {
     }
     console.error(`${TOOL}: ${harvested.missing}; use the retro's fallback procedure`)
     return 10
+  }
+
+  if (harvested.trajectory && harvested.trajectory.status === 'evidence-only') {
+    const evidenceOnly = {
+      schema: 'retro-run-report.v1',
+      run_id: runId,
+      status: 'evidence-only',
+      issue: harvested.trajectory.issue,
+      marker_facts: harvested.trajectory.marker_facts || [],
+      source: { harvester: stats.display, run_id_from: runIdFrom, trusted_actors: trusted.source }
+    }
+    if (args.json) console.log(JSON.stringify(evidenceOnly, null, 2))
+    else {
+      console.log(`## Run evidence — run \`${runId}\``)
+      console.log('')
+      console.log(`- Status: \`evidence-only\``)
+      console.log(`- Issue: #${evidenceOnly.issue}`)
+      console.log(`- Authenticated marker facts: \`${JSON.stringify(evidenceOnly.marker_facts)}\``)
+      console.log('- Full trajectory unavailable: rerun with `--record-dir <path>` containing `<path>/<run_id>/run.json`.')
+    }
+    return 0
   }
 
   // A run record names its own PR. A trajectory that names a DIFFERENT one is

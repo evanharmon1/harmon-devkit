@@ -213,6 +213,16 @@ function evidenceComment(actorId, login, runId, stage, dest, round, seq, payload
   return comment(actorId, login, \`\${m}\n\${fence(text)}\`, createdAt);
 }
 
+function evidenceSummaryComment(actorId, login, runId, stage, dest, round, seq, createdAt) {
+  const markerPayload = JSON.stringify({ run_id: runId, stage, round, sequence: seq, destination: dest });
+  return comment(
+    actorId,
+    login,
+    \`<!-- dev-flow-v2-evidence: \${markerPayload} -->\n## \${stage} round \${round} — \${runId}\n\`,
+    createdAt,
+  );
+}
+
 // Builds the evidence_comments[] entry naming a comment created by
 // evidenceComment() above — discovery is list-driven now, so every real
 // round comment in a fixture needs a matching entry or it is simply never
@@ -2756,6 +2766,54 @@ function writeScenario(name, db) {
   });
 }
 
+// --- #962: the grammar emitted by the review skill authenticates a local record.
+{
+  const runId = "run-186-evidence-grammar";
+  const at = "2026-09-01T00:00:00Z";
+  const ev = evidenceSummaryComment(
+    TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at,
+  );
+  const markerShape = { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 };
+  const runBody = {
+    schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([
+      { stage: "kickoff", entered_at: at, exit: "resolved" },
+      { stage: "review", entered_at: at, exit: "converged" },
+    ]),
+    interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+    evidence_comments: [{
+      id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator",
+      digest: payloadDigest(ev.body), marker: markerShape,
+    }],
+    promotion: null,
+  };
+  const localRunDir = path.join("${tmp}", "local-records", runId);
+  mkdirSync(path.join(localRunDir, "passes"), { recursive: true });
+  mkdirSync(path.join(localRunDir, "adjudications"), { recursive: true });
+  writeFileSync(path.join(localRunDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+  const localPass = pass("codex-verification", []);
+  localPass.run.run_id = runId;
+  localPass.payload.stage = "review";
+  localPass.payload.round = 1;
+  writeFileSync(path.join(localRunDir, "passes", "review-r1.json"), JSON.stringify(localPass, null, 2));
+  writeFileSync(path.join(localRunDir, "adjudications", "review-r1.json"), JSON.stringify({
+    schema: 2, run_id: runId, stage: "review", round: 1,
+    reviewed_head: "0".repeat(40), adjudications: [],
+  }, null, 2));
+  const legacyRunId = "run-186-legacy";
+  const legacyBody = {
+    schema: 2, run_id: legacyRunId, initiated_by: "human", started_at: at,
+    stage_transitions: chain([{ stage: "kickoff", entered_at: at }]),
+    interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+    evidence_comments: [], promotion: null,
+  };
+  const legacy = runRecordComment(TRUSTED_ORCHESTRATOR, "orchestrator", legacyRunId, legacyBody, at);
+  writeScenario("evidence-grammar", {
+    issues: [{ number: 186, pull_request: null }], comments: { "186": [legacy.index, legacy.record, ev] }, commits: {},
+    meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 186 },
+  });
+}
+
 console.log("fixtures built");
 NODE
 
@@ -2813,6 +2871,27 @@ fi
 grep -Fq 'run "run-999-missing" not found (searched issue #999 in o/r)' "$tmp/missing-run.err" ||
     fail "missing canonical run: expected targeted run-not-found diagnostic"
 unset DFSTATS_GH_LOG
+
+echo "== review evidence grammar reconstructs its authenticated local record beside a legacy run =="
+export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
+run_id="$(meta evidence-grammar .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,finding_count:0,has_adjudication:true}]' >/dev/null ||
+    fail "evidence grammar: expected the local run and its authenticated review round, got: $out"
+
+echo "== review evidence grammar without a local input reports evidence-only marker facts =="
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e --arg run "$run_id" '.status == "evidence-only" and .run_id == $run and .marker_facts == [{stage:"review",destination:"issue",round:1,sequence:1}]' >/dev/null ||
+    fail "evidence grammar: expected evidence-only marker facts, got: $out"
+
+echo "== a marker whose named local record is absent reports record-missing =="
+mkdir -p "$tmp/empty-records"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/empty-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 1 ] && grep -Fq 'record-missing' <<<"$out" ||
+    fail "evidence grammar: expected exit 1 record-missing, got rc=$rc: $out"
 
 echo "== chain fork: two entries claiming the same prev_digest -> indeterminate, never silently resolved =="
 export DFSTATS_DB="$tmp/scenarios/fork.json"

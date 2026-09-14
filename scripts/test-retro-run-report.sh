@@ -89,6 +89,13 @@ marker_file() {
         "$2" "$3" "$4" "$5" "$6" >"$1"
 }
 
+evidence_marker_file() {
+    local json_round="$5"
+    [ "$json_round" = - ] && json_round=null
+    printf '<!-- dev-flow-v2-evidence: {"run_id":"%s","stage":"%s","round":%s,"sequence":1,"destination":"%s"} -->\n## %s round %s\n' \
+        "$2" "$3" "$json_round" "$4" "$3" "$5" >"$1"
+}
+
 # make_gh DIR — a `gh` shim in DIR/bin, reading canned answers from
 # $GH_PR_JSON / $GH_COMMENTS_DIR and its actor id from $GH_USER_ID, appending
 # each invocation to $GH_LOG.
@@ -1784,6 +1791,38 @@ PATH="$d/bin:$PATH" node "$REAL_STATS" --repo o/r --run no-such-run --json \
 [ "$RC" -eq 2 ] &&
     bad "the harvester rejected this asset's flag set as a usage error: $(cat "$d/stderr")" ||
     ok "the flag set parses (exit $RC, not a usage error)"
+
+echo "==> --record-dir is passed through to the harvester unchanged"
+d="$TMPROOT/record-dir-passthrough"
+scaffold "$d" further-along "body"
+mkdir -p "$d/records"
+STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --record-dir "$d/records"
+[ "$RC" -eq 0 ] && contains "$(cat "$d/stats.log")" "--record-dir $d/records" &&
+    ok "the local record directory reaches the harvester" ||
+    bad "--record-dir was not passed through unchanged: rc=$RC, log=$(cat "$d/stats.log"), err=$ERR"
+
+echo "==> evidence-only harvester output is reported without fabricating a trajectory"
+d="$TMPROOT/evidence-only"
+scaffold "$d" further-along "body"
+printf '%s\n' '{"status":"evidence-only","run_id":"run-6001-further-along","issue":6001,"marker_facts":[{"stage":"review","destination":"issue","round":1,"sequence":1}]}' >"$d/evidence-only.json"
+make_stats "$d/stats.mjs" 0 "$d/evidence-only.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.status == "evidence-only" and .marker_facts[0].stage == "review"' >/dev/null &&
+    ok "the report preserves authenticated marker facts and stops before trajectory measurement" ||
+    bad "evidence-only output was not preserved: rc=$RC, out=$OUT, err=$ERR"
+
+echo "==> discovery accepts the review skill's evidence-marker grammar"
+d="$TMPROOT/evidence-marker-grammar"
+scaffold "$d" further-along "body"
+evidence_marker_file "$d/c1" run-6001-further-along challenge pr -
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'run-6001-further-along' &&
+    ok "the writer grammar selects the run" ||
+    bad "the writer grammar was not discovered: rc=$RC, err=$ERR"
 
 echo "==> the asset auto-discovers and INVOKES the real harvester, no --stats-script"
 d="$TMPROOT/realpath"

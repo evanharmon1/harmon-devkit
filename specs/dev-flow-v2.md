@@ -842,33 +842,32 @@ The v2 shape is:
 
 ## Evidence
 
-Round JSONs and the adjudication record live in the git directory while the
-branch is worked (the run record too, as a working copy of the issue
-comment that is its durable home), **keyed by `run_id`**
-(`$(git rev-parse --git-common-dir)/dev-flow/runs/<run_id>/` — the
+The current evidence-marker grammar is the review skill's first-line JSON
+marker, documented byte-for-byte in `ai/schemas/README.md`:
+
+```text
+<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n|null>,"sequence":<n>,"destination":"<issue|pr>"} -->
+```
+
+It authenticates the run and the stage/round coordinates present on GitHub;
+the full record remains local. A harvester given `--record-dir <path>` reads
+that content from `<path>/<run_id>/`, reports `record-missing` when the named
+run is absent, and never reconstructs missing content from the summary. Without
+the local input it reports `evidence-only` and the authenticated marker facts.
+The prior `devflow:<kind>` fenced-payload grammar remains readable only for
+legacy comments.
+
+The full run record, round JSONs, and adjudication record live in the git
+directory, **keyed by `run_id`**
+(`$(git rev-parse --git-common-dir)/dev-flow-v2/runs/<run_id>/` — the
 **common** directory, so every linked worktree sees the same runs and
 removing a worktree deletes nothing) with a
-`dev-flow/branches/<branch>` pointer naming the current run — worktree-safe,
+`dev-flow-v2/branches/<branch>` pointer naming the current run — worktree-safe,
 invisible to `git status`, and immune to a reused branch name or an abandoned
 run: a new run gets a new directory, and the exit script only ever reads the
-run the pointer names. **Each round's evidence is posted to the issue the
-moment the round is adjudicated** — one comment per round, beside the run
-record — so a worker that disappears after a round loses at most the round
-in flight, and no later process is needed to upload a trajectory. When the
-draft PR opens, the orchestrator posts **one comment per confidence stage**
-on the PR that carries the stage's rounds so far and links the per-round
-issue comments (later rounds append to the issue and are linked from the
-PR body) — the run record stays on the issue and is edited there — in a fenced block (continued in
-order across further comments only when GitHub's size limit forces it — the
-harvester reassembles by marker sequence). A run that **ends without a PR** —
-capped with P0/P1, abandoned, escalated — posts the same stage comments on
-the **issue**, beside the run record that already lives there, as part of its
-blocker report: the failed trajectories are the ones replay most needs, and
-they must not exist only in one clone. The run record is updated at every
-later transition up to ready-for-review. The renderer
-([#637](https://github.com/evanharmon1/harmon-devkit/issues/637)) writes the
-human tables into the PR body from the same JSON. Nothing is deleted at PR
-open.
+run the pointer names. GitHub receives authenticated `review-evidence/v1`
+summary markers, not the local record itself. The legacy fenced-payload model
+below describes only pre-v2 comments retained for backward-compatible reads.
 
 Two rules make the posted evidence trustworthy on a public repository:
 
