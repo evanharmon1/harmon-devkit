@@ -34,6 +34,18 @@
       "entered_at": "2026-09-13T12:05:00Z"
     }
   ],
+  "receipts": [
+    {
+      "kind": "transition",
+      "stage": "challenge",
+      "entered_at": "2026-09-13T12:04:00Z"
+    },
+    {
+      "kind": "transition",
+      "stage": "review",
+      "entered_at": "2026-09-13T12:05:00Z"
+    }
+  ],
   "interventions": [],
   "outcome": null,
   "pr": null,
