@@ -3215,6 +3215,32 @@ function writeScenario(name, db) {
     writeScenario("legacy-orphan", { issues: [{ number: 212, pull_request: null }], comments: { "212": [current, orphanLegacy] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
 
+  // harmon-devkit#1001 challenge round 5/7 (P2), confirmed and fixed round
+  // 6/7: mirrors run-211-edited-after-cutoff's current-grammar case, but for
+  // the LEGACY orphan-detection path (findOrphanEvidence) — this previously
+  // checked only created_at, unlike visibleMarkers, so a legacy comment
+  // edited after an --as-of cutoff could leak a post-cutoff orphan finding
+  // into a historical read.
+  {
+    const runId = "run-220-legacy-orphan-edited-after-cutoff";
+    const at = "2026-09-01T00:00:00Z";
+    const current = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const orphanLegacy = { ...evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 2, { note: "edited after cutoff" }, "2026-09-01T00:05:00Z"), updated_at: "2026-09-01T01:00:00Z" };
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(current.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(current.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId);
+    writeCompletedZeroFindingPass(runDir, runId);
+    writeScenario("legacy-orphan-edited-after-cutoff", { issues: [{ number: 220, pull_request: null }], comments: { "220": [current, orphanLegacy] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
   // harmon-devkit#1001 item 10: a blocked envelope on disk with no matching
   // "pass" receipt must not inflate the blocked-pass count.
   {
@@ -3360,6 +3386,77 @@ function writeScenario(name, db) {
     envelope.run.run_id = runId;
     writeFileSync(path.join(runDir, "passes", "integration-r1.json"), JSON.stringify(envelope, null, 2));
     writeScenario("integration-only-unreceipted", { issues: [{ number: 217, pull_request: null }], comments: { "217": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // harmon-devkit#1001 challenge round 5/7 (P1), confirmed and fixed round
+  // 6/7: the more representative shape than run-200's integration-only
+  // record — a run with GENUINE review evidence (a real, receipted,
+  // completed pass and its adjudication) that has ALSO reached and
+  // completed integration. Before the fix, the mere presence of the
+  // integration-round adjudication made every confidence-stage engine
+  // invocation indeterminate regardless of what real evidence sat beside
+  // it; per-stage adjudication filtering must let this real review round
+  // compute exactly as it would without the integration adjudication
+  // present at all.
+  {
+    const runId = "run-218-review-and-integration-complete";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("integration", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    const envelope = JSON.parse(readFileSync(path.join("${repo}", "ai/schemas/fixtures/result.integrator.schema/valid/verdict-findings.json"), "utf8"));
+    envelope.run.run_id = runId;
+    writeFileSync(path.join(runDir, "passes", "integration-r1.json"), JSON.stringify(envelope, null, 2));
+    writeFileSync(path.join(runDir, "adjudications", "integration-r1.json"), JSON.stringify({ schema: 2, run_id: runId, stage: "integration", round: 1, reviewed_head: envelope.head, adjudications: [] }, null, 2));
+    const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    run2.receipts = [...(run2.receipts || []), { kind: "transition", stage: "integration" }, { kind: "pass", file: "integration-r1" }];
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
+    writeScenario("review-and-integration-complete", { issues: [{ number: 218, pull_request: null }], comments: { "218": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // A clean review round plus a SECOND, receipted, initially-valid blocked
+  // envelope for the same round — reused by the shell harness below, which
+  // races a live corruption of that exact file against the frozen snapshot
+  // (harmon-devkit#1001 challenge round 5/7, finding #2). localPassFileByName
+  // must resolve to the snapshot's copy, not this live path, or the later
+  // blocked-pass schema re-validation would see the corrupted bytes instead
+  // of what the engine actually classified as blocked.
+  {
+    const runId = "run-219-freeze-race";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    const blocked = pass("codex-verification", []);
+    blocked.run.run_id = runId;
+    blocked.status = "blocked";
+    blocked.payload.stage = "review";
+    blocked.payload.round = 1;
+    writeFileSync(path.join(runDir, "passes", "review-r1-blocked.json"), JSON.stringify(blocked, null, 2));
+    const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    run2.receipts = [...(run2.receipts || []), { kind: "pass", file: "review-r1-blocked" }];
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
+    writeScenario("freeze-race", { issues: [{ number: 219, pull_request: null }], comments: { "219": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
 }
 
@@ -3674,32 +3771,77 @@ set -e
     fail "run-record validation: invalid first transition was accepted, rc=$rc: $out"
 mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 
-# harmon-devkit#1001 challenge round 3/4: the per-stage "does this stage
-# have evidence" gate was deleted (the engine is now invoked for both
-# confidence stages unconditionally whenever the record directory exists),
-# which changed this fixture's own outcome. The engine's orphan-adjudication
-# guard is not itself stage-scoped — it checks every adjudication document
-# in the run directory against every "dispatched round" any pass (of any
-# role) names, regardless of which --stage is under computation — and an
-# integrator envelope's payload has no stage/round fields shaped like a
-# confidence pass's, so this run's own "integration-r1" adjudication reads
-# as orphaned (no matching dispatched round) the moment the engine is
-# invoked at all. The old imported-helper path avoided this by filtering
-# validAdjudications down to challenge/review before ever calling
-# assembleLogicalRounds; the whole point of this redesign is to stop
-# maintaining that kind of filtering by hand and trust the engine's own
-# checks instead, so this fixture now correctly reports the inconsistency
-# as evidence-indeterminate rather than silently reporting a clean
-# "not measured" trajectory over a run.json the engine itself would refuse.
-echo "== an integration-only record with no confidence evidence is indeterminate once the engine sees its orphaned integration adjudication (harmon-devkit#1001 challenge round 4) =="
+# harmon-devkit#1001 challenge round 3/4 briefly regressed this fixture (the
+# per-stage "does this stage have evidence" gate was deleted, so the engine
+# was invoked for both confidence stages unconditionally, and its
+# orphan-adjudication guard — not itself stage-scoped, since an integrator
+# envelope's payload has no stage/round fields shaped like a confidence
+# pass's — read this run's own "integration-r1" adjudication as orphaned the
+# moment the engine was invoked at all). Round 5/7 confirmed that was a real
+# regression, not a stricter-and-correct behavior change: it made every
+# genuinely completed, integrated run indeterminate, not merely this
+# fixture. Round 6/7 restored per-stage adjudication filtering (each
+# confidence-stage engine snapshot carries only that stage's own
+# adjudications; passes and run.json are unaffected), so this integration-
+# only record is back to its original expectation below.
+echo "== the exit-engine trajectory does not synthesize integration rounds, and discloses integration as not measured from local evidence =="
 export DFSTATS_DB="$tmp/scenarios/integration-envelope.json"
 run_id="$(meta integration-envelope .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == [] and .integration_evidence == "not-measured" and (has("integration_passes") | not)' >/dev/null ||
+    fail "integration envelope coordinates: harvester did not disclose integration as not measured from local evidence (never a count, never zero): $out"
+out_table="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001)"
+grep -Fq 'integration: not measured from local evidence' <<<"$out_table" ||
+    fail "integration envelope coordinates: the table renderer did not disclose integration as not measured: $out_table"
+
+echo "== a completed integration adjudication does not block harvesting real review evidence (harmon-devkit#1001 challenge round 5/7, fixed round 6/7) =="
+export DFSTATS_DB="$tmp/scenarios/review-and-integration-complete.json"
+run_id="$(meta review-and-integration-complete .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '(.rounds | length) == 1 and .rounds[0].stage == "review" and .rounds[0].round == 1 and .rounds[0].pass_count == 1 and .rounds[0].finding_count == 0 and .rounds[0].has_adjudication == true' >/dev/null ||
+    fail "review+integration complete: expected the review round to compute cleanly alongside the completed integration adjudication: $out"
+
+echo "== a live-directory corruption after the freeze does not affect the harvested output (harmon-devkit#1001 challenge round 5/7, finding #2, fixed round 6/7) =="
+# Races a corruption of the live review-r1-blocked.json against the frozen
+# snapshot: localPassFileByName must resolve to the SNAPSHOT's copy, not
+# this live path, or the later blocked-pass schema re-validation would read
+# the corrupted bytes instead of what the engine actually classified as
+# blocked when it ran. Synchronized on the per-stage engine snapshot
+# directory appearing under the temp root — that directory is built FROM
+# the frozen copy, so its existence proves the initial freeze has already
+# completed and the live file is safe to corrupt without affecting a
+# correctly-fixed harvester.
+export DFSTATS_DB="$tmp/scenarios/freeze-race.json"
+run_id="$(meta freeze-race .meta.runId)"
+race_run_dir="$tmp/local-records/$run_id"
+race_out="$tmp/freeze-race-out.json"
+race_err="$tmp/freeze-race-err.log"
+node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json >"$race_out" 2>"$race_err" &
+race_pid=$!
+race_tmp_base="${TMPDIR:-/tmp}"
+observed_freeze=""
+race_deadline=$((SECONDS + 20))
+while [ "$SECONDS" -lt "$race_deadline" ]; do
+    if compgen -G "$race_tmp_base/dev-flow-stats-stage-*" >/dev/null; then
+        observed_freeze=1
+        break
+    fi
+    sleep 0.01
+done
+if [ -n "$observed_freeze" ]; then
+    printf '{"corrupted' >"$race_run_dir/passes/review-r1-blocked.json"
+fi
 set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
-rc=$?
+wait "$race_pid"
+race_rc=$?
 set -e
-[ "$rc" -eq 3 ] && grep -Fq 'no pass or slot_failures record in this run ever named that round' <<<"$out" ||
-    fail "integration envelope coordinates: expected the orphaned integration adjudication to be indeterminate, got rc=$rc: $out"
+[ -n "$observed_freeze" ] ||
+    fail "freeze race: the per-stage engine snapshot directory was never observed — this test did not exercise the race"
+[ "$race_rc" -eq 0 ] ||
+    fail "freeze race: harvester failed after a post-freeze live corruption, rc=$race_rc: $(cat "$race_err")"
+race_result="$(cat "$race_out")"
+echo "$race_result" | jq -e '(.rounds | length) == 1 and .rounds[0].stage == "review" and .rounds[0].round == 1' >/dev/null ||
+    fail "freeze race: expected the review round to still compute after the live corruption: $race_result"
 
 echo "== --as-of excludes a round whose marker was posted after the cutoff (harmon-devkit#1001 item 11) =="
 # Round 2's marker was posted at 01:00, after this --as-of cutoff of 00:30 —
@@ -3737,6 +3879,13 @@ run_id="$(meta legacy-orphan .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '(.orphan_comments | length) == 1' >/dev/null ||
     fail "legacy orphan: expected exactly one orphan comment, got: $out"
+
+echo "== a legacy orphan comment edited (updated_at) after an --as-of cutoff is not admitted from its present body (harmon-devkit#1001 challenge round 5/7, fixed round 6/7) =="
+export DFSTATS_DB="$tmp/scenarios/legacy-orphan-edited-after-cutoff.json"
+run_id="$(meta legacy-orphan-edited-after-cutoff .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+echo "$out" | jq -e '(.orphan_comments | length) == 0' >/dev/null ||
+    fail "legacy orphan edited after cutoff: a legacy comment edited after the cutoff leaked into a historical orphan read: $out"
 
 echo "== an unreceipted blocked envelope does not inflate blocked_passes (harmon-devkit#1001 item 10) =="
 export DFSTATS_DB="$tmp/scenarios/unreceipted-blocked.json"
