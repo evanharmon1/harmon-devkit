@@ -1031,7 +1031,13 @@ function measure(trajectory, policy) {
     }),
     integrity: {
       orphan_comments: (trajectory.orphan_comments || []).length,
-      forged_comments: (trajectory.forged_comments || []).length
+      forged_comments: (trajectory.forged_comments || []).length,
+      // Local-record path only (harmon-devkit#1001 item 7): a trusted
+      // actor's marker naming the wrong destination or a stage never
+      // visited — a structural anomaly, not a forged-author claim. Absent
+      // from the GitHub-comment harvest path, which never tags one; the
+      // `|| []` default keeps this measurement 0 there, not missing.
+      tampered_comments: (trajectory.tampered_comments || []).length
     }
   }
 }
@@ -1303,6 +1309,9 @@ function renderMarkdown(report) {
   l.push('')
   l.push(`- Trusted-but-unlisted comments: ${report.measurements.integrity.orphan_comments}`)
   l.push(`- Forged-author comments: ${report.measurements.integrity.forged_comments}`)
+  if (report.measurements.integrity.tampered_comments > 0) {
+    l.push(`- Tampered comments (trusted author, structural anomaly, not forged): ${report.measurements.integrity.tampered_comments}`)
+  }
   l.push(
     `- Trust evaluation: ${safe(report.source.trusted_actors)} — the caller's current set, **not** the run's kickoff-time registry revision, so an orchestrator trusted at kickoff and removed since would read as untrusted here (harmon-devkit#741)`
   )

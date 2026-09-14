@@ -2936,7 +2936,7 @@ function writeScenario(name, db) {
   mkdirSync(prOnlyDir, { recursive: true });
   writeFileSync(path.join(prOnlyDir, "run.json"), JSON.stringify({ ...prOnlyBody, ...deriveDefaultChains(prOnlyBody) }, null, 2));
   writeScenario("evidence-pr-only", {
-    issues: [{ number: 188, pull_request: null }], comments: { "188": [], "9188": [prOnly] }, commits: {},
+    issues: [{ number: 188, pull_request: null }, { number: 9188, pull_request: { url: "https://github.com/o/r/pulls/9188" } }], comments: { "188": [], "9188": [prOnly] }, commits: {},
     meta: { runId: prOnlyRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR], issueNumber: 188 },
   });
 
@@ -3002,7 +3002,7 @@ function writeScenario(name, db) {
   writeZeroFindingAdjudication(arbitraryPrDir, arbitraryPrRunId);
   writeCompletedZeroFindingPass(arbitraryPrDir, arbitraryPrRunId);
   writeScenario("evidence-pr-only-arbitrary", {
-    issues: [{ number: 191, pull_request: null }, { number: 192, pull_request: null }], comments: { "191": [], "192": [arbitraryIssue], "9191": [arbitraryPr] }, commits: {},
+    issues: [{ number: 191, pull_request: null }, { number: 192, pull_request: null }, { number: 9191, pull_request: { url: "https://github.com/o/r/pulls/9191" } }], comments: { "191": [], "192": [arbitraryIssue], "9191": [arbitraryPr] }, commits: {},
     meta: { runId: arbitraryPrRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR] },
   });
 
@@ -3020,7 +3020,7 @@ function writeScenario(name, db) {
   mkdirSync(unboundDir, { recursive: true });
   writeFileSync(path.join(unboundDir, "run.json"), JSON.stringify({ ...unboundBody, ...deriveDefaultChains(unboundBody) }, null, 2));
   writeScenario("evidence-pr-only-unbound", {
-    issues: [{ number: 193, pull_request: null }, { number: 194, pull_request: null }], comments: { "193": [], "194": [], "9193": [unboundPr] }, commits: {},
+    issues: [{ number: 193, pull_request: null }, { number: 194, pull_request: null }, { number: 9193, pull_request: { url: "https://github.com/o/r/pulls/9193" } }], comments: { "193": [], "194": [], "9193": [unboundPr] }, commits: {},
     meta: { runId: unboundRunId, trustedActorIds: [TRUSTED_ORCHESTRATOR] },
   });
 
@@ -3138,6 +3138,173 @@ function writeScenario(name, db) {
     writeCompletedZeroFindingPass(runDir, runId);
     writeScenario("mixed-registration", { issues: [{ number: 204, pull_request: null }], comments: { "204": [current, legacy] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
+
+  // harmon-devkit#1001 item 9: author_actor_id must be a strict positive
+  // integer, never loosely coerced (Number("9001") === 9001 would otherwise
+  // authenticate a string).
+  {
+    const runId = "run-210-strict-actor-id";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: String(TRUSTED_ORCHESTRATOR), login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId);
+    writeCompletedZeroFindingPass(runDir, runId);
+    writeScenario("strict-actor-id", { issues: [{ number: 210, pull_request: null }], comments: { "210": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // harmon-devkit#1001 item 5: a marker created before an --as-of cutoff
+  // but edited (updated_at) after it must not be admitted from its present
+  // (edited) body.
+  {
+    const runId = "run-211-edited-after-cutoff";
+    const first = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, "2026-09-01T00:10:00Z");
+    const second = { ...evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 2, 1, "2026-09-01T00:15:00Z"), updated_at: "2026-09-01T01:00:00Z" };
+    const entries = [first, second].map((c, index) => ({ id: String(c.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(c.body), marker: { run_id: runId, stage: "review", destination: "issue", round: index + 1, sequence: 1 } }));
+    const at = "2026-09-01T00:00:00Z";
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null, evidence_comments: entries,
+      receipts: [{ kind: "transition", stage: "review" }, { kind: "pass", file: "review-r1" }, { kind: "pass", file: "review-r2" }], promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeZeroFindingAdjudication(runDir, runId, "review", 2);
+    const firstPass = pass("codex-verification", []);
+    firstPass.run.run_id = runId;
+    const secondPass = structuredClone(firstPass);
+    secondPass.payload.round = 2;
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    writeFileSync(path.join(runDir, "passes", "review-r1.json"), JSON.stringify(firstPass, null, 2));
+    writeFileSync(path.join(runDir, "passes", "review-r2.json"), JSON.stringify(secondPass, null, 2));
+    writeScenario("edited-after-cutoff", { issues: [{ number: 211, pull_request: null }], comments: { "211": [first, second] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // harmon-devkit#1001 item 6: an unregistered LEGACY-grammar comment from
+  // the run's own trusted author is a trusted orphan and must be reported
+  // under orphan_comments, not silently absent — findOrphanEvidence must
+  // run over the local path too, not just the GitHub-comment harvest path.
+  {
+    const runId = "run-212-legacy-orphan";
+    const at = "2026-09-01T00:00:00Z";
+    const current = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const orphanLegacy = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 2, { note: "never registered" }, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(current.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(current.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId);
+    writeCompletedZeroFindingPass(runDir, runId);
+    writeScenario("legacy-orphan", { issues: [{ number: 212, pull_request: null }], comments: { "212": [current, orphanLegacy] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // harmon-devkit#1001 item 10: a blocked envelope on disk with no matching
+  // "pass" receipt must not inflate the blocked-pass count.
+  {
+    const runId = "run-213-unreceipted-blocked";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId);
+    writeCompletedZeroFindingPass(runDir, runId);
+    // A blocked envelope for the same round, written directly and never
+    // receipted — simulates a dispatch attempt that crashed before its
+    // receipt was recorded.
+    const blocked = pass("codex-verification", []);
+    blocked.run.run_id = runId;
+    blocked.status = "blocked";
+    blocked.payload.stage = "review";
+    blocked.payload.round = 1;
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    writeFileSync(path.join(runDir, "passes", "review-r1-blocked.json"), JSON.stringify(blocked, null, 2));
+    writeScenario("unreceipted-blocked", { issues: [{ number: 213, pull_request: null }], comments: { "213": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // harmon-devkit#1001 item 3: a local run record's pr.number that does not
+  // actually name a pull request must not be silently trusted as PR
+  // evidence via the generic issue-comments endpoint.
+  {
+    const runId = "run-214-pr-not-a-pr";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null,
+      pr: { number: 9214, url: "https://github.com/o/r/pull/9214" },
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId);
+    writeCompletedZeroFindingPass(runDir, runId);
+    // Issue 9214 exists in the fixture DB but is a plain issue
+    // (pull_request: null) — the generic issue-comments endpoint would
+    // otherwise succeed for it exactly as it does for a real PR.
+    writeScenario("pr-not-a-pr", { issues: [{ number: 214, pull_request: null }, { number: 9214, pull_request: null }], comments: { "214": [ev], "9214": [] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // harmon-devkit#1001 item 12: a local record whose rounds are not
+  // contiguous from 1 must be indeterminate — the engine's own
+  // contiguous-from-1 guard, now reached via the CLI on every invocation
+  // (previously unreachable on the imported-helper path).
+  {
+    const runId = "run-215-round-gap";
+    const at = "2026-09-01T00:00:00Z";
+    const r1 = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const r3 = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 3, 1, at);
+    const entries = [
+      { id: String(r1.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(r1.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } },
+      { id: String(r3.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(r3.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 3, sequence: 1 } },
+    ];
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null, evidence_comments: entries,
+      receipts: [{ kind: "transition", stage: "review" }, { kind: "pass", file: "review-r1" }, { kind: "pass", file: "review-r3" }], promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeZeroFindingAdjudication(runDir, runId, "review", 3);
+    const p1 = pass("codex-verification", []);
+    p1.run.run_id = runId;
+    const p3 = structuredClone(p1);
+    p3.payload.round = 3;
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    writeFileSync(path.join(runDir, "passes", "review-r1.json"), JSON.stringify(p1, null, 2));
+    writeFileSync(path.join(runDir, "passes", "review-r3.json"), JSON.stringify(p3, null, 2));
+    writeScenario("round-gap", { issues: [{ number: 215, pull_request: null }], comments: { "215": [r1, r3] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -3202,12 +3369,16 @@ echo "== review evidence grammar reconstructs its authenticated local record bes
 export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
-echo "$out" | jq -e --arg run "$run_id" --argjson wrong "$(meta evidence-grammar .meta.wrongDestinationId)" --argjson stage "$(meta evidence-grammar .meta.unvisitedStageId)" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .provenance_unavailable_rounds == [] and .unreceipted_pass_files == ["stale"] and ([.forged_comments[].id] | index($wrong) != null and index($stage) != null) and .legacy_also_present == true' >/dev/null ||
+# harmon-devkit#1001 item 7: a trusted actor's marker naming the wrong
+# destination or a stage never visited is a structural anomaly in the
+# MARKER, not a forged-author claim — it belongs in tampered_comments, not
+# forged_comments (which is reserved for a genuinely untrusted actor).
+echo "$out" | jq -e --arg run "$run_id" --argjson wrong "$(meta evidence-grammar .meta.wrongDestinationId)" --argjson stage "$(meta evidence-grammar .meta.unvisitedStageId)" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .provenance_unavailable_rounds == [] and .unreceipted_pass_files == ["stale"] and ([.tampered_comments[].id] | index($wrong) != null and index($stage) != null) and ([.forged_comments[].id] | index($wrong) == null and index($stage) == null) and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected the local run and its authenticated review round, got: $out"
 
 echo "== --as-of authenticates remote markers but discloses the local trajectory as current-state =="
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z --json)"
-echo "$out" | jq -e --argjson future "$(meta evidence-grammar .meta.unvisitedStageId)" '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .slot_failures == [] and .slot_failures_unavailable == false and .future_adjudication_files == [] and .local_record_current_state == true and ([.forged_comments[].id] | index($future) != null)' >/dev/null ||
+echo "$out" | jq -e --argjson future "$(meta evidence-grammar .meta.unvisitedStageId)" '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .slot_failures == [] and .slot_failures_unavailable == false and .future_adjudication_files == [] and .local_record_current_state == true and ([.tampered_comments[].id] | index($future) != null)' >/dev/null ||
     fail "evidence grammar as-of: local evidence was not disclosed as current-state: $out"
 text_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z)"
 grep -Fq 'local record read at current state; not reconstructable to the cutoff' <<<"$text_out" ||
@@ -3451,12 +3622,69 @@ out_table="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record
 grep -Fq 'integration: not measured from local evidence' <<<"$out_table" ||
     fail "integration envelope coordinates: the table renderer did not disclose integration as not measured: $out_table"
 
-echo "== --as-of reports retained adjudications from the local record's current state =="
+echo "== --as-of excludes a round whose marker was posted after the cutoff (harmon-devkit#1001 item 11) =="
+# Round 2's marker was posted at 01:00, after this --as-of cutoff of 00:30 —
+# byRound must be built from the cutoff-VISIBLE marker set, not merely the
+# authenticated one, or round 2 leaks into what is supposed to be a
+# historical read (harmon-devkit#1001 item 11). Round 1's own marker (posted
+# at 00:10) is visible, so it still renders — and reads from the local
+# record's CURRENT-STATE files exactly as any other round would.
 export DFSTATS_DB="$tmp/scenarios/future-adjudication.json"
 run_id="$(meta future-adjudication .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
-echo "$out" | jq -e '(.rounds | length) == 2 and .rounds[1].round == 2 and .future_adjudication_files == [] and .local_record_current_state == true' >/dev/null ||
-    fail "future adjudication cutoff: local current-state trajectory was partially cutoff-filtered: $out"
+echo "$out" | jq -e '(.rounds | length) == 1 and .rounds[0].round == 1 and .future_adjudication_files == [] and .local_record_current_state == true' >/dev/null ||
+    fail "future adjudication cutoff: a post-cutoff round leaked into the historical read: $out"
+
+echo "== author_actor_id must be a strict positive integer, never coerced (harmon-devkit#1001 item 9) =="
+export DFSTATS_DB="$tmp/scenarios/strict-actor-id.json"
+run_id="$(meta strict-actor-id .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'does not authenticate evidence comment' <<<"$out" ||
+    fail "strict actor id: a string author_actor_id was coerced into authenticating, rc=$rc: $out"
+
+echo "== a marker edited (updated_at) after an --as-of cutoff is not admitted from its present body (harmon-devkit#1001 item 5) =="
+export DFSTATS_DB="$tmp/scenarios/edited-after-cutoff.json"
+run_id="$(meta edited-after-cutoff .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+echo "$out" | jq -e '(.rounds | length) == 1 and .rounds[0].round == 1' >/dev/null ||
+    fail "edited after cutoff: round 2 (edited after the cutoff) leaked into the historical read: $out"
+
+echo "== an unregistered legacy comment from the trusted author surfaces as a local orphan (harmon-devkit#1001 item 6) =="
+export DFSTATS_DB="$tmp/scenarios/legacy-orphan.json"
+run_id="$(meta legacy-orphan .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '(.orphan_comments | length) == 1' >/dev/null ||
+    fail "legacy orphan: expected exactly one orphan comment, got: $out"
+
+echo "== an unreceipted blocked envelope does not inflate blocked_passes (harmon-devkit#1001 item 10) =="
+export DFSTATS_DB="$tmp/scenarios/unreceipted-blocked.json"
+run_id="$(meta unreceipted-blocked .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
+    fail "unreceipted blocked: expected blocked_passes to stay 0, got: $out"
+
+echo "== a local run record's pr.number that is not a real pull request is rejected (harmon-devkit#1001 item 3) =="
+export DFSTATS_DB="$tmp/scenarios/pr-not-a-pr.json"
+run_id="$(meta pr-not-a-pr .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'does not name a pull request' <<<"$out" ||
+    fail "pr-not-a-pr: expected indeterminate rejection, got rc=$rc: $out"
+
+echo "== a round gap (round 1 then round 3, no round 2) is indeterminate (harmon-devkit#1001 item 12) =="
+export DFSTATS_DB="$tmp/scenarios/round-gap.json"
+run_id="$(meta round-gap .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'not contiguous from 1' <<<"$out" ||
+    fail "round gap: expected indeterminate rejection, got rc=$rc: $out"
 
 echo "== two authoritative issue bindings for one arbitrary run are indeterminate =="
 export DFSTATS_DB="$tmp/scenarios/duplicate-authoritative-binding.json"

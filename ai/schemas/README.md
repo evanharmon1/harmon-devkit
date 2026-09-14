@@ -1373,8 +1373,12 @@ reader receives `--record-dir <path>`, it reads the complete record from
 represented by `run.json` when present), and verifies each observed marker
 against the immutable actor id, body digest, and marker tuple registered in
 that local `run.json`. A missing `<path>/<run_id>/run.json` is
-`record-missing`, never a fabricated trajectory. Without `--record-dir`, the
-reader reports `evidence-only` with the authenticated marker facts.
+`record-missing`, never a fabricated trajectory. Its rounds are then read
+through one `dev-flow-exit.mjs --verification-only --json` invocation per
+confidence stage — the reader consumes that engine's `rounds[]` trajectory
+field rather than re-deriving lifecycle/receipt/adjudication/contiguity
+validation itself (harmon-devkit#1001). Without `--record-dir`, the reader
+reports `evidence-only` with the authenticated marker facts.
 
 The older `devflow:<kind>` form below remains accepted for comments already
 published under the original reader contract. It is legacy compatibility, not

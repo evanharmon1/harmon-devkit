@@ -205,8 +205,8 @@ STATS_SH
 
 # make_trajectory FIXTURE OUT — compose the trajectory the harvester would
 # return for FIXTURE: run-record fields read from the fixture, harvest fields
-# supplied by $ROUNDS_JSON / $CLASSES_JSON / $ORPHANS_JSON /
-# $SLOT_FAILURES_JSON / $ISSUE_NUMBER.
+# supplied by $ROUNDS_JSON / $CLASSES_JSON / $ORPHANS_JSON / $FORGED_JSON /
+# $TAMPERED_JSON / $SLOT_FAILURES_JSON / $ISSUE_NUMBER.
 make_trajectory() {
     # One-shot overrides. A `VAR=x helper` prefix on a shell FUNCTION persists
     # in bash (unlike on an external command), so without this each override
@@ -214,12 +214,12 @@ make_trajectory() {
     # pass for a reason its own setup never established. Captured, then
     # cleared, so the prefix means what it looks like it means.
     local issue="${ISSUE_NUMBER:-0}" rounds="${ROUNDS_JSON:-[]}" classes="${CLASSES_JSON:-{\}}"
-    local orphans="${ORPHANS_JSON:-[]}" forged="${FORGED_JSON:-[]}" slot_failures="${SLOT_FAILURES_JSON:-[]}"
+    local orphans="${ORPHANS_JSON:-[]}" forged="${FORGED_JSON:-[]}" tampered="${TAMPERED_JSON:-[]}" slot_failures="${SLOT_FAILURES_JSON:-[]}"
     local future_adjudications="${FUTURE_ADJUDICATIONS_JSON:-[]}"
     local run_id="${RUN_ID_OVERRIDE:-}"
-    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON SLOT_FAILURES_JSON FUTURE_ADJUDICATIONS_JSON RUN_ID_OVERRIDE
+    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON TAMPERED_JSON SLOT_FAILURES_JSON FUTURE_ADJUDICATIONS_JSON RUN_ID_OVERRIDE
     ISSUE_NUMBER="$issue" ROUNDS_JSON="$rounds" CLASSES_JSON="$classes" RUN_ID_OVERRIDE="$run_id" \
-        ORPHANS_JSON="$orphans" FORGED_JSON="$forged" SLOT_FAILURES_JSON="$slot_failures" \
+        ORPHANS_JSON="$orphans" FORGED_JSON="$forged" TAMPERED_JSON="$tampered" SLOT_FAILURES_JSON="$slot_failures" \
         FUTURE_ADJUDICATIONS_JSON="$future_adjudications" node -e '
       const fs = require("node:fs")
       const [fixture, out] = process.argv.slice(1)
@@ -240,7 +240,8 @@ make_trajectory() {
         future_adjudication_files: JSON.parse(process.env.FUTURE_ADJUDICATIONS_JSON || "[]"),
         findings_by_class_and_provenance: JSON.parse(process.env.CLASSES_JSON || "{}"),
         orphan_comments: JSON.parse(process.env.ORPHANS_JSON || "[]"),
-        forged_comments: JSON.parse(process.env.FORGED_JSON || "[]")
+        forged_comments: JSON.parse(process.env.FORGED_JSON || "[]"),
+        tampered_comments: JSON.parse(process.env.TAMPERED_JSON || "[]")
       }
       fs.writeFileSync(out, JSON.stringify(trajectory, null, 2))
     ' "$1" "$2"
@@ -1107,6 +1108,7 @@ ISSUE_NUMBER="$ISSUE" \
     FUTURE_ADJUDICATIONS_JSON='["review-r2.json"]' \
     CLASSES_JSON='{"correctness/original":2,"hardening/original":1,"design/round:1":1}' \
     ORPHANS_JSON='[{"id":1,"actor_id":9}]' \
+    TAMPERED_JSON='[{"id":2,"actor_id":9,"reason":"wrong-destination"}]' \
     make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
 make_stats "$d/stats.mjs" 0 "$d/trajectory.json"
 write_file "$d/body" "What/why.
@@ -1174,6 +1176,8 @@ contains "$OUT" "codex-cli" &&
     ok "a settlement's finder slug is recovered from its finding id" || bad "finder slug not recovered"
 contains "$OUT" "Trusted-but-unlisted comments: 1" &&
     ok "orphan comments are counted" || bad "orphan comment count missing"
+contains "$OUT" "Tampered comments (trusted author, structural anomaly, not forged): 1" &&
+    ok "tampered comments are counted and labeled distinctly from forged (harmon-devkit#1001 item 7)" || bad "tampered comment count missing"
 contains "$OUT" "PR binding: bound to PR #$PR" &&
     ok "the report states the run's PR binding" || bad "PR binding not reported"
 contains "$OUT" "harmon-devkit#753" &&

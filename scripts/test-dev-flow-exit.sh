@@ -423,6 +423,45 @@ outcome="$(grep -v -e '^::group::' -e '^::endgroup::' "${scratch}/dfe-task-$$.ou
 rm -f "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err"
 echo "OK: task devflow:exit produces the correct verdict JSON through the Taskfile wrapper"
 
+echo "== harmon-devkit#1001: --verification-only --json carries the additive rounds[] trajectory =="
+# The local-record harvester (scripts/dev-flow-stats.mjs) consumes this field
+# instead of calling loadRunDir/validateReceipts/assembleLogicalRounds/
+# applyVerification directly — this proves the field's shape end to end
+# against a real run directory, not just that predicates/verdicts are
+# unaffected (the 132 pre-existing conformance cases above already prove
+# that, since none of them reference `rounds` and all still pass unmodified).
+node scripts/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
+    --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
+    --current-head 0101010101010101010101010101010101010101 --verification-only --json \
+    >"${scratch}/dfe-rounds-$$.out" 2>"${scratch}/dfe-rounds-$$.err" || true
+node -e '
+  const body = require("node:fs").readFileSync(process.argv[1], "utf8");
+  const verification = JSON.parse(body);
+  const assert = require("node:assert/strict");
+  assert.equal(verification.outcome, "converged");
+  assert.equal(Array.isArray(verification.rounds), true, "rounds must be an array");
+  assert.equal(verification.rounds.length, 1);
+  const round = verification.rounds[0];
+  assert.equal(round.round, 1);
+  assert.equal(round.status, "complete");
+  assert.equal(round.reviewed_head, "0101010101010101010101010101010101010101");
+  assert.equal(round.has_adjudication, true);
+  assert.equal(round.adjudication.stage, "review");
+  assert.equal(round.adjudication.round, 1);
+  assert.equal(Array.isArray(round.passes), true);
+  assert.equal(round.passes.length, 1);
+  assert.equal(round.passes[0].name, "review-r1-codex-cli");
+  assert.equal(round.passes[0].envelope.payload.finder, "codex-cli");
+  assert.deepEqual(round.blocked_passes, []);
+  assert.deepEqual(round.findings, []);
+  console.log("rounds[] trajectory shape OK");
+' "${scratch}/dfe-rounds-$$.out" || {
+    cat "${scratch}/dfe-rounds-$$.out" "${scratch}/dfe-rounds-$$.err" >&2
+    rm -f "${scratch}/dfe-rounds-$$.out" "${scratch}/dfe-rounds-$$.err"
+    fail "--verification-only --json did not carry the expected rounds[] trajectory shape"
+}
+rm -f "${scratch}/dfe-rounds-$$.out" "${scratch}/dfe-rounds-$$.err"
+
 # `|| true` on every dev-flow-exit.mjs invocation below: its exit code IS
 # its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
 # 22 capped), so under this file's `set -e` a converged control run would

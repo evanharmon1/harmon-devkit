@@ -30,6 +30,29 @@
 // rounds" and "accept as spent" (specs/dev-flow-v2.md § The split strategy,
 // issue #747). It is a diagnostic: no outcome, exit code, or cap depends on
 // it, and it needs no policy knob.
+//
+// Every verdict (--verification-only and the final verdict alike) also
+// carries an additive `rounds` array — the machine-readable trajectory a
+// caller reports FROM instead of re-deriving round assembly itself via this
+// module's own exported helpers (harmon-devkit#1001). One entry per logical
+// round assembled for `--stage`, from the FULL (pre-ancestry-filter)
+// trajectory, in round order:
+//   { round, status, reviewed_head, unresolved_slot, substitutions,
+//     has_adjudication, adjudication, passes, blocked_passes, findings }
+// `adjudication` is the raw adjudication document for this round, or null.
+// `passes`/`blocked_passes` are `{name, envelope}` pairs — `passes` is every
+// schema/receipt-valid pass naming this stage+round (not narrowed to
+// whichever pass actually won a contested slot); `blocked_passes` is every
+// on-disk envelope for this stage+round whose status is "blocked",
+// UNFILTERED by receipt-backing (a caller that only trusts a receipted
+// attempt restricts this itself — this module has no opinion on that). Each
+// `findings[]` entry is `{id, adjudicated_priority, disposition,
+// provenance_status, verified_provenance, fingerprint_status,
+// verified_fingerprint}`; a finding whose round could not be ancestry-
+// retained for this invocation's --current-head/--repo-root carries
+// "not-measured" for both statuses and null for both verified values,
+// rather than a fabricated verdict. This is purely additive: no predicate,
+// exit code, or verdict depends on it, and it changes no existing check.
 
 import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -759,6 +782,22 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
       }
     }
 
+    // Raw evidence for this round, carried on the round object purely for
+    // an external caller's own projection (harmon-devkit#1001: the local-
+    // record harvester consumes this instead of re-deriving round assembly
+    // itself via imported helpers). Additive only — no predicate or verdict
+    // above reads `passes`/`blockedPasses`/`adjudication`, so this cannot
+    // change exit-code or verdict semantics.
+    //
+    // `passes` mirrors `passesThisRound` (every schema/receipt-valid pass
+    // naming this stage+round), NOT the narrower `acceptedPasses`/`bySlot`
+    // result — a caller reporting evidence wants to see a pass that lost a
+    // slot conflict too, not just the one that won it.
+    const blockedPassesThisRound = allPasses.filter((p) => {
+      const payload = p.envelope.payload;
+      return payload && payload.stage === stage && payload.round === roundNumber && p.envelope.status === "blocked";
+    });
+
     rounds.push({
       round: roundNumber,
       reviewedHead,
@@ -767,6 +806,9 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
       substitutions,
       findings,
       hasAdjudication: !!adjudication,
+      adjudication,
+      passes: passesThisRound.map((p) => ({ name: p.name, envelope: p.envelope })),
+      blockedPasses: blockedPassesThisRound.map((p) => ({ name: p.name, envelope: p.envelope })),
     });
   }
 
@@ -2153,6 +2195,38 @@ async function main() {
   // has no legitimate target to verify against, retained or not.
   const { retained: ancestryRetainedForVerification } = ancestryRetainedRounds(rounds, currentHead, ancestryOpts);
   const corrections = applyVerification(ancestryRetainedForVerification, ledger);
+
+  // The full (pre-ancestry-filter) trajectory, for a caller that reports
+  // history rather than gates on it (harmon-devkit#1001) — deliberately
+  // built from `rounds`, not `ancestryRetainedForVerification`: a multi-
+  // round local record's earlier rounds must still be reported even when
+  // this invocation's --current-head/--repo-root cannot establish real git
+  // ancestry for them. applyVerification above already mutated every
+  // gating finding it could reach IN PLACE (findings are shared by
+  // reference between `rounds` and its ancestry-retained subset), so a
+  // finding here from an ancestry-excluded round simply carries no
+  // provenanceStatus/fingerprintStatus yet — surfaced below as
+  // "not-measured", never fabricated.
+  const roundsForTrajectory = rounds.map((r) => ({
+    round: r.round,
+    status: r.status,
+    reviewed_head: r.reviewedHead,
+    unresolved_slot: r.unresolvedSlot,
+    substitutions: r.substitutions,
+    has_adjudication: r.hasAdjudication,
+    adjudication: r.adjudication,
+    passes: r.passes,
+    blocked_passes: r.blockedPasses,
+    findings: r.findings.map((f) => ({
+      id: f.id,
+      adjudicated_priority: f.adjudicated_priority,
+      disposition: f.disposition,
+      provenance_status: f.provenanceStatus ?? "not-measured",
+      verified_provenance: f.verifiedProvenance ?? null,
+      fingerprint_status: f.fingerprintStatus ?? "not-measured",
+      verified_fingerprint: f.verifiedFingerprint ?? null,
+    })),
+  }));
   const retainedCompleteRounds = ancestryRetainedForVerification.filter((r) => r.status === "complete");
   const retainedRoundNumbers = retainedCompleteRounds.map((r) => r.round);
   const allCompleteRoundNumbers = rounds.filter((r) => r.status === "complete").map((r) => r.round);
@@ -2233,6 +2307,12 @@ async function main() {
           // adjudicate.
           verified_findings: verifiedFindings,
         };
+    // Attached uniformly across all three shapes above (the `pre_adjudication`
+    // shape previously carried no `diagnostics` at all — harmless in
+    // isolation, but a caller reading this projection uniformly needs it in
+    // every reachable shape, not just two of three).
+    verification.rounds = roundsForTrajectory;
+    verification.diagnostics = diagnostics;
     if (retentionChanged) verification.retained_rounds = retainedRoundNumbers;
     if (args.json) console.log(JSON.stringify(verification, null, 2));
     else console.log(`${args.stage}: ${verification.outcome} (${verification.reason})`);
@@ -2289,6 +2369,7 @@ async function main() {
   // them here would falsely present them as verified adjudication evidence
   // and make the blocker record internally inconsistent.
   verdict.verified_findings = verifiedFindings;
+  verdict.rounds = roundsForTrajectory;
   if (verdict.outcome === "capped" && (verdict.reason === "finder_unavailable" || verdict.reason === "breadth_exhausted")) {
     const incompleteRound = ancestryRetainedForVerification.find((round) => round.status !== "complete");
     verdict.partial_findings = incompleteRound ? incompleteRound.findings.map((finding) => finding.id) : [];
