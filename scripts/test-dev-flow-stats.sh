@@ -2415,8 +2415,8 @@ function writeScenario(name, db) {
 
 // --- Scenario 54: a correctly indexed, digested, trusted evidence
 // comment whose reassembled payload is valid JSON but not an object
-// (bare $(null)) — shepherd round 6, Codex-confirmed (P1): JSON.parse
-// accepts $(null) as a value, so this previously reached round.payload
+// (bare null) — shepherd round 6, Codex-confirmed (P1): JSON.parse
+// accepts null as a value, so this previously reached round.payload
 // unchecked, and every downstream reader (--run's rendering, --replay's
 // buildRunDirectory) unconditionally dereferences round.payload.passes —
 // an uncaught TypeError, not an EvidenceError, aborting the entire batch
@@ -3201,10 +3201,13 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "
 echo "$out" | jq -e --arg run "$run_id" --argjson wrong "$(meta evidence-grammar .meta.wrongDestinationId)" --argjson stage "$(meta evidence-grammar .meta.unvisitedStageId)" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .provenance_unavailable_rounds == [] and .unreceipted_pass_files == ["stale"] and ([.forged_comments[].id] | index($wrong) != null and index($stage) != null) and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected the local run and its authenticated review round, got: $out"
 
-echo "== --as-of presence validation sees later live registrations but assembles only pre-cutoff rounds =="
+echo "== --as-of authenticates remote markers but discloses the local trajectory as current-state =="
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z --json)"
-echo "$out" | jq -e --argjson future "$(meta evidence-grammar .meta.unvisitedStageId)" '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .slot_failures == [] and .slot_failures_unavailable == true and ([.forged_comments[].id] | index($future) == null)' >/dev/null ||
-    fail "evidence grammar as-of: later PR registration was misreported deleted or assembled into history: $out"
+echo "$out" | jq -e --argjson future "$(meta evidence-grammar .meta.unvisitedStageId)" '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .slot_failures == [] and .slot_failures_unavailable == false and .future_adjudication_files == [] and .local_record_current_state == true and ([.forged_comments[].id] | index($future) != null)' >/dev/null ||
+    fail "evidence grammar as-of: local evidence was not disclosed as current-state: $out"
+text_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z)"
+grep -Fq 'local record read at current state; not reconstructable to the cutoff' <<<"$text_out" ||
+    fail "evidence grammar as-of: missing current-state disclosure: $text_out"
 
 echo "== current evidence wins when legacy evidence names the same run, with migration disclosed =="
 text_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002)"
@@ -3247,25 +3250,13 @@ for receipt_case in before-transition wrong-stage; do
         jq '.receipts = [{kind:"transition",stage:"challenge",entered_at:.started_at},{kind:"pass",file:"review-r1"}]' \
             "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
     fi
-    set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
-    rc=$?
-    set -e
-    [ "$rc" -eq 3 ] && grep -Fq 'active preceding transition' <<<"$out" ||
-        fail "evidence grammar: expected $receipt_case pass receipt to be indeterminate, got rc=$rc: $out"
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
+    echo "$out" | jq -e '.rounds == [] and (.trajectory_diagnostics[0].reason | contains("was not the active stage"))' >/dev/null ||
+        fail "evidence grammar: exit engine did not reject the $receipt_case pass receipt: $out"
 done
 mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 
 echo "== every local-record read target stays beneath --record-dir =="
-printf '%s\n' '{}' >"$tmp/outside-adjudication.json"
-ln -s "$tmp/outside-adjudication.json" "$tmp/local-records/$run_id/adjudications/escape.json"
-set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
-rc=$?
-set -e
-[ "$rc" -eq 3 ] && grep -Fq 'symbolic link' <<<"$out" ||
-    fail "evidence grammar: expected child symlink escape to be indeterminate, got rc=$rc: $out"
-rm "$tmp/local-records/$run_id/adjudications/escape.json"
 mkdir -p "$tmp/symlink-records"
 ln -s "$tmp/local-records/$run_id" "$tmp/symlink-records/$run_id"
 set +e
@@ -3293,6 +3284,17 @@ run_id="$(meta evidence-pr-only .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 188 and .rounds == [] and .unverified_evidence_destinations == []' >/dev/null ||
     fail "PR-only current marker: expected authenticated local trajectory, got: $out"
+
+echo "== malformed trusted PR evidence propagates beyond the local binding probe =="
+cp "$tmp/scenarios/evidence-pr-only.json" "$tmp/scenarios/evidence-pr-only.json.saved"
+jq '.comments["9188"][0].body = "<!-- dev-flow-v2-evidence: malformed -->"' "$tmp/scenarios/evidence-pr-only.json.saved" >"$tmp/scenarios/evidence-pr-only.json"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'trusted evidence comment' <<<"$out" && grep -Fq 'malformed dev-flow-v2-evidence marker' <<<"$out" ||
+    fail "PR-only current marker: malformed trusted evidence was swallowed by the probe, rc=$rc: $out"
+mv "$tmp/scenarios/evidence-pr-only.json.saved" "$tmp/scenarios/evidence-pr-only.json"
 
 echo "== a later authoritative issue marker wins over an earlier PR-only rejection =="
 export DFSTATS_DB="$tmp/scenarios/evidence-pr-only-arbitrary.json"
@@ -3353,8 +3355,8 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "
 echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 187 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .slot_failures == [{stage:"review",round:2,slot:"codex-verification",reason:"finder_unavailable"}]' >/dev/null ||
     fail "evidence grammar: expected all-issue lookup to find the arbitrary run id, got: $out"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
-echo "$out" | jq -e '.slot_failures == [] and .slot_failures_unavailable == true' >/dev/null ||
-    fail "evidence grammar as-of: slot failures were not omitted with explicit unavailability: $out"
+echo "$out" | jq -e '.slot_failures == [{stage:"review",round:2,slot:"codex-verification",reason:"finder_unavailable"}] and .slot_failures_unavailable == false and .local_record_current_state == true' >/dev/null ||
+    fail "evidence grammar as-of: current local slot failures were cutoff-filtered: $out"
 
 for scenario in evidence-sequence-two-only evidence-sequence-gap; do
     echo "== current-marker groups reject a non-contiguous sequence: $scenario =="
@@ -3381,15 +3383,12 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "evidence sequence: valid multi-segment group did not reconstruct: $out"
 
-echo "== an authenticated issue round with no adjudication is indeterminate =="
+echo "== a marker with no exit-engine round does not fabricate trajectory content =="
 export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-missing.json"
 run_id="$(meta evidence-adjudication-missing .meta.runId)"
-set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
-rc=$?
-set -e
-[ "$rc" -eq 3 ] && grep -Fq 'exactly one adjudication for authenticated review round 1, unless a retained slot failure proves the round incomplete; found 0' <<<"$out" ||
-    fail "evidence adjudication: expected missing document to be indeterminate, got rc=$rc: $out"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == []' >/dev/null ||
+    fail "evidence adjudication: marker-only evidence fabricated a local round: $out"
 
 echo "== a completed zero-finding pass and adjudication are projected without deriving an exit =="
 export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-clean.json"
@@ -3398,19 +3397,19 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "evidence adjudication: completed zero-finding pass and adjudication were not projected: $out"
 
-echo "== integrator envelopes derive integration stage and integration_round coordinates =="
+echo "== the exit-engine trajectory does not synthesize integration rounds =="
 export DFSTATS_DB="$tmp/scenarios/integration-envelope.json"
 run_id="$(meta integration-envelope .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds == [{stage:"integration",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
-    fail "integration envelope coordinates: expected one integration pass: $out"
+echo "$out" | jq -e '.rounds == []' >/dev/null ||
+    fail "integration envelope coordinates: harvester synthesized a round outside the exit engine: $out"
 
-echo "== --as-of excludes and discloses adjudications whose marker is still future =="
+echo "== --as-of reports retained adjudications from the local record's current state =="
 export DFSTATS_DB="$tmp/scenarios/future-adjudication.json"
 run_id="$(meta future-adjudication .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
-echo "$out" | jq -e '(.rounds | length) == 1 and .rounds[0].round == 1 and .future_adjudication_files == ["review-r2.json"]' >/dev/null ||
-    fail "future adjudication cutoff: expected only round 1 plus a future disclosure: $out"
+echo "$out" | jq -e '(.rounds | length) == 2 and .rounds[1].round == 2 and .future_adjudication_files == [] and .local_record_current_state == true' >/dev/null ||
+    fail "future adjudication cutoff: local current-state trajectory was partially cutoff-filtered: $out"
 
 echo "== two authoritative issue bindings for one arbitrary run are indeterminate =="
 export DFSTATS_DB="$tmp/scenarios/duplicate-authoritative-binding.json"
@@ -3429,15 +3428,67 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "
 echo "$out" | jq -e '.rounds[0].pass_count == 1 and .unverified_evidence_destinations == []' >/dev/null ||
     fail "mixed registrations: legacy evidence was not observed beside current evidence: $out"
 
-echo "== a slot failure permits a capped partial round with no adjudication =="
+echo "== mixed legacy evidence is narrowed to the authenticated run-record author =="
+cp "$tmp/scenarios/mixed-registration.json" "$tmp/scenarios/mixed-registration.json.saved"
+cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
+node --input-type=module - "$tmp/scenarios/mixed-registration.json.saved" "$tmp/scenarios/mixed-registration.json" "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json" <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+import { entryDigest, GENESIS } from "./scripts/dev-flow-stats.mjs";
+const [dbSource, dbTarget, runSource, runTarget] = process.argv.slice(2);
+const db = JSON.parse(readFileSync(dbSource, "utf8"));
+const run = JSON.parse(readFileSync(runSource, "utf8"));
+const legacyId = Number(run.evidence_comments[1].id);
+for (const comments of Object.values(db.comments)) {
+    const legacy = comments.find((comment) => comment.id === legacyId);
+    if (legacy) legacy.user = { id: 9002, login: "other-orchestrator" };
+}
+const registrySha = db.registry_commits[0].sha;
+db.registry_contents[registrySha] = Buffer.from(JSON.stringify({ trusted_orchestrator_actor_ids: [9001, 9002] })).toString("base64");
+run.evidence_comments[1].author_actor_id = 9002;
+run.evidence_comments[1].login = "other-orchestrator";
+let previous = GENESIS;
+run.evidence_registrations = run.evidence_comments.map((entry, seq) => {
+    const content = { id: entry.id, author_actor_id: entry.author_actor_id, login: entry.login, payload_digest: entry.digest, marker: entry.marker, registered_at: run.started_at };
+    const digest = entryDigest(content, previous);
+    const result = { ...content, seq, digest, prev_digest: previous };
+    previous = digest;
+    return result;
+});
+writeFileSync(dbTarget, JSON.stringify(db, null, 2));
+writeFileSync(runTarget, JSON.stringify(run, null, 2));
+NODE
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --trusted-actor-id 9002 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'does not authenticate evidence comment' <<<"$out" ||
+    fail "mixed registrations: a different trusted actor supplied legacy evidence, rc=$rc: $out"
+mv "$tmp/scenarios/mixed-registration.json.saved" "$tmp/scenarios/mixed-registration.json"
+mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
+
+echo "== registered legacy evidence must keep its marker on the first line =="
+cp "$tmp/scenarios/mixed-registration.json" "$tmp/scenarios/mixed-registration.json.saved"
+jq '(.comments["204"][] | select(.body | startswith("<!-- devflow:evidence")) | .body) |= ("quoted marker\n" + .)' "$tmp/scenarios/mixed-registration.json.saved" >"$tmp/scenarios/mixed-registration.json"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'does not authenticate evidence comment' <<<"$out" ||
+    fail "mixed registrations: moved legacy marker was accepted, rc=$rc: $out"
+mv "$tmp/scenarios/mixed-registration.json.saved" "$tmp/scenarios/mixed-registration.json"
+
+echo "== the exit engine rejects a slot failure that contradicts an accepted pass =="
 export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-clean.json"
 run_id="$(meta evidence-adjudication-clean .meta.runId)"
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 mv "$tmp/local-records/$run_id/adjudications/review-r1.json" "$tmp/local-records/$run_id/adjudications/review-r1.json.saved"
 jq '.slot_failures = [{stage:"review",round:1,slot:"codex-verification",reason:"finder_unavailable"}]' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds[0].status == "capped" and .rounds[0].pass_count == 1 and .rounds[0].adjudication_count == 0 and .rounds[0].has_adjudication == false and (.slot_failures | length) == 1' >/dev/null ||
-    fail "slot-failure partial round: expected capped partial evidence: $out"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'both an accepted pass and a slot_failures record' <<<"$out" ||
+    fail "slot-failure contradiction: expected exit-engine refusal, got rc=$rc: $out"
 mv "$tmp/local-records/$run_id/adjudications/review-r1.json.saved" "$tmp/local-records/$run_id/adjudications/review-r1.json"
 mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 
@@ -3449,12 +3500,9 @@ for invalid_case in missing-identity duplicate-finding-id; do
     else
         jq '.payload.findings = [{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:1,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"one"},{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:2,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"two"}] | .payload.counts = {P0:0,P1:0,P2:2,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
     fi
-    set +e
-    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
-    rc=$?
-    set -e
-    [ "$rc" -eq 3 ] && grep -Fq 'review-r1.json is not a valid result envelope' <<<"$out" ||
-        fail "retained pass validation ($invalid_case): expected named-file indeterminate, got rc=$rc: $out"
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+    echo "$out" | jq -e '.rounds == [] and (.trajectory_diagnostics | length) > 0 and ([.trajectory_diagnostics[].level] | all(. == "reject"))' >/dev/null ||
+        fail "retained pass validation ($invalid_case): exit engine accepted invalid evidence: $out"
 done
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 
@@ -3464,53 +3512,35 @@ set +e
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
-[ "$rc" -eq 3 ] && grep -Eq 'no completed pass or retained slot failure|pass receipt .* does not exist' <<<"$out" ||
+[ "$rc" -eq 3 ] && grep -Eq 'no completed pass or retained slot failure|receipt without evidence' <<<"$out" ||
     fail "evidence adjudication source: expected indeterminate, got rc=$rc: $out"
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 
-echo "== blocked envelopes are disclosed but excluded from completed pass and finding counts =="
+echo "== the exit engine excludes blocked envelopes from retained round evidence =="
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 cp "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
 jq '.slot_failures = [{stage:"review",round:1,slot:"codex-verification",reason:"finder_unavailable"}]' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
 jq '.status = "blocked" | .payload.findings = [] | .payload.counts = {P0:0,P1:0,P2:0,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds[0].pass_count == 0 and .rounds[0].blocked_passes == 1 and .rounds[0].finding_count == 0' >/dev/null ||
+echo "$out" | jq -e '.rounds[0].pass_count == 0 and .rounds[0].blocked_passes == 0 and .rounds[0].status == "capped" and .rounds[0].finding_count == 0' >/dev/null ||
     fail "blocked pass projection: blocked envelope counted as completed evidence: $out"
 mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 
-echo "== verifier-corrected provenance and fingerprint replace raw producer assertions =="
+echo "== provenance comes from the exit engine, not a local verdict projection =="
 export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
 cp "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
+cp "$tmp/local-records/$run_id/adjudications/review-r1.json" "$tmp/local-records/$run_id/adjudications/review-r1.json.saved"
 jq '.payload.findings = [{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:1,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"fixture evidence"}] | .payload.counts = {P0:0,P1:0,P2:1,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
+jq '.adjudications = [{finding_id:"review-r1-codex-verification-1",reviewer_priority:"P2",adjudicated_priority:"P2",disposition:"defer",reason:"fixture reason",evidence:"fixture evidence",override:null}]' "$tmp/local-records/$run_id/adjudications/review-r1.json.saved" >"$tmp/local-records/$run_id/adjudications/review-r1.json"
 printf '%s\n' '{"stage":"review","verified_findings":[{"id":"review-r1-codex-verification-1","provenance_status":"corrected","verified_provenance":"round:1","fingerprint_status":"corrected","verified_fingerprint":"repeat-of:review-r0-origin"}]}' >"$tmp/local-records/$run_id/verdict.json"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
-echo "$out" | jq -e '.rounds[0].provenance_measurement == "verified" and .findings_by_class_and_provenance == {"correctness/round:1":1} and .findings_by_verified_fingerprint == {"repeat-of:review-r0-origin":1} and .provenance_unavailable_rounds == []' >/dev/null ||
-    fail "verified finding projection: raw producer assertions survived verdict correction: $out"
+echo "$out" | jq -e '.rounds[0].provenance_measurement == "verified" and .findings_by_class_and_provenance == {"correctness/original":1} and .findings_by_verified_fingerprint == {"new":1} and .provenance_unavailable_rounds == []' >/dev/null ||
+    fail "verified finding projection: local verdict bypassed the exit engine: $out"
 rm "$tmp/local-records/$run_id/verdict.json"
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
-
-echo "== retained adjudications and receipted passes require authenticated issue marker groups =="
-printf '%s\n' '{"schema":2,"run_id":"run-186-evidence-grammar","stage":"review","round":2,"reviewed_head":"0000000000000000000000000000000000000000","adjudications":[]}' >"$tmp/local-records/$run_id/adjudications/review-r2.json"
-set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
-rc=$?
-set -e
-[ "$rc" -eq 3 ] && grep -Fq 'retains an adjudication for review round 2 without an authenticated issue marker group' <<<"$out" ||
-    fail "reverse adjudication coverage: expected indeterminate, got rc=$rc: $out"
-rm "$tmp/local-records/$run_id/adjudications/review-r2.json"
-cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
-jq '.payload.round = 2' "$tmp/local-records/$run_id/passes/review-r1.json" >"$tmp/local-records/$run_id/passes/review-r2.json"
-jq '.receipts += [{kind:"pass",file:"review-r2"}]' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
-set +e
-out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json 2>&1)"
-rc=$?
-set -e
-[ "$rc" -eq 3 ] && grep -Fq 'retains a receipted pass for review round 2 without an authenticated issue marker group' <<<"$out" ||
-    fail "reverse pass coverage: expected indeterminate, got rc=$rc: $out"
-rm "$tmp/local-records/$run_id/passes/review-r2.json"
-mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
+mv "$tmp/local-records/$run_id/adjudications/review-r1.json.saved" "$tmp/local-records/$run_id/adjudications/review-r1.json"
 
 echo "== duplicate evidence-comment ids are indeterminate before registration indexing =="
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"

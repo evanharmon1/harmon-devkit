@@ -2360,9 +2360,11 @@ if (isMain) {
 }
 
 export {
+  ExitIndeterminate,
   computeSplitCandidate,
   loadRunDir,
   validateReceipts,
+  validateAdjudicationSchema,
   assembleLogicalRounds,
   loadLedger,
   verifyProvenance,
