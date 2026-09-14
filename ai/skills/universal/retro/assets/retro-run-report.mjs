@@ -298,7 +298,8 @@ function statsCommandFor(file) {
 // what stops a marker quoted inside prose — a real risk on a PR that discusses
 // this protocol — from inventing a run.
 const EVIDENCE_MARKER_RE = /^<!--\s+devflow:([a-z][a-z-]*)\s+v2\s+([^>]*?)-->/
-const REVIEW_EVIDENCE_MARKER_RE = /^<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->/
+const REVIEW_EVIDENCE_MARKER_RE = /^<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->(?=\r?\n|$)/
+const REVIEW_EVIDENCE_PREFIX_RE = /^<!--[ \t]*dev-flow-v2-evidence:/
 
 // Only these three kinds are evidence. An earlier revision accepted any
 // lowercase kind carrying a run_id, so a trusted `devflow:example` comment on
@@ -353,9 +354,11 @@ function parseMarker(body) {
     if (!MARKER_STAGES.has(value.stage)) return { malformed: `stage "${value.stage}" is not a run stage` }
     if (value.destination !== 'issue' && value.destination !== 'pr') return { malformed: `destination "${value.destination}" is not issue or pr` }
     if (value.round !== null && (!Number.isInteger(value.round) || value.round < 1)) return { malformed: 'round is neither null nor a positive integer' }
+    if ((value.destination === 'issue') !== (value.round !== null)) return { malformed: 'destination and round do not form an issue-round or PR-rollup pair' }
     if (!Number.isInteger(value.sequence) || value.sequence < 1) return { malformed: 'sequence is not a positive integer' }
     return { kind: 'evidence', runId: value.run_id }
   }
+  if (REVIEW_EVIDENCE_PREFIX_RE.test(firstLine)) return { malformed: 'dev-flow-v2-evidence marker has trailing content or an invalid payload' }
   const marker = EVIDENCE_MARKER_RE.exec(firstLine)
   if (!marker) return null
   const kind = marker[1]

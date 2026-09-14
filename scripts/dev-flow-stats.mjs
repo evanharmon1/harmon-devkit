@@ -495,7 +495,7 @@ const RUN_STAGES = ["kickoff", "claim", "explore", "plan", "implement", "verify"
 // fenced JSON, never the marker comment line itself).
 const MARKER_RE =
   /<!--\s*devflow:(run-index|run-record|evidence)\s+v2\s+run_id=(\S+)\s+stage=(\S+)\s+dest=(issue|pr)\s+round=(-|\d+)\s+seq=(\d+)\s*-->/;
-const EVIDENCE_SUMMARY_MARKER_RE = /^[ \t]*<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->/;
+const EVIDENCE_SUMMARY_MARKER_RE = /^[ \t]*<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->(?=\r?\n|$)/;
 const EVIDENCE_SUMMARY_PREFIX_RE = /^[ \t]*<!--[ \t]*dev-flow-v2-evidence:/;
 const FENCE_RE = /```json\r?\n([\s\S]*?)\r?\n```/;
 
@@ -529,6 +529,7 @@ function parseEvidenceSummaryMarker(body) {
   if (!RUN_STAGES.includes(value.stage)) return null;
   if (value.destination !== "issue" && value.destination !== "pr") return null;
   if (value.round !== null && (!Number.isInteger(value.round) || value.round < 1)) return null;
+  if ((value.destination === "issue") !== (value.round !== null)) return null;
   if (!Number.isInteger(value.sequence) || value.sequence < 1) return null;
   return { kind: "evidence", runId: value.run_id, stage: value.stage, dest: value.destination, round: value.round, seq: value.sequence, grammar: "dev-flow-v2-evidence" };
 }
@@ -1743,25 +1744,28 @@ function readJsonFile(file) {
 function collectTrustedEvidenceSummaries(issueComments, runId, { trustedActorIds, asOf, effectiveTrustAt }) {
   const cutoff = asOf ? Date.parse(asOf) : Infinity;
   const candidates = [];
+  const untrusted = [];
   for (const comment of issueComments) {
     const marker = parseEvidenceSummaryMarker(comment.body || "");
     const actorId = commentActorId(comment);
-    if (Date.parse(comment.created_at) > cutoff || !trustedActorIds.has(actorId)) continue;
+    if (Date.parse(comment.created_at) > cutoff) continue;
     if (!marker) {
-      if (EVIDENCE_SUMMARY_PREFIX_RE.test(comment.body || "") && effectiveTrustAt(comment.created_at).has(actorId)) {
+      if (EVIDENCE_SUMMARY_PREFIX_RE.test(comment.body || "") && trustedActorIds.has(actorId) && effectiveTrustAt(comment.created_at).has(actorId)) {
         throw new EvidenceError(`trusted evidence comment ${comment.id} has a malformed dev-flow-v2-evidence marker`);
       }
       continue;
     }
     if (marker.runId !== runId) continue;
+    if (!trustedActorIds.has(actorId)) {
+      untrusted.push({ comment, marker, actorId });
+      continue;
+    }
     if (!effectiveTrustAt(comment.created_at).has(actorId)) {
       throw new EvidenceError(`evidence comment ${comment.id} was not authored by an actor trusted at its write time`);
     }
-    const editedAt = typeof comment.updated_at === "string" ? comment.updated_at : null;
-    if (editedAt && Date.parse(editedAt) > Date.parse(comment.created_at) && !effectiveTrustAt(editedAt).has(actorId)) continue;
     candidates.push({ comment, marker, actorId });
   }
-  return [...resolveCanonical(candidates).values()];
+  return { trusted: [...resolveCanonical(candidates).values()], untrusted };
 }
 
 function markerFacts(markers) {
@@ -1770,18 +1774,33 @@ function markerFacts(markers) {
     .sort((a, b) => `${a.stage}|${a.round}|${a.sequence}`.localeCompare(`${b.stage}|${b.round}|${b.sequence}`));
 }
 
-function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, asOf) {
+function resolveContainedPath(root, candidate, label, { allowMissing = false } = {}) {
+  const lexical = path.resolve(candidate);
+  if (lexical !== root && !lexical.startsWith(`${root}${path.sep}`)) {
+    throw new EvidenceError(`${label} escapes --record-dir`);
+  }
+  if (!existsSync(lexical)) {
+    if (allowMissing) return lexical;
+    throw new EvidenceError(`${label} does not exist`);
+  }
+  let resolved;
+  try {
+    resolved = realpathSync(lexical);
+  } catch (err) {
+    throw new EvidenceError(`${label} cannot be resolved: ${err.message}`);
+  }
+  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+    throw new EvidenceError(`${label} escapes --record-dir through a symbolic link`);
+  }
+  return resolved;
+}
+
+function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, untrustedMarkers, asOf) {
   const root = realpathSync(recordRoot);
-  const candidate = path.resolve(root, runId);
-  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
-    throw new EvidenceError(`run id ${JSON.stringify(runId)} escapes --record-dir`);
-  }
-  const runDir = existsSync(candidate) ? realpathSync(candidate) : candidate;
-  if (runDir !== root && !runDir.startsWith(`${root}${path.sep}`)) {
-    throw new EvidenceError(`local run directory for ${JSON.stringify(runId)} escapes --record-dir through a symbolic link`);
-  }
-  const runFile = path.join(runDir, "run.json");
-  if (!existsSync(runFile)) return { status: "record-missing", runId, issueNumber, markerFacts: markerFacts(markers), runDir };
+  const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
+  const runFileCandidate = path.join(runDir, "run.json");
+  if (!existsSync(runFileCandidate)) return { status: "record-missing", runId, issueNumber, markerFacts: markerFacts(markers), runDir };
+  const runFile = resolveContainedPath(root, runFileCandidate, `${runId}/run.json`);
   const body = readJsonFile(runFile);
   if (body.run_id !== runId) throw new EvidenceError(`${runFile} declares run_id ${JSON.stringify(body.run_id)}, expected ${runId}`);
   if (!Array.isArray(body.evidence_comments)) throw new EvidenceError(`${runFile} does not contain an evidence_comments array`);
@@ -1796,13 +1815,54 @@ function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, asOf) {
       throw new EvidenceError(`local run record does not authenticate evidence comment ${observed.comment.id}`);
     }
   }
-  const loadDir = (name) => {
-    const dir = path.join(runDir, name);
-    if (!existsSync(dir)) return [];
-    return readdirSync(dir).filter((file) => file.endsWith(".json")).sort().map((file) => readJsonFile(path.join(dir, file)));
+  const jsonFilesIn = (name) => {
+    const candidate = path.join(runDir, name);
+    if (!existsSync(candidate)) return { dir: candidate, files: [] };
+    const dir = resolveContainedPath(root, candidate, `${runId}/${name}`);
+    let files;
+    try {
+      files = readdirSync(dir).filter((file) => file.endsWith(".json")).sort();
+    } catch (err) {
+      throw new EvidenceError(`${runId}/${name} cannot be read as a directory: ${err.message}`);
+    }
+    return { dir, files };
   };
-  const passes = loadDir("passes");
-  const adjudications = loadDir("adjudications");
+  const passFiles = jsonFilesIn("passes");
+  if (Object.hasOwn(body, "receipts") && !Array.isArray(body.receipts)) {
+    throw new EvidenceError(`${runFile} receipts is not an array`);
+  }
+  const passReceipts = Array.isArray(body.receipts)
+    ? body.receipts.flatMap((receipt, index) => {
+      if (!receipt || typeof receipt !== "object" || Array.isArray(receipt) || (receipt.kind !== "pass" && receipt.kind !== "transition")) {
+        throw new EvidenceError(`${runFile} receipt ${index} is not a pass or transition receipt`);
+      }
+      return receipt.kind === "pass" ? [receipt] : [];
+    })
+    : null;
+  let unreceiptedPassFiles;
+  let passes;
+  if (passReceipts) {
+    const seen = new Set();
+    passes = passReceipts.map((receipt, index) => {
+      if (typeof receipt.file !== "string" || receipt.file.length === 0 || receipt.file === "." || receipt.file === ".." || /[\\/]/.test(receipt.file) || receipt.file.endsWith(".json")) {
+        throw new EvidenceError(`${runFile} receipt ${index} has an invalid pass file identity`);
+      }
+      if (seen.has(receipt.file)) throw new EvidenceError(`${runFile} repeats pass receipt ${JSON.stringify(receipt.file)}`);
+      seen.add(receipt.file);
+      const file = resolveContainedPath(root, path.join(passFiles.dir, `${receipt.file}.json`), `pass receipt ${JSON.stringify(receipt.file)}`);
+      const envelope = readJsonFile(file);
+      if (!envelope || !envelope.run || envelope.run.run_id !== runId || envelope.run.initiated_by !== body.initiated_by) {
+        throw new EvidenceError(`pass receipt ${JSON.stringify(receipt.file)} does not identify run ${runId}`);
+      }
+      return envelope;
+    });
+    unreceiptedPassFiles = passFiles.files.map((file) => file.replace(/\.json$/, "")).filter((file) => !seen.has(file));
+  } else {
+    passes = passFiles.files.map((file) => readJsonFile(resolveContainedPath(root, path.join(passFiles.dir, file), `${runId}/passes/${file}`)));
+    unreceiptedPassFiles = passFiles.files.map((file) => file.replace(/\.json$/, ""));
+  }
+  const adjudicationFiles = jsonFilesIn("adjudications");
+  const adjudications = adjudicationFiles.files.map((file) => readJsonFile(resolveContainedPath(root, path.join(adjudicationFiles.dir, file), `${runId}/adjudications/${file}`)));
   const byRound = new Map();
   for (const observed of markers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
     const key = `${observed.marker.stage}|${observed.marker.round}`;
@@ -1816,7 +1876,7 @@ function loadLocalEvidenceRun(recordRoot, runId, issueNumber, markers, asOf) {
     if (matchingAdjudications.length > 1) throw new EvidenceError(`${runDir} has more than one adjudication for ${stage} round ${round}`);
     return { stage, dest: "issue", round, payload: { passes: matchingPasses, adjudication: matchingAdjudications[0] || null }, commentIds: [observed.comment.id] };
   });
-  return { status: "ok", runId, issueNumber, record: { body }, state, rounds, untrusted: [], forged: [] };
+  return { status: "ok", runId, issueNumber, record: { body }, state, rounds, untrusted: [], forged: untrustedMarkers, unreceiptedPassFiles };
 }
 
 function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null }) {
@@ -1847,12 +1907,12 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
   }
   const summaries = requestedRunId
     ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf, effectiveTrustAt })
-    : [];
+    : { trusted: [], untrusted: [] };
   const legacyNamesRequestedRun = records && records.some((record) => record.runId === requestedRunId);
-  if (summaries.length > 0 && !legacyNamesRequestedRun) {
-    if (!recordDir) return [{ status: "evidence-only", runId: requestedRunId, issueNumber, markerFacts: markerFacts(summaries) }];
+  if (summaries.trusted.length > 0 && !legacyNamesRequestedRun) {
+    if (!recordDir) return [{ status: "evidence-only", runId: requestedRunId, issueNumber, markerFacts: markerFacts(summaries.trusted), untrustedMarkerFacts: markerFacts(summaries.untrusted) }];
     try {
-      return [loadLocalEvidenceRun(recordDir, requestedRunId, issueNumber, summaries, asOf)];
+      return [loadLocalEvidenceRun(recordDir, requestedRunId, issueNumber, summaries.trusted, summaries.untrusted, asOf)];
     } catch (err) {
       if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
       throw err;
@@ -1871,11 +1931,11 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
   );
 }
 
-function discoverAllRuns(repo, { trustedActorIds, asOf }) {
+function discoverAllRuns(repo, options) {
   const issues = fetchIssueList(repo);
   const runs = [];
   for (const issue of issues) {
-    for (const run of harvestRunsForIssue(repo, issue.number, { trustedActorIds, asOf })) {
+    for (const run of harvestRunsForIssue(repo, issue.number, options)) {
       runs.push(run);
     }
   }
@@ -1884,7 +1944,7 @@ function discoverAllRuns(repo, { trustedActorIds, asOf }) {
 
 function discoverRunsForId(repo, runId, options) {
   const issueNumber = issueNumberFromRunId(runId);
-  if (issueNumber === null) return discoverAllRuns(repo, options);
+  if (issueNumber === null) return discoverAllRuns(repo, { ...options, requestedRunId: runId });
 
   let issue;
   try {
@@ -2213,6 +2273,7 @@ function renderTrajectory(run) {
     // forged-author comment: reported, ignored").
     orphan_comments: run.untrusted.map((u) => ({ id: u.comment.id, actor_id: u.actorId })),
     forged_comments: run.forged.map((f) => ({ id: f.comment.id, actor_id: f.actorId })),
+    unreceipted_pass_files: run.unreceiptedPassFiles || [],
   };
 }
 
@@ -2238,6 +2299,10 @@ function renderTrajectoryTable(trajectory) {
     lines.push("");
     lines.push("interventions:");
     for (const i of trajectory.interventions) lines.push(`  ${i.at}  ${i.kind}: ${i.note}`);
+  }
+  if (trajectory.unreceipted_pass_files.length > 0) {
+    lines.push("");
+    lines.push(`unreceipted pass files: ${trajectory.unreceipted_pass_files.join(", ")}`);
   }
   return lines.join("\n");
 }
@@ -2850,7 +2915,7 @@ function cliRun(args) {
     return 1;
   }
   if (run.status === "evidence-only") {
-    const report = { status: "evidence-only", run_id: run.runId, issue: run.issueNumber, marker_facts: run.markerFacts };
+    const report = { status: "evidence-only", run_id: run.runId, issue: run.issueNumber, marker_facts: run.markerFacts, untrusted_marker_facts: run.untrustedMarkerFacts || [] };
     console.log(args.json ? JSON.stringify(report, null, 2) : `run ${run.runId} (issue #${run.issueNumber}) — evidence-only\nmarkers: ${JSON.stringify(run.markerFacts)}`);
     return 0;
   }

@@ -1824,6 +1824,28 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
     ok "the writer grammar selects the run" ||
     bad "the writer grammar was not discovered: rc=$RC, err=$ERR"
 
+echo "==> current evidence markers reject trailing content and invalid destination/round pairs"
+d="$TMPROOT/evidence-marker-strict"
+scaffold "$d" further-along "body"
+write_file "$d/c1" '<!-- dev-flow-v2-evidence: {"run_id":"run-6001-further-along","stage":"review","round":1,"sequence":1,"destination":"issue"} --> trailing'
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" 'trailing content or an invalid payload' &&
+    ok "trailing marker bytes are trusted malformed evidence" ||
+    bad "trailing marker content was accepted or hidden: rc=$RC, err=$ERR"
+for pair in 'issue null' 'pr 1'; do
+    destination="${pair%% *}"
+    round="${pair##* }"
+    write_file "$d/c1" "<!-- dev-flow-v2-evidence: {\"run_id\":\"run-6001-further-along\",\"stage\":\"review\",\"round\":$round,\"sequence\":1,\"destination\":\"$destination\"} -->"
+    set_comments "$d/comments" "$PR" "$d/c1"
+    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+    [ "$RC" -eq 11 ] && contains "$ERR" 'destination and round do not form' ||
+        bad "invalid $destination/$round marker pair was accepted or hidden: rc=$RC, err=$ERR"
+done
+ok "both invalid destination/round combinations are rejected"
+
 echo "==> the asset auto-discovers and INVOKES the real harvester, no --stats-script"
 d="$TMPROOT/realpath"
 mkdir -p "$d"
