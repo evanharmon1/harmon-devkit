@@ -139,6 +139,9 @@ repos/*/pulls/*/comments?per_page=100) file=inline.pages.json ;;
 # inline findings. It must sort AFTER the sub-resource patterns above, which it
 # would otherwise shadow.
 repos/*/pulls/*) file=pr.json ;;
+# Must sort before the bare-commit pattern below, which its trailing `*`
+# would otherwise also match.
+repos/*/commits/*/check-runs*) file=check-runs.pages.json ;;
 repos/*/commits/*)
     jq -cn \
         --arg sha "$(cat "$GH_FIXTURES/resolved-head")" \
@@ -225,6 +228,11 @@ write_defaults() {
         >"${fixtures}/head-authored-at"
     printf '%s\n' '2026-07-31T07:59:00Z' \
         >"${fixtures}/head-committed-at"
+    # Zero check runs by default, so every existing fixture keeps exercising
+    # the unchanged commit-date fallback boundary (harmon-devkit#1014 ruling
+    # 1) unless a case explicitly overrides this file.
+    printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \
+        >"${fixtures}/check-runs.pages.json"
     jq -cn --argjson id "$trusted_trigger_actor_id" \
         '{finders:[],trusted_orchestrator_actor_ids:[$id]}' |
         base64 | tr -d '\n' >"${fixtures}/registry.b64"
@@ -1907,6 +1915,167 @@ assert_status 11 pending
 run_check '2026-07-31T08:17:00Z'
 assert_status 0 clean
 assert_accepted review 167
+
+# --------------------------------------------------------------------------
+# harmon-devkit#1014 — one regression per item: two hardening items from the
+# original issue (rulings 1-2), plus four more filed from Codex cycle-1
+# findings on PR #1013 (rulings 3-6). Each case below is traced against the
+# pre-fix behavior in the PR description, not just against the fixed code.
+# --------------------------------------------------------------------------
+
+echo "==> a check run's server start time bounds prior-trigger reconstruction, not the client-controlled commit date (harmon-devkit#1014 ruling 1)"
+trigger_id=150
+request_time='2026-07-31T08:10:00Z'
+write_defaults
+rm -f "$state"
+# A commit date backdated AFTER the real prior trigger below: the old
+# commit-date boundary would exclude that trigger from reconstruction
+# entirely, hiding real same-head history behind a client-controlled clock.
+printf '%s\n' '2026-07-31T08:05:00Z' >"${fixtures}/head-authored-at"
+printf '%s\n' '2026-07-31T08:05:00Z' >"${fixtures}/head-committed-at"
+jq -cn '[{total_count:1,check_runs:[{started_at:"2026-07-31T07:00:00Z"}]}]' \
+    >"${fixtures}/check-runs.pages.json"
+jq -cn \
+    --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {
+        id:145,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T07:50:00Z"
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq '.reserved_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+[ "$(jq -r '.requires_full_window' "$state")" = true ] ||
+    fail "a client-backdated commit date must not hide a real prior trigger behind the check-run boundary: $(jq -c . "$state")"
+[ "$(jq -r '.previous_trigger_comment_id' "$state")" = 145 ] ||
+    fail "the check-run-bounded prior trigger was not recorded: $(jq -c . "$state")"
+[ "$(jq -r '.boundary_source' "$state")" = "check-run" ] ||
+    fail "the state did not record the check-run boundary source: $(jq -c . "$state")"
+
+echo "==> re-reserving attempt 2 carries the replaced trigger id forward (harmon-devkit#1014 ruling 2)"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 2 >/dev/null
+[ "$(jq -r '.previous_trigger_comment_id' "$state")" = 123 ] ||
+    fail "re-reserving attempt 2 must carry the replaced attempt-1 trigger id forward: $(jq -c . "$state")"
+[ "$(jq -r '.phase' "$state")" = "reserved" ] ||
+    fail "re-reserve did not move the state back to reserved: $(jq -c . "$state")"
+
+echo "==> a same-second prior trigger counts when its id precedes the attached trigger's (harmon-devkit#1014 ruling 3)"
+trigger_id=134
+request_time='2026-07-31T08:02:00Z'
+write_defaults
+rm -f "$state"
+printf '%s\n' '2026-07-31T08:00:00Z' >"${fixtures}/head-authored-at"
+printf '%s\n' '2026-07-31T08:01:00Z' >"${fixtures}/head-committed-at"
+jq -cn \
+    --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {
+        id:133,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T08:02:00Z"
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq '.reserved_at = "2026-07-31T08:01:30Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+[ "$(jq -r '.requires_full_window' "$state")" = true ] ||
+    fail "a same-second prior trigger with a lower id must enable the full-window rule: $(jq -c . "$state")"
+[ "$(jq -r '.previous_trigger_comment_id' "$state")" = 133 ] ||
+    fail "a same-second prior trigger with a lower id was not recorded: $(jq -c . "$state")"
+
+echo "==> a cross-surface same-second tie is indeterminate, not id-tie-broken (harmon-devkit#1014 ruling 4)"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+      id:140,user:{id:$id,login:$login},
+      submitted_at:"2026-07-31T08:05:00Z",commit_id:$head,
+      body:"Codex Review: Didn\u0027t find any major issues."
+    }]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+      id:141,user:{id:$id,login:$login},
+      created_at:"2026-07-31T08:05:00Z",
+      body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+    }]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 2 indeterminate
+
+echo "==> a newer adjudicated empty-body review is not blocked by an older clean review (harmon-devkit#1014 ruling 5)"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[
+      {
+        id:119,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:02Z",commit_id:$head,
+        body:"Codex Review: Didn\u0027t find any major issues."
+      },
+      {
+        id:120,user:{id:$id,login:$login},
+        submitted_at:"2026-07-31T08:00:04Z",commit_id:$head,body:""
+      }
+    ]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --argjson owner "$owner_id" \
+    --arg head "$head_sha" '
+    [[
+      {
+        id:88,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:03Z",updated_at:"2026-07-31T08:00:03Z",
+        commit_id:$head,original_commit_id:$head,pull_request_review_id:120,
+        body:"P2: consider hardening the retry path"
+      },
+      {
+        id:89,user:{id:$owner,login:"repo-owner"},
+        created_at:"2026-07-31T08:00:30Z",updated_at:"2026-07-31T08:00:30Z",
+        author_association:"OWNER",in_reply_to_id:88,
+        body:"Declined: the retry path is bounded by the attempt deadline."
+      }
+    ]]' >"${fixtures}/inline.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 0 clean
+assert_accepted review 120
+
+echo "==> a Reviewed-commit top-level comment without a numeric id fails closed (harmon-devkit#1014 ruling 6)"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+      user:{id:$id,login:$login},
+      created_at:"2026-07-31T08:05:00Z",
+      body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+    }]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 2 indeterminate
 
 echo "==> pending window uses the attached request clock"
 request_time='2026-07-31T08:01:01Z'

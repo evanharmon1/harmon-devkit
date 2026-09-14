@@ -408,7 +408,9 @@ read_state() {
         (.requires_full_window | type == "boolean")) and
       (.previous_trigger_comment_id == null or
         (.previous_trigger_comment_id | type == "number" and . > 0)) and
-      (.timeout_min == null or (.timeout_min | type == "number"))
+      (.timeout_min == null or (.timeout_min | type == "number")) and
+      (.boundary_source == null or
+        (.boundary_source == "check-run" or .boundary_source == "commit-date"))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
 
@@ -711,6 +713,7 @@ reserve)
     fi
     [ "$live_head" = "$head" ] || die "PR head changed before reservation"
 
+    replaced_trigger_comment_id=
     if [ -f "$state_file" ]; then
         read_state
         old_repo=$(jq -r '.repo' "$state_file")
@@ -726,6 +729,15 @@ reserve)
             [ "$old_attempt" = "1" ] && [ "$attempt" = "2" ] &&
                 [ "$old_phase" = "attached" ] ||
                 die "refusing an uncontrolled duplicate trigger for this head"
+            # harmon-devkit#1014 ruling 2: this reservation is about to
+            # overwrite an attached attempt-1 state that itself carried a
+            # trigger comment — that trigger is real same-head history, not
+            # nothing, so the fresh reserved payload below must carry it
+            # forward as `previous_trigger_comment_id` rather than the
+            # attempt-1 shape's hardcoded `null`. `attach` (above) still owns
+            # recomputing this field from live GitHub evidence once a new
+            # trigger is attached; this is only the value in between.
+            replaced_trigger_comment_id=$(jq -r '.trigger_comment_id // empty' "$state_file")
         else
             [ "$attempt" = "1" ] ||
                 die "a new head must begin at attempt 1"
@@ -825,6 +837,14 @@ reserve)
         rm -rf "$finder_tmpdir"
     fi
 
+    if [ -n "$replaced_trigger_comment_id" ]; then
+        valid_uint "$replaced_trigger_comment_id" ||
+            die "attempt 1 state has an invalid trigger id to carry forward"
+        payload_previous_trigger_comment_id=$replaced_trigger_comment_id
+    else
+        payload_previous_trigger_comment_id=null
+    fi
+
     payload=$(jq -cn \
         --arg repo "$repo" \
         --argjson pr "$pr" \
@@ -834,11 +854,12 @@ reserve)
         --argjson timeout_min "$payload_timeout_min" \
         --argjson settled "$carried_settled" \
         --argjson finder "$finder_payload" \
+        --argjson previous_trigger_comment_id "$payload_previous_trigger_comment_id" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
           trigger_comment_id:null,requested_at:null,
-          previous_trigger_comment_id:null,
+          previous_trigger_comment_id:$previous_trigger_comment_id,
           requires_full_window:false,
           timeout_min:$timeout_min,
           settled:$settled,
@@ -943,11 +964,22 @@ attach)
 
     # A reconstructed reservation can be newer than the trigger attached to
     # it even though an earlier trigger already exists for this head. Detect
-    # that history from one issue-comment read. Since trigger comments do not
-    # carry a head field, the earlier of the current commit's author and
-    # committer times is the conservative lower boundary; a distinct exact
-    # trigger at or after that boundary and before this attached trigger belongs
-    # to the same-head history.
+    # that history from one issue-comment read.
+    #
+    # The lower boundary for "same-head history" needs a timestamp GitHub
+    # itself assigned, not one the committer wrote. Trigger comments carry no
+    # head field, so harmon-devkit#1014's original version fell back to the
+    # current commit's author/committer dates as a "conservative" boundary —
+    # but those are client-controlled: a commit dated at or after a real
+    # prior trigger hides that trigger from reconstruction entirely. The
+    # head's earliest check-run `started_at` is server time — assigned the
+    # moment some check actually ran against this exact head — so it is
+    # preferred whenever at least one check run exists; `boundary_source`
+    # records which one was used (`check-run` or `commit-date`) so a later
+    # reader can tell which boundary a given reconstruction trusted. The
+    # commit-date pair is still fetched unconditionally: it remains the
+    # fallback for a head with no check runs at all (checks not yet
+    # configured, or not yet started).
     head_payload=$(run_gh api "repos/$state_repo/commits/$state_head") ||
         die "cannot fetch the current head commit for trigger reconstruction"
     printf '%s' "$head_payload" | jq -e --arg head "$state_head" \
@@ -967,9 +999,33 @@ attach)
     if [ "$head_authored_at" \< "$head_trigger_boundary" ]; then
         head_trigger_boundary=$head_authored_at
     fi
+    boundary_source=commit-date
+    check_run_pages=$(run_gh api --paginate --slurp \
+        "repos/$state_repo/commits/$state_head/check-runs?per_page=100") ||
+        die "cannot fetch check runs for trigger reconstruction"
+    earliest_check_run=$(printf '%s' "$check_run_pages" | jq -r '
+          [.[] | (.check_runs // [])[] | .started_at |
+            select(type == "string")] | sort | first // empty
+        ') || die "cannot classify check-run start times"
+    if [ -n "$earliest_check_run" ]; then
+        valid_time "$earliest_check_run" ||
+            die "GitHub returned a malformed check-run start time"
+        head_trigger_boundary=$earliest_check_run
+        boundary_source=check-run
+    fi
     issue_comments=$(run_gh api --paginate --slurp \
         "repos/$state_repo/issues/$state_pr/comments?per_page=100") ||
         die "cannot fetch PR comments for trigger reconstruction"
+    # A candidate created in the SAME SECOND as the attached trigger cannot be
+    # excluded by a strict `<` on `created_at` alone (harmon-devkit#1014
+    # ruling 3, Codex cycle-1 finding `4007296525`): GitHub timestamps these
+    # to whole seconds, so a genuinely prior trigger posted in the same
+    # second as the one just attached would otherwise be discarded. Comment
+    # ids are monotonically assigned within the same resource type, so a
+    # same-second candidate whose id precedes the attached trigger's id is
+    # still provably prior; this is a same-surface (comment-vs-comment) id
+    # comparison, unlike the cross-surface case in `check` below, which never
+    # tie-breaks by id.
     prior_trigger_candidates=$(printf '%s' "$issue_comments" | jq -c \
         --argjson attached "$trigger_id" \
         --arg expected "$expected_trigger_body" \
@@ -981,7 +1037,9 @@ attach)
             (((.body // "") |
               gsub("^[[:space:]]+|[[:space:]]+$"; "")) == $expected) and
             ((.created_at? | type) == "string") and
-            (.created_at >= $after) and (.created_at < $before)
+            (.created_at >= $after) and
+            ((.created_at < $before) or
+             ((.created_at == $before) and (.id < $attached)))
           )]
         ') || die "cannot classify prior review triggers"
 
@@ -1031,13 +1089,15 @@ attach)
         --argjson id "$trigger_id" \
         --arg requested_at "$requested_at" \
         --argjson previous_trigger_comment_id "$previous_trigger_comment_id" \
-        --argjson requires_full_window "$requires_full_window" '
+        --argjson requires_full_window "$requires_full_window" \
+        --arg boundary_source "$boundary_source" '
           .version = 2 |
           .phase = "attached" |
           .trigger_comment_id = $id |
           .requested_at = $requested_at |
           .previous_trigger_comment_id = $previous_trigger_comment_id |
-          .requires_full_window = $requires_full_window
+          .requires_full_window = $requires_full_window |
+          .boundary_source = $boundary_source
         ' "$state_file")
     write_state "$state_file" "$payload"
     release_state_lock
@@ -1727,6 +1787,17 @@ check)
     # acknowledgements have no bearing on the decision. An empty review is an
     # ordering result only when current-head inline findings attribute to its
     # exact ID; an unattributed shell remains pending evidence below.
+    #
+    # Each candidate is tagged with its `surface` (review/comment/reaction).
+    # Ids from different GitHub resource types are not chronologically
+    # comparable — a review id and a comment id are drawn from unrelated
+    # sequences — so when the newest timestamp is shared by candidates from
+    # more than one surface, that tie is unresolvable here and `tie:true`
+    # says so (harmon-devkit#1014 ruling 4, Codex cycle-1 finding
+    # `4007296539`); a same-surface tie is still broken by id, same as
+    # before. The bash `tie` check below acts on this only once every
+    # non-codex finder mode has already exited, so this flag never changes
+    # CodeRabbit/Copilot behavior.
     newest_result_record=$(jq -nr \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
@@ -1744,7 +1815,7 @@ check)
                 (.id as $rid | $attributed | index($rid) != null))) and
               ((.submitted_at? // "") > $requested) and
               ((.id? | type) == "number")
-            ) | {time: .submitted_at, id: .id}
+            ) | {time: .submitted_at, id: .id, surface: "review"}
           ] + [
             $comments[0][] | select(.user.id? == $id) |
             ((.body // "") |
@@ -1756,17 +1827,37 @@ check)
             select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
             select((.created_at? // "") > $requested) |
             select((.id? | type) == "number") |
-            {time: .created_at, id: .id}
+            {time: .created_at, id: .id, surface: "comment"}
           ] + [
             $reactions[0][] | select(
               .user.id? == $id and .content? == $success and
               ((.created_at? // "") >= $requested) and
               ((.id? | type) == "number")
-            ) | {time: .created_at, id: .id}
-          ]) | sort_by(.time, .id) | last // {time:"",id:""} |
-          [.time, (.id | tostring)] | @tsv
+            ) | {time: .created_at, id: .id, surface: "reaction"}
+          ]) as $candidates |
+          (if ($candidates | length) == 0 then {time:"",id:"",tie:false}
+           else
+             ($candidates | max_by(.time) | .time) as $max_time |
+             ($candidates | map(select(.time == $max_time))) as $top |
+             if ($top | map(.surface) | unique | length) > 1 then
+               {time: $max_time, id:"", tie:true}
+             else
+               ($top | sort_by(.id) | last) as $winner |
+               {time: $winner.time, id: $winner.id, tie:false}
+             end
+           end) |
+          [.time, (.id | tostring), (.tie | tostring)] | join(",")
         ')
-    IFS=$'\t' read -r newest_result_time newest_result_id <<<"$newest_result_record"
+    # `@tsv` (and any IFS made only of tab/space/newline) collapses a run of
+    # empty fields on read: bash read treats those three characters as IFS
+    # whitespace and strips/merges them regardless of how many are
+    # consecutive, which would silently reshuffle a row with an empty middle
+    # field (id:"" on the tie branch above) into the wrong variables. A comma
+    # is not in that class and cannot appear in any of these three fields (an
+    # ISO-8601 second, a bare integer, or true/false), so read below splits on
+    # it literally and every empty field stays exactly where it is.
+    IFS=, read -r newest_result_time newest_result_id newest_result_tie \
+        <<<"$newest_result_record"
 
     # --- Per-finder verdict classification (#804) ---
     # Non-codex verdict modes exit here. The codex clean-sentence classification
@@ -1848,6 +1939,48 @@ check)
             fi
         fi
         bounded_wait "no terminal current-head evidence from inline-comment-count finder yet"
+    fi
+
+    # Both non-codex finder modes above always exit internally (a terminal
+    # `emit`/`exit` on every branch, `bounded_wait` on falling through), so
+    # everything from here down runs only for the clean-sentence/codex path
+    # this issue scopes to.
+    #
+    # harmon-devkit#1014 ruling 4: act on the cross-surface tie flagged above.
+    if [ "$newest_result_tie" = "true" ]; then
+        emit indeterminate "the newest current-head result is tied across surfaces at $newest_result_time and cannot be ordered"
+        exit 2
+    fi
+
+    # harmon-devkit#1014 ruling 6 (Codex cycle-1 finding `4007296552`): a
+    # `Reviewed commit` top-level comment from the actor, naming this exact
+    # head, is candidate verdict evidence. The numeric-id filter both
+    # `newest_result_record` above and `comment_candidates` below apply
+    # exists so `.id` can be used as a tiebreak and as `accepted.id` — it is
+    # not a statement that a comment without one doesn't count. Silently
+    # dropping one let the checker fall back to older or absent evidence
+    # while real, unclassifiable evidence about this head sat right there;
+    # fail closed instead.
+    malformed_top_level=$(jq -r \
+        --argjson id "$actor_id" \
+        --arg head "$state_head" '
+          [.[] | select(.user.id? == $id) |
+            ((.body // "") |
+              try match(
+                "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
+                "i"
+              ).captures[0].string catch "") as $prefix |
+            select($prefix != "") |
+            select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
+            select((.id? | type) != "number")
+          ] | length
+        ' "$workdir/comments.json") || {
+        emit indeterminate "current-head conversation comments could not be scanned for malformed ids"
+        exit 2
+    }
+    if [ "$malformed_top_level" -gt 0 ]; then
+        emit indeterminate "a Reviewed-commit top-level comment from the finder has no usable numeric id"
+        exit 2
     fi
 
     # Classifying a current-head result is three-way, not binary, because
@@ -2256,7 +2389,43 @@ check)
         exit 0
     fi
 
-    if [ "$review_result" = "clean" ] || [ "$comment_result" = "clean" ]; then
+    # harmon-devkit#1014 ruling 5 (Codex cycle-1 finding `4007296546`):
+    # `review_result` above is computed only from reviews with a non-empty
+    # body — `verdict_class` needs body text — so an EMPTY-body review whose
+    # inline findings are fully adjudicated never appears in it at all, even
+    # though `newest_result_record` above already orders such a review ahead
+    # of an older non-empty one (see its own "ordering, not attempt
+    # attribution" comment). When that happens, `review_result` can read
+    # "clean" from the older review while `newest_result` correctly points at
+    # the newer, adjudicated one; forcing the clean branch below to match
+    # `newest_result` against the OLDER review's evidence then bounded-waits
+    # forever, because the older review can never become the newest one it
+    # already lost to. The same shape applies to a NON-empty review too: a
+    # findings review whose inline findings are fully adjudicated is
+    # reclassified to "settled" (not "clean") by `review_result_record`
+    # above, so it likewise falls out of `review_result` while still being
+    # able to win `newest_result` on the strength of its non-empty body.
+    # Detect either case directly — `newest_result` names a review that is a
+    # member of `$settled_reviews`, the inline-reply-adjudication set — and
+    # skip the clean branch so control reaches the existing
+    # `adjudicated_findings` branch below instead. This is a pure exclusion:
+    # it can only prevent entering the clean branch, never cause it to fire
+    # when it wouldn't have otherwise.
+    newest_is_settled_review=false
+    if [ "$adjudicated_findings" = "1" ]; then
+        newest_is_settled_review=$(jq -r \
+            --arg time "$newest_result_time" \
+            --arg id "$newest_result_id" \
+            --argjson settled "$settled_reviews" '
+              ([.[] | select(
+                ((.id? | type) == "number") and ((.id | tostring) == $id) and
+                ((.submitted_at? // "") == $time) and
+                (.id as $rid | ($settled | index($rid)) != null)
+              )] | length) > 0
+            ' "$workdir/reviews.json")
+    fi
+    if { [ "$review_result" = "clean" ] || [ "$comment_result" = "clean" ]; } &&
+        [ "$newest_is_settled_review" != "true" ]; then
         # The newest clean evidence must be NEWER than the dangling-shell
         # barrier above: an older clean result cannot vouch for a head whose
         # next review is already in flight.
