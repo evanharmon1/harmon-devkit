@@ -410,9 +410,9 @@ read_state() {
         (.previous_trigger_comment_id | type == "number" and . > 0)) and
       (.timeout_min == null or (.timeout_min | type == "number")) and
       (.boundary_source == null or
-        (.boundary_source == "check-run" or .boundary_source == "commit-date")) and
+        (.boundary_source == "check-suite" or .boundary_source == "commit-date")) and
       (.commit_date_boundary == null or (.commit_date_boundary | type == "string")) and
-      (.check_run_boundary == null or (.check_run_boundary | type == "string"))
+      (.check_suite_boundary == null or (.check_suite_boundary | type == "string"))
     ' "$state_file" >/dev/null || die "malformed state file: $state_file"
 }
 
@@ -582,6 +582,21 @@ codex_verdict_defs=$(
               gsub("^[[:space:]]+|[[:space:]]+$"; "") | ascii_downcase);
           def has_severity_marker:
             (body_text | ascii_downcase | test("\\bp[0-9]+\\b"));
+          # Integration remediation 1 (2026-09-14, Codex cloud review on
+          # `a5bc99a`, confirmed finding `4010207997`): a bare `type ==
+          # "number"` check on a provider-supplied id admits `0`, a negative
+          # number, and a fraction like `1.5` — none of them a real GitHub
+          # object id, all of them silently usable as the accepted evidence's
+          # `accepted.id` once inside `newest_result_record`/
+          # `comment_candidates`. Mirrors `valid_uint`'s bash-level shape
+          # (positive, integral) inside jq. Deliberately not `% 1 == 0` as
+          # the fractional-part test: jq's `%` truncates BOTH operands to
+          # integers before dividing (`1.5 % 1` is `0`, not `0.5`), so it
+          # would silently accept 1.5 as "integral" — comparing against
+          # `floor` does not have that trap. `> 0` rejects zero and negative
+          # values the same way `valid_uint`'s `[1-9][0-9]*` anchor does.
+          def is_positive_integer:
+            (type == "number") and (. == (. | floor)) and (. > 0);
           # Factored out of `rest_is_boilerplate` so the carrier defs below can
           # reuse the exact same removal and the exact same metadata pattern
           # instead of restating them. Same regexes, same flags, same order —
@@ -975,34 +990,37 @@ attach)
     # but those are client-controlled: a commit dated at or after a real
     # prior trigger hides that trigger from reconstruction entirely.
     #
-    # The head's earliest check-run `started_at` is server time, un-spoofable
-    # by the committer — but challenge round 1 (2026-09-14, confirmed
-    # harmon-devkit#1014 finding challenge-r1-codex-adversarial-1) found that
-    # PREFERRING it outright whenever any check run exists — replacing the
-    # commit-date boundary rather than combining the two — reopens the exact
-    # regression class this boundary exists to close, via ordinary CI timing
-    # rather than a spoofed date: (1) a trusted trigger posted immediately
-    # after push, before CI has started any check, lands the earliest
-    # check-run start AFTER that real trigger; (2) a rerun of an existing
-    # check — GitHub's `GET .../check-runs` defaults to `filter=latest`,
-    # which drops the original (earlier) run's `started_at` once that check
-    # is rerun, moving the earliest run this code can see later than the
-    # truth.
+    # The head's earliest check-suite `created_at` is server time,
+    # un-spoofable by the committer — but challenge round 1 (2026-09-14,
+    # confirmed harmon-devkit#1014 finding challenge-r1-codex-adversarial-1)
+    # found that PREFERRING a check-run's `started_at` outright whenever any
+    # check run exists — replacing the commit-date boundary rather than
+    # combining the two — reopens the exact regression class this boundary
+    # exists to close, via ordinary CI timing rather than a spoofed date.
+    # Fixed with `min(commit-date boundary, earliest check-run started_at)`.
     #
-    # The fix is `min(commit-date boundary, earliest check-run started_at)`,
-    # requesting `filter=all` so a rerun cannot hide the original run's
-    # earlier start. This is provably at least as safe as either boundary
-    # alone: a check run's `started_at` can never predate the commit's own
-    # author/committer dates in any legitimate sequence (CI cannot check a
-    # commit before that commit exists and was pushed), so in the ordinary,
-    # unspoofed case `min()` always equals the commit-date boundary — today's
-    # behavior, unchanged. It defers to the check-run boundary only when the
-    # commit date has been inflated past reality, which is exactly the
-    # original adversarial case this boundary exists to close.
-    # `commit_date_boundary`/`check_run_boundary` name both compared inputs in
-    # state (the latter `null` when no check run exists), and `boundary_source`
-    # names only which one actually won the comparison — a later reader can
-    # audit the comparison itself rather than trust a single opaque label.
+    # Integration remediation 1 (2026-09-14, Codex cloud review on `a5bc99a`,
+    # confirmed finding `4010207979`) found a COMBINED case that `min()` over
+    # check-run `started_at` still does not close: when the commit dates are
+    # ALSO future-dated (spoofed later than reality) AND a trusted trigger is
+    # posted before CI has started its first RUN, `min()` still picks the
+    # check-run boundary (since it is earlier than the inflated commit
+    # dates) — but that boundary is itself later than the genuine trigger,
+    # because a check RUN's `started_at` carries real CI-queue/startup
+    # latency on top of when GitHub actually received the push. A check
+    # SUITE (the envelope check runs belong to) is created essentially the
+    # instant GitHub processes the push, before any run inside it has had a
+    # chance to start — a tighter, still-unspoofable proxy for "when this
+    # commit became the head" than any individual run's start time. Using
+    # the earliest check-suite `created_at` instead of the earliest
+    # check-run `started_at` closes this combined gap while keeping the same
+    # `min()` structure (still defeats a plain commit-date spoof) and the
+    # same fallback (commit dates alone, when no check suite exists at all).
+    # `commit_date_boundary`/`check_suite_boundary` name both compared inputs
+    # in state (the latter `null` when no check suite exists), and
+    # `boundary_source` names only which one actually won the comparison — a
+    # later reader can audit the comparison itself rather than trust a
+    # single opaque label.
     head_payload=$(run_gh api "repos/$state_repo/commits/$state_head") ||
         die "cannot fetch the current head commit for trigger reconstruction"
     printf '%s' "$head_payload" | jq -e --arg head "$state_head" \
@@ -1022,23 +1040,23 @@ attach)
     if [ "$head_authored_at" \< "$commit_date_boundary" ]; then
         commit_date_boundary=$head_authored_at
     fi
-    check_run_pages=$(run_gh api --paginate --slurp \
-        "repos/$state_repo/commits/$state_head/check-runs?filter=all&per_page=100") ||
-        die "cannot fetch check runs for trigger reconstruction"
-    check_run_boundary=$(printf '%s' "$check_run_pages" | jq -r '
-          [.[] | (.check_runs // [])[] | .started_at |
+    check_suite_pages=$(run_gh api --paginate --slurp \
+        "repos/$state_repo/commits/$state_head/check-suites?per_page=100") ||
+        die "cannot fetch check suites for trigger reconstruction"
+    check_suite_boundary=$(printf '%s' "$check_suite_pages" | jq -r '
+          [.[] | (.check_suites // [])[] | .created_at |
             select(type == "string")] | sort | first // empty
-        ') || die "cannot classify check-run start times"
-    if [ -n "$check_run_boundary" ]; then
-        valid_time "$check_run_boundary" ||
-            die "GitHub returned a malformed check-run start time"
+        ') || die "cannot classify check-suite creation times"
+    if [ -n "$check_suite_boundary" ]; then
+        valid_time "$check_suite_boundary" ||
+            die "GitHub returned a malformed check-suite creation time"
     fi
     head_trigger_boundary=$commit_date_boundary
     boundary_source=commit-date
-    if [ -n "$check_run_boundary" ] &&
-        [ "$check_run_boundary" \< "$head_trigger_boundary" ]; then
-        head_trigger_boundary=$check_run_boundary
-        boundary_source=check-run
+    if [ -n "$check_suite_boundary" ] &&
+        [ "$check_suite_boundary" \< "$head_trigger_boundary" ]; then
+        head_trigger_boundary=$check_suite_boundary
+        boundary_source=check-suite
     fi
     issue_comments=$(run_gh api --paginate --slurp \
         "repos/$state_repo/issues/$state_pr/comments?per_page=100") ||
@@ -1119,7 +1137,7 @@ attach)
         --argjson requires_full_window "$requires_full_window" \
         --arg boundary_source "$boundary_source" \
         --arg commit_date_boundary "$commit_date_boundary" \
-        --arg check_run_boundary "$check_run_boundary" '
+        --arg check_suite_boundary "$check_suite_boundary" '
           .version = 2 |
           .phase = "attached" |
           .trigger_comment_id = $id |
@@ -1128,8 +1146,8 @@ attach)
           .requires_full_window = $requires_full_window |
           .boundary_source = $boundary_source |
           .commit_date_boundary = $commit_date_boundary |
-          .check_run_boundary = (if $check_run_boundary == ""
-            then null else $check_run_boundary end)
+          .check_suite_boundary = (if $check_suite_boundary == ""
+            then null else $check_suite_boundary end)
         ' "$state_file")
     write_state "$state_file" "$payload"
     release_state_lock
@@ -1830,15 +1848,55 @@ check)
     # before. The bash `tie` check below acts on this only once every
     # non-codex finder mode has already exited, so this flag never changes
     # CodeRabbit/Copilot behavior.
+    #
+    # Integration remediation 1 (2026-09-14, Codex cloud review on `a5bc99a`,
+    # confirmed finding `4010207991`) found two compounding problems with the
+    # tie exit as it stood: (1) a `settle`d review/comment is never excluded
+    # from tie consideration, so once a human disposes of the finding behind
+    # a cross-surface tie, the exact same tie recurs on every later check —
+    # an immutable indeterminate result the settlement can never clear,
+    # reopening the #275 deadlock class this file works hard everywhere else
+    # to avoid; (2) a tie where one side carries an actual badged finding
+    # exited indeterminate before the review/comment classifiers below ever
+    # got a chance to surface it as `findings`, discarding a concrete result
+    # in favor of a shrug.
+    #
+    # Fixed by tagging each candidate `disposed` (its id is in
+    # `disposed_reviews`/`disposed_comments`) rather than dropping it from
+    # the array outright: a disposed candidate is answered, not a live
+    # contender for "which surface is newest," but it must still be able to
+    # BE `newest_result` on its own — the pre-existing `disposed_applied`
+    # terminal-clean exit further below depends on a solo disposed finding
+    # (nothing else posted on this head) still resolving to its own
+    # time/id, exactly as before this fix. So disposed candidates are
+    # excluded only from the *diversity* check that decides whether a tie is
+    # genuinely live (`$top_live`), never from the candidate pool itself:
+    # when nothing live ties with it, a disposed candidate (or several
+    # disposed candidates sharing one surface) still resolves normally,
+    # same-surface id-tiebreak included; when it ties with something live
+    # from a different surface, only the live side counts toward "is this
+    # ambiguous," and an `actionable` (severity-badged) live candidate is
+    # preferred over declaring an unresolvable tie — findings dominate an
+    # ambiguous ordering the same way they already dominate everywhere else
+    # in this file. This flag does not itself have to name the single
+    # correct finding — not declaring `tie:true` is enough for control to
+    # reach the independent `review_result`/`comment_result` classifiers
+    # below, which detect and cite the real finding on their own regardless
+    # of what `newest_result` pointed at. A live tie with no actionable side
+    # is still genuinely unresolvable and still exits indeterminate exactly
+    # as before.
     newest_result_record=$(jq -nr \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
         --arg requested "$state_requested" \
         --arg success "$finder_success_reaction" \
         --argjson attributed "$attributed_reviews" \
+        --argjson disposed_reviews "$disposed_reviews" \
+        --argjson disposed_comments "$disposed_comments" \
         --slurpfile reviews "$workdir/reviews.json" \
         --slurpfile comments "$workdir/comments.json" \
-        --slurpfile reactions "$workdir/reactions.json" '
+        --slurpfile reactions "$workdir/reactions.json" \
+        "$codex_verdict_defs"'
           ([
             $reviews[0][] | select(
               .user.id? == $id and .commit_id? == $head and
@@ -1847,7 +1905,9 @@ check)
                 (.id as $rid | $attributed | index($rid) != null))) and
               ((.submitted_at? // "") > $requested) and
               ((.id? | type) == "number")
-            ) | {time: .submitted_at, id: .id, surface: "review"}
+            ) | {time: .submitted_at, id: .id, surface: "review",
+                 actionable: has_severity_marker,
+                 disposed: ((.id as $rid | $disposed_reviews | index($rid)) != null)}
           ] + [
             $comments[0][] | select(.user.id? == $id) |
             ((.body // "") |
@@ -1858,23 +1918,37 @@ check)
             select($prefix != "") |
             select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
             select((.created_at? // "") > $requested) |
-            select((.id? | type) == "number") |
-            {time: .created_at, id: .id, surface: "comment"}
+            select(.id? | is_positive_integer) |
+            {time: .created_at, id: .id, surface: "comment",
+             actionable: has_severity_marker,
+             disposed: ((.id as $cid | $disposed_comments | index($cid)) != null)}
           ] + [
             $reactions[0][] | select(
               .user.id? == $id and .content? == $success and
               ((.created_at? // "") >= $requested) and
               ((.id? | type) == "number")
-            ) | {time: .created_at, id: .id, surface: "reaction"}
+            ) | {time: .created_at, id: .id, surface: "reaction",
+                 actionable: false, disposed: false}
           ]) as $candidates |
           (if ($candidates | length) == 0 then {time:"",id:"",tie:false}
            else
              ($candidates | max_by(.time) | .time) as $max_time |
              ($candidates | map(select(.time == $max_time))) as $top |
-             if ($top | map(.surface) | unique | length) > 1 then
-               {time: $max_time, id:"", tie:true}
+             ($top | map(select(.disposed | not))) as $top_live |
+             if ($top_live | length) == 0 then
+               ($top | sort_by(.surface, .id) | last) as $winner |
+               {time: $winner.time, id: $winner.id, tie:false}
+             elif ($top_live | map(.surface) | unique | length) > 1 then
+               ($top_live | map(select(.actionable))) as $actionable_top |
+               if ($actionable_top | length) > 0 then
+                 ($actionable_top | sort_by(.surface, .id) | last) as $winner |
+                 {time: $winner.time, id: $winner.id, tie: false}
+               else
+                 {time: $max_time, id:"", tie:true}
+               end
              else
-               ($top | sort_by(.id) | last) as $winner |
+               ($top_live[0].surface) as $live_surface |
+               ($top | map(select(.surface == $live_surface)) | sort_by(.id) | last) as $winner |
                {time: $winner.time, id: $winner.id, tie:false}
              end
            end) |
@@ -2293,7 +2367,7 @@ check)
               "i"
             ).captures[0].string catch "") as $prefix |
           select($prefix != "") |
-          select((.id? | type) == "number") |
+          select(.id? | is_positive_integer) |
           [
             $prefix,
             verdict_class,

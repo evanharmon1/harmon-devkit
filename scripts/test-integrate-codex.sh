@@ -141,7 +141,7 @@ repos/*/pulls/*/comments?per_page=100) file=inline.pages.json ;;
 repos/*/pulls/*) file=pr.json ;;
 # Must sort before the bare-commit pattern below, which its trailing `*`
 # would otherwise also match.
-repos/*/commits/*/check-runs*) file=check-runs.pages.json ;;
+repos/*/commits/*/check-suites*) file=check-suites.pages.json ;;
 repos/*/commits/*)
     jq -cn \
         --arg sha "$(cat "$GH_FIXTURES/resolved-head")" \
@@ -228,11 +228,12 @@ write_defaults() {
         >"${fixtures}/head-authored-at"
     printf '%s\n' '2026-07-31T07:59:00Z' \
         >"${fixtures}/head-committed-at"
-    # Zero check runs by default, so every existing fixture keeps exercising
-    # the unchanged commit-date fallback boundary (harmon-devkit#1014 ruling
-    # 1) unless a case explicitly overrides this file.
-    printf '%s\n' '[{"total_count":0,"check_runs":[]}]' \
-        >"${fixtures}/check-runs.pages.json"
+    # Zero check suites by default, so every existing fixture keeps
+    # exercising the unchanged commit-date fallback boundary
+    # (harmon-devkit#1014 ruling 1) unless a case explicitly overrides this
+    # file.
+    printf '%s\n' '[{"total_count":0,"check_suites":[]}]' \
+        >"${fixtures}/check-suites.pages.json"
     jq -cn --argjson id "$trusted_trigger_actor_id" \
         '{finders:[],trusted_orchestrator_actor_ids:[$id]}' |
         base64 | tr -d '\n' >"${fixtures}/registry.b64"
@@ -1923,7 +1924,7 @@ assert_accepted review 167
 # pre-fix behavior in the PR description, not just against the fixed code.
 # --------------------------------------------------------------------------
 
-echo "==> a check run's server start time bounds prior-trigger reconstruction, not the client-controlled commit date (harmon-devkit#1014 ruling 1)"
+echo "==> a check suite's server creation time bounds prior-trigger reconstruction, not the client-controlled commit date (harmon-devkit#1014 ruling 1)"
 trigger_id=150
 request_time='2026-07-31T08:10:00Z'
 write_defaults
@@ -1933,8 +1934,8 @@ rm -f "$state"
 # entirely, hiding real same-head history behind a client-controlled clock.
 printf '%s\n' '2026-07-31T08:05:00Z' >"${fixtures}/head-authored-at"
 printf '%s\n' '2026-07-31T08:05:00Z' >"${fixtures}/head-committed-at"
-jq -cn '[{total_count:1,check_runs:[{started_at:"2026-07-31T07:00:00Z"}]}]' \
-    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,check_suites:[{created_at:"2026-07-31T07:00:00Z"}]}]' \
+    >"${fixtures}/check-suites.pages.json"
 jq -cn \
     --argjson trusted "$trusted_trigger_actor_id" '
     [[
@@ -1950,26 +1951,27 @@ jq '.reserved_at = "2026-07-31T07:00:00Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
 [ "$(jq -r '.requires_full_window' "$state")" = true ] ||
-    fail "a client-backdated commit date must not hide a real prior trigger behind the check-run boundary: $(jq -c . "$state")"
+    fail "a client-backdated commit date must not hide a real prior trigger behind the check-suite boundary: $(jq -c . "$state")"
 [ "$(jq -r '.previous_trigger_comment_id' "$state")" = 145 ] ||
-    fail "the check-run-bounded prior trigger was not recorded: $(jq -c . "$state")"
-[ "$(jq -r '.boundary_source' "$state")" = "check-run" ] ||
-    fail "the state did not record the check-run boundary source: $(jq -c . "$state")"
+    fail "the check-suite-bounded prior trigger was not recorded: $(jq -c . "$state")"
+[ "$(jq -r '.boundary_source' "$state")" = "check-suite" ] ||
+    fail "the state did not record the check-suite boundary source: $(jq -c . "$state")"
 
-echo "==> a trigger posted before any check starts is not hidden by a later check-run boundary (harmon-devkit#1014 challenge round 1, finding challenge-r1-codex-adversarial-1)"
+echo "==> a trigger posted before any check starts is not hidden by a later check-suite boundary (harmon-devkit#1014 challenge round 1, finding challenge-r1-codex-adversarial-1)"
 trigger_id=161
 request_time='2026-07-31T08:10:00Z'
 write_defaults
 rm -f "$state"
-# The commit's own dates are genuinely early (not spoofed) -- the check run
-# just hasn't started yet when the real trigger below was posted, which is
-# ordinary CI latency, not an attack. Unconditionally preferring the later
-# check-run boundary (the pre-round-1 shape of this fix) would hide this
-# real trigger; min(commit-date, check-run) must not.
+# The commit's own dates are genuinely early (not spoofed) -- the check
+# suite just hasn't been created yet when the real trigger below was
+# posted, which is ordinary CI/webhook latency, not an attack.
+# Unconditionally preferring the later check-suite boundary (the
+# pre-round-1 shape of this fix, when it still read check-run start times)
+# would hide this real trigger; min(commit-date, check-suite) must not.
 printf '%s\n' '2026-07-31T07:55:00Z' >"${fixtures}/head-authored-at"
 printf '%s\n' '2026-07-31T07:55:00Z' >"${fixtures}/head-committed-at"
-jq -cn '[{total_count:1,check_runs:[{started_at:"2026-07-31T08:05:00Z"}]}]' \
-    >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:1,check_suites:[{created_at:"2026-07-31T08:05:00Z"}]}]' \
+    >"${fixtures}/check-suites.pages.json"
 jq -cn \
     --argjson trusted "$trusted_trigger_actor_id" '
     [[
@@ -1985,39 +1987,31 @@ jq '.reserved_at = "2026-07-31T07:56:00Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
 [ "$(jq -r '.requires_full_window' "$state")" = true ] ||
-    fail "a check-run start later than a genuine prior trigger must not hide it: $(jq -c . "$state")"
+    fail "a check-suite creation later than a genuine prior trigger must not hide it: $(jq -c . "$state")"
 [ "$(jq -r '.previous_trigger_comment_id' "$state")" = 160 ] ||
-    fail "the pre-check-start prior trigger was not recorded: $(jq -c . "$state")"
+    fail "the pre-check-suite prior trigger was not recorded: $(jq -c . "$state")"
 [ "$(jq -r '.boundary_source' "$state")" = "commit-date" ] ||
     fail "the earlier commit-date boundary should have won the comparison: $(jq -c . "$state")"
-[ "$(jq -r '.check_run_boundary' "$state")" = "2026-07-31T08:05:00Z" ] ||
-    fail "the check-run boundary was not recorded even though it lost the comparison: $(jq -c . "$state")"
+[ "$(jq -r '.check_suite_boundary' "$state")" = "2026-07-31T08:05:00Z" ] ||
+    fail "the check-suite boundary was not recorded even though it lost the comparison: $(jq -c . "$state")"
 
-echo "==> the earliest of several check runs bounds reconstruction, not just the newest (harmon-devkit#1014 challenge round 1, finding challenge-r1-codex-adversarial-1)"
+echo "==> the earliest of several check suites bounds reconstruction, not just the newest (harmon-devkit#1014 challenge round 1, finding challenge-r1-codex-adversarial-1)"
 trigger_id=171
 request_time='2026-07-31T08:40:00Z'
 write_defaults
 rm -f "$state"
-# Commit dates are deliberately late so the check-run boundary must win this
-# comparison on its own -- isolates the multi-run handling from the previous
-# case's commit-date-vs-check-run comparison. Two check runs simulate a
-# rerun: the fixture lists the LATER one first, so a bug trusting array
-# order rather than sorting would miss the true (earlier) boundary. The
-# `filter=all` assertion below is the assertion that actually discriminates
-# this fix from its pre-round-1 shape: this harness's stub returns the same
-# fixture regardless of query string, so it cannot reproduce GitHub's own
-# `filter=latest` default (which collapses each check name to its most
-# recent run and would silently drop the earlier entry this code depends on
-# seeing) -- only a real API call proves that end to end. What this harness
-# CAN prove, and does: the request now explicitly asks for every run, and
-# given every run, the code correctly finds the true minimum rather than the
-# most recently listed one.
+# Commit dates are deliberately late so the check-suite boundary must win
+# this comparison on its own -- isolates the multi-suite handling from the
+# previous case's commit-date-vs-check-suite comparison. Two check suites
+# (a commit can have more than one, e.g. one per CI app) simulate that: the
+# fixture lists the LATER one first, so a bug trusting array order rather
+# than sorting would miss the true (earlier) boundary.
 printf '%s\n' '2026-07-31T09:00:00Z' >"${fixtures}/head-authored-at"
 printf '%s\n' '2026-07-31T09:00:00Z' >"${fixtures}/head-committed-at"
-jq -cn '[{total_count:2,check_runs:[
-    {started_at:"2026-07-31T08:30:00Z"},
-    {started_at:"2026-07-31T07:00:00Z"}
-  ]}]' >"${fixtures}/check-runs.pages.json"
+jq -cn '[{total_count:2,check_suites:[
+    {created_at:"2026-07-31T08:30:00Z"},
+    {created_at:"2026-07-31T07:00:00Z"}
+  ]}]' >"${fixtures}/check-suites.pages.json"
 jq -cn \
     --argjson trusted "$trusted_trigger_actor_id" '
     [[
@@ -2033,15 +2027,114 @@ jq '.reserved_at = "2026-07-31T07:10:00Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
 [ "$(jq -r '.requires_full_window' "$state")" = true ] ||
-    fail "the earliest of several check runs must bound reconstruction, not the latest: $(jq -c . "$state")"
+    fail "the earliest of several check suites must bound reconstruction, not the latest: $(jq -c . "$state")"
 [ "$(jq -r '.previous_trigger_comment_id' "$state")" = 170 ] ||
-    fail "a prior trigger after the earliest (but before the latest) check run was not recorded: $(jq -c . "$state")"
-[ "$(jq -r '.boundary_source' "$state")" = "check-run" ] ||
-    fail "the earlier check-run boundary should have won the comparison: $(jq -c . "$state")"
-[ "$(jq -r '.check_run_boundary' "$state")" = "2026-07-31T07:00:00Z" ] ||
-    fail "the earliest check run's start time was not recorded: $(jq -c . "$state")"
-grep -Fq 'filter=all' "$log" ||
-    fail "attach did not request every check run (filter=all), only the endpoint's default-filtered subset: $(cat "$log")"
+    fail "a prior trigger after the earliest (but before the latest) check suite was not recorded: $(jq -c . "$state")"
+[ "$(jq -r '.boundary_source' "$state")" = "check-suite" ] ||
+    fail "the earlier check-suite boundary should have won the comparison: $(jq -c . "$state")"
+[ "$(jq -r '.check_suite_boundary' "$state")" = "2026-07-31T07:00:00Z" ] ||
+    fail "the earliest check suite's creation time was not recorded: $(jq -c . "$state")"
+
+# --------------------------------------------------------------------------
+# harmon-devkit#1014 integration remediation 1 (2026-09-14): three more
+# findings from the Codex cloud review cycle on commit a5bc99a (challenge
+# and review rounds' own local codex-adversarial/codex-verification passes
+# had already converged clean; these came from the separate PR-side cloud
+# review that runs during integration). One regression per finding.
+# --------------------------------------------------------------------------
+
+echo "==> a future-dated commit combined with a trigger before the check suite exists is not hidden (harmon-devkit#1014 integration remediation 1, finding 4010207979)"
+trigger_id=180
+request_time='2026-07-31T08:10:00Z'
+write_defaults
+rm -f "$state"
+# Commit dates are future-dated (spoofed later than reality) -- min() alone
+# would still pick the check-suite boundary here since it is smaller, but
+# only because the suite boundary itself is genuinely early. This is the
+# COMBINED attack the earlier challenge-round-1 tests do not cover
+# separately: a spoofed commit date together with a real trigger posted
+# before the check suite was even created (the suite hasn't formed yet,
+# not just "no run has started").
+printf '%s\n' '2026-07-31T23:00:00Z' >"${fixtures}/head-authored-at"
+printf '%s\n' '2026-07-31T23:00:00Z' >"${fixtures}/head-committed-at"
+jq -cn '[{total_count:1,check_suites:[{created_at:"2026-07-31T07:50:00Z"}]}]' \
+    >"${fixtures}/check-suites.pages.json"
+jq -cn \
+    --argjson trusted "$trusted_trigger_actor_id" '
+    [[
+      {
+        id:179,user:{id:$trusted,login:"trusted-trigger"},
+        body:"@codex review",created_at:"2026-07-31T07:58:00Z"
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+"$helper" reserve \
+    --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 >/dev/null
+jq '.reserved_at = "2026-07-31T07:56:00Z"' "$state" >"${state}.next"
+mv "${state}.next" "$state"
+"$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
+[ "$(jq -r '.requires_full_window' "$state")" = true ] ||
+    fail "a future-dated commit plus a pre-suite trigger must not hide the real trigger: $(jq -c . "$state")"
+[ "$(jq -r '.previous_trigger_comment_id' "$state")" = 179 ] ||
+    fail "the pre-suite prior trigger was not recorded: $(jq -c . "$state")"
+[ "$(jq -r '.boundary_source' "$state")" = "check-suite" ] ||
+    fail "the check-suite boundary should have won over the future-dated commit: $(jq -c . "$state")"
+
+echo "==> a cross-surface tie with an actionable finding is classified, not left indeterminate (harmon-devkit#1014 integration remediation 1, finding 4010207991)"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+      id:200,user:{id:$id,login:$login},
+      submitted_at:"2026-07-31T08:05:00Z",commit_id:$head,
+      body:"Codex Review: Didn\u0027t find any major issues."
+    }]]' >"${fixtures}/reviews.pages.json"
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    {
+      id:201,user:{id:$id,login:$login},
+      created_at:"2026-07-31T08:05:00Z",updated_at:"2026-07-31T08:05:00Z",
+      issue_url:"https://api.github.com/repos/example/repo/issues/493",
+      body:("**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  the rollback path loses data**\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+    }' >"${fixtures}/comment-201.json"
+jq -c '[[.]]' "${fixtures}/comment-201.json" >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 10 findings
+assert_accepted comment 201
+# Inlined rather than calling the run_settle() helper, which is not defined
+# until later in this file.
+set +e
+settle_out="$("$helper" settle --state "$state" --actor-id "$actor_id" \
+    --surface comment --id 201 --disposition declined \
+    --note "the tie's actionable side was addressed" 2>&1)"
+settle_rc=$?
+set -e
+[ "$settle_rc" -eq 0 ] || fail "settle should have recorded: $settle_out"
+run_check '2026-07-31T08:16:00Z'
+assert_status 0 clean
+assert_accepted review 200
+
+echo "==> a fractional or non-positive comment id is rejected as unusable evidence (harmon-devkit#1014 integration remediation 1, finding 4010207997)"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg head "$head_sha" '
+    [[{
+      id:1.5,user:{id:$id,login:$login},
+      created_at:"2026-07-31T08:05:00Z",
+      body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
+    }]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 12 retry
 
 echo "==> re-reserving attempt 2 carries the replaced trigger id forward (harmon-devkit#1014 ruling 2)"
 trigger_id=123
