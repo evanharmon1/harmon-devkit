@@ -8,6 +8,22 @@
 # writes nothing. --execute additionally requires GROOM_EXECUTE=1 in the
 # environment, same contract as groom-apply.sh and triage-apply.sh.
 #
+# PREFLIGHT, before any write (challenge round 1 finding 7): every
+# --supersedes target's live bot-ownership check, and — in --execute mode —
+# every --blocked-by target's numeric id resolution, all run before the
+# decision comment is posted. Posting the comment first and only then
+# discovering a --supersedes target is bot-owned left the comment posted (and
+# any earlier --supersedes sibling already closed) with no way to undo either
+# once the run died — exactly the partial-application failure this script's
+# own bot-ownership rule is meant to guard against.
+#
+# --outcomes FILE (optional) appends one JSON Lines record per applied write:
+# {"issue":<decided-issue>,"op":"decision","status":"DECIDED <YYYY-MM-DD>","at":"<UTC>"}
+# for the decided issue, and {"issue":<sibling>,"op":"close","status":"DONE",
+# "at":"<UTC>"} for each closed --supersedes sibling — for groom-report.sh
+# render --outcomes to merge into each row's `status` column (finding 8).
+# Blocked-by edges are not disposition rows and get no outcome record.
+#
 # Blocked-by edges use GitHub's issue-dependency REST endpoint, id-not-number
 # (the same call ai/skills/universal/breakdown/SKILL.md §7 documents — no
 # reusable helper script exists there to call instead):
@@ -16,15 +32,18 @@
 #
 # Usage:
 #   groom-decide.sh --repo owner/repo --issue N --decision-file PATH
-#                    [--supersedes M]... [--blocked-by K]... [--execute]
+#                    [--supersedes M]... [--blocked-by K]... [--outcomes PATH]
+#                    [--execute]
 #
 # Exit: 0 = dry-run resolved or every write applied, 1 = a write failed,
-#       2 = usage/environment error.
+#       2 = usage/environment error, 4 = refused (a --supersedes target is
+#       bot-authored).
 set -euo pipefail
 
 usage() {
     echo "Usage: $0 --repo owner/repo --issue N --decision-file PATH" >&2
-    echo "          [--supersedes M]... [--blocked-by K]... [--execute]" >&2
+    echo "          [--supersedes M]... [--blocked-by K]... [--outcomes PATH]" >&2
+    echo "          [--execute]" >&2
     exit 2
 }
 
@@ -50,10 +69,20 @@ guard_repo_binding() {
     fi
 }
 
+write_outcome() {
+    local outcomes="$1" issue="$2" op="$3" status="$4"
+    [ -n "$outcomes" ] || return 0
+    local at
+    at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    jq -nc --argjson issue "$issue" --arg op "$op" --arg status "$status" --arg at "$at" \
+        '{issue: $issue, op: $op, status: $status, at: $at}' >>"$outcomes"
+}
+
 repo=""
 issue=""
 decision_file=""
 execute=0
+outcomes=""
 supersedes=()
 blocked_by=()
 while [ "$#" -gt 0 ]; do
@@ -83,6 +112,11 @@ while [ "$#" -gt 0 ]; do
         blocked_by+=("$2")
         shift 2
         ;;
+    --outcomes)
+        [ "$#" -ge 2 ] || usage
+        outcomes="$2"
+        shift 2
+        ;;
     --execute) execute=1 && shift ;;
     *) usage ;;
     esac
@@ -100,6 +134,33 @@ if [ "$execute" -eq 1 ]; then
             "(set by the task groom wrapper for supervised runs)"
 fi
 
+# ── Preflight (finding 7): resolve everything that can fail BEFORE the first
+# write. A maintainer decision names issue numbers, not authors, and a bot
+# (Renovate/Dependabot) routinely files near-duplicates that would otherwise
+# fit a "superseded by" close — SKILL.md's contract is unqualified that a
+# bot-authored issue is never closed by groom, whatever the write path.
+declare -A blocked_by_id=()
+for m in "${supersedes[@]+"${supersedes[@]}"}"; do
+    author_json="$(gh issue view "$m" --repo "$repo" --json author)" ||
+        die 2 "could not read the author of $repo#$m"
+    if jq -e '
+        (.author.type == "Bot") or (.author.is_bot == true)
+        or (.author.login == "app/renovate")
+        or ((.author.login // "") | test("^app/|\\[bot\\]$"))
+      ' <<<"$author_json" >/dev/null; then
+        die 4 "refused: $repo#$m is bot-authored — groom never closes a bot-owned issue"
+    fi
+done
+if [ "$execute" -eq 1 ]; then
+    for k in "${blocked_by[@]+"${blocked_by[@]}"}"; do
+        blocked_by_id["$k"]="$(gh api "repos/$repo/issues/$k" --jq .id)" ||
+            die 1 "could not resolve the numeric id of $repo#$k"
+    done
+fi
+
+# ── Writes. Every supersedes target and blocked-by id above has already been
+# validated, so nothing here can fail partway through for a reason pass 1
+# above should have caught.
 now="${GROOM_NOW_DATE:-$(date -u '+%Y-%m-%d')}"
 comment_tmp="$(mktemp)" || die 2 "could not create a temp file"
 trap 'rm -f "$comment_tmp"' EXIT
@@ -114,23 +175,10 @@ else
     gh issue comment "$issue" --repo "$repo" --body-file "$comment_tmp" >/dev/null ||
         die 1 "write failed: decision comment on $repo#$issue"
     echo "APPLIED decision comment on $repo#$issue"
+    write_outcome "$outcomes" "$issue" "decision" "DECIDED $now"
 fi
 
 for m in "${supersedes[@]+"${supersedes[@]}"}"; do
-    # SKILL.md's contract is unqualified: bot-authored issues are never
-    # closed by groom, whatever the write path. Check live, always — a
-    # maintainer decision names issue numbers, not authors, and a bot
-    # (Renovate/Dependabot) routinely files near-duplicates that would
-    # otherwise fit a "superseded by" close.
-    author_json="$(gh issue view "$m" --repo "$repo" --json author)" ||
-        die 2 "could not read the author of $repo#$m"
-    if jq -e '
-        (.author.type == "Bot") or (.author.is_bot == true)
-        or (.author.login == "app/renovate")
-        or ((.author.login // "") | test("^app/|\\[bot\\]$"))
-      ' <<<"$author_json" >/dev/null; then
-        die 4 "refused: $repo#$m is bot-authored — groom never closes a bot-owned issue"
-    fi
     pointer="Superseded by the decision on #$issue."
     if [ "$execute" -eq 0 ]; then
         echo "PLAN gh issue close $m --repo $repo --reason 'not planned' --comment '$pointer'"
@@ -138,6 +186,7 @@ for m in "${supersedes[@]+"${supersedes[@]}"}"; do
         gh issue close "$m" --repo "$repo" --reason "not planned" --comment "$pointer" >/dev/null ||
             die 1 "write failed: close $repo#$m"
         echo "APPLIED close $repo#$m (superseded by #$issue)"
+        write_outcome "$outcomes" "$m" "close" "DONE"
     fi
 done
 
@@ -145,8 +194,7 @@ for k in "${blocked_by[@]+"${blocked_by[@]}"}"; do
     if [ "$execute" -eq 0 ]; then
         echo "PLAN gh api repos/$repo/issues/$issue/dependencies/blocked_by -F issue_id=<id of #$k>"
     else
-        blocker_id="$(gh api "repos/$repo/issues/$k" --jq .id)" ||
-            die 1 "could not resolve the numeric id of $repo#$k"
+        blocker_id="${blocked_by_id[$k]}"
         gh api "repos/$repo/issues/$issue/dependencies/blocked_by" \
             -F issue_id="$blocker_id" >/dev/null ||
             die 1 "write failed: blocked-by edge $repo#$issue <- $repo#$k"

@@ -36,6 +36,12 @@ recommending a `/triage` run.
 - **`--execute` is refused unless `GROOM_EXECUTE=1`** is in the environment —
   set only by the `task groom` wrapper for a supervised run. A model cannot
   promote itself to write mode by adding a flag.
+- **The wrapper's apply mode never fans out.** `task groom -- --execute` needs
+  `--plan FILE` (and accepts an optional `--decisions DIR`); it grants only
+  the write-capable scripts and read-only `gh` calls — no `Agent`, `Task`,
+  `Glob`, or `Grep`, so nothing in apply mode ever re-reads an issue body.
+  Only audit mode fans out to read-only subagents, and it never has
+  `GROOM_EXECUTE=1`.
 - **A `CLOSE-*` verdict needs concrete evidence.** When unsure, `KEEP` with a
   note. See `references/verdict-vocabulary.md`.
 - **Bot-authored issues are never retitled, closed, or relabelled.**
@@ -52,9 +58,14 @@ recommending a `/triage` run.
   `ai/skills/universal/groom`, `.agents/skills/groom`, `.claude/skills/groom`.
 - `REPO` — the `owner/repo` your runner named, or
   `gh repo view --json nameWithOwner -q .nameWithOwner` when none was named.
-- `SCRATCH` — the scratch directory your runner named, or `mktemp -d` for an
-  interactive session. Every file this run creates (`scan.json`, cluster
-  verdict files, `dispositions.json`, the report) goes in `$SCRATCH`.
+- `SCRATCH` — the scratch (or, headlessly, persistent per-run output)
+  directory your runner named, or `mktemp -d` for an interactive session.
+  Every file this run creates (`scan.json`, cluster verdict files,
+  `dispositions.json`, the report, `outcomes.jsonl`) goes in `$SCRATCH`. The
+  `task groom` wrapper's `$SCRATCH` is NOT deleted when the run ends — it is
+  the only place the report survives to (issue #1015 finding 1) — so it is
+  safe to leave large intermediate files there for the maintainer to inspect
+  after the fact.
 
 ## Step 1 — Scan
 
@@ -84,22 +95,48 @@ process findings as prose in its final message (not in the JSONL file).
 
 ## Step 3 — Consolidate
 
-Validate and join every cluster's verdict file into one dataset:
+Collect the subagents' parent/milestone proposals from their summaries into
+one JSON file before joining, so the report can render them (rather than
+carrying them by hand):
 
 ```sh
+cat >"$SCRATCH/proposals.json" <<'JSON'
+{"parents":[{"parent":12,"title":"CI hardening","children":[45,46]}],
+ "milestones":[{"action":"rename","title":"v1","new_title":"v1.1","issues":[45,46]}]}
+JSON
+```
+
+Omit fields/entries you have nothing to propose this run — an empty
+`{"parents":[],"milestones":[]}` is fine.
+
+Validate and join every cluster's verdict file into one dataset. `shopt -s
+nullglob` first so a clean run with zero cluster files (nothing to verify
+this time) still runs the join with zero files, instead of the literal
+unmatched glob pattern reaching the script as one bogus filename:
+
+```sh
+shopt -s nullglob
 "$DIR/assets/groom-verdicts.sh" join --repo "$REPO" --scan "$SCRATCH/scan.json" \
-  --out "$SCRATCH/dispositions.json" "$SCRATCH"/cluster-*.jsonl
+  --out "$SCRATCH/dispositions.json" --proposals "$SCRATCH/proposals.json" \
+  "$SCRATCH"/cluster-*.jsonl
 ```
 
 `groom-verdicts.sh` refuses (naming the issue) any `CLOSE-*` row missing
 evidence, any unknown verdict, or any `NEEDS-DECISION` row missing a
-`question`. Fix the offending subagent's file and re-run before continuing —
-never hand-patch around a refusal.
+`question`. It then checks COVERAGE against the scan: a duplicate verdict row
+for the same issue, or a verdict row for a number that is not in
+`scan.open`, is always refused; an open issue with no verdict row at all
+(a subagent skipped it) is refused too, unless you pass `--allow-missing`,
+in which case those numbers land in `stats.unverified` and the report shows
+an "Unverified" section instead of silently shipping an incomplete dataset.
+Zero cluster files is accepted only when `scan.open` is itself empty. Fix the
+offending subagent's file (or re-dispatch it) and re-run before continuing —
+never hand-patch around a refusal, and do not reach for `--allow-missing` to
+paper over a subagent that should be re-run.
 
-Collect the subagents' parent/milestone proposals and process findings from
-their summaries into your own notes; there is no dedicated dataset field for
-them yet (see `references/verdict-vocabulary.md`'s companion note in
-`groom-report.sh`'s header) — carry them into the report by hand for now.
+Collect the subagents' process findings from their summaries into your own
+notes; there is no dedicated dataset field for those yet — carry them into
+the report by hand for now.
 
 ## Step 4 — Report
 
@@ -111,7 +148,8 @@ them yet (see `references/verdict-vocabulary.md`'s companion note in
 Sections, in this fixed order: Stats; What to do next; Close now (grouped by
 verdict, every entry showing number **and title**); Milestones; Parent
 issues; Decisions (with a status column); Process findings; Bot-owned issues;
-Every issue (full table, inline filter/search).
+Unverified (only rendered when `stats.unverified` is nonempty — see Step 3's
+`--allow-missing`); Every issue (full table, inline filter/search).
 
 **Publish the HTML with the Artifact tool when it is available** — private by
 default, filterable, and republishable to the **same URL** after every apply
@@ -128,9 +166,26 @@ requests. **Do not proceed to Step 6 without that go-ahead** — the contract's
 
 Turn the maintainer's approvals into a plan file (JSON Lines, one op per
 line — see `groom-apply.sh`'s header for the exact shape: `close`, `retitle`,
-`label`, `milestone-assign`, `sub-issue-link`).
+`label`, `milestone-assign`, `sub-issue-link`) and, for any answered
+decisions, a decisions directory (see Step 6). Both live under `$SCRATCH`.
 
 ## Step 6 — Apply
+
+Applying is its OWN, separately supervised run: `task groom -- --execute
+--plan "$SCRATCH/plan.jsonl" [--decisions "$SCRATCH/decisions"]`. That
+wrapper invocation grants only `groom-apply.sh`, `groom-decide.sh`,
+`groom-report.sh`, and read-only `gh` calls — no fan-out, no re-reading of
+issue text — so build the plan file and decisions directory from what the
+maintainer approved, in this scratch directory, then hand them to that
+separate invocation (do not try to reach `--execute` from inside an audit
+run's own tool grant — it does not have the write scripts' `--execute`
+path armed, by design; see the contract's "wrapper's apply mode never fans
+out" bullet).
+
+Decisions directory shape: one `<issue>.md` file per answered
+`NEEDS-DECISION` row (the maintainer's decision text), plus optional
+`<issue>.supersedes` / `<issue>.blocked-by` sidecar files — one issue number
+per line — naming the siblings/blockers that decision names.
 
 Dry-run the plan first — never skip straight to `--execute`:
 
@@ -140,23 +195,34 @@ Dry-run the plan first — never skip straight to `--execute`:
 ```
 
 Review the `PLAN` lines against what the maintainer actually approved, then
-re-run with `--execute` only when your runner's mode is EXECUTE. Closes above
-`--max-closes` (default 25) in one run are refused without an explicit higher
-value — a large wholesale approval is still applied in bounded batches by
-default.
+re-run with `--execute --outcomes "$SCRATCH/outcomes.jsonl"` only when your
+runner's mode is APPLY. Closes above `--max-closes` (default 25) in one run
+are refused without an explicit higher value — a large wholesale approval is
+still applied in bounded batches by default. apply-plan validates every row
+before writing any of them — a bad row anywhere in the plan aborts before the
+first write, never partway through.
 
 For each answered decision row, run `groom-decide.sh` once per issue (dry-run
-first, same rule):
+first, same rule), reading that issue's `.supersedes` / `.blocked-by`
+sidecar files from the decisions directory into repeated flags:
 
 ```sh
 "$DIR/assets/groom-decide.sh" --repo "$REPO" --issue <n> \
   --decision-file <path-to-one-decision's-text> \
-  [--supersedes <m>]... [--blocked-by <k>]...
+  [--supersedes <m>]... [--blocked-by <k>]... \
+  [--outcomes "$SCRATCH/outcomes.jsonl"]
 ```
 
-After applying, **republish the report** (Step 4, same Artifact URL) so it
-reflects what actually happened — the report is the single view of what is
-done, not a snapshot of the plan.
+After applying, **re-render and republish the report** (Step 4, same
+Artifact URL) with `--outcomes "$SCRATCH/outcomes.jsonl"` added, so its
+Status column reflects what actually happened — the report is the single
+view of what is done, not a snapshot of the plan:
+
+```sh
+"$DIR/assets/groom-report.sh" render --dispositions "$SCRATCH/dispositions.json" \
+  --outcomes "$SCRATCH/outcomes.jsonl" \
+  --out-html "$SCRATCH/report.html" --out-md "$SCRATCH/report.md"
+```
 
 ## Step 7 — Hand-off
 

@@ -9,17 +9,29 @@
 #
 # Section order (fixed, per the issue): Stats strip; What to do next; Close
 # now (grouped by verdict, every entry showing number AND title); Milestones;
-# Parent issues; Decisions (with a status column); Process findings; Every
-# issue (full table with inline filter/search).
+# Parent issues; Decisions (with a status column); Process findings;
+# Bot-owned issues; Unverified (only when the dataset carries any —
+# stats.unverified, from groom-verdicts.sh join --allow-missing); Every issue
+# (full table with inline filter/search).
 #
 # Usage:
 #   groom-report.sh render --dispositions PATH --out-html PATH --out-md PATH
+#                           [--outcomes PATH]
+#
+# --outcomes PATH (optional) is a JSON Lines file of applied-write records
+# written by groom-apply.sh/groom-decide.sh's own --outcomes flag:
+#   {"issue":N,"op":"...","status":"DONE"|"DECIDED <date>","at":"<UTC>"}
+# The LAST record for a given issue number overrides that row's `status`
+# column — republishing the report after an apply step (SKILL.md Step 6)
+# is otherwise a byte-identical re-render of the plan, forever showing
+# PENDING no matter what was actually applied (finding 8).
 #
 # Exit: 0 = rendered, 2 = usage/read error.
 set -euo pipefail
 
 usage() {
     echo "Usage: $0 render --dispositions PATH --out-html PATH --out-md PATH" >&2
+    echo "                 [--outcomes PATH]" >&2
     exit 2
 }
 
@@ -29,7 +41,7 @@ die() {
 }
 
 cmd_render() {
-    local dispositions="" out_html="" out_md=""
+    local dispositions="" out_html="" out_md="" outcomes=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --dispositions)
@@ -47,6 +59,11 @@ cmd_render() {
             out_md="$2"
             shift 2
             ;;
+        --outcomes)
+            [ "$#" -ge 2 ] || usage
+            outcomes="$2"
+            shift 2
+            ;;
         *) usage ;;
         esac
     done
@@ -56,7 +73,15 @@ cmd_render() {
     local now
     now="${GROOM_NOW:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
 
-    jq -r --arg now "$now" '
+    local outcomes_map="{}"
+    if [ -n "$outcomes" ]; then
+        [ -r "$outcomes" ] || die "cannot read outcomes file: $outcomes"
+        outcomes_map="$(jq -s '
+          reduce .[] as $o ({}; .[($o.issue|tostring)] = $o.status)
+        ' "$outcomes")"
+    fi
+
+    jq -r --arg now "$now" --argjson outcomes_map "$outcomes_map" '
       # Markdown-safe: collapse embedded newlines (which would otherwise
       # split a table row or bullet across lines) and escape a literal "|"
       # (which would otherwise insert a phantom table-cell boundary) in any
@@ -65,13 +90,18 @@ cmd_render() {
       def mdesc: if . == null then "" else
         (. | tostring | gsub("\r\n|\r|\n"; " ") | gsub("\\|"; "\\|")) end;
       . as $d
-      | ($d.dispositions // []) as $rows
+      | ($d.dispositions // []
+         | map(. + {status: ($outcomes_map[(.number|tostring)] // .status // "PENDING")})
+        ) as $rows
       | ([$rows[] | select(.verdict | startswith("CLOSE-"))]) as $close
       | ([$rows[] | select(.verdict == "NEEDS-DECISION")]) as $decisions
       | ([$rows[] | select(.bot_owned == true)]) as $bots
       | ($d.stats // {}) as $stats
       | ($d.milestones // []) as $milestones
       | ($d.process_findings // []) as $findings
+      | ($d.proposals.parents // []) as $parents
+      | ($d.proposals.milestones // []) as $milestone_proposals
+      | ($stats.unverified // []) as $unverified
 
       | "# Groom report — \($d.repo // "unknown")",
         "",
@@ -103,13 +133,26 @@ cmd_render() {
          end),
         "## Milestones",
         "",
-        (if ($milestones|length) == 0 then "No milestone proposals this run."
+        (if ($milestone_proposals|length) > 0 then
+           ($milestone_proposals[] |
+            "- \(.action | mdesc) \(.title | mdesc)"
+            + (if .new_title then " → \(.new_title | mdesc)" else "" end)
+            + (if (.issues // [])|length > 0
+               then " (" + ((.issues // []) | map("#\(.)") | join(", ")) + ")"
+               else "" end))
+         elif ($milestones|length) == 0 then "No milestone proposals this run."
          else ($milestones[] | "- #\(.number) \(.title | mdesc) (\(.state)) — \(.open_issues // 0) open, \(.closed_issues // 0) closed")
          end),
         "",
         "## Parent issues",
         "",
-        "No parent-tree proposals this run.",
+        (if ($parents|length) == 0 then "No parent-tree proposals this run."
+         else ($parents[] |
+               "- \(if .parent then "#\(.parent)" else "(new)" end) \(.title | mdesc)"
+               + (if (.children // [])|length > 0
+                  then ": " + ((.children // []) | map("#\(.)") | join(", "))
+                  else "" end))
+         end),
         "",
         "## Decisions",
         "",
@@ -130,6 +173,14 @@ cmd_render() {
          else ($bots[] | "- #\(.number) — \(.title // "(title unavailable)" | mdesc)")
          end),
         "",
+        (if ($unverified|length) == 0 then empty else
+          "## Unverified",
+          "",
+          "Open issues with no verdict row this run (join --allow-missing):",
+          "",
+          ($unverified[] | "- #\(.)"),
+          ""
+         end),
         "## Every issue",
         "",
         "| # | Title | Verdict | Priority | Group | Status |",
@@ -137,12 +188,14 @@ cmd_render() {
         ($rows[] | "| #\(.number) | \(.title // "" | mdesc) | \(.verdict | mdesc) | \(.priority | mdesc) | \(.group | mdesc) | \(.status // "PENDING" | mdesc) |")
     ' "$dispositions" >"$out_md"
 
-    jq -r --arg now "$now" '
+    jq -r --arg now "$now" --argjson outcomes_map "$outcomes_map" '
       def h: tostring
         | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")
         | gsub("\""; "&quot;");
       . as $d
-      | ($d.dispositions // []) as $rows
+      | ($d.dispositions // []
+         | map(. + {status: ($outcomes_map[(.number|tostring)] // .status // "PENDING")})
+        ) as $rows
       | ($d.repo // "unknown") as $repo
       | ([$rows[] | select(.verdict | startswith("CLOSE-"))]) as $close
       | ([$rows[] | select(.verdict == "NEEDS-DECISION")]) as $decisions
@@ -150,6 +203,9 @@ cmd_render() {
       | ($d.stats // {}) as $stats
       | ($d.milestones // []) as $milestones
       | ($d.process_findings // []) as $findings
+      | ($d.proposals.parents // []) as $parents
+      | ($d.proposals.milestones // []) as $milestone_proposals
+      | ($stats.unverified // []) as $unverified
       | "<!doctype html><meta charset=\"utf-8\">",
         "<title>Groom report — \($repo|h)</title>",
         "<style>",
@@ -187,11 +243,26 @@ cmd_render() {
                 + "</ul>"] | join(""))
          end),
         "<h2>Milestones</h2>",
-        (if ($milestones|length) == 0 then "<p>No milestone proposals this run.</p>"
+        (if ($milestone_proposals|length) > 0 then
+           "<ul>" + ([$milestone_proposals[] |
+             "<li>\(.action|h) \(.title|h)"
+             + (if .new_title then " → \(.new_title|h)" else "" end)
+             + (if (.issues // [])|length > 0
+                then " (" + ((.issues // []) | map("#\(.)") | join(", ")) + ")"
+                else "" end)
+             + "</li>"] | join("")) + "</ul>"
+         elif ($milestones|length) == 0 then "<p>No milestone proposals this run.</p>"
          else "<ul>" + ([$milestones[] | "<li>#\(.number) \(.title|h) (\(.state|h)) — \(.open_issues // 0) open, \(.closed_issues // 0) closed</li>"] | join("")) + "</ul>"
          end),
         "<h2>Parent issues</h2>",
-        "<p>No parent-tree proposals this run.</p>",
+        (if ($parents|length) == 0 then "<p>No parent-tree proposals this run.</p>"
+         else "<ul>" + ([$parents[] |
+             "<li>\(if .parent then "#\(.parent)" else "(new)" end) \(.title|h)"
+             + (if (.children // [])|length > 0
+                then ": " + ((.children // []) | map("#\(.)") | join(", "))
+                else "" end)
+             + "</li>"] | join("")) + "</ul>"
+         end),
         "<h2>Decisions</h2>",
         (if ($decisions|length) == 0 then "<p>None this run.</p>"
          else "<ul>" + ([$decisions[] | "<li>#\(.number) — \(.title // "(title unavailable)"|h) — \(.question // ""|h) — recommendation: \(.reason|h) — status: \(.status // "PENDING"|h)</li>"] | join("")) + "</ul>"
@@ -203,6 +274,11 @@ cmd_render() {
         "<h2>Bot-owned issues (excluded from retitle/close/relabel)</h2>",
         (if ($bots|length) == 0 then "<p>None this run.</p>"
          else "<ul>" + ([$bots[] | "<li>#\(.number) — \(.title // "(title unavailable)"|h)</li>"] | join("")) + "</ul>"
+         end),
+        (if ($unverified|length) == 0 then empty else
+          "<h2>Unverified</h2>",
+          "<p>Open issues with no verdict row this run (join --allow-missing):</p>",
+          "<ul>" + ([$unverified[] | "<li>#\(.)</li>"] | join("")) + "</ul>"
          end),
         "<h2>Every issue</h2>",
         "<input type=search id=q placeholder=\"Filter by number, title, verdict, group…\" onkeyup=\"groomFilter()\">",

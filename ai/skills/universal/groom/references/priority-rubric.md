@@ -15,8 +15,13 @@ pointing at it) is `high` regardless of how the underlying work would
 otherwise rate — the cost of leaving it undecided compounds across every
 issue waiting on it.
 
-Board Priority is written only where the run has the `project` scope
-(`groom-scan.sh`'s `board_access` field says so) and only through
-`track-work`'s `set-issue-status.sh`-style board write path; where the scope
-is missing, note the intended priority in the report instead of guessing at a
-write that would fail.
+**Priority is reported only, never written to the board.** The dataset and
+report always carry every row's computed priority — that IS the delivery
+mechanism today. Writing it to the project board's own Priority field is
+**deliberately not started**: no `groom-apply.sh` plan op reaches
+`track-work`'s `set-issue-status.sh`-style board write path (the plan
+vocabulary is close/retitle/label/milestone-assign/sub-issue-link — there is
+no priority op), and `groom-scan.sh`'s `board_access` field is informational
+only, not a gate on a write path that does not exist yet. Name "board
+Priority write" under the run's "deliberately not started" list (SKILL.md
+Step 7) until a plan op for it is introduced.

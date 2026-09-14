@@ -19,8 +19,16 @@
 # it, same convention as triage-scan.sh) so the caller never needs a shell
 # redirection.
 #
+# --limit defaults to 5000 (issue #1015's own motivating repo had 384 open
+# issues). A result that comes back AT the limit is refused outright rather
+# than silently truncated — "verify every open issue" cannot be honored on a
+# partial list, and a dropped/dead truncation flag defeats the point of
+# noting it at all (challenge round 1 finding 2). Pass a higher --limit to
+# proceed on a backlog that large.
+#
 # Exit: 0 = scan emitted, 2 = usage/environment error, 4 = refused (repo or
-#       out-path outside this run's binding).
+#       out-path outside this run's binding, or the open-issue count hit
+#       --limit).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -69,7 +77,7 @@ guard_out_path() {
     die "shared issue-title predicate is missing"
 
 repo=""
-limit=500
+limit=5000
 out=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -100,11 +108,13 @@ open_json="$(gh issue list --repo "$repo" --state open --limit "$limit" \
     --json "$open_fields")" ||
     die "could not list open issues of $repo"
 
-truncated_open=false
-[ "$(jq length <<<"$open_json")" -lt "$limit" ] || truncated_open=true
-
-milestones_json="$(gh api "repos/$repo/milestones" -X GET -f state=all \
-    -f per_page=100 2>/dev/null)" || milestones_json="[]"
+open_count="$(jq length <<<"$open_json")"
+if [ "$open_count" -ge "$limit" ]; then
+    echo "groom-scan: refused: gh issue list returned $open_count open issue(s)," \
+        "at or above --limit $limit — this run cannot verify every open issue" \
+        "at that limit; pass a higher --limit to proceed" >&2
+    exit 4
+fi
 
 # Board access needs the `project` scope; note whether it is usable instead of
 # guessing (issue #1015's scan phase).
@@ -120,20 +130,27 @@ scan_tmp="$(mktemp -d)" || die "could not create a temp directory"
 trap 'rm -rf "$scan_tmp"' EXIT
 printf '%s' "$open_json" >"$scan_tmp/open.json"
 
+# --paginate unwraps a JSON-array response into a stream of individual
+# elements rather than one combined array (gh api's documented behavior for
+# an array-shaped endpoint), so every page's milestones land in the same
+# stream and are read below with --slurpfile as $milestones_arr directly
+# (not $milestones_arr[0]).
+gh api "repos/$repo/milestones" --paginate -X GET -f state=all \
+    -f per_page=100 >"$scan_tmp/milestones.ndjson" 2>/dev/null ||
+    : >"$scan_tmp/milestones.ndjson"
+
 [ -z "$out" ] || exec >"$out"
 
 jq -n -L "$title_module_dir" \
     --arg repo "$repo" \
-    --argjson truncated_open "$truncated_open" \
     --arg board_access "$board_access" \
     --slurpfile open_arr "$scan_tmp/open.json" \
-    --slurpfile milestones_arr <(printf '%s' "$milestones_json") '
+    --slurpfile milestones_arr "$scan_tmp/milestones.ndjson" '
   include "issue-title";
   ($open_arr[0]) as $open |
-  ($milestones_arr[0] // []) as $milestones |
+  ($milestones_arr // []) as $milestones |
   {
     repo: $repo,
-    truncated_open: $truncated_open,
     board_access: $board_access,
     open_total: ($open | length),
     milestones:

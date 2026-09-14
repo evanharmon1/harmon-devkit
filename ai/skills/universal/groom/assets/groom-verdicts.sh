@@ -14,21 +14,43 @@
 #
 # Usage:
 #   groom-verdicts.sh validate FILE...
-#   groom-verdicts.sh join --repo owner/repo --scan PATH --out PATH FILE...
+#   groom-verdicts.sh join --repo owner/repo --scan PATH --out PATH
+#                          [--allow-missing] [--proposals PATH] FILE...
 #
 # `validate` only checks the vocabulary/evidence contract, printing every
 # violation it finds (never stopping at the first) and exiting 1 if any row is
-# invalid. `join` validates the same way, then merges every row with the
-# matching open issue from the scan dataset (title, bot_owned, age) and
-# computes the summary stats groom-report.sh renders.
+# invalid. `join` validates the same way, then checks COVERAGE against the
+# scan's open-issue list before merging (challenge round 1 finding 3):
+#   - a number with more than one verdict row (duplicate) — always refused
+#   - a verdict row whose number is not in scan.open (unknown) — always
+#     refused
+#   - an open issue with no verdict row at all (missing) — refused unless
+#     --allow-missing, in which case the numbers are written to
+#     stats.unverified and the report shows an "Unverified" list instead of
+#     silently shipping an incomplete dataset
+# join then merges every surviving row with the matching open issue from the
+# scan dataset (title, bot_owned, age) and computes the summary stats
+# groom-report.sh renders. `join` with ZERO verdict FILEs is accepted only
+# when scan.open is itself empty (a clean backlog produces a clean empty
+# dataset instead of a hard failure — finding 4); it is refused otherwise.
+#
+# --proposals PATH (optional) is a JSON file of the fan-out subagents'
+# collected parent/milestone regrouping proposals (finding 9):
+#   {"parents":[{"parent":N|null,"title":"...","children":[N,...]}],
+#    "milestones":[{"action":"close|rename|widen|create","title":"...",
+#                    "new_title":"...","issues":[N,...]}]}
+# carried into the dataset verbatim as `proposals` for groom-report.sh's
+# Parent issues / Milestones sections to render.
 #
 # Exit: 0 = valid (validate) / dataset written (join), 1 = a row violates the
-#       vocabulary contract (the issue number and reason are named), 2 = usage.
+#       vocabulary contract, or coverage finds a duplicate/unknown/unallowed-
+#       missing number (each names the offending issue number(s)), 2 = usage.
 set -euo pipefail
 
 usage() {
     echo "Usage: $0 validate FILE..." >&2
-    echo "       $0 join --repo owner/repo --scan PATH --out PATH FILE..." >&2
+    echo "       $0 join --repo owner/repo --scan PATH --out PATH" >&2
+    echo "               [--allow-missing] [--proposals PATH] FILE..." >&2
     exit 2
 }
 
@@ -121,7 +143,7 @@ cmd_validate() {
 }
 
 cmd_join() {
-    local repo="" scan="" out=""
+    local repo="" scan="" out="" allow_missing=0 proposals=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --repo)
@@ -139,6 +161,15 @@ cmd_join() {
             out="$2"
             shift 2
             ;;
+        --allow-missing)
+            allow_missing=1
+            shift
+            ;;
+        --proposals)
+            [ "$#" -ge 2 ] || usage
+            proposals="$2"
+            shift 2
+            ;;
         --)
             shift
             break
@@ -147,12 +178,30 @@ cmd_join() {
         *) break ;;
         esac
     done
-    [ -n "$repo" ] && [ -n "$scan" ] && [ -n "$out" ] && [ "$#" -ge 1 ] || usage
+    [ -n "$repo" ] && [ -n "$scan" ] && [ -n "$out" ] || usage
     [ -r "$scan" ] || die "cannot read scan dataset: $scan"
 
+    local open_count
+    open_count="$(jq '.open // [] | length' "$scan")"
+    if [ "$#" -eq 0 ] && [ "$open_count" -ne 0 ]; then
+        echo "groom-verdicts: refused: no verdict files given but scan.open has" \
+            "$open_count open issue(s) — pass at least one cluster file" >&2
+        exit 1
+    fi
+
+    local proposals_json="{}"
+    if [ -n "$proposals" ]; then
+        [ -r "$proposals" ] || die "cannot read proposals file: $proposals"
+        jq -e . "$proposals" >/dev/null 2>&1 ||
+            die "proposals file is not valid JSON: $proposals"
+        proposals_json="$(cat "$proposals")"
+    fi
+
     local bad=0
-    validate_files "$@" || bad=$?
-    [ "$bad" -eq 0 ] || exit 1
+    if [ "$#" -ge 1 ]; then
+        validate_files "$@" || bad=$?
+        [ "$bad" -eq 0 ] || exit 1
+    fi
 
     local rows_tmp
     rows_tmp="$(mktemp)" || die "could not create a temp file"
@@ -162,9 +211,54 @@ cmd_join() {
         printf '\n' >>"$rows_tmp"
     done
 
+    # Coverage check (finding 3): every open issue must produce EXACTLY one
+    # verdict row. A subagent that silently skips an issue, or two cluster
+    # files that both cover the same one, must never ship an incomplete or
+    # duplicated dataset with no signal that it happened.
+    local coverage dup_list unknown_list missing_list missing_json
+    coverage="$(jq -n --slurpfile scan "$scan" --slurpfile rows "$rows_tmp" '
+      (($scan[0].open // []) | map(.number)) as $open_numbers
+      | (($rows // []) | map(.number)) as $row_numbers
+      | {
+          duplicates: ($row_numbers | group_by(.) | map(select(length > 1) | .[0]) | unique),
+          unknown: (($row_numbers - $open_numbers) | unique),
+          missing: (($open_numbers - $row_numbers) | unique)
+        }')"
+    dup_list="$(jq -r '.duplicates[]' <<<"$coverage")"
+    unknown_list="$(jq -r '.unknown[]' <<<"$coverage")"
+    missing_list="$(jq -r '.missing[]' <<<"$coverage")"
+
+    if [ -n "$dup_list" ]; then
+        while IFS= read -r n; do
+            echo "groom-verdicts: refused: #$n has more than one verdict row (duplicate)" >&2
+        done <<<"$dup_list"
+        exit 1
+    fi
+    if [ -n "$unknown_list" ]; then
+        while IFS= read -r n; do
+            echo "groom-verdicts: refused: #$n has a verdict row but is not in" \
+                "scan.open (unknown issue number)" >&2
+        done <<<"$unknown_list"
+        exit 1
+    fi
+    if [ -n "$missing_list" ]; then
+        if [ "$allow_missing" -ne 1 ]; then
+            while IFS= read -r n; do
+                echo "groom-verdicts: refused: #$n is open but has no verdict row" \
+                    "(missing) — pass --allow-missing to proceed anyway" >&2
+            done <<<"$missing_list"
+            exit 1
+        fi
+        missing_json="$(jq -c '.missing' <<<"$coverage")"
+    else
+        missing_json="[]"
+    fi
+
     jq -n --arg repo "$repo" \
         --slurpfile scan "$scan" \
-        --slurpfile rows "$rows_tmp" '
+        --slurpfile rows "$rows_tmp" \
+        --argjson proposals "$proposals_json" \
+        --argjson unverified "$missing_json" '
       ($scan[0]) as $scan
       | ($rows) as $dispositions0
       | ($scan.open | map({key: (.number|tostring), value: .}) | from_entries) as $by_number
@@ -189,9 +283,14 @@ cmd_join() {
             decisions:
               ([$dispositions[] | select(.verdict == "NEEDS-DECISION")] | length),
             high_priority:
-              ([$dispositions[] | select(.priority == "high")] | length)
+              ([$dispositions[] | select(.priority == "high")] | length),
+            unverified: $unverified
           },
-          milestones: ($scan.milestones // [])
+          milestones: ($scan.milestones // []),
+          proposals: {
+            parents: ($proposals.parents // []),
+            milestones: ($proposals.milestones // [])
+          }
         }' >"$out"
     echo "groom-verdicts: wrote $(jq '.dispositions | length' "$out") dispositions to $out"
 }
