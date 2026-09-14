@@ -89,6 +89,13 @@ marker_file() {
         "$2" "$3" "$4" "$5" "$6" >"$1"
 }
 
+evidence_marker_file() {
+    local json_round="$5"
+    [ "$json_round" = - ] && json_round=null
+    printf '<!-- dev-flow-v2-evidence: {"run_id":"%s","stage":"%s","round":%s,"sequence":1,"destination":"%s"} -->\n## %s round %s\n' \
+        "$2" "$3" "$json_round" "$4" "$3" "$5" >"$1"
+}
+
 # make_gh DIR — a `gh` shim in DIR/bin, reading canned answers from
 # $GH_PR_JSON / $GH_COMMENTS_DIR and its actor id from $GH_USER_ID, appending
 # each invocation to $GH_LOG.
@@ -198,7 +205,8 @@ STATS_SH
 
 # make_trajectory FIXTURE OUT — compose the trajectory the harvester would
 # return for FIXTURE: run-record fields read from the fixture, harvest fields
-# supplied by $ROUNDS_JSON / $CLASSES_JSON / $ORPHANS_JSON / $ISSUE_NUMBER.
+# supplied by $ROUNDS_JSON / $CLASSES_JSON / $ORPHANS_JSON /
+# $SLOT_FAILURES_JSON / $ISSUE_NUMBER.
 make_trajectory() {
     # One-shot overrides. A `VAR=x helper` prefix on a shell FUNCTION persists
     # in bash (unlike on an external command), so without this each override
@@ -206,11 +214,13 @@ make_trajectory() {
     # pass for a reason its own setup never established. Captured, then
     # cleared, so the prefix means what it looks like it means.
     local issue="${ISSUE_NUMBER:-0}" rounds="${ROUNDS_JSON:-[]}" classes="${CLASSES_JSON:-{\}}"
-    local orphans="${ORPHANS_JSON:-[]}" forged="${FORGED_JSON:-[]}"
+    local orphans="${ORPHANS_JSON:-[]}" forged="${FORGED_JSON:-[]}" slot_failures="${SLOT_FAILURES_JSON:-[]}"
+    local future_adjudications="${FUTURE_ADJUDICATIONS_JSON:-[]}"
     local run_id="${RUN_ID_OVERRIDE:-}"
-    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON RUN_ID_OVERRIDE
+    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON SLOT_FAILURES_JSON FUTURE_ADJUDICATIONS_JSON RUN_ID_OVERRIDE
     ISSUE_NUMBER="$issue" ROUNDS_JSON="$rounds" CLASSES_JSON="$classes" RUN_ID_OVERRIDE="$run_id" \
-        ORPHANS_JSON="$orphans" FORGED_JSON="$forged" node -e '
+        ORPHANS_JSON="$orphans" FORGED_JSON="$forged" SLOT_FAILURES_JSON="$slot_failures" \
+        FUTURE_ADJUDICATIONS_JSON="$future_adjudications" node -e '
       const fs = require("node:fs")
       const [fixture, out] = process.argv.slice(1)
       const run = JSON.parse(fs.readFileSync(fixture, "utf8"))
@@ -226,6 +236,8 @@ make_trajectory() {
         interventions: run.interventions,
         settlements: run.settlements,
         rounds: JSON.parse(process.env.ROUNDS_JSON || "[]"),
+        slot_failures: JSON.parse(process.env.SLOT_FAILURES_JSON || "[]"),
+        future_adjudication_files: JSON.parse(process.env.FUTURE_ADJUDICATIONS_JSON || "[]"),
         findings_by_class_and_provenance: JSON.parse(process.env.CLASSES_JSON || "{}"),
         orphan_comments: JSON.parse(process.env.ORPHANS_JSON || "[]"),
         forged_comments: JSON.parse(process.env.FORGED_JSON || "[]")
@@ -1087,10 +1099,12 @@ mkdir -p "$d"
 make_gh "$d"
 ISSUE_NUMBER="$ISSUE" \
     ROUNDS_JSON='[
-      {"stage":"challenge","round":1,"pass_count":1,"finding_count":3,"has_adjudication":true},
-      {"stage":"challenge","round":2,"pass_count":1,"finding_count":1,"has_adjudication":true},
-      {"stage":"review","round":1,"pass_count":1,"finding_count":0,"has_adjudication":false}
+      {"stage":"challenge","round":1,"pass_count":1,"adjudication_count":1,"finding_count":3,"has_adjudication":true},
+      {"stage":"challenge","round":2,"pass_count":1,"adjudication_count":1,"finding_count":1,"has_adjudication":true},
+      {"stage":"review","round":1,"pass_count":1,"adjudication_count":0,"finding_count":0,"has_adjudication":false}
     ]' \
+    SLOT_FAILURES_JSON='[{"stage":"review","round":1,"slot":"codex-verification","reason":"finder_unavailable"}]' \
+    FUTURE_ADJUDICATIONS_JSON='["review-r2.json"]' \
     CLASSES_JSON='{"correctness/original":2,"hardening/original":1,"design/round:1":1}' \
     ORPHANS_JSON='[{"id":1,"actor_id":9}]' \
     make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
@@ -1135,11 +1149,17 @@ contains "$OUT" '### Stage `plan`' &&
 contains "$OUT" "- Rounds spent: 0 / no cap recorded" &&
     bad "a stage with neither a cap nor a round still printed round lines" ||
     ok "a stage with neither a cap nor a round prints no round lines"
-contains "$OUT" "- Rounds spent: 0 / cap 4 (disclosed, unverified)" &&
-    ok "a capped stage that ran no round still reports 0 against its cap" ||
-    bad "a capped stage with no rounds dropped its round line"
+contains "$OUT" "- Rounds/passes/findings: not measured from local evidence (cap 4 (disclosed, unverified)) — integration passes carry no authenticated evidence marker today." &&
+    ok "the integration stage discloses its cap without a fabricated zero round count" ||
+    bad "the integration stage printed a round-count line instead of the not-measured disclosure"
 contains "$OUT" "- Rounds with no adjudication record: 1" &&
     ok "a round with no adjudication is named" || bad "unadjudicated round not reported"
+contains "$OUT" "- Round 1 evidence: 1 pass(es), 0 blocked pass(es), 1 adjudication(s)" &&
+    ok "per-round pass and adjudication counts are disclosed" || bad "per-round evidence counts missing"
+contains "$OUT" 'Slot failures (retained verbatim): `[{"stage":"review","round":1,"slot":"codex-verification","reason":"finder_unavailable"}]`' &&
+    ok "slot failures are retained verbatim" || bad "slot failures were dropped or rewritten"
+contains "$OUT" 'Future adjudications excluded by --as-of: `review-r2.json`' &&
+    ok "future adjudications are disclosed in their stage" || bad "future adjudications were dropped"
 contains "$OUT" "| correctness | original | 2 |" &&
     ok "class/provenance counts render" || bad "class/provenance table missing a row"
 contains "$OUT" "| design | round:1 | 1 |" &&
@@ -1692,6 +1712,36 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 [ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
     ok "exit 10 naming run-not-found" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
 
+echo "==> record-missing for an explicit --run remains authenticated and indeterminate"
+d="$TMPROOT/record-missing-explicit"
+scaffold "$d" further-along "body"
+printf '%s\n' '{"status":"record-missing","run_id":"made-up"}' >"$d/record-missing.json"
+make_stats "$d/stats.mjs" 1 "$d/record-missing.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --run made-up --record-dir "$d" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "record-missing" && contains "$ERR" "Authenticated evidence exists" &&
+    ok "exit 11 preserves structured record-missing" || bad "expected exit 11 / record-missing, got $RC: $ERR"
+
+echo "==> a --run id containing the text 'record-missing' is not misclassified without a structured status"
+d="$TMPROOT/notfound-explicit-collision"
+scaffold "$d" further-along "body"
+# Mirrors the real harvester's plain not-found message, which echoes the
+# requested run id verbatim and emits no structured JSON status. The run id
+# below contains the literal substring "record-missing" so a stderr-substring
+# classifier (the pre-fix behavior) would misclassify this as record-missing
+# and return exit 11 instead of the correct run-not-found fallback (exit 10).
+cat >"$d/stats.mjs" <<'STATS_MJS'
+#!/usr/bin/env node
+process.stderr.write('dev-flow-stats: run "run-804-record-missing" not found (searched every issue run record in o/r)\n')
+process.exitCode = 1
+STATS_MJS
+chmod +x "$d/stats.mjs"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --run run-804-record-missing --stats-script "$d/stats.mjs"
+[ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
+    ok "a stderr substring match on 'record-missing' no longer forces exit 11 without a structured status" ||
+    bad "expected exit 10 / run-not-found (stderr-substring collision), got $RC: $ERR"
+
 echo "==> a harvester crash is an operational error, never a silent fallback"
 d="$TMPROOT/crash"
 scaffold "$d" further-along "body"
@@ -1784,6 +1834,113 @@ PATH="$d/bin:$PATH" node "$REAL_STATS" --repo o/r --run no-such-run --json \
 [ "$RC" -eq 2 ] &&
     bad "the harvester rejected this asset's flag set as a usage error: $(cat "$d/stderr")" ||
     ok "the flag set parses (exit $RC, not a usage error)"
+
+echo "==> --record-dir is passed through to the harvester unchanged"
+d="$TMPROOT/record-dir-passthrough"
+scaffold "$d" further-along "body"
+mkdir -p "$d/records"
+STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --record-dir "$d/records"
+[ "$RC" -eq 0 ] && contains "$(cat "$d/stats.log")" "--record-dir $d/records" &&
+    ok "the local record directory reaches the harvester" ||
+    bad "--record-dir was not passed through unchanged: rc=$RC, log=$(cat "$d/stats.log"), err=$ERR"
+
+echo "==> evidence-only harvester output is reported without fabricating a trajectory"
+d="$TMPROOT/evidence-only"
+scaffold "$d" further-along "body"
+printf '%s\n' '{"status":"evidence-only","run_id":"run-6001-further-along","issue":6001,"marker_facts":[{"stage":"review","destination":"issue","round":1,"sequence":1}],"untrusted_marker_facts":[{"stage":"review","destination":"issue","round":2,"sequence":2}],"legacy_also_present":true}' >"$d/evidence-only.json"
+make_stats "$d/stats.mjs" 0 "$d/evidence-only.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e --argjson pr "$PR" '.status == "evidence-only" and .marker_facts[0].stage == "review" and .untrusted_marker_facts[0].round == 2 and .legacy_also_present == true and .source.pr_binding == ("bound to PR #" + ($pr | tostring))' >/dev/null &&
+    ok "the report preserves authenticated marker facts and stops before trajectory measurement" ||
+    bad "evidence-only output was not preserved: rc=$RC, out=$OUT, err=$ERR"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'Untrusted marker facts' && contains "$OUT" '"round":2' && contains "$OUT" 'Legacy also present: `true`' && contains "$OUT" "PR binding: bound to PR #$PR" &&
+    ok "the text report preserves untrusted marker anomaly facts" ||
+    bad "evidence-only text output dropped untrusted marker facts: rc=$RC, out=$OUT, err=$ERR"
+
+echo "==> an explicitly selected evidence-only run discloses that it is unbound"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --run run-6001-further-along --stats-script "$d/stats.mjs" --json
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.source.pr_binding | startswith("unbound")' >/dev/null &&
+    ok "the absent evidence-only PR binding is disclosed" ||
+    bad "an unbound evidence-only run claimed a binding: rc=$RC, out=$OUT, err=$ERR"
+
+echo "==> evidence-only output rejects a retained binding to another PR"
+jq --argjson pr "$((PR + 1))" '.pr_binding = {number:$pr}' "$d/evidence-only.json" >"$d/evidence-only-bound.json"
+make_stats "$d/stats.mjs" 0 "$d/evidence-only-bound.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --run run-6001-further-along --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" "bound to PR #$((PR + 1)), not the requested #$PR" &&
+    ok "the retained evidence-only PR binding is authoritative" ||
+    bad "a differently-bound evidence-only run was accepted: rc=$RC, out=$OUT, err=$ERR"
+
+echo "==> evidence-only Markdown folds a newline-bearing run id"
+newline_run_id=$'run-6001\ninjected-heading'
+jq --arg run "$newline_run_id" '.run_id = $run | del(.pr_binding)' "$d/evidence-only.json" >"$d/evidence-only-newline.json"
+make_stats "$d/stats.mjs" 0 "$d/evidence-only-newline.json"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --run "$newline_run_id" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$OUT" | sed -n '1p')" = '## Run evidence — run `run-6001 injected-heading`' ] &&
+    ok "the evidence-only heading neutralizes embedded newlines" ||
+    bad "a newline-bearing run id broke the Markdown heading: rc=$RC, out=$OUT, err=$ERR"
+
+echo "==> discovery accepts the review skill's evidence-marker grammar"
+d="$TMPROOT/evidence-marker-grammar"
+scaffold "$d" further-along "body"
+evidence_marker_file "$d/c1" run-6001-further-along challenge pr -
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && contains "$OUT" 'run-6001-further-along' &&
+    ok "the writer grammar selects the run" ||
+    bad "the writer grammar was not discovered: rc=$RC, err=$ERR"
+
+echo "==> discovery rejects marker destinations that disagree with the fetched endpoint"
+d="$TMPROOT/evidence-marker-wrong-endpoint"
+scaffold "$d" further-along "body"
+evidence_marker_file "$d/c1" run-6001-further-along review issue 1
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" 'marker destination issue does not match PR' &&
+    ok "a PR comment cannot claim an issue destination" ||
+    bad "the PR endpoint mismatch was accepted or hidden: rc=$RC, err=$ERR"
+
+write_file "$d/c1" "no marker"
+marker_file "$d/i1" evidence run-6001-further-along integration pr -
+set_comments "$d/comments" "$PR" "$d/c1"
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" 'marker destination pr does not match issue' &&
+    ok "an issue comment cannot claim a PR destination" ||
+    bad "the issue endpoint mismatch was accepted or hidden: rc=$RC, err=$ERR"
+
+echo "==> current evidence markers reject trailing content and invalid destination/round pairs"
+d="$TMPROOT/evidence-marker-strict"
+scaffold "$d" further-along "body"
+write_file "$d/c1" '<!-- dev-flow-v2-evidence: {"run_id":"run-6001-further-along","stage":"review","round":1,"sequence":1,"destination":"issue"} --> trailing'
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" 'trailing content or an invalid payload' &&
+    ok "trailing marker bytes are trusted malformed evidence" ||
+    bad "trailing marker content was accepted or hidden: rc=$RC, err=$ERR"
+for pair in 'issue null' 'pr 1'; do
+    destination="${pair%% *}"
+    round="${pair##* }"
+    write_file "$d/c1" "<!-- dev-flow-v2-evidence: {\"run_id\":\"run-6001-further-along\",\"stage\":\"review\",\"round\":$round,\"sequence\":1,\"destination\":\"$destination\"} -->"
+    set_comments "$d/comments" "$PR" "$d/c1"
+    GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+        run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+    [ "$RC" -eq 11 ] && contains "$ERR" 'destination and round do not form' ||
+        bad "invalid $destination/$round marker pair was accepted or hidden: rc=$RC, err=$ERR"
+done
+ok "both invalid destination/round combinations are rejected"
 
 echo "==> the asset auto-discovers and INVOKES the real harvester, no --stats-script"
 d="$TMPROOT/realpath"

@@ -11,7 +11,7 @@
 // Usage:
 //   retro-run-report.mjs --repo <owner/repo> --pr <n> [--run <run_id>]
 //     [--trusted-actor-id <id>]... [--trusted-actors-file <path>]
-//     [--as-of <iso8601>] [--stats-script <path>] [--json]
+//     [--record-dir <path>] [--as-of <iso8601>] [--stats-script <path>] [--json]
 //
 // Exit codes — the caller (the /retro skill) branches on these:
 //   0   a report was rendered on stdout.
@@ -69,6 +69,8 @@ const USAGE = `Usage: retro-run-report.mjs --repo <owner/repo> --pr <n> [options
                                says so wherever it uses one.
   --stats-script <path>        Override harvester discovery (tests, or a
                                checkout that keeps it somewhere else).
+  --record-dir <path>          Parent directory containing <run_id>/run.json;
+                               passed through unchanged to the harvester.
   --json                       Emit the machine form instead of Markdown.`
 
 class UsageError extends Error {}
@@ -126,6 +128,9 @@ function parseArgs(argv) {
       case '--stats-script':
         args.statsScript = take()
         break
+      case '--record-dir':
+        args.recordDir = take()
+        break
       case '--json':
         args.json = true
         break
@@ -174,6 +179,9 @@ function validateArgs(args) {
   // path is a usage error before the first `gh` call rather than after it.
   if (args.statsScript !== undefined && !existsSync(args.statsScript)) {
     throw new UsageError(`--stats-script path does not exist: ${args.statsScript}`)
+  }
+  if (args.recordDir !== undefined && !existsSync(args.recordDir)) {
+    throw new UsageError(`--record-dir path does not exist: ${args.recordDir}`)
   }
   // Validated here for the same reason, and it became load-bearing the moment
   // the cutoff started filtering discovery: an unparseable value makes
@@ -290,6 +298,8 @@ function statsCommandFor(file) {
 // what stops a marker quoted inside prose — a real risk on a PR that discusses
 // this protocol — from inventing a run.
 const EVIDENCE_MARKER_RE = /^<!--\s+devflow:([a-z][a-z-]*)\s+v2\s+([^>]*?)-->/
+const REVIEW_EVIDENCE_MARKER_RE = /^<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->(?=\r?\n|$)/
+const REVIEW_EVIDENCE_PREFIX_RE = /^<!--[ \t]*dev-flow-v2-evidence:/
 
 // Only these three kinds are evidence. An earlier revision accepted any
 // lowercase kind carrying a run_id, so a trusted `devflow:example` comment on
@@ -327,7 +337,29 @@ function parseMarker(body) {
   // that opens with blank lines and then quotes a marker would read as one
   // (review round 1, confirmed P2). The grammar says first LINE, so only
   // leading spaces/tabs on that line may be skipped.
-  const marker = EVIDENCE_MARKER_RE.exec(body.replace(/\r/g, '').replace(/^[ \t]+/, ''))
+  const firstLine = body.replace(/\r/g, '').replace(/^[ \t]+/, '')
+  const reviewMarker = REVIEW_EVIDENCE_MARKER_RE.exec(firstLine)
+  if (reviewMarker) {
+    let value
+    try {
+      value = JSON.parse(reviewMarker[1])
+    } catch {
+      return { malformed: 'dev-flow-v2-evidence payload is not valid JSON' }
+    }
+    const keys = value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).sort() : []
+    if (JSON.stringify(keys) !== JSON.stringify(['destination', 'round', 'run_id', 'sequence', 'stage'])) {
+      return { malformed: 'dev-flow-v2-evidence payload does not contain exactly run_id, stage, round, sequence, destination' }
+    }
+    if (typeof value.run_id !== 'string' || value.run_id.length === 0) return { malformed: 'run_id is not a non-empty string' }
+    if (!MARKER_STAGES.has(value.stage)) return { malformed: `stage "${value.stage}" is not a run stage` }
+    if (value.destination !== 'issue' && value.destination !== 'pr') return { malformed: `destination "${value.destination}" is not issue or pr` }
+    if (value.round !== null && (!Number.isInteger(value.round) || value.round < 1)) return { malformed: 'round is neither null nor a positive integer' }
+    if ((value.destination === 'issue') !== (value.round !== null)) return { malformed: 'destination and round do not form an issue-round or PR-rollup pair' }
+    if (!Number.isInteger(value.sequence) || value.sequence < 1) return { malformed: 'sequence is not a positive integer' }
+    return { kind: 'evidence', runId: value.run_id, destination: value.destination }
+  }
+  if (REVIEW_EVIDENCE_PREFIX_RE.test(firstLine)) return { malformed: 'dev-flow-v2-evidence marker has trailing content or an invalid payload' }
+  const marker = EVIDENCE_MARKER_RE.exec(firstLine)
   if (!marker) return null
   const kind = marker[1]
   if (!EVIDENCE_KINDS.has(kind)) return { malformed: `kind "${kind}" is not run-index, run-record or evidence` }
@@ -341,7 +373,7 @@ function parseMarker(body) {
     return { malformed: `round "${attrs.round}" is neither "-" nor a positive integer` }
   }
   if (!/^[1-9][0-9]*$/.test(attrs.seq)) return { malformed: `seq "${attrs.seq}" is not a positive integer` }
-  return { kind, runId: attrs.run_id }
+  return { kind, runId: attrs.run_id, destination: attrs.dest }
 }
 
 // Which run a report is about is chosen by a marker, and a marker is just
@@ -358,7 +390,7 @@ function parseMarker(body) {
 // noise — it never named a run, so it cannot make discovery indeterminate. A
 // canonical marker from an untrusted author IS a claim, and refusing it is
 // exactly what the indeterminate exit exists to surface.
-function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
+function collectRunIds(comments, trustedActorIds, where, expectedDestination, untrusted, malformed) {
   const found = new Set()
   for (const comment of comments || []) {
     const parsed = parseMarker(comment && comment.body)
@@ -382,6 +414,15 @@ function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
     }
     if (!isTrusted) {
       untrusted.push({ ...entry, run_id: parsed.runId })
+      continue
+    }
+    if (parsed.destination !== expectedDestination) {
+      malformed.push({
+        ...entry,
+        run_id: parsed.runId,
+        trusted: true,
+        reason: `marker destination ${parsed.destination} does not match ${where}`
+      })
       continue
     }
     found.add(parsed.runId)
@@ -476,6 +517,7 @@ function fetchHintRunIds(args, issueNumber, tier, trustedActorIds, untrusted, ma
       fetchComments(args.repo, issueNumber, args.asOf || null),
       trustedActorIds,
       `issue #${issueNumber}`,
+      'issue',
       untrusted,
       malformed
     )
@@ -515,7 +557,7 @@ function discoverRun(args, trustedActorIds) {
     '--json',
     'number,url,title,state,isDraft,body,closingIssuesReferences'
   ])
-  const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number, asOf), trustedActorIds, `PR #${pr.number}`, untrusted, malformed)].sort()
+  const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number, asOf), trustedActorIds, `PR #${pr.number}`, 'pr', untrusted, malformed)].sort()
   if (fromPr.length > 1) {
     throw new IndeterminateError(
       `PR #${pr.number} carries trusted evidence for more than one run (${fromPr.join(', ')}) — rerun with --run <run_id>`,
@@ -546,7 +588,7 @@ function discoverRun(args, trustedActorIds) {
   for (const issueNumber of closingNumbers) {
     closingRuns.set(
       issueNumber,
-      collectRunIds(fetchComments(args.repo, issueNumber, asOf), trustedActorIds, `issue #${issueNumber}`, untrusted, malformed)
+      collectRunIds(fetchComments(args.repo, issueNumber, asOf), trustedActorIds, `issue #${issueNumber}`, 'issue', untrusted, malformed)
     )
   }
   // The PR's own run wins, but the linked issues are still SCANNED — the
@@ -739,6 +781,7 @@ function resolveTrustedActorArgs(args) {
 function harvestTrajectory(stats, args, runId, trusted) {
   const argv = [...stats.prefix, '--repo', args.repo, '--run', runId, '--json', ...trusted.passthrough]
   if (args.asOf) argv.push('--as-of', args.asOf)
+  if (args.recordDir) argv.push('--record-dir', args.recordDir)
   const result = spawnSync(stats.command, argv, {
     encoding: 'utf8',
     maxBuffer: MAX_SYNC_BUFFER_BYTES
@@ -748,7 +791,17 @@ function harvestTrajectory(stats, args, runId, trusted) {
   }
   const stderr = (result.stderr || '').trim()
   if (result.status === 1) {
-    return { missing: `run-not-found — ${stderr || `the harvester does not know run ${runId}`}` }
+    let structuredStatus = null
+    try {
+      structuredStatus = JSON.parse(result.stdout || 'null')?.status || null
+    } catch {
+      // No structured status on stdout — classify as an ordinary not-found
+      // below. A stderr substring is not a fallback: the not-found message
+      // echoes the requested run id verbatim, so a --run value that merely
+      // CONTAINS the text "record-missing" would otherwise self-misclassify.
+    }
+    const kind = structuredStatus === 'record-missing' ? 'record-missing' : 'run-not-found'
+    return { missingKind: kind, missing: `${kind} — ${stderr || `the harvester does not know run ${runId}`}` }
   }
   if (result.status === 3) {
     throw new IndeterminateError(stderr || `the harvester reports run ${runId} indeterminate`)
@@ -855,6 +908,14 @@ function stageAt(transitions, at) {
 function measure(trajectory, policy) {
   const transitions = Array.isArray(trajectory.stage_transitions) ? trajectory.stage_transitions : []
   const rounds = Array.isArray(trajectory.rounds) ? trajectory.rounds : []
+  const slotFailures = Array.isArray(trajectory.slot_failures) ? trajectory.slot_failures : []
+  const slotFailuresUnavailable = trajectory.slot_failures_unavailable === true
+  const provenanceUnavailableRounds = Array.isArray(trajectory.provenance_unavailable_rounds)
+    ? trajectory.provenance_unavailable_rounds
+    : []
+  const futureAdjudicationFiles = Array.isArray(trajectory.future_adjudication_files)
+    ? trajectory.future_adjudication_files
+    : []
   const interventions = Array.isArray(trajectory.interventions) ? trajectory.interventions : []
   const settlements = Array.isArray(trajectory.settlements) ? trajectory.settlements : []
 
@@ -872,19 +933,51 @@ function measure(trajectory, policy) {
   const stages = order.map((stage) => {
     const own = rounds.filter((round) => round.stage === stage)
     const cap = policy.present && policy.rounds[stage] !== undefined ? policy.rounds[stage] : null
+    const entries = transitions
+      .filter((transition) => transition.stage === stage)
+      .map((transition) => ({ entered_at: transition.entered_at, exit: transition.exit ?? null }))
+    const stageInterventions = interventions
+      .filter((entry) => stageAt(transitions, entry.at) === stage)
+      .map((entry) => ({ at: entry.at, kind: entry.kind, note: entry.note }))
+    // Unlike challenge/review, the review skill posts no evidence marker for
+    // integration passes, so local evidence can never authenticate a round,
+    // pass, or finding count here. Disclose that plainly instead of a count
+    // that — since `rounds` never carries an "integration" entry — would
+    // always read as a misleading zero (harmon-devkit#962 maintainer
+    // extension: never a count, never zero).
+    if (stage === 'integration') {
+      return { stage, entries, cap, integration_evidence: trajectory.integration_evidence || 'unavailable', interventions: stageInterventions }
+    }
     return {
       stage,
-      entries: transitions
-        .filter((transition) => transition.stage === stage)
-        .map((transition) => ({ entered_at: transition.entered_at, exit: transition.exit ?? null })),
+      entries,
       rounds_spent: own.length,
       cap,
       findings: own.reduce((total, round) => total + (round.finding_count || 0), 0),
       passes: own.reduce((total, round) => total + (round.pass_count || 0), 0),
-      rounds_without_adjudication: own.filter((round) => !round.has_adjudication).map((round) => round.round),
-      interventions: interventions
-        .filter((entry) => stageAt(transitions, entry.at) === stage)
-        .map((entry) => ({ at: entry.at, kind: entry.kind, note: entry.note }))
+      blocked_passes: own.reduce((total, round) => total + (round.blocked_passes || 0), 0),
+      adjudications: own.reduce(
+        (total, round) => total + (round.adjudication_count ?? (round.has_adjudication ? 1 : 0)),
+        0
+      ),
+      round_evidence_counts: own.map((round) => ({
+        round: round.round,
+        passes: round.pass_count || 0,
+        blocked_passes: round.blocked_passes || 0,
+        adjudications: round.adjudication_count ?? (round.has_adjudication ? 1 : 0)
+      })),
+      rounds_without_adjudication: own
+        .filter((round) => (round.adjudication_count ?? (round.has_adjudication ? 1 : 0)) === 0)
+        .map((round) => round.round),
+      slot_failures: slotFailures.filter((failure) => failure && failure.stage === stage),
+      slot_failures_unavailable: slotFailuresUnavailable,
+      provenance_unavailable_rounds: provenanceUnavailableRounds
+        .filter((entry) => entry && entry.stage === stage)
+        .map((entry) => entry.round),
+      future_adjudication_files: futureAdjudicationFiles.filter((file) =>
+        typeof file === 'string' && file.startsWith(`${stage}-r`)
+      ),
+      interventions: stageInterventions
     }
   })
 
@@ -906,7 +999,9 @@ function measure(trajectory, policy) {
   // the remedy is a harvester change this lane may not make).
   const stagesWithFindings = [...new Set(stages.filter((st) => st.findings > 0).map((st) => st.stage))]
   const attribution =
-    classProvenance.length === 0
+    provenanceUnavailableRounds.length > 0
+      ? { scope: classProvenance.length > 0 ? 'partial' : 'unavailable', stage: null }
+      : classProvenance.length === 0
       ? { scope: 'none', stage: null }
       : stagesWithFindings.length === 1
         ? { scope: 'stage', stage: stagesWithFindings[0] }
@@ -951,7 +1046,7 @@ function unavailableMeasurements(measured) {
   // anyway would manufacture a follow-up for a measurement the report just
   // made — the skill carries every listed gap into improvements (cloud review
   // round 1, confirmed P2).
-  if (measured.class_provenance_attribution.scope !== 'stage') {
+  if (measured.class_provenance_attribution.scope === 'run') {
     gaps.push({
       measurement: 'findings by class and provenance, keyed by stage',
       reason:
@@ -969,7 +1064,7 @@ function unavailableMeasurements(measured) {
     {
       measurement: 'adjudicated-priority overrides per finding',
       reason:
-        'the run trajectory reduces each round\'s adjudication document to a has_adjudication boolean, dropping reviewer_priority, adjudicated_priority and override',
+        'the run trajectory reduces each round\'s adjudication documents to a count, dropping reviewer_priority, adjudicated_priority and override',
       issue: 'harmon-devkit#753'
     }
   )
@@ -1051,13 +1146,32 @@ function renderMarkdown(report) {
     // noise on a stage that has neither a cap nor a round — `plan` reporting
     // "0 rounds, 0 findings" three times over buries the transition and
     // intervention lines that are the only thing it actually measures.
-    if (stage.cap !== null || stage.rounds_spent > 0) {
+    // Integration is different: it carries no evidence marker at all, so
+    // local evidence can never authenticate a round/pass/finding count for
+    // it — disclose that instead of a count that would always read as zero.
+    if (stage.stage === 'integration') {
+      const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
+      l.push(`- Rounds/passes/findings: not measured from local evidence (${cap}) — integration passes carry no authenticated evidence marker today.`)
+    } else if (stage.cap !== null || stage.rounds_spent > 0) {
       const cap = stage.cap === null ? 'no cap recorded' : `cap ${stage.cap} (disclosed, unverified)`
       l.push(`- Rounds spent: ${stage.rounds_spent} / ${cap}`)
       l.push(`- Findings: ${stage.findings} across ${stage.passes} pass(es)`)
+      for (const evidence of stage.round_evidence_counts) {
+        l.push(`- Round ${evidence.round} evidence: ${evidence.passes} pass(es), ${evidence.blocked_passes} blocked pass(es), ${evidence.adjudications} adjudication(s)`)
+      }
       l.push(
         `- Rounds with no adjudication record: ${stage.rounds_without_adjudication.length === 0 ? 'none' : stage.rounds_without_adjudication.join(', ')}`
       )
+      if (stage.slot_failures.length > 0) {
+        l.push(`- Slot failures (retained verbatim): \`${safe(JSON.stringify(stage.slot_failures))}\``)
+      }
+      if (stage.slot_failures_unavailable) l.push('- Slot failures: unavailable under --as-of')
+      if (stage.future_adjudication_files.length > 0) {
+        l.push(`- Future adjudications excluded by --as-of: ${stage.future_adjudication_files.map((file) => `\`${safe(file)}\``).join(', ')}`)
+      }
+      if (stage.provenance_unavailable_rounds.length > 0) {
+        l.push(`- Verified provenance/fingerprint unavailable for round(s): ${stage.provenance_unavailable_rounds.join(', ')}`)
+      }
     }
     if (stage.entries.length === 0) {
       l.push('- Entered: never (the run recorded no transition into this stage)')
@@ -1075,7 +1189,11 @@ function renderMarkdown(report) {
     )
     const attribution = report.measurements.class_provenance_attribution
     if (stage.findings > 0) {
-      if (attribution.scope === 'stage' && attribution.stage === stage.stage) {
+      if (stage.provenance_unavailable_rounds.length > 0) {
+        l.push(
+          `- Findings by class and provenance: unavailable for round(s) ${stage.provenance_unavailable_rounds.join(', ')} — no matching verified \`verdict.json\` projection exists; raw producer assertions are not substituted.`
+        )
+      } else if (attribution.scope === 'stage' && attribution.stage === stage.stage) {
         l.push('- Findings by class and provenance:')
         for (const row of report.measurements.findings_by_class_and_provenance) {
           l.push(`  - ${cell(row.class)} / ${cell(row.provenance)}: ${row.count}`)
@@ -1095,7 +1213,12 @@ function renderMarkdown(report) {
 
   l.push('### Findings by class and provenance')
   l.push('')
-  if (report.measurements.findings_by_class_and_provenance.length === 0) {
+  if (report.measurements.class_provenance_attribution.scope === 'unavailable') {
+    l.push('Unavailable: no affected round has a matching verified `verdict.json` projection; raw producer assertions are not reported as verified provenance.')
+  } else if (report.measurements.class_provenance_attribution.scope === 'partial') {
+    l.push('Partial verified projection only: rounds named unavailable above are excluded rather than counted from raw producer assertions.')
+    l.push('')
+  } else if (report.measurements.findings_by_class_and_provenance.length === 0) {
     l.push('No findings recorded for this run.')
   } else if (report.measurements.class_provenance_attribution.scope === 'stage') {
     l.push(
@@ -1363,16 +1486,59 @@ function run(argv) {
     // A trusted marker naming a run the harvester cannot find is the evidence
     // spec's deleted-entry case — "reject it as deleted-entry tampering, never
     // reinterpret it as a run that did not happen" — so it is indeterminate,
-    // not a fallback (review round 1, confirmed P1). An id that came from
-    // --run carries no such claim: nothing said that run ever existed.
-    if (!args.run) {
+    // not a fallback (review round 1, confirmed P1). A plain run-not-found id
+    // from --run carries no such claim, but structured record-missing does:
+    // the harvester authenticated its marker before finding the local gap.
+    if (harvested.missingKind === 'record-missing' || !args.run) {
       console.error(
-        `${TOOL}: indeterminate — ${harvested.missing}, but a trusted evidence marker (${runIdFrom}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.`
+        `${TOOL}: indeterminate — ${harvested.missing}${!args.run ? `, but a trusted evidence marker (${runIdFrom}) names it. An indexed run whose evidence the harvester cannot find is deleted-entry tampering, never a run that did not happen.` : '. Authenticated evidence exists, but its named local record is absent.'}`
       )
       return 11
     }
     console.error(`${TOOL}: ${harvested.missing}; use the retro's fallback procedure`)
     return 10
+  }
+
+  if (harvested.trajectory && harvested.trajectory.status === 'evidence-only') {
+    const markerPrMatch = !args.run && /^evidence marker on PR #(\d+)$/.exec(runIdFrom || '')
+    const harvestedPr = harvested.trajectory.pr_binding && Number(harvested.trajectory.pr_binding.number)
+    const evidencePr = Number.isInteger(harvestedPr) && harvestedPr > 0
+      ? harvestedPr
+      : markerPrMatch
+        ? Number(markerPrMatch[1])
+        : null
+    if (args.pr !== undefined && evidencePr !== null && evidencePr !== args.pr) {
+      console.error(
+        `${TOOL}: indeterminate — evidence-only run \`${safe(runId)}\` is bound to PR #${evidencePr}, not the requested #${args.pr}`
+      )
+      return 11
+    }
+    const prBinding = evidencePr === null
+      ? 'unbound — authenticated markers identify the run, but no retained run record or PR marker binds it to a PR'
+      : `bound to PR #${evidencePr}`
+    const evidenceOnly = {
+      schema: 'retro-run-report.v1',
+      run_id: runId,
+      status: 'evidence-only',
+      issue: harvested.trajectory.issue,
+      marker_facts: harvested.trajectory.marker_facts || [],
+      untrusted_marker_facts: harvested.trajectory.untrusted_marker_facts || [],
+      legacy_also_present: Boolean(harvested.trajectory.legacy_also_present),
+      source: { harvester: stats.display, run_id_from: runIdFrom, trusted_actors: trusted.source, pr_binding: prBinding }
+    }
+    if (args.json) console.log(JSON.stringify(evidenceOnly, null, 2))
+    else {
+      console.log(`## Run evidence — run \`${safe(runId)}\``)
+      console.log('')
+      console.log(`- Status: \`evidence-only\``)
+      console.log(`- Issue: #${evidenceOnly.issue}`)
+      console.log(`- Authenticated marker facts: \`${JSON.stringify(evidenceOnly.marker_facts)}\``)
+      console.log(`- Untrusted marker facts: \`${JSON.stringify(evidenceOnly.untrusted_marker_facts)}\``)
+      console.log(`- Legacy also present: \`${evidenceOnly.legacy_also_present}\``)
+      console.log(`- PR binding: ${safe(prBinding)}`)
+      console.log('- Full trajectory unavailable: rerun with `--record-dir <path>` containing `<path>/<run_id>/run.json`.')
+    }
+    return 0
   }
 
   // A run record names its own PR. A trajectory that names a DIFFERENT one is

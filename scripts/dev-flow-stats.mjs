@@ -9,25 +9,33 @@
 // reads is documented in ai/schemas/README.md "Evidence marker and digest
 // grammar" — read that first if this file is confusing on its own.
 //
-// Trust model: a run record or evidence comment counts only when its
-// immutable GitHub actor id was on agent-registry.json's
+// Trust model: current `dev-flow-v2-evidence` markers count when their
+// immutable GitHub actor id is in the caller's configured
+// --trusted-actor-id set at read time. Legacy run-record/evidence comments
+// additionally require membership in agent-registry.json's historical
 // `trusted_orchestrator_actor_ids` allowlist at the registry revision in
-// effect when that comment was written (issue #741; evaluated per write,
-// fail closed — see createRegistryTrustResolver below), AND is among the
-// caller's configured --trusted-actor-id selection, which only ever narrows
-// that registry set. Evidence comments additionally narrow to the run
-// record's own author. Nothing inside a payload is ever trusted to name its
-// own author — see "Trust" below and ai/schemas/README.md's "Trust root: the
-// registry allowlist, pinned per write".
+// effect when the comment was written (issue #741; evaluated per write,
+// fail closed — see createRegistryTrustResolver below). Legacy evidence
+// comments further narrow to the run record's own author. Nothing inside a
+// payload is ever trusted to name its own author — see "Trust" below.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  ExitIndeterminate,
+  loadRunDir as loadExitRunDir,
+  validateReceipts as validateExitReceipts,
+  validateAdjudicationSchema as validateExitAdjudication,
+  assembleLogicalRounds as assembleExitRounds,
+  applyVerification as applyExitVerification,
+} from "./dev-flow-exit.mjs";
 
 const MAX_SYNC_BUFFER_BYTES = 64 * 1024 * 1024;
+const EXIT_VALIDATOR = path.join(path.dirname(fileURLToPath(import.meta.url)), "validate-result-schemas.mjs");
 
 // ---------------------------------------------------------------------------
 // gh api wrapper
@@ -495,11 +503,15 @@ const RUN_STAGES = ["kickoff", "claim", "explore", "plan", "implement", "verify"
 // fenced JSON, never the marker comment line itself).
 const MARKER_RE =
   /<!--\s*devflow:(run-index|run-record|evidence)\s+v2\s+run_id=(\S+)\s+stage=(\S+)\s+dest=(issue|pr)\s+round=(-|\d+)\s+seq=(\d+)\s*-->/;
+const EVIDENCE_SUMMARY_MARKER_RE = /^[ \t]*<!--[ \t]*dev-flow-v2-evidence:[ \t]*(\{[^\r\n]*\})[ \t]*-->(?=\r?\n|$)/;
+const EVIDENCE_SUMMARY_PREFIX_RE = /^[ \t]*<!--[ \t]*dev-flow-v2-evidence:/;
 const FENCE_RE = /```json\r?\n([\s\S]*?)\r?\n```/;
 
 class EvidenceError extends Error {}
 
 function parseMarker(body) {
+  const current = parseEvidenceSummaryMarker(body);
+  if (current) return current;
   const m = MARKER_RE.exec(body);
   if (!m) return null;
   const [, kind, runId, stage, dest, roundRaw, seqRaw] = m;
@@ -507,6 +519,27 @@ function parseMarker(body) {
   const round = roundRaw === "-" ? null : Number.parseInt(roundRaw, 10);
   const seq = Number.parseInt(seqRaw, 10);
   return { kind, runId, stage, dest, round, seq };
+}
+
+function parseEvidenceSummaryMarker(body) {
+  if (typeof body !== "string") return null;
+  const match = EVIDENCE_SUMMARY_MARKER_RE.exec(body.replace(/\r/g, ""));
+  if (!match) return null;
+  let value;
+  try {
+    value = JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (canonicalJson(Object.keys(value).sort()) !== canonicalJson(["destination", "round", "run_id", "sequence", "stage"])) return null;
+  if (typeof value.run_id !== "string" || value.run_id.length === 0) return null;
+  if (!RUN_STAGES.includes(value.stage)) return null;
+  if (value.destination !== "issue" && value.destination !== "pr") return null;
+  if (value.round !== null && (!Number.isInteger(value.round) || value.round < 1)) return null;
+  if ((value.destination === "issue") !== (value.round !== null)) return null;
+  if (!Number.isInteger(value.sequence) || value.sequence < 1) return null;
+  return { kind: "evidence", runId: value.run_id, stage: value.stage, dest: value.destination, round: value.round, seq: value.sequence, grammar: "dev-flow-v2-evidence" };
 }
 
 function fencedPayloadText(body) {
@@ -1708,7 +1741,388 @@ function harvestOneRunRecord(repo, issueNumber, record, { asOf, issueComments, w
   }
 }
 
-function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf }) {
+function readJsonFile(file) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch (err) {
+    throw new EvidenceError(`${file} is not readable JSON: ${err.message}`);
+  }
+}
+
+function runExitValidator(args, label) {
+  const result = spawnSync(process.execPath, [EXIT_VALIDATOR, ...args], {
+    encoding: "utf8",
+    maxBuffer: MAX_SYNC_BUFFER_BYTES,
+  });
+  if (result.error) throw new EvidenceError(`${label} validator could not run: ${result.error.message}`);
+  if (result.status === 0) return;
+  const firstError = `${result.stderr || ""}\n${result.stdout || ""}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) || `validator exited ${result.status}`;
+  throw new EvidenceError(`${label} failed exit-engine validation: ${firstError}`);
+}
+
+function collectTrustedEvidenceSummaries(comments, runId, { trustedActorIds, asOf, fetchedFrom }) {
+  const cutoff = asOf ? Date.parse(asOf) : Infinity;
+  const candidates = [];
+  const untrusted = [];
+  for (const comment of comments) {
+    const marker = parseEvidenceSummaryMarker(comment.body || "");
+    const actorId = commentActorId(comment);
+    if (Date.parse(comment.created_at) > cutoff) continue;
+    if (!marker) {
+      if (EVIDENCE_SUMMARY_PREFIX_RE.test(comment.body || "") && trustedActorIds.has(actorId)) {
+        throw new EvidenceError(`trusted evidence comment ${comment.id} has a malformed dev-flow-v2-evidence marker`);
+      }
+      continue;
+    }
+    if (marker.runId !== runId) continue;
+    if (!trustedActorIds.has(actorId) || marker.dest !== fetchedFrom) {
+      untrusted.push({ comment, marker, actorId });
+      continue;
+    }
+    candidates.push({ comment, marker, actorId });
+  }
+  return { trusted: [...resolveCanonical(candidates).values()], untrusted };
+}
+
+// A PR-only current marker needs the run's PR binding before it can be
+// discovered. This probe is deliberately non-authoritative: malformed or
+// stale local data cannot suppress a valid legacy GitHub record. Full local
+// parsing happens only after a trusted marker selects the current run.
+function probeLocalPrEvidence(repo, recordRoot, runId, options) {
+  let prNumber;
+  try {
+    const root = realpathSync(recordRoot);
+    const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
+    const candidate = path.join(runDir, "run.json");
+    if (!existsSync(candidate)) return { trusted: [], untrusted: [] };
+    const body = readJsonFile(resolveContainedPath(root, candidate, `${runId}/run.json`));
+    prNumber = body && body.pr && body.pr.number;
+    if (!Number.isInteger(prNumber) || prNumber <= 0) return { trusted: [], untrusted: [] };
+  } catch (err) {
+    if (err instanceof EvidenceError) return { trusted: [], untrusted: [] };
+    throw err;
+  }
+  // The local binding above is only a non-authoritative probe, so an
+  // unreadable local candidate is swallowed. Once that binding selects a
+  // real PR, however, trusted remote evidence is authoritative: a malformed
+  // marker must propagate as indeterminate rather than masquerade as absence.
+  return collectTrustedEvidenceSummaries(fetchPrComments(repo, prNumber), runId, { ...options, fetchedFrom: "pr" });
+}
+
+function markerFacts(markers) {
+  return markers
+    .map(({ marker }) => ({ stage: marker.stage, destination: marker.dest, round: marker.round, sequence: marker.seq }))
+    .sort((a, b) => `${a.stage}|${a.round}|${a.sequence}`.localeCompare(`${b.stage}|${b.round}|${b.sequence}`));
+}
+
+function assertEvidenceMarkerSequenceContiguity(entries, label) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const marker = entry.marker;
+    const destination = marker.dest ?? marker.destination;
+    const sequence = marker.seq ?? marker.sequence;
+    const key = `${destination}|${marker.stage}|${marker.round}`;
+    const group = groups.get(key) || { destination, stage: marker.stage, round: marker.round, sequences: [] };
+    group.sequences.push(sequence);
+    groups.set(key, group);
+  }
+  for (const { destination, stage, round, sequences } of groups.values()) {
+    const sorted = [...sequences].sort((a, b) => a - b);
+    if (sorted.some((sequence, index) => sequence !== index + 1)) {
+      throw new EvidenceError(`${label} marker group destination=${destination}, stage=${stage}, round=${round} must have unique contiguous sequences starting at 1; found [${sorted.join(", ")}]`);
+    }
+  }
+}
+
+function resolveContainedPath(root, candidate, label, { allowMissing = false } = {}) {
+  const lexical = path.resolve(candidate);
+  if (lexical !== root && !lexical.startsWith(`${root}${path.sep}`)) {
+    throw new EvidenceError(`${label} escapes --record-dir`);
+  }
+  if (!existsSync(lexical)) {
+    if (allowMissing) return lexical;
+    throw new EvidenceError(`${label} does not exist`);
+  }
+  let resolved;
+  try {
+    resolved = realpathSync(lexical);
+  } catch (err) {
+    throw new EvidenceError(`${label} cannot be resolved: ${err.message}`);
+  }
+  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+    throw new EvidenceError(`${label} escapes --record-dir through a symbolic link`);
+  }
+  return resolved;
+}
+
+function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false) {
+  const root = realpathSync(recordRoot);
+  const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
+  const runFileCandidate = path.join(runDir, "run.json");
+  if (!existsSync(runFileCandidate)) return { status: "record-missing", runId, issueNumber, markerFacts: markerFacts(markers), runDir };
+  const runFile = resolveContainedPath(root, runFileCandidate, `${runId}/run.json`);
+  const body = readJsonFile(runFile);
+  if (body.run_id !== runId) throw new EvidenceError(`${runFile} declares run_id ${JSON.stringify(body.run_id)}, expected ${runId}`);
+  if (!Array.isArray(body.evidence_comments)) throw new EvidenceError(`${runFile} does not contain an evidence_comments array`);
+  // A retained local directory has no historical snapshot semantics. GitHub
+  // marker visibility still selects/authenticates the run at the requested
+  // cutoff, but once selected its local state is explicitly current-state.
+  const state = reconstructAsOf(body, null, body.started_at);
+  const fetchedDestinations = new Set(["issue"]);
+  const fetchedComments = issueComments.map((comment) => ({ ...comment, _fetchedFrom: "issue" }));
+  const allMarkers = markers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
+  const allUntrustedMarkers = untrustedMarkers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
+  if (body.pr && Number.isInteger(body.pr.number) && body.pr.number > 0) {
+    const prComments = fetchPrComments(repo, body.pr.number);
+    fetchedComments.push(...prComments.map((comment) => ({ ...comment, _fetchedFrom: "pr" })));
+    const prSummaries = collectTrustedEvidenceSummaries(prComments, runId, { trustedActorIds, asOf: null, fetchedFrom: "pr" });
+    allMarkers.push(...prSummaries.trusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
+    allUntrustedMarkers.push(...prSummaries.untrusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
+    fetchedDestinations.add("pr");
+  }
+  const cutoff = asOf ? Date.parse(asOf) : Infinity;
+  const visitedStages = new Set((state.stage_transitions || []).map((transition) => transition.stage));
+  const authenticatedMarkers = allMarkers.filter((observed) => visitedStages.has(observed.marker.stage));
+  allUntrustedMarkers.push(...allMarkers.filter((observed) => !visitedStages.has(observed.marker.stage)));
+  const visibleMarkers = authenticatedMarkers.filter((observed) => Date.parse(observed.comment.created_at) <= cutoff);
+  if (visibleMarkers.length === 0) return { status: "no-current-evidence" };
+  const hasIssueBinding = visibleMarkers.some((observed) => observed.marker.dest === "issue") || issueNumberFromRunId(runId) === issueNumber;
+  if (!hasIssueBinding && visibleMarkers.some((observed) => observed.marker.dest === "pr")) {
+    return { status: "indeterminate", runId, issueNumber, unverifiedPrOnly: true, reason: `PR-only evidence for noncanonical run ${JSON.stringify(runId)} is unverified for issue #${issueNumber}; an authenticated issue marker or canonical run-id issue binding is required` };
+  }
+  const registrationIds = new Set();
+  for (const entry of body.evidence_comments) {
+    const id = String(entry && entry.id);
+    if (registrationIds.has(id)) throw new EvidenceError(`local run record repeats evidence comment id ${JSON.stringify(id)}`);
+    registrationIds.add(id);
+  }
+  const registrations = new Map(body.evidence_comments.map((entry) => [String(entry.id), entry]));
+  const observedById = new Map(fetchedComments.map((comment) => [String(comment.id), comment]));
+  const unverifiedEvidenceDestinations = new Set();
+  for (const entry of body.evidence_comments) {
+    const destination = entry && entry.marker && entry.marker.destination;
+    if (!fetchedDestinations.has(destination)) {
+      unverifiedEvidenceDestinations.add(destination);
+    } else if (!observedById.has(String(entry.id))) {
+      throw new EvidenceError(`local run record registers evidence comment ${entry.id}, but that comment was not observed — deleted-entry tampering`);
+    }
+  }
+  // A migration can retain both current summary markers and legacy fenced
+  // evidence comments. Presence is checked across both grammars; legacy
+  // registrations additionally retain their historical per-write trust rule.
+  const runRecordAuthorIds = new Set(authenticatedMarkers
+    .filter((observed) => observed.marker.grammar === "dev-flow-v2-evidence")
+    .map((observed) => observed.actorId));
+  if (runRecordAuthorIds.size !== 1) {
+    throw new EvidenceError(`${runId} current evidence does not identify exactly one run-record author`);
+  }
+  const [runRecordAuthorId] = runRecordAuthorIds;
+  for (const entry of body.evidence_comments) {
+    const comment = observedById.get(String(entry.id));
+    if (!comment) continue;
+    // Legacy discovery accepts a marker only from the first line. Apply the
+    // same boundary here so quoting or moving a registered marker is
+    // tampering even though its separately-digested fenced payload survived.
+    const firstLine = (comment.body || "").split(/\r?\n/, 1)[0];
+    const marker = parseEvidenceSummaryMarker(comment.body || "") || parseMarker(firstLine);
+    if (!marker || marker.kind !== "evidence" || marker.runId !== runId) {
+      throw new EvidenceError(`local run record does not authenticate evidence comment ${entry.id}`);
+    }
+    const actorId = commentActorId(comment);
+    const isCurrentMarker = marker.grammar === "dev-flow-v2-evidence";
+    const trusted = isCurrentMarker
+      ? trustedActorIds.has(actorId)
+      : effectiveTrustAt(comment.created_at).has(actorId);
+    const listed = entry.marker;
+    const legacyPayload = isCurrentMarker ? null : fencedPayloadText(comment.body || "");
+    const expectedDigest = isCurrentMarker ? payloadDigest(comment.body || "") : (legacyPayload === null ? null : payloadDigest(legacyPayload));
+    if (!trusted || (!isCurrentMarker && actorId !== runRecordAuthorId) || actorId !== Number(entry.author_actor_id) || entry.digest !== expectedDigest ||
+        marker.dest !== comment._fetchedFrom || !listed || listed.run_id !== runId || listed.stage !== marker.stage ||
+        listed.destination !== marker.dest || listed.round !== marker.round || listed.sequence !== marker.seq) {
+      throw new EvidenceError(`local run record does not authenticate evidence comment ${entry.id}`);
+    }
+  }
+  for (const observed of authenticatedMarkers) {
+    const entry = registrations.get(String(observed.comment.id));
+    const listed = entry && entry.marker;
+    if (observed.marker.dest !== observed.comment._fetchedFrom || !entry || Number(entry.author_actor_id) !== observed.actorId || entry.digest !== payloadDigest(observed.comment.body || "") ||
+        !listed || listed.run_id !== runId || listed.stage !== observed.marker.stage || listed.destination !== observed.marker.dest ||
+        listed.round !== observed.marker.round || listed.sequence !== observed.marker.seq) {
+      throw new EvidenceError(`local run record does not authenticate evidence comment ${observed.comment.id}`);
+    }
+  }
+  assertEvidenceMarkerSequenceContiguity(body.evidence_comments, `${runId} registered evidence`);
+  assertEvidenceMarkerSequenceContiguity(visibleMarkers, `${runId} visible evidence`);
+  // Retained trajectory semantics belong to dev-flow-exit.mjs. The
+  // harvester authenticates which GitHub marker groups may be reported,
+  // then projects only rounds accepted by that engine; it does not maintain
+  // a second pass/adjudication/receipt/lifecycle implementation here.
+  let exitRun;
+  let validPasses;
+  let diagnostics;
+  const engineTmp = mkdtempSync(path.join(tmpdir(), "dev-flow-stats-exit-"));
+  try {
+    exitRun = loadExitRunDir(runDir);
+    // The durable run directory adds the exit engine's `receipts` and
+    // `slot_failures` trajectory inputs to the canonical run-record document.
+    // Validate the canonical projection while supplying the original file as
+    // the validator's trusted receipt sequence; this is the same split the
+    // validator's run/--receipts contract defines.
+    const canonicalRunFile = path.join(engineTmp, "run-record.json");
+    const { receipts: _receipts, slot_failures: _slotFailures, ...canonicalRun } = exitRun.runRecord;
+    for (const field of ["stage_transitions", "interventions", "settlements"]) {
+      canonicalRun[field] = (canonicalRun[field] || []).map(({ seq: _seq, digest: _digest, prev_digest: _previous, ...entry }) => entry);
+    }
+    writeFileSync(canonicalRunFile, `${JSON.stringify(canonicalRun, null, 2)}\n`);
+    const runValidationArgs = ["run", canonicalRunFile];
+    // --receipts now requires the bound file to carry a receipts array
+    // (harmon-devkit#1000): bind strictly only when this record actually has
+    // one, and fall back to the validator's plain-run mode otherwise, same as
+    // any other caller that omits --receipts.
+    if (Array.isArray(body.receipts)) runValidationArgs.push("--receipts", runFile);
+    runValidationArgs.push("--receipt");
+    if (exitRun.adjudications.length === 0) {
+      runValidationArgs.push("--no-adjudications");
+    } else {
+      for (const adjudication of exitRun.adjudications) {
+        runValidationArgs.push("--adjudication", adjudication.file);
+      }
+    }
+    runExitValidator(runValidationArgs, `${runId}/run.json`);
+    ({ validPasses, diagnostics } = validateExitReceipts(exitRun.runRecord, exitRun.passes, {
+      validatorPath: EXIT_VALIDATOR,
+      tmpDir: engineTmp,
+    }));
+  } catch (err) {
+    if (err instanceof ExitIndeterminate) throw new EvidenceError(err.message);
+    throw err;
+  } finally {
+    rmSync(engineTmp, { recursive: true, force: true });
+  }
+
+  const validAdjudications = [];
+  for (const adjudication of exitRun.adjudications) {
+    if (adjudication.doc.stage !== "challenge" && adjudication.doc.stage !== "review") continue;
+    const matchingPassFiles = validPasses
+      .filter((pass) => pass.payload.stage === adjudication.doc.stage && pass.payload.round === adjudication.doc.round)
+      .map((pass) => pass.file);
+    const result = validateExitAdjudication(EXIT_VALIDATOR, adjudication.file, matchingPassFiles);
+    if (!result.ok) throw new EvidenceError(`exit engine rejected adjudication ${adjudication.name}: ${result.message}`);
+    validAdjudications.push(adjudication);
+  }
+
+  const blockedConfidencePasses = exitRun.passes.filter((pass) => {
+    const envelope = pass.envelope;
+    return envelope.status === "blocked" &&
+      (envelope.role === "challenger" || envelope.role === "reviewer") &&
+      (envelope.payload.stage === "challenge" || envelope.payload.stage === "review") &&
+      Number.isInteger(envelope.payload.round);
+  });
+  for (const pass of blockedConfidencePasses) {
+    runExitValidator(
+      ["envelope", pass.file, "--run-id", body.run_id, "--initiated-by", body.initiated_by],
+      `blocked pass ${pass.name}`,
+    );
+  }
+
+  const byRound = new Map();
+  for (const observed of authenticatedMarkers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
+    const key = `${observed.marker.stage}|${observed.marker.round}`;
+    const group = byRound.get(key) || [];
+    group.push(observed);
+    byRound.set(key, group);
+  }
+  const rounds = [];
+  try {
+    for (const stage of ["challenge", "review"]) {
+      const assembled = assembleExitRounds(stage, validPasses, validAdjudications, { finders: [], finder_fallbacks: [] }, exitRun.runRecord, {
+        allPasses: exitRun.passes,
+      });
+      applyExitVerification(assembled, null);
+      for (const round of assembled) {
+        const key = `${stage}|${round.round}`;
+        const group = byRound.get(key);
+        if (!group) continue;
+        const passes = validPasses.filter((pass) => pass.payload.stage === stage && pass.payload.round === round.round);
+        const blockedPasses = blockedConfidencePasses.filter(
+          (pass) => pass.envelope.payload.stage === stage && pass.envelope.payload.round === round.round,
+        );
+        const adjudication = validAdjudications.find((entry) => entry.doc.stage === stage && entry.doc.round === round.round);
+        rounds.push({
+          stage,
+          dest: "issue",
+          round: round.round,
+          payload: {
+            passes: passes.map((pass) => pass.envelope),
+            blockedPasses: blockedPasses.map((pass) => pass.envelope),
+            adjudication: adjudication ? adjudication.doc : null,
+            findingAttributions: round.findings.length === 0 ? null : round.findings.map((finding) => ({
+              id: finding.id,
+              provenance: finding.verifiedProvenance,
+              provenance_status: finding.provenanceStatus,
+              fingerprint: finding.verifiedFingerprint,
+              fingerprint_status: finding.fingerprintStatus,
+            })),
+            incomplete: round.status !== "complete",
+          },
+          commentIds: group.map((entry) => entry.comment.id),
+        });
+        byRound.delete(key);
+      }
+    }
+  } catch (err) {
+    if (err instanceof ExitIndeterminate) throw new EvidenceError(err.message);
+    throw err;
+  }
+  const artifactRoundKeys = new Set();
+  for (const pass of exitRun.passes) {
+    const envelope = pass.envelope;
+    const stage = envelope.role === "integrator" ? "integration" : envelope.payload.stage;
+    const round = envelope.role === "integrator" ? envelope.payload.integration_round : envelope.payload.round;
+    if (typeof stage === "string" && Number.isInteger(round)) artifactRoundKeys.add(`${stage}|${round}`);
+  }
+  for (const adjudication of exitRun.adjudications) {
+    if (typeof adjudication.doc.stage === "string" && Number.isInteger(adjudication.doc.round)) {
+      artifactRoundKeys.add(`${adjudication.doc.stage}|${adjudication.doc.round}`);
+    }
+  }
+  for (const slotFailure of Array.isArray(body.slot_failures) ? body.slot_failures : []) {
+    if (typeof slotFailure.stage === "string" && Number.isInteger(slotFailure.round)) {
+      artifactRoundKeys.add(`${slotFailure.stage}|${slotFailure.round}`);
+    }
+  }
+  const missingMarkerKey = [...byRound.keys()].find((key) => !artifactRoundKeys.has(key));
+  if (missingMarkerKey) {
+    const [stage, round] = missingMarkerKey.split("|");
+    throw new EvidenceError(`record-missing: authenticated ${stage} round ${round} marker group has no retained pass, adjudication, or slot failure`);
+  }
+  const unreceiptedPassFiles = diagnostics
+    .filter((entry) => entry.reason === "no receipt entry for this pass in run.receipts")
+    .map((entry) => entry.pass);
+  return {
+    status: "ok",
+    runId,
+    issueNumber,
+    record: { body },
+    state,
+    rounds,
+    slotFailures: Array.isArray(body.slot_failures) ? body.slot_failures : [],
+    slotFailuresUnavailable: false,
+    futureAdjudicationFiles: [],
+    localRecordCurrentState: Boolean(asOf),
+    trajectoryDiagnostics: diagnostics,
+    untrusted: [],
+    forged: allUntrustedMarkers,
+    unreceiptedPassFiles,
+    legacyAlsoPresent,
+    unverifiedEvidenceDestinations: [...unverifiedEvidenceDestinations],
+  };
+}
+
+function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null }) {
   const issueComments = fetchIssueComments(repo, issueNumber);
   const cutoffEpoch = asOf ? Date.parse(asOf) : Infinity;
   const withinCutoff = (comment) => Date.parse(comment.created_at) <= cutoffEpoch;
@@ -1720,19 +2134,58 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf }) {
   // exist yet, not merely to reconstruct in-flight. Discovery itself, not
   // just round evidence, needs the cutoff filter — challenge round 1,
   // confirmed.
-  // One resolver per issue harvest, shared by run-record discovery and
-  // evidence assembly (same per-timestamp cache; see
-  // createRegistryTrustResolver). The registry revision HISTORY is cached
-  // per repo at module level, so this costs nothing across issues.
+  const summaries = requestedRunId
+    ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf, fetchedFrom: "issue" })
+    : { trusted: [], untrusted: [] };
+  const liveSummaries = requestedRunId && recordDir
+    ? collectTrustedEvidenceSummaries(issueComments, requestedRunId, { trustedActorIds, asOf: null, fetchedFrom: "issue" })
+    : summaries;
+  let currentRun = null;
+  if (summaries.trusted.length > 0 && !recordDir) {
+    try {
+      assertEvidenceMarkerSequenceContiguity(summaries.trusted, `${requestedRunId} visible evidence`);
+      currentRun = { status: "evidence-only", runId: requestedRunId, issueNumber, markerFacts: markerFacts(summaries.trusted), untrustedMarkerFacts: markerFacts(summaries.untrusted), legacyAlsoPresent: false };
+    } catch (err) {
+      if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
+      throw err;
+    }
+  } else if (requestedRunId && recordDir) {
+    const prSelection = summaries.trusted.length === 0
+      ? probeLocalPrEvidence(repo, recordDir, requestedRunId, { trustedActorIds, asOf })
+      : { trusted: [], untrusted: [] };
+    const selectedByCurrentEvidence = summaries.trusted.length > 0 || prSelection.trusted.length > 0;
+    if (!selectedByCurrentEvidence) {
+      // Fall through to legacy discovery. Local bytes are not authority to
+      // select a current run and therefore are not fully parsed here.
+    } else {
+      try {
+        const effectiveTrustAt = createRegistryTrustResolver(repo, trustedActorIds);
+        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false);
+        if (loaded.status !== "no-current-evidence" && (loaded.status !== "record-missing" || summaries.trusted.length > 0)) currentRun = loaded;
+      } catch (err) {
+        if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
+        throw err;
+      }
+    }
+  }
+  if (currentRun && currentRun.status === "record-missing") return [currentRun];
+
+  // Current evidence is resolved before legacy discovery. A malformed legacy
+  // record cannot suppress an authenticated current run; when legacy parsing
+  // succeeds it contributes only this migration disclosure. With no current
+  // evidence, the historical legacy trust path remains unchanged.
   const effectiveTrustAt = createRegistryTrustResolver(repo, trustedActorIds);
   let records;
   try {
     records = findRunRecord(issueComments.filter(withinCutoff), { trustedActorIds, repo, effectiveTrustAt });
   } catch (err) {
-    if (err instanceof EvidenceError) {
-      return [{ status: "indeterminate", runId: null, issueNumber, reason: err.message }];
-    }
+    if (currentRun && err instanceof EvidenceError) return [currentRun];
+    if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: null, issueNumber, reason: err.message }];
     throw err;
+  }
+  if (currentRun) {
+    currentRun.legacyAlsoPresent = Boolean(records && records.some((record) => record.runId === requestedRunId));
+    return [currentRun];
   }
   if (!records) return [];
 
@@ -1747,11 +2200,11 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf }) {
   );
 }
 
-function discoverAllRuns(repo, { trustedActorIds, asOf }) {
+function discoverAllRuns(repo, options) {
   const issues = fetchIssueList(repo);
   const runs = [];
   for (const issue of issues) {
-    for (const run of harvestRunsForIssue(repo, issue.number, { trustedActorIds, asOf })) {
+    for (const run of harvestRunsForIssue(repo, issue.number, options)) {
       runs.push(run);
     }
   }
@@ -1760,7 +2213,17 @@ function discoverAllRuns(repo, { trustedActorIds, asOf }) {
 
 function discoverRunsForId(repo, runId, options) {
   const issueNumber = issueNumberFromRunId(runId);
-  if (issueNumber === null) return discoverAllRuns(repo, options);
+  if (issueNumber === null) {
+    const discovered = discoverAllRuns(repo, { ...options, requestedRunId: runId });
+    const matching = discovered.filter((run) => run.runId === runId);
+    const authoritativelyBound = matching.filter((run) => !run.unverifiedPrOnly);
+    if (authoritativelyBound.length > 1) {
+      throw new EvidenceError(`run ${JSON.stringify(runId)} has more than one authoritative issue binding (${authoritativelyBound.map((run) => `#${run.issueNumber}`).join(", ")})`);
+    }
+    if (authoritativelyBound.length === 1) return authoritativelyBound;
+    const unverifiedPrOnly = matching.find((run) => run.unverifiedPrOnly);
+    return unverifiedPrOnly ? [unverifiedPrOnly] : discovered;
+  }
 
   let issue;
   try {
@@ -1771,7 +2234,7 @@ function discoverRunsForId(repo, runId, options) {
     throw err;
   }
   if (issue.pull_request) return [];
-  return harvestRunsForIssue(repo, issueNumber, options);
+  return harvestRunsForIssue(repo, issueNumber, { ...options, requestedRunId: runId });
 }
 
 // ---------------------------------------------------------------------------
@@ -2033,21 +2496,41 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
 // Per-run trajectory rendering
 // ---------------------------------------------------------------------------
 
-function findingCountsByClassAndProvenance(rounds) {
+function verifiedFindingMeasurements(rounds) {
   const counts = {};
+  const fingerprints = {};
+  const unavailableRounds = [];
   for (const round of rounds) {
     const passes = Array.isArray(round.payload.passes) ? round.payload.passes : [];
+    const findingCount = passes.reduce((total, pass) => total + (((pass.payload && pass.payload.findings) || []).length), 0);
+    if (findingCount > 0 && !Array.isArray(round.payload.findingAttributions)) {
+      unavailableRounds.push({ stage: round.stage, round: round.round });
+      continue;
+    }
+    if (findingCount === 0) continue;
+    const attributionById = new Map(round.payload.findingAttributions.map((finding) => [finding.id, finding]));
+    let unavailable = false;
     for (const pass of passes) {
       const findings = (pass.payload && pass.payload.findings) || [];
       for (const f of findings) {
+        const attribution = attributionById.get(f.id);
         const cls = f.class || "unclassified";
-        const prov = f.provenance || "unspecified";
-        const key = `${cls}/${prov}`;
-        counts[key] = (counts[key] || 0) + 1;
+        if (attribution && attribution.provenance_status !== "unverified") {
+          const key = `${cls}/${attribution.provenance}`;
+          counts[key] = (counts[key] || 0) + 1;
+        } else {
+          unavailable = true;
+        }
+        if (attribution && attribution.fingerprint_status !== "unverified") {
+          fingerprints[attribution.fingerprint] = (fingerprints[attribution.fingerprint] || 0) + 1;
+        } else {
+          unavailable = true;
+        }
       }
     }
+    if (unavailable) unavailableRounds.push({ stage: round.stage, round: round.round });
   }
-  return counts;
+  return { counts, fingerprints, unavailableRounds };
 }
 
 function renderTrajectory(run) {
@@ -2060,6 +2543,7 @@ function renderTrajectory(run) {
   const rounds = run.rounds
     .filter((r) => r.dest === "issue" && r.round !== null)
     .sort((a, b) => Math.min(...a.commentIds) - Math.min(...b.commentIds));
+  const verifiedMeasurements = verifiedFindingMeasurements(rounds);
   return {
     run_id: run.runId,
     issue: run.issueNumber,
@@ -2076,12 +2560,37 @@ function renderTrajectory(run) {
       stage: r.stage,
       round: r.round,
       pass_count: Array.isArray(r.payload.passes) ? r.payload.passes.length : 0,
+      blocked_passes: Array.isArray(r.payload.blockedPasses) ? r.payload.blockedPasses.length : 0,
+      adjudication_count: r.payload.adjudication ? 1 : 0,
       finding_count: Array.isArray(r.payload.passes)
         ? r.payload.passes.reduce((n, p) => n + ((p.payload && p.payload.findings && p.payload.findings.length) || 0), 0)
         : 0,
       has_adjudication: Boolean(r.payload.adjudication),
+      ...(Array.isArray(r.payload.findingAttributions) && r.payload.findingAttributions.length > 0
+        ? { finding_attributions: r.payload.findingAttributions }
+        : {}),
+      ...(r.payload.incomplete ? { status: "capped" } : {}),
+      provenance_measurement: Array.isArray(r.payload.findingAttributions)
+        ? (r.payload.findingAttributions.every((finding) => finding.provenance_status !== "unverified") ? "verified" : "unverified")
+        : ((Array.isArray(r.payload.passes)
+            ? r.payload.passes.reduce((n, p) => n + (((p.payload && p.payload.findings) || []).length), 0)
+            : 0) === 0 ? "not-applicable" : "unavailable"),
     })),
-    findings_by_class_and_provenance: findingCountsByClassAndProvenance(rounds),
+    findings_by_class_and_provenance: verifiedMeasurements.counts,
+    findings_by_verified_fingerprint: verifiedMeasurements.fingerprints,
+    provenance_unavailable_rounds: verifiedMeasurements.unavailableRounds,
+    // Retained exactly as recorded. This projection reports evidence; it
+    // does not re-run the exit engine's finder-slot semantics.
+    slot_failures: run.slotFailures ?? [],
+    slot_failures_unavailable: Boolean(run.slotFailuresUnavailable),
+    future_adjudication_files: run.futureAdjudicationFiles || [],
+    local_record_current_state: Boolean(run.localRecordCurrentState),
+    trajectory_diagnostics: run.trajectoryDiagnostics || [],
+    // Integration passes carry no authenticated evidence marker today (unlike
+    // challenge/review, which the review skill posts to the issue), so there
+    // is no trustworthy local-evidence count to report — disclose that
+    // plainly rather than a count that would always read as zero.
+    integration_evidence: "not-measured",
     // Renamed from the misleading untrusted_comments — shepherd round 2,
     // Codex-confirmed (P2): this field has only ever held TRUSTED-but-
     // unlisted orphans, never untrusted ones. forged_comments is the new,
@@ -2089,6 +2598,9 @@ function renderTrajectory(run) {
     // forged-author comment: reported, ignored").
     orphan_comments: run.untrusted.map((u) => ({ id: u.comment.id, actor_id: u.actorId })),
     forged_comments: run.forged.map((f) => ({ id: f.comment.id, actor_id: f.actorId })),
+    unreceipted_pass_files: run.unreceiptedPassFiles || [],
+    legacy_also_present: Boolean(run.legacyAlsoPresent),
+    unverified_evidence_destinations: run.unverifiedEvidenceDestinations || [],
   };
 }
 
@@ -2103,18 +2615,31 @@ function renderTrajectoryTable(trajectory) {
   lines.push("");
   lines.push("rounds:");
   for (const r of trajectory.rounds) {
-    lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.finding_count} finding(s), adjudication=${r.has_adjudication}`);
+    lines.push(`  ${r.stage} r${r.round}: ${r.pass_count} pass(es), ${r.blocked_passes} blocked pass(es), ${r.adjudication_count} adjudication(s), ${r.finding_count} finding(s), provenance=${r.provenance_measurement}`);
   }
+  lines.push("integration: not measured from local evidence");
   if (Object.keys(trajectory.findings_by_class_and_provenance).length > 0) {
     lines.push("");
     lines.push("findings by class/provenance:");
     for (const [k, v] of Object.entries(trajectory.findings_by_class_and_provenance)) lines.push(`  ${k}: ${v}`);
   }
+  if (trajectory.provenance_unavailable_rounds.length > 0) lines.push(`provenance unavailable for: ${trajectory.provenance_unavailable_rounds.map((entry) => `${entry.stage} r${entry.round}`).join(", ")}`);
   if (trajectory.interventions.length > 0) {
     lines.push("");
     lines.push("interventions:");
     for (const i of trajectory.interventions) lines.push(`  ${i.at}  ${i.kind}: ${i.note}`);
   }
+  if (trajectory.unreceipted_pass_files.length > 0) {
+    lines.push("");
+    lines.push(`unreceipted pass files: ${trajectory.unreceipted_pass_files.join(", ")}`);
+  }
+  if (trajectory.slot_failures_unavailable) lines.push("slot_failures: unavailable under --as-of");
+  else if (trajectory.slot_failures.length > 0) lines.push(`slot_failures: ${JSON.stringify(trajectory.slot_failures)}`);
+  if (trajectory.future_adjudication_files.length > 0) lines.push(`future adjudications under --as-of: ${trajectory.future_adjudication_files.join(", ")}`);
+  if (trajectory.local_record_current_state) lines.push("local record read at current state; not reconstructable to the cutoff");
+  if (trajectory.trajectory_diagnostics.length > 0) lines.push(`trajectory diagnostics: ${JSON.stringify(trajectory.trajectory_diagnostics)}`);
+  if (trajectory.legacy_also_present) lines.push("legacy-also-present: true");
+  if (trajectory.unverified_evidence_destinations.length > 0) lines.push(`unverified evidence destinations: ${trajectory.unverified_evidence_destinations.join(", ")}`);
   return lines.join("\n");
 }
 
@@ -2411,7 +2936,7 @@ export {
 // the output stays plausible, nothing signals the mistake.
 const KNOWN_FLAGS = new Set([
   "as-of", "config", "exit-script", "json", "policy", "replay", "repo",
-  "repo-root", "run", "since", "stale-after-days", "trusted-actor-id",
+  "record-dir", "repo-root", "run", "since", "stale-after-days", "trusted-actor-id",
   "trusted-actors-file",
 ]);
 
@@ -2691,10 +3216,19 @@ function cliRun(args) {
     return 2;
   }
   const asOf = asOfArg.value;
+  const recordDirRequired = requiredArgValue("record-dir", args["record-dir"]);
+  if (!recordDirRequired.ok) {
+    console.error(recordDirRequired.error);
+    return 2;
+  }
+  if (recordDirRequired.value !== null && !existsSync(recordDirRequired.value)) {
+    console.error(`dev-flow-stats: --record-dir path does not exist: ${recordDirRequired.value}`);
+    return 2;
+  }
 
   let runs;
   try {
-    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf });
+    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value });
   } catch (err) {
     console.error(`dev-flow-stats: ${err.message}`);
     return err instanceof EvidenceError ? 3 : 2;
@@ -2711,6 +3245,16 @@ function cliRun(args) {
   if (run.status === "indeterminate") {
     console.error(`dev-flow-stats: indeterminate: run "${args.run}" — ${run.reason}`);
     return 3;
+  }
+  if (run.status === "record-missing") {
+    if (args.json) console.log(JSON.stringify({ status: "record-missing", run_id: run.runId, issue: run.issueNumber, run_dir: run.runDir }));
+    console.error(`dev-flow-stats: record-missing: authenticated evidence names run "${args.run}", but ${run.runDir}/run.json does not exist`);
+    return 1;
+  }
+  if (run.status === "evidence-only") {
+    const report = { status: "evidence-only", run_id: run.runId, issue: run.issueNumber, pr_binding: null, marker_facts: run.markerFacts, untrusted_marker_facts: run.untrustedMarkerFacts || [], legacy_also_present: Boolean(run.legacyAlsoPresent) };
+    console.log(args.json ? JSON.stringify(report, null, 2) : `run ${run.runId} (issue #${run.issueNumber}) — evidence-only\nmarkers: ${JSON.stringify(run.markerFacts)}${report.legacy_also_present ? "\nlegacy-also-present: true" : ""}`);
+    return 0;
   }
   const trajectory = renderTrajectory(run);
   console.log(args.json ? JSON.stringify(trajectory, null, 2) : renderTrajectoryTable(trajectory));
@@ -2776,7 +3320,7 @@ function main() {
   if (!args.repo || typeof args.repo !== "string") {
     console.error(
       "usage: dev-flow-stats.mjs --repo <owner/repo> --trusted-actor-id <id> [--since <iso8601>] [--as-of <iso8601>] [--json]\n" +
-        "       dev-flow-stats.mjs --repo <owner/repo> --run <run_id> --trusted-actor-id <id> [--as-of <iso8601>] [--json]\n" +
+        "       dev-flow-stats.mjs --repo <owner/repo> --run <run_id> --trusted-actor-id <id> [--record-dir <path>] [--as-of <iso8601>] [--json]\n" +
         "       dev-flow-stats.mjs --repo <owner/repo> --replay --policy <file> --trusted-actor-id <id> [--exit-script <path>] [--json]",
     );
     return 2;

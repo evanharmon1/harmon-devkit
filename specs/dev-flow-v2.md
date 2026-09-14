@@ -842,33 +842,32 @@ The v2 shape is:
 
 ## Evidence
 
-Round JSONs and the adjudication record live in the git directory while the
-branch is worked (the run record too, as a working copy of the issue
-comment that is its durable home), **keyed by `run_id`**
-(`$(git rev-parse --git-common-dir)/dev-flow/runs/<run_id>/` — the
+The current evidence-marker grammar is the review skill's first-line JSON
+marker, documented in `ai/schemas/README.md`; readers accept any valid JSON serialization of the one marker object, while the review skill emits this canonical form:
+
+```text
+<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n|null>,"sequence":<n>,"destination":"<issue|pr>"} -->
+```
+
+It authenticates the run and the stage/round coordinates present on GitHub;
+the full record remains local. A harvester given `--record-dir <path>` reads
+that content from `<path>/<run_id>/`, reports `record-missing` when the named
+run is absent, and never reconstructs missing content from the summary. Without
+the local input it reports `evidence-only` and the authenticated marker facts.
+The prior `devflow:<kind>` fenced-payload grammar remains readable only for
+legacy comments.
+
+The full run record, round JSONs, and adjudication record live in the git
+directory, **keyed by `run_id`**
+(`$(git rev-parse --git-common-dir)/dev-flow-v2/runs/<run_id>/` — the
 **common** directory, so every linked worktree sees the same runs and
 removing a worktree deletes nothing) with a
-`dev-flow/branches/<branch>` pointer naming the current run — worktree-safe,
+`dev-flow-v2/branches/<branch>` pointer naming the current run — worktree-safe,
 invisible to `git status`, and immune to a reused branch name or an abandoned
 run: a new run gets a new directory, and the exit script only ever reads the
-run the pointer names. **Each round's evidence is posted to the issue the
-moment the round is adjudicated** — one comment per round, beside the run
-record — so a worker that disappears after a round loses at most the round
-in flight, and no later process is needed to upload a trajectory. When the
-draft PR opens, the orchestrator posts **one comment per confidence stage**
-on the PR that carries the stage's rounds so far and links the per-round
-issue comments (later rounds append to the issue and are linked from the
-PR body) — the run record stays on the issue and is edited there — in a fenced block (continued in
-order across further comments only when GitHub's size limit forces it — the
-harvester reassembles by marker sequence). A run that **ends without a PR** —
-capped with P0/P1, abandoned, escalated — posts the same stage comments on
-the **issue**, beside the run record that already lives there, as part of its
-blocker report: the failed trajectories are the ones replay most needs, and
-they must not exist only in one clone. The run record is updated at every
-later transition up to ready-for-review. The renderer
-([#637](https://github.com/evanharmon1/harmon-devkit/issues/637)) writes the
-human tables into the PR body from the same JSON. Nothing is deleted at PR
-open.
+run the pointer names. GitHub receives authenticated `dev-flow-v2-evidence`
+summary markers, not the local record itself. The legacy fenced-payload model
+below describes only pre-v2 comments retained for backward-compatible reads.
 
 Two rules make the posted evidence trustworthy on a public repository:
 
@@ -916,15 +915,16 @@ Two rules make the posted evidence trustworthy on a public repository:
   [#741](https://github.com/evanharmon1/harmon-devkit/issues/741)'s to add
   — a dedicated follow-up, after both #634 (result schemas) and #635
   (registry roles/finders) closed without adding it — not a mechanism this
-  anchor re-derives. Trust evaluation for a given run is pinned to an
-  authoritative registry revision, never the registry's current content:
-  trust for each evidence write is evaluated against the registry revision
-  current on the default branch at that write's server-side `created_at`
-  (the run record's `updated_at` likewise), and a kickoff-time snapshot is a
-  permitted implementation only when it resolves to the same revision for
-  every write — so an actor added to the list later does not retroactively
-  authenticate that run's older evidence, and an actor later removed does
-  not invalidate evidence authenticated while they were still trusted. Until a repository configures that
+  anchor re-derives. Current `dev-flow-v2-evidence` summary markers are
+  authenticated against the configured actor set at read time; the report
+  discloses that trust root, so membership changes are visible rather than
+  reconstructed as history. Legacy `devflow:<kind>` run-record and evidence
+  comments retain their historical rule: trust is pinned to the authoritative
+  registry revision on the default branch at each write's server-side
+  `created_at` (and at the run record's `updated_at` when edited). An actor
+  added later therefore does not retroactively authenticate older legacy
+  evidence, and an actor removed later does not invalidate legacy evidence
+  authenticated while they were trusted. Until a repository configures that
   list, a run record has no authority to validate against and its evidence
   is reported unauthenticated rather than silently accepted on an unproven
   identity.

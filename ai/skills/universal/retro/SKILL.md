@@ -41,9 +41,10 @@ is a reconstruction after the fact.
   **resolved rigor line**, which is where §2's caps come from. They do not
   carry the run id.
 - The **run id** lives in the evidence markers themselves,
-  `<!-- devflow:<kind> v2 run_id=<id> … -->`: on the PR's stage-rollup
+  `<!-- dev-flow-v2-evidence: {"run_id":…} -->`: on the PR's stage-rollup
   comments, and — authoritatively, because the record is anchored on the
-  issue — in the `run-index` / `run-record` comments on the linked issue. A
+  issue — in its round comments on the linked issue. The older
+  `<!-- devflow:<kind> … -->` form remains discoverable for legacy runs. A
   marker counts only as the **first line** of a comment; one quoted inside
   prose (a real risk on a PR that discusses this protocol) is not a run.
   **And only a marker from a trusted actor selects a run.** A marker is text
@@ -106,6 +107,14 @@ issue, and note that an id supplied this way is *unverified*: nothing checks it
 against a marker); `--json` for the machine form; and `--stats-script <path>` to point at a
 harvester this checkout does not carry at the usual place — the case below,
 where the repository has not vendored `scripts/dev-flow-stats.*` at all.
+
+Pass `--record-dir <path>` when the run's retained local record is available.
+The helper forwards it unchanged, and the harvester reads
+`<path>/<run_id>/run.json` plus that run directory's passes and adjudications.
+The GitHub marker still authenticates which run and round coordinates may be
+read; the local directory supplies their full content. An absent named record
+is reported as `record-missing`, while omitting the option leaves the marker as
+`evidence-only` rather than inventing the missing content.
 
 **`--as-of <iso8601>` reconstructs the run record and its comment evidence at
 that instant — and nothing else.** Comments are filtered by the cutoff, and

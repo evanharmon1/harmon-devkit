@@ -1356,21 +1356,33 @@ exercising it.
 
 ## Evidence marker and digest grammar
 
-The contract both sides of the evidence protocol implement: the writer that
-will post run records and round evidence to GitHub (stage skills, #638/#639
-— not yet implemented) and the reader that harvests them back
-(`scripts/dev-flow-stats.mjs`, #663 — implemented and wired into `task
-test:dev-flow-stats`). This section remains the interface both sides must
-produce/consume, not a description of the writer's own running code, which
-does not exist yet. It implements `specs/dev-flow-v2.md`
-§ Evidence and the evidence delta spec's requirements — this doc is where a
-concrete byte-level grammar for "deterministic marker" and "canonical
-digest" lives, since neither the anchor nor the delta spec pins one.
+The review skill and the harvester use one current marker grammar. Every
+round-evidence comment opens with this exact first-line shape, followed by its
+Markdown summary:
 
-### Comment kinds
+```text
+<!-- dev-flow-v2-evidence: {"run_id":"<run_id>","stage":"<stage>","round":<n|null>,"sequence":<n>,"destination":"<issue|pr>"} -->
+```
 
-Every evidence comment (issue or PR) opens with one marker line — an HTML
-comment, invisible in GitHub's rendered view:
+The marker line carries one JSON object; any valid JSON serialization is accepted, while the displayed form is the canonical serialization emitted by the review skill. The object has exactly those five fields. `stage` uses the run-stage enum,
+`round` is a positive integer for an issue-side round and `null` for a PR-side
+rollup, and `sequence` is a positive integer. The marker authenticates which
+run and stage/round coordinates exist; it is not the full record. When the
+reader receives `--record-dir <path>`, it reads the complete record from
+`<path>/<run_id>/` (`run.json` plus `passes/`, `adjudications/`, and receipts
+represented by `run.json` when present), and verifies each observed marker
+against the immutable actor id, body digest, and marker tuple registered in
+that local `run.json`. A missing `<path>/<run_id>/run.json` is
+`record-missing`, never a fabricated trajectory. Without `--record-dir`, the
+reader reports `evidence-only` with the authenticated marker facts.
+
+The older `devflow:<kind>` form below remains accepted for comments already
+published under the original reader contract. It is legacy compatibility, not
+the grammar current stage skills write.
+
+### Legacy comment kinds
+
+Legacy evidence comments opened with this marker line:
 
 ```text
 <!-- devflow:<kind> v2 run_id=<run_id> stage=<stage> dest=<issue|pr> round=<n|-> seq=<n> -->
