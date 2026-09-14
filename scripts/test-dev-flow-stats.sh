@@ -238,7 +238,12 @@ function writeCompletedZeroFindingPass(runDir, runId, stage = "review", round = 
   envelope.payload.round = round;
   envelope.payload.reviewed_head = envelope.head;
   mkdirSync(path.join(runDir, "passes"), { recursive: true });
-  writeFileSync(path.join(runDir, "passes", stage + "-r" + round + ".json"), JSON.stringify(envelope, null, 2));
+  const file = stage + "-r" + round;
+  writeFileSync(path.join(runDir, "passes", file + ".json"), JSON.stringify(envelope, null, 2));
+  const runFile = path.join(runDir, "run.json");
+  const run = JSON.parse(readFileSync(runFile, "utf8"));
+  run.receipts = [...(run.receipts || []), { kind: "transition", stage }, { kind: "pass", file }];
+  writeFileSync(runFile, JSON.stringify(run, null, 2));
 }
 
 // Builds the evidence_comments[] entry naming a comment created by
@@ -256,11 +261,28 @@ function evidenceIndexEntry(evComment, actorId, login, runId, stage, dest, round
 }
 
 function pass(finder, findings) {
+  const normalized = findings.map((finding, index) => {
+    const priority = finding.priority || finding.severity || "P2";
+    return {
+      id: finding.id || \`review-r1-\${finder}-\${index + 1}\`,
+      path: finding.path || "scripts/dev-flow-stats.mjs",
+      line: finding.line === undefined ? 1 : finding.line,
+      class: finding.class || "correctness",
+      provenance: finding.provenance || "original",
+      fingerprint: finding.fingerprint || "new",
+      priority,
+      recommended_disposition: finding.recommended_disposition || "fix",
+      evidence: finding.evidence || finding.summary || "fixture evidence",
+    };
+  });
+  const counts = { P0: 0, P1: 0, P2: 0, P3: 0 };
+  for (const finding of normalized) counts[finding.priority] += 1;
   return {
     schema: 2, role: "reviewer", status: "completed", head: "0".repeat(40),
-    produced_at: "2026-09-01T00:00:00Z", producer: finder,
+    produced_at: "2026-09-01T00:00:00Z",
+    producer: { harness: finder, model: "fixture-model", tier: "local" },
     run: { run_id: "placeholder", initiated_by: "human" },
-    payload: { finder, findings: findings.map((f, i) => ({ id: \`review-r1-\${finder}-\${i + 1}\`, class: "correctness", provenance: "original", severity: "P2", ...f })) },
+    payload: { stage: "review", round: 1, reviewed_head: "0".repeat(40), finder, findings: normalized, counts },
   };
 }
 
@@ -2834,8 +2856,8 @@ function writeScenario(name, db) {
   localPass.payload.stage = "review";
   localPass.payload.round = 1;
   writeFileSync(path.join(localRunDir, "passes", "review-r1.json"), JSON.stringify(localPass, null, 2));
-  const stalePass = structuredClone(localPass);
-  stalePass.payload.findings = [{ id: "review-r1-stale-1", priority: "P1", summary: "must not be counted", evidence: "unreceipted" }];
+  const stalePass = pass("codex-verification", [{ priority: "P1", summary: "must not be counted" }]);
+  stalePass.run.run_id = runId;
   writeFileSync(path.join(localRunDir, "passes", "stale.json"), JSON.stringify(stalePass, null, 2));
   writeFileSync(path.join(localRunDir, "adjudications", "review-r1.json"), JSON.stringify({
     schema: 2, run_id: runId, stage: "review", round: 1,
@@ -3026,6 +3048,92 @@ function writeScenario(name, db) {
   writeSegmentScenario("evidence-sequence-valid", 197, [1, 2], true);
   writeSegmentScenario("evidence-adjudication-missing", 198, [1], false);
   writeSegmentScenario("evidence-adjudication-clean", 199, [1], true);
+
+  // Integration envelopes use role + integration_round rather than the
+  // confidence-pass payload's stage + round coordinates.
+  {
+    const runId = "run-200-integration-envelope";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "integration", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "integration", entered_at: at }]),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "integration", destination: "issue", round: 1, sequence: 1 } }],
+      receipts: [{ kind: "transition", stage: "integration" }, { kind: "pass", file: "integration-r1" }], promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    mkdirSync(path.join(runDir, "adjudications"), { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    const envelope = JSON.parse(readFileSync(path.join("${repo}", "ai/schemas/fixtures/result.integrator.schema/valid/verdict-clean.json"), "utf8"));
+    envelope.run.run_id = runId;
+    writeFileSync(path.join(runDir, "passes", "integration-r1.json"), JSON.stringify(envelope, null, 2));
+    writeFileSync(path.join(runDir, "adjudications", "integration-r1.json"), JSON.stringify({ schema: 2, run_id: runId, stage: "integration", round: 1, reviewed_head: envelope.head, adjudications: [] }, null, 2));
+    writeScenario("integration-envelope", { issues: [{ number: 200, pull_request: null }], comments: { "200": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // A historical cutoff retains only round 1 while disclosing round 2's
+  // adjudication as future evidence.
+  {
+    const runId = "run-201-future-adjudication";
+    const at = "2026-09-01T00:00:00Z";
+    const first = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, "2026-09-01T00:10:00Z");
+    const second = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 2, 1, "2026-09-01T01:00:00Z");
+    const entries = [first, second].map((comment, index) => ({ id: String(comment.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(comment.body), marker: { run_id: runId, stage: "review", destination: "issue", round: index + 1, sequence: 1 } }));
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "review", entered_at: at }]),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null, evidence_comments: entries,
+      receipts: [{ kind: "transition", stage: "review" }, { kind: "pass", file: "review-r1" }, { kind: "pass", file: "review-r2" }], promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeZeroFindingAdjudication(runDir, runId, "review", 2);
+    const firstPass = pass("codex-verification", []);
+    firstPass.run.run_id = runId;
+    const secondPass = structuredClone(firstPass);
+    secondPass.payload.round = 2;
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    writeFileSync(path.join(runDir, "passes", "review-r1.json"), JSON.stringify(firstPass, null, 2));
+    writeFileSync(path.join(runDir, "passes", "review-r2.json"), JSON.stringify(secondPass, null, 2));
+    writeScenario("future-adjudication", { issues: [{ number: 201, pull_request: null }], comments: { "201": [first, second] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // Two trusted issues claiming the same arbitrary run id are ambiguous.
+  {
+    const runId = "duplicate-authoritative-binding";
+    const first = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, "2026-09-01T00:00:00Z");
+    const second = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, "2026-09-01T00:00:00Z");
+    writeScenario("duplicate-authoritative-binding", { issues: [{ number: 202, pull_request: null }, { number: 203, pull_request: null }], comments: { "202": [first], "203": [second] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // A selected local record can retain one current marker and one legacy
+  // evidence registration without calling the legacy comment deleted.
+  {
+    const runId = "run-204-mixed-registration";
+    const at = "2026-09-01T00:00:00Z";
+    const current = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const legacyPayload = JSON.stringify({ note: "legacy segment" });
+    const legacy = evidenceComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 2, { note: "legacy segment" }, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: chain([{ stage: "kickoff", entered_at: at }, { stage: "review", entered_at: at }]),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [
+        { id: String(current.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(current.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } },
+        { id: String(legacy.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(legacyPayload), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 2 } },
+      ], promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId);
+    writeCompletedZeroFindingPass(runDir, runId);
+    writeScenario("mixed-registration", { issues: [{ number: 204, pull_request: null }], comments: { "204": [current, legacy] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -3090,12 +3198,12 @@ echo "== review evidence grammar reconstructs its authenticated local record bes
 export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
-echo "$out" | jq -e --arg run "$run_id" --argjson wrong "$(meta evidence-grammar .meta.wrongDestinationId)" --argjson stage "$(meta evidence-grammar .meta.unvisitedStageId)" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"unavailable"}] and .provenance_unavailable_rounds == [{stage:"review",round:1}] and .unreceipted_pass_files == ["stale"] and ([.forged_comments[].id] | index($wrong) != null and index($stage) != null) and .legacy_also_present == true' >/dev/null ||
+echo "$out" | jq -e --arg run "$run_id" --argjson wrong "$(meta evidence-grammar .meta.wrongDestinationId)" --argjson stage "$(meta evidence-grammar .meta.unvisitedStageId)" '.run_id == $run and .issue == 186 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .provenance_unavailable_rounds == [] and .unreceipted_pass_files == ["stale"] and ([.forged_comments[].id] | index($wrong) != null and index($stage) != null) and .legacy_also_present == true' >/dev/null ||
     fail "evidence grammar: expected the local run and its authenticated review round, got: $out"
 
 echo "== --as-of presence validation sees later live registrations but assembles only pre-cutoff rounds =="
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --as-of 2026-09-01T00:25:30Z --json)"
-echo "$out" | jq -e --argjson future "$(meta evidence-grammar .meta.unvisitedStageId)" '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"unavailable"}] and .slot_failures == [] and .slot_failures_unavailable == true and ([.forged_comments[].id] | index($future) == null)' >/dev/null ||
+echo "$out" | jq -e --argjson future "$(meta evidence-grammar .meta.unvisitedStageId)" '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .slot_failures == [] and .slot_failures_unavailable == true and ([.forged_comments[].id] | index($future) == null)' >/dev/null ||
     fail "evidence grammar as-of: later PR registration was misreported deleted or assembled into history: $out"
 
 echo "== current evidence wins when legacy evidence names the same run, with migration disclosed =="
@@ -3242,7 +3350,7 @@ echo "== current-marker discovery supports schema-valid run ids without an encod
 export DFSTATS_DB="$tmp/scenarios/arbitrary-evidence-run.json"
 run_id="$(meta arbitrary-evidence-run .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 187 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"unavailable"}] and .slot_failures == [{stage:"review",round:2,slot:"codex-verification",reason:"finder_unavailable"}]' >/dev/null ||
+echo "$out" | jq -e --arg run "$run_id" '.run_id == $run and .issue == 187 and .rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}] and .slot_failures == [{stage:"review",round:2,slot:"codex-verification",reason:"finder_unavailable"}]' >/dev/null ||
     fail "evidence grammar: expected all-issue lookup to find the arbitrary run id, got: $out"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
 echo "$out" | jq -e '.slot_failures == [] and .slot_failures_unavailable == true' >/dev/null ||
@@ -3270,7 +3378,7 @@ echo "== a valid multi-segment current-marker group projects one retained round 
 export DFSTATS_DB="$tmp/scenarios/evidence-sequence-valid.json"
 run_id="$(meta evidence-sequence-valid .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"unavailable"}]' >/dev/null ||
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "evidence sequence: valid multi-segment group did not reconstruct: $out"
 
 echo "== an authenticated issue round with no adjudication is indeterminate =="
@@ -3280,15 +3388,75 @@ set +e
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
-[ "$rc" -eq 3 ] && grep -Fq 'exactly one adjudication for authenticated review round 1; found 0' <<<"$out" ||
+[ "$rc" -eq 3 ] && grep -Fq 'exactly one adjudication for authenticated review round 1, unless a retained slot failure proves the round incomplete; found 0' <<<"$out" ||
     fail "evidence adjudication: expected missing document to be indeterminate, got rc=$rc: $out"
 
 echo "== a completed zero-finding pass and adjudication are projected without deriving an exit =="
 export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-clean.json"
 run_id="$(meta evidence-adjudication-clean .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
-echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"unavailable"}]' >/dev/null ||
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "evidence adjudication: completed zero-finding pass and adjudication were not projected: $out"
+
+echo "== integrator envelopes derive integration stage and integration_round coordinates =="
+export DFSTATS_DB="$tmp/scenarios/integration-envelope.json"
+run_id="$(meta integration-envelope .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == [{stage:"integration",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
+    fail "integration envelope coordinates: expected one integration pass: $out"
+
+echo "== --as-of excludes and discloses adjudications whose marker is still future =="
+export DFSTATS_DB="$tmp/scenarios/future-adjudication.json"
+run_id="$(meta future-adjudication .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --as-of 2026-09-01T00:30:00Z --json)"
+echo "$out" | jq -e '(.rounds | length) == 1 and .rounds[0].round == 1 and .future_adjudication_files == ["review-r2.json"]' >/dev/null ||
+    fail "future adjudication cutoff: expected only round 1 plus a future disclosure: $out"
+
+echo "== two authoritative issue bindings for one arbitrary run are indeterminate =="
+export DFSTATS_DB="$tmp/scenarios/duplicate-authoritative-binding.json"
+run_id="$(meta duplicate-authoritative-binding .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] && grep -Fq 'more than one authoritative issue binding (#202, #203)' <<<"$out" ||
+    fail "authoritative issue binding: expected both issues to be named, got rc=$rc: $out"
+
+echo "== mixed current and legacy registrations are both observed =="
+export DFSTATS_DB="$tmp/scenarios/mixed-registration.json"
+run_id="$(meta mixed-registration .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds[0].pass_count == 1 and .unverified_evidence_destinations == []' >/dev/null ||
+    fail "mixed registrations: legacy evidence was not observed beside current evidence: $out"
+
+echo "== a slot failure permits a capped partial round with no adjudication =="
+export DFSTATS_DB="$tmp/scenarios/evidence-adjudication-clean.json"
+run_id="$(meta evidence-adjudication-clean .meta.runId)"
+cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
+mv "$tmp/local-records/$run_id/adjudications/review-r1.json" "$tmp/local-records/$run_id/adjudications/review-r1.json.saved"
+jq '.slot_failures = [{stage:"review",round:1,slot:"codex-verification",reason:"finder_unavailable"}]' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds[0].status == "capped" and .rounds[0].pass_count == 1 and .rounds[0].adjudication_count == 0 and .rounds[0].has_adjudication == false and (.slot_failures | length) == 1' >/dev/null ||
+    fail "slot-failure partial round: expected capped partial evidence: $out"
+mv "$tmp/local-records/$run_id/adjudications/review-r1.json.saved" "$tmp/local-records/$run_id/adjudications/review-r1.json"
+mv "$tmp/local-records/$run_id/run.json.saved" "$tmp/local-records/$run_id/run.json"
+
+echo "== schema-invalid retained passes fail closed and name their file =="
+cp "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
+for invalid_case in missing-identity duplicate-finding-id; do
+    if [ "$invalid_case" = missing-identity ]; then
+        jq 'del(.run.initiated_by)' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
+    else
+        jq '.payload.findings = [{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:1,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"one"},{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:2,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"two"}] | .payload.counts = {P0:0,P1:0,P2:2,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
+    fi
+    set +e
+    out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] && grep -Fq 'review-r1.json is not a valid result envelope' <<<"$out" ||
+        fail "retained pass validation ($invalid_case): expected named-file indeterminate, got rc=$rc: $out"
+done
+mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 
 echo "== an adjudication with no completed pass or slot failure is indeterminate =="
 mv "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
@@ -3296,7 +3464,7 @@ set +e
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
 rc=$?
 set -e
-[ "$rc" -eq 3 ] && grep -Fq 'no completed pass or retained slot failure' <<<"$out" ||
+[ "$rc" -eq 3 ] && grep -Eq 'no completed pass or retained slot failure|pass receipt .* does not exist' <<<"$out" ||
     fail "evidence adjudication source: expected indeterminate, got rc=$rc: $out"
 mv "$tmp/local-records/$run_id/passes/review-r1.json.saved" "$tmp/local-records/$run_id/passes/review-r1.json"
 
@@ -3304,7 +3472,7 @@ echo "== blocked envelopes are disclosed but excluded from completed pass and fi
 cp "$tmp/local-records/$run_id/run.json" "$tmp/local-records/$run_id/run.json.saved"
 cp "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
 jq '.slot_failures = [{stage:"review",round:1,slot:"codex-verification",reason:"finder_unavailable"}]' "$tmp/local-records/$run_id/run.json.saved" >"$tmp/local-records/$run_id/run.json"
-jq '.status = "blocked" | .payload.findings = [{id:"blocked-finding",class:"correctness",provenance:"original"}]' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
+jq '.status = "blocked" | .payload.findings = [] | .payload.counts = {P0:0,P1:0,P2:0,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds[0].pass_count == 0 and .rounds[0].blocked_passes == 1 and .rounds[0].finding_count == 0' >/dev/null ||
     fail "blocked pass projection: blocked envelope counted as completed evidence: $out"
@@ -3315,8 +3483,8 @@ echo "== verifier-corrected provenance and fingerprint replace raw producer asse
 export DFSTATS_DB="$tmp/scenarios/evidence-grammar.json"
 run_id="$(meta evidence-grammar .meta.runId)"
 cp "$tmp/local-records/$run_id/passes/review-r1.json" "$tmp/local-records/$run_id/passes/review-r1.json.saved"
-jq '.payload.findings = [{id:"review-r1-corrected-1",class:"correctness",provenance:"original",fingerprint:"new",priority:"P2"}]' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
-printf '%s\n' '{"stage":"review","verified_findings":[{"id":"review-r1-corrected-1","provenance_status":"corrected","verified_provenance":"round:1","fingerprint_status":"corrected","verified_fingerprint":"repeat-of:review-r0-origin"}]}' >"$tmp/local-records/$run_id/verdict.json"
+jq '.payload.findings = [{id:"review-r1-codex-verification-1",path:"scripts/dev-flow-stats.mjs",line:1,class:"correctness",provenance:"original",fingerprint:"new",priority:"P2",recommended_disposition:"fix",evidence:"fixture evidence"}] | .payload.counts = {P0:0,P1:0,P2:1,P3:0}' "$tmp/local-records/$run_id/passes/review-r1.json.saved" >"$tmp/local-records/$run_id/passes/review-r1.json"
+printf '%s\n' '{"stage":"review","verified_findings":[{"id":"review-r1-codex-verification-1","provenance_status":"corrected","verified_provenance":"round:1","fingerprint_status":"corrected","verified_fingerprint":"repeat-of:review-r0-origin"}]}' >"$tmp/local-records/$run_id/verdict.json"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9002 --json)"
 echo "$out" | jq -e '.rounds[0].provenance_measurement == "verified" and .findings_by_class_and_provenance == {"correctness/round:1":1} and .findings_by_verified_fingerprint == {"repeat-of:review-r0-origin":1} and .provenance_unavailable_rounds == []' >/dev/null ||
     fail "verified finding projection: raw producer assertions survived verdict correction: $out"

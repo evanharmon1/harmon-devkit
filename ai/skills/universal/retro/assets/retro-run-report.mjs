@@ -356,7 +356,7 @@ function parseMarker(body) {
     if (value.round !== null && (!Number.isInteger(value.round) || value.round < 1)) return { malformed: 'round is neither null nor a positive integer' }
     if ((value.destination === 'issue') !== (value.round !== null)) return { malformed: 'destination and round do not form an issue-round or PR-rollup pair' }
     if (!Number.isInteger(value.sequence) || value.sequence < 1) return { malformed: 'sequence is not a positive integer' }
-    return { kind: 'evidence', runId: value.run_id }
+    return { kind: 'evidence', runId: value.run_id, destination: value.destination }
   }
   if (REVIEW_EVIDENCE_PREFIX_RE.test(firstLine)) return { malformed: 'dev-flow-v2-evidence marker has trailing content or an invalid payload' }
   const marker = EVIDENCE_MARKER_RE.exec(firstLine)
@@ -373,7 +373,7 @@ function parseMarker(body) {
     return { malformed: `round "${attrs.round}" is neither "-" nor a positive integer` }
   }
   if (!/^[1-9][0-9]*$/.test(attrs.seq)) return { malformed: `seq "${attrs.seq}" is not a positive integer` }
-  return { kind, runId: attrs.run_id }
+  return { kind, runId: attrs.run_id, destination: attrs.dest }
 }
 
 // Which run a report is about is chosen by a marker, and a marker is just
@@ -390,7 +390,7 @@ function parseMarker(body) {
 // noise — it never named a run, so it cannot make discovery indeterminate. A
 // canonical marker from an untrusted author IS a claim, and refusing it is
 // exactly what the indeterminate exit exists to surface.
-function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
+function collectRunIds(comments, trustedActorIds, where, expectedDestination, untrusted, malformed) {
   const found = new Set()
   for (const comment of comments || []) {
     const parsed = parseMarker(comment && comment.body)
@@ -414,6 +414,15 @@ function collectRunIds(comments, trustedActorIds, where, untrusted, malformed) {
     }
     if (!isTrusted) {
       untrusted.push({ ...entry, run_id: parsed.runId })
+      continue
+    }
+    if (parsed.destination !== expectedDestination) {
+      malformed.push({
+        ...entry,
+        run_id: parsed.runId,
+        trusted: true,
+        reason: `marker destination ${parsed.destination} does not match ${where}`
+      })
       continue
     }
     found.add(parsed.runId)
@@ -508,6 +517,7 @@ function fetchHintRunIds(args, issueNumber, tier, trustedActorIds, untrusted, ma
       fetchComments(args.repo, issueNumber, args.asOf || null),
       trustedActorIds,
       `issue #${issueNumber}`,
+      'issue',
       untrusted,
       malformed
     )
@@ -547,7 +557,7 @@ function discoverRun(args, trustedActorIds) {
     '--json',
     'number,url,title,state,isDraft,body,closingIssuesReferences'
   ])
-  const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number, asOf), trustedActorIds, `PR #${pr.number}`, untrusted, malformed)].sort()
+  const fromPr = [...collectRunIds(fetchComments(args.repo, pr.number, asOf), trustedActorIds, `PR #${pr.number}`, 'pr', untrusted, malformed)].sort()
   if (fromPr.length > 1) {
     throw new IndeterminateError(
       `PR #${pr.number} carries trusted evidence for more than one run (${fromPr.join(', ')}) — rerun with --run <run_id>`,
@@ -578,7 +588,7 @@ function discoverRun(args, trustedActorIds) {
   for (const issueNumber of closingNumbers) {
     closingRuns.set(
       issueNumber,
-      collectRunIds(fetchComments(args.repo, issueNumber, asOf), trustedActorIds, `issue #${issueNumber}`, untrusted, malformed)
+      collectRunIds(fetchComments(args.repo, issueNumber, asOf), trustedActorIds, `issue #${issueNumber}`, 'issue', untrusted, malformed)
     )
   }
   // The PR's own run wins, but the linked issues are still SCANNED — the
@@ -901,6 +911,9 @@ function measure(trajectory, policy) {
   const provenanceUnavailableRounds = Array.isArray(trajectory.provenance_unavailable_rounds)
     ? trajectory.provenance_unavailable_rounds
     : []
+  const futureAdjudicationFiles = Array.isArray(trajectory.future_adjudication_files)
+    ? trajectory.future_adjudication_files
+    : []
   const interventions = Array.isArray(trajectory.interventions) ? trajectory.interventions : []
   const settlements = Array.isArray(trajectory.settlements) ? trajectory.settlements : []
 
@@ -946,6 +959,9 @@ function measure(trajectory, policy) {
       provenance_unavailable_rounds: provenanceUnavailableRounds
         .filter((entry) => entry && entry.stage === stage)
         .map((entry) => entry.round),
+      future_adjudication_files: futureAdjudicationFiles.filter((file) =>
+        typeof file === 'string' && file.startsWith(`${stage}-r`)
+      ),
       interventions: interventions
         .filter((entry) => stageAt(transitions, entry.at) === stage)
         .map((entry) => ({ at: entry.at, kind: entry.kind, note: entry.note }))
@@ -1131,6 +1147,9 @@ function renderMarkdown(report) {
         l.push(`- Slot failures (retained verbatim): \`${safe(JSON.stringify(stage.slot_failures))}\``)
       }
       if (stage.slot_failures_unavailable) l.push('- Slot failures: unavailable under --as-of')
+      if (stage.future_adjudication_files.length > 0) {
+        l.push(`- Future adjudications excluded by --as-of: ${stage.future_adjudication_files.map((file) => `\`${safe(file)}\``).join(', ')}`)
+      }
       if (stage.provenance_unavailable_rounds.length > 0) {
         l.push(`- Verified provenance/fingerprint unavailable for round(s): ${stage.provenance_unavailable_rounds.join(', ')}`)
       }

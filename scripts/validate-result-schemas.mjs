@@ -1216,6 +1216,19 @@ function validateEnvelopeInstance(instance, kind, options) {
   return errors
 }
 
+// Library entry point for readers that need the validator's complete envelope
+// contract without spawning the CLI or duplicating its schema/semantic checks.
+// Context-free validation is intentional here: callers validating retained
+// pass artifacts do not possess the run-wide known-id set, while the envelope's
+// own role payload and intra-envelope uniqueness rules still apply in full.
+export function validateResultEnvelope(instance) {
+  return validateEnvelopeInstance(instance, 'envelope', {
+    knownIds: null,
+    runId: null,
+    initiatedBy: null
+  })
+}
+
 // checkAdjudicationEntries — internal self-consistency, always run: no
 // duplicate finding_id within the document; reviewer_priority's nullness
 // matches its stage (non-null — one of P0-P3 — for challenge/review, since
@@ -2834,4 +2847,4 @@ function report(errors, okMessage) {
   console.log(okMessage)
 }
 
-main()
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main()

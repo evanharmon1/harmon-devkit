@@ -215,10 +215,12 @@ make_trajectory() {
     # cleared, so the prefix means what it looks like it means.
     local issue="${ISSUE_NUMBER:-0}" rounds="${ROUNDS_JSON:-[]}" classes="${CLASSES_JSON:-{\}}"
     local orphans="${ORPHANS_JSON:-[]}" forged="${FORGED_JSON:-[]}" slot_failures="${SLOT_FAILURES_JSON:-[]}"
+    local future_adjudications="${FUTURE_ADJUDICATIONS_JSON:-[]}"
     local run_id="${RUN_ID_OVERRIDE:-}"
-    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON SLOT_FAILURES_JSON RUN_ID_OVERRIDE
+    unset ISSUE_NUMBER ROUNDS_JSON CLASSES_JSON ORPHANS_JSON FORGED_JSON SLOT_FAILURES_JSON FUTURE_ADJUDICATIONS_JSON RUN_ID_OVERRIDE
     ISSUE_NUMBER="$issue" ROUNDS_JSON="$rounds" CLASSES_JSON="$classes" RUN_ID_OVERRIDE="$run_id" \
-        ORPHANS_JSON="$orphans" FORGED_JSON="$forged" SLOT_FAILURES_JSON="$slot_failures" node -e '
+        ORPHANS_JSON="$orphans" FORGED_JSON="$forged" SLOT_FAILURES_JSON="$slot_failures" \
+        FUTURE_ADJUDICATIONS_JSON="$future_adjudications" node -e '
       const fs = require("node:fs")
       const [fixture, out] = process.argv.slice(1)
       const run = JSON.parse(fs.readFileSync(fixture, "utf8"))
@@ -235,6 +237,7 @@ make_trajectory() {
         settlements: run.settlements,
         rounds: JSON.parse(process.env.ROUNDS_JSON || "[]"),
         slot_failures: JSON.parse(process.env.SLOT_FAILURES_JSON || "[]"),
+        future_adjudication_files: JSON.parse(process.env.FUTURE_ADJUDICATIONS_JSON || "[]"),
         findings_by_class_and_provenance: JSON.parse(process.env.CLASSES_JSON || "{}"),
         orphan_comments: JSON.parse(process.env.ORPHANS_JSON || "[]"),
         forged_comments: JSON.parse(process.env.FORGED_JSON || "[]")
@@ -1101,6 +1104,7 @@ ISSUE_NUMBER="$ISSUE" \
       {"stage":"review","round":1,"pass_count":1,"adjudication_count":0,"finding_count":0,"has_adjudication":false}
     ]' \
     SLOT_FAILURES_JSON='[{"stage":"review","round":1,"slot":"codex-verification","reason":"finder_unavailable"}]' \
+    FUTURE_ADJUDICATIONS_JSON='["review-r2.json"]' \
     CLASSES_JSON='{"correctness/original":2,"hardening/original":1,"design/round:1":1}' \
     ORPHANS_JSON='[{"id":1,"actor_id":9}]' \
     make_trajectory "$FIXTURES/further-along.json" "$d/trajectory.json"
@@ -1154,6 +1158,8 @@ contains "$OUT" "- Round 1 evidence: 1 pass(es), 0 blocked pass(es), 1 adjudicat
     ok "per-round pass and adjudication counts are disclosed" || bad "per-round evidence counts missing"
 contains "$OUT" 'Slot failures (retained verbatim): `[{"stage":"review","round":1,"slot":"codex-verification","reason":"finder_unavailable"}]`' &&
     ok "slot failures are retained verbatim" || bad "slot failures were dropped or rewritten"
+contains "$OUT" 'Future adjudications excluded by --as-of: `review-r2.json`' &&
+    ok "future adjudications are disclosed in their stage" || bad "future adjudications were dropped"
 contains "$OUT" "| correctness | original | 2 |" &&
     ok "class/provenance counts render" || bad "class/provenance table missing a row"
 contains "$OUT" "| design | round:1 | 1 |" &&
@@ -1845,6 +1851,28 @@ GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 [ "$RC" -eq 0 ] && contains "$OUT" 'run-6001-further-along' &&
     ok "the writer grammar selects the run" ||
     bad "the writer grammar was not discovered: rc=$RC, err=$ERR"
+
+echo "==> discovery rejects marker destinations that disagree with the fetched endpoint"
+d="$TMPROOT/evidence-marker-wrong-endpoint"
+scaffold "$d" further-along "body"
+evidence_marker_file "$d/c1" run-6001-further-along review issue 1
+set_comments "$d/comments" "$PR" "$d/c1"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" 'marker destination issue does not match PR' &&
+    ok "a PR comment cannot claim an issue destination" ||
+    bad "the PR endpoint mismatch was accepted or hidden: rc=$RC, err=$ERR"
+
+write_file "$d/c1" "no marker"
+marker_file "$d/i1" evidence run-6001-further-along integration pr -
+set_comments "$d/comments" "$PR" "$d/c1"
+set_comments "$d/comments" "$ISSUE" "$d/i1"
+CLOSING="[{\"number\":$ISSUE}]" make_pr_json "$d/pr.json" "$d/body"
+GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 11 ] && contains "$ERR" 'marker destination pr does not match issue' &&
+    ok "an issue comment cannot claim a PR destination" ||
+    bad "the issue endpoint mismatch was accepted or hidden: rc=$RC, err=$ERR"
 
 echo "==> current evidence markers reject trailing content and invalid destination/round pairs"
 d="$TMPROOT/evidence-marker-strict"
