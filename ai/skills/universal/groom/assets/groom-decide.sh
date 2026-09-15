@@ -10,12 +10,14 @@
 #
 # PREFLIGHT, before any write (challenge round 1 finding 7): every
 # --supersedes target's live bot-ownership check, and — in --execute mode —
-# every --blocked-by target's numeric id resolution, all run before the
-# decision comment is posted. Posting the comment first and only then
-# discovering a --supersedes target is bot-owned left the comment posted (and
-# any earlier --supersedes sibling already closed) with no way to undo either
-# once the run died — exactly the partial-application failure this script's
-# own bot-ownership rule is meant to guard against.
+# every --blocked-by target's numeric id resolution, PLUS (whenever any
+# --blocked-by is given) a probe that the issue-dependencies endpoint itself
+# is available — all run before the decision comment is posted. Posting the
+# comment first and only then discovering a --supersedes target is bot-owned
+# (or that the dependencies endpoint is unsupported) left the comment posted
+# (and any earlier --supersedes sibling already closed) with no way to undo
+# either once the run died — exactly the partial-application failure this
+# script's own preflight is meant to guard against.
 #
 # --log PATH is REQUIRED in --execute mode (same append-only, exact-command
 # contract as groom-apply.sh's --log): opened with a "# run <UTC> execute"
@@ -68,7 +70,9 @@
 #       --supersedes/--blocked-by that self-references --issue, repeats, or
 #       intersects the other flag, and an empty/whitespace-only
 #       --decision-file), 4 = refused (a --supersedes target is
-#       bot-authored).
+#       bot-authored, or --blocked-by is given and the issue-dependencies
+#       endpoint is unavailable — Codex review on PR #1032, comment
+#       4012885483).
 set -euo pipefail
 
 usage() {
@@ -137,6 +141,53 @@ log_write() {
         done
         printf '\n'
     } >>"$log"
+}
+
+# Same as log_write, but for the decision comment specifically: appends
+# " # body-sha256=<hex>" of the posted body on the SAME WRITE line (Codex
+# review on PR #1032, comment 4012885422). Every decision executes the
+# generated temp-file command (comment_cmd below), but the OLD code logged a
+# separate comment_log_cmd array carrying the literal placeholder
+# "<decision-comment>" instead — neither the executed argv nor replayable
+# after a partial run. Logging the real --body-file path is not itself
+# enough to reconstruct what was posted (the temp file is removed on exit),
+# so the digest of its content travels with the WRITE line as the durable,
+# comparable record of exactly what was sent.
+log_write_comment() {
+    local log="$1" body_sha="$2"
+    shift 2
+    {
+        printf 'WRITE'
+        local arg
+        for arg in "$@"; do
+            printf ' %q' "$arg"
+        done
+        printf ' # body-sha256=%s\n' "$body_sha"
+    } >>"$log"
+}
+
+sha256_stream() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        die 2 "sha256sum or shasum is required"
+    fi
+}
+
+# Print a dry-run "PLAN <exact command>" line with the same %q quoting as
+# log_write (Codex review on PR #1032, comment 4012885429) — see
+# groom-apply.sh's print_plan for the full reasoning: a maintainer comparing
+# a PLAN line against the approved decision text needs argv boundaries
+# preserved, not the lossy "${cmd[*]}" flattening.
+print_plan() {
+    printf 'PLAN'
+    local arg
+    for arg in "$@"; do
+        printf ' %q' "$arg"
+    done
+    printf '\n'
 }
 
 write_outcome() {
@@ -299,6 +350,30 @@ if [ "$execute" -eq 1 ]; then
     done
 fi
 
+# Probe the issue-dependencies endpoint's own availability BEFORE any write
+# (Codex review on PR #1032, comment 4012885483): resolving each
+# --blocked-by target's numeric id above only proves that ISSUE is
+# accessible, not that this GitHub host or repository exposes the
+# issue-dependencies endpoint at all. Without this probe, the decision
+# comment was posted and every --supersedes sibling closed before the FIRST
+# blocked-by write ever touched the endpoint and failed there instead —
+# exactly the partial-application hazard this preflight section exists to
+# prevent. A GET (no -F) mirrors the same availability check
+# ai/skills/universal/breakdown/SKILL.md §7 already performs before relying
+# on this endpoint. Dry run never calls gh; it prints the probe as a PLAN
+# line so the maintainer sees it would run.
+if [ "${#blocked_by[@]}" -gt 0 ]; then
+    if [ "$execute" -eq 1 ]; then
+        gh api "repos/$repo/issues/$issue/dependencies/blocked_by" >/dev/null 2>&1 ||
+            die 4 "refused: $repo#$issue's issue-dependencies endpoint" \
+                "(GET repos/$repo/issues/$issue/dependencies/blocked_by) is" \
+                "unavailable — this host or repository does not support" \
+                "blocked-by edges"
+    else
+        echo "PLAN gh api repos/$repo/issues/$issue/dependencies/blocked_by (availability probe)"
+    fi
+fi
+
 # ── Writes. Every supersedes target and blocked-by id above has already been
 # validated, so nothing here can fail partway through for a reason pass 1
 # above should have caught.
@@ -311,11 +386,11 @@ trap 'rm -f "$comment_tmp"' EXIT
 } >"$comment_tmp"
 
 comment_cmd=(gh issue comment "$issue" --repo "$repo" --body-file "$comment_tmp")
-comment_log_cmd=(gh issue comment "$issue" --repo "$repo" --body-file "<decision-comment>")
 if [ "$execute" -eq 0 ]; then
-    echo "PLAN ${comment_log_cmd[*]}"
+    print_plan "${comment_cmd[@]}"
 else
-    log_write "$log" "${comment_log_cmd[@]}"
+    body_sha="$(sha256_stream <"$comment_tmp")"
+    log_write_comment "$log" "$body_sha" "${comment_cmd[@]}"
     "${comment_cmd[@]}" >/dev/null ||
         die 1 "write failed: decision comment on $repo#$issue"
     echo "APPLIED decision comment on $repo#$issue"
@@ -326,7 +401,7 @@ for m in "${supersedes[@]+"${supersedes[@]}"}"; do
     pointer="Superseded by the decision on #$issue."
     cmd=(gh issue close "$m" --repo "$repo" --reason "not planned" --comment "$pointer")
     if [ "$execute" -eq 0 ]; then
-        echo "PLAN ${cmd[*]}"
+        print_plan "${cmd[@]}"
     else
         log_write "$log" "${cmd[@]}"
         "${cmd[@]}" >/dev/null || die 1 "write failed: close $repo#$m"

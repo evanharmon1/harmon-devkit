@@ -21,7 +21,18 @@
 # --outcomes PATH (optional) is a JSON Lines file of applied-write records
 # written by groom-apply.sh/groom-decide.sh's own --outcomes flag:
 #   {"issue":N,"op":"...","status":"DONE"|"DECIDED <date>","at":"<UTC>"}
-# The LAST record for a given issue number overrides that row's `status`
+# Outcomes are keyed by (issue, op), not by issue alone (Codex review on
+# PR #1032, comment 4012885408): an issue can carry several approved
+# operations (a retitle AND a close, say), or an apply run can fail partway
+# through, and a status keyed by issue number only let ANY outcome for that
+# issue overwrite the row's disposition regardless of which op it was for —
+# a successful retitle followed by a failed close made a CLOSE-* row
+# disappear from "Close now" and render as a completed close, even though the
+# issue remained open. A row's `status` therefore comes only from the outcome
+# of the op that matches its verdict — "close" for a CLOSE-* row, "decision"
+# for a NEEDS-DECISION row — and every other recorded op (retitle, label,
+# milestone-assign, sub-issue-link, blocked-by) never changes a row's status.
+# The LAST record for a given (issue, op) pair overrides that row's `status`
 # column — republishing the report after an apply step (SKILL.md Step 6)
 # is otherwise a byte-identical re-render of the plan, forever showing
 # PENDING no matter what was actually applied (finding 8).
@@ -134,8 +145,12 @@ cmd_render() {
             echo "groom-report: no outcomes file yet at $outcomes — all rows PENDING" >&2
         else
             [ -r "$outcomes" ] || die "cannot read outcomes file: $outcomes"
+            # Keyed by issue, THEN op (Codex review on PR #1032, comment
+            # 4012885408) — see the header comment above. The last record
+            # for a given (issue, op) pair wins, same last-write-wins
+            # semantics as the old issue-only map.
             outcomes_map="$(jq -s '
-              reduce .[] as $o ({}; .[($o.issue|tostring)] = $o.status)
+              reduce .[] as $o ({}; .[($o.issue|tostring)][$o.op] = $o.status)
             ' "$outcomes")"
         fi
     fi
@@ -150,7 +165,15 @@ cmd_render() {
         (. | tostring | gsub("\r\n|\r|\n"; " ") | gsub("\\|"; "\\|")) end;
       . as $d
       | ($d.dispositions // []
-         | map(. + {status: ($outcomes_map[(.number|tostring)] // .status // "PENDING")})
+         | map(
+             ($outcomes_map[(.number|tostring)] // {}) as $ops
+             | . + {status: (
+                 if (.verdict | startswith("CLOSE-")) then ($ops["close"] // .status // "PENDING")
+                 elif (.verdict == "NEEDS-DECISION") then ($ops["decision"] // .status // "PENDING")
+                 else (.status // "PENDING")
+                 end
+               )}
+           )
         ) as $rows
       # Actionable sets ("Close now", "Decisions", "What to do next") and the
       # stats strip below count only PENDING rows: once outcomes are merged
@@ -275,7 +298,15 @@ cmd_render() {
         | gsub("\""; "&quot;");
       . as $d
       | ($d.dispositions // []
-         | map(. + {status: ($outcomes_map[(.number|tostring)] // .status // "PENDING")})
+         | map(
+             ($outcomes_map[(.number|tostring)] // {}) as $ops
+             | . + {status: (
+                 if (.verdict | startswith("CLOSE-")) then ($ops["close"] // .status // "PENDING")
+                 elif (.verdict == "NEEDS-DECISION") then ($ops["decision"] // .status // "PENDING")
+                 else (.status // "PENDING")
+                 end
+               )}
+           )
         ) as $rows
       | ($d.repo // "unknown") as $repo
       # Same PENDING-only filtering as the Markdown render above (Codex

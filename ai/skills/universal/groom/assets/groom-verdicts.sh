@@ -51,6 +51,7 @@
 #       vocabulary contract, or coverage finds a duplicate/unknown/unallowed-
 #       missing number, or a CLOSE-dup-of-# target is self-referential or not
 #       in scan.open (each names the offending issue number(s)), 2 = usage,
+#       or (join) the scan's own repo field does not match --repo,
 #       4 = refused (a path argument outside GROOM_SCRATCH, when set).
 set -euo pipefail
 
@@ -146,6 +147,16 @@ validate_files() {
                 local wrong_repo_target wrong_repo_compact
                 wrong_repo_target="${BASH_REMATCH[1]}"
                 wrong_repo_compact="$(printf '%s' "$wrong_repo_target" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+                # A whitespace-only parenthetical (e.g. "CLOSE-wrong-repo
+                # (   )") satisfies WRONG_REPO_RE's [^)]+ and is not the
+                # literal placeholder either, so it passed both checks below
+                # with no destination repository named at all (Codex review
+                # on PR #1032, comment 4012885435).
+                if [ -z "$wrong_repo_compact" ]; then
+                    echo "groom-verdicts: refused: #$number — CLOSE-wrong-repo needs a nonblank target description" >&2
+                    bad=$((bad + 1))
+                    continue
+                fi
                 if [ "$wrong_repo_compact" = "target" ]; then
                     echo "groom-verdicts: refused: #$number — CLOSE-wrong-repo needs a real target description, not the literal placeholder 'target'" >&2
                     bad=$((bad + 1))
@@ -204,10 +215,27 @@ validate_files() {
                     continue
                 fi
             fi
-            if [ "$verdict" = "NEEDS-DECISION" ] && [ -z "$question" ]; then
-                echo "groom-verdicts: refused: #$number — NEEDS-DECISION requires a one-sentence question" >&2
-                bad=$((bad + 1))
-                continue
+            if [ "$verdict" = "NEEDS-DECISION" ]; then
+                # `jq -r` coerces an array or number to nonempty shell text
+                # (e.g. `question: []` becomes the string "[]"), and a
+                # whitespace-only string also passed the old `-z` check, so
+                # malformed subagent output reached the maintainer as an
+                # unusable decision prompt (Codex review on PR #1032, comment
+                # 4012885444) — same JSON-type-then-trim check the evidence
+                # and reason fields already require.
+                local question_type question_trimmed
+                question_type="$(jq -r '.question | type' <<<"$line")"
+                if [ "$question_type" != "string" ]; then
+                    echo "groom-verdicts: refused: #$number — NEEDS-DECISION requires question to be a JSON string (got $question_type)" >&2
+                    bad=$((bad + 1))
+                    continue
+                fi
+                question_trimmed="$(printf '%s' "$question" | tr -d '[:space:]')"
+                if [ -z "$question_trimmed" ]; then
+                    echo "groom-verdicts: refused: #$number — NEEDS-DECISION requires a one-sentence question" >&2
+                    bad=$((bad + 1))
+                    continue
+                fi
             fi
         done <"$file"
     done
@@ -276,6 +304,20 @@ cmd_join() {
         guard_scratch_path "verdict file" "$f"
     done
     [ -r "$scan" ] || die "cannot read scan dataset: $scan"
+
+    # Bind the joined dispositions to the SCANNED repository (Codex review on
+    # PR #1032, comment 4012885488): without this, a scan collected for
+    # repository A supplied to `join --repo B` never compared the two, and
+    # A's issue rows were stamped as belonging to B — the report then leads
+    # the maintainer to approve issue numbers under the wrong tracker
+    # identity, and later apply commands target B. A scan with no `repo`
+    # field (an older fixture, say) has nothing to compare and is accepted
+    # unchanged.
+    local scan_repo
+    scan_repo="$(jq -r '.repo // empty' "$scan")" || die "cannot read scan dataset: $scan"
+    if [ -n "$scan_repo" ] && [ "$scan_repo" != "$repo" ]; then
+        die "refused: scan's repo '$scan_repo' does not match --repo '$repo'"
+    fi
 
     local open_count
     open_count="$(jq '.open // [] | length' "$scan")"

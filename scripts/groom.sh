@@ -73,8 +73,14 @@
 #      run — challenge round 3 finding 5). A GROOM_OUT_DIR pointed at a
 #      directory the caller owns and shares with others — even the system
 #      temp directory — must never have ITS OWN mode changed by this script
-#      (Codex review on PR #1032, comment 4012242612). Never removed by this
-#      script.
+#      (Codex review on PR #1032, comment 4012242612). A pre-existing
+#      "harmon-groom" child (or repo subdirectory under it) is refused
+#      outright unless it is a real, non-symlink directory already owned by
+#      the current user and not group/world-writable — `mkdir -p` and a bare
+#      `chmod` both otherwise follow a symlink another user could plant at
+#      that predictable path in a shared root, letting this script chmod and
+#      populate an arbitrary target (Codex review on PR #1032, comment
+#      4012885475). Never removed by this script.
 #
 # Exit: 2 = environment/usage refusal, otherwise the named script's exit code
 #       (apply mode) or the model run's exit code (audit mode).
@@ -84,6 +90,41 @@ cd "$(dirname "$0")/.."
 die() {
     echo "groom: $*" >&2
     exit 2
+}
+
+# Create (or re-secure) a directory THIS SCRIPT owns, refusing anything
+# already there that is not a real, currently-owned, non-group/world-writable
+# directory (Codex review on PR #1032, comment 4012885475). Without this, a
+# shared location such as the documented GROOM_OUT_DIR=/tmp example lets
+# another user precreate the predictable "harmon-groom" child as a symlink to
+# a directory the eventual caller can modify: `mkdir -p` follows the symlink
+# (a no-op, since the target already "exists"), and a bare `chmod 700` then
+# follows it too, changing the TARGET's mode — so a root-run groom could
+# chmod and populate an arbitrary attacker-chosen directory even though the
+# whole point of this helper is to secure only directories groom itself
+# created. `mkdir` (no -p) is used for the create case so it fails outright
+# on a concurrent creator instead of silently succeeding on someone else's
+# directory.
+secure_owned_dir() {
+    local dir="$1" desc="$2"
+    if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+        mkdir "$dir" || die "could not create $desc: $dir"
+    else
+        [ ! -L "$dir" ] ||
+            die "refused: $desc already exists and is a symlink: $dir"
+        [ -d "$dir" ] ||
+            die "refused: $desc already exists and is not a directory: $dir"
+        [ -O "$dir" ] ||
+            die "refused: $desc already exists and is not owned by the" \
+                "current user: $dir"
+        local mode_str
+        mode_str="$(ls -ld "$dir" | cut -c1-10)"
+        if [ "${mode_str:5:1}" != "-" ] || [ "${mode_str:8:1}" != "-" ]; then
+            die "refused: $desc already exists and is group- or" \
+                "world-writable: $dir"
+        fi
+    fi
+    chmod 700 "$dir" || die "could not secure $desc: $dir"
 }
 
 allowed_apply_scripts="groom-apply.sh, groom-decide.sh, groom-report.sh"
@@ -196,14 +237,8 @@ mkdir -p "$out_parent" || die "could not create the output root: $out_parent"
 # explicit mode) can already have this child directory at a looser mode, and
 # -m would silently no-op on it (challenge round 3 finding 5).
 out_root="$out_parent/harmon-groom"
-mkdir -p "$out_root" || die "could not create the output root: $out_root"
-chmod 700 "$out_root" || die "could not secure the output root: $out_root"
-mkdir -p "$out_root/$owner_repo_dir" ||
-    die "could not create the repo's output directory:" \
-        "$out_root/$owner_repo_dir"
-chmod 700 "$out_root/$owner_repo_dir" ||
-    die "could not secure the repo's output directory:" \
-        "$out_root/$owner_repo_dir"
+secure_owned_dir "$out_root" "the output root"
+secure_owned_dir "$out_root/$owner_repo_dir" "the repo's output directory"
 run_dir="$(mktemp -d "$out_root/$owner_repo_dir/run.XXXXXX")" ||
     die "could not create the run's output directory"
 export GROOM_SCRATCH="$run_dir"

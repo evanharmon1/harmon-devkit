@@ -86,16 +86,18 @@
 # Exit: 0 = dry-run resolved or every write applied, 1 = a write failed,
 #       2 = usage/environment error (including --execute without the env gate,
 #       more "close" rows than --max-closes allows, an unwritable --outcomes
-#       sink in --execute mode, two plan rows naming the same op+issue, or a
+#       sink in --execute mode, two plan rows naming the same op+issue, a
 #       "duplicate" close whose comment does not name a distinct canonical
-#       issue — Codex review on PR #1032, comment 4012242606),
+#       issue — Codex review on PR #1032, comment 4012242606 — or a
+#       sub-issue-link whose resolved parent and child ids are equal —
+#       Codex review on PR #1032, comment 4012885462),
 #       4 = refused (bot-owned issue, an unknown op, a label op triage-
 #       apply.sh's own dry run would reject, a retitle whose live title no
 #       longer matches the plan's previous_title, a completed close whose
 #       live body still has an unticked task item, a sub-issue-link whose
 #       parent or child id could not be resolved, or a milestone-assign whose
-#       milestone_title is not a milestone of the repo — Codex review on
-#       PR #1032, comment 4012242580).
+#       milestone_title or target issue could not be resolved — Codex review
+#       on PR #1032, comments 4012242580 and 4012885414).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -157,6 +159,22 @@ live_is_bot() {
       or (.author.login == "app/renovate")
       or ((.author.login // "") | test("^app/|\\[bot\\]$"))
     ' <<<"$json" >/dev/null
+}
+
+# Print a dry-run "PLAN <exact command>" line with the same argv-preserving
+# %q quoting log_write uses for the durable WRITE record (Codex review on
+# PR #1032, comment 4012885429): a maintainer-approved title, comment, or
+# milestone name containing spaces, quotes, newlines, or shell metacharacters
+# flattened via "${cmd[*]}" into an ambiguous string a reviewer cannot
+# reliably compare with the approval before running --execute for real — a
+# newline could even fabricate an apparent extra PLAN line.
+print_plan() {
+    printf 'PLAN'
+    local arg
+    for arg in "$@"; do
+        printf ' %q' "$arg"
+    done
+    printf '\n'
 }
 
 log_write() {
@@ -278,7 +296,14 @@ validate_close() {
             body_json="$(gh issue view "$issue" --repo "$repo" --json body)" ||
                 die 2 "could not re-read the body of $repo#$issue"
             body="$(jq -r '.body // ""' <<<"$body_json")"
-            if grep -qE '^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]\[[[:space:]]\]' <<<"$body"; then
+            # Any depth of blockquote prefix (`> - [ ] …`, `> > - [ ] …`, …)
+            # still represents unfinished work — same UNCHECKED_RE predicate
+            # track-work/assets/check-closing-keywords.sh uses — so a
+            # checklist item carried over blockquoted from another issue is
+            # not missed here just because this narrower regex required the
+            # marker at the start of the line (Codex review on PR #1032,
+            # comment 4012885453).
+            if grep -qE '^[[:space:]]*(>[[:space:]]*)*([-*+]|[0-9]+[.)])[[:space:]]+\[[[:space:]]\]' <<<"$body"; then
                 die 4 "refused: #$issue close reason is completed but its" \
                     "live body still has an unticked '- [ ]' task item —" \
                     "track-work's closing contract requires every acceptance" \
@@ -377,6 +402,16 @@ validate_milestone_assign() {
         grep -qxF "$milestone_title" <<<"$milestone_titles" ||
             die 4 "refused: #$issue milestone-assign names" \
                 "'$milestone_title', which is not a milestone of $repo"
+        # Resolve the TARGET issue too (Codex review on PR #1032, comment
+        # 4012885414): this validated only that the milestone title exists,
+        # never that #$issue itself is still resolvable. `gh issue edit`
+        # resolves the issue argument in the write command itself, so a
+        # deleted/inaccessible target following an earlier valid row let
+        # pass 1 succeed, the earlier write run, and only pass 2's edit fail
+        # — contradicting Step 6's all-rows-before-any-write guarantee.
+        gh api "repos/$repo/issues/$issue" --jq .id >/dev/null ||
+            die 4 "refused: could not resolve the numeric id of $repo#$issue" \
+                "(milestone-assign target) — it may be inaccessible or deleted"
     fi
 }
 
@@ -405,6 +440,16 @@ validate_sub_issue_link() {
             die 4 "refused: could not resolve the numeric id of $repo#$child" \
                 "(sub-issue-link child at plan row $lineno) — it may be" \
                 "inaccessible or deleted"
+        # Compare the RESOLVED ids, not the plan's own digit strings (Codex
+        # review on PR #1032, comment 4012885462): "1" and "01" both pass the
+        # digit guards and both resolve, but GitHub cannot make an issue its
+        # own sub-issue, and a self-referential row reached the API only in
+        # pass 2 — after any earlier row's write had already run — without
+        # this check.
+        [ "$parent_id" != "$child_id" ] ||
+            die 2 "refused: sub-issue-link at plan row $lineno cannot make" \
+                "$repo#$parent its own sub-issue (parent and child both" \
+                "resolve to id $parent_id)"
         sub_issue_child_id[$lineno]="$child_id"
     fi
 }
@@ -422,7 +467,7 @@ apply_close() {
     local cmd=(gh issue close "$issue" --repo "$repo" --reason "$reason")
     [ -z "$comment" ] || cmd+=(--comment "$comment")
     if [ "$execute" -eq 0 ]; then
-        echo "PLAN ${cmd[*]}"
+        print_plan "${cmd[@]}"
         return 0
     fi
     log_write "$log" "${cmd[@]}"
@@ -440,7 +485,7 @@ apply_retitle() {
 
     local cmd=(gh issue edit "$issue" --repo "$repo" --title "$title")
     if [ "$execute" -eq 0 ]; then
-        echo "PLAN ${cmd[*]}"
+        print_plan "${cmd[@]}"
         return 0
     fi
 
@@ -490,7 +535,7 @@ apply_label() {
         # it again here would be a second, redundant subprocess/API round
         # trip for identical validation with no functional difference
         # (challenge round 3 finding 6).
-        echo "PLAN $triage_apply ${args[*]}"
+        print_plan "$triage_apply" "${args[@]}"
         return 0
     fi
     log_write "$log" "$triage_apply" "${args[@]}" "--execute"
@@ -511,7 +556,7 @@ apply_milestone_assign() {
 
     local cmd=(gh issue edit "$issue" --repo "$repo" --milestone "$milestone_title")
     if [ "$execute" -eq 0 ]; then
-        echo "PLAN ${cmd[*]}"
+        print_plan "${cmd[@]}"
         return 0
     fi
     log_write "$log" "${cmd[@]}"
