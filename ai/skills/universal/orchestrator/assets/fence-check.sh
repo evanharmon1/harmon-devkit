@@ -162,6 +162,30 @@ resolve_comparison_remote() {
     local -a matches=()
     local match_count=0
 
+    # Refuse before any ref probe below, not just the ones this run happens
+    # to take: two remote names where one is a path-prefix of the other
+    # (e.g. "foo" and "foo/release") can compose the identical tracking ref
+    # under two different (remote, branch) pairs — "foo" + branch
+    # "release/main" and "foo/release" + branch "main" both resolve to
+    # refs/remotes/foo/release/main — so which remote actually supplied that
+    # ref is ambiguous and this script must not guess (integration cycle 3,
+    # confirmed).
+    local -a all_remotes=()
+    local overlap_a overlap_b
+    while IFS= read -r remote; do
+        all_remotes+=("$remote")
+    done < <(git -C "$worktree" remote)
+    for overlap_a in ${all_remotes[@]+"${all_remotes[@]}"}; do
+        for overlap_b in ${all_remotes[@]+"${all_remotes[@]}"}; do
+            case "$overlap_b" in
+            "$overlap_a"/*)
+                echo "fence-check: remote namespaces overlap ($overlap_a, $overlap_b) — refusing to derive a comparison base" >&2
+                exit 1
+                ;;
+            esac
+        done
+    done
+
     issue_url="$(jq -r '.issue.url // empty' "$envelope" 2>/dev/null || true)"
     target_nwo=""
     case "$issue_url" in

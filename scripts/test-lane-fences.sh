@@ -490,6 +490,36 @@ case "$out" in
 *) fail "host-case comparison base did not match an upper-case host remote: $out" ;;
 esac
 
+# Overlapping remote-namespace regression (integration cycle 3, confirmed):
+# remote "foo" and remote "foo/release" can compose the identical tracking
+# ref under two different (remote, branch) pairs (e.g. "foo" + branch
+# "release/main" and "foo/release" + branch "main" both resolve to
+# refs/remotes/foo/release/main); which remote actually supplied a resolved
+# ref would then be ambiguous, so the script must refuse rather than guess.
+# `git remote add` itself refuses to create this pair directly (a builtin
+# subset/superset guard added for this exact reason), so the fixture writes
+# the second remote's config directly via `git config`, the way a
+# hand-edited .git/config or an older git without that guard could still
+# produce it.
+overlap_fixture="$tmp/overlap-namespace-repo"
+make_remote_fixture "$overlap_fixture" "" ""
+git -C "$overlap_fixture" remote add foo "https://github.com/evanharmon1/harmon-devkit.git"
+git -C "$overlap_fixture" config remote."foo/release".url "https://github.com/example-other/some-other-repo.git"
+git -C "$overlap_fixture" config remote."foo/release".fetch "+refs/heads/*:refs/remotes/foo/release/*"
+overlap_base="$(git -C "$overlap_fixture" rev-parse HEAD)"
+git -C "$overlap_fixture" update-ref refs/remotes/foo/main "$overlap_base"
+printf '%s\n' changed >"$overlap_fixture/allowed.txt"
+git -C "$overlap_fixture" add allowed.txt
+git -C "$overlap_fixture" commit -qm "test: change allowed path with overlapping remote namespaces present"
+make_remote_brief "$tmp/overlap.md" "$overlap_fixture" "$overlap_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+if out="$(cd "$overlap_fixture" && "$fence_check" --brief "$tmp/overlap.md" 2>&1)"; then
+    fail "overlapping remote namespaces (foo, foo/release) did not refuse to derive a comparison base: $out"
+fi
+case "$out" in
+*'remote namespaces overlap (foo, foo/release)'*) ;;
+*) fail "overlap refusal did not name both overlapping remote names: $out" ;;
+esac
+
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
 scan_fixture="$tmp/scan-repo"
 git init -q "$scan_fixture"
@@ -533,11 +563,13 @@ printf '%s\n' '_secret = "shh"' >>"$scan_fixture/short-keys.toml"
 printf '%s\n' '"quoted-toml-key" = "x"' >>"$scan_fixture/short-keys.toml"
 printf '%s\n' "'single-toml-key' = \"x\"" >>"$scan_fixture/short-keys.toml"
 printf '%s\n' '-leading = "x"' >>"$scan_fixture/short-keys.toml"
+printf '%s\n' '"group:action" = "x"' >>"$scan_fixture/short-keys.toml"
 printf '%s\n' 'id' >"$scan_fixture/scripts/toml-key-consumer.sh"
 printf '%s\n' '_secret' >"$scan_fixture/scripts/toml-underscore-key-consumer.sh"
 printf '%s\n' 'quoted-toml-key' >"$scan_fixture/scripts/toml-quoted-key-consumer.sh"
 printf '%s\n' 'single-toml-key' >"$scan_fixture/scripts/toml-single-quoted-key-consumer.sh"
 printf '%s\n' '-leading' >"$scan_fixture/scripts/toml-hyphen-leading-key-consumer.sh"
+printf '%s\n' 'group:action' >"$scan_fixture/scripts/toml-colon-quoted-key-consumer.sh"
 isolated_scan_out="$(cd "$scan_fixture" && "$scanner" agent-registry.json)" ||
     fail "isolated dependency scan failed"
 for consumer in \
@@ -588,6 +620,8 @@ grep -Fxq scripts/toml-single-quoted-key-consumer.sh <<<"$toml_scan_out" ||
     fail "dependency scan missed a single-quoted TOML key"
 grep -Fxq scripts/toml-hyphen-leading-key-consumer.sh <<<"$toml_scan_out" ||
     fail "dependency scan missed a hyphen-leading bare TOML key"
+grep -Fxq scripts/toml-colon-quoted-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed a colon-bearing quoted TOML key (group:action)"
 
 scan_out="$("$scanner" agent-registry.json)" || fail "real-tree dependency scan failed"
 for consumer in \

@@ -103,9 +103,14 @@ for supplied in "$@"; do
                 "$target"
             ;;
         *.toml)
+            # `:` is allowed in the interior charset of the two QUOTED
+            # alternatives only (a quoted TOML key like "group:action" is
+            # valid TOML and this repo's own Taskfile convention), never the
+            # bare-key alternative — an unquoted TOML key cannot contain `:`
+            # (integration cycle 3, confirmed).
             sed -nE \
-                -e 's/^[[:space:]]*"([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})"[[:space:]]*=.*/\1/p' \
-                -e 's/^[[:space:]]*'"'"'([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})'"'"'[[:space:]]*=.*/\1/p' \
+                -e 's/^[[:space:]]*"([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})"[[:space:]]*=.*/\1/p' \
+                -e 's/^[[:space:]]*'"'"'([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})'"'"'[[:space:]]*=.*/\1/p' \
                 -e 's/^[[:space:]]*([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})[[:space:]]*=.*/\1/p' \
                 "$target"
             ;;
