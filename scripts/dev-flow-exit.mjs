@@ -31,10 +31,15 @@
 // issue #747). It is a diagnostic: no outcome, exit code, or cap depends on
 // it, and it needs no policy knob.
 //
-// Every verdict (--verification-only and the final verdict alike) also
-// carries an additive `rounds` array — the machine-readable trajectory a
-// caller reports FROM instead of re-deriving round assembly itself via this
-// module's own exported helpers (harmon-devkit#1001). One entry per logical
+// The --verification-only projection also carries an additive `rounds`
+// array — the machine-readable trajectory a caller reports FROM instead of
+// re-deriving round assembly itself via this module's own exported helpers
+// (harmon-devkit#1001). The final (non-verification-only) verdict never
+// carries this field: it is the projection review/SKILL.md's fenced public
+// comment is built from, which must publish only verified/corrected
+// provenance and fingerprint values, never a round's raw envelopes
+// (integration cycle 2, confirmed — an earlier revision attached it there
+// too). One entry per logical
 // round assembled for `--stage`, from the FULL (pre-ancestry-filter)
 // trajectory, in round order:
 //   { round, status, reviewed_head, unresolved_slot, substitutions,
@@ -193,6 +198,18 @@ function latestActiveStage(receipts) {
     if (r.kind === "transition") active = r.stage;
   }
   return active;
+}
+
+// Whether the trusted receipt sequence records a transition into `stage` at
+// ANY point in its history — not merely whether it is the latest one. Used to
+// tell a genuine remediation re-entry (stage X ran, then an earlier stage was
+// re-entered) from a run that skipped straight past stage X without ever
+// entering it; only the former is a legitimate retrospective query.
+function hasEnteredStage(receipts, stage) {
+  for (const r of receipts || []) {
+    if (r.kind === "transition" && r.stage === stage) return true;
+  }
+  return false;
 }
 
 function loadRunDir(dir) {
@@ -1899,7 +1916,29 @@ async function main() {
   // (implying more challenge work should be authorized after review has
   // already begun) — see the post-verdict guard below.
   const activeStage = latestActiveStage(runDir.runRecord.receipts);
-  if (args.stage === "review" && activeStage === "challenge" && resolved.rounds.challenge !== 0) {
+  // A verification-only query is a RETROSPECTIVE read of review's own
+  // already-retained rounds, never a request to authorize new review work —
+  // that authorization question belongs solely to the final verdict below,
+  // which this carve-out never touches. Scoped to the case a remediation loop
+  // actually produces (review ran, then challenge was re-entered): only when
+  // the trusted receipts record review having been entered at some earlier
+  // point, distinct from "review is the latest active stage now". A run that
+  // skipped review entirely (no such transition ever recorded) still hits the
+  // guard below exactly as before — validateReceipts' own activeStageBefore
+  // binds each pass to the stage active WHEN IT ARRIVED, never to the run's
+  // current stage, so this only unblocks reading what was already legitimately
+  // retained. Integration cycle 2, confirmed.
+  const reviewRetrospectiveDuringChallenge =
+    args.stage === "review" &&
+    activeStage === "challenge" &&
+    args["verification-only"] &&
+    hasEnteredStage(runDir.runRecord.receipts, "review");
+  if (
+    args.stage === "review" &&
+    activeStage === "challenge" &&
+    resolved.rounds.challenge !== 0 &&
+    !reviewRetrospectiveDuringChallenge
+  ) {
     return indeterminate(
       args,
       `--stage review was requested but the trusted receipt sequence's active stage is still "challenge" (cap ${resolved.rounds.challenge}, not disabled) — review cannot be active until challenge exits`,
@@ -2393,7 +2432,16 @@ async function main() {
   // them here would falsely present them as verified adjudication evidence
   // and make the blocker record internally inconsistent.
   verdict.verified_findings = verifiedFindings;
-  verdict.rounds = roundsForTrajectory;
+  // Deliberately NOT `verdict.rounds = roundsForTrajectory` here. The final
+  // verdict is the public projection the confidence-stage skill's fenced
+  // comment is built from (review/SKILL.md: "publish only the verified or
+  // corrected provenance and fingerprint values, never the producer's
+  // superseded assertions"); `rounds` carries every pass's raw envelope,
+  // which belongs only in the read-only --verification-only projection above
+  // (never published) that the harvester's trajectory reads it from. No
+  // caller reads `.rounds` off this non-verification-only path — the
+  // harvester only ever invokes this script with --verification-only.
+  // Integration cycle 2, confirmed.
   if (verdict.outcome === "capped" && (verdict.reason === "finder_unavailable" || verdict.reason === "breadth_exhausted")) {
     const incompleteRound = ancestryRetainedForVerification.find((round) => round.status !== "complete");
     verdict.partial_findings = incompleteRound ? incompleteRound.findings.map((finding) => finding.id) : [];

@@ -3613,6 +3613,53 @@ function writeScenario(name, db) {
     writeCompletedZeroFindingPass(runDir, runId, "review", 1);
     writeScenario("subdirectory-repo-root", { issues: [{ number: 225, pull_request: null }], comments: { "225": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
+
+  // Integration Codex cycle 2 (P2), confirmed and fixed: the engine's
+  // "review cannot be active until challenge exits" guard used to fire for
+  // EVERY --stage review query while challenge was the latest active stage
+  // — including a --verification-only read of review's own already-retained
+  // round after a legitimate remediation loop (review ran, converged, then
+  // challenge was re-entered), silently discarding review's real
+  // trajectory. The engine now recognizes that retrospective shape via the
+  // trusted receipts' own earlier "transition into review" and returns
+  // review's retained round instead.
+  {
+    const runId = "run-226-review-then-challenge-reentry";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    // lifecycleTo has no "review -> challenge re-entry" destination — built
+    // inline here rather than extending a helper 200+ other fixtures share,
+    // same reasoning as run-221-challenge-still-active above. Unlike the
+    // engine's own receipts (no edge-legality check at all — see
+    // dev-flow-exit.mjs's own comment on that), stage_transitions IS
+    // checked against validate-result-schemas.mjs's ALLOWED_EDGES, which
+    // has no direct review->challenge edge — only review->implement, then
+    // implement->verify, then verify->challenge (the exact "review ->
+    // implement -> verify -> challenge" shape Codex's own finding named).
+    const reentryStages = ["kickoff", "claim", "implement", "verify", "review", "implement", "verify", "challenge"];
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: chain(reentryStages.map((stage, index) => ({
+        stage, entered_at: at,
+        ...(index < reentryStages.length - 1 ? { exit: "fixture transition to " + reentryStages[index + 1] } : {}),
+      }))),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    // The re-entry itself: a bare transition receipt into "challenge", no
+    // pass of its own — the minimal shape that exercises the engine's fix,
+    // mirroring exactly how scripts/test-dev-flow-exit.sh proves it there.
+    const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    run2.receipts = [...(run2.receipts || []), { kind: "transition", stage: "challenge" }];
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
+    writeScenario("review-then-challenge-reentry", { issues: [{ number: 226, pull_request: null }], comments: { "226": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -4944,6 +4991,13 @@ subdir_out="$(cd "$repo/scripts" && node "$repo/scripts/dev-flow-stats.mjs" --re
 root_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 [ "$subdir_out" = "$root_out" ] ||
     fail "subdirectory repo-root: --run from a subdirectory without --repo-root did not resolve the same policy as the root. subdir=$subdir_out root=$root_out"
+
+echo "== integration Codex cycle 2: review round 1 survives a legitimate challenge re-entry instead of being discarded as stage-not-active (fixed remediation 2/6) =="
+export DFSTATS_DB="$tmp/scenarios/review-then-challenge-reentry.json"
+run_id="$(meta review-then-challenge-reentry .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
+    fail "review-then-challenge-reentry: expected review round 1 to survive the later challenge re-entry: $out"
 
 echo "== harmon-devkit#1001 review round 1: a run still in progress on challenge reports challenge's own trajectory, review not-started (fixed round 2/5) =="
 export DFSTATS_DB="$tmp/scenarios/challenge-still-active.json"

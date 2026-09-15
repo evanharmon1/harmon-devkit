@@ -495,6 +495,64 @@ node -e '
 rm -rf "${code_dir}" "${scratch}/dfe-code-$$.out"
 echo "OK: --stage review while challenge is still active carries code:\"stage-not-active\""
 
+echo "== harmon-devkit#1001 integration cycle 2: --verification-only reads review's retained round after a legitimate challenge re-entry =="
+# Identical trajectory to the stage-not-active fixture just above (review r1
+# already ran and was adjudicated clean, then challenge was re-entered — a
+# remediation loop) but queried with --verification-only: this is a
+# RETROSPECTIVE read of review's own already-retained round, never a request
+# to authorize new review work, so it must return the real trajectory instead
+# of the stage-not-active guard the final-verdict query above still gets for
+# the identical receipts.
+reentry_dir="$(mktemp -d)"
+cp -r "ai/schemas/fixtures/exit/single-round-clean-converge/." "${reentry_dir}/"
+node -e '
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  const run = JSON.parse(fs.readFileSync(file, "utf8"));
+  run.receipts.push({ kind: "transition", stage: "challenge" });
+  fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
+' "${reentry_dir}/run/run.json"
+node scripts/dev-flow-exit.mjs --run "${reentry_dir}/run" --stage review \
+    --policy "${reentry_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
+    --verification-only --json \
+    >"${scratch}/dfe-reentry-$$.out" 2>"${scratch}/dfe-reentry-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.notEqual(body.outcome, "indeterminate");
+  assert.equal(body.outcome, "converged");
+  assert.equal(Array.isArray(body.rounds), true, "rounds must be an array");
+  assert.equal(body.rounds.length, 1);
+  assert.equal(body.rounds[0].round, 1);
+  assert.equal(body.rounds[0].passes[0].name, "review-r1-codex-cli");
+  console.log("verification-only review re-entry OK");
+' "${scratch}/dfe-reentry-$$.out" || {
+    cat "${scratch}/dfe-reentry-$$.out" "${scratch}/dfe-reentry-$$.err" >&2
+    rm -rf "${reentry_dir}" "${scratch}/dfe-reentry-$$.out" "${scratch}/dfe-reentry-$$.err"
+    fail "--verification-only did not return review's retained round 1 after a challenge re-entry"
+}
+rm -rf "${reentry_dir}" "${scratch}/dfe-reentry-$$.out" "${scratch}/dfe-reentry-$$.err"
+echo "OK: --verification-only --stage review returns the real trajectory after a challenge re-entry"
+
+echo "== harmon-devkit#1001 integration cycle 2: rounds[] belongs only to the verification-only projection, never the final verdict =="
+node scripts/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
+    --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
+    --current-head 0101010101010101010101010101010101010101 --json \
+    >"${scratch}/dfe-final-norounds-$$.out" 2>"${scratch}/dfe-final-norounds-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.equal(body.outcome, "converged");
+  assert.equal("rounds" in body, false, "the final verdict must not carry the raw-envelope rounds[] trajectory");
+  console.log("final verdict carries no rounds[] OK");
+' "${scratch}/dfe-final-norounds-$$.out" || {
+    cat "${scratch}/dfe-final-norounds-$$.out" "${scratch}/dfe-final-norounds-$$.err" >&2
+    rm -f "${scratch}/dfe-final-norounds-$$.out" "${scratch}/dfe-final-norounds-$$.err"
+    fail "final verdict unexpectedly carried a rounds[] key"
+}
+rm -f "${scratch}/dfe-final-norounds-$$.out" "${scratch}/dfe-final-norounds-$$.err"
+echo "OK: the final (non-verification-only) verdict carries no rounds[] key — only --verification-only does"
+
 # `|| true` on every dev-flow-exit.mjs invocation below: its exit code IS
 # its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
 # 22 capped), so under this file's `set -e` a converged control run would

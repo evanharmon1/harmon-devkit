@@ -2326,17 +2326,26 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
         });
         if (error) {
           // harmon-devkit#1001 review round 1 (P1), confirmed and fixed: a
-          // run genuinely still in progress on challenge is the ordinary,
-          // common case, not corruption — the engine's own "review cannot
-          // be active until challenge exits" guard is EXPECTED to fire here
-          // every time, and reporting the whole run indeterminate over it
-          // threw away challenge's own perfectly good trajectory alongside
-          // it. Recognized only via the engine's additive `code` field
-          // (never by re-deriving the receipt-sequence check ourselves,
-          // which would reintroduce exactly the "re-implement pieces of
-          // the engine's own logic" pattern this whole redesign exists to
-          // eliminate) — review is reported as not yet started, nothing
-          // else changes.
+          // run genuinely still in progress on challenge, never yet having
+          // reached review, is the ordinary, common case, not corruption —
+          // and reporting the whole run indeterminate over it threw away
+          // challenge's own perfectly good trajectory alongside it.
+          // Recognized only via the engine's additive `code` field (never by
+          // re-deriving the receipt-sequence check ourselves, which would
+          // reintroduce exactly the "re-implement pieces of the engine's own
+          // logic" pattern this whole redesign exists to eliminate) — review
+          // is reported as not yet started, nothing else changes.
+          //
+          // Integration cycle 2, confirmed and fixed: the engine itself now
+          // narrows this guard to exactly that case (review never entered).
+          // Where review DID run before challenge was re-entered (a
+          // remediation loop), the engine's verification-only projection
+          // returns review's retained rounds directly instead of this error
+          // — falling through to the ordinary assignment below, never
+          // through this branch at all. This branch is therefore unreachable
+          // for a genuine re-entry, and stays correct with no change of its
+          // own beyond this comment; the fixture proving it lives in
+          // scripts/test-dev-flow-stats.sh.
           if (stage === "review" && code === "stage-not-active") {
             engineRoundsByStage.set("review", []);
             continue;
