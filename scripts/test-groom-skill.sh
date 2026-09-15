@@ -1413,8 +1413,8 @@ grep -q "GROOM_EXECUTE=0" "$GH_STUB_LOG" || fail "env gate not forced to 0"
 grep -q "GROOM_REPO=$repo" "$GH_STUB_LOG" || fail "run must be repo-bound"
 grep -q "AUDIT" "$GH_STUB_LOG" || fail "prompt must state AUDIT"
 grep -q -- "--model sonnet" "$GH_STUB_LOG" || fail "default model must be sonnet"
-grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "sonnet"' "$GH_STUB_LOG" ||
-    fail "default fan-out model must be sonnet (issue #1044) — coordinating and fan-out tiers must not silently diverge"
+grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "opus"' "$GH_STUB_LOG" ||
+    fail "default fan-out model must be opus (issue #1044) — fan-out verification defaults to frontier, independent of the standard-tier coordinator"
 grep -q "GROOM_SCRATCH=/" "$GH_STUB_LOG" || fail "run must bind a scratch dir"
 grep -q "GROOM_SCRATCH=$GROOM_OUT_DIR/" "$GH_STUB_LOG" ||
     fail "the scratch dir must be created under GROOM_OUT_DIR"
@@ -1439,10 +1439,10 @@ grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "haiku"' "
 echo "==> SKILL.md: Step 2 documents the interactive-path fan-out tier contract directly (issue #1044) — the wrapper-prompt tests above cover only the headless path, and the interactive /groom path relies entirely on this prose"
 skill_md="ai/skills/universal/groom/SKILL.md"
 [ -f "$skill_md" ] || fail "$skill_md must exist"
-grep -q "standard.*tier" "$skill_md" || fail "SKILL.md Step 2 must name the standard tier for fan-out dispatch"
+grep -q "frontier.*tier" "$skill_md" || fail "SKILL.md Step 2 must name the frontier tier for fan-out dispatch"
 grep -qF "agent-registry.json" "$skill_md" ||
     fail "SKILL.md Step 2 must point at agent-registry.json for cross-harness tier lookup, not hardcode one harness"
-grep -qF "sonnet" "$skill_md" || fail "SKILL.md Step 2 must give the Claude Code example (sonnet)"
+grep -qF "opus" "$skill_md" || fail "SKILL.md Step 2 must give the Claude Code example (opus)"
 grep -q "rather than leaving it unset to inherit" "$skill_md" ||
     fail "SKILL.md Step 2 must explicitly say not to leave the fan-out model unset"
 

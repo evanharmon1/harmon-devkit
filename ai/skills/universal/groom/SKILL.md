@@ -102,30 +102,37 @@ output path under `$SCRATCH` (one JSON Lines file per cluster). Prefer
 smaller clusters (nearer 50) on a first run or an unusually old backlog —
 `references/cadence.md` has the sizing reference.
 
-**Dispatch every cluster subagent on the `standard` tier for your own
+**Dispatch every cluster subagent on the `frontier` tier for your own
 harness/family, never on whatever tier is coordinating this run.** A
-cluster subagent's job — verify one cluster against live code, apply the
-fixed vocabulary with evidence — needs real judgment (`GROOM_MODEL`
-defaults this whole run to `standard` for exactly that reason) but not the
-coordinating session's own tier, which may be higher for unrelated
-reasons (an operator's default, a stronger model chosen for a hard
-backlog). Inheriting that tier by default silently multiplies its cost by
-the cluster count — 6–8 clusters on an apex/frontier tier is 6–8x an
-already-adequate `standard`-tier run. Look up your own family's
-`standard`-tier model in `agent-registry.json` and pass it explicitly on
-each dispatch (in Claude Code, the `Agent` tool's `model` parameter) —
-e.g. `sonnet` for the `claude` family, `gpt-5.6-terra` for `gpt`
-(Codex CLI), a `standard`-tier Gemini Flash model for `gemini`
+cluster subagent does the run's real judgment work — verify one cluster
+against live code, decide a `CLOSE-*` verdict needs concrete evidence or
+fall back to `KEEP` — while the coordinating session's own job
+(clustering, consolidating already-decided verdicts, writing the report)
+is comparatively mechanical, so `GROOM_MODEL` defaults the coordinator
+itself to only `standard`. Leaving the fan-out model unset inherits
+whatever tier the coordinator happens to be running instead, which cuts
+both ways: too weak if the coordinator is on `standard` or below for the
+verification work that actually needs judgment, and needlessly expensive
+if the coordinator is on `apex` for unrelated reasons (an operator's
+default, a stronger model chosen for a hard backlog) — 6–8 clusters
+inheriting an apex tier is 6–8x an adequate `frontier`-tier run. Look up
+your own family's `frontier`-tier model in `agent-registry.json` and pass
+it explicitly on each dispatch (in Claude Code, the `Agent` tool's `model`
+parameter) — e.g. `opus` for the `claude` family, `gpt-5.6-sol` for `gpt`
+(Codex CLI), the default `frontier`-tier Gemini model for `gemini`
 (Antigravity) — rather than leaving it unset to inherit the coordinating
 session's own model. If the coordinating session is itself already
-exactly on `standard`, this is a no-op; state so rather than omitting the
-check. A coordinating session running **below** `standard` (an economy
-tier) still dispatches fan-out subagents at `standard` — that raises the
-fan-out tier above the coordinator's own, not a no-op, and skipping the
-override there would silently leave subagents on the weaker economy tier
-instead. Depart from this default only for a stated reason (e.g. an
-unusually ambiguous backlog where a stronger tier is worth the cost), not
-by default inheritance.
+exactly on `frontier`, this is a no-op; state so rather than omitting the
+check. A coordinating session running **below** `frontier` (`standard` or
+`economy`) still dispatches fan-out subagents at `frontier` — that raises
+the fan-out tier above the coordinator's own, not a no-op, and skipping
+the override there would silently leave subagents on the coordinator's
+weaker tier instead. A coordinating session running **above** `frontier`
+(`apex`) dispatches fan-out subagents at `frontier`, capping the cost
+below whatever the coordinator's own tier costs — this is the case the
+override exists for. Depart from this default only for a stated reason
+(e.g. an unusually ambiguous backlog where `apex` is worth the cost for
+verification too), not by default inheritance.
 
 Each subagent verifies against the **live code and merged PRs**, never from
 memory, and returns verdicts in the fixed vocabulary
