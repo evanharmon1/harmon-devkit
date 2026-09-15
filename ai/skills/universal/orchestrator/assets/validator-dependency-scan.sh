@@ -74,10 +74,45 @@ for supplied in "$@"; do
             ' "$target"
             ;;
         *.yaml | *.yml)
-            sed -nE 's/^[[:space:]]*(-[[:space:]]+)?([A-Za-z][A-Za-z0-9_.-]{0,79})[[:space:]]*:.*/\2/p' "$target"
+            # Bare keys accept the full [A-Za-z0-9_-] leading charset, with
+            # dots and colons allowed inside (so a `group:action`-style key,
+            # this repo's own Taskfile convention, is emitted in full rather
+            # than dropped — challenge round 2, confirmed); a "quoted" or
+            # 'quoted' key emits its unquoted term. Each alternative mutates
+            # the matched line on success, so a line matching one never also
+            # matches another — except a quoted key ending in `:` (allowed
+            # since `:` is in the interior charset), whose successful
+            # substitution leaves the pattern space holding just the
+            # unquoted term (e.g. "foo:"), which the bare-key alternative
+            # can then re-match on ITS OWN trailing colon and re-emit a
+            # truncated, unrelated term ("foo"). The `t` after each quoted
+            # alternative branches past the rest of the script once that
+            # alternative has already matched, so a successful quoted-key
+            # substitution is never re-parsed (integration cycle 2,
+            # confirmed). The mapping separator must actually look like
+            # YAML (`:` then whitespace or end of line) rather than `.*`, or
+            # a digit/hyphen-leading unquoted scalar containing a colon (a
+            # Docker port mapping like "- 8080:80") is misread as a key
+            # (challenge round 1, confirmed).
+            sed -nE \
+                -e 's/^[[:space:]]*(-[[:space:]]+)?"([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})"[[:space:]]*:([[:space:]].*)?$/\2/p' \
+                -e t \
+                -e 's/^[[:space:]]*(-[[:space:]]+)?'"'"'([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})'"'"'[[:space:]]*:([[:space:]].*)?$/\2/p' \
+                -e t \
+                -e 's/^[[:space:]]*(-[[:space:]]+)?([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})[[:space:]]*:([[:space:]].*)?$/\2/p' \
+                "$target"
             ;;
         *.toml)
-            sed -nE 's/^[[:space:]]*([A-Za-z][A-Za-z0-9_.-]{0,79})[[:space:]]*=.*/\1/p' "$target"
+            # `:` is allowed in the interior charset of the two QUOTED
+            # alternatives only (a quoted TOML key like "group:action" is
+            # valid TOML and this repo's own Taskfile convention), never the
+            # bare-key alternative — an unquoted TOML key cannot contain `:`
+            # (integration cycle 3, confirmed).
+            sed -nE \
+                -e 's/^[[:space:]]*"([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})"[[:space:]]*=.*/\1/p' \
+                -e 's/^[[:space:]]*'"'"'([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})'"'"'[[:space:]]*=.*/\1/p' \
+                -e 's/^[[:space:]]*([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})[[:space:]]*=.*/\1/p' \
+                "$target"
             ;;
         esac
     } | while IFS= read -r term; do

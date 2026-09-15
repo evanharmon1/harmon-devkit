@@ -229,6 +229,297 @@ case "$out" in
 *) fail "copy refusal did not name its out-of-fence source: $out" ;;
 esac
 
+# Introduced one commit at a time (never together), and last among the
+# $fixture-based cases: fence-check's diff is cumulative from the fixture's
+# one fixed comparison base, so either a sibling added before its own
+# assertion, or a later test's fence omitting it, would make it an unfenced
+# offender for the wrong assertion. Reuses every path still live in that
+# cumulative diff at this point (mirrors $copy_fence, plus the copy's own
+# source, which --find-copies-harder keeps re-attributing on every later
+# diff even though its own content never changed).
+bracket_fence="$(jq -cn --arg newline_path "$newline_path" \
+    '[{"path":"allowed.txt"},{"path":"outside.txt"},{"path":"outside-rename.txt"},{"path":"allowed-renamed.txt"},{"path":"glob/**"},{"path":"copy-destination.txt"},{"path":"copy-source.txt"},{"path":$newline_path},{"path":"app/[id]/page.tsx"}]')"
+mkdir -p "$fixture/app/[id]"
+printf '%s\n' base >"$fixture/app/[id]/page.tsx"
+git -C "$fixture" add "app/[id]/page.tsx"
+git -C "$fixture" commit -qm "test: add a literal bracketed path"
+make_brief "$tmp/bracket-literal.md" "$bracket_fence"
+(
+    cd "$fixture"
+    "$fence_check" --brief "$tmp/bracket-literal.md"
+) >/dev/null || fail "a literal fence entry containing bracket characters rejected its own exact path"
+
+mkdir -p "$fixture/app/i"
+printf '%s\n' base >"$fixture/app/i/page.tsx"
+git -C "$fixture" add "app/i/page.tsx"
+git -C "$fixture" commit -qm "test: add a path a bracket-glob would collapse the literal entry onto"
+if out="$(cd "$fixture" && "$fence_check" --brief "$tmp/bracket-literal.md" 2>&1)"; then
+    fail "a literal bracketed fence entry was glob-interpreted to admit a different path"
+fi
+case "$out" in
+*'app/i/page.tsx'*) ;;
+*) fail "bracket-glob refusal did not name the unfenced sibling path: $out" ;;
+esac
+
+echo "== fence-check.sh: resolves the comparison base from the envelope issue.url's target remote =="
+make_remote_fixture() {
+    # $1: fixture dir  $2: origin url or "" to skip  $3: upstream url or ""
+    # Callers create the upstream/main ref explicitly (or don't) afterward.
+    local dir="$1" origin_url="$2" upstream_url="$3"
+    git init -q "$dir"
+    mkdir -p "$dir/scripts"
+    ln -s "$repo/scripts/validate-result-schemas.mjs" "$dir/scripts/validate-result-schemas.mjs"
+    git -C "$dir" config user.name "Lane Fence Test"
+    git -C "$dir" config user.email "lane-fence@example.invalid"
+    printf '%s\n' base >"$dir/allowed.txt"
+    git -C "$dir" add .
+    git -C "$dir" commit -qm "test: seed remote-resolution fixture"
+    [ -z "$origin_url" ] || git -C "$dir" remote add origin "$origin_url"
+    [ -z "$upstream_url" ] || git -C "$dir" remote add upstream "$upstream_url"
+}
+
+make_remote_brief() {
+    # $1: destination  $2: fixture dir  $3: base sha  $4: issue url
+    local destination="$1" dir="$2" base_sha="$3" issue_url="$4" branch
+    branch="$(git -C "$dir" branch --show-current)"
+    awk '
+      /^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=1; next }
+      /^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=0; next }
+      inside && /^```json$/ { fenced=1; next }
+      inside && fenced && /^```$/ { fenced=0; next }
+      inside && fenced { print }
+    ' "$brief_source" | jq --argjson fence '[{"path":"allowed.txt"}]' --arg base "$base_sha" \
+        --arg worktree "$dir" --arg report "$tmp/remote-report.md" --arg branch "$branch" --arg issue_url "$issue_url" \
+        '.fence = $fence | .base_sha = $base | .default_branch = "main" | .worktree_path = $worktree | .report_path = $report | .branch = $branch | .claim_handoff.branch = $branch | .issue.url = $issue_url' \
+        >"$tmp/remote-envelope.json"
+    sed -n '1,/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/p' "$brief_source" >"$destination"
+    printf '\n```json\n' >>"$destination"
+    cat "$tmp/remote-envelope.json" >>"$destination"
+    printf '```\n\n' >>"$destination"
+    sed -n '/^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/,$p' "$brief_source" >>"$destination"
+}
+
+# Fork topology: origin is the writable fork and lacks the default branch
+# entirely (no refs/remotes/origin/main at all); upstream is the PR target
+# and carries it. issue.url names upstream's owner/repo.
+fork_fixture="$tmp/fork-repo"
+make_remote_fixture "$fork_fixture" "https://github.com/example-fork/harmon-devkit.git" \
+    "https://github.com/example-upstream/harmon-devkit.git"
+fork_base="$(git -C "$fork_fixture" rev-parse HEAD)"
+git -C "$fork_fixture" update-ref refs/remotes/upstream/main "$fork_base"
+printf '%s\n' changed >"$fork_fixture/allowed.txt"
+git -C "$fork_fixture" add allowed.txt
+git -C "$fork_fixture" commit -qm "test: change allowed path in fork topology"
+make_remote_brief "$tmp/fork.md" "$fork_fixture" "$fork_base" "https://github.com/example-upstream/harmon-devkit/issues/1"
+out="$(cd "$fork_fixture" && "$fence_check" --brief "$tmp/fork.md" 2>&1)" ||
+    fail "a fork-topology change was rejected: $out"
+case "$out" in
+*"using remote 'upstream'"*"issue.url"*) ;;
+*) fail "fork-topology comparison base did not report the resolved remote and source: $out" ;;
+esac
+
+# Non-fork checkout regression (challenge round 1, confirmed): origin already
+# is the PR target (issue.url matches it) but the checkout also carries an
+# unrelated upstream remote for a different repository entirely. The old
+# `gh repo view`-ambient-resolution design could regress here by preferring
+# a gh-favoured remote name over the actual target; issue.url must still
+# resolve to origin.
+unrelated_fixture="$tmp/unrelated-upstream-repo"
+make_remote_fixture "$unrelated_fixture" "https://github.com/evanharmon1/harmon-devkit.git" \
+    "https://github.com/example-unrelated/some-other-repo.git"
+unrelated_base="$(git -C "$unrelated_fixture" rev-parse HEAD)"
+git -C "$unrelated_fixture" update-ref refs/remotes/origin/main "$unrelated_base"
+printf '%s\n' changed >"$unrelated_fixture/allowed.txt"
+git -C "$unrelated_fixture" add allowed.txt
+git -C "$unrelated_fixture" commit -qm "test: change allowed path with an unrelated upstream remote present"
+make_remote_brief "$tmp/unrelated.md" "$unrelated_fixture" "$unrelated_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$unrelated_fixture" && "$fence_check" --brief "$tmp/unrelated.md" 2>&1)" ||
+    fail "a non-fork checkout with an unrelated upstream remote was rejected: $out"
+case "$out" in
+*"using remote 'origin'"*"issue.url"*) ;;
+*) fail "unrelated-upstream comparison base did not resolve to origin via issue.url: $out" ;;
+esac
+
+# Duplicate-remote regression (challenge round 2, confirmed): a second,
+# never-fetched remote alias for the SAME repository sorts before origin in
+# `git remote` order (alphabetical: "github" < "origin"). Picking the first
+# URL-matching remote unconditionally would select the alias and fail
+# closed even though origin (fetched, ref present) works fine.
+duplicate_fixture="$tmp/duplicate-remote-repo"
+make_remote_fixture "$duplicate_fixture" "https://github.com/evanharmon1/harmon-devkit.git" ""
+git -C "$duplicate_fixture" remote add github "https://github.com/evanharmon1/harmon-devkit.git"
+duplicate_base="$(git -C "$duplicate_fixture" rev-parse HEAD)"
+git -C "$duplicate_fixture" update-ref refs/remotes/origin/main "$duplicate_base"
+printf '%s\n' changed >"$duplicate_fixture/allowed.txt"
+git -C "$duplicate_fixture" add allowed.txt
+git -C "$duplicate_fixture" commit -qm "test: change allowed path with a never-fetched duplicate remote present"
+make_remote_brief "$tmp/duplicate.md" "$duplicate_fixture" "$duplicate_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$duplicate_fixture" && "$fence_check" --brief "$tmp/duplicate.md" 2>&1)" ||
+    fail "a duplicate-remote checkout with a never-fetched alphabetically-earlier alias was rejected: $out"
+case "$out" in
+*"using remote 'origin'"*"issue.url"*) ;;
+*) fail "duplicate-remote comparison base did not prefer origin over the never-fetched alias: $out" ;;
+esac
+
+# Ref-resolvability preference regression (review round 1, confirmed
+# coverage gap): no remote is named "origin", so the origin-preference
+# branch never applies; two URL-matching remotes exist, and only the
+# alphabetically LATER one ("zzz-mirror" > "alpha-mirror") has a fetched
+# default-branch ref. The alphabetically-first-by-`git remote`-order match
+# must still be skipped in favour of the one whose ref actually resolves.
+ref_pref_fixture="$tmp/ref-preference-repo"
+make_remote_fixture "$ref_pref_fixture" "" ""
+git -C "$ref_pref_fixture" remote add alpha-mirror "https://github.com/evanharmon1/harmon-devkit.git"
+git -C "$ref_pref_fixture" remote add zzz-mirror "https://github.com/evanharmon1/harmon-devkit.git"
+ref_pref_base="$(git -C "$ref_pref_fixture" rev-parse HEAD)"
+git -C "$ref_pref_fixture" update-ref refs/remotes/zzz-mirror/main "$ref_pref_base"
+printf '%s\n' changed >"$ref_pref_fixture/allowed.txt"
+git -C "$ref_pref_fixture" add allowed.txt
+git -C "$ref_pref_fixture" commit -qm "test: change allowed path with no origin and an unresolvable alphabetically-first alias"
+make_remote_brief "$tmp/ref-preference.md" "$ref_pref_fixture" "$ref_pref_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$ref_pref_fixture" && "$fence_check" --brief "$tmp/ref-preference.md" 2>&1)" ||
+    fail "a checkout with no origin and an unresolvable alphabetically-first alias was rejected: $out"
+case "$out" in
+*"using remote 'zzz-mirror'"*"issue.url"*) ;;
+*) fail "ref-preference comparison base did not skip the alphabetically-first remote lacking a resolvable ref: $out" ;;
+esac
+
+# URL-form and case-insensitivity regression (review round 1, confirmed
+# coverage gap): every prior fixture uses one lower-case https://...git
+# shape. A differently-cased ssh://git@github.com/ remote must still match
+# a lower-case issue.url. The trailing "/" after ".git" also discriminates
+# review round 1's own strip-order fix (review round 2, confirmed coverage
+# gap): stripping ".git" before the trailing slash would leave this URL
+# normalized to "evanharmon1/harmon-devkit.git", which never matches.
+ssh_case_fixture="$tmp/ssh-case-repo"
+make_remote_fixture "$ssh_case_fixture" "ssh://git@github.com/EvanHarmon1/Harmon-DevKit.git/" ""
+ssh_case_base="$(git -C "$ssh_case_fixture" rev-parse HEAD)"
+git -C "$ssh_case_fixture" update-ref refs/remotes/origin/main "$ssh_case_base"
+printf '%s\n' changed >"$ssh_case_fixture/allowed.txt"
+git -C "$ssh_case_fixture" add allowed.txt
+git -C "$ssh_case_fixture" commit -qm "test: change allowed path with a differently-cased ssh:// origin remote"
+make_remote_brief "$tmp/ssh-case.md" "$ssh_case_fixture" "$ssh_case_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$ssh_case_fixture" && "$fence_check" --brief "$tmp/ssh-case.md" 2>&1)" ||
+    fail "a differently-cased ssh:// origin remote was rejected: $out"
+case "$out" in
+*"using remote 'origin'"*"issue.url"*) ;;
+*) fail "ssh-case comparison base did not match a differently-cased ssh:// remote: $out" ;;
+esac
+
+# Empty-match-array regression (integration cycle 1, confirmed): a
+# configured remote that does not match a non-GitHub/unparseable issue.url
+# exercises the genuinely-empty match array, the exact path that used to
+# expand `${#matches[@]}` directly. This host's bash is not 3.2, so it
+# cannot reproduce the `set -u` abort itself; the assertion instead pins
+# that the fallback path is reached and reports `source: fallback`, which
+# a bash-3.2 abort on this same code path would never do.
+no_match_fixture="$tmp/no-match-repo"
+make_remote_fixture "$no_match_fixture" "https://github.com/evanharmon1/harmon-devkit.git" ""
+no_match_base="$(git -C "$no_match_fixture" rev-parse HEAD)"
+git -C "$no_match_fixture" update-ref refs/remotes/origin/main "$no_match_base"
+printf '%s\n' changed >"$no_match_fixture/allowed.txt"
+git -C "$no_match_fixture" add allowed.txt
+git -C "$no_match_fixture" commit -qm "test: change allowed path with an unparseable issue.url and no matching remote"
+make_remote_brief "$tmp/no-match.md" "$no_match_fixture" "$no_match_base" "not-a-url"
+out="$(cd "$no_match_fixture" && "$fence_check" --brief "$tmp/no-match.md" 2>&1)" ||
+    fail "an unparseable issue.url with a configured remote was rejected: $out"
+case "$out" in
+*"using remote 'origin'"*"(source: fallback)"*) ;;
+*) fail "no-match comparison base did not reach the empty-array fallback path: $out" ;;
+esac
+
+# Local-branch-ambiguity regression (integration cycle 2, confirmed): a
+# local branch literally named "origin/main" exists at HEAD, alongside the
+# real refs/remotes/origin/main pointing at the true (older) base. The
+# short <remote>/<branch> form resolves refs/heads/... before
+# refs/remotes/..., so it would silently pick the local branch at HEAD,
+# collapsing the merge base to HEAD and hiding an out-of-fence change.
+ambiguous_fixture="$tmp/ambiguous-branch-repo"
+make_remote_fixture "$ambiguous_fixture" "https://github.com/evanharmon1/harmon-devkit.git" ""
+ambiguous_base="$(git -C "$ambiguous_fixture" rev-parse HEAD)"
+git -C "$ambiguous_fixture" update-ref refs/remotes/origin/main "$ambiguous_base"
+printf '%s\n' changed >"$ambiguous_fixture/outside.txt"
+git -C "$ambiguous_fixture" add outside.txt
+git -C "$ambiguous_fixture" commit -qm "test: an out-of-fence change with an ambiguous local branch name"
+git -C "$ambiguous_fixture" branch -- origin/main
+make_remote_brief "$tmp/ambiguous.md" "$ambiguous_fixture" "$ambiguous_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+if out="$(cd "$ambiguous_fixture" && "$fence_check" --brief "$tmp/ambiguous.md" 2>&1)"; then
+    fail "an out-of-fence change was silently allowed by a local branch shadowing the remote-tracking ref name: $out"
+fi
+case "$out" in
+*outside.txt*) ;;
+*) fail "ambiguous-branch refusal did not name the out-of-fence path: $out" ;;
+esac
+
+# Leading-hyphen remote name regression (integration cycle 2, confirmed):
+# the only target-matching remote is named "-target" (legal via `git
+# remote add --`); `git remote get-url` without `--` would parse it as an
+# unrecognized option and silently drop the match via `|| continue`.
+hyphen_fixture="$tmp/hyphen-remote-repo"
+make_remote_fixture "$hyphen_fixture" "" ""
+git -C "$hyphen_fixture" remote add -- -target "https://github.com/evanharmon1/harmon-devkit.git"
+hyphen_base="$(git -C "$hyphen_fixture" rev-parse HEAD)"
+git -C "$hyphen_fixture" update-ref refs/remotes/-target/main "$hyphen_base"
+printf '%s\n' changed >"$hyphen_fixture/allowed.txt"
+git -C "$hyphen_fixture" add allowed.txt
+git -C "$hyphen_fixture" commit -qm "test: change allowed path with a leading-hyphen remote name"
+make_remote_brief "$tmp/hyphen.md" "$hyphen_fixture" "$hyphen_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$hyphen_fixture" && "$fence_check" --brief "$tmp/hyphen.md" 2>&1)" ||
+    fail "a leading-hyphen remote name was rejected: $out"
+case "$out" in
+*"using remote '-target'"*"issue.url"*) ;;
+*) fail "hyphen-remote comparison base did not resolve the leading-hyphen remote: $out" ;;
+esac
+
+# Mixed-case host regression (integration cycle 2, confirmed): the target
+# remote's URL uses an upper-case host ("GITHUB.COM"), which no case arm
+# matches literally; the old trailing-only lowercase step ran too late to
+# help.
+host_case_fixture="$tmp/host-case-repo"
+make_remote_fixture "$host_case_fixture" "https://GITHUB.COM/evanharmon1/harmon-devkit.git" ""
+host_case_base="$(git -C "$host_case_fixture" rev-parse HEAD)"
+git -C "$host_case_fixture" update-ref refs/remotes/origin/main "$host_case_base"
+printf '%s\n' changed >"$host_case_fixture/allowed.txt"
+git -C "$host_case_fixture" add allowed.txt
+git -C "$host_case_fixture" commit -qm "test: change allowed path with an upper-case host origin remote"
+make_remote_brief "$tmp/host-case.md" "$host_case_fixture" "$host_case_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$host_case_fixture" && "$fence_check" --brief "$tmp/host-case.md" 2>&1)" ||
+    fail "an upper-case host origin remote was rejected: $out"
+case "$out" in
+*"using remote 'origin'"*"issue.url"*) ;;
+*) fail "host-case comparison base did not match an upper-case host remote: $out" ;;
+esac
+
+# Overlapping remote-namespace regression (integration cycle 3, confirmed):
+# remote "foo" and remote "foo/release" can compose the identical tracking
+# ref under two different (remote, branch) pairs (e.g. "foo" + branch
+# "release/main" and "foo/release" + branch "main" both resolve to
+# refs/remotes/foo/release/main); which remote actually supplied a resolved
+# ref would then be ambiguous, so the script must refuse rather than guess.
+# `git remote add` itself refuses to create this pair directly (a builtin
+# subset/superset guard added for this exact reason), so the fixture writes
+# the second remote's config directly via `git config`, the way a
+# hand-edited .git/config or an older git without that guard could still
+# produce it.
+overlap_fixture="$tmp/overlap-namespace-repo"
+make_remote_fixture "$overlap_fixture" "" ""
+git -C "$overlap_fixture" remote add foo "https://github.com/evanharmon1/harmon-devkit.git"
+git -C "$overlap_fixture" config remote."foo/release".url "https://github.com/example-other/some-other-repo.git"
+git -C "$overlap_fixture" config remote."foo/release".fetch "+refs/heads/*:refs/remotes/foo/release/*"
+overlap_base="$(git -C "$overlap_fixture" rev-parse HEAD)"
+git -C "$overlap_fixture" update-ref refs/remotes/foo/main "$overlap_base"
+printf '%s\n' changed >"$overlap_fixture/allowed.txt"
+git -C "$overlap_fixture" add allowed.txt
+git -C "$overlap_fixture" commit -qm "test: change allowed path with overlapping remote namespaces present"
+make_remote_brief "$tmp/overlap.md" "$overlap_fixture" "$overlap_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+if out="$(cd "$overlap_fixture" && "$fence_check" --brief "$tmp/overlap.md" 2>&1)"; then
+    fail "overlapping remote namespaces (foo, foo/release) did not refuse to derive a comparison base: $out"
+fi
+case "$out" in
+*'remote namespaces overlap (foo, foo/release)'*) ;;
+*) fail "overlap refusal did not name both overlapping remote names: $out" ;;
+esac
+
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
 scan_fixture="$tmp/scan-repo"
 git init -q "$scan_fixture"
@@ -253,9 +544,32 @@ printf '%s\n' 'status baseSha' >"$scan_fixture/scripts/short-key-consumer.sh"
 printf '%s\n' 'go' >"$scan_fixture/scripts/short-enum-consumer.sh"
 printf '%s\n' 'id: short' >"$scan_fixture/short-keys.yaml"
 printf '%s\n' '- name: fixture' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' '"critical-key": value' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' '      - 8080:8080' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' '  guard:release-title:' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' "'single-quoted-key': value" >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' '9lives: value' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' '"foo:": bar' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' 'id name' >"$scan_fixture/scripts/yaml-key-consumer.sh"
+printf '%s\n' 'critical-key' >"$scan_fixture/scripts/yaml-quoted-key-consumer.sh"
+printf '%s\n' '8080' >"$scan_fixture/scripts/yaml-port-mapping-consumer.sh"
+printf '%s\n' 'task guard:release-title' >"$scan_fixture/scripts/yaml-colon-key-consumer.sh"
+printf '%s\n' 'single-quoted-key' >"$scan_fixture/scripts/yaml-single-quoted-key-consumer.sh"
+printf '%s\n' '9lives' >"$scan_fixture/scripts/yaml-digit-leading-key-consumer.sh"
+printf '%s\n' 'foo:' >"$scan_fixture/scripts/yaml-colon-suffix-key-consumer.sh"
+printf '%s\n' 'foo' >"$scan_fixture/scripts/yaml-colon-suffix-reparse-consumer.sh"
 printf '%s\n' 'id = "short"' >"$scan_fixture/short-keys.toml"
+printf '%s\n' '_secret = "shh"' >>"$scan_fixture/short-keys.toml"
+printf '%s\n' '"quoted-toml-key" = "x"' >>"$scan_fixture/short-keys.toml"
+printf '%s\n' "'single-toml-key' = \"x\"" >>"$scan_fixture/short-keys.toml"
+printf '%s\n' '-leading = "x"' >>"$scan_fixture/short-keys.toml"
+printf '%s\n' '"group:action" = "x"' >>"$scan_fixture/short-keys.toml"
 printf '%s\n' 'id' >"$scan_fixture/scripts/toml-key-consumer.sh"
+printf '%s\n' '_secret' >"$scan_fixture/scripts/toml-underscore-key-consumer.sh"
+printf '%s\n' 'quoted-toml-key' >"$scan_fixture/scripts/toml-quoted-key-consumer.sh"
+printf '%s\n' 'single-toml-key' >"$scan_fixture/scripts/toml-single-quoted-key-consumer.sh"
+printf '%s\n' '-leading' >"$scan_fixture/scripts/toml-hyphen-leading-key-consumer.sh"
+printf '%s\n' 'group:action' >"$scan_fixture/scripts/toml-colon-quoted-key-consumer.sh"
 isolated_scan_out="$(cd "$scan_fixture" && "$scanner" agent-registry.json)" ||
     fail "isolated dependency scan failed"
 for consumer in \
@@ -280,10 +594,34 @@ yaml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.yaml)" ||
     fail "YAML-key dependency scan failed"
 grep -Fxq scripts/yaml-key-consumer.sh <<<"$yaml_scan_out" ||
     fail "dependency scan missed short or list-mapping YAML keys"
+grep -Fxq scripts/yaml-quoted-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan missed a quoted YAML key"
+grep -Fxq scripts/yaml-port-mapping-consumer.sh <<<"$yaml_scan_out" &&
+    fail "dependency scan misread a Docker port-mapping scalar (- 8080:8080) as a key"
+grep -Fxq scripts/yaml-colon-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan dropped a colon-bearing group:action-style YAML key"
+grep -Fxq scripts/yaml-single-quoted-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan missed a single-quoted YAML key"
+grep -Fxq scripts/yaml-digit-leading-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan missed a digit-leading bare YAML key"
+grep -Fxq scripts/yaml-colon-suffix-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan missed a quoted YAML key ending in a colon"
+grep -Fxq scripts/yaml-colon-suffix-reparse-consumer.sh <<<"$yaml_scan_out" &&
+    fail "dependency scan re-parsed a quoted colon-suffixed key's own mutated pattern space and emitted a truncated term"
 toml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.toml)" ||
     fail "TOML-key dependency scan failed"
 grep -Fxq scripts/toml-key-consumer.sh <<<"$toml_scan_out" ||
     fail "dependency scan missed a short TOML key"
+grep -Fxq scripts/toml-underscore-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed an underscore-leading TOML key"
+grep -Fxq scripts/toml-quoted-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed a double-quoted TOML key"
+grep -Fxq scripts/toml-single-quoted-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed a single-quoted TOML key"
+grep -Fxq scripts/toml-hyphen-leading-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed a hyphen-leading bare TOML key"
+grep -Fxq scripts/toml-colon-quoted-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed a colon-bearing quoted TOML key (group:action)"
 
 scan_out="$("$scanner" agent-registry.json)" || fail "real-tree dependency scan failed"
 for consumer in \

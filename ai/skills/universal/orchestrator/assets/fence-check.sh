@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Prove that a lane's committed diff stays within its rendered file fence.
+# A fence entry matches literally per path component; a component is
+# glob-interpreted only when it itself contains `*` or `?` (so a bracket
+# expression like `[id]` is otherwise literal, and `**` still matches any
+# number of path components).
 set -euo pipefail
 
 usage() {
@@ -92,8 +96,151 @@ current_branch="$(git -C "$worktree_path" branch --show-current)" || {
     echo "fence-check: envelope branch $expected_branch does not match worktree branch ${current_branch:-<detached>}" >&2
     exit 1
 }
-comparison_base="$(git -C "$worktree_path" merge-base HEAD "origin/$default_branch" 2>/dev/null)" || {
-    echo "fence-check: could not derive a merge base against origin/$default_branch" >&2
+
+# github.com only, matching this repo's own normalization set (AGENTS.md
+# § Conventions "Git transport"): a remote's fetch URL is compared against
+# a resolved owner/repo by stripping the same protocol/host forms that set
+# already needs to handle. Lower-cased via `tr` BEFORE the case dispatch,
+# not just before returning — URI hostnames are case-insensitive (RFC 3986
+# § 3.2.2), but every arm below is a literal, case-sensitive prefix match,
+# so a mixed-case host (e.g. "https://GITHUB.COM/...") matched no arm and
+# fell through to `return 1` before the old trailing-lowercase step was
+# ever reached (integration cycle 2, confirmed) — not the bash-4-only
+# `${var,,}` expansion, this repo's shell convention requires staying
+# portable to macOS bash 3.2, where `${var,,}` is a fatal `bad
+# substitution` (review round 1, confirmed); two sibling assets doing this
+# same normalization already use this exact idiom
+# (ai/skills/universal/track-work/assets/check-issue-metadata.sh,
+# discover-label-guidance.sh). The trailing slash is still stripped BEFORE
+# the `.git` suffix — a remote ending in ".git/" would otherwise keep the
+# suffix, since stripping ".git" first is a no-op on a string still ending
+# in "/" (review round 1, confirmed).
+remote_name_with_owner() {
+    local url
+    url="$(printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$url" in
+    https://github.com/*) url="${url#https://github.com/}" ;;
+    http://github.com/*) url="${url#http://github.com/}" ;;
+    git@github.com:*) url="${url#git@github.com:}" ;;
+    ssh://git@github.com/*) url="${url#ssh://git@github.com/}" ;;
+    ssh://git@ssh.github.com:443/*) url="${url#ssh://git@ssh.github.com:443/}" ;;
+    ssh://git@ssh.github.com/*) url="${url#ssh://git@ssh.github.com/}" ;;
+    *) return 1 ;;
+    esac
+    url="${url%/}"
+    url="${url%.git}"
+    printf '%s\n' "$url"
+}
+
+# origin is the writable remote in the supported fork topology, not
+# necessarily the PR target. The envelope's own issue.url already pins the
+# target repository (it is where the lane's issue and PR live), so it is the
+# only signal used: derive owner/repo from it and match configured remotes
+# against that. Ambient `gh repo view` resolution was tried and dropped —
+# it resolves by remote-name preference (upstream > github > origin > ...)
+# or a persisted gh-resolved config, not actual git ancestry, so it is not
+# reliably fork-aware and can regress a non-fork checkout that happens to
+# carry a gh-favoured remote name for an unrelated repository (challenge
+# round 1, confirmed). No match, or no parseable issue.url, falls back to
+# origin so an ordinary non-fork checkout is unaffected.
+#
+# Multiple remotes can share the same URL (a mirror or alias alongside the
+# usual clone). Among URL-matching remotes, origin wins first since it is
+# the conventional writable checkout; else the first whose default-branch
+# ref actually resolves locally, so a never-fetched alias doesn't fail a
+# layout the pre-round-1 code handled fine; else the first match by `git
+# remote` order, same as before (challenge round 2, confirmed). The match
+# count is tracked in a plain integer, and the array is expanded via the
+# `${matches[@]+"${matches[@]}"}` form rather than a bare `${#matches[@]}`/
+# `"${matches[@]}"` — on macOS bash 3.2, a `local -a matches=()` array with
+# zero elements expands as unset, and this file's `set -u` would abort the
+# no-match path (the one that is supposed to fall back to origin) instead
+# of reaching it (integration cycle 1, confirmed).
+resolve_comparison_remote() {
+    local worktree="$1" envelope="$2" default_branch_name="$3"
+    local issue_url target_nwo remote url candidate
+    local -a matches=()
+    local match_count=0
+
+    # Refuse before any ref probe below, not just the ones this run happens
+    # to take: two remote names where one is a path-prefix of the other
+    # (e.g. "foo" and "foo/release") can compose the identical tracking ref
+    # under two different (remote, branch) pairs — "foo" + branch
+    # "release/main" and "foo/release" + branch "main" both resolve to
+    # refs/remotes/foo/release/main — so which remote actually supplied that
+    # ref is ambiguous and this script must not guess (integration cycle 3,
+    # confirmed).
+    local -a all_remotes=()
+    local overlap_a overlap_b
+    while IFS= read -r remote; do
+        all_remotes+=("$remote")
+    done < <(git -C "$worktree" remote)
+    for overlap_a in ${all_remotes[@]+"${all_remotes[@]}"}; do
+        for overlap_b in ${all_remotes[@]+"${all_remotes[@]}"}; do
+            case "$overlap_b" in
+            "$overlap_a"/*)
+                echo "fence-check: remote namespaces overlap ($overlap_a, $overlap_b) — refusing to derive a comparison base" >&2
+                exit 1
+                ;;
+            esac
+        done
+    done
+
+    issue_url="$(jq -r '.issue.url // empty' "$envelope" 2>/dev/null || true)"
+    target_nwo=""
+    case "$issue_url" in
+    https://github.com/*/*)
+        target_nwo="$(printf '%s\n' "$issue_url" | sed -nE 's#^https://github\.com/([^/]+)/([^/]+)/.*#\1/\2#p')"
+        target_nwo="$(printf '%s\n' "$target_nwo" | tr '[:upper:]' '[:lower:]')"
+        ;;
+    esac
+
+    if [ -n "$target_nwo" ]; then
+        while IFS= read -r remote; do
+            # -- before the name: a remote created via `git remote add --
+            # -target ...` is legal and would otherwise be parsed as
+            # options, silently dropping the only target-matching remote
+            # via the || continue below (integration cycle 2, confirmed).
+            url="$(git -C "$worktree" remote get-url -- "$remote" 2>/dev/null)" || continue
+            candidate="$(remote_name_with_owner "$url")" || continue
+            if [ "$candidate" = "$target_nwo" ]; then
+                matches+=("$remote")
+                match_count=$((match_count + 1))
+            fi
+        done < <(git -C "$worktree" remote)
+    fi
+
+    if [ "$match_count" -gt 0 ]; then
+        for remote in ${matches[@]+"${matches[@]}"}; do
+            [ "$remote" = "origin" ] || continue
+            printf '%s\t%s\n' "$remote" "issue.url ($target_nwo)"
+            return 0
+        done
+        for remote in ${matches[@]+"${matches[@]}"}; do
+            git -C "$worktree" rev-parse --verify -q "refs/remotes/$remote/$default_branch_name" >/dev/null 2>&1 || continue
+            printf '%s\t%s\n' "$remote" "issue.url ($target_nwo)"
+            return 0
+        done
+        printf '%s\t%s\n' "${matches[0]}" "issue.url ($target_nwo)"
+        return 0
+    fi
+
+    printf '%s\t%s\n' "origin" "fallback"
+}
+
+resolution="$(resolve_comparison_remote "$worktree_path" "$envelope" "$default_branch")"
+comparison_remote="${resolution%%$'\t'*}"
+resolution_source="${resolution#*$'\t'}"
+echo "fence-check: using remote '$comparison_remote' for the comparison base (source: $resolution_source)" >&2
+# The full refs/remotes/... form, not the short <remote>/<branch> form: git
+# tries refs/heads/<ref> before refs/remotes/<ref>, so a checkout that also
+# has a local branch literally named "<remote>/<branch>" (e.g. local
+# "upstream/main") would silently resolve to that local branch at HEAD
+# instead of the intended remote-tracking ref, collapsing the merge base to
+# HEAD itself (integration cycle 2, confirmed). Already the form the
+# ref-resolvability check above uses.
+comparison_base="$(git -C "$worktree_path" merge-base HEAD "refs/remotes/$comparison_remote/$default_branch" 2>/dev/null)" || {
+    echo "fence-check: could not derive a merge base against refs/remotes/$comparison_remote/$default_branch" >&2
     exit 1
 }
 git -C "$worktree_path" merge-base --is-ancestor "$recorded_base" "$comparison_base" || {
@@ -147,6 +294,29 @@ git -C "$worktree_path" diff -C --find-copies-harder --name-status -z \
 _fence_pattern_parts=()
 _fence_path_parts=()
 
+# A fence entry component matches literally first (exact string compare), so
+# a literal path segment containing glob metacharacters — most commonly a
+# bracket expression such as a Next.js `[id]` route segment — is never
+# glob-interpreted. Pattern matching is a fallback tried only when the
+# component itself contains `*` or `?`; a component made only of `[`...`]`
+# with no `*`/`?` anywhere in it never falls back, so it can only ever match
+# itself.
+component_matches() {
+    local path_part="$1" pattern_part="$2"
+
+    [ "$path_part" = "$pattern_part" ] && return 0
+
+    case "$pattern_part" in
+    *'*'* | *'?'*)
+        case "$path_part" in
+        $pattern_part) return 0 ;;
+        *) return 1 ;;
+        esac
+        ;;
+    *) return 1 ;;
+    esac
+}
+
 match_path_components() {
     local pattern_index="$1"
     local path_index="$2"
@@ -169,12 +339,11 @@ match_path_components() {
     fi
 
     [ "$path_index" -lt "${#_fence_path_parts[@]}" ] || return 1
-    case "${_fence_path_parts[$path_index]}" in
-    $pattern_part)
+    if component_matches "${_fence_path_parts[$path_index]}" "$pattern_part"; then
         match_path_components "$((pattern_index + 1))" "$((path_index + 1))"
-        ;;
-    *) return 1 ;;
-    esac
+    else
+        return 1
+    fi
 }
 
 path_matches_pattern() {
