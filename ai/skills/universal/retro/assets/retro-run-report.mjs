@@ -782,6 +782,14 @@ function harvestTrajectory(stats, args, runId, trusted) {
   const argv = [...stats.prefix, '--repo', args.repo, '--run', runId, '--json', ...trusted.passthrough]
   if (args.asOf) argv.push('--as-of', args.asOf)
   if (args.recordDir) argv.push('--record-dir', args.recordDir)
+  // Integration Codex cycle 1 (P2), confirmed and fixed: this spawn passed
+  // neither --repo-root nor a cwd override, so the harvester's own default
+  // resolution ran instead — even though resolveStatsCommand (above) has
+  // already found the actual repository top level to locate this script in
+  // the first place. Pass that same resolved root through explicitly rather
+  // than letting the harvester re-derive (or fail to derive) it.
+  const root = repoRoot()
+  if (root) argv.push('--repo-root', root)
   const result = spawnSync(stats.command, argv, {
     encoding: 'utf8',
     maxBuffer: MAX_SYNC_BUFFER_BYTES

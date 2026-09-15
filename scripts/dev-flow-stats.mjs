@@ -2393,14 +2393,30 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     // markers never mention, exactly as before this lane (the original
     // validated every blockedConfidencePasses entry unconditionally, ahead of
     // and independent from the marker/round matching loop).
-    const blockedPassesToValidate = [];
-    for (const stage of ["challenge", "review"]) {
-      for (const round of engineRoundsByStage.get(stage) || []) {
-        for (const entry of round.blocked_passes || []) {
-          if (receiptBackedNames.has(entry.name)) blockedPassesToValidate.push(entry);
-        }
-      }
-    }
+    //
+    // Integration Codex cycle 1 (P2), confirmed and fixed: this used to be
+    // built only from engineRoundsByStage's round.blocked_passes — but
+    // validateReceipts (inside the engine) rejects `status !== "completed"`
+    // BEFORE its run_id/schema checks, so a blocked pass never becomes part
+    // of any valid pass the engine groups into a round; a round whose ONLY
+    // artifact is a blocked pass therefore gets no round object from the
+    // engine at all, and its blocked pass was silently never validated.
+    // Scan the local pass files directly instead — every receipt-backed
+    // envelope with status "blocked" naming a confidence stage/round is
+    // validated regardless of whether the engine ever emitted a round for
+    // it, restoring the unconditional parity the comment above already
+    // claimed.
+    const blockedPassesToValidate = localPasses.filter((entry) => {
+      const envelope = entry.content;
+      return (
+        envelope.status === "blocked" &&
+        (envelope.role === "challenger" || envelope.role === "reviewer") &&
+        envelope.payload &&
+        (envelope.payload.stage === "challenge" || envelope.payload.stage === "review") &&
+        Number.isInteger(envelope.payload.round) &&
+        receiptBackedNames.has(entry.name)
+      );
+    });
     for (const pass of blockedPassesToValidate) {
       const file = localPassFileByName.get(pass.name);
       if (!file) continue; // the engine can only ever name a file it read from this same passes/ dir
@@ -3643,6 +3659,26 @@ function cliMetrics(args) {
   return 0;
 }
 
+// Integration Codex cycle 1 (P2), confirmed and fixed: an omitted
+// --repo-root defaulted to process.cwd() — correct only when the caller
+// happens to already be at the repository root. Launched from a
+// subdirectory (e.g. a wrapper resolving its own toplevel but invoking this
+// CLI without changing directory), that pointed the local-record path at
+// "<subdirectory>/.devflow.toml", which does not exist, reporting the
+// evidence indeterminate. Resolve the actual git toplevel instead; an
+// explicit --repo-root still always wins, and process.cwd() remains the
+// fallback for the (rare) case of running outside a git checkout entirely.
+function defaultRepoRoot() {
+  try {
+    const result = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
+    const trimmed = result.status === 0 && typeof result.stdout === "string" ? result.stdout.trim() : "";
+    if (trimmed) return trimmed;
+  } catch {
+    // fall through to cwd
+  }
+  return process.cwd();
+}
+
 function cliRun(args) {
   const trustedActorIds = requireTrustedActorIds(args);
   if (!trustedActorIds) return 2;
@@ -3671,7 +3707,7 @@ function cliRun(args) {
   // repository root, ignoring this same flag the --replay path already
   // accepts and validates (below), and failing when invoked from a
   // repository subdirectory even without the flag.
-  const repoRoot = args["repo-root"] || process.cwd();
+  const repoRoot = args["repo-root"] || defaultRepoRoot();
   if (typeof repoRoot !== "string" || !existsSync(repoRoot)) {
     console.error(`dev-flow-stats: --repo-root path does not exist: ${repoRoot}`);
     return 2;
@@ -3729,10 +3765,11 @@ function cliReplay(args) {
     console.error(`dev-flow-stats: exit script does not exist: ${exitScriptPath}`);
     return 2;
   }
-  // Defaults to process.cwd() (unchanged behavior) — only needed when
-  // --repo names a repository other than the current checkout, or a
-  // checkout missing the retained remote commits. See invokeExitScript.
-  const repoRoot = args["repo-root"] || process.cwd();
+  // Defaults to the resolved git toplevel (integration Codex cycle 1) —
+  // only needed when --repo names a repository other than the current
+  // checkout, or a checkout missing the retained remote commits. See
+  // invokeExitScript.
+  const repoRoot = args["repo-root"] || defaultRepoRoot();
   if (typeof repoRoot !== "string" || !existsSync(repoRoot)) {
     console.error(`dev-flow-stats: --repo-root path does not exist: ${repoRoot}`);
     return 2;

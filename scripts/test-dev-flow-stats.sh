@@ -3551,6 +3551,68 @@ function writeScenario(name, db) {
     writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
     writeScenario("not-measured-provenance", { issues: [{ number: 222, pull_request: null }], comments: { "222": [ev1, ev2] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
+
+  // Integration Codex cycle 1 (P2), confirmed and fixed: a receipted blocked
+  // envelope for a round with no other artifact previously received no
+  // validation at all (the engine never emits a round object for a round
+  // whose only pass is blocked, and blockedPassesToValidate used to be
+  // sourced only from the engine's own rounds). A wrong-run_id blocked
+  // envelope is deliberately malformed evidence — a run whose harvester
+  // still reports "ok" over it is the regression this proves closed.
+  {
+    const runId = "run-224-blocked-wrong-runid";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    // Round 2's ONLY artifact: a receipted, blocked envelope naming a
+    // DIFFERENT run_id than this run's own — the engine emits no round 2 at
+    // all for a blocked-only round, so this is only ever caught by scanning
+    // the local pass files directly.
+    const blocked = pass("codex-verification", []);
+    blocked.run.run_id = "some-other-run-entirely";
+    blocked.status = "blocked";
+    blocked.payload.stage = "review";
+    blocked.payload.round = 2;
+    writeFileSync(path.join(runDir, "passes", "review-r2-blocked.json"), JSON.stringify(blocked, null, 2));
+    const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    run2.receipts = [...(run2.receipts || []), { kind: "pass", file: "review-r2-blocked" }];
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
+    writeScenario("blocked-wrong-runid", { issues: [{ number: 224, pull_request: null }], comments: { "224": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // Integration Codex cycle 1 (P2), confirmed and fixed: --repo-root now
+  // defaults to the resolved git toplevel instead of process.cwd(), so a
+  // --run invocation launched from a repository subdirectory (no explicit
+  // --repo-root) resolves the same .devflow.toml the root would.
+  {
+    const runId = "run-225-subdirectory-repo-root";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    writeScenario("subdirectory-repo-root", { issues: [{ number: 225, pull_request: null }], comments: { "225": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -4861,6 +4923,27 @@ echo "$out" | jq -e '
   ([.provenance_unavailable_rounds[] | select(.stage == "review" and .round == 1)] | length == 1)
 ' >/dev/null ||
     fail "not-measured provenance: a finding whose round could not be ancestry-retained was counted as verified: $out"
+
+echo "== integration Codex cycle 1: a receipted blocked envelope for a round the engine never emits is still validated (fixed remediation 1/6) =="
+export DFSTATS_DB="$tmp/scenarios/blocked-wrong-runid.json"
+run_id="$(meta blocked-wrong-runid .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" ||
+    fail "blocked wrong run_id: a wrong-run_id blocked envelope for an engine-invisible round was not caught, rc=$rc: $out"
+
+echo "== integration Codex cycle 1: --run from a repository subdirectory resolves the same .devflow.toml without --repo-root (fixed remediation 1/6) =="
+# cwd must be an actual subdirectory OF THIS GIT CHECKOUT (not $tmp, which is
+# outside any repository and would make `git rev-parse --show-toplevel`
+# itself fail) for this to exercise the toplevel-resolution fix at all.
+export DFSTATS_DB="$tmp/scenarios/subdirectory-repo-root.json"
+run_id="$(meta subdirectory-repo-root .meta.runId)"
+subdir_out="$(cd "$repo/scripts" && node "$repo/scripts/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+root_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+[ "$subdir_out" = "$root_out" ] ||
+    fail "subdirectory repo-root: --run from a subdirectory without --repo-root did not resolve the same policy as the root. subdir=$subdir_out root=$root_out"
 
 echo "== harmon-devkit#1001 review round 1: a run still in progress on challenge reports challenge's own trajectory, review not-started (fixed round 2/5) =="
 export DFSTATS_DB="$tmp/scenarios/challenge-still-active.json"

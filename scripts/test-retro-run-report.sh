@@ -1782,6 +1782,16 @@ STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
 contains "$(cat "$d/stats.log")" "--trusted-actors-file" &&
     ok "the file is passed through to the harvester as well" || bad "the actors file did not reach the harvester"
 
+echo "==> the harvester is invoked with an explicit --repo-root (integration Codex cycle 1, fixed remediation 1/6)"
+d="$TMPROOT/repo-root-threaded"
+scaffold "$d" further-along "body"
+STATS_LOG="$d/stats.log" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
+    run_report "$d" --repo o/r --pr "$PR" --stats-script "$d/stats.mjs"
+[ "$RC" -eq 0 ] && ok "exit 0" || bad "expected exit 0, got $RC: $ERR"
+contains "$(cat "$d/stats.log")" "--repo-root" &&
+    ok "the resolved repository root is passed through explicitly, not left to the harvester's own default" ||
+    bad "harvestTrajectory did not pass --repo-root to the spawned harvester"
+
 # ---------------------------------------------------------------------------
 # 5. The real harvester: contract, discovery and trust agreement
 # ---------------------------------------------------------------------------
