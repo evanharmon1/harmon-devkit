@@ -1413,6 +1413,8 @@ grep -q "GROOM_EXECUTE=0" "$GH_STUB_LOG" || fail "env gate not forced to 0"
 grep -q "GROOM_REPO=$repo" "$GH_STUB_LOG" || fail "run must be repo-bound"
 grep -q "AUDIT" "$GH_STUB_LOG" || fail "prompt must state AUDIT"
 grep -q -- "--model sonnet" "$GH_STUB_LOG" || fail "default model must be sonnet"
+grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "opus"' "$GH_STUB_LOG" ||
+    fail "default fan-out model must be opus (issue #1044) — fan-out verification defaults to frontier, independent of the standard-tier coordinator"
 grep -q "GROOM_SCRATCH=/" "$GH_STUB_LOG" || fail "run must bind a scratch dir"
 grep -q "GROOM_SCRATCH=$GROOM_OUT_DIR/" "$GH_STUB_LOG" ||
     fail "the scratch dir must be created under GROOM_OUT_DIR"
@@ -1424,6 +1426,59 @@ grep -qF "groom-apply.sh" "$GH_STUB_LOG" &&
     fail "audit mode's tool grant must not include groom-apply.sh (finding 7 — a fan-out session never applies)"
 grep -qF "groom-decide.sh" "$GH_STUB_LOG" &&
     fail "audit mode's tool grant must not include groom-decide.sh (finding 7 — a fan-out session never decides)"
+
+echo "==> wrapper: GROOM_FANOUT_MODEL overrides the fan-out tier independently of GROOM_MODEL (issue #1044)"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_MODEL=opus GROOM_FANOUT_MODEL=haiku "$wrapper")" = 0 ] ||
+    fail "wrapper audit run with a fan-out override failed: $(cat "$tmp/out" "$tmp/err")"
+grep -q -- "--model opus" "$GH_STUB_LOG" ||
+    fail "GROOM_MODEL must still control the coordinating session's own model"
+grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "haiku"' "$GH_STUB_LOG" ||
+    fail "GROOM_FANOUT_MODEL must control the fan-out instruction independently of GROOM_MODEL"
+
+echo "==> SKILL.md: Step 2 documents the interactive-path fan-out tier contract directly (issue #1044) — the wrapper-prompt tests above cover only the headless path, and the interactive /groom path relies entirely on this prose"
+skill_md="ai/skills/universal/groom/SKILL.md"
+[ -f "$skill_md" ] || fail "$skill_md must exist"
+grep -q "frontier.*tier" "$skill_md" || fail "SKILL.md Step 2 must name the frontier tier for fan-out dispatch"
+grep -qF "agent-registry.json" "$skill_md" ||
+    fail "SKILL.md Step 2 must point at agent-registry.json for cross-harness tier lookup, not hardcode one harness"
+grep -qF "opus" "$skill_md" || fail "SKILL.md Step 2 must give the Claude Code example (opus)"
+grep -q "rather than leaving it unset" "$skill_md" ||
+    fail "SKILL.md Step 2 must explicitly say not to leave the fan-out model unset"
+grep -qF "no separate \`frontier\` tier" "$skill_md" ||
+    fail "SKILL.md Step 2 must cover families with no separate frontier tier (Codex review on PR #1045, comment about claude-code-deepseek/-glm/-kimi/-minimax)"
+grep -qF "claude-code-qwen-local" "$skill_md" ||
+    fail "SKILL.md Step 2 must cover a harness rewired to one fixed model regardless of requested tier (Codex review on PR #1045, comment about claude-code-qwen-local)"
+grep -qF "model_resolution.details" "$skill_md" ||
+    fail "SKILL.md Step 2 must say to read the harness's own model_resolution, not just its family's tier table"
+grep -qF "harness-runtime" "$skill_md" ||
+    fail "SKILL.md Step 2 must name harness-runtime-owned harnesses (Codex review round 4 on PR #1045 — Antigravity/OpenCode/Pi have no per-dispatch override at all)"
+grep -qF "there is no override to make" "$skill_md" ||
+    fail "SKILL.md Step 2 must honestly state that harness-runtime-owned harnesses have no per-dispatch override, rather than claiming a worked example (e.g. Antigravity) it cannot verify"
+grep -qF "test-registry-drift.sh" "$skill_md" ||
+    fail "SKILL.md Step 2 must cite the test enforcing that opus/fable always remap to a provider wrapper's strongest model (Codex review round 5 on PR #1045)"
+grep -q "Do not pass a family's raw registry model slug" "$skill_md" ||
+    fail "SKILL.md Step 2 must warn against passing a raw registry model slug (e.g. deepseek-flash) as the Agent tool's model argument — it only accepts Claude Code's own aliases (Codex review round 5 on PR #1045)"
+
+echo "==> canary: opus is still agent-registry.json's frontier-tier model for the claude family (Codex review on PR #1045) — this must fail loudly if the registry ever retiers or renames it, since scripts/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's own example both hardcode the literal 'opus'"
+[ -f agent-registry.json ] || fail "agent-registry.json must exist"
+registry_claude_frontier="$(jq -r '.families[] | select(.slug == "claude") | .models[] | select(.tier == "frontier") | .slug' agent-registry.json)"
+[ "$registry_claude_frontier" = "opus" ] ||
+    fail "agent-registry.json's claude/frontier model is '$registry_claude_frontier', not 'opus' — update scripts/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's example to match"
+
+echo "==> canary: claude-code-qwen-local is still fixed to one model regardless of requested tier (Codex review on PR #1045) — this must fail loudly if the registry ever changes so SKILL.md's own worked example goes stale"
+qwen_local_resolution="$(jq -r '.harnesses[] | select(.slug == "claude-code-qwen-local") | .model_resolution.details' agent-registry.json)"
+case "$qwen_local_resolution" in
+*"serving qwen3-coder:30b"*) : ;;
+*) fail "claude-code-qwen-local's model_resolution.details no longer describes a fixed local model ('$qwen_local_resolution') — update SKILL.md Step 2's worked example to match" ;;
+esac
+
+echo "==> canary: antigravity, opencode, and pi are still harness-runtime-owned with no per-dispatch override (Codex review round 4 on PR #1045) — this must fail loudly if the registry ever gives one of them a per-dispatch model parameter, so SKILL.md's honesty statement doesn't go stale"
+for harness in antigravity opencode pi; do
+    owner="$(jq -r --arg h "$harness" '.harnesses[] | select(.slug == $h) | .model_resolution.owner' agent-registry.json)"
+    [ "$owner" = "harness-runtime" ] ||
+        fail "agent-registry.json's $harness harness now resolves its model via '$owner', not 'harness-runtime' — SKILL.md Step 2 may be able to name a real per-dispatch override for it now instead of the honest fallback"
+done
 
 echo "==> wrapper: the run's report survives the wrapper process (finding 1 — no more rm -rf EXIT trap)"
 audit_scratch="$(grep -o 'GROOM_SCRATCH=/[^[:space:]]*' "$GH_STUB_LOG" | tail -1 | cut -d= -f2)"

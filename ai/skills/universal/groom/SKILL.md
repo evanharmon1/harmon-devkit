@@ -102,6 +102,70 @@ output path under `$SCRATCH` (one JSON Lines file per cluster). Prefer
 smaller clusters (nearer 50) on a first run or an unusually old backlog —
 `references/cadence.md` has the sizing reference.
 
+**Where your harness can dispatch a subagent on a specific model
+independently of the coordinating session's own model, do so — at your
+family's `frontier` tier by default, never at whatever tier is
+coordinating this run.** A cluster subagent does the run's real judgment
+work — verify one cluster against live code, decide a `CLOSE-*` verdict
+needs concrete evidence or fall back to `KEEP` — while the coordinating
+session's own job (clustering, consolidating already-decided verdicts,
+writing the report) is comparatively mechanical, so `GROOM_MODEL`
+defaults the coordinator itself to only `standard`. Leaving the fan-out
+model unset inherits whatever tier the coordinator happens to be running
+instead, which cuts both ways: too weak if the coordinator is on
+`standard` or below for work that actually needs judgment, and
+needlessly expensive if the coordinator is on `apex` for unrelated
+reasons (an operator's default, a stronger model chosen for a hard
+backlog) — 6–8 clusters inheriting an apex tier is 6–8x an adequate
+`frontier`-tier run.
+
+**For Claude Code, this is simply `opus`.** Pass `model: "opus"` on the
+`Agent` tool explicitly, rather than leaving it unset. This is correct
+for native Claude Code and for every
+provider-rewired variant this repo ships (`claude-code-deepseek`, `-glm`,
+`-kimi`, `-qwen`, `-qwen-local`) alike, not by coincidence: the wrapper
+that switches providers always remaps the `opus` and `fable` aliases to
+that provider's single strongest exposed model, and
+`scripts/test-registry-drift.sh` fails the build if a wrapper or the
+registry ever drifts from that mapping. That is also why no per-harness
+exception is needed for a family with no separate `frontier` tier, or
+for `claude-code-qwen-local`'s single exposed model (`qwen3-coder:30b`
+per its own `model_resolution.details`) — `opus` still resolves
+correctly in both cases, in the second case as a harmless no-op rather
+than a failure. **Do not pass a family's raw registry model slug** (e.g.
+`deepseek-flash`) as the `model` argument — the `Agent` tool accepts
+only Claude Code's own aliases; the provider wrapper does the remapping
+underneath, not the caller.
+
+**For any other harness, the same principle applies, but this skill does
+not claim to have verified whether the mechanism exists.** Check whether
+your harness exposes a per-dispatch model parameter the way Claude
+Code's `Agent` tool does. If it does, resolve your family's `frontier`
+tier from `agent-registry.json` and pass its `slug` (that harness's
+dispatch call takes the family's own model identifiers, unlike Claude
+Code's alias indirection above — confirm the parameter your harness
+actually expects before assuming it matches either shape). If it does not — several
+registered harnesses select the model only at the session or runtime
+level, not per dispatch (`agent-registry.json`'s own
+`model_resolution.owner: "harness-runtime"` marks these; Antigravity,
+OpenCode, and Pi are examples today) — there is no override to make.
+State that plainly and let fan-out subagents run at the coordinating
+session's own tier; that is a real limitation of those harnesses, not a
+gap this skill's own instructions can close.
+
+If the coordinating session is itself already exactly at the resolved
+tier, this is a no-op; state so rather than omitting the check. A
+coordinating session running below it still dispatches fan-out subagents
+at it — that raises the fan-out tier above the coordinator's own, not a
+no-op, and skipping the override there would silently leave subagents on
+the coordinator's weaker tier instead. A coordinating session running
+above it (an `apex` family model) dispatches fan-out subagents at the
+resolved tier, capping the cost below whatever the coordinator's own
+tier costs — this is the case the override exists for. Depart from this
+default only for a stated reason (e.g. an unusually ambiguous backlog
+where a stronger tier is worth the cost for verification too), not by
+default inheritance.
+
 Each subagent verifies against the **live code and merged PRs**, never from
 memory, and returns verdicts in the fixed vocabulary
 (`references/verdict-vocabulary.md`) plus any parent/milestone proposals and
