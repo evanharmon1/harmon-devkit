@@ -1443,14 +1443,22 @@ grep -q "frontier.*tier" "$skill_md" || fail "SKILL.md Step 2 must name the fron
 grep -qF "agent-registry.json" "$skill_md" ||
     fail "SKILL.md Step 2 must point at agent-registry.json for cross-harness tier lookup, not hardcode one harness"
 grep -qF "opus" "$skill_md" || fail "SKILL.md Step 2 must give the Claude Code example (opus)"
-grep -q "rather than leaving it unset to inherit" "$skill_md" ||
+grep -q "rather than leaving it unset" "$skill_md" ||
     fail "SKILL.md Step 2 must explicitly say not to leave the fan-out model unset"
-grep -qF "not every family has a \`frontier\`" "$skill_md" ||
-    fail "SKILL.md Step 2 must cover families with no frontier tier (Codex review on PR #1045, comment about claude-code-deepseek/-glm/-kimi/-minimax)"
+grep -qF "no separate \`frontier\` tier" "$skill_md" ||
+    fail "SKILL.md Step 2 must cover families with no separate frontier tier (Codex review on PR #1045, comment about claude-code-deepseek/-glm/-kimi/-minimax)"
 grep -qF "claude-code-qwen-local" "$skill_md" ||
     fail "SKILL.md Step 2 must cover a harness rewired to one fixed model regardless of requested tier (Codex review on PR #1045, comment about claude-code-qwen-local)"
 grep -qF "model_resolution.details" "$skill_md" ||
     fail "SKILL.md Step 2 must say to read the harness's own model_resolution, not just its family's tier table"
+grep -qF "harness-runtime" "$skill_md" ||
+    fail "SKILL.md Step 2 must name harness-runtime-owned harnesses (Codex review round 4 on PR #1045 — Antigravity/OpenCode/Pi have no per-dispatch override at all)"
+grep -qF "there is no override to make" "$skill_md" ||
+    fail "SKILL.md Step 2 must honestly state that harness-runtime-owned harnesses have no per-dispatch override, rather than claiming a worked example (e.g. Antigravity) it cannot verify"
+grep -qF "test-registry-drift.sh" "$skill_md" ||
+    fail "SKILL.md Step 2 must cite the test enforcing that opus/fable always remap to a provider wrapper's strongest model (Codex review round 5 on PR #1045)"
+grep -q "Do not pass a family's raw registry model slug" "$skill_md" ||
+    fail "SKILL.md Step 2 must warn against passing a raw registry model slug (e.g. deepseek-flash) as the Agent tool's model argument — it only accepts Claude Code's own aliases (Codex review round 5 on PR #1045)"
 
 echo "==> canary: opus is still agent-registry.json's frontier-tier model for the claude family (Codex review on PR #1045) — this must fail loudly if the registry ever retiers or renames it, since scripts/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's own example both hardcode the literal 'opus'"
 [ -f agent-registry.json ] || fail "agent-registry.json must exist"
@@ -1464,9 +1472,13 @@ case "$qwen_local_resolution" in
 *"serving qwen3-coder:30b"*) : ;;
 *) fail "claude-code-qwen-local's model_resolution.details no longer describes a fixed local model ('$qwen_local_resolution') — update SKILL.md Step 2's worked example to match" ;;
 esac
-registry_qwen_frontier="$(jq -r '.families[] | select(.slug == "qwen") | .models[] | select(.tier == "frontier") | .slug' agent-registry.json)"
-[ "$registry_qwen_frontier" = "max" ] ||
-    fail "agent-registry.json's qwen/frontier model is '$registry_qwen_frontier', not 'max' — update SKILL.md Step 2's worked example to match"
+
+echo "==> canary: antigravity, opencode, and pi are still harness-runtime-owned with no per-dispatch override (Codex review round 4 on PR #1045) — this must fail loudly if the registry ever gives one of them a per-dispatch model parameter, so SKILL.md's honesty statement doesn't go stale"
+for harness in antigravity opencode pi; do
+    owner="$(jq -r --arg h "$harness" '.harnesses[] | select(.slug == $h) | .model_resolution.owner' agent-registry.json)"
+    [ "$owner" = "harness-runtime" ] ||
+        fail "agent-registry.json's $harness harness now resolves its model via '$owner', not 'harness-runtime' — SKILL.md Step 2 may be able to name a real per-dispatch override for it now instead of the honest fallback"
+done
 
 echo "==> wrapper: the run's report survives the wrapper process (finding 1 — no more rm -rf EXIT trap)"
 audit_scratch="$(grep -o 'GROOM_SCRATCH=/[^[:space:]]*' "$GH_STUB_LOG" | tail -1 | cut -d= -f2)"
