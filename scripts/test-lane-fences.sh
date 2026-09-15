@@ -387,9 +387,12 @@ esac
 # URL-form and case-insensitivity regression (review round 1, confirmed
 # coverage gap): every prior fixture uses one lower-case https://...git
 # shape. A differently-cased ssh://git@github.com/ remote must still match
-# a lower-case issue.url.
+# a lower-case issue.url. The trailing "/" after ".git" also discriminates
+# review round 1's own strip-order fix (review round 2, confirmed coverage
+# gap): stripping ".git" before the trailing slash would leave this URL
+# normalized to "evanharmon1/harmon-devkit.git", which never matches.
 ssh_case_fixture="$tmp/ssh-case-repo"
-make_remote_fixture "$ssh_case_fixture" "ssh://git@github.com/EvanHarmon1/Harmon-DevKit" ""
+make_remote_fixture "$ssh_case_fixture" "ssh://git@github.com/EvanHarmon1/Harmon-DevKit.git/" ""
 ssh_case_base="$(git -C "$ssh_case_fixture" rev-parse HEAD)"
 git -C "$ssh_case_fixture" update-ref refs/remotes/origin/main "$ssh_case_base"
 printf '%s\n' changed >"$ssh_case_fixture/allowed.txt"
