@@ -429,6 +429,20 @@ grep -q "rename v1 → v1.1 (#3, #4)" "$tmp/proposals.md" ||
 grep -q "Parser work" "$tmp/proposals.html" || fail "HTML must also render the parent proposal"
 grep -q "v1.1" "$tmp/proposals.html" || fail "HTML must also render the milestone proposal"
 
+echo "==> report: a nonexistent --outcomes path is an empty outcomes set, not an error (challenge round 2 confirming round, finding 2)"
+missing_outcomes="$tmp/does-not-exist-yet/outcomes.jsonl"
+[ ! -e "$missing_outcomes" ] || fail "test setup: outcomes path must not already exist"
+[ "$(run "$report" render --dispositions "$disp" --outcomes "$missing_outcomes" \
+    --out-html "$tmp/missing-outcomes.html" --out-md "$tmp/missing-outcomes.md")" = 0 ] ||
+    fail "render with a nonexistent --outcomes path must exit 0: $(cat "$tmp/out" "$tmp/err")"
+grep -q "no outcomes file yet at $missing_outcomes" "$tmp/err" ||
+    fail "a missing --outcomes path must note it on stderr"
+[ "$(grep -c '^| #[0-9]' "$tmp/missing-outcomes.md")" = 5 ] ||
+    fail "every disposition row must still render in the Every issue table"
+while IFS= read -r status_col; do
+    [ "$status_col" = "PENDING" ] || fail "every row must be PENDING when --outcomes is missing: got '$status_col'"
+done < <(awk -F'|' '/^\| #[0-9]/{n=NF-1; gsub(/^ +| +$/, "", $n); print $n}' "$tmp/missing-outcomes.md")
+
 echo "==> apply-plan / groom-decide: a mismatched --repo is refused when the run is bound"
 noop_plan="$tmp/noop-plan.jsonl"
 : >"$noop_plan"
@@ -777,29 +791,32 @@ for allowed in groom-apply.sh groom-decide.sh groom-report.sh; do
         fail "the unknown-script refusal must name '$allowed' as allowed: $(cat "$tmp/err")"
 done
 
-echo "==> wrapper: --execute with a valid script name still requires an interactive terminal"
-[ "$(run "$wrapper" --execute groom-apply.sh apply-plan --repo "$repo")" = 2 ] ||
-    fail "non-interactive --execute must exit 2 even with a valid script name"
-grep -qi "interactive terminal" "$tmp/err" ||
-    fail "refusal must name the interactive-terminal requirement: $(cat "$tmp/err")"
+echo "==> wrapper: --execute groom-apply.sh / groom-decide.sh still requires an interactive terminal (write gate unchanged)"
+for gated in groom-apply.sh groom-decide.sh; do
+    [ "$(run "$wrapper" --execute "$gated" --repo "$repo")" = 2 ] ||
+        fail "non-interactive --execute $gated must exit 2 even with a valid script name"
+    grep -qi "interactive terminal" "$tmp/err" ||
+        fail "refusal for $gated must name the interactive-terminal requirement: $(cat "$tmp/err")"
+done
 
 echo "==> wrapper: a confirmed --execute execs the named script verbatim, with GROOM_EXECUTE=1 and GROOM_REPO set, and nothing else in between"
-if [ "$PTY_OK" = true ]; then
-    # Point skill_dir at a fixture rather than the real ai/skills/universal/
-    # groom/assets/*.sh: the wrapper no longer validates or interprets
-    # anything about its target beyond the name, so a fixture that just
-    # records its own basename/argv/env is enough to prove the exec contract
-    # without touching the real write-path scripts.
-    fake_root="$tmp/fake-repo"
-    mkdir -p "$fake_root/scripts" "$fake_root/ai/skills/universal/groom/assets"
-    cp "$wrapper" "$fake_root/scripts/groom.sh"
-    chmod +x "$fake_root/scripts/groom.sh"
-    : >"$fake_root/ai/skills/universal/groom/SKILL.md"
-    git -C "$fake_root" init -q
-    git -C "$fake_root" remote add origin https://github.com/testowner/testrepo.git
+# Point skill_dir at a fixture rather than the real ai/skills/universal/
+# groom/assets/*.sh: the wrapper no longer validates or interprets anything
+# about its target beyond the name, so a fixture that just records its own
+# basename/argv/env is enough to prove the exec contract without touching
+# the real write-path scripts. Built unconditionally — groom-report.sh's own
+# direct-exec path (below) needs no pty; only the confirmed
+# apply.sh/decide.sh path does.
+fake_root="$tmp/fake-repo"
+mkdir -p "$fake_root/scripts" "$fake_root/ai/skills/universal/groom/assets"
+cp "$wrapper" "$fake_root/scripts/groom.sh"
+chmod +x "$fake_root/scripts/groom.sh"
+: >"$fake_root/ai/skills/universal/groom/SKILL.md"
+git -C "$fake_root" init -q
+git -C "$fake_root" remote add origin https://github.com/testowner/testrepo.git
 
-    for stub_script in groom-apply.sh groom-decide.sh groom-report.sh; do
-        cat >"$fake_root/ai/skills/universal/groom/assets/$stub_script" <<'STUB'
+for stub_script in groom-apply.sh groom-decide.sh groom-report.sh; do
+    cat >"$fake_root/ai/skills/universal/groom/assets/$stub_script" <<'STUB'
 #!/usr/bin/env bash
 {
     printf 'SCRIPT=%s\n' "$(basename "$0")"
@@ -810,11 +827,34 @@ if [ "$PTY_OK" = true ]; then
     printf '\n'
 } >>"${EXEC_LOG:?}"
 STUB
-        chmod +x "$fake_root/ai/skills/universal/groom/assets/$stub_script"
-    done
+    chmod +x "$fake_root/ai/skills/universal/groom/assets/$stub_script"
+done
 
+echo "==> wrapper: --execute groom-report.sh execs directly — no tty, no confirmation prompt, no GROOM_EXECUTE (challenge round 2 confirming round, finding 4)"
+report_exec_log="$tmp/report-exec.log"
+: >"$report_exec_log"
+report_rc=0
+env PATH="$tmp/bin:$PATH" EXEC_LOG="$report_exec_log" "$fake_root/scripts/groom.sh" \
+    --execute groom-report.sh --marker report-arg \
+    --outcomes /tmp/does-not-need-to-exist.jsonl \
+    </dev/null >"$tmp/report-wrap-out" 2>"$tmp/report-wrap-err" || report_rc=$?
+[ "$report_rc" = 0 ] ||
+    fail "non-interactive --execute groom-report.sh must succeed without a tty: $(cat "$tmp/report-wrap-out" "$tmp/report-wrap-err")"
+grep -q "SCRIPT=groom-report.sh" "$report_exec_log" ||
+    fail "--execute groom-report.sh must exec the report script: $(cat "$report_exec_log")"
+grep -q "GROOM_EXECUTE=unset" "$report_exec_log" ||
+    fail "groom-report.sh must never see GROOM_EXECUTE exported by the wrapper: $(cat "$report_exec_log")"
+grep -q "GROOM_REPO=$repo" "$report_exec_log" ||
+    fail "groom-report.sh must still see GROOM_REPO=$repo: $(cat "$report_exec_log")"
+grep -q "ARGV: --marker report-arg --outcomes /tmp/does-not-need-to-exist.jsonl" "$report_exec_log" ||
+    fail "groom-report.sh must receive the operator's arguments verbatim: $(cat "$report_exec_log")"
+grep -qi 'type "yes"' "$tmp/report-wrap-out" "$tmp/report-wrap-err" &&
+    fail "groom-report.sh must never be gated behind the confirmation prompt"
+
+echo "==> wrapper: a confirmed --execute execs groom-apply.sh/groom-decide.sh verbatim, with GROOM_EXECUTE=1 and GROOM_REPO set (write gate unchanged)"
+if [ "$PTY_OK" = true ]; then
     exec_log="$tmp/exec.log"
-    for script_name in groom-apply.sh groom-decide.sh groom-report.sh; do
+    for script_name in groom-apply.sh groom-decide.sh; do
         : >"$exec_log"
         {
             printf 'yes\n' | pty_exec env PATH="$tmp/bin:$PATH" EXEC_LOG="$exec_log" \

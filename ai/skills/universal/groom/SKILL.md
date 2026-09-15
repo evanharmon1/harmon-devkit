@@ -231,7 +231,9 @@ appended — only when your runner's mode is APPLY. Run these, in order:
    --dispositions "$SCRATCH/dispositions.json" \
    --outcomes "$SCRATCH/outcomes.jsonl" --out-html "$SCRATCH/report.html" \
    --out-md "$SCRATCH/report.md"` — re-renders the SAME report so its Status
-   column reflects what actually happened, not a snapshot of the plan.
+   column reflects what actually happened, not a snapshot of the plan. This
+   step needs no confirmation: `groom-report.sh` is read-only, so the wrapper
+   execs it directly without the gate above.
 
 After applying, republish the re-rendered report (Step 4, same Artifact URL,
 or the committed path) — the report is the single view of what is done.

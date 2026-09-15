@@ -12,26 +12,31 @@
 #     finding 10 / challenge round 1; challenge round 2 finding 7 — a fan-out
 #     session has no business calling groom-apply.sh/groom-decide.sh, since
 #     it never runs with GROOM_EXECUTE=1 anyway).
-#   - `task groom -- --execute <script> [args…]` is apply mode: confirm,
-#     export the gate, exec exactly ONE named groom script with the
-#     operator's own arguments — nothing else. `<script>` must be one of
-#     `groom-apply.sh`, `groom-decide.sh`, or `groom-report.sh` (resolved
-#     under the skill's own assets/ directory); any other name is refused.
-#     There is no orchestration left in this wrapper to attack: it never
-#     reads a run directory, never loops over a decisions directory, and
-#     never re-renders a report itself — the operator runs each of the three
-#     commands directly, in the order ai/skills/universal/groom/SKILL.md
-#     Step 6 gives, and the remaining arguments after the script name are
-#     forwarded to it verbatim (challenge round 3, deleting the --run/--plan
-#     /--decisions orchestration challenge round 2 findings 1 and 2 had added
-#     — that orchestration's own validation gaps, partial-apply hazards, and
-#     lost --max-closes passthrough are moot once there is no orchestration
-#     left to have those gaps). `--execute` still requires an interactive
-#     terminal and an explicit "yes" confirmation before anything runs, the
-#     same as triage.sh's --execute path; whether the named script performs a
-#     real write is entirely up to whether ITS OWN --execute is present in
-#     the forwarded arguments (dry-run a script by omitting its own trailing
-#     --execute).
+#   - `task groom -- --execute <script> [args…]` is apply mode: exec exactly
+#     ONE named groom script with the operator's own arguments — nothing
+#     else. `<script>` must be one of `groom-apply.sh`, `groom-decide.sh`, or
+#     `groom-report.sh` (resolved under the skill's own assets/ directory);
+#     any other name is refused. There is no orchestration left in this
+#     wrapper to attack: it never reads a run directory, never loops over a
+#     decisions directory, and never re-renders a report itself — the
+#     operator runs each of the three commands directly, in the order
+#     ai/skills/universal/groom/SKILL.md Step 6 gives, and the remaining
+#     arguments after the script name are forwarded to it verbatim (challenge
+#     round 3, deleting the --run/--plan/--decisions orchestration challenge
+#     round 2 findings 1 and 2 had added — that orchestration's own
+#     validation gaps, partial-apply hazards, and lost --max-closes
+#     passthrough are moot once there is no orchestration left to have those
+#     gaps). `groom-apply.sh` and `groom-decide.sh` still require an
+#     interactive terminal and an explicit "yes" confirmation before
+#     anything runs, then export `GROOM_EXECUTE=1`, the same as triage.sh's
+#     --execute path; whether either performs a real write is entirely up to
+#     whether ITS OWN --execute is present in the forwarded arguments
+#     (dry-run a script by omitting its own trailing --execute).
+#     `groom-report.sh` is exec'd directly instead, with none of that: no
+#     interactive-terminal requirement, no confirmation prompt, and no
+#     `GROOM_EXECUTE` export — it never writes to GitHub and reads no gate
+#     (challenge round 2 confirming round, finding 4). `GROOM_REPO` is still
+#     exported for it, as for every mode.
 #
 # Unlike triage (a cheap classifier working only from a precomputed scan),
 # groom verifies claims against the live code and merged PRs and fans out
@@ -119,6 +124,13 @@ repo="$(gh repo view "$(git remote get-url origin)" \
 export GROOM_REPO="$repo"
 
 if [ "$mode" = "apply" ]; then
+    if [ "$apply_script" = "groom-report.sh" ]; then
+        # Read-only and writes only to the two output files named on its own
+        # command line — never to GitHub — so it carries none of the write
+        # gate below: no tty requirement, no confirmation prompt, and no
+        # GROOM_EXECUTE export (challenge round 2 confirming round, finding 4).
+        exec "$skill_dir/assets/$apply_script" "$@"
+    fi
     [ -t 0 ] && [ -t 1 ] ||
         die "--execute needs an interactive terminal — supervised runs only"
     printf 'groom: EXECUTE will run %s in %s with GROOM_EXECUTE=1 —\n' \

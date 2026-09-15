@@ -25,6 +25,11 @@
 # column — republishing the report after an apply step (SKILL.md Step 6)
 # is otherwise a byte-identical re-render of the plan, forever showing
 # PENDING no matter what was actually applied (finding 8).
+# A --outcomes PATH that does not exist yet is an empty outcomes set (every
+# row PENDING), noted on stderr rather than refused — the documented dry-run
+# recipe (SKILL.md Step 6 item 3) points --outcomes at a file no apply step
+# has written yet on its first render (challenge round 2 confirming round,
+# finding 2). A PATH that exists but cannot be read is still an error.
 #
 # Exit: 0 = rendered, 2 = usage/read error.
 set -euo pipefail
@@ -75,10 +80,14 @@ cmd_render() {
 
     local outcomes_map="{}"
     if [ -n "$outcomes" ]; then
-        [ -r "$outcomes" ] || die "cannot read outcomes file: $outcomes"
-        outcomes_map="$(jq -s '
-          reduce .[] as $o ({}; .[($o.issue|tostring)] = $o.status)
-        ' "$outcomes")"
+        if [ ! -e "$outcomes" ]; then
+            echo "groom-report: no outcomes file yet at $outcomes — all rows PENDING" >&2
+        else
+            [ -r "$outcomes" ] || die "cannot read outcomes file: $outcomes"
+            outcomes_map="$(jq -s '
+              reduce .[] as $o ({}; .[($o.issue|tostring)] = $o.status)
+            ' "$outcomes")"
+        fi
     fi
 
     jq -r --arg now "$now" --argjson outcomes_map "$outcomes_map" '
