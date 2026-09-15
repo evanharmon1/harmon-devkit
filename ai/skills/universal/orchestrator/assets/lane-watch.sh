@@ -10,6 +10,10 @@
 #   WALLCLOCK <lane|run>: <text>
 #
 # Timestamp-versioned activity keys may emit one duplicate when adopting legacy state.
+# WINDOW's persisted "since" likewise carries a ":<event_id>" suffix once armed by a
+# resolved promotion event (see promotion_epoch()/poll_activity()); state adopted from
+# before that encoding existed reads back with an empty id and may re-arm once more on
+# adoption, the same legacy-adoption tolerance already documented for ACTIVITY keys.
 # Clearing PR state on POST-PROMOTION-INDETERMINATE (so a later observation re-arms
 # the window) also re-emits one identical PR line once that observation lands.
 # Every herdr/gh call is bounded. Failures mean indeterminate/no event; this watcher
@@ -351,11 +355,10 @@ activity_rows() {
       (if (.[0]? | type) == "array" then add else . end)[]?
       | (.user.id | tostring) as $actor_id
       | select(.user.type == "User" or ($trusted | split("\n") | index($actor_id)))
-      | (if $kind == "review"
-          then .submitted_at // .updated_at // .created_at
-          else .updated_at // .created_at
-        end // empty | fromdateiso8601) as $activity_at
-      | [.user.login, $kind, (.id | tostring), ($activity_at | tostring)] | @tsv
+      | (if $kind == "review" then (.submitted_at // .updated_at // .created_at) else .created_at end // empty
+          | fromdateiso8601) as $created_at
+      | (if $kind == "review" then $created_at else ((.updated_at // .created_at) // empty | fromdateiso8601) end) as $updated_at
+      | [.user.login, $kind, (.id | tostring), ($created_at | tostring), ($updated_at | tostring)] | @tsv
     ' <<<"$payload" 2>/dev/null
 }
 
@@ -382,10 +385,16 @@ poll_activity() {
     repo=$2
     pr_number=$3
     now=$4
-    persisted_since="$(state_get WINDOW "$lane" detail || true)"
+    # WINDOW's detail field carries "since:event_id" once a window has been
+    # armed by a promotion_epoch() resolution (event_id empty only for state
+    # adopted from before this encoding existed). Splitting on the first ':'
+    # keeps `since` a pure epoch integer for the arithmetic below while
+    # giving the warm re-arm check below the event identity it needs.
+    persisted_since_raw="$(state_get WINDOW "$lane" detail || true)"
     persisted_until="$(state_get WINDOW "$lane" extra || printf 0)"
     cold_start=0
-    [ -n "$persisted_since" ] || cold_start=1
+    [ -n "$persisted_since_raw" ] || cold_start=1
+    IFS=: read -r persisted_since persisted_since_event_id <<<"$persisted_since_raw"
 
     # A warm window already durably marked CLOSING -- its closing
     # determination and every row from that fetch already fully persisted,
@@ -429,7 +438,7 @@ poll_activity() {
     # which is an acceptable, bounded addition given this file's existing
     # per-poll API budget and its already fail-closed handling of a failed
     # call (observation_failed halts the watcher either way).
-    since="$(promotion_epoch "$repo" "$pr_number")"
+    epoch_id_pair="$(promotion_epoch "$repo" "$pr_number")"
     promotion_status=$?
     rearmed=0
     if [ "$promotion_status" -eq 10 ]; then
@@ -447,12 +456,21 @@ poll_activity() {
         # whichever window is already armed rather than tearing down a real
         # window over one transient events-API gap.
         since=$persisted_since
+        since_event_id=$persisted_since_event_id
         until=$persisted_until
     elif [ "$promotion_status" -ne 0 ]; then
         return 1
     else
+        IFS=$'\t' read -r since since_event_id <<<"$epoch_id_pair"
         until=$((since + post_promotion_seconds))
-        if [ "$cold_start" -eq 1 ] || [ "$since" != "$persisted_since" ]; then
+        # A same-second withdrawal-then-re-promotion resolves to an
+        # identical `since` epoch but a different event id; comparing the
+        # epoch alone (the pre-fix check) sees "no change" and never
+        # re-arms, silently reproducing the original silent-loss defect in
+        # that one-second collision window. Comparing the id too tells the
+        # two events apart even when their timestamps tie.
+        if [ "$cold_start" -eq 1 ] || [ "$since" != "$persisted_since" ] ||
+            [ "$since_event_id" != "$persisted_since_event_id" ]; then
             rearmed=1
         fi
     fi
@@ -467,7 +485,7 @@ poll_activity() {
     expired=0
     [ "$now" -le "$until" ] || expired=1
     if [ "$rearmed" -eq 1 ] && [ "$expired" -eq 0 ]; then
-        state_set WINDOW "$lane" "$pr_number" "$until" "$since"
+        state_set WINDOW "$lane" "$pr_number" "$until" "$since:$since_event_id"
         # A re-arm can follow a PRIOR window's CLOSING flag left behind by a
         # crash between persisting it and deleting it (see the ordering
         # comment below); that flag belongs to the window that just expired,
@@ -486,10 +504,27 @@ poll_activity() {
 
     rows="$(activity_snapshot "$repo" "$pr_number")" || return 1
 
-    while IFS=$'\t' read -r actor kind id activity_at; do
+    # A comment/inline row carries two candidate instants -- its creation and
+    # its current updated_at, which GitHub sets equal to created_at at
+    # creation and only diverges from on a real edit. A comment CREATED
+    # inside [since,until] is in-window activity even when a LATER edit moved
+    # its updated_at past `until`; using .updated_at // .created_at alone
+    # (the pre-fix shape) silently dropped exactly that case, since GitHub
+    # always sets updated_at, so the // .created_at fallback never actually
+    # ran. Prefer created_at when it alone qualifies; fall back to updated_at
+    # when only the edit instant falls in-window (creation happened before
+    # the window opened). When BOTH instants fall in-window they describe one
+    # comment's one activity, not two: report it once, keyed off created_at,
+    # rather than manufacturing a second dedup key for the same id.
+    while IFS=$'\t' read -r actor kind id created_at updated_at; do
         [ -n "$id" ] || continue
-        [ "$activity_at" -ge "$since" ] || continue
-        [ "$activity_at" -le "$until" ] || continue
+        activity_at=
+        if [ -n "$created_at" ] && [ "$created_at" -ge "$since" ] && [ "$created_at" -le "$until" ]; then
+            activity_at=$created_at
+        elif [ -n "$updated_at" ] && [ "$updated_at" -ge "$since" ] && [ "$updated_at" -le "$until" ]; then
+            activity_at=$updated_at
+        fi
+        [ -n "$activity_at" ] || continue
         key="$lane:$kind:$id:$activity_at"
         if ! state_get ACTIVITY "$key" >/dev/null; then
             echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
@@ -545,13 +580,25 @@ promotion_epoch() {
     [ -n "$payload" ] || return 1
     jq -e 'if (.[0]? | type) == "array" then all(.[]; type == "array") else type == "array" end' \
         >/dev/null 2>&1 <<<"$payload" || return 1
-    epoch="$(jq -r '
+    # A withdrawal and a same-head re-promotion inside the same second can
+    # both land ready_for_review events with an identical created_at -- an
+    # epoch-only result cannot tell those two events apart. Every GitHub
+    # timeline event carries its own immutable `id`, so among the event(s)
+    # sharing the latest created_at, break the tie on the highest id (GitHub
+    # assigns timeline event ids in creation order, so the higher id is
+    # always the later, correct event) and return both epoch and id.
+    result="$(jq -r '
       (if (.[0]? | type) == "array" then add else . end)
-      | map(select(.event == "ready_for_review") | .created_at | fromdateiso8601)
-      | if length > 0 then max else empty end
+      | map(select(.event == "ready_for_review"))
+      | if length == 0 then empty
+        else
+          (map(.created_at | fromdateiso8601) | max) as $max_epoch
+          | (map(select((.created_at | fromdateiso8601) == $max_epoch)) | max_by(.id)) as $latest
+          | "\($max_epoch)\t\($latest.id)"
+        end
     ' <<<"$payload" 2>/dev/null)" || return 1
-    [ -n "$epoch" ] || return 10
-    printf '%s' "$epoch"
+    [ -n "$result" ] || return 10
+    printf '%s' "$result"
 }
 
 discover_pr() {

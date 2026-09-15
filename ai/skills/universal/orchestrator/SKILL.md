@@ -264,6 +264,16 @@ fingerprint; escalate instead of reporting ready if the watch can never be
 made to reach it.
 Promotion itself is never reported as readiness: a status sent during the
 watch instead reads "promoted at T, post-promotion watch until T+15", never "ready".
+Immediately before actually sending the delayed ready report, re-read the
+current `headRefOid` and recompute the gate fingerprint with the same
+`readiness-gate.sh fingerprint` mechanism `AGENTS.md` § Readiness gate names
+for the promotion-time check, then compare both against what promotion
+itself captured. `assets/lane-watch.sh`'s own polling covers PR head/draft
+state and new reviews plus top-level and inline comments; it does not cover
+a PR-body edit or a thread-resolution toggle made during the watch, both
+content the readiness-gate fingerprint already covers. If either the head
+or the fingerprint changed since promotion, the report must not claim
+readiness against that stale value — escalate or re-verify instead.
 This maintainer-facing report is distinct from § Persistent supervision's
 internal per-lane ledger entry ("a ready PR is reported"), which is
 orchestrator bookkeeping, not the maintainer-facing message this rule defines.
@@ -331,6 +341,19 @@ bound to the immutable kickoff snapshot across every re-arm. It only reports
 events; the orchestrator remains responsible for every action. The watcher-owned
 `lane-watch.state` is separate from the run's canonical `monitor.json`; never
 pass that JSON monitor state to `--state-file`.
+
+The watcher's own restart durability does not, by itself, make the
+orchestrator's reporting durable: `POST-PROMOTION-ACTIVITY` and
+`POST-PROMOTION-CLOSED` are lines on the watcher's stdout, consumed by a
+separate orchestrator process, and the § PR-open confirmation gate depends
+on the orchestrator having durably seen every activity line for the
+*current* window — never merely on what its own live stdout stream has shown
+since its own last restart. An orchestrator restart mid-window must not
+silently default to "no activity seen"; confirm that against durable state,
+either by re-deriving what happened over the window's `[since,until]`
+directly from the same GitHub activity sources `lane-watch.sh` itself polls,
+or by maintaining its own durable log of every `POST-PROMOTION-ACTIVITY` /
+`POST-PROMOTION-CLOSED` line it has actually processed.
 
 Every emitted transition terminates in a recorded action: idle reads and
 adjudicates the lane status (including any unsupported claim that the user was

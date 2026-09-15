@@ -297,8 +297,20 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     `POST-PROMOTION-CLOSED` to actually arrive for a window that recorded no
     activity before appending this sentinel, escalating instead of reporting
     ready if it never gets there — never at the moment of promotion itself.
+    Immediately before appending this sentinel, the orchestrator re-reads
+    the current `headRefOid` and recomputes the gate fingerprint (the same
+    `readiness-gate.sh fingerprint` mechanism `AGENTS.md` § Readiness gate
+    names for the promotion-time check) and compares both against what
+    promotion captured; a changed head or fingerprint means the report is
+    not sent as ready — escalate or re-verify instead.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
+
+  The lane's own handoff sentinel and the orchestrator's later ready
+  sentinel are two different actors' two different attempts, both
+  legitimately appended in sequence to this same accumulating, never-deleted
+  report — not a violation of "exactly one sentinel per attempt," which
+  scopes to one actor's one attempt, never the file's whole lifetime.
 
 Begin now: perform the startup-capability check, read the issue, policy, stage
 skill, existing asset, and relevant archived briefs; write the plan; then enter

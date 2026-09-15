@@ -138,6 +138,45 @@ if [ "${1:-}" = api ]; then
         esac
         exit 0
     fi
+    if [ -f "$WATCH_FIXTURES/samesecond-events" ]; then
+        content="$(<"$WATCH_FIXTURES/samesecond-events")"
+        same_iso="${content%%$'\t'*}"
+        same_ids="${content#*$'\t'}"
+        case "$endpoint" in
+        */events?per_page=100)
+            events_json='['
+            first=1
+            for same_id in $same_ids; do
+                [ "$first" -eq 1 ] || events_json+=','
+                events_json+="{\"id\":$same_id,\"event\":\"ready_for_review\",\"created_at\":\"$same_iso\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}"
+                first=0
+            done
+            events_json+=']'
+            printf '%s\n' "$events_json"
+            ;;
+        */reviews?per_page=100)
+            if [ -f "$WATCH_FIXTURES/samesecond-activity-at" ]; then
+                same_activity="$(<"$WATCH_FIXTURES/samesecond-activity-at")"
+                printf '%s\n' "[{\"id\":902,\"submitted_at\":\"$same_activity\",\"user\":{\"id\":999,\"login\":\"trusted-codex\",\"type\":\"Bot\"}}]"
+            else
+                printf '%s\n' '[]'
+            fi
+            ;;
+        *) printf '%s\n' '[]' ;;
+        esac
+        exit 0
+    fi
+    if [ -f "$WATCH_FIXTURES/created-edit-created-at" ]; then
+        case "$endpoint" in
+        */issues/*/comments?per_page=100)
+            ce_created="$(<"$WATCH_FIXTURES/created-edit-created-at")"
+            ce_updated="$(<"$WATCH_FIXTURES/created-edit-updated-at")"
+            printf '%s\n' "[{\"id\":801,\"created_at\":\"$ce_created\",\"updated_at\":\"$ce_updated\",\"user\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
+            ;;
+        *) printf '%s\n' '[]' ;;
+        esac
+        exit 0
+    fi
     if [ -f "$WATCH_FIXTURES/cold-resolve-since" ]; then
         case "$endpoint" in
         */events?per_page=100)
@@ -206,6 +245,29 @@ fi
 exit 90
 STUB
 chmod +x "$bin_dir/herdr" "$bin_dir/gh"
+
+# A narrowly-scoped `mv` stub: root bypasses chmod's discretionary permission
+# checks entirely, so a `chmod 555` fixture can't simulate an unpersistable
+# state directory in a root-run container. Fail only the exact rename
+# persist_state() performs into the persistfail fixture directory (gated
+# behind $WATCH_FIXTURES/fail-mv); every other `mv` -- the test harness's own,
+# and persist_state() calls for every other test in this file -- passes
+# straight through to the real binary, resolved once here before bin_dir ever
+# shadows PATH.
+real_mv="$(command -v mv)"
+cat >"$bin_dir/mv" <<STUB
+#!/usr/bin/env bash
+set -u
+if [ -f "\${WATCH_FIXTURES:-}/fail-mv" ]; then
+    for arg in "\$@"; do
+        case "\$arg" in
+        */persist-fail-state/*) exit 1 ;;
+        esac
+    done
+fi
+exec "$real_mv" "\$@"
+STUB
+chmod +x "$bin_dir/mv"
 
 export PATH="$bin_dir:$PATH"
 export WATCH_FIXTURES="$fixture_dir"
@@ -507,11 +569,14 @@ assert_count "$test_tmp/closing-durable.state" 0 '^CLOSING[[:space:]]+alpha[[:sp
 # never lose one. A process-level crash mid-statement cannot be injected
 # deterministically from a test, but persist_state() itself calling `exit 1`
 # on a save failure is an equally real interruption landing between the
-# SAME two statements a crash would -- reachable by making the state
-# directory unwritable after it is seeded. The lane, report, and agent
-# fixtures below are chosen so this is the ONLY persist_state call the run
-# ever reaches, isolating the ordering this finding is about from every
-# other persist_state call the watcher makes.
+# SAME two statements a crash would -- reachable by making persist_state()'s
+# rename fail via the $WATCH_FIXTURES/fail-mv-gated `mv` stub above (a
+# chmod-based unwritable directory doesn't work under root, which bypasses
+# discretionary permission checks entirely -- finding integration-r1-codex-
+# cloud-6). The lane, report, and agent fixtures below are chosen so this is
+# the ONLY persist_state call the run ever reaches, isolating the ordering
+# this finding is about from every other persist_state call the watcher
+# makes.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 touch "$fixture_dir/malformed-list"
@@ -526,7 +591,7 @@ persistfail_dir="$test_tmp/persist-fail-state"
 mkdir -p "$persistfail_dir"
 printf 'PR\tzeta\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\tzeta\t77\t%s\t%s\nWALLCLOCK\trun\t0\t\n' \
     "$persistfail_until" "$persistfail_since" >"$persistfail_dir/watcher.state"
-chmod 555 "$persistfail_dir"
+touch "$fixture_dir/fail-mv"
 persistfail_out="$test_tmp/persist-fail.out"
 persistfail_err="$test_tmp/persist-fail.err"
 if bash "$watcher" --iterations 1 --state-file "$persistfail_dir/watcher.state" \
@@ -536,11 +601,48 @@ if bash "$watcher" --iterations 1 --state-file "$persistfail_dir/watcher.state" 
     >"$persistfail_out" 2>"$persistfail_err"; then
     fail 'watcher exited zero despite an unpersistable state directory'
 fi
-chmod 755 "$persistfail_dir"
+rm "$fixture_dir/fail-mv"
 rm "$fixture_dir/malformed-list" "$fixture_dir/tail-activity-at"
 assert_line "$persistfail_err" "lane-watch: could not persist state to $persistfail_dir/watcher.state"
 assert_line "$persistfail_out" 'POST-PROMOTION-ACTIVITY zeta: trusted-codex review 901'
 assert_count "$persistfail_out" 1 '^POST-PROMOTION-ACTIVITY '
+
+# Finding integration-r1-codex-cloud-2: activity_rows() computed a
+# comment/inline row's single activity instant as `.updated_at // .created_at`
+# -- and GitHub always sets updated_at (equal to created_at at creation), so
+# that `// .created_at` fallback essentially never triggers. A comment
+# CREATED inside a still-open window but EDITED after the window's `until`
+# then has an updated_at outside [since,until], so the pre-fix row filter
+# dropped it entirely even though real in-window activity happened. Seed a
+# WARM, still-open window (until comfortably in the future, so this is purely
+# about the row filter, not window expiry) and a comment whose created_at
+# falls inside [since,until] but whose updated_at falls after `until`; it
+# must still be reported.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+ce_now="$(date -u +%s)"
+ce_since=$((ce_now - 300))
+ce_until=$((ce_now + 400))
+ce_created_at=$((ce_since + 50))
+ce_updated_at=$((ce_until + 500))
+ce_created_iso="$(date -u -d "@$ce_created_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$ce_created_iso" ] || ce_created_iso="$(date -u -r "$ce_created_at" +%Y-%m-%dT%H:%M:%SZ)"
+ce_updated_iso="$(date -u -d "@$ce_updated_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$ce_updated_iso" ] || ce_updated_iso="$(date -u -r "$ce_updated_at" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$ce_created_iso" >"$fixture_dir/created-edit-created-at"
+printf '%s\n' "$ce_updated_iso" >"$fixture_dir/created-edit-updated-at"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s\nWALLCLOCK\trun\t0\t\n' \
+    "$ce_until" "$ce_since" >"$test_tmp/created-edit.state"
+created_edit_out="$test_tmp/created-edit.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/created-edit.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$created_edit_out"
+rm "$fixture_dir/created-edit-created-at" "$fixture_dir/created-edit-updated-at"
+assert_line "$created_edit_out" 'POST-PROMOTION-ACTIVITY alpha: maintainer comment 801'
+assert_count "$created_edit_out" 1 '^POST-PROMOTION-ACTIVITY '
+assert_count "$created_edit_out" 0 '^POST-PROMOTION-CLOSED '
 
 # A cold-start window whose epoch resolves to a real, already-past deadline
 # (the provisional deadline had already passed too) still takes exactly one
@@ -700,8 +802,69 @@ assert_count "$samehead_rearm_out" 0 '^POST-PROMOTION-INDETERMINATE '
 # WINDOW must now reflect the NEW epoch, proving a genuine re-arm rather than
 # merely surviving with its stale bounds untouched.
 assert_count "$test_tmp/samehead-rearm.state" 1 \
-    "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+${samehead_until2}[[:space:]]+${samehead_since2}\$"
+    "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+${samehead_until2}[[:space:]]+${samehead_since2}:401\$"
 assert_count "$test_tmp/samehead-rearm.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
+
+# Finding integration-r1-codex-cloud-1: a withdrawal and a same-head
+# re-promotion that both land inside the same wall-clock second produce two
+# ready_for_review timeline events with an IDENTICAL created_at but distinct
+# event ids. promotion_epoch()'s pre-fix epoch-only result, and
+# poll_activity()'s pre-fix `since != persisted_since` check, cannot tell
+# those two events apart: seeing "no change," the window is never re-armed.
+# Poll 1 establishes a real window from a single event (id 401) via the
+# watcher's own cold-start code path -- so the persisted WINDOW state is
+# genuine watcher output, not a hand-crafted shape. Poll 2 then presents BOTH
+# events (401 and 402) tied at the identical created_at, simulating the
+# collision. The fix must select 402 (the later, higher-id event) and
+# persist a re-armed window keyed to it -- something no pre-fix build could
+# ever produce, since pre-fix code neither resolves nor persists an event id
+# at all, proving this assertion fails against the pre-fix implementation and
+# passes only once the fix is applied.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+samesecond_now="$(date -u +%s)"
+samesecond_t=$((samesecond_now - 200))
+samesecond_t_iso="$(date -u -d "@$samesecond_t" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$samesecond_t_iso" ] || samesecond_t_iso="$(date -u -r "$samesecond_t" +%Y-%m-%dT%H:%M:%SZ)"
+samesecond_provisional_until=$((samesecond_now + 1200))
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t\nWALLCLOCK\trun\t0\t\n' \
+    "$samesecond_provisional_until" >"$test_tmp/samesecond.state"
+
+# Poll 1: exactly one ready_for_review event (401) resolves the cold-start window.
+printf '%s\t401\n' "$samesecond_t_iso" >"$fixture_dir/samesecond-events"
+samesecond_out1="$test_tmp/samesecond-1.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/samesecond.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$samesecond_out1"
+assert_count "$test_tmp/samesecond.state" 1 \
+    "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+$((samesecond_t + 900))[[:space:]]+${samesecond_t}:401\$"
+
+# Poll 2: an off-watch withdraw-then-re-promote lands a SECOND ready_for_review
+# event tied to the identical created_at as the first (401 and 402 both at
+# $samesecond_t). Real new activity lands just before "now," well inside a
+# freshly re-armed window.
+printf '%s\t401\t402\n' "$samesecond_t_iso" >"$fixture_dir/samesecond-events"
+samesecond_activity_at=$((samesecond_now - 5))
+samesecond_activity_iso="$(date -u -d "@$samesecond_activity_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$samesecond_activity_iso" ] || samesecond_activity_iso="$(date -u -r "$samesecond_activity_at" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$samesecond_activity_iso" >"$fixture_dir/samesecond-activity-at"
+samesecond_out2="$test_tmp/samesecond-2.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/samesecond.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$samesecond_out2"
+rm "$fixture_dir/samesecond-events" "$fixture_dir/samesecond-activity-at"
+assert_line "$samesecond_out2" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 902'
+assert_count "$samesecond_out2" 1 '^POST-PROMOTION-ACTIVITY '
+assert_count "$samesecond_out2" 0 '^POST-PROMOTION-CLOSED '
+# The persisted window must now be re-keyed to event 402 -- proving the
+# collision was detected and re-armed from the correct, later event, not
+# merely left unchanged because the timestamp alone still matched.
+assert_count "$test_tmp/samesecond.state" 1 \
+    "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+$((samesecond_t + 900))[[:space:]]+${samesecond_t}:402\$"
 
 # A cold-start window whose epoch never resolves (a clean, valid response
 # with no ready_for_review event -- ordinary GitHub eventual consistency,
@@ -898,7 +1061,8 @@ assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|POST-PROMOTION-CLOSED [^:]+: #[0-9]+|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
     "$tail_out" "$closed_quiet_out" "$closing_out" "$persistfail_out" "$cold_resolve_out" "$stillopen_out" "$realexpired_out" \
-    "$samehead_rearm_out" "$cold_never_out" "$rearm_restart_out" \
+    "$samehead_rearm_out" "$cold_never_out" "$rearm_restart_out" "$created_edit_out" \
+    "$samesecond_out1" "$samesecond_out2" \
     "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
