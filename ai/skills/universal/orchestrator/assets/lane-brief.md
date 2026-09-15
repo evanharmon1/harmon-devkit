@@ -276,59 +276,28 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
   the final message:
   - `{{ready-sentinel}}-{{attempt-nonce}}` — the orchestrator promoted the PR
     through the readiness gate. This sentinel is the orchestrator's own mark:
-    a lane never promotes its own PR and never writes this sentinel. The
-    orchestrator appends it to `{{report-path}}` only once its own
-    post-promotion watch — 15 minutes on the trusted review-bot actors (the
-    `trusted_actor_id` of every finder in `agent-registry.json`) and on
-    humans — has actually emitted `POST-PROMOTION-CLOSED` for this lane, with
-    no `POST-PROMOTION-ACTIVITY` line ever recorded inside its window: the
-    concrete event gates the sentinel, never silence, and never "the watch
-    closes clean" concluded some other way — `assets/lane-watch.sh` emits
-    `POST-PROMOTION-CLOSED` itself, only once its one closing snapshot has
-    actually been taken. Silence on `POST-PROMOTION-ACTIVITY` is never
-    enough by itself — a window whose promotion epoch never resolves shows
-    no activity either, precisely because that closing snapshot never
-    happens; that is exactly what `POST-PROMOTION-INDETERMINATE` reports
-    instead.
-    A `POST-PROMOTION-CLOSED` line is trustworthy evidence only for the exact
-    promotion it names — `assets/lane-watch.sh` carries that window's
-    `since:` promotion-event identity on the event text itself, and the
-    orchestrator accepts the line only when its carried identity matches the
-    promotion identity it most recently observed or armed a window from for
-    this lane, never a same-lane, same-PR `POST-PROMOTION-CLOSED` line in
-    isolation: a same-head withdrawal followed by a re-promotion after an
-    earlier close re-arms a brand-new window with its own identity, and
-    ignoring the carried identity cannot tell that close apart from this one.
-    A `POST-PROMOTION-INDETERMINATE` result is never a pass: the orchestrator
-    re-arms the window — clearing this lane's tracked `PR` state on that
-    path is what makes even a plain restart a genuine retry now — or
-    resolves the stuck promotion epoch by hand, and waits for
-    `POST-PROMOTION-CLOSED` to actually arrive for a window that recorded no
-    activity before appending this sentinel, escalating instead of reporting
-    ready if it never gets there — never at the moment of promotion itself.
-    Immediately before appending this sentinel, the orchestrator re-reads
-    the current `headRefOid` and `isDraft`, and re-evaluates required CI
-    status for that head (the same check the readiness gate itself
-    performs), then recomputes the gate fingerprint (the same
-    `readiness-gate.sh fingerprint` mechanism `AGENTS.md` § Readiness gate
-    names for the promotion-time check), then re-reads `headRefOid` and
-    `isDraft` once more, after the fingerprint, exactly as that
-    promotion-time check does: the fingerprint deliberately excludes both
-    the head and draft status, so a push or a withdrawal landing between the
-    scalar fetch and the fingerprint read leaves the hash and the
-    fingerprint identical, and only a re-read on the far side proves the
-    content just fingerprinted belongs to a head that is still non-draft.
-    The orchestrator requires the near-side head, near-side
-    `isDraft == false`, far-side head, far-side `isDraft == false`, the head
-    promotion itself captured, the fingerprint, and required CI for the
-    current head all to agree and pass; if any of those disagree, or the PR
-    is now draft, or required CI is failing or still pending, the report is
-    not sent as ready. Matching the vendored `/integrate` skill's own
-    handling of this same case (`.claude/skills/integrate/SKILL.md` step 6):
-    the orchestrator runs `gh pr ready --undo`, confirms the PR is draft on
-    the current head, and only then decides whether to re-verify or
-    escalate — an invalidated promotion is returned to draft, never left
-    standing as ready.
+    a lane never promotes its own PR and never writes this sentinel.
+    **Invariant: the orchestrator appends this sentinel only for a
+    `POST-PROMOTION-CLOSED` event that names the promotion event id the
+    watcher armed on, with zero activity rows in that window, and only
+    after one re-read taken after the close shows the same head, the same
+    readiness fingerprint, and every check still concluded green; any other
+    observation (a different promotion id, any activity row, any changed
+    value, any indeterminate read) withdraws the report and re-arms
+    instead of appending this sentinel.** The re-read uses the same
+    mechanisms `AGENTS.md` § Readiness gate names for the promotion-time
+    check (`headRefOid`/`isDraft`, required CI status, and
+    `readiness-gate.sh fingerprint`); the sentinel is never appended at the
+    moment of promotion itself. Matching the vendored `/integrate` skill's
+    own handling of an invalidated promotion
+    (`.claude/skills/integrate/SKILL.md` step 6): withdrawing runs
+    `gh pr ready --undo` and confirms the PR is draft on the current head
+    before deciding whether to re-verify or escalate. The mechanism that
+    satisfies this invariant — window arming, activity/close correlation by
+    promotion event id, retry on an indeterminate read — belongs to
+    `assets/lane-watch.sh`; this bullet states only what must be true
+    before the sentinel is appended, never the ordering or per-endpoint
+    steps the watcher uses to get there.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
 

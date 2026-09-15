@@ -3,26 +3,32 @@
 #   AGENT <lane>: <from> -> <to>
 #   SENTINEL <lane>: <value>[ (pane only)]
 #   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
-#   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id>
+#   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id> since=<epoch>:<event_id>
 #   POST-PROMOTION-CLOSED <lane>: #<pr_number> since=<epoch>:<event_id>
 #   POST-PROMOTION-INDETERMINATE <lane>: #<pr_number>
 #
-# POST-PROMOTION-CLOSED's trailing "since=<epoch>:<event_id>" is the identity
-# of the promotion window that just closed -- the same epoch:event_id pair
-# ARMED and WINDOW's own detail field already carry (see below). Without it
-# the event text is textually indistinguishable across two different windows
-# for the same lane/PR: a same-head withdrawal-then-re-promotion after an
-# earlier close re-arms a brand-new window (see check_repromotion_after_close()
-# below) and, on its own eventual close, would emit the exact same
-# "POST-PROMOTION-CLOSED <lane>: #<pr_number>" text the first close already
-# emitted. A consumer watching for "the concrete POST-PROMOTION-CLOSED event"
-# could not tell the two apart without this identity; carrying it lets a
-# consumer correlate a given CLOSED line against whichever promotion identity
-# it is currently tracking rather than trusting any same-lane CLOSED line in
-# isolation. <event_id> may be empty (rendering as a trailing colon with
-# nothing after it) only when the window was armed from state adopted before
-# this identity encoding existed -- the same legacy-adoption tolerance this
-# file already documents for WINDOW's own "since:event_id" detail field.
+# Both POST-PROMOTION-ACTIVITY's and POST-PROMOTION-CLOSED's trailing
+# "since=<epoch>:<event_id>" is the identity of the promotion window the row
+# or close belongs to -- the same epoch:event_id pair ARMED and WINDOW's own
+# detail field already carry (see below), and the same one keys
+# POST-PROMOTION-ACTIVITY's own durable ACTIVITY dedup entry. Without it the
+# event text is textually indistinguishable across two different windows for
+# the same lane/PR: a same-head withdrawal-then-re-promotion after an earlier
+# close re-arms a brand-new window (see check_repromotion_after_close() below)
+# and, on its own eventual close or its own activity, would emit the exact
+# same "POST-PROMOTION-CLOSED <lane>: #<pr_number>" / "POST-PROMOTION-ACTIVITY
+# <lane>: <actor> <kind> <id>" text an earlier window already emitted, and a
+# row dated between the old window's close and the new window's arming could
+# dedup against the OLD window's already-recorded key even though it belongs
+# to the new one. A consumer watching for "the concrete POST-PROMOTION-CLOSED
+# event" could not tell two windows apart without this identity; carrying it
+# on both event kinds lets a consumer correlate a given line against whichever
+# promotion identity it is currently tracking rather than trusting any
+# same-lane line in isolation. <event_id> may be empty (rendering as a
+# trailing colon with nothing after it) only when the window was armed from
+# state adopted before this identity encoding existed -- the same
+# legacy-adoption tolerance this file already documents for WINDOW's own
+# "since:event_id" detail field.
 #   USAGE-PAUSED <lane>
 #   WALLCLOCK <lane|run>: <text>
 #
@@ -582,9 +588,17 @@ poll_activity() {
             activity_at=$updated_at
         fi
         [ -n "$activity_at" ] || continue
-        key="$lane:$kind:$id:$activity_at"
+        # Bind this row to the exact window's promotion identity, in both the
+        # durable dedup key and the emitted line: a same-head withdraw and
+        # re-promotion that lands its own ready_for_review event before this
+        # row's poll observes it, but after the OLD window's key was already
+        # recorded, must not have this row suppressed as "already reported"
+        # for a promotion it never actually belonged to -- and a consumer
+        # correlating POST-PROMOTION-ACTIVITY against POST-PROMOTION-CLOSED's
+        # own carried "since=" identity needs the same identity on this line.
+        key="$lane:$since_event_id:$kind:$id:$activity_at"
         if ! state_get ACTIVITY "$key" >/dev/null; then
-            echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
+            echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id since=$since:$since_event_id"
             state_set ACTIVITY "$key" 1
             persist_state
         fi
@@ -648,9 +662,20 @@ promotion_epoch() {
     # sharing the latest created_at, break the tie on the highest id (GitHub
     # assigns timeline event ids in creation order, so the higher id is
     # always the later, correct event) and return both epoch and id.
+    #
+    # A row missing a usable numeric id is excluded before that tie-break,
+    # not accepted with a null one: interpolating a null id would resolve as
+    # the literal identity "<epoch>:null", so two distinct malformed
+    # same-second promotions would collapse to the same string and
+    # reproduce exactly the silent re-promotion loss this tie-break exists
+    # to prevent. Excluding it here -- mirroring activity_rows()'s own
+    # malformed-row handling -- lets a real usable event at the same or an
+    # earlier instant still resolve normally; only a payload with no
+    # ready_for_review event carrying a usable id at all falls through to
+    # the existing "no resolvable event" (indeterminate) result below.
     result="$(jq -r '
       (if (.[0]? | type) == "array" then add else . end)
-      | map(select(.event == "ready_for_review"))
+      | map(select(.event == "ready_for_review" and (.id | type) == "number"))
       | if length == 0 then empty
         else
           (map(.created_at | fromdateiso8601) | max) as $max_epoch

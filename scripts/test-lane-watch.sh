@@ -205,6 +205,50 @@ if [ "${1:-}" = api ]; then
         esac
         exit 0
     fi
+    if [ -f "$WATCH_FIXTURES/rebind-events" ]; then
+        rphase="$(<"$WATCH_FIXTURES/rebind-phase")"
+        rsince1="$(<"$WATCH_FIXTURES/rebind-since1")"
+        case "$endpoint" in
+        */events?per_page=100)
+            if [ "$rphase" = 1 ]; then
+                printf '%s\n' "[{\"id\":301,\"event\":\"ready_for_review\",\"created_at\":\"$rsince1\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
+            else
+                rsince2="$(<"$WATCH_FIXTURES/rebind-since2")"
+                printf '%s\n' "[{\"id\":301,\"event\":\"ready_for_review\",\"created_at\":\"$rsince1\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}},{\"id\":402,\"event\":\"ready_for_review\",\"created_at\":\"$rsince2\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
+            fi
+            ;;
+        */reviews?per_page=100)
+            # Unlike dormant-events' phase-gated review row, this one is
+            # returned unconditionally on every poll -- the point is that the
+            # SAME (kind, id, created_at) row is fetched and re-evaluated
+            # against two different armed windows in succession.
+            ractivity="$(<"$WATCH_FIXTURES/rebind-activity-at")"
+            printf '%s\n' "[{\"id\":950,\"submitted_at\":\"$ractivity\",\"user\":{\"id\":999,\"login\":\"trusted-codex\",\"type\":\"Bot\"}}]"
+            ;;
+        *) printf '%s\n' '[]' ;;
+        esac
+        exit 0
+    fi
+    if [ -f "$WATCH_FIXTURES/malformed-promo-events" ]; then
+        case "$endpoint" in
+        */events?per_page=100)
+            mp_valid_at="$(<"$WATCH_FIXTURES/malformed-promo-valid-at")"
+            mp_null_at="$(<"$WATCH_FIXTURES/malformed-promo-null-at")"
+            if [ -f "$WATCH_FIXTURES/malformed-promo-all-bad" ]; then
+                printf '%s\n' "[{\"id\":null,\"event\":\"ready_for_review\",\"created_at\":\"$mp_null_at\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
+            else
+                # A later-timestamped event with a null id alongside an
+                # earlier, validly-identified one: the null-id row has the
+                # later created_at, so an unfiltered max-by-created_at
+                # selection would pick it (and interpolate its null id into
+                # the identity string) unless it is excluded first.
+                printf '%s\n' "[{\"id\":555,\"event\":\"ready_for_review\",\"created_at\":\"$mp_valid_at\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}},{\"id\":null,\"event\":\"ready_for_review\",\"created_at\":\"$mp_null_at\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
+            fi
+            ;;
+        *) printf '%s\n' '[]' ;;
+        esac
+        exit 0
+    fi
     if [ -f "$WATCH_FIXTURES/cold-resolve-since" ]; then
         case "$endpoint" in
         */events?per_page=100)
@@ -325,6 +369,14 @@ common_args=(
     gamma:branch-gamma:n3:evanharmon1/harmon-devkit
 )
 
+# The phase-driven default gh stub fixture (no dedicated WATCH_FIXTURES file)
+# always resolves promotion_epoch() to this fixed event/epoch; every
+# POST-PROMOTION-ACTIVITY assertion against default-fixture output carries
+# this same "since=" identity.
+default_since_epoch="$(date -u -d '2098-01-01T00:00:00Z' +%s 2>/dev/null || true)"
+[ -n "$default_since_epoch" ] ||
+    default_since_epoch="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' '2098-01-01T00:00:00Z' +%s)"
+
 primary_out="$test_tmp/primary.out"
 bash "$watcher" --iterations 5 "${common_args[@]}" >"$primary_out"
 
@@ -344,9 +396,9 @@ assert_line "$primary_out" 'PR alpha: #77 draft=true OPEN head=aaaaaaaa'
 assert_count "$primary_out" 2 '^PR alpha: #77 draft=true OPEN head=aaaaaaaa$'
 assert_line "$primary_out" 'PR alpha: #77 draft=false OPEN head=aaaaaaaa'
 assert_line "$primary_out" 'PR alpha: #77 draft=false MERGED head=aaaaaaaa'
-assert_line "$primary_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
-assert_line "$primary_out" 'POST-PROMOTION-ACTIVITY alpha: maintainer comment 601'
-assert_count "$primary_out" 1 '^POST-PROMOTION-ACTIVITY alpha: maintainer comment 601$'
+assert_line "$primary_out" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501 since=${default_since_epoch}:401"
+assert_line "$primary_out" "POST-PROMOTION-ACTIVITY alpha: maintainer comment 601 since=${default_since_epoch}:401"
+assert_count "$primary_out" 1 "^POST-PROMOTION-ACTIVITY alpha: maintainer comment 601 since=${default_since_epoch}:401\$"
 assert_count "$primary_out" 0 'untrusted-bot'
 assert_count "$primary_out" 1 '^USAGE-PAUSED beta$'
 
@@ -364,7 +416,7 @@ bash "$watcher" --iterations 2 \
 rm "$fixture_dir/skip-ready"
 assert_line "$skipped_ready_out" 'PR alpha: #77 draft=true OPEN head=aaaaaaaa'
 assert_line "$skipped_ready_out" 'PR alpha: #77 draft=false MERGED head=aaaaaaaa'
-assert_line "$skipped_ready_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
+assert_line "$skipped_ready_out" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501 since=${default_since_epoch}:401"
 
 # A pre-head snapshot still opens the post-promotion activity window after an upgrade.
 printf '%s\n' 2 >"$fixture_dir/pr-count"
@@ -377,7 +429,7 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/legacy-draft.state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$legacy_draft_out"
 assert_line "$legacy_draft_out" 'PR alpha: #77 draft=false OPEN head=aaaaaaaa'
-assert_line "$legacy_draft_out" 'POST-PROMOTION-ACTIVITY alpha: maintainer comment 601'
+assert_line "$legacy_draft_out" "POST-PROMOTION-ACTIVITY alpha: maintainer comment 601 since=${default_since_epoch}:401"
 
 # A fresh process adopts state and does not re-emit either sentinel.
 restart_out="$test_tmp/restart.out"
@@ -680,7 +732,10 @@ fi
 rm "$fixture_dir/fail-mv"
 rm "$fixture_dir/malformed-list" "$fixture_dir/tail-activity-at"
 assert_line "$persistfail_err" "lane-watch: could not persist state to $persistfail_dir/watcher.state"
-assert_line "$persistfail_out" 'POST-PROMOTION-ACTIVITY zeta: trusted-codex review 901'
+# WINDOW was hand-seeded with the legacy (no event id) detail shape, and this
+# poll's tail-activity-at fixture returns no resolvable event, so the warm
+# path trusts the persisted since with its empty event id.
+assert_line "$persistfail_out" "POST-PROMOTION-ACTIVITY zeta: trusted-codex review 901 since=${persistfail_since}:"
 assert_count "$persistfail_out" 1 '^POST-PROMOTION-ACTIVITY '
 
 # Finding integration-r1-codex-cloud-2: activity_rows() computed a
@@ -716,7 +771,8 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/created-edit.state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$created_edit_out"
 rm "$fixture_dir/created-edit-created-at" "$fixture_dir/created-edit-updated-at"
-assert_line "$created_edit_out" 'POST-PROMOTION-ACTIVITY alpha: maintainer comment 801'
+# Same legacy (no event id) WINDOW shape as the persistfail case above.
+assert_line "$created_edit_out" "POST-PROMOTION-ACTIVITY alpha: maintainer comment 801 since=${ce_since}:"
 assert_count "$created_edit_out" 1 '^POST-PROMOTION-ACTIVITY '
 assert_count "$created_edit_out" 0 '^POST-PROMOTION-CLOSED '
 
@@ -746,7 +802,7 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/cold-resolve.state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$cold_resolve_out"
 rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
-assert_line "$cold_resolve_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
+assert_line "$cold_resolve_out" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901 since=${resolve_real_since}:401"
 assert_count "$cold_resolve_out" 1 '^POST-PROMOTION-ACTIVITY '
 assert_count "$cold_resolve_out" 0 '^POST-PROMOTION-INDETERMINATE '
 # A cold-start resolution carries the freshly resolved event id (401, from
@@ -788,7 +844,7 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/still-open.state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$stillopen_out"
 rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
-assert_line "$stillopen_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
+assert_line "$stillopen_out" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901 since=${stillopen_real_since}:401"
 assert_count "$stillopen_out" 1 '^POST-PROMOTION-ACTIVITY '
 assert_count "$stillopen_out" 0 '^POST-PROMOTION-CLOSED '
 assert_count "$stillopen_out" 0 '^POST-PROMOTION-INDETERMINATE '
@@ -822,7 +878,7 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/real-expired.state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$realexpired_out"
 rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
-assert_line "$realexpired_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
+assert_line "$realexpired_out" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901 since=${realexpired_real_since}:401"
 # Same cold-resolve-since fixture branch, same event id 401.
 assert_line "$realexpired_out" "POST-PROMOTION-CLOSED alpha: #77 since=${realexpired_real_since}:401"
 assert_count "$realexpired_out" 1 '^POST-PROMOTION-CLOSED '
@@ -874,7 +930,7 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/samehead-rearm.state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$samehead_rearm_out"
 rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
-assert_line "$samehead_rearm_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
+assert_line "$samehead_rearm_out" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901 since=${samehead_since2}:401"
 assert_count "$samehead_rearm_out" 1 '^POST-PROMOTION-ACTIVITY '
 assert_count "$samehead_rearm_out" 0 '^POST-PROMOTION-CLOSED '
 assert_count "$samehead_rearm_out" 0 '^POST-PROMOTION-INDETERMINATE '
@@ -982,7 +1038,7 @@ bash "$watcher" --iterations 1 --state-file "$dormant_state" \
     >"$dormant_out3"
 rm "$fixture_dir/dormant-events" "$fixture_dir/dormant-phase" "$fixture_dir/dormant-since1" \
     "$fixture_dir/dormant-since2" "$fixture_dir/dormant-activity" "$fixture_dir/dormant-pr-json"
-assert_line "$dormant_out3" 'POST-PROMOTION-ACTIVITY theta: trusted-codex review 903'
+assert_line "$dormant_out3" "POST-PROMOTION-ACTIVITY theta: trusted-codex review 903 since=${dormant_since2}:702"
 assert_count "$dormant_out3" 1 '^POST-PROMOTION-ACTIVITY '
 assert_count "$dormant_out3" 0 '^POST-PROMOTION-CLOSED '
 assert_count "$dormant_out3" 0 '^POST-PROMOTION-INDETERMINATE '
@@ -1053,7 +1109,7 @@ bash "$watcher" --iterations 1 --state-file "$iota_state" \
     >"$iota_out2"
 rm "$fixture_dir/dormant-events" "$fixture_dir/dormant-phase" "$fixture_dir/dormant-since1" \
     "$fixture_dir/dormant-since2" "$fixture_dir/dormant-activity" "$fixture_dir/dormant-pr-json"
-assert_line "$iota_out2" 'POST-PROMOTION-ACTIVITY iota: trusted-codex review 903'
+assert_line "$iota_out2" "POST-PROMOTION-ACTIVITY iota: trusted-codex review 903 since=${iota_since2}:702"
 assert_line "$iota_out2" "POST-PROMOTION-CLOSED iota: #88 since=${iota_since2}:702"
 assert_count "$iota_out2" 1 '^POST-PROMOTION-CLOSED '
 # The two closes' carried identities are distinguishable: different epochs,
@@ -1118,7 +1174,7 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/samesecond.state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$samesecond_out2"
 rm "$fixture_dir/samesecond-events" "$fixture_dir/samesecond-activity-at"
-assert_line "$samesecond_out2" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 902'
+assert_line "$samesecond_out2" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 902 since=${samesecond_t}:402"
 assert_count "$samesecond_out2" 1 '^POST-PROMOTION-ACTIVITY '
 assert_count "$samesecond_out2" 0 '^POST-PROMOTION-CLOSED '
 # The persisted window must now be re-keyed to event 402 -- proving the
@@ -1179,7 +1235,7 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/cold-never.state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$rearm_restart_out"
 assert_count "$test_tmp/cold-never.state" 1 '^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+'
-assert_line "$rearm_restart_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
+assert_line "$rearm_restart_out" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501 since=${default_since_epoch}:401"
 
 # The same asset resolves the repository root and registry in the flattened
 # consumer layout when the lane spec supplies its required repository.
@@ -1318,13 +1374,139 @@ bash "$watcher" --iterations 1 --registry "$registry" \
 rm "$fixture_dir/hang-pr-list"
 assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 
+# Integration-r4-codex-cloud finding #4: activity_rows() emitted and
+# globally deduplicated a row's ACTIVITY key using only (lane, kind, id,
+# activity_at) -- no promotion identity. When a same-head re-promotion opens
+# a NEW window whose bounds still cover a row already reported under the OLD
+# window, the row's dedup key was byte-for-byte identical across both
+# windows, so the second (legitimately new-window) occurrence was silently
+# suppressed as "already reported." Reproduce with two real, live polls: poll
+# 1 cold-starts a window from event 301 and reports one review row inside it;
+# poll 2 resolves a NEWER event 402 whose window (since2 comfortably inside
+# window 1's still-open bounds, mimicking a re-promotion that lands before
+# the prior window would otherwise have expired) also covers that exact same
+# row (same id, same created_at, refetched unconditionally by the
+# rebind-events fixture regardless of phase). Pre-fix, the second poll's key
+# collides with the first poll's and the row is dropped; fixed, the key now
+# also carries the window's own since_event_id, so the two windows' keys
+# differ and the row is correctly reported again under window 2's identity.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+rebind_now="$(date -u +%s)"
+rebind_since1=$((rebind_now - 400))
+rebind_since2=$((rebind_since1 + 10))
+rebind_activity_at=$((rebind_since1 + 50))
+rebind_since1_iso="$(date -u -d "@$rebind_since1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$rebind_since1_iso" ] || rebind_since1_iso="$(date -u -r "$rebind_since1" +%Y-%m-%dT%H:%M:%SZ)"
+rebind_since2_iso="$(date -u -d "@$rebind_since2" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$rebind_since2_iso" ] || rebind_since2_iso="$(date -u -r "$rebind_since2" +%Y-%m-%dT%H:%M:%SZ)"
+rebind_activity_iso="$(date -u -d "@$rebind_activity_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$rebind_activity_iso" ] || rebind_activity_iso="$(date -u -r "$rebind_activity_at" +%Y-%m-%dT%H:%M:%SZ)"
+touch "$fixture_dir/rebind-events"
+printf '%s\n' 1 >"$fixture_dir/rebind-phase"
+printf '%s\n' "$rebind_since1_iso" >"$fixture_dir/rebind-since1"
+printf '%s\n' "$rebind_activity_iso" >"$fixture_dir/rebind-activity-at"
+rebind_state="$test_tmp/rebind.state"
+
+# Poll 1: cold start resolves event 301 at since1; the review row (id 950,
+# created at since1+50) falls inside [since1, since1+900] and is reported,
+# durably keyed to window 1's own identity (301).
+rebind_out1="$test_tmp/rebind-1.out"
+bash "$watcher" --iterations 1 --state-file "$rebind_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$rebind_out1"
+assert_line "$rebind_out1" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 950 since=${rebind_since1}:301"
+assert_count "$rebind_out1" 1 '^POST-PROMOTION-ACTIVITY '
+
+# Poll 2: a newer event (402) at since2 = since1+10 -- still comfortably
+# inside window 1's un-expired bounds, i.e. a re-promotion landing mid-window
+# -- differs from the persisted event id, so the warm path re-arms window 2.
+# The SAME row (id 950, same created_at) is fetched again and still falls
+# inside window 2's bounds too (since1+50 >= since2, <= since2+900), so it is
+# evaluated again -- and must be reported again, not suppressed by window 1's
+# already-durable key.
+printf '%s\n' 2 >"$fixture_dir/rebind-phase"
+printf '%s\n' "$rebind_since2_iso" >"$fixture_dir/rebind-since2"
+rebind_out2="$test_tmp/rebind-2.out"
+bash "$watcher" --iterations 1 --state-file "$rebind_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$rebind_out2"
+rm "$fixture_dir/rebind-events" "$fixture_dir/rebind-phase" "$fixture_dir/rebind-since1" \
+    "$fixture_dir/rebind-since2" "$fixture_dir/rebind-activity-at"
+assert_line "$rebind_out2" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 950 since=${rebind_since2}:402"
+assert_count "$rebind_out2" 1 '^POST-PROMOTION-ACTIVITY '
+
+# Integration-r4-codex-cloud finding #6: a ready_for_review event with a
+# missing/null id must be excluded from promotion_epoch()'s selection, never
+# accepted with its id interpolated as the literal text "null" -- which would
+# let two distinct malformed same-second promotions collapse to the same
+# "<epoch>:null" identity, reproducing the exact silent-loss defect the
+# event-id tie-break exists to prevent. The null-id event here carries a
+# LATER created_at than the valid one, so an unfiltered max-by-created_at
+# selection would pick it; the fix must filter it out before that selection,
+# not after, and resolve to the valid, earlier event instead.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+mp_now="$(date -u +%s)"
+mp_valid_at=$((mp_now - 300))
+mp_null_at=$((mp_now - 100))
+mp_valid_iso="$(date -u -d "@$mp_valid_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$mp_valid_iso" ] || mp_valid_iso="$(date -u -r "$mp_valid_at" +%Y-%m-%dT%H:%M:%SZ)"
+mp_null_iso="$(date -u -d "@$mp_null_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$mp_null_iso" ] || mp_null_iso="$(date -u -r "$mp_null_at" +%Y-%m-%dT%H:%M:%SZ)"
+touch "$fixture_dir/malformed-promo-events"
+printf '%s\n' "$mp_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
+printf '%s\n' "$mp_null_iso" >"$fixture_dir/malformed-promo-null-at"
+mp_out="$test_tmp/malformed-promo.out"
+mp_state="$test_tmp/malformed-promo.state"
+bash "$watcher" --iterations 1 --state-file "$mp_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$mp_out"
+assert_count "$mp_out" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$mp_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+$((mp_valid_at + 900))[[:space:]]+${mp_valid_at}:555\$"
+assert_count "$mp_state" 0 'null'
+
+# When every ready_for_review event is malformed, resolution must fall
+# through to the existing "no resolvable event" indeterminate path -- never
+# accept the malformed one for lack of an alternative.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+touch "$fixture_dir/malformed-promo-all-bad"
+mp_allbad_until=$((mp_now - 1200))
+mp_allbad_out="$test_tmp/malformed-promo-allbad.out"
+mp_allbad_state="$test_tmp/malformed-promo-allbad.state"
+# Seed an already-expired provisional deadline (mirroring the cold-never-
+# resolves case above) so this single poll's cold-start resolution, finding
+# no usable event at all, reports indeterminate immediately rather than
+# waiting for a future poll to notice the provisional deadline has passed.
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t\nWALLCLOCK\trun\t0\t\n' \
+    "$mp_allbad_until" >"$mp_allbad_state"
+bash "$watcher" --iterations 1 --state-file "$mp_allbad_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$mp_allbad_out"
+rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-all-bad" \
+    "$fixture_dir/malformed-promo-valid-at" "$fixture_dir/malformed-promo-null-at"
+assert_line "$mp_allbad_out" 'POST-PROMOTION-INDETERMINATE alpha: #77'
+assert_count "$mp_allbad_out" 0 '^POST-PROMOTION-ACTIVITY '
+assert_count "$mp_allbad_state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
+assert_count "$mp_allbad_state" 0 'null'
+
 # Every emitted line belongs to one of the stable event grammars.
-if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|POST-PROMOTION-CLOSED [^:]+: #[0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
+if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-CLOSED [^:]+: #[0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
     "$tail_out" "$closed_quiet_out" "$closing_out" "$persistfail_out" "$cold_resolve_out" "$stillopen_out" "$realexpired_out" \
     "$samehead_rearm_out" "$cold_never_out" "$rearm_restart_out" "$created_edit_out" \
     "$dormant_out1" "$dormant_out2" "$dormant_out3" \
     "$samesecond_out1" "$samesecond_out2" \
+    "$rebind_out1" "$rebind_out2" "$mp_out" "$mp_allbad_out" \
     "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
