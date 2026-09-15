@@ -74,18 +74,21 @@ for supplied in "$@"; do
             ' "$target"
             ;;
         *.yaml | *.yml)
-            # Bare keys accept the full [A-Za-z0-9_-] leading charset (dots
-            # allowed inside); a "quoted" or 'quoted' key emits its unquoted
-            # term. Each alternative mutates the matched line on success, so
-            # a line matching one never also matches another. The mapping
-            # separator must actually look like YAML (`:` then whitespace or
-            # end of line) rather than `.*`, or a digit/hyphen-leading
-            # unquoted scalar containing a colon (a Docker port mapping like
-            # "- 8080:80") is misread as a key (challenge round 1, confirmed).
+            # Bare keys accept the full [A-Za-z0-9_-] leading charset, with
+            # dots and colons allowed inside (so a `group:action`-style key,
+            # this repo's own Taskfile convention, is emitted in full rather
+            # than dropped — challenge round 2, confirmed); a "quoted" or
+            # 'quoted' key emits its unquoted term. Each alternative mutates
+            # the matched line on success, so a line matching one never also
+            # matches another. The mapping separator must actually look like
+            # YAML (`:` then whitespace or end of line) rather than `.*`, or
+            # a digit/hyphen-leading unquoted scalar containing a colon (a
+            # Docker port mapping like "- 8080:80") is misread as a key
+            # (challenge round 1, confirmed).
             sed -nE \
-                -e 's/^[[:space:]]*(-[[:space:]]+)?"([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})"[[:space:]]*:([[:space:]].*)?$/\2/p' \
-                -e 's/^[[:space:]]*(-[[:space:]]+)?'"'"'([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})'"'"'[[:space:]]*:([[:space:]].*)?$/\2/p' \
-                -e 's/^[[:space:]]*(-[[:space:]]+)?([A-Za-z0-9_-][A-Za-z0-9_.-]{0,79})[[:space:]]*:([[:space:]].*)?$/\2/p' \
+                -e 's/^[[:space:]]*(-[[:space:]]+)?"([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})"[[:space:]]*:([[:space:]].*)?$/\2/p' \
+                -e 's/^[[:space:]]*(-[[:space:]]+)?'"'"'([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})'"'"'[[:space:]]*:([[:space:]].*)?$/\2/p' \
+                -e 's/^[[:space:]]*(-[[:space:]]+)?([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})[[:space:]]*:([[:space:]].*)?$/\2/p' \
                 "$target"
             ;;
         *.toml)

@@ -264,8 +264,8 @@ esac
 echo "== fence-check.sh: resolves the comparison base from the envelope issue.url's target remote =="
 make_remote_fixture() {
     # $1: fixture dir  $2: origin url or "" to skip  $3: upstream url or ""
-    # $4: whether upstream carries the default branch (true/false)
-    local dir="$1" origin_url="$2" upstream_url="$3" upstream_has_main="$4"
+    # Callers create the upstream/main ref explicitly (or don't) afterward.
+    local dir="$1" origin_url="$2" upstream_url="$3"
     git init -q "$dir"
     mkdir -p "$dir/scripts"
     ln -s "$repo/scripts/validate-result-schemas.mjs" "$dir/scripts/validate-result-schemas.mjs"
@@ -304,7 +304,7 @@ make_remote_brief() {
 # and carries it. issue.url names upstream's owner/repo.
 fork_fixture="$tmp/fork-repo"
 make_remote_fixture "$fork_fixture" "https://github.com/example-fork/harmon-devkit.git" \
-    "https://github.com/example-upstream/harmon-devkit.git" true
+    "https://github.com/example-upstream/harmon-devkit.git"
 fork_base="$(git -C "$fork_fixture" rev-parse HEAD)"
 git -C "$fork_fixture" update-ref refs/remotes/upstream/main "$fork_base"
 printf '%s\n' changed >"$fork_fixture/allowed.txt"
@@ -326,7 +326,7 @@ esac
 # resolve to origin.
 unrelated_fixture="$tmp/unrelated-upstream-repo"
 make_remote_fixture "$unrelated_fixture" "https://github.com/evanharmon1/harmon-devkit.git" \
-    "https://github.com/example-unrelated/some-other-repo.git" false
+    "https://github.com/example-unrelated/some-other-repo.git"
 unrelated_base="$(git -C "$unrelated_fixture" rev-parse HEAD)"
 git -C "$unrelated_fixture" update-ref refs/remotes/origin/main "$unrelated_base"
 printf '%s\n' changed >"$unrelated_fixture/allowed.txt"
@@ -338,6 +338,27 @@ out="$(cd "$unrelated_fixture" && "$fence_check" --brief "$tmp/unrelated.md" 2>&
 case "$out" in
 *"using remote 'origin'"*"issue.url"*) ;;
 *) fail "unrelated-upstream comparison base did not resolve to origin via issue.url: $out" ;;
+esac
+
+# Duplicate-remote regression (challenge round 2, confirmed): a second,
+# never-fetched remote alias for the SAME repository sorts before origin in
+# `git remote` order (alphabetical: "github" < "origin"). Picking the first
+# URL-matching remote unconditionally would select the alias and fail
+# closed even though origin (fetched, ref present) works fine.
+duplicate_fixture="$tmp/duplicate-remote-repo"
+make_remote_fixture "$duplicate_fixture" "https://github.com/evanharmon1/harmon-devkit.git" ""
+git -C "$duplicate_fixture" remote add github "https://github.com/evanharmon1/harmon-devkit.git"
+duplicate_base="$(git -C "$duplicate_fixture" rev-parse HEAD)"
+git -C "$duplicate_fixture" update-ref refs/remotes/origin/main "$duplicate_base"
+printf '%s\n' changed >"$duplicate_fixture/allowed.txt"
+git -C "$duplicate_fixture" add allowed.txt
+git -C "$duplicate_fixture" commit -qm "test: change allowed path with a never-fetched duplicate remote present"
+make_remote_brief "$tmp/duplicate.md" "$duplicate_fixture" "$duplicate_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$duplicate_fixture" && "$fence_check" --brief "$tmp/duplicate.md" 2>&1)" ||
+    fail "a duplicate-remote checkout with a never-fetched alphabetically-earlier alias was rejected: $out"
+case "$out" in
+*"using remote 'origin'"*"issue.url"*) ;;
+*) fail "duplicate-remote comparison base did not prefer origin over the never-fetched alias: $out" ;;
 esac
 
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
@@ -366,9 +387,11 @@ printf '%s\n' 'id: short' >"$scan_fixture/short-keys.yaml"
 printf '%s\n' '- name: fixture' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' '"critical-key": value' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' '      - 8080:8080' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' '  guard:release-title:' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' 'id name' >"$scan_fixture/scripts/yaml-key-consumer.sh"
 printf '%s\n' 'critical-key' >"$scan_fixture/scripts/yaml-quoted-key-consumer.sh"
 printf '%s\n' '8080' >"$scan_fixture/scripts/yaml-port-mapping-consumer.sh"
+printf '%s\n' 'task guard:release-title' >"$scan_fixture/scripts/yaml-colon-key-consumer.sh"
 printf '%s\n' 'id = "short"' >"$scan_fixture/short-keys.toml"
 printf '%s\n' '_secret = "shh"' >>"$scan_fixture/short-keys.toml"
 printf '%s\n' 'id' >"$scan_fixture/scripts/toml-key-consumer.sh"
@@ -401,6 +424,8 @@ grep -Fxq scripts/yaml-quoted-key-consumer.sh <<<"$yaml_scan_out" ||
     fail "dependency scan missed a quoted YAML key"
 grep -Fxq scripts/yaml-port-mapping-consumer.sh <<<"$yaml_scan_out" &&
     fail "dependency scan misread a Docker port-mapping scalar (- 8080:8080) as a key"
+grep -Fxq scripts/yaml-colon-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan dropped a colon-bearing group:action-style YAML key"
 toml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.toml)" ||
     fail "TOML-key dependency scan failed"
 grep -Fxq scripts/toml-key-consumer.sh <<<"$toml_scan_out" ||

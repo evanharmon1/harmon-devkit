@@ -100,7 +100,10 @@ current_branch="$(git -C "$worktree_path" branch --show-current)" || {
 # github.com only, matching this repo's own normalization set
 # (docs/conventions.md § Git transport): a remote's fetch URL is compared
 # against a resolved owner/repo by stripping the same protocol/host forms
-# that set already needs to handle.
+# that set already needs to handle. Lower-cased and trailing-slash-stripped
+# before returning, since GitHub owner/repo names are case-insensitive and a
+# case-sensitive compare could silently miss a real match (challenge round 2,
+# confirmed).
 remote_name_with_owner() {
     local url="$1"
     case "$url" in
@@ -112,13 +115,15 @@ remote_name_with_owner() {
     ssh://git@ssh.github.com/*) url="${url#ssh://git@ssh.github.com/}" ;;
     *) return 1 ;;
     esac
-    printf '%s\n' "${url%.git}"
+    url="${url%.git}"
+    url="${url%/}"
+    printf '%s\n' "${url,,}"
 }
 
 # origin is the writable remote in the supported fork topology, not
 # necessarily the PR target. The envelope's own issue.url already pins the
 # target repository (it is where the lane's issue and PR live), so it is the
-# only signal used: derive owner/repo from it and match a configured remote
+# only signal used: derive owner/repo from it and match configured remotes
 # against that. Ambient `gh repo view` resolution was tried and dropped —
 # it resolves by remote-name preference (upstream > github > origin > ...)
 # or a persisted gh-resolved config, not actual git ancestry, so it is not
@@ -126,15 +131,24 @@ remote_name_with_owner() {
 # carry a gh-favoured remote name for an unrelated repository (challenge
 # round 1, confirmed). No match, or no parseable issue.url, falls back to
 # origin so an ordinary non-fork checkout is unaffected.
+#
+# Multiple remotes can share the same URL (a mirror or alias alongside the
+# usual clone). Among URL-matching remotes, origin wins first since it is
+# the conventional writable checkout; else the first whose default-branch
+# ref actually resolves locally, so a never-fetched alias doesn't fail a
+# layout the pre-round-1 code handled fine; else the first match by `git
+# remote` order, same as before (challenge round 2, confirmed).
 resolve_comparison_remote() {
-    local worktree="$1" envelope="$2"
+    local worktree="$1" envelope="$2" default_branch_name="$3"
     local issue_url target_nwo remote url candidate
+    local -a matches=()
 
     issue_url="$(jq -r '.issue.url // empty' "$envelope" 2>/dev/null || true)"
     target_nwo=""
     case "$issue_url" in
     https://github.com/*/*)
         target_nwo="$(printf '%s\n' "$issue_url" | sed -nE 's#^https://github\.com/([^/]+)/([^/]+)/.*#\1/\2#p')"
+        target_nwo="${target_nwo,,}"
         ;;
     esac
 
@@ -142,17 +156,29 @@ resolve_comparison_remote() {
         while IFS= read -r remote; do
             url="$(git -C "$worktree" remote get-url "$remote" 2>/dev/null)" || continue
             candidate="$(remote_name_with_owner "$url")" || continue
-            if [ "$candidate" = "$target_nwo" ]; then
-                printf '%s\t%s\n' "$remote" "issue.url ($target_nwo)"
-                return 0
-            fi
+            [ "$candidate" = "$target_nwo" ] && matches+=("$remote")
         done < <(git -C "$worktree" remote)
+    fi
+
+    if [ "${#matches[@]}" -gt 0 ]; then
+        for remote in "${matches[@]}"; do
+            [ "$remote" = "origin" ] || continue
+            printf '%s\t%s\n' "$remote" "issue.url ($target_nwo)"
+            return 0
+        done
+        for remote in "${matches[@]}"; do
+            git -C "$worktree" rev-parse --verify -q "refs/remotes/$remote/$default_branch_name" >/dev/null 2>&1 || continue
+            printf '%s\t%s\n' "$remote" "issue.url ($target_nwo)"
+            return 0
+        done
+        printf '%s\t%s\n' "${matches[0]}" "issue.url ($target_nwo)"
+        return 0
     fi
 
     printf '%s\t%s\n' "origin" "fallback"
 }
 
-resolution="$(resolve_comparison_remote "$worktree_path" "$envelope")"
+resolution="$(resolve_comparison_remote "$worktree_path" "$envelope" "$default_branch")"
 comparison_remote="${resolution%%$'\t'*}"
 resolution_source="${resolution#*$'\t'}"
 echo "fence-check: using remote '$comparison_remote' for the comparison base (source: $resolution_source)" >&2
