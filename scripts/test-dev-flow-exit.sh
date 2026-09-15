@@ -591,6 +591,63 @@ node -e '
 rm -rf "${adj_dir}" "${scratch}/dfe-adj-reject-$$.out" "${scratch}/dfe-adj-reject-$$.err"
 echo "OK: a rejected adjudication's diagnostic carries subject:\"adjudication\""
 
+echo "== harmon-devkit#1001 integration cycle 4 (P1): a retrospective review read never authorizes adjudication =="
+# The cycle-2 re-entry fixture (review r1 ran, challenge was re-entered) with
+# the review adjudication REMOVED: the retained review round is complete and
+# unadjudicated, so the ordinary verification-only projection would return
+# action:"adjudicate" — the sole authorization /review needs to write one.
+# A query issued only because challenge happens to be active must never grant
+# that, whatever the rounds contain.
+retro_dir="$(mktemp -d)"
+cp -r "ai/schemas/fixtures/exit/single-round-clean-converge/." "${retro_dir}/"
+rm -f "${retro_dir}/run/adjudications/review-r1.json"
+node -e '
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  const run = JSON.parse(fs.readFileSync(file, "utf8"));
+  run.receipts.push({ kind: "transition", stage: "challenge" });
+  fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
+' "${retro_dir}/run/run.json"
+node scripts/dev-flow-exit.mjs --run "${retro_dir}/run" --stage review \
+    --policy "${retro_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
+    --verification-only --json \
+    >"${scratch}/dfe-retro-review-$$.out" 2>"${scratch}/dfe-retro-review-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.notEqual(body.action, "adjudicate");
+  assert.equal(body.action, "report-only");
+  assert.equal(body.retrospective, true);
+  assert.equal(Array.isArray(body.rounds), true);
+  assert.equal(body.rounds.length, 1);
+  assert.equal(body.rounds[0].has_adjudication, false);
+  console.log("retrospective review report-only OK");
+' "${scratch}/dfe-retro-review-$$.out" || {
+    cat "${scratch}/dfe-retro-review-$$.out" "${scratch}/dfe-retro-review-$$.err" >&2
+    rm -rf "${retro_dir}" "${scratch}/dfe-retro-review-$$.out" "${scratch}/dfe-retro-review-$$.err"
+    fail "a retrospective review read returned an authorizing action instead of report-only"
+}
+# Same run, queried for challenge: unchanged — the retrospective carve-out is
+# scoped to --stage review only, so challenge's own verification-only read
+# keeps its ordinary action (0 challenge rounds here: dispatch).
+node scripts/dev-flow-exit.mjs --run "${retro_dir}/run" --stage challenge \
+    --policy "${retro_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
+    --verification-only --json \
+    >"${scratch}/dfe-retro-challenge-$$.out" 2>"${scratch}/dfe-retro-challenge-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.equal(body.retrospective, undefined);
+  assert.equal(body.action, "dispatch");
+  console.log("challenge query unchanged OK");
+' "${scratch}/dfe-retro-challenge-$$.out" || {
+    cat "${scratch}/dfe-retro-challenge-$$.out" "${scratch}/dfe-retro-challenge-$$.err" >&2
+    rm -rf "${retro_dir}" "${scratch}/dfe-retro-review-$$.out" "${scratch}/dfe-retro-review-$$.err" "${scratch}/dfe-retro-challenge-$$.out" "${scratch}/dfe-retro-challenge-$$.err"
+    fail "the same run's challenge query was unexpectedly affected by the review retrospective carve-out"
+}
+rm -rf "${retro_dir}" "${scratch}/dfe-retro-review-$$.out" "${scratch}/dfe-retro-review-$$.err" "${scratch}/dfe-retro-challenge-$$.out" "${scratch}/dfe-retro-challenge-$$.err"
+echo "OK: a retrospective review read is report-only; the same run's challenge query is unaffected"
+
 # `|| true` on every dev-flow-exit.mjs invocation below: its exit code IS
 # its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
 # 22 capped), so under this file's `set -e` a converged control run would

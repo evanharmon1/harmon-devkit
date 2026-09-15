@@ -3695,6 +3695,81 @@ function writeScenario(name, db) {
     writeFileSync(adjFile, JSON.stringify(adjDoc, null, 2));
     writeScenario("rejected-adjudication", { issues: [{ number: 227, pull_request: null }], comments: { "227": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
+
+  // Integration Codex cycle 4 (P2), confirmed and fixed: an UNRECEIPTED
+  // blocked envelope used to be excluded from blockedPassesToValidate by the
+  // receiptBackedNames requirement, so it was never validated at all — the
+  // fix drops that requirement from the VALIDATE side (receipt-backing now
+  // decides only what gets counted, not what gets checked). Same
+  // wrong-run_id shape as run-224 above, but with no receipt naming the
+  // blocked file at all.
+  {
+    const runId = "run-229-unreceipted-blocked-wrong-runid";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    // A wrong-run_id blocked envelope with NO matching receipt entry at all —
+    // never appears in run.json.receipts, so only a raw disk scan of
+    // passes/ (not a receipts-first read) can find it.
+    const blocked = pass("codex-verification", []);
+    blocked.run.run_id = "some-other-run-entirely";
+    blocked.status = "blocked";
+    blocked.payload.stage = "review";
+    blocked.payload.round = 2;
+    writeFileSync(path.join(runDir, "passes", "review-r2-blocked.json"), JSON.stringify(blocked, null, 2));
+    writeScenario("unreceipted-blocked-wrong-runid", { issues: [{ number: 229, pull_request: null }], comments: { "229": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // Integration Codex cycle 4 (P2), confirmed and fixed: the engine's own
+  // round.blocked_passes carries no role opinion (its header comment:
+  // "this module has no opinion on that"), so a receipted blocked envelope
+  // with the WRONG role for a confidence stage (role:"integrator" naming a
+  // review round) used to count as blocked review evidence purely on
+  // receipt-backing. It must now satisfy isConfidenceBlockedEnvelope (and
+  // the round's own stage) like everything else that gets reported.
+  {
+    const runId = "run-230-wrong-role-blocked";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    // A receipted, correctly-run-bound blocked envelope naming review round
+    // 1 but claiming role:"integrator" — schema/run-binding are fine (it
+    // validates and is never rejected), it simply is not confidence
+    // evidence at all and must not be counted as blocked review evidence.
+    const wrongRole = pass("codex-verification", []);
+    wrongRole.run.run_id = runId;
+    wrongRole.role = "integrator";
+    wrongRole.status = "blocked";
+    wrongRole.payload.stage = "review";
+    wrongRole.payload.round = 1;
+    writeFileSync(path.join(runDir, "passes", "review-r1-wrong-role-blocked.json"), JSON.stringify(wrongRole, null, 2));
+    const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    run2.receipts = [...(run2.receipts || []), { kind: "pass", file: "review-r1-wrong-role-blocked" }];
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
+    writeScenario("wrong-role-blocked", { issues: [{ number: 230, pull_request: null }], comments: { "230": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -5043,6 +5118,23 @@ rc=$?
 set -e
 [ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'exit engine rejected adjudication' <<<"$out" ||
     fail "rejected-adjudication: a pass-bound-rejected adjudication was not caught, rc=$rc: $out"
+
+echo "== integration Codex cycle 4: an UNRECEIPTED blocked envelope with a wrong run_id is still validated (fixed remediation 4/6) =="
+export DFSTATS_DB="$tmp/scenarios/unreceipted-blocked-wrong-runid.json"
+run_id="$(meta unreceipted-blocked-wrong-runid .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" ||
+    fail "unreceipted-blocked-wrong-runid: an unreceipted wrong-run_id blocked envelope was not caught, rc=$rc: $out"
+
+echo "== integration Codex cycle 4: a receipted wrong-role blocked envelope is neither counted nor reported (fixed remediation 4/6) =="
+export DFSTATS_DB="$tmp/scenarios/wrong-role-blocked.json"
+run_id="$(meta wrong-role-blocked .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
+    fail "wrong-role-blocked: a receipted role:\"integrator\" blocked envelope was counted as blocked review evidence: $out"
 
 echo "== harmon-devkit#1001 review round 1: a run still in progress on challenge reports challenge's own trajectory, review not-started (fixed round 2/5) =="
 export DFSTATS_DB="$tmp/scenarios/challenge-still-active.json"

@@ -2385,6 +2385,21 @@ async function main() {
     verification.rounds = roundsForTrajectory;
     verification.diagnostics = diagnostics;
     if (retentionChanged) verification.retained_rounds = retainedRoundNumbers;
+    // A retrospective read (reviewRetrospectiveDuringChallenge, above) is a
+    // report on review's own already-retained history — never a request this
+    // invocation may act on. Without this, the ordinary verification-only
+    // projection could still return `action: "adjudicate"` for a complete,
+    // unadjudicated retained round (or "dispatch"/"advance"/"escalate" from
+    // any of the other two shapes) — and `/review` treats that action as the
+    // SOLE authorization to write an adjudication (review/SKILL.md), so a
+    // review query issued only because challenge happens to be active could
+    // authorize new evidence in the wrong stage. Override the action alone,
+    // whatever the rounds contain; outcome/reason/rounds/diagnostics keep
+    // reporting the real retained state. Integration cycle 4, confirmed P1.
+    if (reviewRetrospectiveDuringChallenge) {
+      verification.action = "report-only";
+      verification.retrospective = true;
+    }
     if (args.json) console.log(JSON.stringify(verification, null, 2));
     else console.log(`${args.stage}: ${verification.outcome} (${verification.reason})`);
     return incompleteRound ? EXIT_CODES.capped : 0;

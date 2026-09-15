@@ -2430,17 +2430,32 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     // validated regardless of whether the engine ever emitted a round for
     // it, restoring the unconditional parity the comment above already
     // claimed.
-    const blockedPassesToValidate = localPasses.filter((entry) => {
-      const envelope = entry.content;
-      return (
-        envelope.status === "blocked" &&
-        (envelope.role === "challenger" || envelope.role === "reviewer") &&
-        envelope.payload &&
-        (envelope.payload.stage === "challenge" || envelope.payload.stage === "review") &&
-        Number.isInteger(envelope.payload.round) &&
-        receiptBackedNames.has(entry.name)
+    // Integration Codex cycle 4 (P2 x2), confirmed and fixed: this single
+    // predicate now governs both what gets VALIDATED and what gets COUNTED,
+    // but the two questions are answered separately (see each call site) —
+    // conflating them either dropped validation for an unreceipted envelope
+    // (4015233883: schema/run-binding checks below never ran for it, so a
+    // malformed or wrong-run_id blocked envelope with no receipt could still
+    // slip through as "never checked") or let an unvalidated engine
+    // round.blocked_passes entry get counted on receipt-backing alone
+    // (4015233886: the engine's own blocked_passes list carries no role
+    // opinion, so a wrong-role — e.g. integrator — envelope receipted for a
+    // review round counted as blocked review evidence without ever passing
+    // this predicate at all).
+    function isConfidenceBlockedEnvelope(envelope) {
+      return Boolean(
+        envelope &&
+          envelope.status === "blocked" &&
+          (envelope.role === "challenger" || envelope.role === "reviewer") &&
+          envelope.payload &&
+          (envelope.payload.stage === "challenge" || envelope.payload.stage === "review") &&
+          Number.isInteger(envelope.payload.round),
       );
-    });
+    }
+    // VALIDATE every matching local envelope, receipted or not — receipt
+    // status decides only whether it is later COUNTED/reported (below), never
+    // whether corrupt retained evidence gets checked at all.
+    const blockedPassesToValidate = localPasses.filter((entry) => isConfidenceBlockedEnvelope(entry.content));
     for (const pass of blockedPassesToValidate) {
       const file = localPassFileByName.get(pass.name);
       if (!file) continue; // the engine can only ever name a file it read from this same passes/ dir
@@ -2456,7 +2471,19 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
         const key = `${stage}|${round.round}`;
         const group = byRound.get(key);
         if (!group) continue;
-        const blockedPasses = (round.blocked_passes || []).filter((entry) => receiptBackedNames.has(entry.name));
+        // Reported blocked evidence is validated blocked evidence: the
+        // validation loop above already throws on any receipt-backed entry
+        // that fails isConfidenceBlockedEnvelope's own schema/role/stage
+        // shape (via the exit-validator run on every matching local file),
+        // so requiring the SAME predicate here — plus this round's own
+        // stage, since the engine's blocked_passes carries no such opinion
+        // — means nothing reaches this list unvalidated.
+        const blockedPasses = (round.blocked_passes || []).filter(
+          (entry) =>
+            isConfidenceBlockedEnvelope(entry.envelope) &&
+            entry.envelope.payload.stage === stage &&
+            receiptBackedNames.has(entry.name),
+        );
         const findingAttributions = round.findings.length === 0 ? null : round.findings.map((finding) => ({
           id: finding.id,
           provenance: finding.verified_provenance,
