@@ -60,7 +60,17 @@
 #       --plan-file "$SCRATCH/plan.jsonl" --log "$SCRATCH/apply.log" \
 #       --outcomes "$SCRATCH/outcomes.jsonl" --execute # apply, execute
 #
-# Env: GROOM_MODEL (default: sonnet) picks the AUDIT model.
+# Env: GROOM_MODEL (default: sonnet) picks the AUDIT model — the
+#      coordinating session that reads SKILL.md and fans out Step 2's
+#      cluster subagents.
+#      GROOM_FANOUT_MODEL (default: sonnet) picks the model each Step 2
+#      cluster subagent is dispatched on — independent of GROOM_MODEL, so
+#      raising the coordinating session's own tier (a harder backlog, an
+#      operator's preference) does not silently multiply that cost across
+#      every fan-out subagent too (issue #1044). Forwarded to the
+#      coordinating session as an explicit instruction; SKILL.md Step 2
+#      carries the same default for the interactive path, where no
+#      wrapper prompt exists to forward it.
 #      GROOM_OUT_DIR (default: $HOME/.local/state) names the CALLER'S root —
 #      a directory this script does not own and never chmods, only creates
 #      if missing (refused if it exists and is not a directory). Every audit
@@ -280,7 +290,10 @@ Read the skill file and follow its steps exactly, in order. Stop at Step 5
 (the maintainer pass) — apply mode is a separate, model-free run
 (task groom -- --execute <script> [args…]) that a human runs directly; it
 has no tool grant here. Use only the tools you were granted. Finish with
-the summary its final step defines."
+the summary its final step defines.
+
+Step 2 fan-out: dispatch every cluster subagent with model: \"${GROOM_FANOUT_MODEL:-sonnet}\"
+— do not leave the model unset to inherit this session's own model."
 if [ -n "$note" ]; then
     prompt="$prompt
 

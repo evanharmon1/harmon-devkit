@@ -1413,6 +1413,8 @@ grep -q "GROOM_EXECUTE=0" "$GH_STUB_LOG" || fail "env gate not forced to 0"
 grep -q "GROOM_REPO=$repo" "$GH_STUB_LOG" || fail "run must be repo-bound"
 grep -q "AUDIT" "$GH_STUB_LOG" || fail "prompt must state AUDIT"
 grep -q -- "--model sonnet" "$GH_STUB_LOG" || fail "default model must be sonnet"
+grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "sonnet"' "$GH_STUB_LOG" ||
+    fail "default fan-out model must be sonnet (issue #1044) — coordinating and fan-out tiers must not silently diverge"
 grep -q "GROOM_SCRATCH=/" "$GH_STUB_LOG" || fail "run must bind a scratch dir"
 grep -q "GROOM_SCRATCH=$GROOM_OUT_DIR/" "$GH_STUB_LOG" ||
     fail "the scratch dir must be created under GROOM_OUT_DIR"
@@ -1424,6 +1426,25 @@ grep -qF "groom-apply.sh" "$GH_STUB_LOG" &&
     fail "audit mode's tool grant must not include groom-apply.sh (finding 7 — a fan-out session never applies)"
 grep -qF "groom-decide.sh" "$GH_STUB_LOG" &&
     fail "audit mode's tool grant must not include groom-decide.sh (finding 7 — a fan-out session never decides)"
+
+echo "==> wrapper: GROOM_FANOUT_MODEL overrides the fan-out tier independently of GROOM_MODEL (issue #1044)"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_MODEL=opus GROOM_FANOUT_MODEL=haiku "$wrapper")" = 0 ] ||
+    fail "wrapper audit run with a fan-out override failed: $(cat "$tmp/out" "$tmp/err")"
+grep -q -- "--model opus" "$GH_STUB_LOG" ||
+    fail "GROOM_MODEL must still control the coordinating session's own model"
+grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "haiku"' "$GH_STUB_LOG" ||
+    fail "GROOM_FANOUT_MODEL must control the fan-out instruction independently of GROOM_MODEL"
+
+echo "==> SKILL.md: Step 2 documents the interactive-path fan-out tier contract directly (issue #1044) — the wrapper-prompt tests above cover only the headless path, and the interactive /groom path relies entirely on this prose"
+skill_md="ai/skills/universal/groom/SKILL.md"
+[ -f "$skill_md" ] || fail "$skill_md must exist"
+grep -q "standard.*tier" "$skill_md" || fail "SKILL.md Step 2 must name the standard tier for fan-out dispatch"
+grep -qF "agent-registry.json" "$skill_md" ||
+    fail "SKILL.md Step 2 must point at agent-registry.json for cross-harness tier lookup, not hardcode one harness"
+grep -qF "sonnet" "$skill_md" || fail "SKILL.md Step 2 must give the Claude Code example (sonnet)"
+grep -q "rather than leaving it unset to inherit" "$skill_md" ||
+    fail "SKILL.md Step 2 must explicitly say not to leave the fan-out model unset"
 
 echo "==> wrapper: the run's report survives the wrapper process (finding 1 — no more rm -rf EXIT trap)"
 audit_scratch="$(grep -o 'GROOM_SCRATCH=/[^[:space:]]*' "$GH_STUB_LOG" | tail -1 | cut -d= -f2)"
