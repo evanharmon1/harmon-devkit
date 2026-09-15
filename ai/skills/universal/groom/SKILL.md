@@ -121,26 +121,38 @@ it explicitly on each dispatch (in Claude Code, the `Agent` tool's `model`
 parameter) — e.g. `opus` for the `claude` family, `gpt-5.6-sol` for `gpt`
 (Codex CLI), the default `frontier`-tier Gemini model for `gemini`
 (Antigravity) — rather than leaving it unset to inherit the coordinating
-session's own model. **Not every registered family has a `frontier`
-tier** — several provider-rewired Claude Code harnesses
+session's own model.
+
+**Resolve this from your actual harness, not just its family's tier
+table** — the two can diverge. Read your own harness's entry in
+`agent-registry.json`, including its `model_resolution.details` prose,
+before committing to a tier name: (1) not every family has a `frontier`
+entry at all — several provider-rewired Claude Code harnesses
 (`claude-code-deepseek`, `-glm`, `-kimi`, `-minimax`) constrain to a
-family whose strongest tier in `agent-registry.json` is only `standard`.
-Where your own family has no `frontier` entry, dispatch at that family's
-own strongest available tier instead (`standard` for those four) — never
-invent a model name or leave the parameter unset to satisfy the letter of
-"always frontier". If the coordinating session is itself already exactly
-on the resolved tier (`frontier`, or a lower ceiling per the previous
-sentence), this is a no-op; state so rather than omitting the check. A
-coordinating session running **below** that tier still dispatches
-fan-out subagents at it — that raises the fan-out tier above the
-coordinator's own, not a no-op, and skipping the override there would
-silently leave subagents on the coordinator's weaker tier instead. A
-coordinating session running **above** it (`apex`, where the family has
-one) dispatches fan-out subagents at the resolved tier, capping the cost
+family whose strongest tier is only `standard`, so dispatch at that
+family's own strongest available tier instead of inventing a model name
+or leaving the parameter unset to satisfy the letter of "always
+frontier"; (2) some harnesses are rewired to always serve one fixed
+model regardless of the requested tier name — `claude-code-qwen-local`'s
+own entry says it "points at a local Anthropic-compatible endpoint...
+serving qwen3-coder:30b" even though the `qwen` family itself has a
+`frontier` entry (`max`) — so requesting that family's frontier tier
+here would ask for a model this specific harness cannot actually serve;
+dispatch at the one model the harness's own resolution describes
+instead. In both cases, the effective ceiling is real capability, not
+the raw family/tier table read in isolation. If the coordinating session
+is itself already exactly at that resolved ceiling, this is a no-op;
+state so rather than omitting the check. A coordinating session running
+below it still dispatches fan-out subagents at it — that raises the
+fan-out tier above the coordinator's own, not a no-op, and skipping the
+override there would silently leave subagents on the coordinator's
+weaker tier instead. A coordinating session running above it (an `apex`
+family model, or any tier the harness itself cannot actually vary past)
+dispatches fan-out subagents at the resolved ceiling, capping the cost
 below whatever the coordinator's own tier costs — this is the case the
 override exists for. Depart from this default only for a stated reason
-(e.g. an unusually ambiguous backlog where `apex` is worth the cost for
-verification too), not by default inheritance.
+(e.g. an unusually ambiguous backlog where a stronger tier is worth the
+cost for verification too), not by default inheritance.
 
 Each subagent verifies against the **live code and merged PRs**, never from
 memory, and returns verdicts in the fixed vocabulary

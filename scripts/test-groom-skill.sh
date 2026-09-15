@@ -1445,14 +1445,28 @@ grep -qF "agent-registry.json" "$skill_md" ||
 grep -qF "opus" "$skill_md" || fail "SKILL.md Step 2 must give the Claude Code example (opus)"
 grep -q "rather than leaving it unset to inherit" "$skill_md" ||
     fail "SKILL.md Step 2 must explicitly say not to leave the fan-out model unset"
-grep -qF "no \`frontier\` entry" "$skill_md" ||
+grep -qF "not every family has a \`frontier\`" "$skill_md" ||
     fail "SKILL.md Step 2 must cover families with no frontier tier (Codex review on PR #1045, comment about claude-code-deepseek/-glm/-kimi/-minimax)"
+grep -qF "claude-code-qwen-local" "$skill_md" ||
+    fail "SKILL.md Step 2 must cover a harness rewired to one fixed model regardless of requested tier (Codex review on PR #1045, comment about claude-code-qwen-local)"
+grep -qF "model_resolution.details" "$skill_md" ||
+    fail "SKILL.md Step 2 must say to read the harness's own model_resolution, not just its family's tier table"
 
 echo "==> canary: opus is still agent-registry.json's frontier-tier model for the claude family (Codex review on PR #1045) — this must fail loudly if the registry ever retiers or renames it, since scripts/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's own example both hardcode the literal 'opus'"
 [ -f agent-registry.json ] || fail "agent-registry.json must exist"
 registry_claude_frontier="$(jq -r '.families[] | select(.slug == "claude") | .models[] | select(.tier == "frontier") | .slug' agent-registry.json)"
 [ "$registry_claude_frontier" = "opus" ] ||
     fail "agent-registry.json's claude/frontier model is '$registry_claude_frontier', not 'opus' — update scripts/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's example to match"
+
+echo "==> canary: claude-code-qwen-local is still fixed to one model regardless of requested tier (Codex review on PR #1045) — this must fail loudly if the registry ever changes so SKILL.md's own worked example goes stale"
+qwen_local_resolution="$(jq -r '.harnesses[] | select(.slug == "claude-code-qwen-local") | .model_resolution.details' agent-registry.json)"
+case "$qwen_local_resolution" in
+*"serving qwen3-coder:30b"*) : ;;
+*) fail "claude-code-qwen-local's model_resolution.details no longer describes a fixed local model ('$qwen_local_resolution') — update SKILL.md Step 2's worked example to match" ;;
+esac
+registry_qwen_frontier="$(jq -r '.families[] | select(.slug == "qwen") | .models[] | select(.tier == "frontier") | .slug' agent-registry.json)"
+[ "$registry_qwen_frontier" = "max" ] ||
+    fail "agent-registry.json's qwen/frontier model is '$registry_qwen_frontier', not 'max' — update SKILL.md Step 2's worked example to match"
 
 echo "==> wrapper: the run's report survives the wrapper process (finding 1 — no more rm -rf EXIT trap)"
 audit_scratch="$(grep -o 'GROOM_SCRATCH=/[^[:space:]]*' "$GH_STUB_LOG" | tail -1 | cut -d= -f2)"
