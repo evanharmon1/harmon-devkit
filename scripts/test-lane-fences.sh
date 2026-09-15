@@ -428,6 +428,68 @@ case "$out" in
 *) fail "no-match comparison base did not reach the empty-array fallback path: $out" ;;
 esac
 
+# Local-branch-ambiguity regression (integration cycle 2, confirmed): a
+# local branch literally named "origin/main" exists at HEAD, alongside the
+# real refs/remotes/origin/main pointing at the true (older) base. The
+# short <remote>/<branch> form resolves refs/heads/... before
+# refs/remotes/..., so it would silently pick the local branch at HEAD,
+# collapsing the merge base to HEAD and hiding an out-of-fence change.
+ambiguous_fixture="$tmp/ambiguous-branch-repo"
+make_remote_fixture "$ambiguous_fixture" "https://github.com/evanharmon1/harmon-devkit.git" ""
+ambiguous_base="$(git -C "$ambiguous_fixture" rev-parse HEAD)"
+git -C "$ambiguous_fixture" update-ref refs/remotes/origin/main "$ambiguous_base"
+printf '%s\n' changed >"$ambiguous_fixture/outside.txt"
+git -C "$ambiguous_fixture" add outside.txt
+git -C "$ambiguous_fixture" commit -qm "test: an out-of-fence change with an ambiguous local branch name"
+git -C "$ambiguous_fixture" branch -- origin/main
+make_remote_brief "$tmp/ambiguous.md" "$ambiguous_fixture" "$ambiguous_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+if out="$(cd "$ambiguous_fixture" && "$fence_check" --brief "$tmp/ambiguous.md" 2>&1)"; then
+    fail "an out-of-fence change was silently allowed by a local branch shadowing the remote-tracking ref name: $out"
+fi
+case "$out" in
+*outside.txt*) ;;
+*) fail "ambiguous-branch refusal did not name the out-of-fence path: $out" ;;
+esac
+
+# Leading-hyphen remote name regression (integration cycle 2, confirmed):
+# the only target-matching remote is named "-target" (legal via `git
+# remote add --`); `git remote get-url` without `--` would parse it as an
+# unrecognized option and silently drop the match via `|| continue`.
+hyphen_fixture="$tmp/hyphen-remote-repo"
+make_remote_fixture "$hyphen_fixture" "" ""
+git -C "$hyphen_fixture" remote add -- -target "https://github.com/evanharmon1/harmon-devkit.git"
+hyphen_base="$(git -C "$hyphen_fixture" rev-parse HEAD)"
+git -C "$hyphen_fixture" update-ref refs/remotes/-target/main "$hyphen_base"
+printf '%s\n' changed >"$hyphen_fixture/allowed.txt"
+git -C "$hyphen_fixture" add allowed.txt
+git -C "$hyphen_fixture" commit -qm "test: change allowed path with a leading-hyphen remote name"
+make_remote_brief "$tmp/hyphen.md" "$hyphen_fixture" "$hyphen_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$hyphen_fixture" && "$fence_check" --brief "$tmp/hyphen.md" 2>&1)" ||
+    fail "a leading-hyphen remote name was rejected: $out"
+case "$out" in
+*"using remote '-target'"*"issue.url"*) ;;
+*) fail "hyphen-remote comparison base did not resolve the leading-hyphen remote: $out" ;;
+esac
+
+# Mixed-case host regression (integration cycle 2, confirmed): the target
+# remote's URL uses an upper-case host ("GITHUB.COM"), which no case arm
+# matches literally; the old trailing-only lowercase step ran too late to
+# help.
+host_case_fixture="$tmp/host-case-repo"
+make_remote_fixture "$host_case_fixture" "https://GITHUB.COM/evanharmon1/harmon-devkit.git" ""
+host_case_base="$(git -C "$host_case_fixture" rev-parse HEAD)"
+git -C "$host_case_fixture" update-ref refs/remotes/origin/main "$host_case_base"
+printf '%s\n' changed >"$host_case_fixture/allowed.txt"
+git -C "$host_case_fixture" add allowed.txt
+git -C "$host_case_fixture" commit -qm "test: change allowed path with an upper-case host origin remote"
+make_remote_brief "$tmp/host-case.md" "$host_case_fixture" "$host_case_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$host_case_fixture" && "$fence_check" --brief "$tmp/host-case.md" 2>&1)" ||
+    fail "an upper-case host origin remote was rejected: $out"
+case "$out" in
+*"using remote 'origin'"*"issue.url"*) ;;
+*) fail "host-case comparison base did not match an upper-case host remote: $out" ;;
+esac
+
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
 scan_fixture="$tmp/scan-repo"
 git init -q "$scan_fixture"
@@ -457,12 +519,15 @@ printf '%s\n' '      - 8080:8080' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' '  guard:release-title:' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' "'single-quoted-key': value" >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' '9lives: value' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' '"foo:": bar' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' 'id name' >"$scan_fixture/scripts/yaml-key-consumer.sh"
 printf '%s\n' 'critical-key' >"$scan_fixture/scripts/yaml-quoted-key-consumer.sh"
 printf '%s\n' '8080' >"$scan_fixture/scripts/yaml-port-mapping-consumer.sh"
 printf '%s\n' 'task guard:release-title' >"$scan_fixture/scripts/yaml-colon-key-consumer.sh"
 printf '%s\n' 'single-quoted-key' >"$scan_fixture/scripts/yaml-single-quoted-key-consumer.sh"
 printf '%s\n' '9lives' >"$scan_fixture/scripts/yaml-digit-leading-key-consumer.sh"
+printf '%s\n' 'foo:' >"$scan_fixture/scripts/yaml-colon-suffix-key-consumer.sh"
+printf '%s\n' 'foo' >"$scan_fixture/scripts/yaml-colon-suffix-reparse-consumer.sh"
 printf '%s\n' 'id = "short"' >"$scan_fixture/short-keys.toml"
 printf '%s\n' '_secret = "shh"' >>"$scan_fixture/short-keys.toml"
 printf '%s\n' '"quoted-toml-key" = "x"' >>"$scan_fixture/short-keys.toml"
@@ -507,6 +572,10 @@ grep -Fxq scripts/yaml-single-quoted-key-consumer.sh <<<"$yaml_scan_out" ||
     fail "dependency scan missed a single-quoted YAML key"
 grep -Fxq scripts/yaml-digit-leading-key-consumer.sh <<<"$yaml_scan_out" ||
     fail "dependency scan missed a digit-leading bare YAML key"
+grep -Fxq scripts/yaml-colon-suffix-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan missed a quoted YAML key ending in a colon"
+grep -Fxq scripts/yaml-colon-suffix-reparse-consumer.sh <<<"$yaml_scan_out" &&
+    fail "dependency scan re-parsed a quoted colon-suffixed key's own mutated pattern space and emitted a truncated term"
 toml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.toml)" ||
     fail "TOML-key dependency scan failed"
 grep -Fxq scripts/toml-key-consumer.sh <<<"$toml_scan_out" ||

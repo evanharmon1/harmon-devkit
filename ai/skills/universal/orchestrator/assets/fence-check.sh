@@ -100,18 +100,24 @@ current_branch="$(git -C "$worktree_path" branch --show-current)" || {
 # github.com only, matching this repo's own normalization set (AGENTS.md
 # § Conventions "Git transport"): a remote's fetch URL is compared against
 # a resolved owner/repo by stripping the same protocol/host forms that set
-# already needs to handle. The trailing slash must be stripped BEFORE the
-# `.git` suffix — a remote ending in ".git/" would otherwise keep the
-# suffix, since stripping ".git" first is a no-op on a string still ending
-# in "/" (review round 1, confirmed). Lower-cased before returning via
-# `tr`, not the bash-4-only `${var,,}` expansion — this repo's shell
-# convention requires staying portable to macOS bash 3.2, where `${var,,}`
-# is a fatal `bad substitution` (review round 1, confirmed); two sibling
-# assets doing this same normalization already use this exact idiom
+# already needs to handle. Lower-cased via `tr` BEFORE the case dispatch,
+# not just before returning — URI hostnames are case-insensitive (RFC 3986
+# § 3.2.2), but every arm below is a literal, case-sensitive prefix match,
+# so a mixed-case host (e.g. "https://GITHUB.COM/...") matched no arm and
+# fell through to `return 1` before the old trailing-lowercase step was
+# ever reached (integration cycle 2, confirmed) — not the bash-4-only
+# `${var,,}` expansion, this repo's shell convention requires staying
+# portable to macOS bash 3.2, where `${var,,}` is a fatal `bad
+# substitution` (review round 1, confirmed); two sibling assets doing this
+# same normalization already use this exact idiom
 # (ai/skills/universal/track-work/assets/check-issue-metadata.sh,
-# discover-label-guidance.sh).
+# discover-label-guidance.sh). The trailing slash is still stripped BEFORE
+# the `.git` suffix — a remote ending in ".git/" would otherwise keep the
+# suffix, since stripping ".git" first is a no-op on a string still ending
+# in "/" (review round 1, confirmed).
 remote_name_with_owner() {
-    local url="$1"
+    local url
+    url="$(printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]')"
     case "$url" in
     https://github.com/*) url="${url#https://github.com/}" ;;
     http://github.com/*) url="${url#http://github.com/}" ;;
@@ -123,7 +129,7 @@ remote_name_with_owner() {
     esac
     url="${url%/}"
     url="${url%.git}"
-    printf '%s\n' "$url" | tr '[:upper:]' '[:lower:]'
+    printf '%s\n' "$url"
 }
 
 # origin is the writable remote in the supported fork topology, not
@@ -167,7 +173,11 @@ resolve_comparison_remote() {
 
     if [ -n "$target_nwo" ]; then
         while IFS= read -r remote; do
-            url="$(git -C "$worktree" remote get-url "$remote" 2>/dev/null)" || continue
+            # -- before the name: a remote created via `git remote add --
+            # -target ...` is legal and would otherwise be parsed as
+            # options, silently dropping the only target-matching remote
+            # via the || continue below (integration cycle 2, confirmed).
+            url="$(git -C "$worktree" remote get-url -- "$remote" 2>/dev/null)" || continue
             candidate="$(remote_name_with_owner "$url")" || continue
             if [ "$candidate" = "$target_nwo" ]; then
                 matches+=("$remote")
@@ -198,8 +208,15 @@ resolution="$(resolve_comparison_remote "$worktree_path" "$envelope" "$default_b
 comparison_remote="${resolution%%$'\t'*}"
 resolution_source="${resolution#*$'\t'}"
 echo "fence-check: using remote '$comparison_remote' for the comparison base (source: $resolution_source)" >&2
-comparison_base="$(git -C "$worktree_path" merge-base HEAD "$comparison_remote/$default_branch" 2>/dev/null)" || {
-    echo "fence-check: could not derive a merge base against $comparison_remote/$default_branch" >&2
+# The full refs/remotes/... form, not the short <remote>/<branch> form: git
+# tries refs/heads/<ref> before refs/remotes/<ref>, so a checkout that also
+# has a local branch literally named "<remote>/<branch>" (e.g. local
+# "upstream/main") would silently resolve to that local branch at HEAD
+# instead of the intended remote-tracking ref, collapsing the merge base to
+# HEAD itself (integration cycle 2, confirmed). Already the form the
+# ref-resolvability check above uses.
+comparison_base="$(git -C "$worktree_path" merge-base HEAD "refs/remotes/$comparison_remote/$default_branch" 2>/dev/null)" || {
+    echo "fence-check: could not derive a merge base against refs/remotes/$comparison_remote/$default_branch" >&2
     exit 1
 }
 git -C "$worktree_path" merge-base --is-ancestor "$recorded_base" "$comparison_base" || {

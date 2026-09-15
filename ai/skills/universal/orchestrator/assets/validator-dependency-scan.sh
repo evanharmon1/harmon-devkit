@@ -80,14 +80,25 @@ for supplied in "$@"; do
             # than dropped — challenge round 2, confirmed); a "quoted" or
             # 'quoted' key emits its unquoted term. Each alternative mutates
             # the matched line on success, so a line matching one never also
-            # matches another. The mapping separator must actually look like
+            # matches another — except a quoted key ending in `:` (allowed
+            # since `:` is in the interior charset), whose successful
+            # substitution leaves the pattern space holding just the
+            # unquoted term (e.g. "foo:"), which the bare-key alternative
+            # can then re-match on ITS OWN trailing colon and re-emit a
+            # truncated, unrelated term ("foo"). The `t` after each quoted
+            # alternative branches past the rest of the script once that
+            # alternative has already matched, so a successful quoted-key
+            # substitution is never re-parsed (integration cycle 2,
+            # confirmed). The mapping separator must actually look like
             # YAML (`:` then whitespace or end of line) rather than `.*`, or
             # a digit/hyphen-leading unquoted scalar containing a colon (a
             # Docker port mapping like "- 8080:80") is misread as a key
             # (challenge round 1, confirmed).
             sed -nE \
                 -e 's/^[[:space:]]*(-[[:space:]]+)?"([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})"[[:space:]]*:([[:space:]].*)?$/\2/p' \
+                -e t \
                 -e 's/^[[:space:]]*(-[[:space:]]+)?'"'"'([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})'"'"'[[:space:]]*:([[:space:]].*)?$/\2/p' \
+                -e t \
                 -e 's/^[[:space:]]*(-[[:space:]]+)?([A-Za-z0-9_-][A-Za-z0-9_.:-]{0,79})[[:space:]]*:([[:space:]].*)?$/\2/p' \
                 "$target"
             ;;
