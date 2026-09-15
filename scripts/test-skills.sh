@@ -239,8 +239,11 @@ expect_ok "orchestrator planning publishes expansions as complete revisions" \
 expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
     grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
-expect_ok "orchestrator PR-open confirmation gates the ready report on the watch closing clean" \
-    grep -qF 'send the ready report only once that watch closes clean' \
+expect_ok "orchestrator PR-open confirmation gates the ready report on the positive POST-PROMOTION-CLOSED event" \
+    grep -qF 'emitted `POST-PROMOTION-CLOSED` for that lane, with no `POST-PROMOTION-ACTIVITY`' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation gates on the concrete event, never an inference from silence" \
+    grep -qF 'never an inference from its absence' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
 expect_ok "orchestrator PR-open confirmation never reports promotion itself as readiness" \
     grep -qF 'Promotion itself is never reported as readiness' \
@@ -272,8 +275,11 @@ expect_ok "orchestrator PR-open confirmation names the same post-promotion-activ
 expect_ok "lane-brief READY sentinel names the same post-promotion-activity source as orchestrator PR-open confirmation" \
     grep -qF '`assets/lane-watch.sh`' \
     "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
-expect_ok "lane-brief READY sentinel gates on the watch closing clean, not bare silence" \
-    grep -qF 'closes clean: `assets/lane-watch.sh` takes its one closing' \
+expect_ok "lane-brief READY sentinel gates on the positive POST-PROMOTION-CLOSED event, not bare silence" \
+    grep -qF 'has actually emitted `POST-PROMOTION-CLOSED` for this lane, with' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "lane-brief READY sentinel gates on the concrete event, never silence" \
+    grep -qF 'concrete event gates the sentinel, never silence' \
     "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation never treats an indeterminate watch as a pass" \
     grep -qF '`POST-PROMOTION-INDETERMINATE` result is never a pass' \

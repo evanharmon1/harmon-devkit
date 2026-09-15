@@ -371,7 +371,10 @@ rm "$fixture_dir/fail-api"
 # within one poll interval, now that no interval-based tolerance exists --
 # still takes exactly one closing snapshot before the state is torn down, so
 # activity in the tail of the window a poll never lands inside is still
-# caught.
+# caught. The positive `POST-PROMOTION-CLOSED` signal fires exactly once
+# alongside that activity line -- both signals coexist on the same
+# snapshot; CLOSED is neither suppressed by activity being present nor
+# duplicated by it.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 tail_now="$(date -u +%s)"
@@ -391,8 +394,46 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/tail-window.state" \
     >"$tail_out"
 rm "$fixture_dir/tail-activity-at"
 assert_count "$tail_out" 1 '^POST-PROMOTION-ACTIVITY '
+assert_line "$tail_out" 'POST-PROMOTION-CLOSED alpha: #77'
+assert_count "$tail_out" 1 '^POST-PROMOTION-CLOSED '
 assert_count "$test_tmp/tail-window.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$test_tmp/tail-window.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
+
+# Round 5's finding #1: a clean close emitted no positive event anywhere --
+# the orchestrator could only ever infer "quiet" from silence plus its own
+# timer, a signal a stuck cold-start window (see cold-never-resolves below)
+# satisfies just as well. A window well past `until`, with genuinely no
+# activity pending, must still emit the new `POST-PROMOTION-CLOSED` signal
+# exactly once before `WINDOW`/`CLOSING` are torn down. No dedicated "empty"
+# gh fixture is needed for this: the phase-driven default rows are dated
+# 2098-01-01, far outside this window's [since, until] bounds, so they are
+# genuinely fetched (proving the snapshot ran) and then correctly filtered
+# to zero activity.
+#
+# This same fixture also doubles as the crash-recovery proof for echoing
+# POST-PROMOTION-CLOSED before persist_state rather than after: a crash in
+# that gap leaves CLOSING durably unset, and the state a subsequent poll
+# would see -- an expired window, no CLOSING key -- is byte-for-byte the
+# state seeded here. There is nothing left for a dedicated "crash" fixture
+# to seed differently; this test already proves the retry emits the line.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+closed_now="$(date -u +%s)"
+closed_until=$((closed_now - 1200))
+closed_since=$((closed_until - 900))
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s\nWALLCLOCK\trun\t0\t\n' \
+    "$closed_until" "$closed_since" >"$test_tmp/closed-quiet.state"
+closed_quiet_out="$test_tmp/closed-quiet.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/closed-quiet.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$closed_quiet_out"
+assert_line "$closed_quiet_out" 'POST-PROMOTION-CLOSED alpha: #77'
+assert_count "$closed_quiet_out" 1 '^POST-PROMOTION-CLOSED '
+assert_count "$closed_quiet_out" 0 '^POST-PROMOTION-ACTIVITY '
+assert_count "$test_tmp/closed-quiet.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
+assert_count "$test_tmp/closed-quiet.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
 
 # CLOSING durably means "done," never "in progress": a window whose CLOSING
 # flag and the corresponding row's ACTIVITY key are BOTH already durably
@@ -404,7 +445,10 @@ assert_count "$test_tmp/tail-window.state" 0 '^CLOSING[[:space:]]+alpha[[:space:
 # also suppress a duplicate POST-PROMOTION-ACTIVITY line even if the fast
 # path were broken and a re-fetch happened anyway, so counting emitted lines
 # cannot distinguish "CLOSING correctly means done" from "CLOSING might be a
-# premature lie." Only proving the endpoint was never called can.
+# premature lie." Only proving the endpoint was never called can. The same
+# fast path must also never re-announce `POST-PROMOTION-CLOSED`: that event
+# belongs solely to the snapshot that first observes and durably records
+# CLOSING, never to a later restart that only finds the cleanup left undone.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase" "$fixture_dir/fast-path-calls"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 closing_now="$(date -u +%s)"
@@ -422,6 +466,7 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/closing-durable.state" \
 rm "$fixture_dir/fast-path-expected"
 assert_count "$closing_out" 0 '^POST-PROMOTION-ACTIVITY '
 assert_count "$closing_out" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$closing_out" 0 '^POST-PROMOTION-CLOSED '
 [ ! -f "$fixture_dir/fast-path-calls" ] ||
     fail 'watcher re-fetched activity for a window already closed durably'
 assert_count "$test_tmp/closing-durable.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
@@ -430,7 +475,8 @@ assert_count "$test_tmp/closing-durable.state" 0 '^CLOSING[[:space:]]+alpha[[:sp
 # A cold-start window whose epoch resolves to a real, already-past deadline
 # (the provisional deadline had already passed too) still takes exactly one
 # snapshot over the REAL [since,until] before the window is torn down --
-# resolving late does not abandon the window.
+# resolving late does not abandon the window, and the positive
+# `POST-PROMOTION-CLOSED` signal still fires exactly once for it.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 resolve_now="$(date -u +%s)"
@@ -455,6 +501,8 @@ rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
 assert_line "$cold_resolve_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
 assert_count "$cold_resolve_out" 1 '^POST-PROMOTION-ACTIVITY '
 assert_count "$cold_resolve_out" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_line "$cold_resolve_out" 'POST-PROMOTION-CLOSED alpha: #77'
+assert_count "$cold_resolve_out" 1 '^POST-PROMOTION-CLOSED '
 assert_count "$test_tmp/cold-resolve.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$test_tmp/cold-resolve.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
 
@@ -462,7 +510,12 @@ assert_count "$test_tmp/cold-resolve.state" 0 '^CLOSING[[:space:]]+alpha[[:space
 # with no ready_for_review event -- ordinary GitHub eventual consistency,
 # not a hard API failure) emits exactly one POST-PROMOTION-INDETERMINATE
 # line, zero POST-PROMOTION-ACTIVITY lines, and never calls any activity
-# endpoint (reviews, comments, or inline) at all.
+# endpoint (reviews, comments, or inline) at all. It also drops the lane's
+# `PR` state entry, not just `WINDOW`/`CLOSING` -- round 5's live repro
+# proved that without this, the documented recovery ("restart with the same
+# --state-file") never actually re-watches the lane, because observe_pr()
+# only re-creates WINDOW on a PR-state change, and a promoted PR's observed
+# state ordinarily stops changing once promotion lands.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase" "$fixture_dir/cold-never-resolves-calls"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 never_now="$(date -u +%s)"
@@ -483,6 +536,29 @@ assert_count "$cold_never_out" 0 '^POST-PROMOTION-ACTIVITY '
 [ ! -f "$fixture_dir/cold-never-resolves-calls" ] ||
     fail 'watcher called an activity endpoint for an unresolved cold-start window'
 assert_count "$test_tmp/cold-never.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
+assert_count "$test_tmp/cold-never.state" 0 '^PR[[:space:]]+alpha[[:space:]]+'
+
+# The single most important regression in this round: round 5's live repro
+# proved that restarting lane-watch.sh against that SAME --state-file -- the
+# only documented recovery for POST-PROMOTION-INDETERMINATE -- was a dead
+# end, because nothing ever recreated WINDOW once the PR's observed state
+# stopped changing (three consecutive invocations, only the first ever
+# produced output). A fresh invocation against the exact state file just
+# produced above must now genuinely re-arm: observe_pr() sees the
+# still-promoted PR as newly observed (its PR entry is gone) and opens a
+# fresh WINDOW on its own, and the watcher goes on to produce a real
+# activity snapshot again in the same poll -- proving the recovery is a
+# working pipeline, not just a state-file key with nothing reading it.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+rearm_restart_out="$test_tmp/rearm-restart.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/cold-never.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$rearm_restart_out"
+assert_count "$test_tmp/cold-never.state" 1 '^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+'
+assert_line "$rearm_restart_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 501'
 
 # The same asset resolves the repository root and registry in the flattened
 # consumer layout when the lane spec supplies its required repository.
@@ -622,9 +698,10 @@ rm "$fixture_dir/hang-pr-list"
 assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 
 # Every emitted line belongs to one of the stable event grammars.
-if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
+if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|POST-PROMOTION-CLOSED [^:]+: #[0-9]+|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
-    "$tail_out" "$closing_out" "$cold_resolve_out" "$cold_never_out" "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
+    "$tail_out" "$closed_quiet_out" "$closing_out" "$cold_resolve_out" "$cold_never_out" "$rearm_restart_out" \
+    "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
 

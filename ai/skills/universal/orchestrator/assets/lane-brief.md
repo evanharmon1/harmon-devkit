@@ -280,16 +280,23 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     orchestrator appends it to `{{report-path}}` only once its own
     post-promotion watch — 15 minutes on the trusted review-bot actors (the
     `trusted_actor_id` of every finder in `agent-registry.json`) and on
-    humans — closes clean: `assets/lane-watch.sh` takes its one closing
-    snapshot and that snapshot finds no activity, not just "no
-    `POST-PROMOTION-ACTIVITY` event ever showed up" — a window whose
-    promotion epoch never resolves shows no event either, precisely because
-    its closing snapshot never happens.
+    humans — has actually emitted `POST-PROMOTION-CLOSED` for this lane, with
+    no `POST-PROMOTION-ACTIVITY` line ever recorded inside its window: the
+    concrete event gates the sentinel, never silence, and never "the watch
+    closes clean" concluded some other way — `assets/lane-watch.sh` emits
+    `POST-PROMOTION-CLOSED` itself, only once its one closing snapshot has
+    actually been taken. Silence on `POST-PROMOTION-ACTIVITY` is never
+    enough by itself — a window whose promotion epoch never resolves shows
+    no activity either, precisely because that closing snapshot never
+    happens; that is exactly what `POST-PROMOTION-INDETERMINATE` reports
+    instead.
     A `POST-PROMOTION-INDETERMINATE` result is never a pass: the orchestrator
-    re-arms the window or resolves the stuck promotion epoch by hand and
-    waits for a closed, quiet window before appending this sentinel,
-    escalating instead of reporting ready if it never gets there —
-    never at the moment of promotion itself.
+    re-arms the window — clearing this lane's tracked `PR` state on that
+    path is what makes even a plain restart a genuine retry now — or
+    resolves the stuck promotion epoch by hand, and waits for
+    `POST-PROMOTION-CLOSED` to actually arrive for a window that recorded no
+    activity before appending this sentinel, escalating instead of reporting
+    ready if it never gets there — never at the moment of promotion itself.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
 

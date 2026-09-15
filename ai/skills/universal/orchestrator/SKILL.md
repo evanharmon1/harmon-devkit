@@ -241,17 +241,27 @@ The maintainer-facing ready report is the last message about a promoted PR,
 not the first one after promotion. Once `gh pr ready` confirms non-draft on
 the verified head, run the post-promotion watch — 15 minutes on the trusted
 review-bot actors (the `trusted_actor_id` of every finder in `agent-registry.json`)
-and on humans — and send the ready report only once that watch closes clean:
-`assets/lane-watch.sh` takes its one closing snapshot at window expiry and
-that snapshot finds no activity — not merely "no `POST-PROMOTION-ACTIVITY`
-event was ever seen," which a window whose promotion epoch never resolves
-also satisfies, precisely because its closing snapshot is never taken.
+and on humans — and send the ready report only once the watch has actually
+emitted `POST-PROMOTION-CLOSED` for that lane, with no `POST-PROMOTION-ACTIVITY`
+line ever recorded inside that lane's window. The gate is that concrete,
+observed event, never an inference from its absence: not "15 minutes of
+silence," and not "the watch closes clean" asserted as a state you can
+otherwise conclude — `assets/lane-watch.sh` emits `POST-PROMOTION-CLOSED`
+itself, at window expiry, and only once its one closing snapshot has
+actually been taken. Absence of `POST-PROMOTION-ACTIVITY` is never
+sufficient on its own: a window whose promotion epoch never resolves shows
+no activity either, precisely because that closing snapshot is never taken —
+which is exactly the case `POST-PROMOTION-INDETERMINATE` reports instead.
 A `POST-PROMOTION-INDETERMINATE` result is never a pass: it means nothing
-was checked, not that nothing was found. On indeterminate, re-arm the
-window or resolve the stuck promotion epoch by hand, and send the ready
-report only once a closed, quiet window is actually achieved, naming the
-head SHA and the gate fingerprint; escalate instead of reporting ready if
-the watch can never be made to close clean.
+was checked, not that nothing was found — and it is never
+`POST-PROMOTION-CLOSED`, so there is no event yet to gate a report on. On
+indeterminate, re-arm the window — clearing the lane's tracked `PR` state on
+that path is what makes even a plain restart against the same state file a
+genuine retry now — or resolve the stuck promotion epoch by hand, and send
+the ready report only once `POST-PROMOTION-CLOSED` actually arrives for a
+window that recorded no activity, naming the head SHA and the gate
+fingerprint; escalate instead of reporting ready if the watch can never be
+made to reach it.
 Promotion itself is never reported as readiness: a status sent during the
 watch instead reads "promoted at T, post-promotion watch until T+15", never "ready".
 This maintainer-facing report is distinct from § Persistent supervision's
@@ -311,7 +321,12 @@ post-promotion window's promotion event cannot be resolved before that
 window's own deadline passes, the watcher emits
 `POST-PROMOTION-INDETERMINATE <lane>: #<pr>` instead of silently abandoning
 the window — the event means only that the promotion epoch could not be
-confirmed in time. Keep the registry argument
+confirmed in time; that path also clears the lane's tracked `PR` state as it
+tears the window down, so the very next observation — the watcher's own next
+poll, or a fresh process restarted against the same `--state-file` — sees
+the still-promoted PR as newly observed and re-arms a fresh window on its
+own, which is what makes restarting with the same state file a genuine
+retry rather than a no-op. Keep the registry argument
 bound to the immutable kickoff snapshot across every re-arm. It only reports
 events; the orchestrator remains responsible for every action. The watcher-owned
 `lane-watch.state` is separate from the run's canonical `monitor.json`; never

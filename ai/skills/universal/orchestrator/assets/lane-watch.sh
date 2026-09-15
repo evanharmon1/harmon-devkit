@@ -4,11 +4,14 @@
 #   SENTINEL <lane>: <value>[ (pane only)]
 #   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id>
+#   POST-PROMOTION-CLOSED <lane>: #<pr_number>
 #   POST-PROMOTION-INDETERMINATE <lane>: #<pr_number>
 #   USAGE-PAUSED <lane>
 #   WALLCLOCK <lane|run>: <text>
 #
 # Timestamp-versioned activity keys may emit one duplicate when adopting legacy state.
+# Clearing PR state on POST-PROMOTION-INDETERMINATE (so a later observation re-arms
+# the window) also re-emits one identical PR line once that observation lands.
 # Every herdr/gh call is bounded. Failures mean indeterminate/no event; this watcher
 # never writes through either CLI. Pass --state-file so a re-armed watcher does
 # not repeat sentinels, transitions, or post-promotion activity.
@@ -393,6 +396,7 @@ poll_activity() {
             if [ "$expired" -eq 1 ]; then
                 state_delete WINDOW "$lane"
                 state_delete CLOSING "$lane"
+                state_delete PR "$lane"
                 echo "POST-PROMOTION-INDETERMINATE $lane: #$pr_number"
             fi
             return 0
@@ -441,8 +445,24 @@ poll_activity() {
     # then persisting BEFORE the cleanup delete, means a restart's fast path
     # only ever skips a fetch+process cycle that has already, verifiably,
     # completed in full.
+    #
+    # POST-PROMOTION-CLOSED is echoed before persist_state, deliberately: a
+    # crash between the echo and persist_state leaves CLOSING durably unset,
+    # so the next poll finds no fast-path shortcut above, retakes this same
+    # closing snapshot from scratch (every row already durably keyed under
+    # ACTIVITY is deduped, so only the CLOSING determination and its echo
+    # actually repeat), and emits the line again -- at worst one duplicate,
+    # the same tolerance this file already documents for ACTIVITY-key
+    # adoption. Echoing after persist_state instead would trade that
+    # duplicate for the opposite failure: a crash between persist_state and
+    # the echo leaves CLOSING durably 1, so the next poll's fast path
+    # (above) deletes WINDOW/CLOSING and returns without ever reaching the
+    # echo -- permanently losing the one signal this event exists to
+    # guarantee, with no later poll left to retry it. A harmless duplicate
+    # beats a signal that can never be recovered.
     if [ "$expired" -eq 1 ]; then
         state_set CLOSING "$lane" 1
+        echo "POST-PROMOTION-CLOSED $lane: #$pr_number"
         persist_state
         state_delete WINDOW "$lane"
         state_delete CLOSING "$lane"
