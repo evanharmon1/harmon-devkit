@@ -102,6 +102,27 @@ output path under `$SCRATCH` (one JSON Lines file per cluster). Prefer
 smaller clusters (nearer 50) on a first run or an unusually old backlog —
 `references/cadence.md` has the sizing reference.
 
+**Dispatch every cluster subagent on the `standard` tier for your own
+harness/family, never on whatever tier is coordinating this run.** A
+cluster subagent's job — verify one cluster against live code, apply the
+fixed vocabulary with evidence — needs real judgment (`GROOM_MODEL`
+defaults this whole run to `standard` for exactly that reason) but not the
+coordinating session's own tier, which may be higher for unrelated
+reasons (an operator's default, a stronger model chosen for a hard
+backlog). Inheriting that tier by default silently multiplies its cost by
+the cluster count — 6–8 clusters on an apex/frontier tier is 6–8x an
+already-adequate `standard`-tier run. Look up your own family's
+`standard`-tier model in `agent-registry.json` and pass it explicitly on
+each dispatch (in Claude Code, the `Agent` tool's `model` parameter) —
+e.g. `sonnet` for the `claude` family, `gpt-5.6-terra` for `gpt`
+(Codex CLI), a `standard`-tier Gemini Flash model for `gemini`
+(Antigravity) — rather than leaving it unset to inherit the coordinating
+session's own model. If the coordinating session is itself already on
+`standard` or below, this is a no-op; state so rather than omitting the
+check. Depart from this default only for a stated reason (e.g. an
+unusually ambiguous backlog where a stronger tier is worth the cost), not
+by default inheritance.
+
 Each subagent verifies against the **live code and merged PRs**, never from
 memory, and returns verdicts in the fixed vocabulary
 (`references/verdict-vocabulary.md`) plus any parent/milestone proposals and
