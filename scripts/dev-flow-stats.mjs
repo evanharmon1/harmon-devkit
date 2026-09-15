@@ -1941,10 +1941,22 @@ function readLocalJsonEntries(dir) {
 // usable head — the caller then has local evidence for this stage but no
 // way to ask the engine about it, which is itself reported rather than
 // silently skipped.
+// Matches the engine's own --current-head shape gate exactly
+// (dev-flow-exit.mjs: `--current-head must be a full 40-character commit
+// SHA`) — not a trust/evidence decision, just the CLI's documented input
+// contract. Integration cycle 6, confirmed and fixed: a malformed head from
+// a rejected/unreceipted raw pass file used to still win the naive
+// selection below, and the engine's own shape gate then rejected the WHOLE
+// first invocation outright (indeterminate) before any round or trajectory
+// was ever returned — leaving no validated evidence for the retry logic
+// (below, in the caller) to correct from, so an otherwise-valid earlier
+// round went indeterminate over a malformed LATER round's garbage head.
+const CURRENT_HEAD_SHA_PATTERN = /^[0-9a-f]{40}$/;
+
 function currentHeadForLocalStage(passEntries, adjudicationEntries, slotFailures, stage) {
   let best = null;
   const consider = (round, head) => {
-    if (typeof head !== "string" || head.length === 0 || !Number.isInteger(round)) return;
+    if (typeof head !== "string" || !CURRENT_HEAD_SHA_PATTERN.test(head) || !Number.isInteger(round)) return;
     if (!best || round > best.round) best = { round, head };
   };
   for (const entry of passEntries) {
@@ -1992,16 +2004,33 @@ const ROUNDS_POLICY_KEYS = ["challenge", "review", "integration", "remediation",
 // have one) so the caller can compare it against the engine's own
 // additive `resolved_rounds` and fail closed on any disagreement, rather
 // than silently trusting either side.
+//
+// Integration cycle 6 (P2), confirmed and fixed: absence and corruption are
+// NOT the same fact. A policy.json that genuinely does not exist is the
+// same "older or hand-built record" case recordedRigorLevel above already
+// tolerates — but ai/schemas/README.md ("The record directory" table,
+// policy.json row) is explicit that "rounds and every one of its five caps
+// are required whenever policy.json exists at all". A PRESENT file with a
+// missing/non-numeric rounds key, or one that fails to parse at all, is
+// retained evidence that FAILS that contract — collapsing it to the same
+// `null` as genuine absence let the drift check below silently skip
+// exactly the run whose own retained policy is least trustworthy. Only a
+// truly ABSENT file returns null; anything else that fails to produce a
+// complete, well-typed rounds object throws.
 function recordedRoundsPolicy(runDir) {
+  const policyFile = path.join(runDir, "policy.json");
+  if (!existsSync(policyFile)) return null;
+  let projection;
   try {
-    const projection = JSON.parse(readFileSync(path.join(runDir, "policy.json"), "utf8"));
-    const rounds = projection?.rounds;
-    if (!rounds || typeof rounds !== "object") return null;
-    if (!ROUNDS_POLICY_KEYS.every((key) => typeof rounds[key] === "number")) return null;
-    return Object.fromEntries(ROUNDS_POLICY_KEYS.map((key) => [key, rounds[key]]));
-  } catch {
-    return null;
+    projection = JSON.parse(readFileSync(policyFile, "utf8"));
+  } catch (err) {
+    throw new EvidenceError(`${policyFile} exists but is not readable JSON: ${err.message}`);
   }
+  const rounds = projection?.rounds;
+  if (!rounds || typeof rounds !== "object" || Array.isArray(rounds) || !ROUNDS_POLICY_KEYS.every((key) => typeof rounds[key] === "number")) {
+    throw new EvidenceError(`${policyFile} exists but its "rounds" object is missing or malformed (ai/schemas/README.md requires all five round values whenever policy.json exists)`);
+  }
+  return Object.fromEntries(ROUNDS_POLICY_KEYS.map((key) => [key, rounds[key]]));
 }
 
 // harmon-devkit#1001 item 11 / challenge round 5/7 (P2): a comment's
@@ -2368,8 +2397,24 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
           const validated = verification.rounds;
           const naiveGuessValidated = validated.some((r) => r.reviewed_head === currentHead);
           if (!naiveGuessValidated) {
-            const correctedHead = validated[validated.length - 1].reviewed_head;
-            if (typeof correctedHead === "string" && correctedHead.length > 0 && correctedHead !== currentHead) {
+            // Integration cycle 6 (P2), confirmed and fixed: the highest
+            // validated round is not necessarily the most useful one to
+            // correct to — a legitimate terminal `capped/finder_unavailable`
+            // round may carry no head at all (slot_failures[].head is
+            // optional), and blindly taking `validated[length-1]` picked
+            // that null/undefined value, failing the type guard below and
+            // silently keeping the ORIGINAL poisoned naive head instead of
+            // falling back to an earlier complete round's own real head.
+            // Search backward for the newest round that actually has one.
+            let correctedHead = null;
+            for (let i = validated.length - 1; i >= 0; i--) {
+              const candidate = validated[i].reviewed_head;
+              if (typeof candidate === "string" && candidate.length > 0) {
+                correctedHead = candidate;
+                break;
+              }
+            }
+            if (correctedHead && correctedHead !== currentHead) {
               currentHead = correctedHead;
               ({ verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
                 runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot,
@@ -2512,11 +2557,30 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     // opinion, so a wrong-role — e.g. integrator — envelope receipted for a
     // review round counted as blocked review evidence without ever passing
     // this predicate at all).
+    // Integration cycle 6 (P2), confirmed and fixed: isConfidenceBlockedEnvelope
+    // below requires a well-formed `payload` before it will even look at an
+    // envelope — a receipted `status: "blocked"`/`role: "reviewer"` envelope
+    // with a missing or null `payload` failed that check and was silently
+    // excluded from `blockedPassesToValidate` entirely, so a malformed
+    // confidence-role blocked result was never validated and never reported
+    // as a problem. isBlockedConfidenceRole selects on the two fields that
+    // are reliably present on ANY envelope worth validating (status, role);
+    // it is the VALIDATION-selection predicate specifically so a malformed
+    // payload reaches runExitValidator (the schema validator) and is
+    // rejected there, on its own terms, rather than being filtered out
+    // beforehand by a predicate standing in for that same check.
+    // isConfidenceBlockedEnvelope stays strict — the per-round COUNTING call
+    // site below genuinely needs a well-formed payload.stage/round to know
+    // which round an entry belongs to, and every receipt-backed entry it
+    // could possibly count has already passed through the validation loop
+    // just below (which throws on anything malformed), so nothing reaches
+    // it unvalidated.
+    function isBlockedConfidenceRole(envelope) {
+      return Boolean(envelope && envelope.status === "blocked" && (envelope.role === "challenger" || envelope.role === "reviewer"));
+    }
     function isConfidenceBlockedEnvelope(envelope) {
       return Boolean(
-        envelope &&
-          envelope.status === "blocked" &&
-          (envelope.role === "challenger" || envelope.role === "reviewer") &&
+        isBlockedConfidenceRole(envelope) &&
           envelope.payload &&
           (envelope.payload.stage === "challenge" || envelope.payload.stage === "review") &&
           Number.isInteger(envelope.payload.round),
@@ -2525,7 +2589,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
     // VALIDATE every matching local envelope, receipted or not — receipt
     // status decides only whether it is later COUNTED/reported (below), never
     // whether corrupt retained evidence gets checked at all.
-    const blockedPassesToValidate = localPasses.filter((entry) => isConfidenceBlockedEnvelope(entry.content));
+    const blockedPassesToValidate = localPasses.filter((entry) => isBlockedConfidenceRole(entry.content));
     for (const pass of blockedPassesToValidate) {
       const file = localPassFileByName.get(pass.name);
       if (!file) continue; // the engine can only ever name a file it read from this same passes/ dir

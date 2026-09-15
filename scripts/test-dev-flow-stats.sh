@@ -3861,6 +3861,174 @@ function writeScenario(name, db) {
     writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
     writeScenario("invalid-later-round-head", { issues: [{ number: 233, pull_request: null }], comments: { "233": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
+
+  // Integration cycle 6 (P2), confirmed and fixed: a MALFORMED (not
+  // 40-hex-char) naive head used to still win currentHeadForLocalStage's
+  // selection, and the engine's own --current-head shape gate rejected the
+  // whole first invocation outright (indeterminate) BEFORE the cycle-5
+  // retry logic ever had a chance to run (its not-error guard never fires) —
+  // an otherwise-valid round 1 went indeterminate over a malformed round 2.
+  {
+    const runId = "run-234-malformed-later-round-head";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    const round1Pass = pass("codex-verification", [{ priority: "P2", class: "correctness" }]);
+    round1Pass.run.run_id = runId;
+    round1Pass.head = "1".repeat(40);
+    round1Pass.payload.round = 1;
+    round1Pass.payload.reviewed_head = "1".repeat(40);
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    writeFileSync(path.join(runDir, "passes", "review-r1.json"), JSON.stringify(round1Pass, null, 2));
+    mkdirSync(path.join(runDir, "adjudications"), { recursive: true });
+    writeFileSync(path.join(runDir, "adjudications", "review-r1.json"), JSON.stringify({
+      schema: 2, run_id: runId, stage: "review", round: 1, reviewed_head: "1".repeat(40),
+      adjudications: [{
+        finding_id: round1Pass.payload.findings[0].id, reviewer_priority: "P2", adjudicated_priority: "P2",
+        disposition: "fix", reason: "confirmed", evidence: "fixture evidence", override: null,
+      }],
+    }, null, 2));
+    // Round 2's only artifact: a wrong-run_id pass whose OWN head is not
+    // even a syntactically valid 40-hex-char SHA — the shape the engine's
+    // CLI itself refuses outright, distinct from run-234's
+    // syntactically-valid-but-wrong-and-unreceipted head.
+    const malformedHead = pass("codex-verification", []);
+    malformedHead.run.run_id = "some-other-run-entirely";
+    malformedHead.head = "not-a-real-sha-at-all";
+    malformedHead.payload.stage = "review";
+    malformedHead.payload.round = 2;
+    malformedHead.payload.reviewed_head = "not-a-real-sha-at-all";
+    writeFileSync(path.join(runDir, "passes", "review-r2-malformed-head.json"), JSON.stringify(malformedHead, null, 2));
+    const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    run2.receipts = [...(run2.receipts || []), { kind: "transition", stage: "review" }, { kind: "pass", file: "review-r1" }];
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
+    writeScenario("malformed-later-round-head", { issues: [{ number: 234, pull_request: null }], comments: { "234": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // Integration cycle 6 (P2), confirmed and fixed: a present policy.json
+  // with a malformed rounds object used to be treated the same as no
+  // policy.json at all — silently skipping the drift check for exactly the
+  // untrustworthy retained state it exists to catch.
+  {
+    const runId = "run-235-malformed-policy-json";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    // Present, parses fine, but "rounds" is missing min_rounds entirely —
+    // ai/schemas/README.md requires all five whenever policy.json exists.
+    writeFileSync(path.join(runDir, "policy.json"), JSON.stringify({
+      rigor: { level: "standard", source: "default_rigor" },
+      rounds: { challenge: 3, review: 3, integration: 4, remediation: 4 },
+    }, null, 2));
+    writeScenario("malformed-policy-json", { issues: [{ number: 235, pull_request: null }], comments: { "235": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // Integration cycle 6 (P2), confirmed and fixed: the cycle-5 retry took
+  // the LAST validated round unconditionally, even when that round is a
+  // legitimate terminal capped/finder_unavailable slot failure carrying no
+  // head at all — silently keeping the original poisoned naive head instead
+  // of falling back to an earlier complete round's real one.
+  {
+    const runId = "run-236-headless-terminal-round";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+      slot_failures: [{ stage: "review", round: 2, slot: "codex-verification", reason: "finder_unavailable" }],
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    const round1Pass = pass("codex-verification", [{ priority: "P2", class: "correctness" }]);
+    round1Pass.run.run_id = runId;
+    round1Pass.head = "1".repeat(40);
+    round1Pass.payload.round = 1;
+    round1Pass.payload.reviewed_head = "1".repeat(40);
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    writeFileSync(path.join(runDir, "passes", "review-r1.json"), JSON.stringify(round1Pass, null, 2));
+    mkdirSync(path.join(runDir, "adjudications"), { recursive: true });
+    writeFileSync(path.join(runDir, "adjudications", "review-r1.json"), JSON.stringify({
+      schema: 2, run_id: runId, stage: "review", round: 1, reviewed_head: "1".repeat(40),
+      adjudications: [{
+        finding_id: round1Pass.payload.findings[0].id, reviewer_priority: "P2", adjudicated_priority: "P2",
+        disposition: "fix", reason: "confirmed", evidence: "fixture evidence", override: null,
+      }],
+    }, null, 2));
+    // Round 3's only artifact: an unreceipted wrong-run_id pass with a
+    // syntactically valid but unrelated head — the highest round number, so
+    // it wins the naive currentHeadForLocalStage guess (round 2's slot
+    // failure has no head to compete with at all).
+    const wrongRun = pass("codex-verification", []);
+    wrongRun.run.run_id = "some-other-run-entirely";
+    wrongRun.head = "9".repeat(40);
+    wrongRun.payload.stage = "review";
+    wrongRun.payload.round = 3;
+    wrongRun.payload.reviewed_head = "9".repeat(40);
+    writeFileSync(path.join(runDir, "passes", "review-r3-wrong-run.json"), JSON.stringify(wrongRun, null, 2));
+    const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    run2.receipts = [...(run2.receipts || []), { kind: "transition", stage: "review" }, { kind: "pass", file: "review-r1" }];
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
+    writeScenario("headless-terminal-round", { issues: [{ number: 236, pull_request: null }], comments: { "236": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // Integration cycle 6 (P2), confirmed and fixed: isConfidenceBlockedEnvelope
+  // required a well-formed payload before it would even look at an envelope
+  // — a receipted status:"blocked"/role:"reviewer" envelope with a missing
+  // payload was silently excluded from validation entirely instead of
+  // reaching the schema validator, which would properly reject it.
+  {
+    const runId = "run-237-null-payload-blocked";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    // A receipted blocked envelope with the right status/role but NO
+    // payload at all — schema-invalid, but must still be selected for
+    // validation (and rejected there) rather than silently filtered out.
+    const nullPayload = pass("codex-verification", []);
+    nullPayload.run.run_id = runId;
+    nullPayload.status = "blocked";
+    delete nullPayload.payload;
+    writeFileSync(path.join(runDir, "passes", "review-r1-null-payload-blocked.json"), JSON.stringify(nullPayload, null, 2));
+    const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    run2.receipts = [...(run2.receipts || []), { kind: "pass", file: "review-r1-null-payload-blocked" }];
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
+    writeScenario("null-payload-blocked", { issues: [{ number: 237, pull_request: null }], comments: { "237": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -5249,6 +5417,40 @@ out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "
 # the opposite, legitimate-second-round cause).
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
     fail "invalid-later-round-head: round 1's provenance was corrupted by an invalid round 2's unrelated head: $out"
+
+echo "== integration cycle 6: a malformed (non-SHA) round-2 head no longer indeterminates a valid round 1 (fixed remediation 6/6) =="
+export DFSTATS_DB="$tmp/scenarios/malformed-later-round-head.json"
+run_id="$(meta malformed-later-round-head .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
+    fail "malformed-later-round-head: a malformed round-2 head made a valid round 1 indeterminate: $out"
+
+echo "== integration cycle 6: a present policy.json with a malformed rounds object fails closed (fixed remediation 6/6) =="
+export DFSTATS_DB="$tmp/scenarios/malformed-policy-json.json"
+run_id="$(meta malformed-policy-json .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'policy.json exists but its' <<<"$out" ||
+    fail "malformed-policy-json: a present policy.json missing min_rounds was not caught, rc=$rc: $out"
+
+echo "== integration cycle 6: the retry falls back past a headless terminal round to an earlier round's real head (fixed remediation 6/6) =="
+export DFSTATS_DB="$tmp/scenarios/headless-terminal-round.json"
+run_id="$(meta headless-terminal-round .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
+    fail "headless-terminal-round: the retry did not skip past the headless round 2 to round 1's real head: $out"
+
+echo "== integration cycle 6: a receipted blocked envelope with no payload is caught by the validator, not silently excluded (fixed remediation 6/6) =="
+export DFSTATS_DB="$tmp/scenarios/null-payload-blocked.json"
+run_id="$(meta null-payload-blocked .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" ||
+    fail "null-payload-blocked: a receipted null-payload blocked envelope was not caught, rc=$rc: $out"
 
 echo "== harmon-devkit#1001 review round 1: a run still in progress on challenge reports challenge's own trajectory, review not-started (fixed round 2/5) =="
 export DFSTATS_DB="$tmp/scenarios/challenge-still-active.json"
