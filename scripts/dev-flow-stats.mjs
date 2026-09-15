@@ -2912,6 +2912,21 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
 // Per-run trajectory rendering
 // ---------------------------------------------------------------------------
 
+// harmon-devkit#1001 review round 2 (P1), confirmed and fixed: the engine's
+// provenance_status/fingerprint_status vocabulary is "verified", "corrected",
+// or "unverified" (dev-flow-exit.mjs) — this file's own `?? "not-measured"`
+// default (added alongside the rounds[] trajectory field in this lane's
+// first commit) is a FOURTH value for a finding whose round could not be
+// ancestry-retained. Both consumers below predate that fourth value and
+// checked `!== "unverified"` as a proxy for "actually verified" — which
+// silently misclassifies "not-measured" as verified (it IS, trivially,
+// !== "unverified"), reporting a round whose provenance was never checked
+// as confirmed. A positive check against the only two genuinely-measured
+// values is correct for any future status too, not just this one.
+function isVerifiedAttributionStatus(status) {
+  return status === "verified" || status === "corrected";
+}
+
 function verifiedFindingMeasurements(rounds) {
   const counts = {};
   const fingerprints = {};
@@ -2931,13 +2946,13 @@ function verifiedFindingMeasurements(rounds) {
       for (const f of findings) {
         const attribution = attributionById.get(f.id);
         const cls = f.class || "unclassified";
-        if (attribution && attribution.provenance_status !== "unverified") {
+        if (attribution && isVerifiedAttributionStatus(attribution.provenance_status)) {
           const key = `${cls}/${attribution.provenance}`;
           counts[key] = (counts[key] || 0) + 1;
         } else {
           unavailable = true;
         }
-        if (attribution && attribution.fingerprint_status !== "unverified") {
+        if (attribution && isVerifiedAttributionStatus(attribution.fingerprint_status)) {
           fingerprints[attribution.fingerprint] = (fingerprints[attribution.fingerprint] || 0) + 1;
         } else {
           unavailable = true;
@@ -2987,7 +3002,7 @@ function renderTrajectory(run) {
         : {}),
       ...(r.payload.incomplete ? { status: "capped" } : {}),
       provenance_measurement: Array.isArray(r.payload.findingAttributions)
-        ? (r.payload.findingAttributions.every((finding) => finding.provenance_status !== "unverified") ? "verified" : "unverified")
+        ? (r.payload.findingAttributions.every((finding) => isVerifiedAttributionStatus(finding.provenance_status)) ? "verified" : "unverified")
         : ((Array.isArray(r.payload.passes)
             ? r.payload.passes.reduce((n, p) => n + (((p.payload && p.payload.findings) || []).length), 0)
             : 0) === 0 ? "not-applicable" : "unavailable"),

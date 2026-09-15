@@ -3495,6 +3495,62 @@ function writeScenario(name, db) {
     writeCompletedZeroFindingPass(runDir, runId, "challenge", 1);
     writeScenario("challenge-still-active", { issues: [{ number: 221, pull_request: null }], comments: { "221": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
+
+  // harmon-devkit#1001 review round 2 (P1), confirmed and fixed: round 1's
+  // reviewed_head ("1" x 40) is neither equal to nor a real git ancestor of
+  // round 2's ("0" x 40, the standard fixture placeholder, auto-selected as
+  // --current-head since round 2 is the highest round) — ancestry
+  // computes false/unknown either way, so round 1 is excluded from the
+  // engine's ancestry-retained set and its finding's provenance/fingerprint
+  // never go through applyVerification at all, landing on "not-measured".
+  {
+    const runId = "run-222-not-measured-provenance";
+    const at = "2026-09-01T00:00:00Z";
+    const ev1 = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const ev2 = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 2, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [
+        { id: String(ev1.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev1.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } },
+        { id: String(ev2.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev2.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 2, sequence: 1 } },
+      ],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    const round1Pass = pass("codex-verification", [{ priority: "P2", class: "correctness" }]);
+    round1Pass.run.run_id = runId;
+    round1Pass.head = "1".repeat(40);
+    round1Pass.payload.round = 1;
+    round1Pass.payload.reviewed_head = "1".repeat(40);
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    writeFileSync(path.join(runDir, "passes", "review-r1.json"), JSON.stringify(round1Pass, null, 2));
+    mkdirSync(path.join(runDir, "adjudications"), { recursive: true });
+    writeFileSync(path.join(runDir, "adjudications", "review-r1.json"), JSON.stringify({
+      schema: 2, run_id: runId, stage: "review", round: 1, reviewed_head: "1".repeat(40),
+      adjudications: [{
+        finding_id: round1Pass.payload.findings[0].id, reviewer_priority: "P2", adjudicated_priority: "P2",
+        disposition: "fix", reason: "confirmed", evidence: "fixture evidence", override: null,
+      }],
+    }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 2);
+    const round2Pass = pass("codex-verification", []);
+    round2Pass.run.run_id = runId;
+    round2Pass.payload.round = 2;
+    writeFileSync(path.join(runDir, "passes", "review-r2.json"), JSON.stringify(round2Pass, null, 2));
+    const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    run2.receipts = [
+      ...(run2.receipts || []),
+      { kind: "transition", stage: "review" },
+      { kind: "pass", file: "review-r1" },
+      { kind: "pass", file: "review-r2" },
+    ];
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
+    writeScenario("not-measured-provenance", { issues: [{ number: 222, pull_request: null }], comments: { "222": [ev1, ev2] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -3853,9 +3909,18 @@ run_id="$(meta freeze-race .meta.runId)"
 race_run_dir="$tmp/local-records/$run_id"
 race_out="$tmp/freeze-race-out.json"
 race_err="$tmp/freeze-race-err.log"
-node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json >"$race_out" 2>"$race_err" &
+# harmon-devkit#1001 review round 2 (P2), confirmed and fixed: watching a
+# system-wide ${TMPDIR:-/tmp} glob could match an unrelated concurrent
+# process's own dev-flow-stats-stage-* directory (another session, a
+# parallel CI run) and return early, corrupting the live file before this
+# test's own child actually finished freezing it — nondeterministic, not a
+# real test of the invariant. Node's os.tmpdir() honors TMPDIR, so giving
+# the child its own isolated one and watching only that directory removes
+# the collision entirely; no production-code change needed.
+race_tmp_base="$tmp/freeze-race-tmpdir"
+mkdir -p "$race_tmp_base"
+TMPDIR="$race_tmp_base" node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json >"$race_out" 2>"$race_err" &
 race_pid=$!
-race_tmp_base="${TMPDIR:-/tmp}"
 observed_freeze=""
 race_deadline=$((SECONDS + 20))
 while [ "$SECONDS" -lt "$race_deadline" ]; do
@@ -4782,6 +4847,20 @@ baseline_out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --rec
 altroot_out="$(cd "$tmp" && node "$repo/scripts/dev-flow-stats.mjs" --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --repo-root "$tmp/altroot-repo-root" --json)"
 [ "$baseline_out" = "$altroot_out" ] ||
     fail "repo-root (run path): explicit --repo-root from another cwd did not reproduce the baseline output. baseline=$baseline_out altroot=$altroot_out"
+
+echo "== harmon-devkit#1001 review round 2: a not-measured finding (its round could not be ancestry-retained) is never counted as verified (fixed round 3/5) =="
+export DFSTATS_DB="$tmp/scenarios/not-measured-provenance.json"
+run_id="$(meta not-measured-provenance .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+echo "$out" | jq -e '
+  (.rounds[0].provenance_measurement == "unverified") and
+  (.rounds[0].finding_attributions[0].provenance_status == "not-measured") and
+  (.rounds[0].finding_attributions[0].fingerprint_status == "not-measured") and
+  (.findings_by_class_and_provenance == {}) and
+  (.findings_by_verified_fingerprint == {}) and
+  ([.provenance_unavailable_rounds[] | select(.stage == "review" and .round == 1)] | length == 1)
+' >/dev/null ||
+    fail "not-measured provenance: a finding whose round could not be ancestry-retained was counted as verified: $out"
 
 echo "== harmon-devkit#1001 review round 1: a run still in progress on challenge reports challenge's own trajectory, review not-started (fixed round 2/5) =="
 export DFSTATS_DB="$tmp/scenarios/challenge-still-active.json"
