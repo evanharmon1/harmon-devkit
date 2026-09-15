@@ -1445,6 +1445,14 @@ grep -qF "agent-registry.json" "$skill_md" ||
 grep -qF "opus" "$skill_md" || fail "SKILL.md Step 2 must give the Claude Code example (opus)"
 grep -q "rather than leaving it unset to inherit" "$skill_md" ||
     fail "SKILL.md Step 2 must explicitly say not to leave the fan-out model unset"
+grep -qF "no \`frontier\` entry" "$skill_md" ||
+    fail "SKILL.md Step 2 must cover families with no frontier tier (Codex review on PR #1045, comment about claude-code-deepseek/-glm/-kimi/-minimax)"
+
+echo "==> canary: opus is still agent-registry.json's frontier-tier model for the claude family (Codex review on PR #1045) — this must fail loudly if the registry ever retiers or renames it, since scripts/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's own example both hardcode the literal 'opus'"
+[ -f agent-registry.json ] || fail "agent-registry.json must exist"
+registry_claude_frontier="$(jq -r '.families[] | select(.slug == "claude") | .models[] | select(.tier == "frontier") | .slug' agent-registry.json)"
+[ "$registry_claude_frontier" = "opus" ] ||
+    fail "agent-registry.json's claude/frontier model is '$registry_claude_frontier', not 'opus' — update scripts/groom.sh's GROOM_FANOUT_MODEL default and SKILL.md Step 2's example to match"
 
 echo "==> wrapper: the run's report survives the wrapper process (finding 1 — no more rm -rf EXIT trap)"
 audit_scratch="$(grep -o 'GROOM_SCRATCH=/[^[:space:]]*' "$GH_STUB_LOG" | tail -1 | cut -d= -f2)"
