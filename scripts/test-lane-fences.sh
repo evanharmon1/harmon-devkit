@@ -361,6 +361,48 @@ case "$out" in
 *) fail "duplicate-remote comparison base did not prefer origin over the never-fetched alias: $out" ;;
 esac
 
+# Ref-resolvability preference regression (review round 1, confirmed
+# coverage gap): no remote is named "origin", so the origin-preference
+# branch never applies; two URL-matching remotes exist, and only the
+# alphabetically LATER one ("zzz-mirror" > "alpha-mirror") has a fetched
+# default-branch ref. The alphabetically-first-by-`git remote`-order match
+# must still be skipped in favour of the one whose ref actually resolves.
+ref_pref_fixture="$tmp/ref-preference-repo"
+make_remote_fixture "$ref_pref_fixture" "" ""
+git -C "$ref_pref_fixture" remote add alpha-mirror "https://github.com/evanharmon1/harmon-devkit.git"
+git -C "$ref_pref_fixture" remote add zzz-mirror "https://github.com/evanharmon1/harmon-devkit.git"
+ref_pref_base="$(git -C "$ref_pref_fixture" rev-parse HEAD)"
+git -C "$ref_pref_fixture" update-ref refs/remotes/zzz-mirror/main "$ref_pref_base"
+printf '%s\n' changed >"$ref_pref_fixture/allowed.txt"
+git -C "$ref_pref_fixture" add allowed.txt
+git -C "$ref_pref_fixture" commit -qm "test: change allowed path with no origin and an unresolvable alphabetically-first alias"
+make_remote_brief "$tmp/ref-preference.md" "$ref_pref_fixture" "$ref_pref_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$ref_pref_fixture" && "$fence_check" --brief "$tmp/ref-preference.md" 2>&1)" ||
+    fail "a checkout with no origin and an unresolvable alphabetically-first alias was rejected: $out"
+case "$out" in
+*"using remote 'zzz-mirror'"*"issue.url"*) ;;
+*) fail "ref-preference comparison base did not skip the alphabetically-first remote lacking a resolvable ref: $out" ;;
+esac
+
+# URL-form and case-insensitivity regression (review round 1, confirmed
+# coverage gap): every prior fixture uses one lower-case https://...git
+# shape. A differently-cased ssh://git@github.com/ remote must still match
+# a lower-case issue.url.
+ssh_case_fixture="$tmp/ssh-case-repo"
+make_remote_fixture "$ssh_case_fixture" "ssh://git@github.com/EvanHarmon1/Harmon-DevKit" ""
+ssh_case_base="$(git -C "$ssh_case_fixture" rev-parse HEAD)"
+git -C "$ssh_case_fixture" update-ref refs/remotes/origin/main "$ssh_case_base"
+printf '%s\n' changed >"$ssh_case_fixture/allowed.txt"
+git -C "$ssh_case_fixture" add allowed.txt
+git -C "$ssh_case_fixture" commit -qm "test: change allowed path with a differently-cased ssh:// origin remote"
+make_remote_brief "$tmp/ssh-case.md" "$ssh_case_fixture" "$ssh_case_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$ssh_case_fixture" && "$fence_check" --brief "$tmp/ssh-case.md" 2>&1)" ||
+    fail "a differently-cased ssh:// origin remote was rejected: $out"
+case "$out" in
+*"using remote 'origin'"*"issue.url"*) ;;
+*) fail "ssh-case comparison base did not match a differently-cased ssh:// remote: $out" ;;
+esac
+
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
 scan_fixture="$tmp/scan-repo"
 git init -q "$scan_fixture"
@@ -388,14 +430,24 @@ printf '%s\n' '- name: fixture' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' '"critical-key": value' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' '      - 8080:8080' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' '  guard:release-title:' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' "'single-quoted-key': value" >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' '9lives: value' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' 'id name' >"$scan_fixture/scripts/yaml-key-consumer.sh"
 printf '%s\n' 'critical-key' >"$scan_fixture/scripts/yaml-quoted-key-consumer.sh"
 printf '%s\n' '8080' >"$scan_fixture/scripts/yaml-port-mapping-consumer.sh"
 printf '%s\n' 'task guard:release-title' >"$scan_fixture/scripts/yaml-colon-key-consumer.sh"
+printf '%s\n' 'single-quoted-key' >"$scan_fixture/scripts/yaml-single-quoted-key-consumer.sh"
+printf '%s\n' '9lives' >"$scan_fixture/scripts/yaml-digit-leading-key-consumer.sh"
 printf '%s\n' 'id = "short"' >"$scan_fixture/short-keys.toml"
 printf '%s\n' '_secret = "shh"' >>"$scan_fixture/short-keys.toml"
+printf '%s\n' '"quoted-toml-key" = "x"' >>"$scan_fixture/short-keys.toml"
+printf '%s\n' "'single-toml-key' = \"x\"" >>"$scan_fixture/short-keys.toml"
+printf '%s\n' '-leading = "x"' >>"$scan_fixture/short-keys.toml"
 printf '%s\n' 'id' >"$scan_fixture/scripts/toml-key-consumer.sh"
 printf '%s\n' '_secret' >"$scan_fixture/scripts/toml-underscore-key-consumer.sh"
+printf '%s\n' 'quoted-toml-key' >"$scan_fixture/scripts/toml-quoted-key-consumer.sh"
+printf '%s\n' 'single-toml-key' >"$scan_fixture/scripts/toml-single-quoted-key-consumer.sh"
+printf '%s\n' '-leading' >"$scan_fixture/scripts/toml-hyphen-leading-key-consumer.sh"
 isolated_scan_out="$(cd "$scan_fixture" && "$scanner" agent-registry.json)" ||
     fail "isolated dependency scan failed"
 for consumer in \
@@ -426,12 +478,22 @@ grep -Fxq scripts/yaml-port-mapping-consumer.sh <<<"$yaml_scan_out" &&
     fail "dependency scan misread a Docker port-mapping scalar (- 8080:8080) as a key"
 grep -Fxq scripts/yaml-colon-key-consumer.sh <<<"$yaml_scan_out" ||
     fail "dependency scan dropped a colon-bearing group:action-style YAML key"
+grep -Fxq scripts/yaml-single-quoted-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan missed a single-quoted YAML key"
+grep -Fxq scripts/yaml-digit-leading-key-consumer.sh <<<"$yaml_scan_out" ||
+    fail "dependency scan missed a digit-leading bare YAML key"
 toml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.toml)" ||
     fail "TOML-key dependency scan failed"
 grep -Fxq scripts/toml-key-consumer.sh <<<"$toml_scan_out" ||
     fail "dependency scan missed a short TOML key"
 grep -Fxq scripts/toml-underscore-key-consumer.sh <<<"$toml_scan_out" ||
     fail "dependency scan missed an underscore-leading TOML key"
+grep -Fxq scripts/toml-quoted-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed a double-quoted TOML key"
+grep -Fxq scripts/toml-single-quoted-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed a single-quoted TOML key"
+grep -Fxq scripts/toml-hyphen-leading-key-consumer.sh <<<"$toml_scan_out" ||
+    fail "dependency scan missed a hyphen-leading bare TOML key"
 
 scan_out="$("$scanner" agent-registry.json)" || fail "real-tree dependency scan failed"
 for consumer in \

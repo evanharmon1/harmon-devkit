@@ -97,13 +97,19 @@ current_branch="$(git -C "$worktree_path" branch --show-current)" || {
     exit 1
 }
 
-# github.com only, matching this repo's own normalization set
-# (docs/conventions.md § Git transport): a remote's fetch URL is compared
-# against a resolved owner/repo by stripping the same protocol/host forms
-# that set already needs to handle. Lower-cased and trailing-slash-stripped
-# before returning, since GitHub owner/repo names are case-insensitive and a
-# case-sensitive compare could silently miss a real match (challenge round 2,
-# confirmed).
+# github.com only, matching this repo's own normalization set (AGENTS.md
+# § Conventions "Git transport"): a remote's fetch URL is compared against
+# a resolved owner/repo by stripping the same protocol/host forms that set
+# already needs to handle. The trailing slash must be stripped BEFORE the
+# `.git` suffix — a remote ending in ".git/" would otherwise keep the
+# suffix, since stripping ".git" first is a no-op on a string still ending
+# in "/" (review round 1, confirmed). Lower-cased before returning via
+# `tr`, not the bash-4-only `${var,,}` expansion — this repo's shell
+# convention requires staying portable to macOS bash 3.2, where `${var,,}`
+# is a fatal `bad substitution` (review round 1, confirmed); two sibling
+# assets doing this same normalization already use this exact idiom
+# (ai/skills/universal/track-work/assets/check-issue-metadata.sh,
+# discover-label-guidance.sh).
 remote_name_with_owner() {
     local url="$1"
     case "$url" in
@@ -115,9 +121,9 @@ remote_name_with_owner() {
     ssh://git@ssh.github.com/*) url="${url#ssh://git@ssh.github.com/}" ;;
     *) return 1 ;;
     esac
-    url="${url%.git}"
     url="${url%/}"
-    printf '%s\n' "${url,,}"
+    url="${url%.git}"
+    printf '%s\n' "$url" | tr '[:upper:]' '[:lower:]'
 }
 
 # origin is the writable remote in the supported fork topology, not
@@ -148,7 +154,7 @@ resolve_comparison_remote() {
     case "$issue_url" in
     https://github.com/*/*)
         target_nwo="$(printf '%s\n' "$issue_url" | sed -nE 's#^https://github\.com/([^/]+)/([^/]+)/.*#\1/\2#p')"
-        target_nwo="${target_nwo,,}"
+        target_nwo="$(printf '%s\n' "$target_nwo" | tr '[:upper:]' '[:lower:]')"
         ;;
     esac
 
