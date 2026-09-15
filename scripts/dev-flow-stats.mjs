@@ -21,18 +21,10 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  ExitIndeterminate,
-  loadRunDir as loadExitRunDir,
-  validateReceipts as validateExitReceipts,
-  validateAdjudicationSchema as validateExitAdjudication,
-  assembleLogicalRounds as assembleExitRounds,
-  applyVerification as applyExitVerification,
-} from "./dev-flow-exit.mjs";
 
 const MAX_SYNC_BUFFER_BYTES = 64 * 1024 * 1024;
 const EXIT_VALIDATOR = path.join(path.dirname(fileURLToPath(import.meta.url)), "validate-result-schemas.mjs");
@@ -489,6 +481,27 @@ function fetchPrComments(repo, prNumber) {
   return ghApiPaginated(`repos/${repo}/issues/${prNumber}/comments?per_page=100`);
 }
 
+// GitHub's issues API returns a `pull_request` object on the issue resource
+// only when that "issue" is actually a pull request — the one way to
+// distinguish the two before trusting a fetch made against the generic
+// issue-comments endpoint (harmon-devkit#1001 item 3).
+function isActuallyPullRequest(repo, number) {
+  try {
+    const result = ghApiOne(`repos/${repo}/issues/${number}`);
+    return Boolean(result && result.pull_request);
+  } catch (err) {
+    // harmon-devkit#1001 challenge round 2 (P2), confirmed: collapsing
+    // every GhError to false conflated "confirmed 404, genuinely not a
+    // pull request" with an operational failure (auth, rate limit,
+    // timeout, server error) — the latter would misreport as a
+    // data-integrity accusation instead of surfacing as the transient
+    // failure it actually is. Mirrors discoverRunsForId's own 404-only
+    // check just below.
+    if (err instanceof GhError && /\bHTTP 404\b/.test(err.message)) return false;
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Marker grammar (ai/schemas/README.md "Evidence marker and digest grammar")
 // ---------------------------------------------------------------------------
@@ -595,6 +608,19 @@ function canonicalJson(value) {
 // anything the payload itself claims.
 function commentActorId(comment) {
   return comment.user && typeof comment.user.id === "number" ? comment.user.id : null;
+}
+
+// A local run record's evidence_comments[].author_actor_id is producer-
+// asserted, untrusted data — `actorId !== Number(entry.author_actor_id)`
+// let a non-integer value authenticate by accident of loose coercion
+// (`Number("123abc")` is NaN and correctly never matches, but
+// `Number(" 123 ")`, `Number("0x7b")`, `Number(true)`, and `Number([123])`
+// all coerce to a real number that CAN match a genuine actor id). Requiring
+// the field to already be a JS safe-integer number, strictly equal to the
+// observed actor id, closes every coercion path at once rather than
+// special-casing the ones noticed so far.
+function isStrictPositiveIntegerActorId(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 // Evidence-comment trust narrows to the SPECIFIC actor who authored this
@@ -1779,7 +1805,11 @@ function collectTrustedEvidenceSummaries(comments, runId, { trustedActorIds, asO
     }
     if (marker.runId !== runId) continue;
     if (!trustedActorIds.has(actorId) || marker.dest !== fetchedFrom) {
-      untrusted.push({ comment, marker, actorId });
+      // Tagged so a caller that needs to tell "the author cannot be
+      // trusted at all" from "the author is fine, but this marker's own
+      // destination is wrong" can — harmon-devkit#1001 item 7: the local-
+      // record path must not report the second kind as a forged author.
+      untrusted.push({ comment, marker, actorId, reason: !trustedActorIds.has(actorId) ? "untrusted-actor" : "wrong-destination" });
       continue;
     }
     candidates.push({ comment, marker, actorId });
@@ -1858,214 +1888,773 @@ function resolveContainedPath(root, candidate, label, { allowMissing = false } =
   return resolved;
 }
 
-function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false) {
+// ---------------------------------------------------------------------------
+// Local-record trajectory (harmon-devkit#1001): one dev-flow-exit.mjs CLI
+// invocation per confidence stage that has local evidence, consuming its
+// `rounds` trajectory field instead of calling any of that module's
+// exported helpers directly. The engine owns lifecycle/receipt/
+// adjudication/contiguity validation and round assembly end to end now;
+// what is left here is what genuinely is the harvester's own concern —
+// marker trust/registration/sequence/destination (elsewhere in
+// loadLocalEvidenceRun), and, below, the handful of raw facts the engine's
+// CLI contract needs as INPUT before it can run at all.
+// ---------------------------------------------------------------------------
+
+// A bare directory listing, never a trust decision. loadRunDir (the
+// engine's own reader, run inside the spawned process below) applies the
+// real structural guards this file used to import; this duplicates only
+// the thin slice needed to pick --current-head and to check artifact
+// coverage for EVERY role (including integrator, which the engine's own
+// confidence-stage trajectory never reports on) — never to decide whether
+// a pass or adjudication is valid evidence. A file that fails to parse as
+// a JSON object is skipped, not thrown on: it contributes to neither
+// computation below, and the engine's own read is what actually decides
+// whether the run directory as a whole is trustworthy.
+function readLocalJsonEntries(dir) {
+  if (!existsSync(dir)) return [];
+  const entries = [];
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+    let content;
+    try {
+      content = JSON.parse(readFileSync(path.join(dir, file), "utf8"));
+    } catch {
+      continue;
+    }
+    if (content !== null && typeof content === "object" && !Array.isArray(content)) {
+      entries.push({ name: file.replace(/\.json$/, ""), file: path.join(dir, file), content });
+    }
+  }
+  return entries;
+}
+
+// dev-flow-exit.mjs's --current-head must be "an independently captured
+// value" of the head actually under evaluation, never derived from the
+// evidence being certified (its own header comment). For a live PR that is
+// straightforward; a purely local record has no live PR to ask, so —
+// mirroring currentHeadForStage's existing precedent for --replay (same
+// file, same underlying problem: no promotion to fall back to either) —
+// the most recently dispatched pass naming this stage supplies its own
+// reviewed head, falling back to an adjudication's own reviewed_head or a
+// slot failure's own head when no pass survives (an orphan adjudication, or
+// a slot exhausted with only a failure record, both still need SOME head to
+// invoke the engine against). Returns null only when nothing at all names a
+// usable head — the caller then has local evidence for this stage but no
+// way to ask the engine about it, which is itself reported rather than
+// silently skipped.
+// Matches the engine's own --current-head shape gate exactly
+// (dev-flow-exit.mjs: `--current-head must be a full 40-character commit
+// SHA`) — not a trust/evidence decision, just the CLI's documented input
+// contract. Integration cycle 6, confirmed and fixed: a malformed head from
+// a rejected/unreceipted raw pass file used to still win the naive
+// selection below, and the engine's own shape gate then rejected the WHOLE
+// first invocation outright (indeterminate) before any round or trajectory
+// was ever returned — leaving no validated evidence for the retry logic
+// (below, in the caller) to correct from, so an otherwise-valid earlier
+// round went indeterminate over a malformed LATER round's garbage head.
+const CURRENT_HEAD_SHA_PATTERN = /^[0-9a-f]{40}$/;
+
+function currentHeadForLocalStage(passEntries, adjudicationEntries, slotFailures, stage) {
+  let best = null;
+  const consider = (round, head) => {
+    if (typeof head !== "string" || !CURRENT_HEAD_SHA_PATTERN.test(head) || !Number.isInteger(round)) return;
+    if (!best || round > best.round) best = { round, head };
+  };
+  for (const entry of passEntries) {
+    const payload = entry.content.payload;
+    if (payload && payload.stage === stage) consider(payload.round, entry.content.head);
+  }
+  for (const entry of adjudicationEntries) {
+    const doc = entry.content;
+    if (doc.stage === stage) consider(doc.round, doc.reviewed_head);
+  }
+  for (const sf of slotFailures) {
+    if (sf && sf.stage === stage) consider(sf.round, sf.head);
+  }
+  return best ? best.head : null;
+}
+
+// Best-effort: use the run's OWN recorded rigor level so the exit engine's
+// cap-integrity checks are evaluated against the rigor the run actually
+// executed under, rather than whatever .devflow.toml's default_rigor
+// happens to resolve to today (defaults legitimately change over time). The
+// policy projection is written beside run.json by the orchestrating session
+// at dispatch time; a TRULY ABSENT file is an older or hand-built record
+// that may not have one — return null and let the CLI apply .devflow.toml's
+// own default_rigor, exactly as any other caller that omits --rigor.
+//
+// Integration cycle 7 (P2), confirmed and fixed: a PRESENT policy.json with
+// a missing/malformed rigor.level or rigor.source used to collapse to the
+// same null as genuine absence — but ai/schemas/README.md requires both as
+// non-empty strings whenever policy.json exists at all, the same contract
+// sentence that requires the `rounds` object recordedRoundsPolicy below
+// already fails closed on. Omitting --rigor here silently substitutes
+// TODAY's default_rigor level; if that level's numeric caps happen to match
+// the run's own retained `rounds`, the cycle-6 drift check below would
+// wrongly certify agreement without ever confirming which NAMED level
+// actually governed. Only a truly absent file returns null now.
+function recordedRigorLevel(runDir) {
+  const policyFile = path.join(runDir, "policy.json");
+  if (!existsSync(policyFile)) return null;
+  let projection;
+  try {
+    projection = JSON.parse(readFileSync(policyFile, "utf8"));
+  } catch (err) {
+    throw new EvidenceError(`${policyFile} exists but is not readable JSON: ${err.message}`);
+  }
+  const level = projection?.rigor?.level;
+  const source = projection?.rigor?.source;
+  if (typeof level !== "string" || level.length === 0 || typeof source !== "string" || source.length === 0) {
+    throw new EvidenceError(
+      `${policyFile} exists but its "rigor.level"/"rigor.source" is missing or malformed (ai/schemas/README.md requires both whenever policy.json exists)`,
+    );
+  }
+  return level;
+}
+
+const ROUNDS_POLICY_KEYS = ["challenge", "review", "integration", "remediation", "min_rounds"];
+
+// Integration cycle 5 (P2), confirmed and fixed: recordedRigorLevel above
+// retains only the rigor NAME, so the engine re-resolves caps/min_rounds
+// from TODAY's .devflow.toml — a run whose retained caps have since drifted
+// (the level's [rounds.*] table edited after this run executed) gets
+// silently verified against the wrong policy either way: tightening falsely
+// indeterminates valid historical evidence, loosening falsely accepts
+// rounds beyond the run's actual budget. This reads the run's own retained
+// `rounds` object (same policy.json sibling, same absent-stays-absent
+// contract as recordedRigorLevel — an older or hand-built record may not
+// have one) so the caller can compare it against the engine's own
+// additive `resolved_rounds` and fail closed on any disagreement, rather
+// than silently trusting either side.
+//
+// Integration cycle 6 (P2), confirmed and fixed: absence and corruption are
+// NOT the same fact. A policy.json that genuinely does not exist is the
+// same "older or hand-built record" case recordedRigorLevel above already
+// tolerates — but ai/schemas/README.md ("The record directory" table,
+// policy.json row) is explicit that "rounds and every one of its five caps
+// are required whenever policy.json exists at all". A PRESENT file with a
+// missing/non-numeric rounds key, or one that fails to parse at all, is
+// retained evidence that FAILS that contract — collapsing it to the same
+// `null` as genuine absence let the drift check below silently skip
+// exactly the run whose own retained policy is least trustworthy. Only a
+// truly ABSENT file returns null; anything else that fails to produce a
+// complete, well-typed rounds object throws.
+function recordedRoundsPolicy(runDir) {
+  const policyFile = path.join(runDir, "policy.json");
+  if (!existsSync(policyFile)) return null;
+  let projection;
+  try {
+    projection = JSON.parse(readFileSync(policyFile, "utf8"));
+  } catch (err) {
+    throw new EvidenceError(`${policyFile} exists but is not readable JSON: ${err.message}`);
+  }
+  const rounds = projection?.rounds;
+  if (!rounds || typeof rounds !== "object" || Array.isArray(rounds) || !ROUNDS_POLICY_KEYS.every((key) => typeof rounds[key] === "number")) {
+    throw new EvidenceError(`${policyFile} exists but its "rounds" object is missing or malformed (ai/schemas/README.md requires all five round values whenever policy.json exists)`);
+  }
+  return Object.fromEntries(ROUNDS_POLICY_KEYS.map((key) => [key, rounds[key]]));
+}
+
+// harmon-devkit#1001 item 11 / challenge round 5/7 (P2): a comment's
+// created_at alone answers "when was this comment first posted," not "is
+// this comment's CURRENT content visible as of a historical --as-of
+// cutoff" — the GitHub API always returns a comment's current, possibly
+// edited, body. Shared by every reader that needs the latter question
+// answered the same way, so a legacy-grammar reader cannot drift from the
+// current-grammar one by checking only created_at.
+function isCommentVisibleAsOf(comment, cutoff) {
+  const created = Date.parse(comment.created_at);
+  if (created > cutoff) return false;
+  const updatedRaw = comment.updated_at;
+  const updated = typeof updatedRaw === "string" ? Date.parse(updatedRaw) : NaN;
+  return (Number.isFinite(updated) ? updated : created) <= cutoff;
+}
+
+// harmon-devkit#1001 challenge round 5/7 (P1): true only when `filePath`
+// parses to an object whose .stage is a recognizable string naming a
+// DIFFERENT stage — i.e. positively identified as not belonging to the
+// engine snapshot being built for `stage`. Anything that fails to parse, or
+// parses without a readable .stage, reads as false (include it) so the
+// engine's own fail-closed rejection still applies to it exactly as it
+// would on the unfiltered directory; only a clean, confident match against
+// a different stage is excluded.
+function adjudicationNamesOtherStage(filePath, stage) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    return false;
+  }
+  return Boolean(parsed) && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.stage === "string" && parsed.stage !== stage;
+}
+
+// The single engine-CLI invocation ruling 1 asks for, per stage: spawn
+// dev-flow-exit.mjs in --verification-only --json mode (never the plain
+// exit-code mode — this projection must work on an in-progress trajectory,
+// not only a fully-adjudicated one) and return its parsed `rounds`/
+// `diagnostics`. A spawn failure, an unparseable/empty stdout (the CLI's
+// own usage/parse-error path prints plain text to stderr, never JSON —
+// harmon-devkit#1001 item 2: this is exactly the "truncated/malformed
+// retained JSON" case that must surface as evidence-indeterminate rather
+// than a raw crash), or an indeterminate outcome are all reported back as
+// one `error` string for the caller to fold into an EvidenceError. An
+// indeterminate result's additive `code` field (harmon-devkit#1001, review
+// round 1) is passed through alongside `error` so the caller can recognize
+// one specific, EXPECTED indeterminate condition ("review requested while
+// challenge is still active") without string-matching `error`'s free text.
+function invokeExitScriptVerificationOnly(exitScriptPath, { runDir, stage, policyPath, rigor, currentHead, repoRoot }) {
+  const argv = [
+    exitScriptPath, "--run", runDir, "--stage", stage, "--policy", policyPath,
+    "--current-head", currentHead, "--repo-root", repoRoot, "--verification-only", "--json",
+  ];
+  if (rigor) argv.push("--rigor", rigor);
+  const result = spawnSync(process.execPath, argv, { encoding: "utf8", maxBuffer: MAX_SYNC_BUFFER_BYTES });
+  if (result.error) {
+    return { error: `could not exec exit script: ${result.error.message}` };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    // parsed stays null — handled below exactly like an execution failure.
+  }
+  if (parsed === null || typeof parsed !== "object") {
+    return { error: (result.stderr || result.stdout || `exit script exited ${result.status} with no parseable output`).trim() };
+  }
+  if (parsed.outcome === "indeterminate") {
+    return { error: `exit script could not verify this trajectory: ${parsed.reason || "indeterminate"}`, code: parsed.code ?? null };
+  }
+  return { verification: parsed };
+}
+
+function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComments, markers, untrustedMarkers, asOf, trustedActorIds, effectiveTrustAt, legacyAlsoPresent = false, repoRoot = process.cwd()) {
   const root = realpathSync(recordRoot);
   const runDir = resolveContainedPath(root, path.join(root, runId), `local run directory for ${JSON.stringify(runId)}`, { allowMissing: true });
   const runFileCandidate = path.join(runDir, "run.json");
   if (!existsSync(runFileCandidate)) return { status: "record-missing", runId, issueNumber, markerFacts: markerFacts(markers), runDir };
   const runFile = resolveContainedPath(root, runFileCandidate, `${runId}/run.json`);
-  const body = readJsonFile(runFile);
-  if (body.run_id !== runId) throw new EvidenceError(`${runFile} declares run_id ${JSON.stringify(body.run_id)}, expected ${runId}`);
-  if (!Array.isArray(body.evidence_comments)) throw new EvidenceError(`${runFile} does not contain an evidence_comments array`);
-  // A retained local directory has no historical snapshot semantics. GitHub
-  // marker visibility still selects/authenticates the run at the requested
-  // cutoff, but once selected its local state is explicitly current-state.
-  const state = reconstructAsOf(body, null, body.started_at);
-  const fetchedDestinations = new Set(["issue"]);
-  const fetchedComments = issueComments.map((comment) => ({ ...comment, _fetchedFrom: "issue" }));
-  const allMarkers = markers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
-  const allUntrustedMarkers = untrustedMarkers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
-  if (body.pr && Number.isInteger(body.pr.number) && body.pr.number > 0) {
-    const prComments = fetchPrComments(repo, body.pr.number);
-    fetchedComments.push(...prComments.map((comment) => ({ ...comment, _fetchedFrom: "pr" })));
-    const prSummaries = collectTrustedEvidenceSummaries(prComments, runId, { trustedActorIds, asOf: null, fetchedFrom: "pr" });
-    allMarkers.push(...prSummaries.trusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
-    allUntrustedMarkers.push(...prSummaries.untrusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
-    fetchedDestinations.add("pr");
-  }
-  const cutoff = asOf ? Date.parse(asOf) : Infinity;
-  const visitedStages = new Set((state.stage_transitions || []).map((transition) => transition.stage));
-  const authenticatedMarkers = allMarkers.filter((observed) => visitedStages.has(observed.marker.stage));
-  allUntrustedMarkers.push(...allMarkers.filter((observed) => !visitedStages.has(observed.marker.stage)));
-  const visibleMarkers = authenticatedMarkers.filter((observed) => Date.parse(observed.comment.created_at) <= cutoff);
-  if (visibleMarkers.length === 0) return { status: "no-current-evidence" };
-  const hasIssueBinding = visibleMarkers.some((observed) => observed.marker.dest === "issue") || issueNumberFromRunId(runId) === issueNumber;
-  if (!hasIssueBinding && visibleMarkers.some((observed) => observed.marker.dest === "pr")) {
-    return { status: "indeterminate", runId, issueNumber, unverifiedPrOnly: true, reason: `PR-only evidence for noncanonical run ${JSON.stringify(runId)} is unverified for issue #${issueNumber}; an authenticated issue marker or canonical run-id issue binding is required` };
-  }
-  const registrationIds = new Set();
-  for (const entry of body.evidence_comments) {
-    const id = String(entry && entry.id);
-    if (registrationIds.has(id)) throw new EvidenceError(`local run record repeats evidence comment id ${JSON.stringify(id)}`);
-    registrationIds.add(id);
-  }
-  const registrations = new Map(body.evidence_comments.map((entry) => [String(entry.id), entry]));
-  const observedById = new Map(fetchedComments.map((comment) => [String(comment.id), comment]));
-  const unverifiedEvidenceDestinations = new Set();
-  for (const entry of body.evidence_comments) {
-    const destination = entry && entry.marker && entry.marker.destination;
-    if (!fetchedDestinations.has(destination)) {
-      unverifiedEvidenceDestinations.add(destination);
-    } else if (!observedById.has(String(entry.id))) {
-      throw new EvidenceError(`local run record registers evidence comment ${entry.id}, but that comment was not observed — deleted-entry tampering`);
-    }
-  }
-  // A migration can retain both current summary markers and legacy fenced
-  // evidence comments. Presence is checked across both grammars; legacy
-  // registrations additionally retain their historical per-write trust rule.
-  const runRecordAuthorIds = new Set(authenticatedMarkers
-    .filter((observed) => observed.marker.grammar === "dev-flow-v2-evidence")
-    .map((observed) => observed.actorId));
-  if (runRecordAuthorIds.size !== 1) {
-    throw new EvidenceError(`${runId} current evidence does not identify exactly one run-record author`);
-  }
-  const [runRecordAuthorId] = runRecordAuthorIds;
-  for (const entry of body.evidence_comments) {
-    const comment = observedById.get(String(entry.id));
-    if (!comment) continue;
-    // Legacy discovery accepts a marker only from the first line. Apply the
-    // same boundary here so quoting or moving a registered marker is
-    // tampering even though its separately-digested fenced payload survived.
-    const firstLine = (comment.body || "").split(/\r?\n/, 1)[0];
-    const marker = parseEvidenceSummaryMarker(comment.body || "") || parseMarker(firstLine);
-    if (!marker || marker.kind !== "evidence" || marker.runId !== runId) {
-      throw new EvidenceError(`local run record does not authenticate evidence comment ${entry.id}`);
-    }
-    const actorId = commentActorId(comment);
-    const isCurrentMarker = marker.grammar === "dev-flow-v2-evidence";
-    const trusted = isCurrentMarker
-      ? trustedActorIds.has(actorId)
-      : effectiveTrustAt(comment.created_at).has(actorId);
-    const listed = entry.marker;
-    const legacyPayload = isCurrentMarker ? null : fencedPayloadText(comment.body || "");
-    const expectedDigest = isCurrentMarker ? payloadDigest(comment.body || "") : (legacyPayload === null ? null : payloadDigest(legacyPayload));
-    if (!trusted || (!isCurrentMarker && actorId !== runRecordAuthorId) || actorId !== Number(entry.author_actor_id) || entry.digest !== expectedDigest ||
-        marker.dest !== comment._fetchedFrom || !listed || listed.run_id !== runId || listed.stage !== marker.stage ||
-        listed.destination !== marker.dest || listed.round !== marker.round || listed.sequence !== marker.seq) {
-      throw new EvidenceError(`local run record does not authenticate evidence comment ${entry.id}`);
-    }
-  }
-  for (const observed of authenticatedMarkers) {
-    const entry = registrations.get(String(observed.comment.id));
-    const listed = entry && entry.marker;
-    if (observed.marker.dest !== observed.comment._fetchedFrom || !entry || Number(entry.author_actor_id) !== observed.actorId || entry.digest !== payloadDigest(observed.comment.body || "") ||
-        !listed || listed.run_id !== runId || listed.stage !== observed.marker.stage || listed.destination !== observed.marker.dest ||
-        listed.round !== observed.marker.round || listed.sequence !== observed.marker.seq) {
-      throw new EvidenceError(`local run record does not authenticate evidence comment ${observed.comment.id}`);
-    }
-  }
-  assertEvidenceMarkerSequenceContiguity(body.evidence_comments, `${runId} registered evidence`);
-  assertEvidenceMarkerSequenceContiguity(visibleMarkers, `${runId} visible evidence`);
-  // Retained trajectory semantics belong to dev-flow-exit.mjs. The
-  // harvester authenticates which GitHub marker groups may be reported,
-  // then projects only rounds accepted by that engine; it does not maintain
-  // a second pass/adjudication/receipt/lifecycle implementation here.
-  let exitRun;
-  let validPasses;
-  let diagnostics;
-  const engineTmp = mkdtempSync(path.join(tmpdir(), "dev-flow-stats-exit-"));
+
+  // harmon-devkit#1001 challenge round 5/7 (P1), confirmed: round 1's
+  // snapshot (further down, now folded into this same freeze) only ever
+  // protected consistency BETWEEN the two engine invocations — body,
+  // localPasses, localAdjudications, and rigor were all still read straight
+  // from the LIVE directory, at separate instants, before that copy was
+  // even made, and the later blocked-pass re-validation resolved its file
+  // path against the live passes/ dir even though the classification that
+  // made it "blocked" came from the snapshot. A still-in-progress
+  // orchestration can legitimately be writing to this exact directory while
+  // it is harvested, so any of those live reads could disagree with what
+  // the engine actually certified. Freeze the whole directory FIRST —
+  // before body is even parsed — and derive every local read for the rest
+  // of this function from that one frozen copy.
+  const engineSnapshotDir = mkdtempSync(path.join(tmpdir(), "dev-flow-stats-snapshot-"));
   try {
-    exitRun = loadExitRunDir(runDir);
-    // The durable run directory adds the exit engine's `receipts` and
-    // `slot_failures` trajectory inputs to the canonical run-record document.
-    // Validate the canonical projection while supplying the original file as
-    // the validator's trusted receipt sequence; this is the same split the
-    // validator's run/--receipts contract defines.
-    const canonicalRunFile = path.join(engineTmp, "run-record.json");
-    const { receipts: _receipts, slot_failures: _slotFailures, ...canonicalRun } = exitRun.runRecord;
-    for (const field of ["stage_transitions", "interventions", "settlements"]) {
-      canonicalRun[field] = (canonicalRun[field] || []).map(({ seq: _seq, digest: _digest, prev_digest: _previous, ...entry }) => entry);
+    const runBytes = readFileSync(runFile, "utf8");
+    writeFileSync(path.join(engineSnapshotDir, "run.json"), runBytes);
+    let body;
+    try {
+      body = JSON.parse(runBytes);
+    } catch (err) {
+      throw new EvidenceError(`${runFile} is not readable JSON: ${err.message}`);
     }
-    writeFileSync(canonicalRunFile, `${JSON.stringify(canonicalRun, null, 2)}\n`);
-    const runValidationArgs = ["run", canonicalRunFile];
-    // --receipts now requires the bound file to carry a receipts array
-    // (harmon-devkit#1000): bind strictly only when this record actually has
-    // one, and fall back to the validator's plain-run mode otherwise, same as
-    // any other caller that omits --receipts.
-    if (Array.isArray(body.receipts)) runValidationArgs.push("--receipts", runFile);
-    runValidationArgs.push("--receipt");
-    if (exitRun.adjudications.length === 0) {
-      runValidationArgs.push("--no-adjudications");
-    } else {
-      for (const adjudication of exitRun.adjudications) {
-        runValidationArgs.push("--adjudication", adjudication.file);
+    // Byte-for-byte, unconditionally, exactly as round 2 established for
+    // the engine's own consumption — a malformed file must still reach
+    // whatever later reads it (this function's own `localPasses`/
+    // `localAdjudications`, or the per-stage engine snapshots built from
+    // this copy below) unchanged, so it fails closed instead of vanishing.
+    const passesDir = path.join(runDir, "passes");
+    mkdirSync(path.join(engineSnapshotDir, "passes"), { recursive: true });
+    if (existsSync(passesDir)) {
+      for (const file of readdirSync(passesDir).filter((f) => f.endsWith(".json"))) {
+        copyFileSync(path.join(passesDir, file), path.join(engineSnapshotDir, "passes", file));
       }
     }
-    runExitValidator(runValidationArgs, `${runId}/run.json`);
-    ({ validPasses, diagnostics } = validateExitReceipts(exitRun.runRecord, exitRun.passes, {
-      validatorPath: EXIT_VALIDATOR,
-      tmpDir: engineTmp,
-    }));
-  } catch (err) {
-    if (err instanceof ExitIndeterminate) throw new EvidenceError(err.message);
-    throw err;
-  } finally {
-    rmSync(engineTmp, { recursive: true, force: true });
-  }
+    const adjudicationsDir = path.join(runDir, "adjudications");
+    mkdirSync(path.join(engineSnapshotDir, "adjudications"), { recursive: true });
+    if (existsSync(adjudicationsDir)) {
+      for (const file of readdirSync(adjudicationsDir).filter((f) => f.endsWith(".json"))) {
+        copyFileSync(path.join(adjudicationsDir, file), path.join(engineSnapshotDir, "adjudications", file));
+      }
+    }
+    // recordedRigorLevel's own policy.json sibling, frozen alongside
+    // everything else it is read next to.
+    const policyJsonPath = path.join(runDir, "policy.json");
+    if (existsSync(policyJsonPath)) {
+      copyFileSync(policyJsonPath, path.join(engineSnapshotDir, "policy.json"));
+    }
 
-  const validAdjudications = [];
-  for (const adjudication of exitRun.adjudications) {
-    if (adjudication.doc.stage !== "challenge" && adjudication.doc.stage !== "review") continue;
-    const matchingPassFiles = validPasses
-      .filter((pass) => pass.payload.stage === adjudication.doc.stage && pass.payload.round === adjudication.doc.round)
-      .map((pass) => pass.file);
-    const result = validateExitAdjudication(EXIT_VALIDATOR, adjudication.file, matchingPassFiles);
-    if (!result.ok) throw new EvidenceError(`exit engine rejected adjudication ${adjudication.name}: ${result.message}`);
-    validAdjudications.push(adjudication);
-  }
+    if (body.run_id !== runId) throw new EvidenceError(`${runFile} declares run_id ${JSON.stringify(body.run_id)}, expected ${runId}`);
+    if (!Array.isArray(body.evidence_comments)) throw new EvidenceError(`${runFile} does not contain an evidence_comments array`);
+    // A retained local directory has no historical snapshot semantics. GitHub
+    // marker visibility still selects/authenticates the run at the requested
+    // cutoff, but once selected its local state is explicitly current-state.
+    const state = reconstructAsOf(body, null, body.started_at);
+    const fetchedDestinations = new Set(["issue"]);
+    const fetchedComments = issueComments.map((comment) => ({ ...comment, _fetchedFrom: "issue" }));
+    const allMarkers = markers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
+    const allUntrustedMarkers = untrustedMarkers.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "issue" } }));
+    if (body.pr && Number.isInteger(body.pr.number) && body.pr.number > 0) {
+      // repos/{repo}/issues/{n}/comments succeeds for a PLAIN issue too — it
+      // is the generic issue-comments endpoint, and GitHub treats a PR as an
+      // issue under the hood. Without checking that this number actually
+      // names a pull request, a run record whose pr.number was corrupted (or
+      // tampered) to point at an ordinary issue would have that issue's
+      // comments silently trusted as PR-destination evidence.
+      if (!isActuallyPullRequest(repo, body.pr.number)) {
+        throw new EvidenceError(`local run record's pr.number ${body.pr.number} does not name a pull request in ${repo} — the generic issue-comments endpoint would otherwise accept a plain issue's comments as PR evidence`);
+      }
+      const prComments = fetchPrComments(repo, body.pr.number);
+      fetchedComments.push(...prComments.map((comment) => ({ ...comment, _fetchedFrom: "pr" })));
+      const prSummaries = collectTrustedEvidenceSummaries(prComments, runId, { trustedActorIds, asOf: null, fetchedFrom: "pr" });
+      allMarkers.push(...prSummaries.trusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
+      allUntrustedMarkers.push(...prSummaries.untrusted.map((observed) => ({ ...observed, comment: { ...observed.comment, _fetchedFrom: "pr" } })));
+      fetchedDestinations.add("pr");
+    }
+    const cutoff = asOf ? Date.parse(asOf) : Infinity;
+    const visitedStages = new Set((state.stage_transitions || []).map((transition) => transition.stage));
+    const authenticatedMarkers = allMarkers.filter((observed) => visitedStages.has(observed.marker.stage));
+    // Demoted for naming a stage this run never transitioned into — a
+    // structural anomaly in the MARKER, not evidence the author is untrusted
+    // (harmon-devkit#1001 item 7: this must not read as a forged author).
+    allUntrustedMarkers.push(...allMarkers.filter((observed) => !visitedStages.has(observed.marker.stage)).map((observed) => ({ ...observed, reason: "absent-stage" })));
+    // created_at alone is not enough: a GitHub comment can be edited after
+    // posting, and the API always returns its CURRENT (possibly-edited) body
+    // — so a marker created before the cutoff but edited after it would be
+    // admitted here from content that did not exist "as of" the cutoff.
+    // isCommentVisibleAsOf falls back to created_at when updated_at is
+    // missing/unparseable, rather than treating that as automatically
+    // visible.
+    const visibleMarkers = authenticatedMarkers.filter((observed) => isCommentVisibleAsOf(observed.comment, cutoff));
+    if (visibleMarkers.length === 0) return { status: "no-current-evidence" };
+    const hasIssueBinding = visibleMarkers.some((observed) => observed.marker.dest === "issue") || issueNumberFromRunId(runId) === issueNumber;
+    if (!hasIssueBinding && visibleMarkers.some((observed) => observed.marker.dest === "pr")) {
+      return { status: "indeterminate", runId, issueNumber, unverifiedPrOnly: true, reason: `PR-only evidence for noncanonical run ${JSON.stringify(runId)} is unverified for issue #${issueNumber}; an authenticated issue marker or canonical run-id issue binding is required` };
+    }
+    const registrationIds = new Set();
+    for (const entry of body.evidence_comments) {
+      const id = String(entry && entry.id);
+      if (registrationIds.has(id)) throw new EvidenceError(`local run record repeats evidence comment id ${JSON.stringify(id)}`);
+      registrationIds.add(id);
+    }
+    const registrations = new Map(body.evidence_comments.map((entry) => [String(entry.id), entry]));
+    const observedById = new Map(fetchedComments.map((comment) => [String(comment.id), comment]));
+    const unverifiedEvidenceDestinations = new Set();
+    for (const entry of body.evidence_comments) {
+      const destination = entry && entry.marker && entry.marker.destination;
+      if (!fetchedDestinations.has(destination)) {
+        unverifiedEvidenceDestinations.add(destination);
+      } else if (!observedById.has(String(entry.id))) {
+        throw new EvidenceError(`local run record registers evidence comment ${entry.id}, but that comment was not observed — deleted-entry tampering`);
+      }
+    }
+    // A migration can retain both current summary markers and legacy fenced
+    // evidence comments. Presence is checked across both grammars; legacy
+    // registrations additionally retain their historical per-write trust rule.
+    const runRecordAuthorIds = new Set(authenticatedMarkers
+      .filter((observed) => observed.marker.grammar === "dev-flow-v2-evidence")
+      .map((observed) => observed.actorId));
+    if (runRecordAuthorIds.size !== 1) {
+      throw new EvidenceError(`${runId} current evidence does not identify exactly one run-record author`);
+    }
+    const [runRecordAuthorId] = runRecordAuthorIds;
+    for (const entry of body.evidence_comments) {
+      const comment = observedById.get(String(entry.id));
+      if (!comment) continue;
+      // Legacy discovery accepts a marker only from the first line. Apply the
+      // same boundary here so quoting or moving a registered marker is
+      // tampering even though its separately-digested fenced payload survived.
+      const firstLine = (comment.body || "").split(/\r?\n/, 1)[0];
+      const marker = parseEvidenceSummaryMarker(comment.body || "") || parseMarker(firstLine);
+      if (!marker || marker.kind !== "evidence" || marker.runId !== runId) {
+        throw new EvidenceError(`local run record does not authenticate evidence comment ${entry.id}`);
+      }
+      const actorId = commentActorId(comment);
+      const isCurrentMarker = marker.grammar === "dev-flow-v2-evidence";
+      const trusted = isCurrentMarker
+        ? trustedActorIds.has(actorId)
+        : effectiveTrustAt(comment.created_at).has(actorId);
+      const listed = entry.marker;
+      const legacyPayload = isCurrentMarker ? null : fencedPayloadText(comment.body || "");
+      const expectedDigest = isCurrentMarker ? payloadDigest(comment.body || "") : (legacyPayload === null ? null : payloadDigest(legacyPayload));
+      if (!trusted || (!isCurrentMarker && actorId !== runRecordAuthorId) || !isStrictPositiveIntegerActorId(entry.author_actor_id) || actorId !== entry.author_actor_id || entry.digest !== expectedDigest ||
+          marker.dest !== comment._fetchedFrom || !listed || listed.run_id !== runId || listed.stage !== marker.stage ||
+          listed.destination !== marker.dest || listed.round !== marker.round || listed.sequence !== marker.seq) {
+        throw new EvidenceError(`local run record does not authenticate evidence comment ${entry.id}`);
+      }
+    }
+    for (const observed of authenticatedMarkers) {
+      const entry = registrations.get(String(observed.comment.id));
+      const listed = entry && entry.marker;
+      if (observed.marker.dest !== observed.comment._fetchedFrom || !entry || !isStrictPositiveIntegerActorId(entry.author_actor_id) || entry.author_actor_id !== observed.actorId || entry.digest !== payloadDigest(observed.comment.body || "") ||
+          !listed || listed.run_id !== runId || listed.stage !== observed.marker.stage || listed.destination !== observed.marker.dest ||
+          listed.round !== observed.marker.round || listed.sequence !== observed.marker.seq) {
+        throw new EvidenceError(`local run record does not authenticate evidence comment ${observed.comment.id}`);
+      }
+    }
+    assertEvidenceMarkerSequenceContiguity(body.evidence_comments, `${runId} registered evidence`);
+    assertEvidenceMarkerSequenceContiguity(visibleMarkers, `${runId} visible evidence`);
 
-  const blockedConfidencePasses = exitRun.passes.filter((pass) => {
-    const envelope = pass.envelope;
-    return envelope.status === "blocked" &&
-      (envelope.role === "challenger" || envelope.role === "reviewer") &&
-      (envelope.payload.stage === "challenge" || envelope.payload.stage === "review") &&
-      Number.isInteger(envelope.payload.round);
-  });
-  for (const pass of blockedConfidencePasses) {
-    runExitValidator(
-      ["envelope", pass.file, "--run-id", body.run_id, "--initiated-by", body.initiated_by],
-      `blocked pass ${pass.name}`,
-    );
-  }
+    // Raw, un-trust-bearing directory listings — see the block comment above
+    // readLocalJsonEntries. Read once, used both to feed the engine CLI below
+    // and for artifact coverage across every role afterward. Sourced from the
+    // frozen snapshot (harmon-devkit#1001 challenge round 5/7), not runDir.
+    const localPasses = readLocalJsonEntries(path.join(engineSnapshotDir, "passes"));
+    const localAdjudications = readLocalJsonEntries(path.join(engineSnapshotDir, "adjudications"));
+    const localPassFileByName = new Map(localPasses.map((p) => [p.name, p.file]));
 
-  const byRound = new Map();
-  for (const observed of authenticatedMarkers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
-    const key = `${observed.marker.stage}|${observed.marker.round}`;
-    const group = byRound.get(key) || [];
-    group.push(observed);
-    byRound.set(key, group);
-  }
-  const rounds = [];
-  try {
+    // Canonical run-record schema validation is unchanged from before this
+    // lane: it spawns validate-result-schemas.mjs directly (a different
+    // script from the exit engine) and was never part of the imported-helper
+    // trajectory assembly this redesign replaces.
+    const engineTmp = mkdtempSync(path.join(tmpdir(), "dev-flow-stats-exit-"));
+    try {
+      const canonicalRunFile = path.join(engineTmp, "run-record.json");
+      const { receipts: _receipts, slot_failures: _slotFailures, ...canonicalRun } = body;
+      for (const field of ["stage_transitions", "interventions", "settlements"]) {
+        canonicalRun[field] = (canonicalRun[field] || []).map(({ seq: _seq, digest: _digest, prev_digest: _previous, ...entry }) => entry);
+      }
+      writeFileSync(canonicalRunFile, `${JSON.stringify(canonicalRun, null, 2)}\n`);
+      const runValidationArgs = ["run", canonicalRunFile];
+      // --receipts now requires the bound file to carry a receipts array
+      // (harmon-devkit#1000): bind strictly only when this record actually has
+      // one, and fall back to the validator's plain-run mode otherwise, same as
+      // any other caller that omits --receipts.
+      if (Array.isArray(body.receipts)) runValidationArgs.push("--receipts", path.join(engineSnapshotDir, "run.json"));
+      runValidationArgs.push("--receipt");
+      if (localAdjudications.length === 0) {
+        runValidationArgs.push("--no-adjudications");
+      } else {
+        for (const adjudication of localAdjudications) {
+          runValidationArgs.push("--adjudication", adjudication.file);
+        }
+      }
+      runExitValidator(runValidationArgs, `${runId}/run.json`);
+    } finally {
+      rmSync(engineTmp, { recursive: true, force: true });
+    }
+
+    // ONE dev-flow-exit.mjs CLI invocation per confidence stage, unconditionally,
+    // whenever this run directory exists at all (harmon-devkit#1001 ruling 1) —
+    // replacing the loadRunDir/validateReceipts/validateAdjudicationSchema/
+    // assembleLogicalRounds/applyVerification sequence this file used to call
+    // directly. The engine is invoked once per confidence stage unconditionally:
+    // loadRunDir (inside every invocation) loads and parses every file under
+    // passes/ and adjudications/ regardless of --stage, so a malformed file
+    // anywhere is always caught, and validateReceipts (not stage-scoped either)
+    // always runs too, closing round 2's deferred finding #3 (no receipt
+    // validation for a run whose only evidence is some other role entirely)
+    // as a side effect.
+    const localSlotFailures = Array.isArray(body.slot_failures) ? body.slot_failures : [];
+    // harmon-devkit#1001 challenge round 6/7 (P2), confirmed and fixed: this
+    // used to hardcode process.cwd(), ignoring the already-accepted,
+    // already-validated --repo-root flag the --replay path respects (and
+    // failing when invoked from a repository subdirectory even without the
+    // flag) — repoRoot is now threaded in from the CLI's own resolution.
+    const policyPath = path.join(repoRoot, ".devflow.toml");
+    if (!existsSync(policyPath)) {
+      throw new EvidenceError(`local-record trajectory requires the exit engine's policy at ${policyPath}, which does not exist`);
+    }
+    const rigor = recordedRigorLevel(engineSnapshotDir);
+    const recordedRounds = recordedRoundsPolicy(engineSnapshotDir);
+    const engineRoundsByStage = new Map();
+    const diagnostics = [];
+    const seenDiagnostics = new Set();
+    // harmon-devkit#1001 challenge round 5/7 (P1), confirmed: the engine's
+    // own orphan-adjudication check (assembleLogicalRounds) is not
+    // stage-scoped — it rejects the WHOLE trajectory the instant ANY
+    // adjudication in the directory names a round no pass could ever
+    // satisfy. An integrator envelope's payload carries integration_round,
+    // never stage/round, so it can never satisfy that check — meaning a
+    // genuinely valid integration-round adjudication, sitting beside real
+    // challenge/review evidence or entirely alone, made EVERY confidence-
+    // stage invocation indeterminate. That is the ordinary shape for any
+    // run that has actually reached integration, not an edge case. The
+    // pre-redesign code avoided this by filtering adjudications to
+    // challenge/review before calling assembleLogicalRounds directly;
+    // restore the same filtering here, per invocation, by giving each
+    // stage's engine snapshot ONLY that stage's own adjudications (passes
+    // and run.json are unaffected — validateReceipts still sees every pass
+    // regardless of stage). A file that fails to parse, or parses without a
+    // readable .stage string, is copied through to EVERY stage unchanged,
+    // so the engine's own fail-closed rejection still applies to it exactly
+    // as it would on the unfiltered directory.
     for (const stage of ["challenge", "review"]) {
-      const assembled = assembleExitRounds(stage, validPasses, validAdjudications, { finders: [], finder_fallbacks: [] }, exitRun.runRecord, {
-        allPasses: exitRun.passes,
-      });
-      applyExitVerification(assembled, null);
-      for (const round of assembled) {
+      const stageSnapshotDir = mkdtempSync(path.join(tmpdir(), `dev-flow-stats-stage-${stage}-`));
+      try {
+        copyFileSync(path.join(engineSnapshotDir, "run.json"), path.join(stageSnapshotDir, "run.json"));
+        mkdirSync(path.join(stageSnapshotDir, "passes"), { recursive: true });
+        for (const file of readdirSync(path.join(engineSnapshotDir, "passes")).filter((f) => f.endsWith(".json"))) {
+          copyFileSync(path.join(engineSnapshotDir, "passes", file), path.join(stageSnapshotDir, "passes", file));
+        }
+        mkdirSync(path.join(stageSnapshotDir, "adjudications"), { recursive: true });
+        for (const file of readdirSync(path.join(engineSnapshotDir, "adjudications")).filter((f) => f.endsWith(".json"))) {
+          const src = path.join(engineSnapshotDir, "adjudications", file);
+          if (adjudicationNamesOtherStage(src, stage)) continue;
+          copyFileSync(src, path.join(stageSnapshotDir, "adjudications", file));
+        }
+        // A stage with no local evidence of its own has no round to be
+        // ancestry-sensitive about (computeVerdict short-circuits to
+        // outcome:"continue"/"no_rounds_yet" before ancestry is ever
+        // consulted when there are zero rounds), so an all-zero placeholder
+        // is safe here specifically — never for a stage that has real
+        // rounds, which still uses its own genuine head below.
+        let currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage) ?? "0".repeat(40);
+        let { verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+          runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot,
+        });
+        // Integration cycle 5 (P2), confirmed and fixed: the naive currentHead
+        // above is picked from RAW local pass/adjudication/slot-failure
+        // entries (currentHeadForLocalStage), unfiltered by the engine's own
+        // validation (receipt-backing, run_id, schema) — an invalid later
+        // round (an unreceipted or wrong-run pass, say) could still win the
+        // "highest round" naive guess, poisoning ancestry-based retention for
+        // an otherwise-valid earlier round. Correct it from the engine's OWN
+        // validated trajectory rather than re-implementing validation here:
+        // if none of the returned rounds' own reviewed_head matches the naive
+        // guess, re-derive from the highest VALIDATED round's real head and
+        // ask again. The common case (naive guess already matches real
+        // evidence) costs nothing extra — only a genuine mismatch pays for a
+        // second invocation.
+        if (!error && Array.isArray(verification.rounds) && verification.rounds.length > 0) {
+          const validated = verification.rounds;
+          const naiveGuessValidated = validated.some((r) => r.reviewed_head === currentHead);
+          if (!naiveGuessValidated) {
+            // Integration cycle 6 (P2), confirmed and fixed: the highest
+            // validated round is not necessarily the most useful one to
+            // correct to — a legitimate terminal `capped/finder_unavailable`
+            // round may carry no head at all (slot_failures[].head is
+            // optional), and blindly taking `validated[length-1]` picked
+            // that null/undefined value, failing the type guard below and
+            // silently keeping the ORIGINAL poisoned naive head instead of
+            // falling back to an earlier complete round's own real head.
+            // Search backward for the newest round that actually has one.
+            let correctedHead = null;
+            for (let i = validated.length - 1; i >= 0; i--) {
+              const candidate = validated[i].reviewed_head;
+              if (typeof candidate === "string" && candidate.length > 0) {
+                correctedHead = candidate;
+                break;
+              }
+            }
+            if (correctedHead && correctedHead !== currentHead) {
+              currentHead = correctedHead;
+              ({ verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+                runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot,
+              }));
+            }
+          }
+        }
+        if (error) {
+          // harmon-devkit#1001 review round 1 (P1), confirmed and fixed: a
+          // run genuinely still in progress on challenge, never yet having
+          // reached review, is the ordinary, common case, not corruption —
+          // and reporting the whole run indeterminate over it threw away
+          // challenge's own perfectly good trajectory alongside it.
+          // Recognized only via the engine's additive `code` field (never by
+          // re-deriving the receipt-sequence check ourselves, which would
+          // reintroduce exactly the "re-implement pieces of the engine's own
+          // logic" pattern this whole redesign exists to eliminate) — review
+          // is reported as not yet started, nothing else changes.
+          //
+          // Integration cycle 2, confirmed and fixed: the engine itself now
+          // narrows this guard to exactly that case (review never entered).
+          // Where review DID run before challenge was re-entered (a
+          // remediation loop), the engine's verification-only projection
+          // returns review's retained rounds directly instead of this error
+          // — falling through to the ordinary assignment below, never
+          // through this branch at all. This branch is therefore unreachable
+          // for a genuine re-entry, and stays correct with no change of its
+          // own beyond this comment; the fixture proving it lives in
+          // scripts/test-dev-flow-stats.sh.
+          if (stage === "review" && code === "stage-not-active") {
+            engineRoundsByStage.set("review", []);
+            continue;
+          }
+          // A malformed/truncated retained artifact, an over-cap trajectory,
+          // or any other reason the engine cannot certify this record all
+          // surface through the SAME structured "indeterminate" contract
+          // inside invokeExitScriptVerificationOnly — translated here to
+          // evidence-indeterminate rather than a raw crash (item 2).
+          throw new EvidenceError(`local-record trajectory for ${stage}: ${error}`);
+        }
+        // Integration cycle 5 (P2), confirmed and fixed: recordedRoundsPolicy
+        // (this run's own retained caps) and the engine's additive
+        // resolved_rounds (what it actually resolved for THIS invocation)
+        // must agree — a .devflow.toml edit since dispatch must never be
+        // silently substituted for the policy the run actually executed
+        // under, in either direction (tightened: falsely indeterminate;
+        // loosened: falsely accepts extra rounds). Absent on either side
+        // (an older/hand-built record, or a fixture that predates this
+        // additive field) skips the check rather than forcing it.
+        if (recordedRounds && verification.resolved_rounds) {
+          const drift = ROUNDS_POLICY_KEYS.filter((key) => recordedRounds[key] !== verification.resolved_rounds[key]);
+          if (drift.length > 0) {
+            throw new EvidenceError(
+              `local-record trajectory for ${stage}: resolved rounds policy has drifted since this run's dispatch — retained ${JSON.stringify(recordedRounds)}, engine resolved ${JSON.stringify(verification.resolved_rounds)}`,
+            );
+          }
+        }
+        engineRoundsByStage.set(stage, Array.isArray(verification.rounds) ? verification.rounds : []);
+        // validateReceipts (inside the spawned process) is not itself stage-
+        // scoped — it validates every pass on disk regardless of --stage — so
+        // two successful invocations report byte-identical diagnostics for
+        // anything outside the stage under computation. Dedup by (pass, reason)
+        // rather than concatenating.
+        for (const d of Array.isArray(verification.diagnostics) ? verification.diagnostics : []) {
+          const key = JSON.stringify([d.pass, d.reason]);
+          if (seenDiagnostics.has(key)) continue;
+          seenDiagnostics.add(key);
+          diagnostics.push(d);
+          // A rejected PASS is ordinary trajectory noise (an earlier retry,
+          // a stale artifact) and stays merely diagnosed. A rejected
+          // ADJUDICATION is different: the engine still returns a
+          // successful verification-only projection around it (its
+          // pre_adjudication/round-assembly logic just drops the
+          // document), so accepting that projection here would silently
+          // report `status: ok` with the round unadjudicated — corrupt
+          // retained evidence read as an ordinary unadjudicated round.
+          // Before this redesign, loadLocalEvidenceRun threw directly on
+          // this same rejection; restore that fail-closed contract now
+          // that the engine's own diagnostic discriminates it via
+          // `subject`. Integration cycle 3, confirmed.
+          if (d.subject === "adjudication" && d.level === "reject") {
+            throw new EvidenceError(`exit engine rejected adjudication ${d.pass}: ${d.reason}`);
+          }
+        }
+      } finally {
+        rmSync(stageSnapshotDir, { recursive: true, force: true });
+      }
+    }
+
+    // harmon-devkit#1001 item 10: the blocked-pass count must reflect only
+    // receipt-backed attempts — a stale or never-dispatched blocked envelope
+    // sitting on disk with no matching "pass" receipt must not inflate it.
+    // The engine's own `blocked_passes` is deliberately unfiltered (its
+    // header comment: "this module has no opinion on that"); restricting it
+    // to receipt-backed names is this harvester's own concern.
+    const receiptBackedNames = new Set(
+      (Array.isArray(body.receipts) ? body.receipts : [])
+        .filter((r) => r && r.kind === "pass" && typeof r.file === "string")
+        .map((r) => r.file),
+    );
+
+    // harmon-devkit#1001 item 11: grouped from the CUTOFF-VISIBLE marker set,
+    // not merely the authenticated one — an authenticated marker posted after
+    // an --as-of cutoff must not leak a later round into a historical read.
+    const byRound = new Map();
+    for (const observed of visibleMarkers.filter(({ marker }) => marker.dest === "issue" && marker.round !== null)) {
+      const key = `${observed.marker.stage}|${observed.marker.round}`;
+      const group = byRound.get(key) || [];
+      group.push(observed);
+      byRound.set(key, group);
+    }
+
+    // Schema-validated independent of marker coverage below — a blocked pass
+    // is worth validating even for a round this run's authenticated GitHub
+    // markers never mention, exactly as before this lane (the original
+    // validated every blockedConfidencePasses entry unconditionally, ahead of
+    // and independent from the marker/round matching loop).
+    //
+    // Integration Codex cycle 1 (P2), confirmed and fixed: this used to be
+    // built only from engineRoundsByStage's round.blocked_passes — but
+    // validateReceipts (inside the engine) rejects `status !== "completed"`
+    // BEFORE its run_id/schema checks, so a blocked pass never becomes part
+    // of any valid pass the engine groups into a round; a round whose ONLY
+    // artifact is a blocked pass therefore gets no round object from the
+    // engine at all, and its blocked pass was silently never validated.
+    // Scan the local pass files directly instead — every receipt-backed
+    // envelope with status "blocked" naming a confidence stage/round is
+    // validated regardless of whether the engine ever emitted a round for
+    // it, restoring the unconditional parity the comment above already
+    // claimed.
+    // Integration Codex cycle 4 (P2 x2), confirmed and fixed: this single
+    // predicate now governs both what gets VALIDATED and what gets COUNTED,
+    // but the two questions are answered separately (see each call site) —
+    // conflating them either dropped validation for an unreceipted envelope
+    // (4015233883: schema/run-binding checks below never ran for it, so a
+    // malformed or wrong-run_id blocked envelope with no receipt could still
+    // slip through as "never checked") or let an unvalidated engine
+    // round.blocked_passes entry get counted on receipt-backing alone
+    // (4015233886: the engine's own blocked_passes list carries no role
+    // opinion, so a wrong-role — e.g. integrator — envelope receipted for a
+    // review round counted as blocked review evidence without ever passing
+    // this predicate at all).
+    // Integration cycle 6 (P2), confirmed and fixed: isConfidenceBlockedEnvelope
+    // below requires a well-formed `payload` before it will even look at an
+    // envelope — a receipted `status: "blocked"`/`role: "reviewer"` envelope
+    // with a missing or null `payload` failed that check and was silently
+    // excluded from `blockedPassesToValidate` entirely, so a malformed
+    // confidence-role blocked result was never validated and never reported
+    // as a problem. isBlockedConfidenceRole selects on the two fields that
+    // are reliably present on ANY envelope worth validating (status, role);
+    // it is the VALIDATION-selection predicate specifically so a malformed
+    // payload reaches runExitValidator (the schema validator) and is
+    // rejected there, on its own terms, rather than being filtered out
+    // beforehand by a predicate standing in for that same check.
+    // isConfidenceBlockedEnvelope stays strict — the per-round COUNTING call
+    // site below genuinely needs a well-formed payload.stage/round to know
+    // which round an entry belongs to, and every receipt-backed entry it
+    // could possibly count has already passed through the validation loop
+    // just below (which throws on anything malformed), so nothing reaches
+    // it unvalidated.
+    function isBlockedConfidenceRole(envelope) {
+      return Boolean(envelope && envelope.status === "blocked" && (envelope.role === "challenger" || envelope.role === "reviewer"));
+    }
+    function isConfidenceBlockedEnvelope(envelope) {
+      return Boolean(
+        isBlockedConfidenceRole(envelope) &&
+          envelope.payload &&
+          (envelope.payload.stage === "challenge" || envelope.payload.stage === "review") &&
+          Number.isInteger(envelope.payload.round),
+      );
+    }
+    // VALIDATE every matching local envelope, receipted or not — receipt
+    // status decides only whether it is later COUNTED/reported (below), never
+    // whether corrupt retained evidence gets checked at all.
+    const blockedPassesToValidate = localPasses.filter((entry) => isBlockedConfidenceRole(entry.content));
+    for (const pass of blockedPassesToValidate) {
+      const file = localPassFileByName.get(pass.name);
+      if (!file) continue; // the engine can only ever name a file it read from this same passes/ dir
+      runExitValidator(
+        ["envelope", file, "--run-id", body.run_id, "--initiated-by", body.initiated_by],
+        `blocked pass ${pass.name}`,
+      );
+    }
+
+    const rounds = [];
+    for (const stage of ["challenge", "review"]) {
+      for (const round of engineRoundsByStage.get(stage) || []) {
         const key = `${stage}|${round.round}`;
         const group = byRound.get(key);
         if (!group) continue;
-        const passes = validPasses.filter((pass) => pass.payload.stage === stage && pass.payload.round === round.round);
-        const blockedPasses = blockedConfidencePasses.filter(
-          (pass) => pass.envelope.payload.stage === stage && pass.envelope.payload.round === round.round,
+        // Reported blocked evidence is validated blocked evidence: the
+        // validation loop above already throws on any receipt-backed entry
+        // that fails isConfidenceBlockedEnvelope's own schema/role/stage
+        // shape (via the exit-validator run on every matching local file),
+        // so requiring the SAME predicate here — plus this round's own
+        // stage, since the engine's blocked_passes carries no such opinion
+        // — means nothing reaches this list unvalidated.
+        const blockedPasses = (round.blocked_passes || []).filter(
+          (entry) =>
+            isConfidenceBlockedEnvelope(entry.envelope) &&
+            entry.envelope.payload.stage === stage &&
+            receiptBackedNames.has(entry.name),
         );
-        const adjudication = validAdjudications.find((entry) => entry.doc.stage === stage && entry.doc.round === round.round);
+        const findingAttributions = round.findings.length === 0 ? null : round.findings.map((finding) => ({
+          id: finding.id,
+          provenance: finding.verified_provenance,
+          provenance_status: finding.provenance_status,
+          fingerprint: finding.verified_fingerprint,
+          fingerprint_status: finding.fingerprint_status,
+        }));
         rounds.push({
           stage,
           dest: "issue",
           round: round.round,
           payload: {
-            passes: passes.map((pass) => pass.envelope),
-            blockedPasses: blockedPasses.map((pass) => pass.envelope),
-            adjudication: adjudication ? adjudication.doc : null,
-            findingAttributions: round.findings.length === 0 ? null : round.findings.map((finding) => ({
-              id: finding.id,
-              provenance: finding.verifiedProvenance,
-              provenance_status: finding.provenanceStatus,
-              fingerprint: finding.verifiedFingerprint,
-              fingerprint_status: finding.fingerprintStatus,
-            })),
+            passes: (round.passes || []).map((entry) => entry.envelope),
+            blockedPasses: blockedPasses.map((entry) => entry.envelope),
+            adjudication: round.adjudication || null,
+            findingAttributions,
             incomplete: round.status !== "complete",
           },
           commentIds: group.map((entry) => entry.comment.id),
@@ -2073,56 +2662,105 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
         byRound.delete(key);
       }
     }
-  } catch (err) {
-    if (err instanceof ExitIndeterminate) throw new EvidenceError(err.message);
-    throw err;
-  }
-  const artifactRoundKeys = new Set();
-  for (const pass of exitRun.passes) {
-    const envelope = pass.envelope;
-    const stage = envelope.role === "integrator" ? "integration" : envelope.payload.stage;
-    const round = envelope.role === "integrator" ? envelope.payload.integration_round : envelope.payload.round;
-    if (typeof stage === "string" && Number.isInteger(round)) artifactRoundKeys.add(`${stage}|${round}`);
-  }
-  for (const adjudication of exitRun.adjudications) {
-    if (typeof adjudication.doc.stage === "string" && Number.isInteger(adjudication.doc.round)) {
-      artifactRoundKeys.add(`${adjudication.doc.stage}|${adjudication.doc.round}`);
+
+    // harmon-devkit#1001 challenge round 1 (P1), confirmed: building coverage
+    // from raw, engine-unvalidated files let a marker whose only backing pass
+    // the engine REJECTED (e.g. "stage was not active when this pass
+    // arrived") still read as covered — the raw file's own payload.stage/
+    // round satisfied this set even though assembleLogicalRounds never
+    // admitted it, so the round silently vanished from the final `rounds`
+    // projection instead of failing closed. For challenge/review, coverage
+    // now means the engine's own trajectory actually produced this round
+    // (complete or a recognized incomplete/slot-failure round alike) — never
+    // a raw file's own unverified claim. Integration is the one exception:
+    // the engine's confidence-stage trajectory never reports on that role at
+    // all, so raw file presence remains its only available coverage signal.
+    const artifactRoundKeys = new Set();
+    for (const stage of ["challenge", "review"]) {
+      for (const round of engineRoundsByStage.get(stage) || []) {
+        artifactRoundKeys.add(`${stage}|${round.round}`);
+      }
     }
-  }
-  for (const slotFailure of Array.isArray(body.slot_failures) ? body.slot_failures : []) {
-    if (typeof slotFailure.stage === "string" && Number.isInteger(slotFailure.round)) {
-      artifactRoundKeys.add(`${slotFailure.stage}|${slotFailure.round}`);
+    for (const pass of localPasses) {
+      const envelope = pass.content;
+      if (envelope.role !== "integrator") continue;
+      const payload = envelope.payload || {};
+      if (Number.isInteger(payload.integration_round)) artifactRoundKeys.add(`integration|${payload.integration_round}`);
     }
+    for (const adjudication of localAdjudications) {
+      const stage = adjudication.content.stage;
+      if (stage === "challenge" || stage === "review") continue; // engine-validated coverage above is authoritative for these
+      if (typeof stage === "string" && Number.isInteger(adjudication.content.round)) {
+        artifactRoundKeys.add(`${stage}|${adjudication.content.round}`);
+      }
+    }
+    for (const slotFailure of localSlotFailures) {
+      if (slotFailure.stage === "challenge" || slotFailure.stage === "review") continue; // ditto
+      if (typeof slotFailure.stage === "string" && Number.isInteger(slotFailure.round)) {
+        artifactRoundKeys.add(`${slotFailure.stage}|${slotFailure.round}`);
+      }
+    }
+    const missingMarkerKey = [...byRound.keys()].find((key) => !artifactRoundKeys.has(key));
+    if (missingMarkerKey) {
+      const [stage, round] = missingMarkerKey.split("|");
+      throw new EvidenceError(`record-missing: authenticated ${stage} round ${round} marker group has no retained pass, adjudication, or slot failure`);
+    }
+    const unreceiptedPassFiles = diagnostics
+      .filter((entry) => entry.reason === "no receipt entry for this pass in run.receipts")
+      .map((entry) => entry.pass);
+
+    // harmon-devkit#1001 item 6: a mixed-format run can carry legacy-grammar
+    // evidence comments that were never registered at all — markedComments'
+    // own fenced-payload requirement means this can only ever match the
+    // legacy grammar (a current dev-flow-v2-evidence marker has no fenced
+    // JSON block), so this never double-reports what collectTrustedEvidenceSummaries
+    // already classified above. Classified with the SAME orphan/forgery rule
+    // the GitHub-comment harvest path uses, instead of the record simply
+    // being reported as if no such comments existed.
+    //
+    // harmon-devkit#1001 challenge round 5/7 (P2), confirmed and fixed: this
+    // used to check only created_at, unlike visibleMarkers above (now
+    // isCommentVisibleAsOf) which also falls back through updated_at — a
+    // legacy comment edited after an --as-of cutoff could leak a post-cutoff
+    // orphan/forgery finding into a historical read. Reuse the same helper.
+    const listedIdsNumeric = new Set(body.evidence_comments.map((entry) => Number(entry.id)));
+    const { trusted: legacyOrphans, forged: legacyForged } = findOrphanEvidence(
+      fetchedComments.filter((comment) => isCommentVisibleAsOf(comment, cutoff)),
+      { runId, runRecordAuthorId, listedIds: listedIdsNumeric, effectiveTrustAt },
+    );
+
+    // harmon-devkit#1001 item 7: a marker demoted for "wrong destination" or
+    // "absent stage" is a structural anomaly in the MARKER, not evidence its
+    // author is untrusted — keep it out of forged_comments (which claims a
+    // forged AUTHOR) and report it under its own tampering label instead.
+    const forged = [...allUntrustedMarkers.filter((observed) => observed.reason === "untrusted-actor"), ...legacyForged];
+    const tampered = allUntrustedMarkers.filter((observed) => observed.reason !== "untrusted-actor");
+
+    return {
+      status: "ok",
+      runId,
+      issueNumber,
+      record: { body },
+      state,
+      rounds,
+      slotFailures: localSlotFailures,
+      slotFailuresUnavailable: false,
+      futureAdjudicationFiles: [],
+      localRecordCurrentState: Boolean(asOf),
+      trajectoryDiagnostics: diagnostics,
+      untrusted: legacyOrphans,
+      forged,
+      tampered,
+      unreceiptedPassFiles,
+      legacyAlsoPresent,
+      unverifiedEvidenceDestinations: [...unverifiedEvidenceDestinations],
+    };
+  } finally {
+    rmSync(engineSnapshotDir, { recursive: true, force: true });
   }
-  const missingMarkerKey = [...byRound.keys()].find((key) => !artifactRoundKeys.has(key));
-  if (missingMarkerKey) {
-    const [stage, round] = missingMarkerKey.split("|");
-    throw new EvidenceError(`record-missing: authenticated ${stage} round ${round} marker group has no retained pass, adjudication, or slot failure`);
-  }
-  const unreceiptedPassFiles = diagnostics
-    .filter((entry) => entry.reason === "no receipt entry for this pass in run.receipts")
-    .map((entry) => entry.pass);
-  return {
-    status: "ok",
-    runId,
-    issueNumber,
-    record: { body },
-    state,
-    rounds,
-    slotFailures: Array.isArray(body.slot_failures) ? body.slot_failures : [],
-    slotFailuresUnavailable: false,
-    futureAdjudicationFiles: [],
-    localRecordCurrentState: Boolean(asOf),
-    trajectoryDiagnostics: diagnostics,
-    untrusted: [],
-    forged: allUntrustedMarkers,
-    unreceiptedPassFiles,
-    legacyAlsoPresent,
-    unverifiedEvidenceDestinations: [...unverifiedEvidenceDestinations],
-  };
 }
 
-function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null }) {
+function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordDir = null, requestedRunId = null, repoRoot = process.cwd() }) {
   const issueComments = fetchIssueComments(repo, issueNumber);
   const cutoffEpoch = asOf ? Date.parse(asOf) : Infinity;
   const withinCutoff = (comment) => Date.parse(comment.created_at) <= cutoffEpoch;
@@ -2160,7 +2798,7 @@ function harvestRunsForIssue(repo, issueNumber, { trustedActorIds, asOf, recordD
     } else {
       try {
         const effectiveTrustAt = createRegistryTrustResolver(repo, trustedActorIds);
-        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false);
+        const loaded = loadLocalEvidenceRun(repo, recordDir, requestedRunId, issueNumber, issueComments, liveSummaries.trusted, liveSummaries.untrusted, asOf, trustedActorIds, effectiveTrustAt, false, repoRoot);
         if (loaded.status !== "no-current-evidence" && (loaded.status !== "record-missing" || summaries.trusted.length > 0)) currentRun = loaded;
       } catch (err) {
         if (err instanceof EvidenceError) return [{ status: "indeterminate", runId: requestedRunId, issueNumber, reason: err.message }];
@@ -2496,6 +3134,21 @@ function computeClosedCohortMetric(repo, runsByIssue, { staleAfterDays, asOf, si
 // Per-run trajectory rendering
 // ---------------------------------------------------------------------------
 
+// harmon-devkit#1001 review round 2 (P1), confirmed and fixed: the engine's
+// provenance_status/fingerprint_status vocabulary is "verified", "corrected",
+// or "unverified" (dev-flow-exit.mjs) — this file's own `?? "not-measured"`
+// default (added alongside the rounds[] trajectory field in this lane's
+// first commit) is a FOURTH value for a finding whose round could not be
+// ancestry-retained. Both consumers below predate that fourth value and
+// checked `!== "unverified"` as a proxy for "actually verified" — which
+// silently misclassifies "not-measured" as verified (it IS, trivially,
+// !== "unverified"), reporting a round whose provenance was never checked
+// as confirmed. A positive check against the only two genuinely-measured
+// values is correct for any future status too, not just this one.
+function isVerifiedAttributionStatus(status) {
+  return status === "verified" || status === "corrected";
+}
+
 function verifiedFindingMeasurements(rounds) {
   const counts = {};
   const fingerprints = {};
@@ -2515,13 +3168,13 @@ function verifiedFindingMeasurements(rounds) {
       for (const f of findings) {
         const attribution = attributionById.get(f.id);
         const cls = f.class || "unclassified";
-        if (attribution && attribution.provenance_status !== "unverified") {
+        if (attribution && isVerifiedAttributionStatus(attribution.provenance_status)) {
           const key = `${cls}/${attribution.provenance}`;
           counts[key] = (counts[key] || 0) + 1;
         } else {
           unavailable = true;
         }
-        if (attribution && attribution.fingerprint_status !== "unverified") {
+        if (attribution && isVerifiedAttributionStatus(attribution.fingerprint_status)) {
           fingerprints[attribution.fingerprint] = (fingerprints[attribution.fingerprint] || 0) + 1;
         } else {
           unavailable = true;
@@ -2571,7 +3224,7 @@ function renderTrajectory(run) {
         : {}),
       ...(r.payload.incomplete ? { status: "capped" } : {}),
       provenance_measurement: Array.isArray(r.payload.findingAttributions)
-        ? (r.payload.findingAttributions.every((finding) => finding.provenance_status !== "unverified") ? "verified" : "unverified")
+        ? (r.payload.findingAttributions.every((finding) => isVerifiedAttributionStatus(finding.provenance_status)) ? "verified" : "unverified")
         : ((Array.isArray(r.payload.passes)
             ? r.payload.passes.reduce((n, p) => n + (((p.payload && p.payload.findings) || []).length), 0)
             : 0) === 0 ? "not-applicable" : "unavailable"),
@@ -2598,6 +3251,13 @@ function renderTrajectory(run) {
     // forged-author comment: reported, ignored").
     orphan_comments: run.untrusted.map((u) => ({ id: u.comment.id, actor_id: u.actorId })),
     forged_comments: run.forged.map((f) => ({ id: f.comment.id, actor_id: f.actorId })),
+    // A trusted actor's marker naming the wrong destination or a stage this
+    // run never visited (local-record path only, harmon-devkit#1001 item
+    // 7) — a structural anomaly in the marker, never a forged-author claim,
+    // so it gets its own label rather than inflating forged_comments.
+    // Absent for a source that never tags a reason (the GitHub-comment
+    // harvest path) — defaults to empty, not a behavior change there.
+    tampered_comments: (run.tampered || []).map((t) => ({ id: t.comment.id, actor_id: t.actorId, reason: t.reason })),
     unreceipted_pass_files: run.unreceiptedPassFiles || [],
     legacy_also_present: Boolean(run.legacyAlsoPresent),
     unverified_evidence_destinations: run.unverifiedEvidenceDestinations || [],
@@ -2640,6 +3300,9 @@ function renderTrajectoryTable(trajectory) {
   if (trajectory.trajectory_diagnostics.length > 0) lines.push(`trajectory diagnostics: ${JSON.stringify(trajectory.trajectory_diagnostics)}`);
   if (trajectory.legacy_also_present) lines.push("legacy-also-present: true");
   if (trajectory.unverified_evidence_destinations.length > 0) lines.push(`unverified evidence destinations: ${trajectory.unverified_evidence_destinations.join(", ")}`);
+  if (trajectory.tampered_comments && trajectory.tampered_comments.length > 0) {
+    lines.push(`tampered comments (trusted author, structural anomaly, not a forged author): ${JSON.stringify(trajectory.tampered_comments)}`);
+  }
   return lines.join("\n");
 }
 
@@ -3202,6 +3865,26 @@ function cliMetrics(args) {
   return 0;
 }
 
+// Integration Codex cycle 1 (P2), confirmed and fixed: an omitted
+// --repo-root defaulted to process.cwd() — correct only when the caller
+// happens to already be at the repository root. Launched from a
+// subdirectory (e.g. a wrapper resolving its own toplevel but invoking this
+// CLI without changing directory), that pointed the local-record path at
+// "<subdirectory>/.devflow.toml", which does not exist, reporting the
+// evidence indeterminate. Resolve the actual git toplevel instead; an
+// explicit --repo-root still always wins, and process.cwd() remains the
+// fallback for the (rare) case of running outside a git checkout entirely.
+function defaultRepoRoot() {
+  try {
+    const result = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
+    const trimmed = result.status === 0 && typeof result.stdout === "string" ? result.stdout.trim() : "";
+    if (trimmed) return trimmed;
+  } catch {
+    // fall through to cwd
+  }
+  return process.cwd();
+}
+
 function cliRun(args) {
   const trustedActorIds = requireTrustedActorIds(args);
   if (!trustedActorIds) return 2;
@@ -3225,10 +3908,20 @@ function cliRun(args) {
     console.error(`dev-flow-stats: --record-dir path does not exist: ${recordDirRequired.value}`);
     return 2;
   }
+  // harmon-devkit#1001 challenge round 6/7 (P2), confirmed and fixed: this
+  // path used to hardcode process.cwd() for the local-record trajectory's
+  // repository root, ignoring this same flag the --replay path already
+  // accepts and validates (below), and failing when invoked from a
+  // repository subdirectory even without the flag.
+  const repoRoot = args["repo-root"] || defaultRepoRoot();
+  if (typeof repoRoot !== "string" || !existsSync(repoRoot)) {
+    console.error(`dev-flow-stats: --repo-root path does not exist: ${repoRoot}`);
+    return 2;
+  }
 
   let runs;
   try {
-    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value });
+    runs = discoverRunsForId(args.repo, args.run, { trustedActorIds, asOf, recordDir: recordDirRequired.value, repoRoot });
   } catch (err) {
     console.error(`dev-flow-stats: ${err.message}`);
     return err instanceof EvidenceError ? 3 : 2;
@@ -3278,10 +3971,11 @@ function cliReplay(args) {
     console.error(`dev-flow-stats: exit script does not exist: ${exitScriptPath}`);
     return 2;
   }
-  // Defaults to process.cwd() (unchanged behavior) — only needed when
-  // --repo names a repository other than the current checkout, or a
-  // checkout missing the retained remote commits. See invokeExitScript.
-  const repoRoot = args["repo-root"] || process.cwd();
+  // Defaults to the resolved git toplevel (integration Codex cycle 1) —
+  // only needed when --repo names a repository other than the current
+  // checkout, or a checkout missing the retained remote commits. See
+  // invokeExitScript.
+  const repoRoot = args["repo-root"] || defaultRepoRoot();
   if (typeof repoRoot !== "string" || !existsSync(repoRoot)) {
     console.error(`dev-flow-stats: --repo-root path does not exist: ${repoRoot}`);
     return 2;

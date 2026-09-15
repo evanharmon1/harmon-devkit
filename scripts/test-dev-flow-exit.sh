@@ -423,6 +423,249 @@ outcome="$(grep -v -e '^::group::' -e '^::endgroup::' "${scratch}/dfe-task-$$.ou
 rm -f "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err"
 echo "OK: task devflow:exit produces the correct verdict JSON through the Taskfile wrapper"
 
+echo "== harmon-devkit#1001: --verification-only --json carries the additive rounds[] trajectory =="
+# The local-record harvester (scripts/dev-flow-stats.mjs) consumes this field
+# instead of calling loadRunDir/validateReceipts/assembleLogicalRounds/
+# applyVerification directly — this proves the field's shape end to end
+# against a real run directory, not just that predicates/verdicts are
+# unaffected (the 132 pre-existing conformance cases above already prove
+# that, since none of them reference `rounds` and all still pass unmodified).
+node scripts/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
+    --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
+    --current-head 0101010101010101010101010101010101010101 --verification-only --json \
+    >"${scratch}/dfe-rounds-$$.out" 2>"${scratch}/dfe-rounds-$$.err" || true
+node -e '
+  const body = require("node:fs").readFileSync(process.argv[1], "utf8");
+  const verification = JSON.parse(body);
+  const assert = require("node:assert/strict");
+  assert.equal(verification.outcome, "converged");
+  assert.equal(Array.isArray(verification.rounds), true, "rounds must be an array");
+  assert.equal(verification.rounds.length, 1);
+  const round = verification.rounds[0];
+  assert.equal(round.round, 1);
+  assert.equal(round.status, "complete");
+  assert.equal(round.reviewed_head, "0101010101010101010101010101010101010101");
+  assert.equal(round.has_adjudication, true);
+  assert.equal(round.adjudication.stage, "review");
+  assert.equal(round.adjudication.round, 1);
+  assert.equal(Array.isArray(round.passes), true);
+  assert.equal(round.passes.length, 1);
+  assert.equal(round.passes[0].name, "review-r1-codex-cli");
+  assert.equal(round.passes[0].envelope.payload.finder, "codex-cli");
+  assert.deepEqual(round.blocked_passes, []);
+  assert.deepEqual(round.findings, []);
+  console.log("rounds[] trajectory shape OK");
+' "${scratch}/dfe-rounds-$$.out" || {
+    cat "${scratch}/dfe-rounds-$$.out" "${scratch}/dfe-rounds-$$.err" >&2
+    rm -f "${scratch}/dfe-rounds-$$.out" "${scratch}/dfe-rounds-$$.err"
+    fail "--verification-only --json did not carry the expected rounds[] trajectory shape"
+}
+rm -f "${scratch}/dfe-rounds-$$.out" "${scratch}/dfe-rounds-$$.err"
+
+echo "== harmon-devkit#1001 review round 1: indeterminate results carry an additive machine-readable code =="
+# --stage review requested while the trusted receipt sequence's active stage
+# is still "challenge" (a nonzero-cap stage, not disabled) is the one call
+# site that currently sets a value: "stage-not-active" — a caller (the
+# local-record harvester) needs to recognize this EXPECTED condition without
+# string-matching the free-text reason.
+code_dir="$(mktemp -d)"
+cp -r "ai/schemas/fixtures/exit/single-round-clean-converge/." "${code_dir}/"
+node -e '
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  const run = JSON.parse(fs.readFileSync(file, "utf8"));
+  run.receipts.push({ kind: "transition", stage: "challenge" });
+  fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
+' "${code_dir}/run/run.json"
+node scripts/dev-flow-exit.mjs --run "${code_dir}/run" --stage review \
+    --policy "${code_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 --json \
+    >"${scratch}/dfe-code-$$.out" 2>/dev/null || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.equal(body.outcome, "indeterminate");
+  assert.equal(body.code, "stage-not-active");
+  assert.match(body.reason, /active stage is still "challenge"/);
+  console.log("indeterminate code field OK");
+' "${scratch}/dfe-code-$$.out" || {
+    cat "${scratch}/dfe-code-$$.out" >&2
+    rm -rf "${code_dir}" "${scratch}/dfe-code-$$.out"
+    fail "review-requested-while-challenge-active did not carry code:\"stage-not-active\""
+}
+rm -rf "${code_dir}" "${scratch}/dfe-code-$$.out"
+echo "OK: --stage review while challenge is still active carries code:\"stage-not-active\""
+
+echo "== harmon-devkit#1001 integration cycle 2: --verification-only reads review's retained round after a legitimate challenge re-entry =="
+# Identical trajectory to the stage-not-active fixture just above (review r1
+# already ran and was adjudicated clean, then challenge was re-entered — a
+# remediation loop) but queried with --verification-only: this is a
+# RETROSPECTIVE read of review's own already-retained round, never a request
+# to authorize new review work, so it must return the real trajectory instead
+# of the stage-not-active guard the final-verdict query above still gets for
+# the identical receipts.
+reentry_dir="$(mktemp -d)"
+cp -r "ai/schemas/fixtures/exit/single-round-clean-converge/." "${reentry_dir}/"
+node -e '
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  const run = JSON.parse(fs.readFileSync(file, "utf8"));
+  run.receipts.push({ kind: "transition", stage: "challenge" });
+  fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
+' "${reentry_dir}/run/run.json"
+node scripts/dev-flow-exit.mjs --run "${reentry_dir}/run" --stage review \
+    --policy "${reentry_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
+    --verification-only --json \
+    >"${scratch}/dfe-reentry-$$.out" 2>"${scratch}/dfe-reentry-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.notEqual(body.outcome, "indeterminate");
+  assert.equal(body.outcome, "converged");
+  assert.equal(Array.isArray(body.rounds), true, "rounds must be an array");
+  assert.equal(body.rounds.length, 1);
+  assert.equal(body.rounds[0].round, 1);
+  assert.equal(body.rounds[0].passes[0].name, "review-r1-codex-cli");
+  console.log("verification-only review re-entry OK");
+' "${scratch}/dfe-reentry-$$.out" || {
+    cat "${scratch}/dfe-reentry-$$.out" "${scratch}/dfe-reentry-$$.err" >&2
+    rm -rf "${reentry_dir}" "${scratch}/dfe-reentry-$$.out" "${scratch}/dfe-reentry-$$.err"
+    fail "--verification-only did not return review's retained round 1 after a challenge re-entry"
+}
+rm -rf "${reentry_dir}" "${scratch}/dfe-reentry-$$.out" "${scratch}/dfe-reentry-$$.err"
+echo "OK: --verification-only --stage review returns the real trajectory after a challenge re-entry"
+
+echo "== harmon-devkit#1001 integration cycle 2: rounds[] belongs only to the verification-only projection, never the final verdict =="
+node scripts/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
+    --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
+    --current-head 0101010101010101010101010101010101010101 --json \
+    >"${scratch}/dfe-final-norounds-$$.out" 2>"${scratch}/dfe-final-norounds-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.equal(body.outcome, "converged");
+  assert.equal("rounds" in body, false, "the final verdict must not carry the raw-envelope rounds[] trajectory");
+  console.log("final verdict carries no rounds[] OK");
+' "${scratch}/dfe-final-norounds-$$.out" || {
+    cat "${scratch}/dfe-final-norounds-$$.out" "${scratch}/dfe-final-norounds-$$.err" >&2
+    rm -f "${scratch}/dfe-final-norounds-$$.out" "${scratch}/dfe-final-norounds-$$.err"
+    fail "final verdict unexpectedly carried a rounds[] key"
+}
+rm -f "${scratch}/dfe-final-norounds-$$.out" "${scratch}/dfe-final-norounds-$$.err"
+echo "OK: the final (non-verification-only) verdict carries no rounds[] key — only --verification-only does"
+
+echo "== harmon-devkit#1001 integration cycle 3: a rejected adjudication's diagnostic carries subject:\"adjudication\" =="
+# A schema-valid-by-itself adjudication whose reviewed_head disagrees with its
+# own (valid) pass's payload.reviewed_head is rejected by
+# validateAdjudicationSchema — the engine still returns a successful
+# verification-only projection around it (pre_adjudication, awaiting a fresh
+# adjudication), but its diagnostics[] must let a caller tell this apart from
+# an ordinary rejected PASS, so a caller that must fail closed on corrupt
+# retained evidence can do so without pattern-matching free-text `reason`.
+adj_dir="$(mktemp -d)"
+cp -r "ai/schemas/fixtures/exit/single-round-clean-converge/." "${adj_dir}/"
+node -e '
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  const doc = JSON.parse(fs.readFileSync(file, "utf8"));
+  doc.reviewed_head = "9".repeat(40);
+  fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
+' "${adj_dir}/run/adjudications/review-r1.json"
+node scripts/dev-flow-exit.mjs --run "${adj_dir}/run" --stage review \
+    --policy "${adj_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
+    --verification-only --json \
+    >"${scratch}/dfe-adj-reject-$$.out" 2>"${scratch}/dfe-adj-reject-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.notEqual(body.outcome, "indeterminate");
+  const rejected = (body.diagnostics || []).filter((d) => d.level === "reject" && d.pass === "review-r1");
+  assert.equal(rejected.length, 1, `expected exactly one rejection diagnostic for review-r1, got: ${JSON.stringify(body.diagnostics)}`);
+  assert.equal(rejected[0].subject, "adjudication");
+  assert.match(rejected[0].reason, /adjudication schema validation failed/);
+  console.log("rejected-adjudication subject discriminator OK");
+' "${scratch}/dfe-adj-reject-$$.out" || {
+    cat "${scratch}/dfe-adj-reject-$$.out" "${scratch}/dfe-adj-reject-$$.err" >&2
+    rm -rf "${adj_dir}" "${scratch}/dfe-adj-reject-$$.out" "${scratch}/dfe-adj-reject-$$.err"
+    fail "a rejected adjudication's diagnostic did not carry subject:\"adjudication\""
+}
+rm -rf "${adj_dir}" "${scratch}/dfe-adj-reject-$$.out" "${scratch}/dfe-adj-reject-$$.err"
+echo "OK: a rejected adjudication's diagnostic carries subject:\"adjudication\""
+
+echo "== harmon-devkit#1001 integration cycle 4 (P1): a retrospective review read never authorizes adjudication =="
+# The cycle-2 re-entry fixture (review r1 ran, challenge was re-entered) with
+# the review adjudication REMOVED: the retained review round is complete and
+# unadjudicated, so the ordinary verification-only projection would return
+# action:"adjudicate" — the sole authorization /review needs to write one.
+# A query issued only because challenge happens to be active must never grant
+# that, whatever the rounds contain.
+retro_dir="$(mktemp -d)"
+cp -r "ai/schemas/fixtures/exit/single-round-clean-converge/." "${retro_dir}/"
+rm -f "${retro_dir}/run/adjudications/review-r1.json"
+node -e '
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  const run = JSON.parse(fs.readFileSync(file, "utf8"));
+  run.receipts.push({ kind: "transition", stage: "challenge" });
+  fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
+' "${retro_dir}/run/run.json"
+node scripts/dev-flow-exit.mjs --run "${retro_dir}/run" --stage review \
+    --policy "${retro_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
+    --verification-only --json \
+    >"${scratch}/dfe-retro-review-$$.out" 2>"${scratch}/dfe-retro-review-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.notEqual(body.action, "adjudicate");
+  assert.equal(body.action, "report-only");
+  assert.equal(body.retrospective, true);
+  assert.equal(Array.isArray(body.rounds), true);
+  assert.equal(body.rounds.length, 1);
+  assert.equal(body.rounds[0].has_adjudication, false);
+  console.log("retrospective review report-only OK");
+' "${scratch}/dfe-retro-review-$$.out" || {
+    cat "${scratch}/dfe-retro-review-$$.out" "${scratch}/dfe-retro-review-$$.err" >&2
+    rm -rf "${retro_dir}" "${scratch}/dfe-retro-review-$$.out" "${scratch}/dfe-retro-review-$$.err"
+    fail "a retrospective review read returned an authorizing action instead of report-only"
+}
+# Same run, queried for challenge: unchanged — the retrospective carve-out is
+# scoped to --stage review only, so challenge's own verification-only read
+# keeps its ordinary action (0 challenge rounds here: dispatch).
+node scripts/dev-flow-exit.mjs --run "${retro_dir}/run" --stage challenge \
+    --policy "${retro_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
+    --verification-only --json \
+    >"${scratch}/dfe-retro-challenge-$$.out" 2>"${scratch}/dfe-retro-challenge-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.equal(body.retrospective, undefined);
+  assert.equal(body.action, "dispatch");
+  console.log("challenge query unchanged OK");
+' "${scratch}/dfe-retro-challenge-$$.out" || {
+    cat "${scratch}/dfe-retro-challenge-$$.out" "${scratch}/dfe-retro-challenge-$$.err" >&2
+    rm -rf "${retro_dir}" "${scratch}/dfe-retro-review-$$.out" "${scratch}/dfe-retro-review-$$.err" "${scratch}/dfe-retro-challenge-$$.out" "${scratch}/dfe-retro-challenge-$$.err"
+    fail "the same run's challenge query was unexpectedly affected by the review retrospective carve-out"
+}
+rm -rf "${retro_dir}" "${scratch}/dfe-retro-review-$$.out" "${scratch}/dfe-retro-review-$$.err" "${scratch}/dfe-retro-challenge-$$.out" "${scratch}/dfe-retro-challenge-$$.err"
+echo "OK: a retrospective review read is report-only; the same run's challenge query is unaffected"
+
+echo "== harmon-devkit#1001 integration cycle 5: --verification-only --json carries the additive resolved_rounds policy =="
+node scripts/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
+    --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
+    --current-head 0101010101010101010101010101010101010101 --verification-only --json \
+    >"${scratch}/dfe-resolved-rounds-$$.out" 2>"${scratch}/dfe-resolved-rounds-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.deepEqual(body.resolved_rounds, { challenge: 3, review: 3, integration: 2, remediation: 2, min_rounds: 1 });
+  console.log("resolved_rounds OK");
+' "${scratch}/dfe-resolved-rounds-$$.out" || {
+    cat "${scratch}/dfe-resolved-rounds-$$.out" "${scratch}/dfe-resolved-rounds-$$.err" >&2
+    rm -f "${scratch}/dfe-resolved-rounds-$$.out" "${scratch}/dfe-resolved-rounds-$$.err"
+    fail "--verification-only --json did not carry the expected resolved_rounds policy"
+}
+rm -f "${scratch}/dfe-resolved-rounds-$$.out" "${scratch}/dfe-resolved-rounds-$$.err"
+echo "OK: --verification-only --json carries the additive resolved_rounds policy"
+
 # `|| true` on every dev-flow-exit.mjs invocation below: its exit code IS
 # its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
 # 22 capped), so under this file's `set -e` a converged control run would

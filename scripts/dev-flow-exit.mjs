@@ -30,6 +30,55 @@
 // rounds" and "accept as spent" (specs/dev-flow-v2.md § The split strategy,
 // issue #747). It is a diagnostic: no outcome, exit code, or cap depends on
 // it, and it needs no policy knob.
+//
+// The --verification-only projection also carries an additive `rounds`
+// array — the machine-readable trajectory a caller reports FROM instead of
+// re-deriving round assembly itself via this module's own exported helpers
+// (harmon-devkit#1001). The final (non-verification-only) verdict never
+// carries this field: it is the projection review/SKILL.md's fenced public
+// comment is built from, which must publish only verified/corrected
+// provenance and fingerprint values, never a round's raw envelopes
+// (integration cycle 2, confirmed — an earlier revision attached it there
+// too). One entry per logical
+// round assembled for `--stage`, from the FULL (pre-ancestry-filter)
+// trajectory, in round order:
+//   { round, status, reviewed_head, unresolved_slot, substitutions,
+//     has_adjudication, adjudication, passes, blocked_passes, findings }
+// `adjudication` is the raw adjudication document for this round, or null.
+// `passes`/`blocked_passes` are `{name, envelope}` pairs — `passes` is every
+// schema/receipt-valid pass naming this stage+round (not narrowed to
+// whichever pass actually won a contested slot); `blocked_passes` is every
+// on-disk envelope for this stage+round whose status is "blocked",
+// UNFILTERED by receipt-backing (a caller that only trusts a receipted
+// attempt restricts this itself — this module has no opinion on that). Each
+// `findings[]` entry is `{id, adjudicated_priority, disposition,
+// provenance_status, verified_provenance, fingerprint_status,
+// verified_fingerprint}`; a finding whose round could not be ancestry-
+// retained for this invocation's --current-head/--repo-root carries
+// "not-measured" for both statuses and null for both verified values,
+// rather than a fabricated verdict. This is purely additive: no predicate,
+// exit code, or verdict depends on it, and it changes no existing check.
+//
+// Every indeterminate result under --json also carries an additive `code`
+// field alongside its existing free-text `reason` (harmon-devkit#1001,
+// review round 1) — a stable, machine-readable classification a caller can
+// switch on instead of string-matching `reason`. Most indeterminate call
+// sites leave it `null` (unchanged from before this field existed); the one
+// call site that currently sets a value is `"stage-not-active"` (`--stage
+// review` requested while the trusted receipt sequence's active stage is
+// still "challenge") — an EXPECTED condition for a run genuinely still in
+// progress, not evidence of corruption, which a caller may choose to
+// recognize and degrade gracefully rather than treat as a fatal error. This
+// changes no exit code, verdict, or existing check.
+//
+// The --verification-only projection also carries an additive
+// `resolved_rounds` object — `{challenge, review, integration, remediation,
+// min_rounds}`, the round-caps policy THIS invocation actually resolved and
+// used (harmon-devkit#1001, integration cycle 5). A caller that separately
+// retained a run's own resolved policy at dispatch time can compare the two
+// and fail closed on drift instead of silently trusting whichever caps a
+// later .devflow.toml edit happens to resolve today. Purely additive: no
+// predicate, exit code, or verdict depends on it.
 
 import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -67,10 +116,21 @@ const EXIT_CODES = { continue: 0, converged: 20, diverging: 21, capped: 22, inde
 // capturing stderr and hoping the exit code survived the caller's own
 // wrapper. Shepherd-stage cloud finding, confirmed. Centralized here rather
 // than duplicated at each of the nine indeterminate call sites in main().
-function indeterminate(args, reason) {
+// harmon-devkit#1001 review round 1 (P1), confirmed and fixed: `reason` is
+// free text, so a caller (the local-record harvester) had no reliable way to
+// distinguish an EXPECTED indeterminate condition — e.g. "--stage review was
+// requested but challenge is still active" is not corruption, it is an
+// ordinary run genuinely still in progress — from a real one, short of
+// fragile string-matching. `code` is optional and additive: most call sites
+// pass none (so `code` stays null, exactly as this JSON shape always was for
+// them); only the one call site a caller needs to recognize sets one. No
+// exit code, verdict, or existing check changes — this is the same
+// machine-readable-output-only allowance the `rounds[]` trajectory field
+// already used.
+function indeterminate(args, reason, code = null) {
   console.error(`dev-flow-exit: indeterminate: ${reason}`);
   if (args && args.json) {
-    console.log(JSON.stringify({ outcome: "indeterminate", reason, rounds_counted: null, next_round: null }, null, 2));
+    console.log(JSON.stringify({ outcome: "indeterminate", reason, code, rounds_counted: null, next_round: null }, null, 2));
   }
   return EXIT_CODES.indeterminate;
 }
@@ -147,6 +207,18 @@ function latestActiveStage(receipts) {
     if (r.kind === "transition") active = r.stage;
   }
   return active;
+}
+
+// Whether the trusted receipt sequence records a transition into `stage` at
+// ANY point in its history — not merely whether it is the latest one. Used to
+// tell a genuine remediation re-entry (stage X ran, then an earlier stage was
+// re-entered) from a run that skipped straight past stage X without ever
+// entering it; only the former is a legitimate retrospective query.
+function hasEnteredStage(receipts, stage) {
+  for (const r of receipts || []) {
+    if (r.kind === "transition" && r.stage === stage) return true;
+  }
+  return false;
 }
 
 function loadRunDir(dir) {
@@ -759,6 +831,22 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
       }
     }
 
+    // Raw evidence for this round, carried on the round object purely for
+    // an external caller's own projection (harmon-devkit#1001: the local-
+    // record harvester consumes this instead of re-deriving round assembly
+    // itself via imported helpers). Additive only — no predicate or verdict
+    // above reads `passes`/`blockedPasses`/`adjudication`, so this cannot
+    // change exit-code or verdict semantics.
+    //
+    // `passes` mirrors `passesThisRound` (every schema/receipt-valid pass
+    // naming this stage+round), NOT the narrower `acceptedPasses`/`bySlot`
+    // result — a caller reporting evidence wants to see a pass that lost a
+    // slot conflict too, not just the one that won it.
+    const blockedPassesThisRound = allPasses.filter((p) => {
+      const payload = p.envelope.payload;
+      return payload && payload.stage === stage && payload.round === roundNumber && p.envelope.status === "blocked";
+    });
+
     rounds.push({
       round: roundNumber,
       reviewedHead,
@@ -767,6 +855,9 @@ function assembleLogicalRounds(stage, validPasses, adjudications, resolvedStage,
       substitutions,
       findings,
       hasAdjudication: !!adjudication,
+      adjudication,
+      passes: passesThisRound.map((p) => ({ name: p.name, envelope: p.envelope })),
+      blockedPasses: blockedPassesThisRound.map((p) => ({ name: p.name, envelope: p.envelope })),
     });
   }
 
@@ -1834,10 +1925,33 @@ async function main() {
   // (implying more challenge work should be authorized after review has
   // already begun) — see the post-verdict guard below.
   const activeStage = latestActiveStage(runDir.runRecord.receipts);
-  if (args.stage === "review" && activeStage === "challenge" && resolved.rounds.challenge !== 0) {
+  // A verification-only query is a RETROSPECTIVE read of review's own
+  // already-retained rounds, never a request to authorize new review work —
+  // that authorization question belongs solely to the final verdict below,
+  // which this carve-out never touches. Scoped to the case a remediation loop
+  // actually produces (review ran, then challenge was re-entered): only when
+  // the trusted receipts record review having been entered at some earlier
+  // point, distinct from "review is the latest active stage now". A run that
+  // skipped review entirely (no such transition ever recorded) still hits the
+  // guard below exactly as before — validateReceipts' own activeStageBefore
+  // binds each pass to the stage active WHEN IT ARRIVED, never to the run's
+  // current stage, so this only unblocks reading what was already legitimately
+  // retained. Integration cycle 2, confirmed.
+  const reviewRetrospectiveDuringChallenge =
+    args.stage === "review" &&
+    activeStage === "challenge" &&
+    args["verification-only"] &&
+    hasEnteredStage(runDir.runRecord.receipts, "review");
+  if (
+    args.stage === "review" &&
+    activeStage === "challenge" &&
+    resolved.rounds.challenge !== 0 &&
+    !reviewRetrospectiveDuringChallenge
+  ) {
     return indeterminate(
       args,
       `--stage review was requested but the trusted receipt sequence's active stage is still "challenge" (cap ${resolved.rounds.challenge}, not disabled) — review cannot be active until challenge exits`,
+      "stage-not-active",
     );
   }
 
@@ -1987,6 +2101,14 @@ async function main() {
       diagnostics.push({
         pass: adj.name,
         level: "reject",
+        // subject discriminates a rejected ADJUDICATION document from a
+        // rejected PASS (validateReceipts' own diagnostics above, which
+        // carry no subject) — a caller that must fail closed only on a
+        // corrupt retained adjudication, never on an ordinary rejected
+        // pass, needs this to tell the two apart without pattern-matching
+        // `reason`'s free text. Additive; no existing field changes.
+        // Integration cycle 3, confirmed.
+        subject: "adjudication",
         reason: `adjudication run_id "${adj.doc.run_id}" does not match the active run "${runDir.runRecord.run_id}"`,
       });
       continue;
@@ -1998,7 +2120,7 @@ async function main() {
     if (ok) {
       validAdjudications.push(adj);
     } else {
-      diagnostics.push({ pass: adj.name, level: "reject", reason: `adjudication schema validation failed: ${message}` });
+      diagnostics.push({ pass: adj.name, level: "reject", subject: "adjudication", reason: `adjudication schema validation failed: ${message}` });
     }
   }
 
@@ -2153,6 +2275,38 @@ async function main() {
   // has no legitimate target to verify against, retained or not.
   const { retained: ancestryRetainedForVerification } = ancestryRetainedRounds(rounds, currentHead, ancestryOpts);
   const corrections = applyVerification(ancestryRetainedForVerification, ledger);
+
+  // The full (pre-ancestry-filter) trajectory, for a caller that reports
+  // history rather than gates on it (harmon-devkit#1001) — deliberately
+  // built from `rounds`, not `ancestryRetainedForVerification`: a multi-
+  // round local record's earlier rounds must still be reported even when
+  // this invocation's --current-head/--repo-root cannot establish real git
+  // ancestry for them. applyVerification above already mutated every
+  // gating finding it could reach IN PLACE (findings are shared by
+  // reference between `rounds` and its ancestry-retained subset), so a
+  // finding here from an ancestry-excluded round simply carries no
+  // provenanceStatus/fingerprintStatus yet — surfaced below as
+  // "not-measured", never fabricated.
+  const roundsForTrajectory = rounds.map((r) => ({
+    round: r.round,
+    status: r.status,
+    reviewed_head: r.reviewedHead,
+    unresolved_slot: r.unresolvedSlot,
+    substitutions: r.substitutions,
+    has_adjudication: r.hasAdjudication,
+    adjudication: r.adjudication,
+    passes: r.passes,
+    blocked_passes: r.blockedPasses,
+    findings: r.findings.map((f) => ({
+      id: f.id,
+      adjudicated_priority: f.adjudicated_priority,
+      disposition: f.disposition,
+      provenance_status: f.provenanceStatus ?? "not-measured",
+      verified_provenance: f.verifiedProvenance ?? null,
+      fingerprint_status: f.fingerprintStatus ?? "not-measured",
+      verified_fingerprint: f.verifiedFingerprint ?? null,
+    })),
+  }));
   const retainedCompleteRounds = ancestryRetainedForVerification.filter((r) => r.status === "complete");
   const retainedRoundNumbers = retainedCompleteRounds.map((r) => r.round);
   const allCompleteRoundNumbers = rounds.filter((r) => r.status === "complete").map((r) => r.round);
@@ -2233,7 +2387,43 @@ async function main() {
           // adjudicate.
           verified_findings: verifiedFindings,
         };
+    // Attached uniformly across all three shapes above (the `pre_adjudication`
+    // shape previously carried no `diagnostics` at all — harmless in
+    // isolation, but a caller reading this projection uniformly needs it in
+    // every reachable shape, not just two of three).
+    verification.rounds = roundsForTrajectory;
+    verification.diagnostics = diagnostics;
     if (retentionChanged) verification.retained_rounds = retainedRoundNumbers;
+    // Additive: the resolved round-caps policy THIS invocation actually used
+    // (from `resolved.rounds`, the same object the cap-integrity checks
+    // above already consult) — a caller that separately retained a run's
+    // OWN policy projection at dispatch time (harmon-devkit#1001 local-
+    // record harvester: policy.json) can compare the two and fail closed on
+    // drift, rather than silently trusting whichever caps a later
+    // .devflow.toml edit happens to resolve today. Integration cycle 5,
+    // confirmed. No existing field, predicate, or exit code changes.
+    verification.resolved_rounds = {
+      challenge: resolved.rounds.challenge,
+      review: resolved.rounds.review,
+      integration: resolved.rounds.integration,
+      remediation: resolved.rounds.remediation,
+      min_rounds: resolved.rounds.min_rounds,
+    };
+    // A retrospective read (reviewRetrospectiveDuringChallenge, above) is a
+    // report on review's own already-retained history — never a request this
+    // invocation may act on. Without this, the ordinary verification-only
+    // projection could still return `action: "adjudicate"` for a complete,
+    // unadjudicated retained round (or "dispatch"/"advance"/"escalate" from
+    // any of the other two shapes) — and `/review` treats that action as the
+    // SOLE authorization to write an adjudication (review/SKILL.md), so a
+    // review query issued only because challenge happens to be active could
+    // authorize new evidence in the wrong stage. Override the action alone,
+    // whatever the rounds contain; outcome/reason/rounds/diagnostics keep
+    // reporting the real retained state. Integration cycle 4, confirmed P1.
+    if (reviewRetrospectiveDuringChallenge) {
+      verification.action = "report-only";
+      verification.retrospective = true;
+    }
     if (args.json) console.log(JSON.stringify(verification, null, 2));
     else console.log(`${args.stage}: ${verification.outcome} (${verification.reason})`);
     return incompleteRound ? EXIT_CODES.capped : 0;
@@ -2289,6 +2479,16 @@ async function main() {
   // them here would falsely present them as verified adjudication evidence
   // and make the blocker record internally inconsistent.
   verdict.verified_findings = verifiedFindings;
+  // Deliberately NOT `verdict.rounds = roundsForTrajectory` here. The final
+  // verdict is the public projection the confidence-stage skill's fenced
+  // comment is built from (review/SKILL.md: "publish only the verified or
+  // corrected provenance and fingerprint values, never the producer's
+  // superseded assertions"); `rounds` carries every pass's raw envelope,
+  // which belongs only in the read-only --verification-only projection above
+  // (never published) that the harvester's trajectory reads it from. No
+  // caller reads `.rounds` off this non-verification-only path — the
+  // harvester only ever invokes this script with --verification-only.
+  // Integration cycle 2, confirmed.
   if (verdict.outcome === "capped" && (verdict.reason === "finder_unavailable" || verdict.reason === "breadth_exhausted")) {
     const incompleteRound = ancestryRetainedForVerification.find((round) => round.status !== "complete");
     verdict.partial_findings = incompleteRound ? incompleteRound.findings.map((finding) => finding.id) : [];

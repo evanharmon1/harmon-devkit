@@ -116,6 +116,15 @@ read; the local directory supplies their full content. An absent named record
 is reported as `record-missing`, while omitting the option leaves the marker as
 `evidence-only` rather than inventing the missing content.
 
+Once selected, the local record's rounds are read through the exit engine
+itself — the harvester spawns `scripts/dev-flow-exit.mjs --verification-only
+--json` once per confidence stage with local evidence and consumes its
+`rounds[]` trajectory field, rather than re-implementing lifecycle/receipt/
+adjudication/contiguity validation on its own (harmon-devkit#1001). What stays
+harvester-owned is everything about which GitHub markers may be trusted to
+report a round at all — trust, registration, sequence, destination, and
+cutoff visibility under `--as-of`; the engine has no opinion on any of that.
+
 **`--as-of <iso8601>` reconstructs the run record and its comment evidence at
 that instant — and nothing else.** Comments are filtered by the cutoff, and
 the harvester replays the record's append-only chain to it. But two discovery
