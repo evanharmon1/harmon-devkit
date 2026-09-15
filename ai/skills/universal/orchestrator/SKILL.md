@@ -262,25 +262,49 @@ the ready report only once `POST-PROMOTION-CLOSED` actually arrives for a
 window that recorded no activity, naming the head SHA and the gate
 fingerprint; escalate instead of reporting ready if the watch can never be
 made to reach it.
+A `POST-PROMOTION-CLOSED` line is trustworthy evidence only for the exact
+promotion it names: `assets/lane-watch.sh` carries that window's `since:`
+promotion-event identity on the `POST-PROMOTION-CLOSED` event text itself, and
+the report may accept the line only when that carried identity matches the
+promotion identity the orchestrator itself most recently observed or armed a
+window from for this lane — never a same-lane, same-PR
+`POST-PROMOTION-CLOSED` line in isolation. A same-head withdrawal followed by
+a re-promotion after an earlier close re-arms a brand-new window with its own
+identity; a stdout consumer that ignores the carried identity cannot tell that
+close apart from this one, so the correlation is load-bearing, not advisory.
 Promotion itself is never reported as readiness: a status sent during the
 watch instead reads "promoted at T, post-promotion watch until T+15", never "ready".
 Immediately before actually sending the delayed ready report, re-read the
-current `headRefOid` and recompute the gate fingerprint with the same
-`readiness-gate.sh fingerprint` mechanism `AGENTS.md` § Readiness gate names
-for the promotion-time check. Then re-read `headRefOid` once more, **after**
-the fingerprint, exactly as that promotion-time check does: the fingerprint
-deliberately excludes the head, so a push landing between the scalar fetch
-and the fingerprint read leaves the hash identical, and only a head re-read
-on the far side proves the content just fingerprinted belongs to the head
-both reads name.
+current `headRefOid` and `isDraft`, and re-evaluate required CI status for
+that head (the same check the readiness gate itself performs), then recompute
+the gate fingerprint with the same `readiness-gate.sh fingerprint` mechanism
+`AGENTS.md` § Readiness gate names for the promotion-time check. Then re-read
+`headRefOid` and `isDraft` once more, **after** the fingerprint, exactly as
+that promotion-time check does: the fingerprint deliberately excludes the
+head, so a push landing between the scalar fetch and the fingerprint read
+leaves the hash identical, and only a head re-read on the far side proves the
+content just fingerprinted belongs to the head both reads name. The far-side
+`isDraft` read is the same kind of proof: the fingerprint deliberately
+excludes draft status too, so a withdrawal (a maintainer or automation
+converting the PR back to draft) landing between the two reads would
+otherwise go unnoticed even though the head and fingerprint still match.
 `assets/lane-watch.sh`'s own polling covers PR head/draft state and new
 reviews plus top-level and inline comments; it does not cover a PR-body edit
 or a thread-resolution toggle made during the watch, both content the
-readiness-gate fingerprint already covers. Require the near-side head, the
-far-side head, and the head promotion itself captured all to agree, and the
-fingerprint to match what promotion captured; if any of those disagree, the
-report must not claim readiness against that stale value — escalate or
-re-verify instead.
+readiness-gate fingerprint already covers, nor required CI re-running and
+coming back red, which the fingerprint deliberately excludes exactly as the
+readiness gate's own separate CI condition does. Require the near-side head,
+near-side `isDraft == false`, far-side head, far-side `isDraft == false`, the
+head promotion itself captured, the fingerprint, and required CI for the
+current head all to agree and pass; if any of those disagree, or the PR is
+now draft, or required CI is failing or still pending, the report must not
+claim readiness against that stale or invalid value. Matching the vendored
+`/integrate` skill's own handling of this same case
+(`.claude/skills/integrate/SKILL.md` step 6, "If the open PR is non-draft on
+a changed head or content snapshot..."): run `gh pr ready --undo`, confirm
+the PR is draft on the current head, and only then decide whether to
+re-verify or escalate — an invalidated promotion is returned to draft, never
+left standing as ready while remediation happens outside the workbench.
 This maintainer-facing report is distinct from § Persistent supervision's
 internal per-lane ledger entry ("a ready PR is reported"), which is
 orchestrator bookkeeping, not the maintainer-facing message this rule defines.

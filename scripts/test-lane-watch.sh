@@ -242,6 +242,18 @@ if [ "${1:-}" = api ]; then
             ;;
         esac
     fi
+    if [ -f "$WATCH_FIXTURES/malformed-activity-entry" ]; then
+        case "$endpoint" in
+        */events?per_page=100)
+            printf '%s\n' '[{"id":401,"event":"ready_for_review","created_at":"2098-01-01T00:00:00Z","actor":{"id":111,"login":"maintainer","type":"User"}}]'
+            ;;
+        */reviews?per_page=100)
+            printf '%s\n' '[{"id":999,"user":{"id":999,"login":"trusted-codex","type":"Bot"}}]'
+            ;;
+        *) printf '%s\n' '[]' ;;
+        esac
+        exit 0
+    fi
     phase=0
     [ ! -f "$WATCH_FIXTURES/phase" ] || phase="$(<"$WATCH_FIXTURES/phase")"
     activity_phase=3
@@ -432,6 +444,31 @@ assert_line "$activity_failure_err" 'lane-watch: GitHub activity observation fai
 assert_count "$test_tmp/activity-failure.state" 1 '^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+'
 rm "$fixture_dir/fail-api"
 
+# Integration-r3-codex-cloud finding #5: activity_rows() computed each row's
+# timestamp via `... // empty`, so a selected (trusted-actor) row missing
+# every timestamp field it needs silently produced nothing for that one `jq`
+# iteration -- the row vanished rather than the fetch failing, so a malformed
+# API response (a real activity entry missing its timestamp) was
+# indistinguishable from a genuinely quiet window. The malformed-activity-entry
+# fixture returns a resolvable ready_for_review event (so the cold-start
+# window opens and activity_snapshot() is actually reached) but a review row
+# from a trusted actor with none of submitted_at/updated_at/created_at. This
+# must now fail the snapshot the same way a hard API error does, not resolve
+# to zero activity.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+touch "$fixture_dir/malformed-activity-entry"
+malformed_activity_err="$test_tmp/malformed-activity.err"
+if bash "$watcher" --iterations 1 --state-file "$test_tmp/malformed-activity.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >/dev/null 2>"$malformed_activity_err"; then
+    fail 'watcher accepted an activity entry missing its timestamp'
+fi
+assert_line "$malformed_activity_err" 'lane-watch: GitHub activity observation failed for lane alpha'
+rm "$fixture_dir/malformed-activity-entry"
+
 # A cold-start window whose provisional deadline has passed now always
 # retries promotion_epoch() rather than abandoning the window unexamined --
 # so a genuine hard API failure during that retry (not a clean "no such
@@ -492,7 +529,14 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/tail-window.state" \
     >"$tail_out"
 rm "$fixture_dir/tail-activity-at"
 assert_count "$tail_out" 1 '^POST-PROMOTION-ACTIVITY '
-assert_line "$tail_out" 'POST-PROMOTION-CLOSED alpha: #77'
+# This window's persisted WINDOW detail carries no ":event_id" suffix (the
+# legacy shape), and this poll's warm re-check resolves no fresh event
+# (warm-events-empty is not touched here, but the default gh stub's events
+# endpoint returns nothing usable outside its own phase-driven fixture), so
+# the closing snapshot trusts the persisted `since` with an empty event id --
+# the "since=<epoch>:" trailing-colon legacy-adoption shape documented in the
+# header comment and in poll_activity()'s own comments.
+assert_line "$tail_out" "POST-PROMOTION-CLOSED alpha: #77 since=${tail_since}:"
 assert_count "$tail_out" 1 '^POST-PROMOTION-CLOSED '
 assert_count "$test_tmp/tail-window.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$test_tmp/tail-window.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
@@ -543,7 +587,11 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/closed-quiet.state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$closed_quiet_out"
 rm "$fixture_dir/warm-events-empty"
-assert_line "$closed_quiet_out" 'POST-PROMOTION-CLOSED alpha: #77'
+# Same legacy-adoption shape as the tail-window case above: this WINDOW's
+# persisted detail also carries no event id, and warm-events-empty makes this
+# poll's re-check resolve nothing fresh, so the closing snapshot trusts the
+# persisted `since` with an empty event id.
+assert_line "$closed_quiet_out" "POST-PROMOTION-CLOSED alpha: #77 since=${closed_since}:"
 assert_count "$closed_quiet_out" 1 '^POST-PROMOTION-CLOSED '
 assert_count "$closed_quiet_out" 0 '^POST-PROMOTION-ACTIVITY '
 assert_count "$test_tmp/closed-quiet.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
@@ -701,7 +749,9 @@ rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
 assert_line "$cold_resolve_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
 assert_count "$cold_resolve_out" 1 '^POST-PROMOTION-ACTIVITY '
 assert_count "$cold_resolve_out" 0 '^POST-PROMOTION-INDETERMINATE '
-assert_line "$cold_resolve_out" 'POST-PROMOTION-CLOSED alpha: #77'
+# A cold-start resolution carries the freshly resolved event id (401, from
+# the cold-resolve-since fixture branch) in the closed event's identity.
+assert_line "$cold_resolve_out" "POST-PROMOTION-CLOSED alpha: #77 since=${resolve_real_since}:401"
 assert_count "$cold_resolve_out" 1 '^POST-PROMOTION-CLOSED '
 assert_count "$test_tmp/cold-resolve.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$test_tmp/cold-resolve.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
@@ -773,7 +823,8 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/real-expired.state" \
     >"$realexpired_out"
 rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
 assert_line "$realexpired_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
-assert_line "$realexpired_out" 'POST-PROMOTION-CLOSED alpha: #77'
+# Same cold-resolve-since fixture branch, same event id 401.
+assert_line "$realexpired_out" "POST-PROMOTION-CLOSED alpha: #77 since=${realexpired_real_since}:401"
 assert_count "$realexpired_out" 1 '^POST-PROMOTION-CLOSED '
 assert_count "$test_tmp/real-expired.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$test_tmp/real-expired.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
@@ -896,7 +947,8 @@ bash "$watcher" --iterations 1 --state-file "$dormant_state" \
     --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
     2099-01-01T00:00:00Z theta:branch-theta:n7:evanharmon1/harmon-devkit \
     >"$dormant_out1"
-assert_line "$dormant_out1" 'POST-PROMOTION-CLOSED theta: #88'
+# Window 1 resolves from dormant-phase-1's event id 701.
+assert_line "$dormant_out1" "POST-PROMOTION-CLOSED theta: #88 since=${dormant_since1}:701"
 assert_count "$dormant_out1" 0 '^POST-PROMOTION-ACTIVITY '
 assert_count "$dormant_state" 0 '^WINDOW[[:space:]]+theta[[:space:]]+'
 assert_count "$dormant_state" 0 '^CLOSING[[:space:]]+theta[[:space:]]+'
@@ -940,6 +992,79 @@ assert_count "$dormant_out3" 0 '^POST-PROMOTION-INDETERMINATE '
 assert_count "$dormant_state" 1 \
     "^WINDOW[[:space:]]+theta[[:space:]]+88[[:space:]]+${dormant_until2}[[:space:]]+${dormant_since2}:702\$"
 assert_count "$dormant_state" 1 "^ARMED[[:space:]]+theta[[:space:]]+${dormant_since2}:702"
+
+# Integration-r3-codex-cloud finding #2: POST-PROMOTION-CLOSED carried no
+# identity of which promotion actually closed, so two closes for the same
+# lane/PR were textually indistinguishable -- a consumer watching for "the
+# concrete POST-PROMOTION-CLOSED event" could not tell a stale close (already
+# seen) apart from a fresh one for a genuinely new, still-active window. This
+# reproduces a close followed by an off-watch re-promotion whose window is
+# ALSO already expired at the moment check_repromotion_after_close() re-arms
+# it, so poll_activity() closes it again within that same poll -- producing a
+# second POST-PROMOTION-CLOSED for lane iota, PR #88, in one invocation.
+# Asserting the two closes' carried "since=<epoch>:<event_id>" identities
+# differ is the actual proof: pre-fix, both lines would have been the
+# byte-for-byte identical "POST-PROMOTION-CLOSED iota: #88" with nothing to
+# distinguish them.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+iota_now="$(date -u +%s)"
+iota_since1=$((iota_now - 5000))
+iota_since2=$((iota_now - 4000))
+iota_until2=$((iota_since2 + 900))
+iota_activity_at=$((iota_since2 + 100))
+iota_since1_iso="$(date -u -d "@$iota_since1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$iota_since1_iso" ] || iota_since1_iso="$(date -u -r "$iota_since1" +%Y-%m-%dT%H:%M:%SZ)"
+iota_since2_iso="$(date -u -d "@$iota_since2" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$iota_since2_iso" ] || iota_since2_iso="$(date -u -r "$iota_since2" +%Y-%m-%dT%H:%M:%SZ)"
+iota_activity_iso="$(date -u -d "@$iota_activity_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$iota_activity_iso" ] || iota_activity_iso="$(date -u -r "$iota_activity_at" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' '[{"number":88,"isDraft":false,"state":"OPEN","headRefOid":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}]' \
+    >"$fixture_dir/dormant-pr-json"
+printf '%s\n' "$iota_since1_iso" >"$fixture_dir/dormant-since1"
+touch "$fixture_dir/dormant-events"
+iota_state="$test_tmp/iota.state"
+
+# Poll 1: cold-start window resolves to since1, already 5000s in the past, so
+# it closes within this same poll -- a genuine watcher-produced close.
+printf '%s\n' 1 >"$fixture_dir/dormant-phase"
+iota_out1="$test_tmp/iota-1.out"
+bash "$watcher" --iterations 1 --state-file "$iota_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z iota:branch-theta:n8:evanharmon1/harmon-devkit \
+    >"$iota_out1"
+assert_line "$iota_out1" "POST-PROMOTION-CLOSED iota: #88 since=${iota_since1}:701"
+assert_count "$iota_out1" 1 '^POST-PROMOTION-CLOSED '
+
+# Poll 2: the off-watch withdraw-then-re-promote. discover_pr()'s tuple is
+# unchanged (dormant-pr-json is byte-for-byte identical), but the events
+# endpoint now also reports event 702 at since2 -- itself ALSO already
+# expired once re-armed (since2 + post_promotion_seconds < now), so
+# check_repromotion_after_close() re-arms a fresh window from it and this
+# same poll's poll_activity() call closes that fresh window immediately too.
+printf '%s\n' "$iota_since2_iso" >"$fixture_dir/dormant-since2"
+printf '%s\n' "$iota_activity_iso" >"$fixture_dir/dormant-activity"
+printf '%s\n' 2 >"$fixture_dir/dormant-phase"
+iota_out2="$test_tmp/iota-2.out"
+bash "$watcher" --iterations 1 --state-file "$iota_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z iota:branch-theta:n8:evanharmon1/harmon-devkit \
+    >"$iota_out2"
+rm "$fixture_dir/dormant-events" "$fixture_dir/dormant-phase" "$fixture_dir/dormant-since1" \
+    "$fixture_dir/dormant-since2" "$fixture_dir/dormant-activity" "$fixture_dir/dormant-pr-json"
+assert_line "$iota_out2" 'POST-PROMOTION-ACTIVITY iota: trusted-codex review 903'
+assert_line "$iota_out2" "POST-PROMOTION-CLOSED iota: #88 since=${iota_since2}:702"
+assert_count "$iota_out2" 1 '^POST-PROMOTION-CLOSED '
+# The two closes' carried identities are distinguishable: different epochs,
+# different event ids -- proving a consumer correlating against whichever
+# promotion it is tracking can tell them apart, which a bare
+# "POST-PROMOTION-CLOSED iota: #88" on both polls never could.
+[ "$iota_since1" != "$iota_since2" ] || fail 'test setup error: iota since1/since2 must differ'
+grep -Fxq "POST-PROMOTION-CLOSED iota: #88 since=${iota_since1}:701" "$iota_out1"
+grep -Fxq "POST-PROMOTION-CLOSED iota: #88 since=${iota_since2}:702" "$iota_out2"
+assert_count "$iota_state" 0 '^WINDOW[[:space:]]+iota[[:space:]]+'
+assert_count "$iota_state" 1 "^ARMED[[:space:]]+iota[[:space:]]+${iota_since2}:702"
 
 # Finding integration-r1-codex-cloud-1: a withdrawal and a same-head
 # re-promotion that both land inside the same wall-clock second produce two
@@ -1194,7 +1319,7 @@ rm "$fixture_dir/hang-pr-list"
 assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 
 # Every emitted line belongs to one of the stable event grammars.
-if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|POST-PROMOTION-CLOSED [^:]+: #[0-9]+|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
+if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|POST-PROMOTION-CLOSED [^:]+: #[0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
     "$tail_out" "$closed_quiet_out" "$closing_out" "$persistfail_out" "$cold_resolve_out" "$stillopen_out" "$realexpired_out" \
     "$samehead_rearm_out" "$cold_never_out" "$rearm_restart_out" "$created_edit_out" \

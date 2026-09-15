@@ -4,8 +4,25 @@
 #   SENTINEL <lane>: <value>[ (pane only)]
 #   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id>
-#   POST-PROMOTION-CLOSED <lane>: #<pr_number>
+#   POST-PROMOTION-CLOSED <lane>: #<pr_number> since=<epoch>:<event_id>
 #   POST-PROMOTION-INDETERMINATE <lane>: #<pr_number>
+#
+# POST-PROMOTION-CLOSED's trailing "since=<epoch>:<event_id>" is the identity
+# of the promotion window that just closed -- the same epoch:event_id pair
+# ARMED and WINDOW's own detail field already carry (see below). Without it
+# the event text is textually indistinguishable across two different windows
+# for the same lane/PR: a same-head withdrawal-then-re-promotion after an
+# earlier close re-arms a brand-new window (see check_repromotion_after_close()
+# below) and, on its own eventual close, would emit the exact same
+# "POST-PROMOTION-CLOSED <lane>: #<pr_number>" text the first close already
+# emitted. A consumer watching for "the concrete POST-PROMOTION-CLOSED event"
+# could not tell the two apart without this identity; carrying it lets a
+# consumer correlate a given CLOSED line against whichever promotion identity
+# it is currently tracking rather than trusting any same-lane CLOSED line in
+# isolation. <event_id> may be empty (rendering as a trailing colon with
+# nothing after it) only when the window was armed from state adopted before
+# this identity encoding existed -- the same legacy-adoption tolerance this
+# file already documents for WINDOW's own "since:event_id" detail field.
 #   USAGE-PAUSED <lane>
 #   WALLCLOCK <lane|run>: <text>
 #
@@ -357,6 +374,29 @@ activity_rows() {
     [ -n "$payload" ] || return 1
     jq -e 'if (.[0]? | type) == "array" then all(.[]; type == "array") else type == "array" end' \
         >/dev/null 2>&1 <<<"$payload" || return 1
+    # A row this function would otherwise select (a trusted actor's review,
+    # comment, or inline finding) must carry the timestamp field its kind
+    # needs -- a review needs at least one of submitted_at/updated_at/
+    # created_at, a comment/inline row needs created_at. Missing that field
+    # is not "no activity": the extraction pipeline below computes
+    # $created_at via `... // empty`, so a row missing it silently produces
+    # nothing for that one iteration and the caller cannot tell a malformed
+    # API response apart from a genuinely quiet window. Fail the snapshot
+    # (same as the structural array-shape check above) instead of silently
+    # dropping the row. Narrowed to selected rows only: an entry from an
+    # untrusted, non-User actor is already excluded from activity regardless
+    # of whether it carries a timestamp, so it is not checked here.
+    jq -e --arg kind "$kind" --arg trusted "$trusted_actor_ids" '
+      (if (.[0]? | type) == "array" then add else . end)
+      | map(select((.user.id | tostring) as $actor_id
+          | .user.type == "User" or ($trusted | split("\n") | index($actor_id))))
+      | all(.[];
+          if $kind == "review" then
+            (.submitted_at != null) or (.updated_at != null) or (.created_at != null)
+          else
+            .created_at != null
+          end)
+    ' >/dev/null 2>&1 <<<"$payload" || return 1
     jq -r --arg kind "$kind" --arg trusted "$trusted_actor_ids" '
       (if (.[0]? | type) == "array" then add else . end)[]?
       | (.user.id | tostring) as $actor_id
@@ -582,7 +622,11 @@ poll_activity() {
     # re-emitted next poll, never silently dropped.
     if [ "$expired" -eq 1 ]; then
         state_set CLOSING "$lane" 1
-        echo "POST-PROMOTION-CLOSED $lane: #$pr_number"
+        # Carry the closing window's own promotion identity (the same
+        # epoch:event_id pair recorded in WINDOW's detail field and in
+        # ARMED) so a consumer can bind this exact close to the promotion it
+        # closed -- see the header comment's event-grammar note above.
+        echo "POST-PROMOTION-CLOSED $lane: #$pr_number since=$since:$since_event_id"
         persist_state
         state_delete WINDOW "$lane"
         state_delete CLOSING "$lane"

@@ -290,6 +290,15 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     no activity either, precisely because that closing snapshot never
     happens; that is exactly what `POST-PROMOTION-INDETERMINATE` reports
     instead.
+    A `POST-PROMOTION-CLOSED` line is trustworthy evidence only for the exact
+    promotion it names — `assets/lane-watch.sh` carries that window's
+    `since:` promotion-event identity on the event text itself, and the
+    orchestrator accepts the line only when its carried identity matches the
+    promotion identity it most recently observed or armed a window from for
+    this lane, never a same-lane, same-PR `POST-PROMOTION-CLOSED` line in
+    isolation: a same-head withdrawal followed by a re-promotion after an
+    earlier close re-arms a brand-new window with its own identity, and
+    ignoring the carried identity cannot tell that close apart from this one.
     A `POST-PROMOTION-INDETERMINATE` result is never a pass: the orchestrator
     re-arms the window — clearing this lane's tracked `PR` state on that
     path is what makes even a plain restart a genuine retry now — or
@@ -298,18 +307,28 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     activity before appending this sentinel, escalating instead of reporting
     ready if it never gets there — never at the moment of promotion itself.
     Immediately before appending this sentinel, the orchestrator re-reads
-    the current `headRefOid` and recomputes the gate fingerprint (the same
+    the current `headRefOid` and `isDraft`, and re-evaluates required CI
+    status for that head (the same check the readiness gate itself
+    performs), then recomputes the gate fingerprint (the same
     `readiness-gate.sh fingerprint` mechanism `AGENTS.md` § Readiness gate
-    names for the promotion-time check), then re-reads `headRefOid` once
-    more, after the fingerprint, exactly as that promotion-time check does:
-    the fingerprint deliberately excludes the head, so a push landing
-    between the scalar fetch and the fingerprint read leaves the hash
-    identical, and only a head re-read on the far side proves the content
-    just fingerprinted belongs to the head both reads name. The
-    orchestrator requires the near-side head, the far-side head, and the
-    head promotion itself captured all to agree, and the fingerprint to
-    match what promotion captured; if any of those disagree, the report is
-    not sent as ready — escalate or re-verify instead.
+    names for the promotion-time check), then re-reads `headRefOid` and
+    `isDraft` once more, after the fingerprint, exactly as that
+    promotion-time check does: the fingerprint deliberately excludes both
+    the head and draft status, so a push or a withdrawal landing between the
+    scalar fetch and the fingerprint read leaves the hash and the
+    fingerprint identical, and only a re-read on the far side proves the
+    content just fingerprinted belongs to a head that is still non-draft.
+    The orchestrator requires the near-side head, near-side
+    `isDraft == false`, far-side head, far-side `isDraft == false`, the head
+    promotion itself captured, the fingerprint, and required CI for the
+    current head all to agree and pass; if any of those disagree, or the PR
+    is now draft, or required CI is failing or still pending, the report is
+    not sent as ready. Matching the vendored `/integrate` skill's own
+    handling of this same case (`.claude/skills/integrate/SKILL.md` step 6):
+    the orchestrator runs `gh pr ready --undo`, confirms the PR is draft on
+    the current head, and only then decides whether to re-verify or
+    escalate — an invalidated promotion is returned to draft, never left
+    standing as ready.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
 
