@@ -261,63 +261,83 @@ case "$out" in
 *) fail "bracket-glob refusal did not name the unfenced sibling path: $out" ;;
 esac
 
-echo "== fence-check.sh: resolves the comparison base from the target remote in a fork topology =="
+echo "== fence-check.sh: resolves the comparison base from the envelope issue.url's target remote =="
+make_remote_fixture() {
+    # $1: fixture dir  $2: origin url or "" to skip  $3: upstream url or ""
+    # $4: whether upstream carries the default branch (true/false)
+    local dir="$1" origin_url="$2" upstream_url="$3" upstream_has_main="$4"
+    git init -q "$dir"
+    mkdir -p "$dir/scripts"
+    ln -s "$repo/scripts/validate-result-schemas.mjs" "$dir/scripts/validate-result-schemas.mjs"
+    git -C "$dir" config user.name "Lane Fence Test"
+    git -C "$dir" config user.email "lane-fence@example.invalid"
+    printf '%s\n' base >"$dir/allowed.txt"
+    git -C "$dir" add .
+    git -C "$dir" commit -qm "test: seed remote-resolution fixture"
+    [ -z "$origin_url" ] || git -C "$dir" remote add origin "$origin_url"
+    [ -z "$upstream_url" ] || git -C "$dir" remote add upstream "$upstream_url"
+}
+
+make_remote_brief() {
+    # $1: destination  $2: fixture dir  $3: base sha  $4: issue url
+    local destination="$1" dir="$2" base_sha="$3" issue_url="$4" branch
+    branch="$(git -C "$dir" branch --show-current)"
+    awk '
+      /^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=1; next }
+      /^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=0; next }
+      inside && /^```json$/ { fenced=1; next }
+      inside && fenced && /^```$/ { fenced=0; next }
+      inside && fenced { print }
+    ' "$brief_source" | jq --argjson fence '[{"path":"allowed.txt"}]' --arg base "$base_sha" \
+        --arg worktree "$dir" --arg report "$tmp/remote-report.md" --arg branch "$branch" --arg issue_url "$issue_url" \
+        '.fence = $fence | .base_sha = $base | .default_branch = "main" | .worktree_path = $worktree | .report_path = $report | .branch = $branch | .claim_handoff.branch = $branch | .issue.url = $issue_url' \
+        >"$tmp/remote-envelope.json"
+    sed -n '1,/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/p' "$brief_source" >"$destination"
+    printf '\n```json\n' >>"$destination"
+    cat "$tmp/remote-envelope.json" >>"$destination"
+    printf '```\n\n' >>"$destination"
+    sed -n '/^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/,$p' "$brief_source" >>"$destination"
+}
+
+# Fork topology: origin is the writable fork and lacks the default branch
+# entirely (no refs/remotes/origin/main at all); upstream is the PR target
+# and carries it. issue.url names upstream's owner/repo.
 fork_fixture="$tmp/fork-repo"
-git init -q "$fork_fixture"
-mkdir -p "$fork_fixture/scripts"
-ln -s "$repo/scripts/validate-result-schemas.mjs" "$fork_fixture/scripts/validate-result-schemas.mjs"
-git -C "$fork_fixture" config user.name "Lane Fence Test"
-git -C "$fork_fixture" config user.email "lane-fence@example.invalid"
-printf '%s\n' base >"$fork_fixture/allowed.txt"
-git -C "$fork_fixture" add .
-git -C "$fork_fixture" commit -qm "test: seed fork fixture"
+make_remote_fixture "$fork_fixture" "https://github.com/example-fork/harmon-devkit.git" \
+    "https://github.com/example-upstream/harmon-devkit.git" true
 fork_base="$(git -C "$fork_fixture" rev-parse HEAD)"
-fork_branch="$(git -C "$fork_fixture" branch --show-current)"
-
-# origin is the writable fork and lacks the default branch entirely — no
-# refs/remotes/origin/main at all, the historical bug's exact trigger.
-# upstream carries the real default branch and is what a faked `gh repo
-# view` resolves the PR target to, matching the supported fork topology.
-git -C "$fork_fixture" remote add origin "https://github.com/example-fork/harmon-devkit.git"
-git -C "$fork_fixture" remote add upstream "https://github.com/example-upstream/harmon-devkit.git"
 git -C "$fork_fixture" update-ref refs/remotes/upstream/main "$fork_base"
-
 printf '%s\n' changed >"$fork_fixture/allowed.txt"
 git -C "$fork_fixture" add allowed.txt
 git -C "$fork_fixture" commit -qm "test: change allowed path in fork topology"
-
-awk '
-  /^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=1; next }
-  /^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/ { inside=0; next }
-  inside && /^```json$/ { fenced=1; next }
-  inside && fenced && /^```$/ { fenced=0; next }
-  inside && fenced { print }
-' "$brief_source" | jq --argjson fence '[{"path":"allowed.txt"}]' --arg base "$fork_base" \
-    --arg worktree "$fork_fixture" --arg report "$tmp/fork-report.md" --arg branch "$fork_branch" \
-    '.fence = $fence | .base_sha = $base | .default_branch = "main" | .worktree_path = $worktree | .report_path = $report | .branch = $branch | .claim_handoff.branch = $branch' \
-    >"$tmp/fork-envelope.json"
-sed -n '1,/^<!-- BEGIN SCHEMA-BOUND ENVELOPE FACTS -->$/p' "$brief_source" >"$tmp/fork.md"
-printf '\n```json\n' >>"$tmp/fork.md"
-cat "$tmp/fork-envelope.json" >>"$tmp/fork.md"
-printf '```\n\n' >>"$tmp/fork.md"
-sed -n '/^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/,$p' "$brief_source" >>"$tmp/fork.md"
-
-mkdir -p "$tmp/fakegh"
-cat >"$tmp/fakegh/gh" <<'FAKEGH'
-#!/bin/sh
-if [ "$*" = "repo view --json nameWithOwner --jq .nameWithOwner" ]; then
-    echo "example-upstream/harmon-devkit"
-    exit 0
-fi
-exit 1
-FAKEGH
-chmod +x "$tmp/fakegh/gh"
-
-out="$(cd "$fork_fixture" && PATH="$tmp/fakegh:$PATH" "$fence_check" --brief "$tmp/fork.md" 2>&1)" ||
-    fail "a two-remote fork-topology change was rejected: $out"
+make_remote_brief "$tmp/fork.md" "$fork_fixture" "$fork_base" "https://github.com/example-upstream/harmon-devkit/issues/1"
+out="$(cd "$fork_fixture" && "$fence_check" --brief "$tmp/fork.md" 2>&1)" ||
+    fail "a fork-topology change was rejected: $out"
 case "$out" in
-*"using remote 'upstream'"*) ;;
-*) fail "fork-topology comparison base did not report the resolved remote: $out" ;;
+*"using remote 'upstream'"*"issue.url"*) ;;
+*) fail "fork-topology comparison base did not report the resolved remote and source: $out" ;;
+esac
+
+# Non-fork checkout regression (challenge round 1, confirmed): origin already
+# is the PR target (issue.url matches it) but the checkout also carries an
+# unrelated upstream remote for a different repository entirely. The old
+# `gh repo view`-ambient-resolution design could regress here by preferring
+# a gh-favoured remote name over the actual target; issue.url must still
+# resolve to origin.
+unrelated_fixture="$tmp/unrelated-upstream-repo"
+make_remote_fixture "$unrelated_fixture" "https://github.com/evanharmon1/harmon-devkit.git" \
+    "https://github.com/example-unrelated/some-other-repo.git" false
+unrelated_base="$(git -C "$unrelated_fixture" rev-parse HEAD)"
+git -C "$unrelated_fixture" update-ref refs/remotes/origin/main "$unrelated_base"
+printf '%s\n' changed >"$unrelated_fixture/allowed.txt"
+git -C "$unrelated_fixture" add allowed.txt
+git -C "$unrelated_fixture" commit -qm "test: change allowed path with an unrelated upstream remote present"
+make_remote_brief "$tmp/unrelated.md" "$unrelated_fixture" "$unrelated_base" "https://github.com/evanharmon1/harmon-devkit/issues/987"
+out="$(cd "$unrelated_fixture" && "$fence_check" --brief "$tmp/unrelated.md" 2>&1)" ||
+    fail "a non-fork checkout with an unrelated upstream remote was rejected: $out"
+case "$out" in
+*"using remote 'origin'"*"issue.url"*) ;;
+*) fail "unrelated-upstream comparison base did not resolve to origin via issue.url: $out" ;;
 esac
 
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
@@ -345,8 +365,10 @@ printf '%s\n' 'go' >"$scan_fixture/scripts/short-enum-consumer.sh"
 printf '%s\n' 'id: short' >"$scan_fixture/short-keys.yaml"
 printf '%s\n' '- name: fixture' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' '"critical-key": value' >>"$scan_fixture/short-keys.yaml"
+printf '%s\n' '      - 8080:8080' >>"$scan_fixture/short-keys.yaml"
 printf '%s\n' 'id name' >"$scan_fixture/scripts/yaml-key-consumer.sh"
 printf '%s\n' 'critical-key' >"$scan_fixture/scripts/yaml-quoted-key-consumer.sh"
+printf '%s\n' '8080' >"$scan_fixture/scripts/yaml-port-mapping-consumer.sh"
 printf '%s\n' 'id = "short"' >"$scan_fixture/short-keys.toml"
 printf '%s\n' '_secret = "shh"' >>"$scan_fixture/short-keys.toml"
 printf '%s\n' 'id' >"$scan_fixture/scripts/toml-key-consumer.sh"
@@ -377,6 +399,8 @@ grep -Fxq scripts/yaml-key-consumer.sh <<<"$yaml_scan_out" ||
     fail "dependency scan missed short or list-mapping YAML keys"
 grep -Fxq scripts/yaml-quoted-key-consumer.sh <<<"$yaml_scan_out" ||
     fail "dependency scan missed a quoted YAML key"
+grep -Fxq scripts/yaml-port-mapping-consumer.sh <<<"$yaml_scan_out" &&
+    fail "dependency scan misread a Docker port-mapping scalar (- 8080:8080) as a key"
 toml_scan_out="$(cd "$scan_fixture" && "$scanner" short-keys.toml)" ||
     fail "TOML-key dependency scan failed"
 grep -Fxq scripts/toml-key-consumer.sh <<<"$toml_scan_out" ||

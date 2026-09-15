@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Prove that a lane's committed diff stays within its rendered file fence.
+# A fence entry matches literally per path component; a component is
+# glob-interpreted only when it itself contains `*` or `?` (so a bracket
+# expression like `[id]` is otherwise literal, and `**` still matches any
+# number of path components).
 set -euo pipefail
 
 usage() {
@@ -112,38 +116,46 @@ remote_name_with_owner() {
 }
 
 # origin is the writable remote in the supported fork topology, not
-# necessarily the PR target — prefer an explicit envelope hint (none of the
-# schema's properties carry one today; this is a no-op read against a future
-# addition, never one added here), else match a configured remote against
-# `gh repo view`'s own fork-aware resolution of the target repo, else fall
-# back to origin so an ordinary non-fork checkout is unaffected.
+# necessarily the PR target. The envelope's own issue.url already pins the
+# target repository (it is where the lane's issue and PR live), so it is the
+# only signal used: derive owner/repo from it and match a configured remote
+# against that. Ambient `gh repo view` resolution was tried and dropped —
+# it resolves by remote-name preference (upstream > github > origin > ...)
+# or a persisted gh-resolved config, not actual git ancestry, so it is not
+# reliably fork-aware and can regress a non-fork checkout that happens to
+# carry a gh-favoured remote name for an unrelated repository (challenge
+# round 1, confirmed). No match, or no parseable issue.url, falls back to
+# origin so an ordinary non-fork checkout is unaffected.
 resolve_comparison_remote() {
     local worktree="$1" envelope="$2"
-    local hint target_nwo remote url candidate
+    local issue_url target_nwo remote url candidate
 
-    hint="$(jq -r '.target_repo // empty' "$envelope" 2>/dev/null || true)"
-    if [ -n "$hint" ]; then
-        target_nwo="$hint"
-    else
-        target_nwo="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
-    fi
+    issue_url="$(jq -r '.issue.url // empty' "$envelope" 2>/dev/null || true)"
+    target_nwo=""
+    case "$issue_url" in
+    https://github.com/*/*)
+        target_nwo="$(printf '%s\n' "$issue_url" | sed -nE 's#^https://github\.com/([^/]+)/([^/]+)/.*#\1/\2#p')"
+        ;;
+    esac
 
     if [ -n "$target_nwo" ]; then
         while IFS= read -r remote; do
             url="$(git -C "$worktree" remote get-url "$remote" 2>/dev/null)" || continue
             candidate="$(remote_name_with_owner "$url")" || continue
             if [ "$candidate" = "$target_nwo" ]; then
-                printf '%s\n' "$remote"
+                printf '%s\t%s\n' "$remote" "issue.url ($target_nwo)"
                 return 0
             fi
         done < <(git -C "$worktree" remote)
     fi
 
-    printf '%s\n' "origin"
+    printf '%s\t%s\n' "origin" "fallback"
 }
 
-comparison_remote="$(resolve_comparison_remote "$worktree_path" "$envelope")"
-echo "fence-check: using remote '$comparison_remote' for the comparison base" >&2
+resolution="$(resolve_comparison_remote "$worktree_path" "$envelope")"
+comparison_remote="${resolution%%$'\t'*}"
+resolution_source="${resolution#*$'\t'}"
+echo "fence-check: using remote '$comparison_remote' for the comparison base (source: $resolution_source)" >&2
 comparison_base="$(git -C "$worktree_path" merge-base HEAD "$comparison_remote/$default_branch" 2>/dev/null)" || {
     echo "fence-check: could not derive a merge base against $comparison_remote/$default_branch" >&2
     exit 1
