@@ -1978,6 +1978,32 @@ function recordedRigorLevel(runDir) {
   }
 }
 
+const ROUNDS_POLICY_KEYS = ["challenge", "review", "integration", "remediation", "min_rounds"];
+
+// Integration cycle 5 (P2), confirmed and fixed: recordedRigorLevel above
+// retains only the rigor NAME, so the engine re-resolves caps/min_rounds
+// from TODAY's .devflow.toml — a run whose retained caps have since drifted
+// (the level's [rounds.*] table edited after this run executed) gets
+// silently verified against the wrong policy either way: tightening falsely
+// indeterminates valid historical evidence, loosening falsely accepts
+// rounds beyond the run's actual budget. This reads the run's own retained
+// `rounds` object (same policy.json sibling, same absent-stays-absent
+// contract as recordedRigorLevel — an older or hand-built record may not
+// have one) so the caller can compare it against the engine's own
+// additive `resolved_rounds` and fail closed on any disagreement, rather
+// than silently trusting either side.
+function recordedRoundsPolicy(runDir) {
+  try {
+    const projection = JSON.parse(readFileSync(path.join(runDir, "policy.json"), "utf8"));
+    const rounds = projection?.rounds;
+    if (!rounds || typeof rounds !== "object") return null;
+    if (!ROUNDS_POLICY_KEYS.every((key) => typeof rounds[key] === "number")) return null;
+    return Object.fromEntries(ROUNDS_POLICY_KEYS.map((key) => [key, rounds[key]]));
+  } catch {
+    return null;
+  }
+}
+
 // harmon-devkit#1001 item 11 / challenge round 5/7 (P2): a comment's
 // created_at alone answers "when was this comment first posted," not "is
 // this comment's CURRENT content visible as of a historical --as-of
@@ -2278,6 +2304,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
       throw new EvidenceError(`local-record trajectory requires the exit engine's policy at ${policyPath}, which does not exist`);
     }
     const rigor = recordedRigorLevel(engineSnapshotDir);
+    const recordedRounds = recordedRoundsPolicy(engineSnapshotDir);
     const engineRoundsByStage = new Map();
     const diagnostics = [];
     const seenDiagnostics = new Set();
@@ -2320,10 +2347,36 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
         // consulted when there are zero rounds), so an all-zero placeholder
         // is safe here specifically — never for a stage that has real
         // rounds, which still uses its own genuine head below.
-        const currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage) ?? "0".repeat(40);
-        const { verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+        let currentHead = currentHeadForLocalStage(localPasses, localAdjudications, localSlotFailures, stage) ?? "0".repeat(40);
+        let { verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
           runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot,
         });
+        // Integration cycle 5 (P2), confirmed and fixed: the naive currentHead
+        // above is picked from RAW local pass/adjudication/slot-failure
+        // entries (currentHeadForLocalStage), unfiltered by the engine's own
+        // validation (receipt-backing, run_id, schema) — an invalid later
+        // round (an unreceipted or wrong-run pass, say) could still win the
+        // "highest round" naive guess, poisoning ancestry-based retention for
+        // an otherwise-valid earlier round. Correct it from the engine's OWN
+        // validated trajectory rather than re-implementing validation here:
+        // if none of the returned rounds' own reviewed_head matches the naive
+        // guess, re-derive from the highest VALIDATED round's real head and
+        // ask again. The common case (naive guess already matches real
+        // evidence) costs nothing extra — only a genuine mismatch pays for a
+        // second invocation.
+        if (!error && Array.isArray(verification.rounds) && verification.rounds.length > 0) {
+          const validated = verification.rounds;
+          const naiveGuessValidated = validated.some((r) => r.reviewed_head === currentHead);
+          if (!naiveGuessValidated) {
+            const correctedHead = validated[validated.length - 1].reviewed_head;
+            if (typeof correctedHead === "string" && correctedHead.length > 0 && correctedHead !== currentHead) {
+              currentHead = correctedHead;
+              ({ verification, error, code } = invokeExitScriptVerificationOnly(DEFAULT_EXIT_SCRIPT, {
+                runDir: stageSnapshotDir, stage, policyPath, rigor, currentHead, repoRoot,
+              }));
+            }
+          }
+        }
         if (error) {
           // harmon-devkit#1001 review round 1 (P1), confirmed and fixed: a
           // run genuinely still in progress on challenge, never yet having
@@ -2356,6 +2409,23 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
           // inside invokeExitScriptVerificationOnly — translated here to
           // evidence-indeterminate rather than a raw crash (item 2).
           throw new EvidenceError(`local-record trajectory for ${stage}: ${error}`);
+        }
+        // Integration cycle 5 (P2), confirmed and fixed: recordedRoundsPolicy
+        // (this run's own retained caps) and the engine's additive
+        // resolved_rounds (what it actually resolved for THIS invocation)
+        // must agree — a .devflow.toml edit since dispatch must never be
+        // silently substituted for the policy the run actually executed
+        // under, in either direction (tightened: falsely indeterminate;
+        // loosened: falsely accepts extra rounds). Absent on either side
+        // (an older/hand-built record, or a fixture that predates this
+        // additive field) skips the check rather than forcing it.
+        if (recordedRounds && verification.resolved_rounds) {
+          const drift = ROUNDS_POLICY_KEYS.filter((key) => recordedRounds[key] !== verification.resolved_rounds[key]);
+          if (drift.length > 0) {
+            throw new EvidenceError(
+              `local-record trajectory for ${stage}: resolved rounds policy has drifted since this run's dispatch — retained ${JSON.stringify(recordedRounds)}, engine resolved ${JSON.stringify(verification.resolved_rounds)}`,
+            );
+          }
         }
         engineRoundsByStage.set(stage, Array.isArray(verification.rounds) ? verification.rounds : []);
         // validateReceipts (inside the spawned process) is not itself stage-

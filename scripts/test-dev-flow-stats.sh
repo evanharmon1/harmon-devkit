@@ -3770,6 +3770,97 @@ function writeScenario(name, db) {
     writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
     writeScenario("wrong-role-blocked", { issues: [{ number: 230, pull_request: null }], comments: { "230": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
+
+  // Integration Codex cycle 5 (P2), confirmed and fixed: recordedRigorLevel
+  // retained only the rigor NAME, so the engine re-resolved caps from
+  // TODAY's live .devflow.toml instead of the run's own retained rounds
+  // policy. A policy.json whose retained review cap (99) disagrees with
+  // what this repo's live .devflow.toml resolves for "standard" (3) must
+  // fail closed rather than silently using either number.
+  {
+    const runId = "run-232-rounds-policy-drift";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    // This repo's own live .devflow.toml resolves [rounds.standard].review
+    // to 3 (checked directly against the file this fixture runs against,
+    // since the harvester always reads <repo-root>/.devflow.toml). 99 is
+    // deliberately wrong.
+    writeFileSync(path.join(runDir, "policy.json"), JSON.stringify({
+      rigor: { level: "standard", source: "default_rigor" },
+      rounds: { challenge: 3, review: 99, integration: 4, remediation: 4, min_rounds: 1 },
+    }, null, 2));
+    writeScenario("rounds-policy-drift", { issues: [{ number: 232, pull_request: null }], comments: { "232": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
+  // Integration Codex cycle 5 (P2), confirmed and fixed: currentHeadForLocalStage
+  // picked --current-head from the highest-round RAW pass entry, unfiltered
+  // by validity — an invalid later round (wrong run_id here) could still win
+  // the naive "highest round" guess and poison ancestry-based retention for
+  // an otherwise-valid earlier round's FINDING (a zero-finding round's
+  // provenance_measurement is always "not-applicable" regardless of
+  // ancestry, so this needs a real finding to observe the difference — same
+  // shape as run-222-not-measured-provenance above, whose own root cause is
+  // a second LEGITIMATE round with an unrelated head; this one's root cause
+  // is an INVALID round that should never have been able to win the head
+  // selection at all).
+  {
+    const runId = "run-233-invalid-later-round-head";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    const round1Pass = pass("codex-verification", [{ priority: "P2", class: "correctness" }]);
+    round1Pass.run.run_id = runId;
+    round1Pass.head = "1".repeat(40);
+    round1Pass.payload.round = 1;
+    round1Pass.payload.reviewed_head = "1".repeat(40);
+    mkdirSync(path.join(runDir, "passes"), { recursive: true });
+    writeFileSync(path.join(runDir, "passes", "review-r1.json"), JSON.stringify(round1Pass, null, 2));
+    mkdirSync(path.join(runDir, "adjudications"), { recursive: true });
+    writeFileSync(path.join(runDir, "adjudications", "review-r1.json"), JSON.stringify({
+      schema: 2, run_id: runId, stage: "review", round: 1, reviewed_head: "1".repeat(40),
+      adjudications: [{
+        finding_id: round1Pass.payload.findings[0].id, reviewer_priority: "P2", adjudicated_priority: "P2",
+        disposition: "fix", reason: "confirmed", evidence: "fixture evidence", override: null,
+      }],
+    }, null, 2));
+    // Round 2's only artifact: an unreceipted, wrong-run_id pass with an
+    // unrelated head — never becomes a valid round (validateReceipts rejects
+    // it on run_id before it could ever win a receipted slot), but its
+    // higher round number and unrelated head are exactly what the naive
+    // currentHeadForLocalStage guess would have picked before this fix.
+    const wrongRun = pass("codex-verification", []);
+    wrongRun.run.run_id = "some-other-run-entirely";
+    wrongRun.head = "9".repeat(40);
+    wrongRun.payload.stage = "review";
+    wrongRun.payload.round = 2;
+    wrongRun.payload.reviewed_head = "9".repeat(40);
+    writeFileSync(path.join(runDir, "passes", "review-r2-wrong-run.json"), JSON.stringify(wrongRun, null, 2));
+    const run2 = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
+    run2.receipts = [...(run2.receipts || []), { kind: "transition", stage: "review" }, { kind: "pass", file: "review-r1" }];
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
+    writeScenario("invalid-later-round-head", { issues: [{ number: 233, pull_request: null }], comments: { "233": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -5135,6 +5226,29 @@ run_id="$(meta wrong-role-blocked .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "wrong-role-blocked: a receipted role:\"integrator\" blocked envelope was counted as blocked review evidence: $out"
+
+echo "== integration Codex cycle 5: a retained rounds policy that has drifted from the live .devflow.toml fails closed (fixed remediation 5/6) =="
+export DFSTATS_DB="$tmp/scenarios/rounds-policy-drift.json"
+run_id="$(meta rounds-policy-drift .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'resolved rounds policy has drifted' <<<"$out" ||
+    fail "rounds-policy-drift: a retained rounds policy disagreeing with the live .devflow.toml was not caught, rc=$rc: $out"
+
+echo "== integration Codex cycle 5: the verification head is corrected from validated rounds, not a raw invalid later-round entry (fixed remediation 5/6) =="
+export DFSTATS_DB="$tmp/scenarios/invalid-later-round-head.json"
+run_id="$(meta invalid-later-round-head .meta.runId)"
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
+# "unverified" (not "not-measured") proves round 1 was ancestry-RETAINED —
+# the corrected current-head resolved to its own reviewed_head, so
+# applyVerification actually ran on it. "not-measured" is what an invalid
+# round 2's unrelated head, left uncorrected, would have produced instead
+# (see run-222-not-measured-provenance above for that same root value from
+# the opposite, legitimate-second-round cause).
+echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:1,has_adjudication:true,finding_attributions:[{id:"review-r1-codex-verification-1",provenance:"original",provenance_status:"unverified",fingerprint:"new",fingerprint_status:"verified"}],provenance_measurement:"unverified"}]' >/dev/null ||
+    fail "invalid-later-round-head: round 1's provenance was corrupted by an invalid round 2's unrelated head: $out"
 
 echo "== harmon-devkit#1001 review round 1: a run still in progress on challenge reports challenge's own trajectory, review not-started (fixed round 2/5) =="
 export DFSTATS_DB="$tmp/scenarios/challenge-still-active.json"

@@ -70,6 +70,15 @@
 // progress, not evidence of corruption, which a caller may choose to
 // recognize and degrade gracefully rather than treat as a fatal error. This
 // changes no exit code, verdict, or existing check.
+//
+// The --verification-only projection also carries an additive
+// `resolved_rounds` object — `{challenge, review, integration, remediation,
+// min_rounds}`, the round-caps policy THIS invocation actually resolved and
+// used (harmon-devkit#1001, integration cycle 5). A caller that separately
+// retained a run's own resolved policy at dispatch time can compare the two
+// and fail closed on drift instead of silently trusting whichever caps a
+// later .devflow.toml edit happens to resolve today. Purely additive: no
+// predicate, exit code, or verdict depends on it.
 
 import { readFileSync, readdirSync, existsSync, writeFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -2385,6 +2394,21 @@ async function main() {
     verification.rounds = roundsForTrajectory;
     verification.diagnostics = diagnostics;
     if (retentionChanged) verification.retained_rounds = retainedRoundNumbers;
+    // Additive: the resolved round-caps policy THIS invocation actually used
+    // (from `resolved.rounds`, the same object the cap-integrity checks
+    // above already consult) — a caller that separately retained a run's
+    // OWN policy projection at dispatch time (harmon-devkit#1001 local-
+    // record harvester: policy.json) can compare the two and fail closed on
+    // drift, rather than silently trusting whichever caps a later
+    // .devflow.toml edit happens to resolve today. Integration cycle 5,
+    // confirmed. No existing field, predicate, or exit code changes.
+    verification.resolved_rounds = {
+      challenge: resolved.rounds.challenge,
+      review: resolved.rounds.review,
+      integration: resolved.rounds.integration,
+      remediation: resolved.rounds.remediation,
+      min_rounds: resolved.rounds.min_rounds,
+    };
     // A retrospective read (reviewRetrospectiveDuringChallenge, above) is a
     // report on review's own already-retained history — never a request this
     // invocation may act on. Without this, the ordinary verification-only

@@ -648,6 +648,24 @@ node -e '
 rm -rf "${retro_dir}" "${scratch}/dfe-retro-review-$$.out" "${scratch}/dfe-retro-review-$$.err" "${scratch}/dfe-retro-challenge-$$.out" "${scratch}/dfe-retro-challenge-$$.err"
 echo "OK: a retrospective review read is report-only; the same run's challenge query is unaffected"
 
+echo "== harmon-devkit#1001 integration cycle 5: --verification-only --json carries the additive resolved_rounds policy =="
+node scripts/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
+    --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
+    --current-head 0101010101010101010101010101010101010101 --verification-only --json \
+    >"${scratch}/dfe-resolved-rounds-$$.out" 2>"${scratch}/dfe-resolved-rounds-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.deepEqual(body.resolved_rounds, { challenge: 3, review: 3, integration: 2, remediation: 2, min_rounds: 1 });
+  console.log("resolved_rounds OK");
+' "${scratch}/dfe-resolved-rounds-$$.out" || {
+    cat "${scratch}/dfe-resolved-rounds-$$.out" "${scratch}/dfe-resolved-rounds-$$.err" >&2
+    rm -f "${scratch}/dfe-resolved-rounds-$$.out" "${scratch}/dfe-resolved-rounds-$$.err"
+    fail "--verification-only --json did not carry the expected resolved_rounds policy"
+}
+rm -f "${scratch}/dfe-resolved-rounds-$$.out" "${scratch}/dfe-resolved-rounds-$$.err"
+echo "OK: --verification-only --json carries the additive resolved_rounds policy"
+
 # `|| true` on every dev-flow-exit.mjs invocation below: its exit code IS
 # its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
 # 22 capped), so under this file's `set -e` a converged control run would
