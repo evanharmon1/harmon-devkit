@@ -17,15 +17,24 @@
 # once the run died — exactly the partial-application failure this script's
 # own bot-ownership rule is meant to guard against.
 #
+# --log PATH is REQUIRED in --execute mode (same append-only, exact-command
+# contract as groom-apply.sh's --log): opened with a "# run <UTC> execute"
+# header, and one "WRITE <exact command>" line before every gh write —
+# the decision comment, each superseded sibling's close, and each blocked-by
+# edge (Codex review on PR #1032, comment 4011648572 — without it, none of
+# this script's writes had a durable exact-command record comparable to
+# groom-apply.sh's). Dry run never touches it.
+#
 # --outcomes FILE (optional) appends one JSON Lines record per applied write:
 # {"issue":<decided-issue>,"op":"decision","status":"DECIDED <YYYY-MM-DD>","at":"<UTC>"}
-# for the decided issue, and {"issue":<sibling>,"op":"close","status":"DONE",
-# "at":"<UTC>"} for each closed --supersedes sibling — for groom-report.sh
-# render --outcomes to merge into each row's `status` column (finding 8).
-# Blocked-by edges are not disposition rows and get no outcome record. In
-# --execute mode the sink's appendability is checked before any write; once
-# writes are underway a write_outcome failure warns and continues rather than
-# aborting the run (challenge round 2 finding 8).
+# for the decided issue, {"issue":<sibling>,"op":"close","status":"DONE",
+# "at":"<UTC>"} for each closed --supersedes sibling, and
+# {"issue":<decided-issue>,"op":"blocked-by","status":"DONE","at":"<UTC>"} for
+# each added blocked-by edge (Codex review on PR #1032, comment 4011648572) —
+# for groom-report.sh render --outcomes to merge into each row's `status`
+# column (finding 8). In --execute mode the sink's appendability is checked
+# before any write; once writes are underway a write_outcome failure warns
+# and continues rather than aborting the run (challenge round 2 finding 8).
 #
 # Blocked-by edges use GitHub's issue-dependency REST endpoint, id-not-number
 # (the same call ai/skills/universal/breakdown/SKILL.md §7 documents — no
@@ -33,20 +42,26 @@
 #   gh api repos/<owner>/<repo>/issues/<blocked>/dependencies/blocked_by \
 #     -F issue_id=<blocker's numeric id>
 #
+# PREFLIGHT also rejects (exit 2) a --supersedes or --blocked-by value equal
+# to --issue itself, or a value repeated within the same flag (Codex review on
+# PR #1032, comment 4011648597) — before any gh call, including the
+# bot-ownership reads below.
+#
 # Usage:
 #   groom-decide.sh --repo owner/repo --issue N --decision-file PATH
 #                    [--supersedes M]... [--blocked-by K]... [--outcomes PATH]
-#                    [--execute]
+#                    [--log PATH] [--execute]
 #
 # Exit: 0 = dry-run resolved or every write applied, 1 = a write failed,
-#       2 = usage/environment error, 4 = refused (a --supersedes target is
-#       bot-authored).
+#       2 = usage/environment error (including --execute without --log, and a
+#       --supersedes/--blocked-by that self-references --issue or repeats),
+#       4 = refused (a --supersedes target is bot-authored).
 set -euo pipefail
 
 usage() {
     echo "Usage: $0 --repo owner/repo --issue N --decision-file PATH" >&2
     echo "          [--supersedes M]... [--blocked-by K]... [--outcomes PATH]" >&2
-    echo "          [--execute]" >&2
+    echo "          [--log PATH] [--execute]" >&2
     exit 2
 }
 
@@ -63,6 +78,27 @@ guard_issue_number() {
     esac
 }
 
+guard_not_self() {
+    local flag="$1" value="$2" issue_arg="$3"
+    [ "$value" != "$issue_arg" ] ||
+        die 2 "refused: $flag $value equals --issue $issue_arg (a decision" \
+            "cannot name itself)"
+}
+
+# A plain string-list membership test stands in for an associative array
+# (bash 3.2 has none — same reasoning as groom-apply.sh's seen_keys check).
+guard_no_duplicates() {
+    local flag="$1"
+    shift
+    local seen="" v
+    for v in "$@"; do
+        if grep -qxF "$v" <<<"$seen"; then
+            die 2 "refused: $flag lists $v more than once"
+        fi
+        seen="$(printf '%s\n%s' "$seen" "$v")"
+    done
+}
+
 # Same run-binding as groom-apply.sh / triage-apply.sh.
 guard_repo_binding() {
     local repo="$1"
@@ -70,6 +106,12 @@ guard_repo_binding() {
         die 4 "refused: --repo '$repo' does not match this run's bound" \
             "repository '$GROOM_REPO'"
     fi
+}
+
+log_write() {
+    local log="$1"
+    shift
+    printf 'WRITE %s\n' "$*" >>"$log"
 }
 
 write_outcome() {
@@ -91,6 +133,7 @@ issue=""
 decision_file=""
 execute=0
 outcomes=""
+log=""
 supersedes=()
 blocked_by=()
 while [ "$#" -gt 0 ]; do
@@ -125,6 +168,11 @@ while [ "$#" -gt 0 ]; do
         outcomes="$2"
         shift 2
         ;;
+    --log)
+        [ "$#" -ge 2 ] || usage
+        log="$2"
+        shift 2
+        ;;
     --execute) execute=1 && shift ;;
     *) usage ;;
     esac
@@ -134,12 +182,32 @@ guard_repo_binding "$repo"
 guard_issue_number "$issue"
 for m in "${supersedes[@]+"${supersedes[@]}"}"; do guard_issue_number "$m"; done
 for k in "${blocked_by[@]+"${blocked_by[@]}"}"; do guard_issue_number "$k"; done
+
+# Reject self-references and duplicates BEFORE any gh call (Codex review on
+# PR #1032, comment 4011648597): a --supersedes/--blocked-by sidecar
+# accidentally naming the decided issue itself, or naming the same sibling
+# twice, used to be caught only when GitHub itself refused the write — after
+# the decision comment (and any earlier --supersedes close) had already been
+# posted for real.
+for m in "${supersedes[@]+"${supersedes[@]}"}"; do guard_not_self --supersedes "$m" "$issue"; done
+for k in "${blocked_by[@]+"${blocked_by[@]}"}"; do guard_not_self --blocked-by "$k" "$issue"; done
+guard_no_duplicates --supersedes "${supersedes[@]+"${supersedes[@]}"}"
+guard_no_duplicates --blocked-by "${blocked_by[@]+"${blocked_by[@]}"}"
+
 [ -r "$decision_file" ] || die 2 "cannot read decision file: $decision_file"
 
 if [ "$execute" -eq 1 ]; then
     [ "${GROOM_EXECUTE:-0}" = "1" ] ||
         die 2 "--execute requires GROOM_EXECUTE=1 in the environment" \
             "(set by the task groom wrapper for supervised runs)"
+    # --log is required in --execute mode (Codex review on PR #1032, comment
+    # 4011648572) — same append-only, exact-command contract as
+    # groom-apply.sh's --log, opened here before any write.
+    [ -n "$log" ] ||
+        die 2 "--execute requires --log PATH (append-only write record," \
+            "same contract as groom-apply.sh)"
+    printf '# run %s execute\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >>"$log" ||
+        die 2 "could not open log file: $log"
     # Verify the outcomes sink is appendable up front (challenge round 2
     # finding 8) — the same reasoning as groom-apply.sh's log/outcomes
     # preflight: a write_outcome failure discovered mid-run, after live
@@ -195,6 +263,7 @@ trap 'rm -f "$comment_tmp"' EXIT
 if [ "$execute" -eq 0 ]; then
     echo "PLAN gh issue comment $issue --repo $repo --body-file <decision-comment>"
 else
+    log_write "$log" "gh issue comment $issue --repo $repo --body-file <decision-comment>"
     gh issue comment "$issue" --repo "$repo" --body-file "$comment_tmp" >/dev/null ||
         die 1 "write failed: decision comment on $repo#$issue"
     echo "APPLIED decision comment on $repo#$issue"
@@ -206,6 +275,7 @@ for m in "${supersedes[@]+"${supersedes[@]}"}"; do
     if [ "$execute" -eq 0 ]; then
         echo "PLAN gh issue close $m --repo $repo --reason 'not planned' --comment '$pointer'"
     else
+        log_write "$log" "gh issue close $m --repo $repo --reason 'not planned' --comment '$pointer'"
         gh issue close "$m" --repo "$repo" --reason "not planned" --comment "$pointer" >/dev/null ||
             die 1 "write failed: close $repo#$m"
         echo "APPLIED close $repo#$m (superseded by #$issue)"
@@ -219,10 +289,12 @@ for k in "${blocked_by[@]+"${blocked_by[@]}"}"; do
         echo "PLAN gh api repos/$repo/issues/$issue/dependencies/blocked_by -F issue_id=<id of #$k>"
     else
         blocker_id="${blocked_by_ids[$blocked_by_i]}"
+        log_write "$log" "gh api repos/$repo/issues/$issue/dependencies/blocked_by -F issue_id=$blocker_id"
         gh api "repos/$repo/issues/$issue/dependencies/blocked_by" \
             -F issue_id="$blocker_id" >/dev/null ||
             die 1 "write failed: blocked-by edge $repo#$issue <- $repo#$k"
         echo "APPLIED blocked-by $repo#$issue <- $repo#$k"
+        write_outcome "$outcomes" "$issue" "blocked-by" "DONE"
     fi
     blocked_by_i=$((blocked_by_i + 1))
 done

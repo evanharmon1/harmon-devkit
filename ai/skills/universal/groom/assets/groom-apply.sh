@@ -68,24 +68,36 @@
 #                  [--max-closes N] [--outcomes PATH] [--execute]
 #
 # Plan file: JSON Lines, one op per line:
-#   {"op":"close","issue":N,"reason":"completed|not planned|duplicate","comment":"...","bot_owned":false}
+#   {"op":"close","issue":N,"reason":"completed|not planned|duplicate","comment":"...","bot_owned":false,"unticked":false}
 #   {"op":"retitle","issue":N,"title":"...","previous_title":"...","bot_owned":false}
 #   {"op":"label","issue":N,"add":["..."],"remove":["needs-triage"],"bot_owned":false}
 #   {"op":"milestone-assign","issue":N,"milestone_title":"...","bot_owned":false}
 #   {"op":"sub-issue-link","parent":N,"child":N}
+#
+# A "close" row's optional "unticked" field is a plan-authoring hint only
+# (surfaced as a dry-run NOTE); the real gate is the live-body re-check below,
+# which runs only in --execute mode.
 #
 # Exit: 0 = dry-run resolved or every write applied, 1 = a write failed,
 #       2 = usage/environment error (including --execute without the env gate,
 #       more "close" rows than --max-closes allows, an unwritable --outcomes
 #       sink in --execute mode, or two plan rows naming the same op+issue),
 #       4 = refused (bot-owned issue, an unknown op, a label op triage-
-#       apply.sh's own dry run would reject, or a retitle whose live title no
-#       longer matches the plan's previous_title).
+#       apply.sh's own dry run would reject, a retitle whose live title no
+#       longer matches the plan's previous_title, a completed close whose
+#       live body still has an unticked task item, or a sub-issue-link whose
+#       parent or child id could not be resolved).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 triage_apply="$script_dir/../../triage/assets/triage-apply.sh"
 check_metadata="$script_dir/../../track-work/assets/check-issue-metadata.sh"
+
+# sub-issue-link's resolved CHILD numeric id, cached in pass 1 (execute mode
+# only) and consumed by pass 2 — indexed by plan-file line number. A plain
+# indexed array stands in for an associative array (bash 3.2 has none, same
+# reasoning as cmd_apply_plan's own seen_keys/lines handling below).
+sub_issue_child_id=()
 
 usage() {
     echo "Usage: $0 apply-plan --repo owner/repo --plan-file PATH --log PATH" >&2
@@ -182,6 +194,37 @@ validate_close() {
     *) die 2 "refused: #$issue close reason must be completed, 'not planned', or duplicate (got '$reason')" ;;
     esac
     refuse_if_bot "$repo" "$issue" "$row" "$execute" close
+
+    # track-work's closing contract (ai/skills/universal/track-work/SKILL.md
+    # §4): "completed" claims every acceptance item is ticked; the documented
+    # fail condition is closing completed while the live body still shows an
+    # unticked `- [ ]` item (Codex review on PR #1032, comment 4011648601).
+    if [ "$reason" = "completed" ]; then
+        if [ "$execute" -eq 1 ]; then
+            local body_json body
+            body_json="$(gh issue view "$issue" --repo "$repo" --json body)" ||
+                die 2 "could not re-read the body of $repo#$issue"
+            body="$(jq -r '.body // ""' <<<"$body_json")"
+            if grep -qE '^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]\[[[:space:]]\]' <<<"$body"; then
+                die 4 "refused: #$issue close reason is completed but its" \
+                    "live body still has an unticked '- [ ]' task item —" \
+                    "track-work's closing contract requires every acceptance" \
+                    "item ticked before closing completed"
+            fi
+        else
+            # Dry run never reads the live body (no write is imminent); it
+            # only surfaces the plan row's own optional "unticked" hint, when
+            # a plan author set one, so a reviewer can flag it before
+            # approving.
+            local plan_unticked
+            plan_unticked="$(jq -r '.unticked // false' <<<"$row")"
+            if [ "$plan_unticked" = "true" ]; then
+                echo "NOTE #$issue close reason is completed but the plan" \
+                    "row's own 'unticked' hint says an acceptance item is" \
+                    "still unchecked — verify before approving"
+            fi
+        fi
+    fi
 }
 
 validate_retitle() {
@@ -254,12 +297,32 @@ validate_milestone_assign() {
 }
 
 validate_sub_issue_link() {
-    local row="$1"
+    local repo="$1" row="$2" execute="$3" lineno="$4"
     local parent child
     parent="$(jq -r '.parent // empty' <<<"$row")"
     child="$(jq -r '.child // empty' <<<"$row")"
     guard_issue_number "$parent"
     guard_issue_number "$child"
+
+    # Resolve BOTH ids during pass 1, in execute mode, and cache the child's
+    # id for pass 2 (Codex review on PR #1032, comment 4011648563): without
+    # this, an inaccessible/deleted child was discovered only when pass 2
+    # got to this row, after every earlier row's write had already run —
+    # exactly the partial-application hazard the two-pass split (finding 5)
+    # exists to prevent. Dry run never resolves ids; it only prints the PLAN
+    # line, unchanged.
+    if [ "$execute" -eq 1 ]; then
+        local parent_id child_id
+        parent_id="$(gh api "repos/$repo/issues/$parent" --jq .id)" ||
+            die 4 "refused: could not resolve the numeric id of $repo#$parent" \
+                "(sub-issue-link parent at plan row $lineno) — it may be" \
+                "inaccessible or deleted"
+        child_id="$(gh api "repos/$repo/issues/$child" --jq .id)" ||
+            die 4 "refused: could not resolve the numeric id of $repo#$child" \
+                "(sub-issue-link child at plan row $lineno) — it may be" \
+                "inaccessible or deleted"
+        sub_issue_child_id[$lineno]="$child_id"
+    fi
 }
 
 # ── Pass 2: perform the write (or print the PLAN line in dry-run). Every row
@@ -374,7 +437,7 @@ apply_milestone_assign() {
 }
 
 apply_sub_issue_link() {
-    local repo="$1" row="$2" log="$3" execute="$4" outcomes="$5"
+    local repo="$1" row="$2" log="$3" execute="$4" outcomes="$5" lineno="$6"
     local parent child
     parent="$(jq -r '.parent // empty' <<<"$row")"
     child="$(jq -r '.child // empty' <<<"$row")"
@@ -384,9 +447,13 @@ apply_sub_issue_link() {
         echo "PLAN $cmd_desc"
         return 0
     fi
-    local child_id
-    child_id="$(gh api "repos/$repo/issues/$child" --jq .id)" ||
-        die 1 "could not resolve the numeric id of $repo#$child"
+    # Use the id pass 1 already resolved and validated (finding 4011648563)
+    # instead of re-querying here — a second query would also reopen the
+    # exact race the preflight closes.
+    local child_id="${sub_issue_child_id[$lineno]:-}"
+    [ -n "$child_id" ] ||
+        die 1 "internal error: pass 1 did not cache an id for $repo#$child" \
+            "(sub-issue-link at plan row $lineno)"
     log_write "$log" "gh api repos/$repo/issues/$parent/sub_issues -F sub_issue_id=$child_id"
     gh api "repos/$repo/issues/$parent/sub_issues" -F sub_issue_id="$child_id" >/dev/null ||
         die 1 "write failed: sub-issue link $repo#$parent <- $repo#$child"
@@ -508,7 +575,7 @@ cmd_apply_plan() {
         retitle) validate_retitle "$repo" "$line" "$execute" ;;
         label) validate_label "$repo" "$line" "$execute" ;;
         milestone-assign) validate_milestone_assign "$repo" "$line" "$execute" ;;
-        sub-issue-link) validate_sub_issue_link "$line" ;;
+        sub-issue-link) validate_sub_issue_link "$repo" "$line" "$execute" "$lineno" ;;
         *) die 4 "refused: plan-file line $lineno has an unknown op '$op'" ;;
         esac
     done
@@ -525,7 +592,7 @@ cmd_apply_plan() {
         retitle) apply_retitle "$repo" "$line" "$log" "$execute" "$outcomes" "$lineno" </dev/null ;;
         label) apply_label "$repo" "$line" "$log" "$execute" "$outcomes" </dev/null ;;
         milestone-assign) apply_milestone_assign "$repo" "$line" "$log" "$execute" "$outcomes" </dev/null ;;
-        sub-issue-link) apply_sub_issue_link "$repo" "$line" "$log" "$execute" "$outcomes" </dev/null ;;
+        sub-issue-link) apply_sub_issue_link "$repo" "$line" "$log" "$execute" "$outcomes" "$lineno" </dev/null ;;
         esac
     done
 }

@@ -224,9 +224,11 @@ appended — only when your runner's mode is APPLY. Run these, in order:
    large wholesale approval is still applied in bounded batches by default.
 2. `task groom -- --execute groom-decide.sh --repo "$REPO" --issue N \
    --decision-file "$SCRATCH/decisions/N.md" [--supersedes M]… \
-   [--blocked-by K]… --outcomes "$SCRATCH/outcomes.jsonl" --execute` once
-   per `$SCRATCH/decisions/<issue>.md`, reading that issue's `.supersedes` /
-   `.blocked-by` sidecar files into repeated flags.
+   [--blocked-by K]… --outcomes "$SCRATCH/outcomes.jsonl" \
+   --log "$SCRATCH/decide.log" --execute` once per
+   `$SCRATCH/decisions/<issue>.md`, reading that issue's `.supersedes` /
+   `.blocked-by` sidecar files into repeated flags. `--log` is required
+   whenever the script's own `--execute` is present.
 3. `task groom -- --execute groom-report.sh render \
    --dispositions "$SCRATCH/dispositions.json" \
    --outcomes "$SCRATCH/outcomes.jsonl" --out-html "$SCRATCH/report.html" \

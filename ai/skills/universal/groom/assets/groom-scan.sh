@@ -130,14 +130,20 @@ scan_tmp="$(mktemp -d)" || die "could not create a temp directory"
 trap 'rm -rf "$scan_tmp"' EXIT
 printf '%s' "$open_json" >"$scan_tmp/open.json"
 
-# --paginate unwraps a JSON-array response into a stream of individual
-# elements rather than one combined array (gh api's documented behavior for
-# an array-shaped endpoint), so every page's milestones land in the same
-# stream and are read below with --slurpfile as $milestones_arr directly
-# (not $milestones_arr[0]).
+# --paginate on an array-shaped endpoint writes ONE JSON array per page to
+# stdout, concatenated back to back — it does NOT merge pages into a single
+# array, and it does NOT unwrap each page into a stream of bare elements
+# (confirmed against `gh api --help` and gh 2.98.0's actual output; Codex
+# review on PR #1032, comment 4011648559). --slurpfile then reads every
+# top-level JSON value in the file into its own array slot, so
+# $milestones_arr ends up as an array of PAGE ARRAYS — even for a single
+# page, since slurpfile always wraps top-level values in its own outer
+# array. Flatten with `$milestones_arr[] | .[]` below to get each milestone
+# object regardless of how many pages were emitted; a failed call or an
+# empty `[]` page still flattens to nothing.
 gh api "repos/$repo/milestones" --paginate -X GET -f state=all \
-    -f per_page=100 >"$scan_tmp/milestones.ndjson" 2>/dev/null ||
-    : >"$scan_tmp/milestones.ndjson"
+    -f per_page=100 >"$scan_tmp/milestones.pages" 2>/dev/null ||
+    : >"$scan_tmp/milestones.pages"
 
 [ -z "$out" ] || exec >"$out"
 
@@ -145,16 +151,15 @@ jq -n -L "$title_module_dir" \
     --arg repo "$repo" \
     --arg board_access "$board_access" \
     --slurpfile open_arr "$scan_tmp/open.json" \
-    --slurpfile milestones_arr "$scan_tmp/milestones.ndjson" '
+    --slurpfile milestones_arr "$scan_tmp/milestones.pages" '
   include "issue-title";
   ($open_arr[0]) as $open |
-  ($milestones_arr // []) as $milestones |
   {
     repo: $repo,
     board_access: $board_access,
     open_total: ($open | length),
     milestones:
-      [ $milestones[] | {number, title, state, description,
+      [ $milestones_arr[] | .[] | {number, title, state, description,
                           open_issues: .open_issues, closed_issues: .closed_issues} ],
     open:
       [ $open[]

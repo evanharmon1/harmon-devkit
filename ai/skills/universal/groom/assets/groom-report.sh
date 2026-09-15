@@ -31,7 +31,13 @@
 # has written yet on its first render (challenge round 2 confirming round,
 # finding 2). A PATH that exists but cannot be read is still an error.
 #
-# Exit: 0 = rendered, 2 = usage/read error.
+# Every path argument (--dispositions, --outcomes, --out-html, --out-md) is
+# canonicalized and, when GROOM_SCRATCH is set, must lie under it — exactly
+# like groom-scan.sh's guard_out_path — refused (exit 4) otherwise.
+# Interactive use with GROOM_SCRATCH unset is unchanged.
+#
+# Exit: 0 = rendered, 2 = usage/read error, 4 = refused (a path argument
+#       outside GROOM_SCRATCH, when set).
 set -euo pipefail
 
 usage() {
@@ -43,6 +49,35 @@ usage() {
 die() {
     echo "groom-report: $*" >&2
     exit 2
+}
+
+# Canonicalize PATH and refuse it (exit 4) unless it lies under this run's
+# $GROOM_SCRATCH, same binding groom-scan.sh's guard_out_path enforces for
+# --out (Codex review on PR #1032, comment 4011648576): a headless audit's
+# worker treats issue text as untrusted, and this script's --out-html/
+# --out-md/--dispositions/--outcomes arguments were not bound to the run
+# directory, so a prompt-injected argument (e.g. --out-md ./AGENTS.md) could
+# escape the scoped Write(//<run_dir>/**) grant and truncate an arbitrary
+# worker-writable file. Interactive use with GROOM_SCRATCH unset is
+# unchanged — every path is accepted as given.
+guard_scratch_path() {
+    local flag="$1" path="$2" dir base abs
+    [ -n "${GROOM_SCRATCH:-}" ] || return 0
+    [ -n "$path" ] || return 0
+    dir="$(dirname "$path")"
+    base="$(basename "$path")"
+    abs="$(cd "$dir" 2>/dev/null && pwd -P)/$base" || {
+        echo "groom-report: could not resolve $flag path: $path" >&2
+        exit 2
+    }
+    case "$abs" in
+    "$GROOM_SCRATCH"/*) ;;
+    *)
+        echo "groom-report: refused: $flag must live under this run's" \
+            "scratch directory ($GROOM_SCRATCH), got: $path" >&2
+        exit 4
+        ;;
+    esac
 }
 
 cmd_render() {
@@ -73,6 +108,10 @@ cmd_render() {
         esac
     done
     [ -n "$dispositions" ] && [ -n "$out_html" ] && [ -n "$out_md" ] || usage
+    guard_scratch_path --dispositions "$dispositions"
+    guard_scratch_path --out-html "$out_html"
+    guard_scratch_path --out-md "$out_md"
+    [ -z "$outcomes" ] || guard_scratch_path --outcomes "$outcomes"
     [ -r "$dispositions" ] || die "cannot read dispositions dataset: $dispositions"
 
     local now

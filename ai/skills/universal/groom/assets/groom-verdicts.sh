@@ -42,9 +42,16 @@
 # carried into the dataset verbatim as `proposals` for groom-report.sh's
 # Parent issues / Milestones sections to render.
 #
+# Every path argument (FILE..., --scan, --out, --proposals) is canonicalized
+# and, when GROOM_SCRATCH is set, must lie under it — exactly like
+# groom-scan.sh's guard_out_path — refused (exit 4) otherwise. Interactive
+# use with GROOM_SCRATCH unset is unchanged.
+#
 # Exit: 0 = valid (validate) / dataset written (join), 1 = a row violates the
 #       vocabulary contract, or coverage finds a duplicate/unknown/unallowed-
-#       missing number (each names the offending issue number(s)), 2 = usage.
+#       missing number, or a CLOSE-dup-of-# target is self-referential or not
+#       in scan.open (each names the offending issue number(s)), 2 = usage,
+#       4 = refused (a path argument outside GROOM_SCRATCH, when set).
 set -euo pipefail
 
 usage() {
@@ -59,12 +66,46 @@ die() {
     exit 2
 }
 
+# Canonicalize PATH and refuse it (exit 4) unless it lies under this run's
+# $GROOM_SCRATCH, same binding groom-scan.sh's guard_out_path enforces for
+# --out (Codex review on PR #1032, comment 4011648576): a headless audit's
+# worker treats issue text as untrusted, and unlike groom-scan.sh, neither
+# this script nor groom-report.sh enforced GROOM_SCRATCH on the paths a
+# model can pass, so a prompt-injected --out/--scan/verdict-file argument
+# could escape the scoped Write(//<run_dir>/**) grant. Interactive use with
+# GROOM_SCRATCH unset is unchanged — every path is accepted as given.
+guard_scratch_path() {
+    local flag="$1" path="$2" dir base abs
+    [ -n "${GROOM_SCRATCH:-}" ] || return 0
+    [ -n "$path" ] || return 0
+    dir="$(dirname "$path")"
+    base="$(basename "$path")"
+    abs="$(cd "$dir" 2>/dev/null && pwd -P)/$base" || {
+        echo "groom-verdicts: could not resolve $flag path: $path" >&2
+        exit 2
+    }
+    case "$abs" in
+    "$GROOM_SCRATCH"/*) ;;
+    *)
+        echo "groom-verdicts: refused: $flag must live under this run's" \
+            "scratch directory ($GROOM_SCRATCH), got: $path" >&2
+        exit 4
+        ;;
+    esac
+}
+
 # CLOSE-wrong-repo carries a real target description in its parens (e.g.
 # "CLOSE-wrong-repo (harmonops/harmon-infra)"), per references/verdict-
 # vocabulary.md and references/subagent-brief.md — a literal word "target"
 # is the placeholder in the docs, not a value to match verbatim.
 CLOSE_RE='^CLOSE-(done|obsolete|wrong-repo \([^)]+\)|dup-of-#[0-9]+)$'
 VERDICT_RE='^(CLOSE-done|CLOSE-obsolete|CLOSE-wrong-repo \([^)]+\)|CLOSE-dup-of-#[0-9]+|KEEP|NEEDS-DECISION|NEEDS-INFO)$'
+# The parenthetical after CLOSE-wrong-repo must be a real target description,
+# not the literal word from the documented template
+# (`CLOSE-wrong-repo (target)` in references/verdict-vocabulary.md and
+# references/subagent-brief.md is a placeholder to fill in, not a value to
+# copy verbatim — Codex review on PR #1032, comment 4011648585).
+WRONG_REPO_RE='^CLOSE-wrong-repo \(([^)]+)\)$'
 
 # Validate every line of every file. Prints one "groom-verdicts: refused: ..."
 # line per violation (never stops early) so a subagent's whole file can be
@@ -101,6 +142,16 @@ validate_files() {
                 bad=$((bad + 1))
                 continue
             fi
+            if [[ "$verdict" =~ $WRONG_REPO_RE ]]; then
+                local wrong_repo_target wrong_repo_compact
+                wrong_repo_target="${BASH_REMATCH[1]}"
+                wrong_repo_compact="$(printf '%s' "$wrong_repo_target" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+                if [ "$wrong_repo_compact" = "target" ]; then
+                    echo "groom-verdicts: refused: #$number — CLOSE-wrong-repo needs a real target description, not the literal placeholder 'target'" >&2
+                    bad=$((bad + 1))
+                    continue
+                fi
+            fi
             case "$priority" in
             high | medium | low) ;;
             *)
@@ -119,10 +170,25 @@ validate_files() {
                 bad=$((bad + 1))
                 continue
             fi
-            if [[ "$verdict" =~ $CLOSE_RE ]] && [ -z "$evidence" ]; then
-                echo "groom-verdicts: refused: #$number — a CLOSE verdict requires nonempty evidence" >&2
-                bad=$((bad + 1))
-                continue
+            if [[ "$verdict" =~ $CLOSE_RE ]]; then
+                # `jq -r` coerces any JSON value (a number, `[]`, `null`) to a
+                # shell string, so checking only `[ -z "$evidence" ]` accepted
+                # a non-string or whitespace-only evidence field even though
+                # the documented schema requires a concrete string (Codex
+                # review on PR #1032, comment 4011648593).
+                local evidence_type evidence_trimmed
+                evidence_type="$(jq -r '.evidence | type' <<<"$line")"
+                if [ "$evidence_type" != "string" ]; then
+                    echo "groom-verdicts: refused: #$number — a CLOSE verdict requires evidence to be a JSON string (got $evidence_type)" >&2
+                    bad=$((bad + 1))
+                    continue
+                fi
+                evidence_trimmed="$(printf '%s' "$evidence" | tr -d '[:space:]')"
+                if [ -z "$evidence_trimmed" ]; then
+                    echo "groom-verdicts: refused: #$number — a CLOSE verdict requires nonempty evidence" >&2
+                    bad=$((bad + 1))
+                    continue
+                fi
             fi
             if [ "$verdict" = "NEEDS-DECISION" ] && [ -z "$question" ]; then
                 echo "groom-verdicts: refused: #$number — NEEDS-DECISION requires a one-sentence question" >&2
@@ -131,11 +197,20 @@ validate_files() {
             fi
         done <"$file"
     done
-    return "$bad"
+    # Cap the returned status at 1, never return the raw count (Codex review
+    # on PR #1032, comment 4011648565): bash truncates an exit status to its
+    # low 8 bits, so `return 256` (exactly 256 invalid rows) silently becomes
+    # exit 0 and both callers below would treat validation as successful.
+    [ "$bad" -eq 0 ] || return 1
+    return 0
 }
 
 cmd_validate() {
     [ "$#" -ge 1 ] || usage
+    local f
+    for f in "$@"; do
+        guard_scratch_path "verdict file" "$f"
+    done
     local bad=0
     validate_files "$@" || bad=$?
     [ "$bad" -eq 0 ] || exit 1
@@ -179,6 +254,13 @@ cmd_join() {
         esac
     done
     [ -n "$repo" ] && [ -n "$scan" ] && [ -n "$out" ] || usage
+    guard_scratch_path --scan "$scan"
+    guard_scratch_path --out "$out"
+    [ -z "$proposals" ] || guard_scratch_path --proposals "$proposals"
+    local f
+    for f in "$@"; do
+        guard_scratch_path "verdict file" "$f"
+    done
     [ -r "$scan" ] || die "cannot read scan dataset: $scan"
 
     local open_count
@@ -252,6 +334,35 @@ cmd_join() {
         missing_json="$(jq -c '.missing' <<<"$coverage")"
     else
         missing_json="[]"
+    fi
+
+    # CLOSE-dup-of-#N's target is a distinct open issue in the same
+    # repository per references/verdict-vocabulary.md; the syntax check above
+    # only validates the "#N" shape, and unknown/missing coverage above only
+    # checks the row's OWN number, so a self-referential or nonexistent
+    # target was accepted and presented as safe to close (Codex review on
+    # PR #1032, comment 4011648588).
+    local dup_target_bad
+    dup_target_bad="$(jq -nc --slurpfile scan "$scan" --slurpfile rows "$rows_tmp" '
+      (($scan[0].open // []) | map(.number)) as $open_numbers
+      | ($rows // [])
+      | map(select(.verdict | test("^CLOSE-dup-of-#[0-9]+$")))
+      | map({number, target: (.verdict | capture("^CLOSE-dup-of-#(?<t>[0-9]+)$").t | tonumber)})
+      | map(select(.target as $t | .number as $n | ($t == $n) or ($open_numbers | index($t) | not)))
+    ')"
+    if [ "$(jq 'length' <<<"$dup_target_bad")" -gt 0 ]; then
+        while IFS= read -r bad_row; do
+            local bad_number bad_target
+            bad_number="$(jq -r '.number' <<<"$bad_row")"
+            bad_target="$(jq -r '.target' <<<"$bad_row")"
+            if [ "$bad_number" = "$bad_target" ]; then
+                echo "groom-verdicts: refused: #$bad_number's CLOSE-dup-of-#$bad_target targets itself" >&2
+            else
+                echo "groom-verdicts: refused: #$bad_number's CLOSE-dup-of-#$bad_target targets an" \
+                    "issue not in scan.open (nonexistent, closed, or otherwise unverifiable)" >&2
+            fi
+        done < <(jq -c '.[]' <<<"$dup_target_bad")
+        exit 1
     fi
 
     jq -n --arg repo "$repo" \
