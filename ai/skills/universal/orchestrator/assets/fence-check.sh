@@ -143,11 +143,18 @@ remote_name_with_owner() {
 # the conventional writable checkout; else the first whose default-branch
 # ref actually resolves locally, so a never-fetched alias doesn't fail a
 # layout the pre-round-1 code handled fine; else the first match by `git
-# remote` order, same as before (challenge round 2, confirmed).
+# remote` order, same as before (challenge round 2, confirmed). The match
+# count is tracked in a plain integer, and the array is expanded via the
+# `${matches[@]+"${matches[@]}"}` form rather than a bare `${#matches[@]}`/
+# `"${matches[@]}"` — on macOS bash 3.2, a `local -a matches=()` array with
+# zero elements expands as unset, and this file's `set -u` would abort the
+# no-match path (the one that is supposed to fall back to origin) instead
+# of reaching it (integration cycle 1, confirmed).
 resolve_comparison_remote() {
     local worktree="$1" envelope="$2" default_branch_name="$3"
     local issue_url target_nwo remote url candidate
     local -a matches=()
+    local match_count=0
 
     issue_url="$(jq -r '.issue.url // empty' "$envelope" 2>/dev/null || true)"
     target_nwo=""
@@ -162,17 +169,20 @@ resolve_comparison_remote() {
         while IFS= read -r remote; do
             url="$(git -C "$worktree" remote get-url "$remote" 2>/dev/null)" || continue
             candidate="$(remote_name_with_owner "$url")" || continue
-            [ "$candidate" = "$target_nwo" ] && matches+=("$remote")
+            if [ "$candidate" = "$target_nwo" ]; then
+                matches+=("$remote")
+                match_count=$((match_count + 1))
+            fi
         done < <(git -C "$worktree" remote)
     fi
 
-    if [ "${#matches[@]}" -gt 0 ]; then
-        for remote in "${matches[@]}"; do
+    if [ "$match_count" -gt 0 ]; then
+        for remote in ${matches[@]+"${matches[@]}"}; do
             [ "$remote" = "origin" ] || continue
             printf '%s\t%s\n' "$remote" "issue.url ($target_nwo)"
             return 0
         done
-        for remote in "${matches[@]}"; do
+        for remote in ${matches[@]+"${matches[@]}"}; do
             git -C "$worktree" rev-parse --verify -q "refs/remotes/$remote/$default_branch_name" >/dev/null 2>&1 || continue
             printf '%s\t%s\n' "$remote" "issue.url ($target_nwo)"
             return 0

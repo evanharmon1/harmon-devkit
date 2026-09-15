@@ -406,6 +406,28 @@ case "$out" in
 *) fail "ssh-case comparison base did not match a differently-cased ssh:// remote: $out" ;;
 esac
 
+# Empty-match-array regression (integration cycle 1, confirmed): a
+# configured remote that does not match a non-GitHub/unparseable issue.url
+# exercises the genuinely-empty match array, the exact path that used to
+# expand `${#matches[@]}` directly. This host's bash is not 3.2, so it
+# cannot reproduce the `set -u` abort itself; the assertion instead pins
+# that the fallback path is reached and reports `source: fallback`, which
+# a bash-3.2 abort on this same code path would never do.
+no_match_fixture="$tmp/no-match-repo"
+make_remote_fixture "$no_match_fixture" "https://github.com/evanharmon1/harmon-devkit.git" ""
+no_match_base="$(git -C "$no_match_fixture" rev-parse HEAD)"
+git -C "$no_match_fixture" update-ref refs/remotes/origin/main "$no_match_base"
+printf '%s\n' changed >"$no_match_fixture/allowed.txt"
+git -C "$no_match_fixture" add allowed.txt
+git -C "$no_match_fixture" commit -qm "test: change allowed path with an unparseable issue.url and no matching remote"
+make_remote_brief "$tmp/no-match.md" "$no_match_fixture" "$no_match_base" "not-a-url"
+out="$(cd "$no_match_fixture" && "$fence_check" --brief "$tmp/no-match.md" 2>&1)" ||
+    fail "an unparseable issue.url with a configured remote was rejected: $out"
+case "$out" in
+*"using remote 'origin'"*"(source: fallback)"*) ;;
+*) fail "no-match comparison base did not reach the empty-array fallback path: $out" ;;
+esac
+
 scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
 scan_fixture="$tmp/scan-repo"
 git init -q "$scan_fixture"
