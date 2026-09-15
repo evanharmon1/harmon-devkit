@@ -22,6 +22,7 @@ ai/skills/
 │   ├── retro/SKILL.md       # /retro — end-of-session retro: run evidence + status tables
 │   ├── wrap/SKILL.md        # /wrap — wrap up + rename done-<name>
 │   ├── triage/SKILL.md      # /triage — manifest-governed backlog classifier
+│   ├── groom/SKILL.md       # /groom — verify, dispose, regroup, and record decisions across a backlog
 │   ├── track-work/SKILL.md  # issue/PR tracking hygiene (model-invoked)
 │   └── label-registry-support/SKILL.md  # shared runtime, not a workflow
 ├── backend/     # server / data / Convex
@@ -56,7 +57,12 @@ without waiting for a separate human trigger, stopping only at
 ready-for-review is still the dev loop's human-handoff point, it is just the
 *output* of that stage rather than a gate on entering it. `/triage` (also run
 by `task triage` with a cheap headless model, or interactively) classifies
-the backlog. `track-work` is model-invocable too, and deliberately **not**
+the backlog; `/groom` (also run by `task groom`, with a fan-out of read-only
+subagents that verify claims against the live code and merged PRs) decides
+what the backlog should contain — closes, regroups, and surfaces
+maintainer-only decisions with a recommendation each. The two stay separate:
+triage classifies, groom decides, and a groom run ends by recommending a
+triage run. `track-work` is model-invocable too, and deliberately **not**
 slash-only. Tracking
 mistakes happen mid-flow, while a PR body is being written and nobody is typing
 a command, so it must be model-invocable to fire at all. It also bundles

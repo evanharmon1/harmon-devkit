@@ -845,5 +845,7 @@ catches what event-driven release did not. Project status never participates.
 ## Scope
 
 This skill is about the mechanics of tracked work — authoring, linking, closing.
-It is not the backlog-grooming routine, not the repo-conventions catalog
+It is not the backlog-grooming routine (`/groom` decides what the tracker
+should contain — `triage` classifies, `groom` decides, and a groom run ends
+by recommending a triage run), not the repo-conventions catalog
 (`standardize-repo`), and not the pre-implementation sweep (`/claim`).
