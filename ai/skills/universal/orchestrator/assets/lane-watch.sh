@@ -382,17 +382,58 @@ poll_activity() {
     repo=$2
     pr_number=$3
     now=$4
-    since="$(state_get WINDOW "$lane" detail || true)"
-    until="$(state_get WINDOW "$lane" extra || printf 0)"
+    persisted_since="$(state_get WINDOW "$lane" detail || true)"
+    persisted_until="$(state_get WINDOW "$lane" extra || printf 0)"
     cold_start=0
-    [ -n "$since" ] || cold_start=1
+    [ -n "$persisted_since" ] || cold_start=1
 
-    if [ "$cold_start" -eq 1 ]; then
-        provisional_expired=0
-        [ "$now" -le "$until" ] || provisional_expired=1
-        since="$(promotion_epoch "$repo" "$pr_number")"
-        promotion_status=$?
-        if [ "$promotion_status" -eq 10 ]; then
+    # A warm window already durably marked CLOSING -- its closing
+    # determination and every row from that fetch already fully persisted,
+    # per the crash-safe reorder below, and only the final WINDOW/CLOSING
+    # delete left undone -- needs no re-resolution of anything: that
+    # decision is already made and recorded. Checking this first, from the
+    # already-persisted `until` alone, before the epoch re-check just below
+    # ever runs, is what keeps a restart landing here from re-fetching
+    # anything at all (including the epoch itself). A window that has
+    # merely passed its persisted `until` but has NOT yet recorded CLOSING
+    # is not this case -- it is exactly the moment a stale schedule would
+    # otherwise wrongly emit a false close, so it still goes through the
+    # re-check below.
+    if [ "$cold_start" -eq 0 ]; then
+        persisted_expired=0
+        [ "$now" -le "$persisted_until" ] || persisted_expired=1
+        if [ "$persisted_expired" -eq 1 ] && [ "$(state_get CLOSING "$lane" || printf 0)" = 1 ]; then
+            state_delete WINDOW "$lane"
+            state_delete CLOSING "$lane"
+            return 0
+        fi
+    fi
+
+    provisional_expired=0
+    [ "$now" -le "$persisted_until" ] || provisional_expired=1
+
+    # Re-resolve the promotion epoch every poll, not only at cold start.
+    # observe_pr()'s change detection is a bare string compare of
+    # discover_pr()'s "#N draft=<bool> <STATE> head=<sha>" tuple; a PR
+    # withdrawn (gh pr ready --undo) and re-promoted at the same head,
+    # entirely between two observations of this lane, collapses back to
+    # that identical tuple, so observe_pr() never notices and never re-arms
+    # WINDOW. promotion_epoch() is immune to that collapse: it reports the
+    # *latest* ready_for_review event's timestamp, which a genuine
+    # re-promotion always advances even though the PR tuple string does
+    # not. Comparing the freshly resolved epoch against whichever epoch
+    # WINDOW was last armed from (persisted as WINDOW's "since"/detail) is
+    # what lets the warm path notice and re-arm. This costs one extra
+    # bounded gh api call per poll while a window is active -- on top of
+    # the three activity_snapshot calls already made every such poll --
+    # which is an acceptable, bounded addition given this file's existing
+    # per-poll API budget and its already fail-closed handling of a failed
+    # call (observation_failed halts the watcher either way).
+    since="$(promotion_epoch "$repo" "$pr_number")"
+    promotion_status=$?
+    rearmed=0
+    if [ "$promotion_status" -eq 10 ]; then
+        if [ "$cold_start" -eq 1 ]; then
             if [ "$provisional_expired" -eq 1 ]; then
                 state_delete WINDOW "$lane"
                 state_delete CLOSING "$lane"
@@ -401,20 +442,38 @@ poll_activity() {
             fi
             return 0
         fi
-        [ "$promotion_status" -eq 0 ] || return 1
+        # Warm poll, no resolvable ready_for_review event this time around
+        # (ordinary GitHub eventual consistency, not a hard failure): trust
+        # whichever window is already armed rather than tearing down a real
+        # window over one transient events-API gap.
+        since=$persisted_since
+        until=$persisted_until
+    elif [ "$promotion_status" -ne 0 ]; then
+        return 1
+    else
         until=$((since + post_promotion_seconds))
+        if [ "$cold_start" -eq 1 ] || [ "$since" != "$persisted_since" ]; then
+            rearmed=1
+        fi
     fi
 
     # `expired` is computed exactly once, here, from whichever `until` is
     # currently in scope: the real deadline just resolved above on a cold
-    # start, or the already-real deadline read from state on a warm poll --
-    # never the provisional placeholder observe_pr() seeds WINDOW with
-    # before the real epoch is known. A resolved real epoch is not
-    # guaranteed <= that provisional guess, so the two must not be conflated.
+    # start or a same-tuple re-promotion, or the already-real deadline read
+    # from state on an unchanged warm poll -- never the provisional
+    # placeholder observe_pr() seeds WINDOW with before the real epoch is
+    # known. A resolved real epoch is not guaranteed <= that provisional
+    # guess, so the two must not be conflated.
     expired=0
     [ "$now" -le "$until" ] || expired=1
-    if [ "$cold_start" -eq 1 ] && [ "$expired" -eq 0 ]; then
+    if [ "$rearmed" -eq 1 ] && [ "$expired" -eq 0 ]; then
         state_set WINDOW "$lane" "$pr_number" "$until" "$since"
+        # A re-arm can follow a PRIOR window's CLOSING flag left behind by a
+        # crash between persisting it and deleting it (see the ordering
+        # comment below); that flag belongs to the window that just expired,
+        # not this freshly armed one, and must not be read later as "this
+        # new window's closing snapshot is already done."
+        state_delete CLOSING "$lane"
     fi
 
     if [ "$expired" -eq 1 ]; then

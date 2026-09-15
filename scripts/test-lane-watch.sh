@@ -167,6 +167,14 @@ if [ "${1:-}" = api ]; then
         printf '%s\n' '[]'
         exit 0
     fi
+    if [ -f "$WATCH_FIXTURES/warm-events-empty" ]; then
+        case "$endpoint" in
+        */events?per_page=100)
+            printf '%s\n' '[]'
+            exit 0
+            ;;
+        esac
+    fi
     phase=0
     [ ! -f "$WATCH_FIXTURES/phase" ] || phase="$(<"$WATCH_FIXTURES/phase")"
     activity_phase=3
@@ -416,8 +424,23 @@ assert_count "$test_tmp/tail-window.state" 0 '^CLOSING[[:space:]]+alpha[[:space:
 # would see -- an expired window, no CLOSING key -- is byte-for-byte the
 # state seeded here. There is nothing left for a dedicated "crash" fixture
 # to seed differently; this test already proves the retry emits the line.
+#
+# Since finding challenge-r7-codex-adversarial-1's fix, a warm poll like this
+# one also re-resolves promotion_epoch() before deciding to close (exactly so
+# a stale schedule cannot emit a false close here -- see the samehead-rearm
+# test below for the positive case of that re-check). The `warm-events-empty`
+# fixture makes the events endpoint report "no ready_for_review event" for
+# this poll, so that re-check safely no-ops and trusts this seeded window
+# unchanged, rather than comparing this test's real wall-clock `since` against
+# the phase-driven default fixture's unrelated fictional 2098-01-01 event
+# (which exists only to give OTHER tests' genuine cold-starts a still-open
+# window under real wall-clock time, and is never meant to describe this
+# window). It does not touch the reviews/comments/inline endpoints below,
+# which stay on the phase-driven default so the "genuinely fetched, then
+# filtered to zero" proof above still holds.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
+touch "$fixture_dir/warm-events-empty"
 closed_now="$(date -u +%s)"
 closed_until=$((closed_now - 1200))
 closed_since=$((closed_until - 900))
@@ -429,6 +452,7 @@ bash "$watcher" --iterations 1 --state-file "$test_tmp/closed-quiet.state" \
     --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$closed_quiet_out"
+rm "$fixture_dir/warm-events-empty"
 assert_line "$closed_quiet_out" 'POST-PROMOTION-CLOSED alpha: #77'
 assert_count "$closed_quiet_out" 1 '^POST-PROMOTION-CLOSED '
 assert_count "$closed_quiet_out" 0 '^POST-PROMOTION-ACTIVITY '
@@ -552,7 +576,7 @@ assert_count "$cold_resolve_out" 1 '^POST-PROMOTION-CLOSED '
 assert_count "$test_tmp/cold-resolve.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$test_tmp/cold-resolve.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
 
-# Round 7 confidence found finding #1: `expired` was computed once, from the
+# Round 6 confidence found finding #1: `expired` was computed once, from the
 # WINDOW's *provisional* deadline (observe_pr()'s placeholder, set before the
 # real promotion epoch was known), and never recomputed once the cold-start
 # branch resolved the real epoch -- defended by an inline comment claiming
@@ -623,6 +647,61 @@ assert_line "$realexpired_out" 'POST-PROMOTION-CLOSED alpha: #77'
 assert_count "$realexpired_out" 1 '^POST-PROMOTION-CLOSED '
 assert_count "$test_tmp/real-expired.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$test_tmp/real-expired.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
+
+# Integration-stage finding challenge-r7-codex-adversarial-1: a WARM window
+# (WINDOW already fully armed from an earlier promotion -- since/until both
+# persisted, not the cold-start provisional shape) was never re-validated
+# against the actual, current promotion event once armed. Reproduce the exact
+# sequence the finding describes: an off-watch withdraw (gh pr ready --undo)
+# then re-promote at the SAME PR tuple -- so the single observe_pr() call
+# this poll makes sees discover_pr()'s "#N draft=<bool> <STATE> head=<sha>"
+# string as byte-for-byte unchanged from the seeded PR state and never
+# touches WINDOW -- while the real promotion epoch (from promotion_epoch(),
+# i.e. the latest ready_for_review event) has actually advanced far past the
+# stale window's own bounds. Activity lands within the NEW promotion's real
+# [since,until] but outside the STALE persisted one. Pre-fix, poll_activity()
+# never re-resolves promotion_epoch() on a warm poll, so it filters this row
+# against the stale bounds (dropping it) and, since the stale `until` has
+# long since passed, emits POST-PROMOTION-CLOSED on the wrong schedule -- a
+# false all-clear. Fixed, the warm path re-resolves the epoch every poll,
+# notices since2 != the persisted since1, re-arms WINDOW to [since2,until2],
+# and correctly reports the activity with no premature close.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+samehead_now="$(date -u +%s)"
+samehead_since1=$((samehead_now - 3000))
+samehead_until1=$((samehead_since1 + 900))
+samehead_since2=$((samehead_now - 100))
+samehead_until2=$((samehead_since2 + 900))
+samehead_activity_at=$((samehead_since2 + 50))
+samehead_since2_iso="$(date -u -d "@$samehead_since2" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$samehead_since2_iso" ] || samehead_since2_iso="$(date -u -r "$samehead_since2" +%Y-%m-%dT%H:%M:%SZ)"
+samehead_activity_iso="$(date -u -d "@$samehead_activity_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$samehead_activity_iso" ] || samehead_activity_iso="$(date -u -r "$samehead_activity_at" +%Y-%m-%dT%H:%M:%SZ)"
+# The cold-resolve-since/-activity-at fixture pair drives the events and
+# reviews endpoints unconditionally (regardless of cold vs warm state), which
+# is exactly what is needed here: control the RE-RESOLVED epoch on a warm
+# poll, not just a cold-start one.
+printf '%s\n' "$samehead_since2_iso" >"$fixture_dir/cold-resolve-since"
+printf '%s\n' "$samehead_activity_iso" >"$fixture_dir/cold-resolve-activity-at"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s\nWALLCLOCK\trun\t0\t\n' \
+    "$samehead_until1" "$samehead_since1" >"$test_tmp/samehead-rearm.state"
+samehead_rearm_out="$test_tmp/samehead-rearm.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/samehead-rearm.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$samehead_rearm_out"
+rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
+assert_line "$samehead_rearm_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
+assert_count "$samehead_rearm_out" 1 '^POST-PROMOTION-ACTIVITY '
+assert_count "$samehead_rearm_out" 0 '^POST-PROMOTION-CLOSED '
+assert_count "$samehead_rearm_out" 0 '^POST-PROMOTION-INDETERMINATE '
+# WINDOW must now reflect the NEW epoch, proving a genuine re-arm rather than
+# merely surviving with its stale bounds untouched.
+assert_count "$test_tmp/samehead-rearm.state" 1 \
+    "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+${samehead_until2}[[:space:]]+${samehead_since2}\$"
+assert_count "$test_tmp/samehead-rearm.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
 
 # A cold-start window whose epoch never resolves (a clean, valid response
 # with no ready_for_review event -- ordinary GitHub eventual consistency,
@@ -819,7 +898,7 @@ assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|POST-PROMOTION-CLOSED [^:]+: #[0-9]+|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
     "$tail_out" "$closed_quiet_out" "$closing_out" "$persistfail_out" "$cold_resolve_out" "$stillopen_out" "$realexpired_out" \
-    "$cold_never_out" "$rearm_restart_out" \
+    "$samehead_rearm_out" "$cold_never_out" "$rearm_restart_out" \
     "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
