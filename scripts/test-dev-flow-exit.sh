@@ -553,6 +553,44 @@ node -e '
 rm -f "${scratch}/dfe-final-norounds-$$.out" "${scratch}/dfe-final-norounds-$$.err"
 echo "OK: the final (non-verification-only) verdict carries no rounds[] key — only --verification-only does"
 
+echo "== harmon-devkit#1001 integration cycle 3: a rejected adjudication's diagnostic carries subject:\"adjudication\" =="
+# A schema-valid-by-itself adjudication whose reviewed_head disagrees with its
+# own (valid) pass's payload.reviewed_head is rejected by
+# validateAdjudicationSchema — the engine still returns a successful
+# verification-only projection around it (pre_adjudication, awaiting a fresh
+# adjudication), but its diagnostics[] must let a caller tell this apart from
+# an ordinary rejected PASS, so a caller that must fail closed on corrupt
+# retained evidence can do so without pattern-matching free-text `reason`.
+adj_dir="$(mktemp -d)"
+cp -r "ai/schemas/fixtures/exit/single-round-clean-converge/." "${adj_dir}/"
+node -e '
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  const doc = JSON.parse(fs.readFileSync(file, "utf8"));
+  doc.reviewed_head = "9".repeat(40);
+  fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
+' "${adj_dir}/run/adjudications/review-r1.json"
+node scripts/dev-flow-exit.mjs --run "${adj_dir}/run" --stage review \
+    --policy "${adj_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
+    --verification-only --json \
+    >"${scratch}/dfe-adj-reject-$$.out" 2>"${scratch}/dfe-adj-reject-$$.err" || true
+node -e '
+  const body = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+  const assert = require("node:assert/strict");
+  assert.notEqual(body.outcome, "indeterminate");
+  const rejected = (body.diagnostics || []).filter((d) => d.level === "reject" && d.pass === "review-r1");
+  assert.equal(rejected.length, 1, `expected exactly one rejection diagnostic for review-r1, got: ${JSON.stringify(body.diagnostics)}`);
+  assert.equal(rejected[0].subject, "adjudication");
+  assert.match(rejected[0].reason, /adjudication schema validation failed/);
+  console.log("rejected-adjudication subject discriminator OK");
+' "${scratch}/dfe-adj-reject-$$.out" || {
+    cat "${scratch}/dfe-adj-reject-$$.out" "${scratch}/dfe-adj-reject-$$.err" >&2
+    rm -rf "${adj_dir}" "${scratch}/dfe-adj-reject-$$.out" "${scratch}/dfe-adj-reject-$$.err"
+    fail "a rejected adjudication's diagnostic did not carry subject:\"adjudication\""
+}
+rm -rf "${adj_dir}" "${scratch}/dfe-adj-reject-$$.out" "${scratch}/dfe-adj-reject-$$.err"
+echo "OK: a rejected adjudication's diagnostic carries subject:\"adjudication\""
+
 # `|| true` on every dev-flow-exit.mjs invocation below: its exit code IS
 # its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
 # 22 capped), so under this file's `set -e` a converged control run would

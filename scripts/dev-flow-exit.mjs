@@ -2092,6 +2092,14 @@ async function main() {
       diagnostics.push({
         pass: adj.name,
         level: "reject",
+        // subject discriminates a rejected ADJUDICATION document from a
+        // rejected PASS (validateReceipts' own diagnostics above, which
+        // carry no subject) — a caller that must fail closed only on a
+        // corrupt retained adjudication, never on an ordinary rejected
+        // pass, needs this to tell the two apart without pattern-matching
+        // `reason`'s free text. Additive; no existing field changes.
+        // Integration cycle 3, confirmed.
+        subject: "adjudication",
         reason: `adjudication run_id "${adj.doc.run_id}" does not match the active run "${runDir.runRecord.run_id}"`,
       });
       continue;
@@ -2103,7 +2111,7 @@ async function main() {
     if (ok) {
       validAdjudications.push(adj);
     } else {
-      diagnostics.push({ pass: adj.name, level: "reject", reason: `adjudication schema validation failed: ${message}` });
+      diagnostics.push({ pass: adj.name, level: "reject", subject: "adjudication", reason: `adjudication schema validation failed: ${message}` });
     }
   }
 

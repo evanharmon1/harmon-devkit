@@ -3660,6 +3660,41 @@ function writeScenario(name, db) {
     writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run2, null, 2));
     writeScenario("review-then-challenge-reentry", { issues: [{ number: 226, pull_request: null }], comments: { "226": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
+
+  // Integration Codex cycle 3 (P2), confirmed and fixed: a retained
+  // adjudication that is schema-valid by itself but fails the pass-bound
+  // cross-check (its reviewed_head disagrees with the matching pass's own
+  // payload.reviewed_head) is REJECTED by the engine, which still returns a
+  // successful --verification-only projection around it (pre_adjudication,
+  // awaiting a fresh adjudication) — accepting that projection at face value
+  // used to report status:"ok" with the round silently unadjudicated. The
+  // harvester now fails closed on the engine's own subject:"adjudication"
+  // rejection diagnostic instead.
+  {
+    const runId = "run-227-rejected-adjudication";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    // Corrupt the retained adjudication's reviewed_head so it disagrees with
+    // the (valid, receipted) pass's own payload.reviewed_head — schema-valid
+    // by itself, rejected only by the pass-bound cross-check.
+    const adjFile = path.join(runDir, "adjudications", "review-r1.json");
+    const adjDoc = JSON.parse(readFileSync(adjFile, "utf8"));
+    adjDoc.reviewed_head = "9".repeat(40);
+    writeFileSync(adjFile, JSON.stringify(adjDoc, null, 2));
+    writeScenario("rejected-adjudication", { issues: [{ number: 227, pull_request: null }], comments: { "227": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
 }
 
 console.log("fixtures built");
@@ -4998,6 +5033,16 @@ run_id="$(meta review-then-challenge-reentry .meta.runId)"
 out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json)"
 echo "$out" | jq -e '.rounds == [{stage:"review",round:1,pass_count:1,blocked_passes:0,adjudication_count:1,finding_count:0,has_adjudication:true,provenance_measurement:"not-applicable"}]' >/dev/null ||
     fail "review-then-challenge-reentry: expected review round 1 to survive the later challenge re-entry: $out"
+
+echo "== integration Codex cycle 3: a schema-valid adjudication rejected by the pass-bound cross-check fails closed, not status:ok (fixed remediation 3/6) =="
+export DFSTATS_DB="$tmp/scenarios/rejected-adjudication.json"
+run_id="$(meta rejected-adjudication .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'exit engine rejected adjudication' <<<"$out" ||
+    fail "rejected-adjudication: a pass-bound-rejected adjudication was not caught, rc=$rc: $out"
 
 echo "== harmon-devkit#1001 review round 1: a run still in progress on challenge reports challenge's own trajectory, review not-started (fixed round 2/5) =="
 export DFSTATS_DB="$tmp/scenarios/challenge-still-active.json"

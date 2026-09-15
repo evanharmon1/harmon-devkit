@@ -2368,6 +2368,21 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
           if (seenDiagnostics.has(key)) continue;
           seenDiagnostics.add(key);
           diagnostics.push(d);
+          // A rejected PASS is ordinary trajectory noise (an earlier retry,
+          // a stale artifact) and stays merely diagnosed. A rejected
+          // ADJUDICATION is different: the engine still returns a
+          // successful verification-only projection around it (its
+          // pre_adjudication/round-assembly logic just drops the
+          // document), so accepting that projection here would silently
+          // report `status: ok` with the round unadjudicated — corrupt
+          // retained evidence read as an ordinary unadjudicated round.
+          // Before this redesign, loadLocalEvidenceRun threw directly on
+          // this same rejection; restore that fail-closed contract now
+          // that the engine's own diagnostic discriminates it via
+          // `subject`. Integration cycle 3, confirmed.
+          if (d.subject === "adjudication" && d.level === "reject") {
+            throw new EvidenceError(`exit engine rejected adjudication ${d.pass}: ${d.reason}`);
+          }
         }
       } finally {
         rmSync(stageSnapshotDir, { recursive: true, force: true });
