@@ -386,14 +386,14 @@ poll_activity() {
     until="$(state_get WINDOW "$lane" extra || printf 0)"
     cold_start=0
     [ -n "$since" ] || cold_start=1
-    expired=0
-    [ "$now" -le "$until" ] || expired=1
 
     if [ "$cold_start" -eq 1 ]; then
+        provisional_expired=0
+        [ "$now" -le "$until" ] || provisional_expired=1
         since="$(promotion_epoch "$repo" "$pr_number")"
         promotion_status=$?
         if [ "$promotion_status" -eq 10 ]; then
-            if [ "$expired" -eq 1 ]; then
+            if [ "$provisional_expired" -eq 1 ]; then
                 state_delete WINDOW "$lane"
                 state_delete CLOSING "$lane"
                 state_delete PR "$lane"
@@ -403,15 +403,18 @@ poll_activity() {
         fi
         [ "$promotion_status" -eq 0 ] || return 1
         until=$((since + post_promotion_seconds))
-        if [ "$expired" -eq 0 ]; then
-            state_set WINDOW "$lane" "$pr_number" "$until" "$since"
-        fi
-        # A real `until` (from the resolved epoch) can only be <= the
-        # provisional one used to compute `expired` above, never later:
-        # detection (observe_pr's own `now` at cold-start time) cannot
-        # precede the actual GitHub event promotion_epoch resolves. So
-        # `expired`, computed before the real epoch was known, remains a
-        # correct signal for the real window too.
+    fi
+
+    # `expired` is computed exactly once, here, from whichever `until` is
+    # currently in scope: the real deadline just resolved above on a cold
+    # start, or the already-real deadline read from state on a warm poll --
+    # never the provisional placeholder observe_pr() seeds WINDOW with
+    # before the real epoch is known. A resolved real epoch is not
+    # guaranteed <= that provisional guess, so the two must not be conflated.
+    expired=0
+    [ "$now" -le "$until" ] || expired=1
+    if [ "$cold_start" -eq 1 ] && [ "$expired" -eq 0 ]; then
+        state_set WINDOW "$lane" "$pr_number" "$until" "$since"
     fi
 
     if [ "$expired" -eq 1 ]; then
@@ -430,9 +433,9 @@ poll_activity() {
         [ "$activity_at" -le "$until" ] || continue
         key="$lane:$kind:$id:$activity_at"
         if ! state_get ACTIVITY "$key" >/dev/null; then
+            echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
             state_set ACTIVITY "$key" 1
             persist_state
-            echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
         fi
     done <<<"$rows"
 
@@ -460,6 +463,12 @@ poll_activity() {
     # echo -- permanently losing the one signal this event exists to
     # guarantee, with no later poll left to retry it. A harmless duplicate
     # beats a signal that can never be recovered.
+    #
+    # The per-row POST-PROMOTION-ACTIVITY echo above (inside the read loop)
+    # is ordered the same way -- echo, then state_set, then persist_state --
+    # for the identical reason: a crash before persist_state leaves that
+    # row's ACTIVITY key durably unset, so it is simply refetched and
+    # re-emitted next poll, never silently dropped.
     if [ "$expired" -eq 1 ]; then
         state_set CLOSING "$lane" 1
         echo "POST-PROMOTION-CLOSED $lane: #$pr_number"

@@ -472,6 +472,52 @@ assert_count "$closing_out" 0 '^POST-PROMOTION-CLOSED '
 assert_count "$test_tmp/closing-durable.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$test_tmp/closing-durable.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
 
+# Round 6 confidence found finding #2: the ACTIVITY row loop set the dedup
+# key and persisted it BEFORE echoing the line, so a crash between a
+# successful persist_state and the echo left that row's key durably set
+# with the notification never printed -- permanently and silently
+# suppressed, since every later poll's dedup check sees the key already
+# present and skips it forever. Mirroring POST-PROMOTION-CLOSED's own
+# crash-safe reorder (round 5), the echo must happen before persist_state
+# commits the key, so a real crash there can duplicate a notification but
+# never lose one. A process-level crash mid-statement cannot be injected
+# deterministically from a test, but persist_state() itself calling `exit 1`
+# on a save failure is an equally real interruption landing between the
+# SAME two statements a crash would -- reachable by making the state
+# directory unwritable after it is seeded. The lane, report, and agent
+# fixtures below are chosen so this is the ONLY persist_state call the run
+# ever reaches, isolating the ordering this finding is about from every
+# other persist_state call the watcher makes.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+touch "$fixture_dir/malformed-list"
+persistfail_now="$(date -u +%s)"
+persistfail_since=$((persistfail_now - 300))
+persistfail_until=$((persistfail_since + 900))
+persistfail_activity_at=$((persistfail_since + 50))
+persistfail_activity_iso="$(date -u -d "@$persistfail_activity_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$persistfail_activity_iso" ] || persistfail_activity_iso="$(date -u -r "$persistfail_activity_at" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$persistfail_activity_iso" >"$fixture_dir/tail-activity-at"
+persistfail_dir="$test_tmp/persist-fail-state"
+mkdir -p "$persistfail_dir"
+printf 'PR\tzeta\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\tzeta\t77\t%s\t%s\nWALLCLOCK\trun\t0\t\n' \
+    "$persistfail_until" "$persistfail_since" >"$persistfail_dir/watcher.state"
+chmod 555 "$persistfail_dir"
+persistfail_out="$test_tmp/persist-fail.out"
+persistfail_err="$test_tmp/persist-fail.err"
+if bash "$watcher" --iterations 1 --state-file "$persistfail_dir/watcher.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z zeta:branch-alpha:n6:evanharmon1/harmon-devkit \
+    >"$persistfail_out" 2>"$persistfail_err"; then
+    fail 'watcher exited zero despite an unpersistable state directory'
+fi
+chmod 755 "$persistfail_dir"
+rm "$fixture_dir/malformed-list" "$fixture_dir/tail-activity-at"
+assert_line "$persistfail_err" "lane-watch: could not persist state to $persistfail_dir/watcher.state"
+assert_line "$persistfail_out" 'POST-PROMOTION-ACTIVITY zeta: trusted-codex review 901'
+assert_count "$persistfail_out" 1 '^POST-PROMOTION-ACTIVITY '
+
 # A cold-start window whose epoch resolves to a real, already-past deadline
 # (the provisional deadline had already passed too) still takes exactly one
 # snapshot over the REAL [since,until] before the window is torn down --
@@ -505,6 +551,78 @@ assert_line "$cold_resolve_out" 'POST-PROMOTION-CLOSED alpha: #77'
 assert_count "$cold_resolve_out" 1 '^POST-PROMOTION-CLOSED '
 assert_count "$test_tmp/cold-resolve.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$test_tmp/cold-resolve.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
+
+# Round 7 confidence found finding #1: `expired` was computed once, from the
+# WINDOW's *provisional* deadline (observe_pr()'s placeholder, set before the
+# real promotion epoch was known), and never recomputed once the cold-start
+# branch resolved the real epoch -- defended by an inline comment claiming
+# the real `until` could only be <= the provisional one. That claim fails
+# after a watcher restart plus an off-watch withdraw-then-re-promote at an
+# unchanged head, where the newly resolved epoch can land LATER than the
+# stale provisional deadline. A provisional deadline already in the past
+# must not force a still-open real window closed: resolving to a real window
+# that has NOT elapsed must persist it and take a normal snapshot, never
+# emit POST-PROMOTION-CLOSED on this same poll.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+stillopen_now="$(date -u +%s)"
+stillopen_provisional_until=$((stillopen_now - 1200))
+stillopen_real_since=$((stillopen_now - 300))
+stillopen_activity_at=$((stillopen_real_since + 100))
+stillopen_since_iso="$(date -u -d "@$stillopen_real_since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$stillopen_since_iso" ] || stillopen_since_iso="$(date -u -r "$stillopen_real_since" +%Y-%m-%dT%H:%M:%SZ)"
+stillopen_activity_iso="$(date -u -d "@$stillopen_activity_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$stillopen_activity_iso" ] || stillopen_activity_iso="$(date -u -r "$stillopen_activity_at" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$stillopen_since_iso" >"$fixture_dir/cold-resolve-since"
+printf '%s\n' "$stillopen_activity_iso" >"$fixture_dir/cold-resolve-activity-at"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t\nWALLCLOCK\trun\t0\t\n' \
+    "$stillopen_provisional_until" >"$test_tmp/still-open.state"
+stillopen_out="$test_tmp/still-open.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/still-open.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$stillopen_out"
+rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
+assert_line "$stillopen_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
+assert_count "$stillopen_out" 1 '^POST-PROMOTION-ACTIVITY '
+assert_count "$stillopen_out" 0 '^POST-PROMOTION-CLOSED '
+assert_count "$stillopen_out" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$test_tmp/still-open.state" 1 '^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+'
+assert_count "$test_tmp/still-open.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
+
+# The inverse: a provisional deadline still comfortably in the future must
+# not keep a real, already-elapsed window open. Once the real epoch resolves
+# to a window whose `until` has already passed, the watcher must close on
+# THIS SAME poll -- not be fooled by the stale provisional value into
+# treating the window as still open and deferring the close to a later poll
+# that a lane whose PR state stops changing may never actually get.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+realexpired_now="$(date -u +%s)"
+realexpired_provisional_until=$((realexpired_now + 1200))
+realexpired_real_since=$((realexpired_now - 2000))
+realexpired_activity_at=$((realexpired_real_since + 100))
+realexpired_since_iso="$(date -u -d "@$realexpired_real_since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$realexpired_since_iso" ] || realexpired_since_iso="$(date -u -r "$realexpired_real_since" +%Y-%m-%dT%H:%M:%SZ)"
+realexpired_activity_iso="$(date -u -d "@$realexpired_activity_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$realexpired_activity_iso" ] || realexpired_activity_iso="$(date -u -r "$realexpired_activity_at" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$realexpired_since_iso" >"$fixture_dir/cold-resolve-since"
+printf '%s\n' "$realexpired_activity_iso" >"$fixture_dir/cold-resolve-activity-at"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t\nWALLCLOCK\trun\t0\t\n' \
+    "$realexpired_provisional_until" >"$test_tmp/real-expired.state"
+realexpired_out="$test_tmp/real-expired.out"
+bash "$watcher" --iterations 1 --state-file "$test_tmp/real-expired.state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$realexpired_out"
+rm "$fixture_dir/cold-resolve-since" "$fixture_dir/cold-resolve-activity-at"
+assert_line "$realexpired_out" 'POST-PROMOTION-ACTIVITY alpha: trusted-codex review 901'
+assert_line "$realexpired_out" 'POST-PROMOTION-CLOSED alpha: #77'
+assert_count "$realexpired_out" 1 '^POST-PROMOTION-CLOSED '
+assert_count "$test_tmp/real-expired.state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
+assert_count "$test_tmp/real-expired.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
 
 # A cold-start window whose epoch never resolves (a clean, valid response
 # with no ready_for_review event -- ordinary GitHub eventual consistency,
@@ -700,7 +818,8 @@ assert_line "$deadline_out" "WALLCLOCK run: deadline $crossed_deadline reached"
 # Every emitted line belongs to one of the stable event grammars.
 if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+|POST-PROMOTION-CLOSED [^:]+: #[0-9]+|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
-    "$tail_out" "$closed_quiet_out" "$closing_out" "$cold_resolve_out" "$cold_never_out" "$rearm_restart_out" \
+    "$tail_out" "$closed_quiet_out" "$closing_out" "$persistfail_out" "$cold_resolve_out" "$stillopen_out" "$realexpired_out" \
+    "$cold_never_out" "$rearm_restart_out" \
     "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
