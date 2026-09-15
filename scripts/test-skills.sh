@@ -236,6 +236,57 @@ expect_ok "orchestrator planning refuses a second plan writer" \
 expect_ok "orchestrator planning publishes expansions as complete revisions" \
     grep -qF 'accepted expansion is a recomputation reason' \
     "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
+    grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation gates the ready report on the positive POST-PROMOTION-CLOSED event" \
+    grep -qF 'emitted `POST-PROMOTION-CLOSED` for that lane, with no `POST-PROMOTION-ACTIVITY`' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation gates on the concrete event, never an inference from silence" \
+    grep -qF 'never an inference from its absence' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation never reports promotion itself as readiness" \
+    grep -qF 'Promotion itself is never reported as readiness' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation names the interim promoted/watch status line" \
+    grep -qF '"promoted at T, post-promotion watch until T+15", never "ready".' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator PR-open confirmation announces a withdrawn promotion before anything else" \
+    grep -qF '"#n is no longer ready: `<reason>`; back to draft on `<head>`"' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "orchestrator withdrawal announcement leads the next maintainer-facing message" \
+    grep -qF 'ahead of any other status in that same message' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "lane-brief READY sentinel is the orchestrator's own mark, never a lane's" \
+    grep -qF "a lane never promotes its own PR and never writes this sentinel" \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "lane-brief READY sentinel is never emitted at the moment of promotion itself" \
+    grep -qF 'never at the moment of promotion itself' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "orchestrator PR-open confirmation names the same trusted-actor source as the lane-brief READY sentinel" \
+    grep -qF '`trusted_actor_id` of every finder in `agent-registry.json`' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "lane-brief READY sentinel names the same trusted-actor source as orchestrator PR-open confirmation" \
+    grep -qF '`trusted_actor_id` of every finder in `agent-registry.json`' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "orchestrator PR-open confirmation names the same post-promotion-activity source as the lane-brief READY sentinel" \
+    grep -qF '`assets/lane-watch.sh`' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "lane-brief READY sentinel names the same post-promotion-activity source as orchestrator PR-open confirmation" \
+    grep -qF '`assets/lane-watch.sh`' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "lane-brief READY sentinel gates on the positive POST-PROMOTION-CLOSED event, not bare silence" \
+    grep -qF 'has actually emitted `POST-PROMOTION-CLOSED` for this lane, with' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "lane-brief READY sentinel gates on the concrete event, never silence" \
+    grep -qF 'concrete event gates the sentinel, never silence' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+expect_ok "orchestrator PR-open confirmation never treats an indeterminate watch as a pass" \
+    grep -qF '`POST-PROMOTION-INDETERMINATE` result is never a pass' \
+    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+expect_ok "lane-brief READY sentinel never treats an indeterminate watch as a pass" \
+    grep -qF '`POST-PROMOTION-INDETERMINATE` result is never a pass' \
+    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
 expect_ok "retro compares validated planned and actual lane execution" \
     grep -qF 'planned versus actual waves and interventions for each lane' \
     "$repo/ai/skills/universal/retro/SKILL.md"

@@ -4,10 +4,41 @@
 #   SENTINEL <lane>: <value>[ (pane only)]
 #   PR <lane>: #<n> draft=<bool> <STATE> head=<sha8>
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id>
+#   POST-PROMOTION-CLOSED <lane>: #<pr_number> since=<epoch>:<event_id>
+#   POST-PROMOTION-INDETERMINATE <lane>: #<pr_number>
+#
+# POST-PROMOTION-CLOSED's trailing "since=<epoch>:<event_id>" is the identity
+# of the promotion window that just closed -- the same epoch:event_id pair
+# ARMED and WINDOW's own detail field already carry (see below). Without it
+# the event text is textually indistinguishable across two different windows
+# for the same lane/PR: a same-head withdrawal-then-re-promotion after an
+# earlier close re-arms a brand-new window (see check_repromotion_after_close()
+# below) and, on its own eventual close, would emit the exact same
+# "POST-PROMOTION-CLOSED <lane>: #<pr_number>" text the first close already
+# emitted. A consumer watching for "the concrete POST-PROMOTION-CLOSED event"
+# could not tell the two apart without this identity; carrying it lets a
+# consumer correlate a given CLOSED line against whichever promotion identity
+# it is currently tracking rather than trusting any same-lane CLOSED line in
+# isolation. <event_id> may be empty (rendering as a trailing colon with
+# nothing after it) only when the window was armed from state adopted before
+# this identity encoding existed -- the same legacy-adoption tolerance this
+# file already documents for WINDOW's own "since:event_id" detail field.
 #   USAGE-PAUSED <lane>
 #   WALLCLOCK <lane|run>: <text>
 #
 # Timestamp-versioned activity keys may emit one duplicate when adopting legacy state.
+# WINDOW's persisted "since" likewise carries a ":<event_id>" suffix once armed by a
+# resolved promotion event (see promotion_epoch()/poll_activity()); state adopted from
+# before that encoding existed reads back with an empty id and may re-arm once more on
+# adoption, the same legacy-adoption tolerance already documented for ACTIVITY keys.
+# ARMED persists, per lane, the "since:event_id" identity of the promotion
+# epoch the lane's most-recently-armed WINDOW was armed from. Unlike WINDOW,
+# it is never deleted when a window closes, so check_repromotion_after_close()
+# can still tell a genuinely new promotion apart from the one that already
+# closed even once WINDOW itself is gone -- see that function for why WINDOW
+# alone cannot do this once its own close/delete has already run.
+# Clearing PR state on POST-PROMOTION-INDETERMINATE (so a later observation re-arms
+# the window) also re-emits one identical PR line once that observation lands.
 # Every herdr/gh call is bounded. Failures mean indeterminate/no event; this watcher
 # never writes through either CLI. Pass --state-file so a re-armed watcher does
 # not repeat sentinels, transitions, or post-promotion activity.
@@ -208,7 +239,7 @@ load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
-        AGENT | PR | USAGE) state_set "$kind" "$lane" "$value" ;;
+        AGENT | PR | USAGE | CLOSING | ARMED) state_set "$kind" "$lane" "$value" ;;
         SENTINEL) state_set SENTINEL "$lane:$value" 1 ;;
         WINDOW) state_set WINDOW "$lane" "$value" "$extra" "$detail" ;;
         ACTIVITY) state_set ACTIVITY "$lane:$value:$extra" 1 ;;
@@ -232,7 +263,7 @@ save_state() {
             extra=${state_extras[$index]}
             detail=${state_details[$index]}
             case "$kind" in
-            AGENT | PR | USAGE)
+            AGENT | PR | USAGE | CLOSING | ARMED)
                 printf '%s\t%s\t%s\t\n' "$kind" "$key" "$value"
                 ;;
             SENTINEL) printf 'SENTINEL\t%s\t%s\t\n' "${key%%:*}" "${key#*:}" ;;
@@ -343,15 +374,37 @@ activity_rows() {
     [ -n "$payload" ] || return 1
     jq -e 'if (.[0]? | type) == "array" then all(.[]; type == "array") else type == "array" end' \
         >/dev/null 2>&1 <<<"$payload" || return 1
+    # A row this function would otherwise select (a trusted actor's review,
+    # comment, or inline finding) must carry the timestamp field its kind
+    # needs -- a review needs at least one of submitted_at/updated_at/
+    # created_at, a comment/inline row needs created_at. Missing that field
+    # is not "no activity": the extraction pipeline below computes
+    # $created_at via `... // empty`, so a row missing it silently produces
+    # nothing for that one iteration and the caller cannot tell a malformed
+    # API response apart from a genuinely quiet window. Fail the snapshot
+    # (same as the structural array-shape check above) instead of silently
+    # dropping the row. Narrowed to selected rows only: an entry from an
+    # untrusted, non-User actor is already excluded from activity regardless
+    # of whether it carries a timestamp, so it is not checked here.
+    jq -e --arg kind "$kind" --arg trusted "$trusted_actor_ids" '
+      (if (.[0]? | type) == "array" then add else . end)
+      | map(select((.user.id | tostring) as $actor_id
+          | .user.type == "User" or ($trusted | split("\n") | index($actor_id))))
+      | all(.[];
+          if $kind == "review" then
+            (.submitted_at != null) or (.updated_at != null) or (.created_at != null)
+          else
+            .created_at != null
+          end)
+    ' >/dev/null 2>&1 <<<"$payload" || return 1
     jq -r --arg kind "$kind" --arg trusted "$trusted_actor_ids" '
       (if (.[0]? | type) == "array" then add else . end)[]?
       | (.user.id | tostring) as $actor_id
       | select(.user.type == "User" or ($trusted | split("\n") | index($actor_id)))
-      | (if $kind == "review"
-          then .submitted_at // .updated_at // .created_at
-          else .updated_at // .created_at
-        end // empty | fromdateiso8601) as $activity_at
-      | [.user.login, $kind, (.id | tostring), ($activity_at | tostring)] | @tsv
+      | (if $kind == "review" then (.submitted_at // .updated_at // .created_at) else .created_at end // empty
+          | fromdateiso8601) as $created_at
+      | (if $kind == "review" then $created_at else ((.updated_at // .created_at) // empty | fromdateiso8601) end) as $updated_at
+      | [.user.login, $kind, (.id | tostring), ($created_at | tostring), ($updated_at | tostring)] | @tsv
     ' <<<"$payload" 2>/dev/null
 }
 
@@ -378,41 +431,206 @@ poll_activity() {
     repo=$2
     pr_number=$3
     now=$4
-    since="$(state_get WINDOW "$lane" detail || true)"
-    until="$(state_get WINDOW "$lane" extra || printf 0)"
-    if [ -z "$since" ]; then
-        if [ "$now" -gt "$until" ]; then
+    # WINDOW's detail field carries "since:event_id" once a window has been
+    # armed by a promotion_epoch() resolution (event_id empty only for state
+    # adopted from before this encoding existed). Splitting on the first ':'
+    # keeps `since` a pure epoch integer for the arithmetic below while
+    # giving the warm re-arm check below the event identity it needs.
+    persisted_since_raw="$(state_get WINDOW "$lane" detail || true)"
+    persisted_until="$(state_get WINDOW "$lane" extra || printf 0)"
+    cold_start=0
+    [ -n "$persisted_since_raw" ] || cold_start=1
+    IFS=: read -r persisted_since persisted_since_event_id <<<"$persisted_since_raw"
+
+    # A warm window already durably marked CLOSING -- its closing
+    # determination and every row from that fetch already fully persisted,
+    # per the crash-safe reorder below, and only the final WINDOW/CLOSING
+    # delete left undone -- needs no re-resolution of anything: that
+    # decision is already made and recorded. Checking this first, from the
+    # already-persisted `until` alone, before the epoch re-check just below
+    # ever runs, is what keeps a restart landing here from re-fetching
+    # anything at all (including the epoch itself). A window that has
+    # merely passed its persisted `until` but has NOT yet recorded CLOSING
+    # is not this case -- it is exactly the moment a stale schedule would
+    # otherwise wrongly emit a false close, so it still goes through the
+    # re-check below.
+    if [ "$cold_start" -eq 0 ]; then
+        persisted_expired=0
+        [ "$now" -le "$persisted_until" ] || persisted_expired=1
+        if [ "$persisted_expired" -eq 1 ] && [ "$(state_get CLOSING "$lane" || printf 0)" = 1 ]; then
             state_delete WINDOW "$lane"
+            state_delete CLOSING "$lane"
             return 0
         fi
-        since="$(promotion_epoch "$repo" "$pr_number")"
-        promotion_status=$?
-        if [ "$promotion_status" -eq 10 ]; then
-            return 0
-        fi
-        [ "$promotion_status" -eq 0 ] || return 1
-        until=$((since + post_promotion_seconds))
-        state_set WINDOW "$lane" "$pr_number" "$until" "$since"
     fi
-    if [ "$now" -gt "$until" ]; then
-        state_delete WINDOW "$lane"
-        return 0
+
+    provisional_expired=0
+    [ "$now" -le "$persisted_until" ] || provisional_expired=1
+
+    # Re-resolve the promotion epoch every poll, not only at cold start.
+    # observe_pr()'s change detection is a bare string compare of
+    # discover_pr()'s "#N draft=<bool> <STATE> head=<sha>" tuple; a PR
+    # withdrawn (gh pr ready --undo) and re-promoted at the same head,
+    # entirely between two observations of this lane, collapses back to
+    # that identical tuple, so observe_pr() never notices and never re-arms
+    # WINDOW. promotion_epoch() is immune to that collapse: it reports the
+    # *latest* ready_for_review event's timestamp, which a genuine
+    # re-promotion always advances even though the PR tuple string does
+    # not. Comparing the freshly resolved epoch against whichever epoch
+    # WINDOW was last armed from (persisted as WINDOW's "since"/detail) is
+    # what lets the warm path notice and re-arm. This costs one extra
+    # bounded gh api call per poll while a window is active -- on top of
+    # the three activity_snapshot calls already made every such poll --
+    # which is an acceptable, bounded addition given this file's existing
+    # per-poll API budget and its already fail-closed handling of a failed
+    # call (observation_failed halts the watcher either way).
+    epoch_id_pair="$(promotion_epoch "$repo" "$pr_number")"
+    promotion_status=$?
+    rearmed=0
+    if [ "$promotion_status" -eq 10 ]; then
+        if [ "$cold_start" -eq 1 ]; then
+            if [ "$provisional_expired" -eq 1 ]; then
+                state_delete WINDOW "$lane"
+                state_delete CLOSING "$lane"
+                state_delete PR "$lane"
+                echo "POST-PROMOTION-INDETERMINATE $lane: #$pr_number"
+            fi
+            return 0
+        fi
+        # Warm poll, no resolvable ready_for_review event this time around
+        # (ordinary GitHub eventual consistency, not a hard failure): trust
+        # whichever window is already armed rather than tearing down a real
+        # window over one transient events-API gap.
+        since=$persisted_since
+        since_event_id=$persisted_since_event_id
+        until=$persisted_until
+    elif [ "$promotion_status" -ne 0 ]; then
+        return 1
+    else
+        IFS=$'\t' read -r since since_event_id <<<"$epoch_id_pair"
+        until=$((since + post_promotion_seconds))
+        # ARMED tracks the identity of the epoch actually resolved here,
+        # independent of whether it turns out to be a change (rearmed=1
+        # below) or, on an already-expired resolution, whether the window
+        # ever gets persisted via the rearmed/expired block further down.
+        # Keeping it current on every fresh resolution -- not only on a
+        # detected change -- is what lets check_repromotion_after_close()
+        # correctly recognize "this promotion was already seen and closed"
+        # once WINDOW itself is gone, instead of mistaking an
+        # already-handled promotion for a new one and re-arming a duplicate,
+        # already-expired window for it every poll.
+        state_set ARMED "$lane" "$since:$since_event_id"
+        # A same-second withdrawal-then-re-promotion resolves to an
+        # identical `since` epoch but a different event id; comparing the
+        # epoch alone (the pre-fix check) sees "no change" and never
+        # re-arms, silently reproducing the original silent-loss defect in
+        # that one-second collision window. Comparing the id too tells the
+        # two events apart even when their timestamps tie.
+        if [ "$cold_start" -eq 1 ] || [ "$since" != "$persisted_since" ] ||
+            [ "$since_event_id" != "$persisted_since_event_id" ]; then
+            rearmed=1
+        fi
+    fi
+
+    # `expired` is computed exactly once, here, from whichever `until` is
+    # currently in scope: the real deadline just resolved above on a cold
+    # start or a same-tuple re-promotion, or the already-real deadline read
+    # from state on an unchanged warm poll -- never the provisional
+    # placeholder observe_pr() seeds WINDOW with before the real epoch is
+    # known. A resolved real epoch is not guaranteed <= that provisional
+    # guess, so the two must not be conflated.
+    expired=0
+    [ "$now" -le "$until" ] || expired=1
+    if [ "$rearmed" -eq 1 ] && [ "$expired" -eq 0 ]; then
+        state_set WINDOW "$lane" "$pr_number" "$until" "$since:$since_event_id"
+        # A re-arm can follow a PRIOR window's CLOSING flag left behind by a
+        # crash between persisting it and deleting it (see the ordering
+        # comment below); that flag belongs to the window that just expired,
+        # not this freshly armed one, and must not be read later as "this
+        # new window's closing snapshot is already done."
+        state_delete CLOSING "$lane"
+    fi
+
+    if [ "$expired" -eq 1 ]; then
+        if [ "$(state_get CLOSING "$lane" || printf 0)" = 1 ]; then
+            state_delete WINDOW "$lane"
+            state_delete CLOSING "$lane"
+            return 0
+        fi
     fi
 
     rows="$(activity_snapshot "$repo" "$pr_number")" || return 1
 
-    while IFS=$'\t' read -r actor kind id activity_at; do
+    # A comment/inline row carries two candidate instants -- its creation and
+    # its current updated_at, which GitHub sets equal to created_at at
+    # creation and only diverges from on a real edit. A comment CREATED
+    # inside [since,until] is in-window activity even when a LATER edit moved
+    # its updated_at past `until`; using .updated_at // .created_at alone
+    # (the pre-fix shape) silently dropped exactly that case, since GitHub
+    # always sets updated_at, so the // .created_at fallback never actually
+    # ran. Prefer created_at when it alone qualifies; fall back to updated_at
+    # when only the edit instant falls in-window (creation happened before
+    # the window opened). When BOTH instants fall in-window they describe one
+    # comment's one activity, not two: report it once, keyed off created_at,
+    # rather than manufacturing a second dedup key for the same id.
+    while IFS=$'\t' read -r actor kind id created_at updated_at; do
         [ -n "$id" ] || continue
-        [ "$activity_at" -ge "$since" ] || continue
-        [ "$activity_at" -le "$until" ] || continue
+        activity_at=
+        if [ -n "$created_at" ] && [ "$created_at" -ge "$since" ] && [ "$created_at" -le "$until" ]; then
+            activity_at=$created_at
+        elif [ -n "$updated_at" ] && [ "$updated_at" -ge "$since" ] && [ "$updated_at" -le "$until" ]; then
+            activity_at=$updated_at
+        fi
+        [ -n "$activity_at" ] || continue
         key="$lane:$kind:$id:$activity_at"
         if ! state_get ACTIVITY "$key" >/dev/null; then
+            echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
             state_set ACTIVITY "$key" 1
             persist_state
-            echo "POST-PROMOTION-ACTIVITY $lane: $actor $kind $id"
         fi
     done <<<"$rows"
 
+    # CLOSING is recorded only once every row from this fetch has already
+    # been durably persisted (the loop above), never before or during the
+    # fetch/processing itself: a flag set earlier would still read back as 1
+    # after a crash mid-fetch or mid-loop, letting a restart skip the
+    # still-needed retry and silently lose whatever hadn't been recorded yet
+    # -- the exact gap round 4 found via live repro. Recording it only here,
+    # then persisting BEFORE the cleanup delete, means a restart's fast path
+    # only ever skips a fetch+process cycle that has already, verifiably,
+    # completed in full.
+    #
+    # POST-PROMOTION-CLOSED is echoed before persist_state, deliberately: a
+    # crash between the echo and persist_state leaves CLOSING durably unset,
+    # so the next poll finds no fast-path shortcut above, retakes this same
+    # closing snapshot from scratch (every row already durably keyed under
+    # ACTIVITY is deduped, so only the CLOSING determination and its echo
+    # actually repeat), and emits the line again -- at worst one duplicate,
+    # the same tolerance this file already documents for ACTIVITY-key
+    # adoption. Echoing after persist_state instead would trade that
+    # duplicate for the opposite failure: a crash between persist_state and
+    # the echo leaves CLOSING durably 1, so the next poll's fast path
+    # (above) deletes WINDOW/CLOSING and returns without ever reaching the
+    # echo -- permanently losing the one signal this event exists to
+    # guarantee, with no later poll left to retry it. A harmless duplicate
+    # beats a signal that can never be recovered.
+    #
+    # The per-row POST-PROMOTION-ACTIVITY echo above (inside the read loop)
+    # is ordered the same way -- echo, then state_set, then persist_state --
+    # for the identical reason: a crash before persist_state leaves that
+    # row's ACTIVITY key durably unset, so it is simply refetched and
+    # re-emitted next poll, never silently dropped.
+    if [ "$expired" -eq 1 ]; then
+        state_set CLOSING "$lane" 1
+        # Carry the closing window's own promotion identity (the same
+        # epoch:event_id pair recorded in WINDOW's detail field and in
+        # ARMED) so a consumer can bind this exact close to the promotion it
+        # closed -- see the header comment's event-grammar note above.
+        echo "POST-PROMOTION-CLOSED $lane: #$pr_number since=$since:$since_event_id"
+        persist_state
+        state_delete WINDOW "$lane"
+        state_delete CLOSING "$lane"
+    fi
 }
 
 promotion_epoch() {
@@ -423,13 +641,96 @@ promotion_epoch() {
     [ -n "$payload" ] || return 1
     jq -e 'if (.[0]? | type) == "array" then all(.[]; type == "array") else type == "array" end' \
         >/dev/null 2>&1 <<<"$payload" || return 1
-    epoch="$(jq -r '
+    # A withdrawal and a same-head re-promotion inside the same second can
+    # both land ready_for_review events with an identical created_at -- an
+    # epoch-only result cannot tell those two events apart. Every GitHub
+    # timeline event carries its own immutable `id`, so among the event(s)
+    # sharing the latest created_at, break the tie on the highest id (GitHub
+    # assigns timeline event ids in creation order, so the higher id is
+    # always the later, correct event) and return both epoch and id.
+    result="$(jq -r '
       (if (.[0]? | type) == "array" then add else . end)
-      | map(select(.event == "ready_for_review") | .created_at | fromdateiso8601)
-      | if length > 0 then max else empty end
+      | map(select(.event == "ready_for_review"))
+      | if length == 0 then empty
+        else
+          (map(.created_at | fromdateiso8601) | max) as $max_epoch
+          | (map(select((.created_at | fromdateiso8601) == $max_epoch)) | max_by(.id)) as $latest
+          | "\($max_epoch)\t\($latest.id)"
+        end
     ' <<<"$payload" 2>/dev/null)" || return 1
-    [ -n "$epoch" ] || return 10
-    printf '%s' "$epoch"
+    [ -n "$result" ] || return 10
+    printf '%s' "$result"
+}
+
+# Once a post-promotion window closes cleanly, WINDOW is deleted by design --
+# the window itself really is over -- but poll_activity() (the only place
+# that re-validates promotion identity against a freshly resolved
+# promotion_epoch()) only ever runs while a WINDOW is active, because the
+# main loop below gates the call on WINDOW existing. A PR withdrawn (gh pr
+# ready --undo) and re-promoted at the same head, entirely between two polls
+# and entirely AFTER its previous window already closed and was torn down,
+# collapses back to the identical discover_pr() tuple: observe_pr() never
+# notices it and never re-arms WINDOW, so without this check nothing in this
+# file would ever detect it again -- the lane goes dormant for that PR
+# forever, even though a brand-new promotion with its own legitimate window
+# genuinely started.
+#
+# Called from the main loop only when there is currently no active WINDOW
+# for the lane, so this never duplicates poll_activity()'s own per-poll
+# promotion_epoch() re-check while a window is live. It further gates its one
+# extra `gh api` call on discover_pr()'s own freshly observed PR tuple still
+# reading as promoted (non-draft) at all: a dormant lane whose PR has since
+# gone back to draft, was never promoted, or was observed some other way
+# costs nothing extra here -- the added cost is bounded to one
+# promotion_epoch() call per poll per lane that is BOTH windowless AND
+# currently promoted, not one per poll for every lane that has ever been
+# promoted.
+#
+# ARMED (see the header comment and poll_activity()) is what makes the
+# comparison possible after WINDOW's own close/delete has already run: it
+# persists the epoch:event_id identity of whichever promotion this lane's
+# WINDOW was most recently armed from, and unlike WINDOW it survives a clean
+# close. A freshly resolved epoch that still matches ARMED is the same
+# promotion this lane already watched and closed -- stay dormant. One that
+# differs (or no ARMED yet recorded) is a promotion this lane has not armed a
+# window for yet -- arm a fresh one from it, exactly as poll_activity()'s own
+# cold-start path would.
+check_repromotion_after_close() {
+    lane=$1
+    repo=$2
+    pr=$3
+    now=$4
+    [[ "$pr" =~ ^#([0-9]+)\ draft=false\ (OPEN|CLOSED|MERGED)\ head=[0-9A-Fa-f]{8,64}$ ]] || return 0
+    promoted_pr=${BASH_REMATCH[1]}
+
+    epoch_id_pair="$(promotion_epoch "$repo" "$promoted_pr")"
+    promotion_status=$?
+    if [ "$promotion_status" -eq 10 ]; then
+        # No resolvable ready_for_review event this poll -- ordinary GitHub
+        # eventual consistency, not a hard failure. Nothing to compare
+        # against yet; stay dormant rather than arming from an unresolved
+        # epoch.
+        return 0
+    elif [ "$promotion_status" -ne 0 ]; then
+        return 1
+    fi
+    IFS=$'\t' read -r since since_event_id <<<"$epoch_id_pair"
+
+    armed_raw="$(state_get ARMED "$lane" || true)"
+    IFS=: read -r armed_since armed_event_id <<<"$armed_raw"
+    # Record the freshly resolved identity unconditionally, mirroring
+    # poll_activity()'s own unconditional ARMED update, before deciding
+    # whether it differs from what was previously armed.
+    state_set ARMED "$lane" "$since:$since_event_id"
+
+    if [ -n "$armed_raw" ] && [ "$since" = "$armed_since" ] && [ "$since_event_id" = "$armed_event_id" ]; then
+        return 0
+    fi
+
+    until=$((since + post_promotion_seconds))
+    state_set WINDOW "$lane" "$promoted_pr" "$until" "$since:$since_event_id"
+    state_delete CLOSING "$lane"
+    return 0
 }
 
 discover_pr() {
@@ -557,6 +858,12 @@ while true; do
         observe_pr "$lane" "$pr" "$now"
 
         active_pr="$(state_get WINDOW "$lane" || true)"
+        if [ -z "$active_pr" ]; then
+            if ! check_repromotion_after_close "$lane" "$repo" "$pr" "$now"; then
+                observation_failed "GitHub promotion-identity observation failed for lane $lane"
+            fi
+            active_pr="$(state_get WINDOW "$lane" || true)"
+        fi
         if [ -n "$active_pr" ]; then
             if ! poll_activity "$lane" "$repo" "$active_pr" "$now"; then
                 observation_failed "GitHub activity observation failed for lane $lane"
