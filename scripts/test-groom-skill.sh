@@ -1436,6 +1436,16 @@ grep -q -- "--model opus" "$GH_STUB_LOG" ||
 grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "haiku"' "$GH_STUB_LOG" ||
     fail "GROOM_FANOUT_MODEL must control the fan-out instruction independently of GROOM_MODEL"
 
+echo "==> SKILL.md: Step 2 documents the interactive-path fan-out tier contract directly (issue #1044) — the wrapper-prompt tests above cover only the headless path, and the interactive /groom path relies entirely on this prose"
+skill_md="ai/skills/universal/groom/SKILL.md"
+[ -f "$skill_md" ] || fail "$skill_md must exist"
+grep -q "standard.*tier" "$skill_md" || fail "SKILL.md Step 2 must name the standard tier for fan-out dispatch"
+grep -qF "agent-registry.json" "$skill_md" ||
+    fail "SKILL.md Step 2 must point at agent-registry.json for cross-harness tier lookup, not hardcode one harness"
+grep -qF "sonnet" "$skill_md" || fail "SKILL.md Step 2 must give the Claude Code example (sonnet)"
+grep -q "rather than leaving it unset to inherit" "$skill_md" ||
+    fail "SKILL.md Step 2 must explicitly say not to leave the fan-out model unset"
+
 echo "==> wrapper: the run's report survives the wrapper process (finding 1 — no more rm -rf EXIT trap)"
 audit_scratch="$(grep -o 'GROOM_SCRATCH=/[^[:space:]]*' "$GH_STUB_LOG" | tail -1 | cut -d= -f2)"
 [ -n "$audit_scratch" ] || fail "could not recover the run's scratch dir from the stub log"

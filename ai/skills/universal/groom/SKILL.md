@@ -117,9 +117,13 @@ each dispatch (in Claude Code, the `Agent` tool's `model` parameter) —
 e.g. `sonnet` for the `claude` family, `gpt-5.6-terra` for `gpt`
 (Codex CLI), a `standard`-tier Gemini Flash model for `gemini`
 (Antigravity) — rather than leaving it unset to inherit the coordinating
-session's own model. If the coordinating session is itself already on
-`standard` or below, this is a no-op; state so rather than omitting the
-check. Depart from this default only for a stated reason (e.g. an
+session's own model. If the coordinating session is itself already
+exactly on `standard`, this is a no-op; state so rather than omitting the
+check. A coordinating session running **below** `standard` (an economy
+tier) still dispatches fan-out subagents at `standard` — that raises the
+fan-out tier above the coordinator's own, not a no-op, and skipping the
+override there would silently leave subagents on the weaker economy tier
+instead. Depart from this default only for a stated reason (e.g. an
 unusually ambiguous backlog where a stronger tier is worth the cost), not
 by default inheritance.
 
