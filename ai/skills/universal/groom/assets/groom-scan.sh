@@ -139,11 +139,16 @@ printf '%s' "$open_json" >"$scan_tmp/open.json"
 # $milestones_arr ends up as an array of PAGE ARRAYS — even for a single
 # page, since slurpfile always wraps top-level values in its own outer
 # array. Flatten with `$milestones_arr[] | .[]` below to get each milestone
-# object regardless of how many pages were emitted; a failed call or an
-# empty `[]` page still flattens to nothing.
+# object regardless of how many pages were emitted; an empty `[]` page still
+# flattens to nothing. A FAILED call, by contrast, is fatal — same as the
+# open-issues fetch above — rather than silently converted into an empty
+# stream: swallowing the failure made an incomplete scan (auth expired, a
+# transient API error, an unavailable endpoint) indistinguishable from a
+# repository that genuinely has no milestones, which can drive an incorrect
+# regrouping recommendation (Codex review on PR #1032, comment 4012242594).
 gh api "repos/$repo/milestones" --paginate -X GET -f state=all \
-    -f per_page=100 >"$scan_tmp/milestones.pages" 2>/dev/null ||
-    : >"$scan_tmp/milestones.pages"
+    -f per_page=100 >"$scan_tmp/milestones.pages" 2>"$scan_tmp/milestones.err" ||
+    die "could not list milestones of $repo: $(cat "$scan_tmp/milestones.err")"
 
 [ -z "$out" ] || exec >"$out"
 

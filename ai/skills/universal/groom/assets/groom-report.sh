@@ -9,10 +9,10 @@
 #
 # Section order (fixed, per the issue): Stats strip; What to do next; Close
 # now (grouped by verdict, every entry showing number AND title); Milestones;
-# Parent issues; Decisions (with a status column); Process findings;
-# Bot-owned issues; Unverified (only when the dataset carries any —
-# stats.unverified, from groom-verdicts.sh join --allow-missing); Every issue
-# (full table with inline filter/search).
+# Parent issues; Decisions (with a status column); Completed this run;
+# Process findings; Bot-owned issues; Unverified (only when the dataset
+# carries any — stats.unverified, from groom-verdicts.sh join
+# --allow-missing); Every issue (full table with inline filter/search).
 #
 # Usage:
 #   groom-report.sh render --dispositions PATH --out-html PATH --out-md PATH
@@ -30,6 +30,17 @@
 # recipe (SKILL.md Step 6 item 3) points --outcomes at a file no apply step
 # has written yet on its first render (challenge round 2 confirming round,
 # finding 2). A PATH that exists but cannot be read is still an error.
+#
+# "Close now" and "Decisions" list only PENDING rows, and the Stats strip's
+# close-candidate/decision counts and the "What to do next"/clean-backlog
+# lines count PENDING rows only too: once outcomes are merged in, a DONE
+# close or a DECIDED decision moves to the "Completed this run" section
+# instead of continuing to render as still-actionable work on every
+# successful post-apply re-render (Codex review on PR #1032, comment
+# 4012242626). The clean-backlog line additionally requires
+# stats.unverified to be empty — an incomplete audit (join --allow-missing)
+# is never "clean", whatever the close/decision/finding counts say (Codex
+# review on PR #1032, comment 4012242642).
 #
 # Every path argument (--dispositions, --outcomes, --out-html, --out-md) is
 # canonicalized and, when GROOM_SCRATCH is set, must lie under it — exactly
@@ -141,8 +152,20 @@ cmd_render() {
       | ($d.dispositions // []
          | map(. + {status: ($outcomes_map[(.number|tostring)] // .status // "PENDING")})
         ) as $rows
-      | ([$rows[] | select(.verdict | startswith("CLOSE-"))]) as $close
-      | ([$rows[] | select(.verdict == "NEEDS-DECISION")]) as $decisions
+      # Actionable sets ("Close now", "Decisions", "What to do next") and the
+      # stats strip below count only PENDING rows: once outcomes are merged
+      # in, a DONE close or a DECIDED decision must stop being told to the
+      # maintainer as still-actionable work, and its count must stop being
+      # counted toward it, or every successful post-apply re-render keeps
+      # instructing the maintainer to review/answer work that is already
+      # done (Codex review on PR #1032, comment 4012242626). Completed rows
+      # are not dropped — they render under "## Completed this run" below.
+      | ([$rows[] | select(.verdict | startswith("CLOSE-"))]) as $close_all
+      | ([$close_all[] | select(.status == "PENDING")]) as $close
+      | ([$close_all[] | select(.status != "PENDING")]) as $close_done
+      | ([$rows[] | select(.verdict == "NEEDS-DECISION")]) as $decisions_all
+      | ([$decisions_all[] | select(.status == "PENDING")]) as $decisions
+      | ([$decisions_all[] | select(.status != "PENDING")]) as $decisions_done
       | ([$rows[] | select(.bot_owned == true)]) as $bots
       | ($d.stats // {}) as $stats
       | ($d.milestones // []) as $milestones
@@ -158,8 +181,8 @@ cmd_render() {
         "## Stats",
         "",
         "- Open issues: \($stats.open_total // 0)",
-        "- Close candidates: \($stats.close_candidates // ($close|length))",
-        "- Decisions needed: \($stats.decisions // ($decisions|length))",
+        "- Close candidates: \($close|length)",
+        "- Decisions needed: \($decisions|length)",
         "- High priority: \($stats.high_priority // 0)",
         "",
         "## What to do next",
@@ -168,6 +191,7 @@ cmd_render() {
         (if ($decisions|length) > 0 then "1. Answer \($decisions|length) decision(s) below." else empty end),
         (if ($findings|length) > 0 then "1. Review \($findings|length) process finding(s) below." else empty end),
         (if ($close|length) == 0 and ($decisions|length) == 0 and ($findings|length) == 0
+            and ($unverified|length) == 0
          then "Nothing to do — backlog is clean this run." else empty end),
         "",
         "## Close now",
@@ -209,6 +233,15 @@ cmd_render() {
                "- #\(.number) — \(.title // "(title unavailable)" | mdesc) — \(.question // "" | mdesc) — recommendation: \(.reason | mdesc) — status: \(.status // "PENDING" | mdesc)")
          end),
         "",
+        "## Completed this run",
+        "",
+        (if (($close_done|length) + ($decisions_done|length)) == 0 then "None this run."
+         else (
+           ($close_done[] | "- #\(.number) — \(.title // "(title unavailable)" | mdesc) — close — status: \(.status | mdesc)"),
+           ($decisions_done[] | "- #\(.number) — \(.title // "(title unavailable)" | mdesc) — decision — status: \(.status | mdesc)")
+         )
+         end),
+        "",
         "## Process findings",
         "",
         (if ($findings|length) == 0 then "None recorded this run."
@@ -245,8 +278,14 @@ cmd_render() {
          | map(. + {status: ($outcomes_map[(.number|tostring)] // .status // "PENDING")})
         ) as $rows
       | ($d.repo // "unknown") as $repo
-      | ([$rows[] | select(.verdict | startswith("CLOSE-"))]) as $close
-      | ([$rows[] | select(.verdict == "NEEDS-DECISION")]) as $decisions
+      # Same PENDING-only filtering as the Markdown render above (Codex
+      # review on PR #1032, comment 4012242626).
+      | ([$rows[] | select(.verdict | startswith("CLOSE-"))]) as $close_all
+      | ([$close_all[] | select(.status == "PENDING")]) as $close
+      | ([$close_all[] | select(.status != "PENDING")]) as $close_done
+      | ([$rows[] | select(.verdict == "NEEDS-DECISION")]) as $decisions_all
+      | ([$decisions_all[] | select(.status == "PENDING")]) as $decisions
+      | ([$decisions_all[] | select(.status != "PENDING")]) as $decisions_done
       | ([$rows[] | select(.bot_owned == true)]) as $bots
       | ($d.stats // {}) as $stats
       | ($d.milestones // []) as $milestones
@@ -271,8 +310,8 @@ cmd_render() {
         "<h2>Stats</h2>",
         "<p class=stats>",
         "<span>Open: \($stats.open_total // 0)</span>",
-        "<span>Close candidates: \($stats.close_candidates // ($close|length))</span>",
-        "<span>Decisions: \($stats.decisions // ($decisions|length))</span>",
+        "<span>Close candidates: \($close|length)</span>",
+        "<span>Decisions: \($decisions|length)</span>",
         "<span>High priority: \($stats.high_priority // 0)</span>",
         "</p>",
         "<h2>What to do next</h2>",
@@ -281,6 +320,7 @@ cmd_render() {
         (if ($decisions|length) > 0 then "<li>Answer \($decisions|length) decision(s) below.</li>" else empty end),
         (if ($findings|length) > 0 then "<li>Review \($findings|length) process finding(s) below.</li>" else empty end),
         (if ($close|length) == 0 and ($decisions|length) == 0 and ($findings|length) == 0
+            and ($unverified|length) == 0
          then "<li>Nothing to do — backlog is clean this run.</li>" else empty end),
         "</ol>",
         "<h2>Close now</h2>",
@@ -314,6 +354,13 @@ cmd_render() {
         "<h2>Decisions</h2>",
         (if ($decisions|length) == 0 then "<p>None this run.</p>"
          else "<ul>" + ([$decisions[] | "<li>#\(.number) — \(.title // "(title unavailable)"|h) — \(.question // ""|h) — recommendation: \(.reason|h) — status: \(.status // "PENDING"|h)</li>"] | join("")) + "</ul>"
+         end),
+        "<h2>Completed this run</h2>",
+        (if (($close_done|length) + ($decisions_done|length)) == 0 then "<p>None this run.</p>"
+         else "<ul>"
+           + ([$close_done[] | "<li>#\(.number) — \(.title // "(title unavailable)"|h) — close — status: \(.status|h)</li>"] | join(""))
+           + ([$decisions_done[] | "<li>#\(.number) — \(.title // "(title unavailable)"|h) — decision — status: \(.status|h)</li>"] | join(""))
+           + "</ul>"
          end),
         "<h2>Process findings</h2>",
         (if ($findings|length) == 0 then "<p>None recorded this run.</p>"

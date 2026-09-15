@@ -35,8 +35,12 @@
 #     `groom-report.sh` is exec'd directly instead, with none of that: no
 #     interactive-terminal requirement, no confirmation prompt, and no
 #     `GROOM_EXECUTE` export — it never writes to GitHub and reads no gate
-#     (challenge round 2 confirming round, finding 4). `GROOM_REPO` is still
-#     exported for it, as for every mode.
+#     (challenge round 2 confirming round, finding 4). It also runs BEFORE
+#     this wrapper resolves the GitHub repo below, so rendering an
+#     already-applied run's local dispositions/outcomes keeps working during
+#     a GitHub outage or an expired `gh` session — it never needed
+#     `GROOM_REPO` (cmd_render never reads it) and never saw it (Codex review
+#     on PR #1032, comment 4012242636).
 #
 # Unlike triage (a cheap classifier working only from a precomputed scan),
 # groom verifies claims against the live code and merged PRs and fans out
@@ -57,12 +61,20 @@
 #       --outcomes "$SCRATCH/outcomes.jsonl" --execute # apply, execute
 #
 # Env: GROOM_MODEL (default: sonnet) picks the AUDIT model.
-#      GROOM_OUT_DIR (default: $HOME/.local/state/harmon-groom) is the root
-#      an audit run's persistent output directory is created under, as
-#      `mktemp -d "$GROOM_OUT_DIR/<owner>-<repo>/run.XXXXXX"` (mode 0700 —
-#      issue #1015 challenge round 2 findings 6 and 9, secured even when the
-#      parent directories already existed from an older, looser-mode run —
-#      challenge round 3 finding 5), never removed by this script.
+#      GROOM_OUT_DIR (default: $HOME/.local/state) names the CALLER'S root —
+#      a directory this script does not own and never chmods, only creates
+#      if missing (refused if it exists and is not a directory). Every audit
+#      run's persistent output directory is created under a groom-owned
+#      child of that root, `$GROOM_OUT_DIR/harmon-groom`, as
+#      `mktemp -d ".../harmon-groom/<owner>-<repo>/run.XXXXXX"` — only that
+#      child and the directories under it (never the caller's own root) are
+#      secured to mode 0700 (issue #1015 challenge round 2 findings 6 and 9,
+#      re-applied even when they already existed from an older, looser-mode
+#      run — challenge round 3 finding 5). A GROOM_OUT_DIR pointed at a
+#      directory the caller owns and shares with others — even the system
+#      temp directory — must never have ITS OWN mode changed by this script
+#      (Codex review on PR #1032, comment 4012242612). Never removed by this
+#      script.
 #
 # Exit: 2 = environment/usage refusal, otherwise the named script's exit code
 #       (apply mode) or the model run's exit code (audit mode).
@@ -100,15 +112,6 @@ fi
 
 command -v gh >/dev/null 2>&1 || die "the gh CLI is required"
 
-if [ "$mode" = "audit" ]; then
-    command -v claude >/dev/null 2>&1 ||
-        die "the claude CLI is required (or run the skill interactively via" \
-            "your agent session instead)"
-    grep -q -- "--setting-sources" < <(claude --help 2>/dev/null) ||
-        die "this claude CLI lacks --setting-sources; refusing to launch the" \
-            "worker with the repo's settings grants in effect — upgrade the CLI"
-fi
-
 skill_dir=""
 for d in ai/skills/universal/groom .agents/skills/groom .claude/skills/groom; do
     if [ -f "$d/SKILL.md" ]; then
@@ -118,19 +121,33 @@ for d in ai/skills/universal/groom .agents/skills/groom .claude/skills/groom; do
 done
 [ -n "$skill_dir" ] || die "no groom skill found in this checkout"
 
+# groom-report.sh runs BEFORE repository resolution below (Codex review on
+# PR #1032, comment 4012242636): it is read-only, writes only to the two
+# output files named on its own command line, never touches GitHub, and
+# never reads GROOM_REPO, so gating it behind `gh repo view` made an
+# already-applied run's local report un-renderable during a GitHub outage or
+# an expired gh session for no reason the script itself needed. It carries
+# none of the write gate either: no tty requirement, no confirmation prompt,
+# and no GROOM_EXECUTE export (challenge round 2 confirming round, finding 4).
+if [ "$mode" = "apply" ] && [ "$apply_script" = "groom-report.sh" ]; then
+    exec "$skill_dir/assets/$apply_script" "$@"
+fi
+
+if [ "$mode" = "audit" ]; then
+    command -v claude >/dev/null 2>&1 ||
+        die "the claude CLI is required (or run the skill interactively via" \
+            "your agent session instead)"
+    grep -q -- "--setting-sources" < <(claude --help 2>/dev/null) ||
+        die "this claude CLI lacks --setting-sources; refusing to launch the" \
+            "worker with the repo's settings grants in effect — upgrade the CLI"
+fi
+
 repo="$(gh repo view "$(git remote get-url origin)" \
     --json nameWithOwner -q .nameWithOwner)" ||
     die "could not resolve the GitHub repo from the origin remote"
 export GROOM_REPO="$repo"
 
 if [ "$mode" = "apply" ]; then
-    if [ "$apply_script" = "groom-report.sh" ]; then
-        # Read-only and writes only to the two output files named on its own
-        # command line — never to GitHub — so it carries none of the write
-        # gate below: no tty requirement, no confirmation prompt, and no
-        # GROOM_EXECUTE export (challenge round 2 confirming round, finding 4).
-        exec "$skill_dir/assets/$apply_script" "$@"
-    fi
     [ -t 0 ] && [ -t 1 ] ||
         die "--execute needs an interactive terminal — supervised runs only"
     printf 'groom: EXECUTE will run %s in %s with GROOM_EXECUTE=1 —\n' \
@@ -158,13 +175,28 @@ fi
 # world-readable under a normal umask and, on a platform whose `date` has no
 # %N, collision-prone).
 owner_repo_dir="$(printf '%s' "$repo" | tr '/' '-')"
-out_root="${GROOM_OUT_DIR:-$HOME/.local/state/harmon-groom}"
+# GROOM_OUT_DIR (default $HOME/.local/state) names the CALLER'S root — a
+# directory this script does not own, so it is only ever created if missing,
+# NEVER chmod'd: a root-run `GROOM_OUT_DIR=/tmp task groom` must not turn the
+# system temp directory's mode from 1777 into 0700, and an owned shared team
+# directory must not become inaccessible to its other users (Codex review on
+# PR #1032, comment 4012242612). A pre-existing root that is not a directory
+# at all is refused outright rather than silently used as one.
+out_parent="${GROOM_OUT_DIR:-$HOME/.local/state}"
+if [ -e "$out_parent" ] && [ ! -d "$out_parent" ]; then
+    die "GROOM_OUT_DIR root exists and is not a directory: $out_parent"
+fi
+mkdir -p "$out_parent" || die "could not create the output root: $out_parent"
+# Every run's output lives under a groom-OWNED child of that root instead —
+# this script always creates it (whether or not it happened to already exist
+# from an earlier run), so it — and everything under it — is always safe to
+# secure to mode 0700. mkdir -p -m 700 only applies the mode to directories
+# it actually creates, so chmod it explicitly every run: a host upgraded
+# from an older version of this script (which used a bare mkdir -p with no
+# explicit mode) can already have this child directory at a looser mode, and
+# -m would silently no-op on it (challenge round 3 finding 5).
+out_root="$out_parent/harmon-groom"
 mkdir -p "$out_root" || die "could not create the output root: $out_root"
-# mkdir -p -m 700 only applies the mode to directories it actually creates —
-# a host upgraded from an older version of this script (which used a bare
-# mkdir -p with no explicit mode) can already have $out_root at a looser
-# mode, and -m would silently no-op on it. chmod it explicitly every run so
-# an already-existing parent gets secured too (challenge round 3 finding 5).
 chmod 700 "$out_root" || die "could not secure the output root: $out_root"
 mkdir -p "$out_root/$owner_repo_dir" ||
     die "could not create the repo's output directory:" \

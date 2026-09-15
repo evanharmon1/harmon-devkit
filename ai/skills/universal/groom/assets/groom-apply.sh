@@ -50,7 +50,12 @@
 # The write log (--log) is opened in APPEND mode with a
 # "# run <UTC timestamp> apply" header line for every --execute invocation —
 # it is never truncated, so a rerun after a partial failure keeps the record
-# of what an earlier attempt already wrote.
+# of what an earlier attempt already wrote. Each WRITE line is the EXACT
+# command: log_write serializes every argv element with `printf '%q'`
+# (bash 3.2 supports it) instead of flattening the array with "$*", which
+# lost argv boundaries whenever an approved title, comment, or milestone name
+# contained whitespace, quotes, or shell metacharacters (Codex review on
+# PR #1032, comment 4012242585).
 #
 # --outcomes FILE (optional) appends one JSON Lines record per applied write —
 # {"issue":N,"op":"close|retitle|label|milestone-assign|sub-issue-link",
@@ -81,12 +86,16 @@
 # Exit: 0 = dry-run resolved or every write applied, 1 = a write failed,
 #       2 = usage/environment error (including --execute without the env gate,
 #       more "close" rows than --max-closes allows, an unwritable --outcomes
-#       sink in --execute mode, or two plan rows naming the same op+issue),
+#       sink in --execute mode, two plan rows naming the same op+issue, or a
+#       "duplicate" close whose comment does not name a distinct canonical
+#       issue — Codex review on PR #1032, comment 4012242606),
 #       4 = refused (bot-owned issue, an unknown op, a label op triage-
 #       apply.sh's own dry run would reject, a retitle whose live title no
 #       longer matches the plan's previous_title, a completed close whose
-#       live body still has an unticked task item, or a sub-issue-link whose
-#       parent or child id could not be resolved).
+#       live body still has an unticked task item, a sub-issue-link whose
+#       parent or child id could not be resolved, or a milestone-assign whose
+#       milestone_title is not a milestone of the repo — Codex review on
+#       PR #1032, comment 4012242580).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -98,6 +107,13 @@ check_metadata="$script_dir/../../track-work/assets/check-issue-metadata.sh"
 # indexed array stands in for an associative array (bash 3.2 has none, same
 # reasoning as cmd_apply_plan's own seen_keys/lines handling below).
 sub_issue_child_id=()
+
+# Every milestone TITLE of the target repo, resolved once in pass 1 (execute
+# mode only, on first use) by validate_milestone_assign and cached here —
+# newline-separated, empty until fetched (Codex review on PR #1032, comment
+# 4012242580).
+milestone_titles=""
+milestone_titles_fetched=0
 
 usage() {
     echo "Usage: $0 apply-plan --repo owner/repo --plan-file PATH --log PATH" >&2
@@ -146,7 +162,39 @@ live_is_bot() {
 log_write() {
     local log="$1"
     shift
-    printf 'WRITE %s\n' "$*" >>"$log"
+    # Serialize each argv element with %q (shell-safe quoting) instead of
+    # flattening the array with "$*" (which loses argv boundaries whenever an
+    # approved title, comment, or milestone name contains whitespace, quotes,
+    # or shell metacharacters — Codex review on PR #1032, comment
+    # 4012242585). The resulting line is the EXACT command, re-parseable by
+    # `eval`, not an approximation of it.
+    {
+        printf 'WRITE'
+        local arg
+        for arg in "$@"; do
+            printf ' %q' "$arg"
+        done
+        printf '\n'
+    } >>"$log"
+}
+
+# Resolve every milestone TITLE of $repo, once, in execute mode (Codex review
+# on PR #1032, comment 4012242580): without this, an approved plan's
+# milestone-assign row was accepted in pass 1 even when its milestone_title
+# was stale, renamed, or never existed, and `gh issue edit --milestone` (which
+# resolves by NAME, not number) only failed in pass 2 — after every earlier
+# row's write had already run, exactly the partial-application hazard the
+# two-pass split (finding 5) exists to prevent. Same pagination-flattening
+# reasoning as groom-scan.sh's milestones fetch (Codex review comment
+# 4011648559): `gh api --paginate` emits one JSON array per page.
+fetch_milestone_titles() {
+    local repo="$1" pages
+    [ "$milestone_titles_fetched" -eq 1 ] && return 0
+    pages="$(gh api "repos/$repo/milestones" --paginate -X GET -f state=all -f per_page=100)" ||
+        die 2 "could not list the milestones of $repo"
+    milestone_titles="$(printf '%s' "$pages" | jq -rs '.[][] | .title')" ||
+        die 2 "could not parse the milestones of $repo"
+    milestone_titles_fetched=1
 }
 
 write_outcome() {
@@ -193,6 +241,31 @@ validate_close() {
     completed | "not planned" | duplicate) ;;
     *) die 2 "refused: #$issue close reason must be completed, 'not planned', or duplicate (got '$reason')" ;;
     esac
+
+    # A "duplicate" close must carry a comment naming the canonical issue
+    # (Codex review on PR #1032, comment 4012242606): the reason alone does
+    # not preserve where the real work lives, and
+    # ai/skills/universal/track-work/SKILL.md's closing contract requires the
+    # pointer. Applies in BOTH dry-run and execute mode — this validates the
+    # plan row's own content, not live GitHub state.
+    if [ "$reason" = "duplicate" ]; then
+        local dup_comment dup_target
+        dup_comment="$(jq -r '.comment // empty' <<<"$row")"
+        # grep -oE exits 1 on no match, which set -e would otherwise treat as
+        # this whole function failing (a bare pattern-not-found is not an
+        # error here — it means "no canonical pointer", handled below).
+        dup_target="$(printf '%s' "$dup_comment" | grep -oE '#[0-9]+' | head -1 | tr -d '#')" || true
+        [ -n "$dup_target" ] ||
+            die 2 "refused: #$issue close reason is duplicate but its comment" \
+                "does not name a canonical issue (expected a '#N' pointer) —" \
+                "track-work's closing contract requires the canonical issue" \
+                "for a duplicate close"
+        [ "$dup_target" != "$issue" ] ||
+            die 2 "refused: #$issue close reason is duplicate but its" \
+                "comment's canonical pointer names itself (#$dup_target)" \
+                "rather than a different issue"
+    fi
+
     refuse_if_bot "$repo" "$issue" "$row" "$execute" close
 
     # track-work's closing contract (ai/skills/universal/track-work/SKILL.md
@@ -294,6 +367,17 @@ validate_milestone_assign() {
     milestone_title="$(jq -r '.milestone_title // empty' <<<"$row")"
     [ -n "$milestone_title" ] ||
         die 2 "refused: #$issue milestone-assign needs a nonempty milestone_title"
+
+    # Resolve the milestone list once and refuse a title that is not present
+    # (Codex review on PR #1032, comment 4012242580) — see
+    # fetch_milestone_titles above. Dry run never resolves the list; it only
+    # prints the PLAN line, unchanged.
+    if [ "$execute" -eq 1 ]; then
+        fetch_milestone_titles "$repo"
+        grep -qxF "$milestone_title" <<<"$milestone_titles" ||
+            die 4 "refused: #$issue milestone-assign names" \
+                "'$milestone_title', which is not a milestone of $repo"
+    fi
 }
 
 validate_sub_issue_link() {
@@ -341,7 +425,7 @@ apply_close() {
         echo "PLAN ${cmd[*]}"
         return 0
     fi
-    log_write "$log" "${cmd[*]}"
+    log_write "$log" "${cmd[@]}"
     "${cmd[@]}" >/dev/null || die 1 "write failed: close $repo#$issue"
     echo "APPLIED close $repo#$issue ($reason)"
     write_outcome "$outcomes" "$issue" "close" "DONE"
@@ -378,7 +462,7 @@ apply_retitle() {
             "Refresh the plan and re-approve; writes already applied by this" \
             "run are recorded in $log."
 
-    log_write "$log" "${cmd[*]}"
+    log_write "$log" "${cmd[@]}"
     "${cmd[@]}" >/dev/null || die 1 "write failed: retitle $repo#$issue"
     echo "APPLIED retitle $repo#$issue"
     write_outcome "$outcomes" "$issue" "retitle" "DONE"
@@ -409,7 +493,7 @@ apply_label() {
         echo "PLAN $triage_apply ${args[*]}"
         return 0
     fi
-    log_write "$log" "$triage_apply ${args[*]} --execute"
+    log_write "$log" "$triage_apply" "${args[@]}" "--execute"
     TRIAGE_EXECUTE=1 "$triage_apply" "${args[@]}" --execute ||
         die 1 "write failed: label $repo#$issue"
     write_outcome "$outcomes" "$issue" "label" "DONE"
@@ -430,7 +514,7 @@ apply_milestone_assign() {
         echo "PLAN ${cmd[*]}"
         return 0
     fi
-    log_write "$log" "${cmd[*]}"
+    log_write "$log" "${cmd[@]}"
     "${cmd[@]}" >/dev/null || die 1 "write failed: milestone-assign $repo#$issue"
     echo "APPLIED milestone-assign $repo#$issue -> '$milestone_title'"
     write_outcome "$outcomes" "$issue" "milestone-assign" "DONE"
@@ -454,8 +538,9 @@ apply_sub_issue_link() {
     [ -n "$child_id" ] ||
         die 1 "internal error: pass 1 did not cache an id for $repo#$child" \
             "(sub-issue-link at plan row $lineno)"
-    log_write "$log" "gh api repos/$repo/issues/$parent/sub_issues -F sub_issue_id=$child_id"
-    gh api "repos/$repo/issues/$parent/sub_issues" -F sub_issue_id="$child_id" >/dev/null ||
+    local cmd=(gh api "repos/$repo/issues/$parent/sub_issues" -F "sub_issue_id=$child_id")
+    log_write "$log" "${cmd[@]}"
+    "${cmd[@]}" >/dev/null ||
         die 1 "write failed: sub-issue link $repo#$parent <- $repo#$child"
     echo "APPLIED sub-issue-link $repo#$parent <- $repo#$child"
     # Recorded against the CHILD issue number: that is the row a maintainer

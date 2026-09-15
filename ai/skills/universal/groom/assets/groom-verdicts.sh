@@ -160,7 +160,21 @@ validate_files() {
                 continue
                 ;;
             esac
-            if [ -z "$reason" ]; then
+            # `jq -r` coerces any JSON value (a number, `[]`, `null`) to a
+            # shell string, so checking only `[ -z "$reason" ]` accepted a
+            # non-string or whitespace-only reason even though the
+            # documented schema requires a concrete nonempty string — the
+            # same gap the evidence check below already closed (Codex review
+            # on PR #1032, comment 4012242599).
+            local reason_type reason_trimmed
+            reason_type="$(jq -r '.reason | type' <<<"$line")"
+            if [ "$reason_type" != "string" ]; then
+                echo "groom-verdicts: refused: #$number — reason must be a JSON string (got $reason_type)" >&2
+                bad=$((bad + 1))
+                continue
+            fi
+            reason_trimmed="$(printf '%s' "$reason" | tr -d '[:space:]')"
+            if [ -z "$reason_trimmed" ]; then
                 echo "groom-verdicts: refused: #$number — reason is required" >&2
                 bad=$((bad + 1))
                 continue

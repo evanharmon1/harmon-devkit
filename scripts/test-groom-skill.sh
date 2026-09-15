@@ -85,7 +85,10 @@ case "${1:-} ${2:-}" in
 "repo view") printf '%s\n' "${GH_STUB_REPO:?}" ;;
 "project list") exit 1 ;;
 "issue list") cat "${GH_STUB_DIR:?}/open-issues.json" ;;
-api\ repos/*/milestones) cat "${GH_STUB_DIR:?}/milestones.json" ;;
+api\ repos/*/milestones)
+    [ "${GH_STUB_FAIL_MILESTONES:-0}" = 0 ] || exit 1
+    cat "${GH_STUB_DIR:?}/milestones.json"
+    ;;
 api\ repos/*/issues/*/dependencies/blocked_by) ;;
 api\ repos/*/issues/*/sub_issues) ;;
 api\ repos/*/issues/*)
@@ -235,6 +238,20 @@ printf '%s\n' '{"number":17,"verdict":"CLOSE-done","priority":"high","reason":"x
 number_evidence="$tmp/number-evidence.jsonl"
 printf '%s\n' '{"number":18,"verdict":"CLOSE-done","priority":"high","reason":"x","evidence":123,"group":"ci"}' >"$number_evidence"
 [ "$(run "$verdicts" validate "$number_evidence")" = 1 ] || fail "a numeric evidence value must be refused"
+
+echo "==> validate: whitespace-only reason is refused (Codex 4012242599)"
+ws_reason="$tmp/ws-reason.jsonl"
+printf '%s\n' '{"number":19,"verdict":"KEEP","priority":"low","reason":"   ","evidence":"","group":"ci"}' >"$ws_reason"
+[ "$(run "$verdicts" validate "$ws_reason")" = 1 ] || fail "whitespace-only reason must be refused"
+grep -q "#19" "$tmp/err" || fail "refusal must name the issue number"
+
+echo "==> validate: a non-string reason value ([] or a number) is refused (Codex 4012242599)"
+array_reason="$tmp/array-reason.jsonl"
+printf '%s\n' '{"number":23,"verdict":"KEEP","priority":"low","reason":[],"evidence":"","group":"ci"}' >"$array_reason"
+[ "$(run "$verdicts" validate "$array_reason")" = 1 ] || fail "an array reason value must be refused"
+number_reason="$tmp/number-reason.jsonl"
+printf '%s\n' '{"number":24,"verdict":"KEEP","priority":"low","reason":123,"evidence":"","group":"ci"}' >"$number_reason"
+[ "$(run "$verdicts" validate "$number_reason")" = 1 ] || fail "a numeric reason value must be refused"
 
 echo "==> validate: multiple invalid rows in one file still exit 1 (never the raw count — Codex 4011648565)"
 multi_bad="$tmp/multi-bad.jsonl"
@@ -434,7 +451,8 @@ out_md="$tmp/report.md"
 GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$disp" \
     --out-html "$out_html" --out-md "$out_md" >/dev/null
 for section in "## Stats" "## What to do next" "## Close now" "## Milestones" \
-    "## Parent issues" "## Decisions" "## Process findings" "## Every issue"; do
+    "## Parent issues" "## Decisions" "## Completed this run" "## Process findings" \
+    "## Every issue"; do
     grep -qF "$section" "$out_md" || fail "missing section: $section"
 done
 order="$(grep -n '^## ' "$out_md" | cut -d: -f2)"
@@ -444,6 +462,7 @@ expected="## Stats
 ## Milestones
 ## Parent issues
 ## Decisions
+## Completed this run
 ## Process findings
 ## Bot-owned issues (excluded from retitle/close/relabel)
 ## Every issue"
@@ -503,6 +522,15 @@ empty_ms_out="$tmp/scan-empty-milestones.json"
 [ "$(jq -r '.milestones | length' "$empty_ms_out")" = 0 ] ||
     fail "an empty milestones page must flatten to an empty list, not error"
 
+echo "==> scan: a failed milestones request is fatal, not an empty list (Codex 4012242594)"
+: >"$GH_STUB_LOG"
+fail_ms_out="$tmp/scan-milestones-fail.json"
+[ "$(run env GH_STUB_FAIL_MILESTONES=1 "./ai/skills/universal/groom/assets/groom-scan.sh" \
+    --repo "$repo" --out "$fail_ms_out")" = 2 ] ||
+    fail "a failed milestones request must be fatal: $(cat "$tmp/out" "$tmp/err")"
+[ ! -f "$fail_ms_out" ] || fail "a failed scan must not write --out"
+grep -qi "milestone" "$tmp/err" || fail "the refusal must mention milestones"
+
 echo "==> scan: refuses (exit 4, naming --limit) when the result hits --limit exactly"
 : >"$GH_STUB_LOG"
 [ "$(run "./ai/skills/universal/groom/assets/groom-scan.sh" --repo "$repo" \
@@ -531,6 +559,36 @@ pipe_row="$(grep '^| #9 ' "$tmp/pipe.md")"
 [ "$(printf '%s\n' "$pipe_row" | awk -F' \\| ' '{print NF}')" = 6 ] ||
     fail "an escaped pipe must not add a phantom table column: $pipe_row"
 
+echo "==> report: after outcomes merge, a DONE close/DECIDED decision moves from the actionable sets to Completed this run (Codex 4012242626)"
+done_outcomes="$tmp/done-close-outcomes.jsonl"
+cat >"$done_outcomes" <<'JSON'
+{"issue":1,"op":"close","status":"DONE","at":"2026-01-01T00:00:00Z"}
+{"issue":3,"op":"decision","status":"DECIDED 2026-01-01","at":"2026-01-01T00:00:00Z"}
+JSON
+done_md="$tmp/done.md"
+run "$report" render --dispositions "$disp" --outcomes "$done_outcomes" \
+    --out-html "$tmp/done.html" --out-md "$done_md" >/dev/null
+close_now_section="$(sed -n '/^## Close now$/,/^## /p' "$done_md")"
+grep -q '#1 —' <<<"$close_now_section" &&
+    fail "a DONE close must not remain listed under Close now"
+grep -q '#4 —' <<<"$close_now_section" ||
+    fail "an untouched close candidate must still be listed under Close now"
+decisions_section="$(sed -n '/^## Decisions$/,/^## /p' "$done_md")"
+grep -q '#3 —' <<<"$decisions_section" &&
+    fail "a DECIDED decision must not remain listed under Decisions"
+completed_section="$(sed -n '/^## Completed this run$/,/^## /p' "$done_md")"
+grep -q '#1 —' <<<"$completed_section" ||
+    fail "a DONE close must be listed under Completed this run"
+grep -q '#3 —' <<<"$completed_section" ||
+    fail "a DECIDED decision must be listed under Completed this run"
+grep -qF -- "- Close candidates: 2" "$done_md" ||
+    fail "the Stats close-candidate count must reflect PENDING rows only"
+grep -qF -- "- Decisions needed: 0" "$done_md" ||
+    fail "the Stats decisions count must reflect PENDING rows only"
+done_html="$tmp/done.html"
+grep -qF "Completed this run" "$done_html" || fail "HTML must also render the Completed this run section"
+grep -qF "close — status: DONE" "$done_html" || fail "HTML Completed this run must show the DONE close"
+
 echo "==> report: renders an Unverified section only when stats.unverified is nonempty"
 run "$report" render --dispositions "$missing_disp" --out-html "$tmp/unverified.html" \
     --out-md "$tmp/unverified.md" >/dev/null
@@ -552,6 +610,24 @@ done
 run "$report" render --dispositions "$disp" --out-html "$tmp/no-unverified.html" \
     --out-md "$tmp/no-unverified.md" >/dev/null
 grep -q "^## Unverified" "$tmp/no-unverified.md" && fail "Unverified section must not render when unverified is empty"
+
+echo "==> report: a nonempty stats.unverified prevents the clean-backlog message even with zero close/decision/finding rows (Codex 4012242642)"
+grep -qF "Nothing to do — backlog is clean this run." "$tmp/unverified.md" &&
+    fail "an audit with unverified (unallocated) issues must never be reported as clean"
+grep -qF "Nothing to do — backlog is clean this run." "$tmp/unverified.html" &&
+    fail "the HTML render must never report an unverified audit as clean either"
+
+echo "==> report: a genuinely clean audit (no close/decisions/findings/unverified) still reports clean"
+clean_disp="$tmp/clean-disp.json"
+cat >"$clean_disp" <<'JSON'
+{"repo":"o/r","dispositions":[
+  {"number":1,"title":"Still relevant","verdict":"KEEP","priority":"low","reason":"still needed","group":"ci"}
+],"stats":{"open_total":1,"close_candidates":0,"decisions":0,"high_priority":0,"unverified":[]},"milestones":[]}
+JSON
+clean_md="$tmp/clean.md"
+run "$report" render --dispositions "$clean_disp" --out-html "$tmp/clean.html" --out-md "$clean_md" >/dev/null
+grep -qF "Nothing to do — backlog is clean this run." "$clean_md" ||
+    fail "a genuinely clean audit must still report the backlog as clean"
 
 echo "==> report: Parent issues and Milestones render from dataset proposals"
 run "$report" render --dispositions "$proposals_disp" --out-html "$tmp/proposals.html" \
@@ -636,6 +712,13 @@ JSON
 cat >"$stub_dir/issue-31.json" <<'JSON'
 {"labels":[],"author":{"login":"dependabot[bot]","type":"Bot","is_bot":true}}
 JSON
+# validate_milestone_assign (Codex 4012242580) resolves this list in execute
+# mode — reset it to a single page carrying "v1" (the groom-scan.sh section
+# above left it at an empty page) so the write-gate tests below that assign
+# "v1" keep passing.
+cat >"$stub_dir/milestones.json" <<'JSON'
+[{"number":1,"title":"v1","state":"open","description":"","open_issues":1,"closed_issues":0}]
+JSON
 
 echo "==> apply-plan: dry-run writes nothing"
 plan="$tmp/plan.jsonl"
@@ -669,6 +752,49 @@ grep -q "^WRITE gh issue edit 30 .*--title" "$tmp/apply.log" || fail "retitle mu
 grep -q "^WRITE gh issue edit 30 .*--milestone v1" "$tmp/apply.log" || fail "milestone-assign must be logged"
 grep -q "^WRITE gh api repos/$repo/issues/1/sub_issues" "$tmp/apply.log" || fail "sub-issue-link must be logged"
 grep -q "^issue close 30 " "$GH_STUB_LOG" || fail "close must actually run"
+
+echo "==> apply-plan: milestone-assign is resolved against the repo's real milestone list in pass 1, before any write (Codex 4012242580)"
+unknown_milestone_plan="$tmp/unknown-milestone-plan.jsonl"
+cat >"$unknown_milestone_plan" <<'JSONL'
+{"op":"close","issue":30,"reason":"completed","bot_owned":false}
+{"op":"milestone-assign","issue":30,"milestone_title":"does-not-exist","bot_owned":false}
+JSONL
+: >"$GH_STUB_LOG"
+unknown_milestone_log="$tmp/unknown-milestone.log"
+: >"$unknown_milestone_log"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$unknown_milestone_plan" \
+    --log "$unknown_milestone_log" --execute)" = 4 ] ||
+    fail "a milestone_title absent from the repo's milestones must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q "does-not-exist" "$tmp/err" || fail "the refusal must name the unresolved milestone title"
+grep -qE "^issue close 30" "$GH_STUB_LOG" &&
+    fail "an unresolvable milestone in a later row must prevent EVERY write, including an earlier valid close"
+grep -q "^WRITE " "$unknown_milestone_log" && fail "no WRITE lines should be logged when pass 1 refuses"
+
+echo "==> apply-plan: milestone-assign is not resolved against the live milestone list in dry-run mode"
+[ "$(run "$apply" apply-plan --repo "$repo" --plan-file "$unknown_milestone_plan" \
+    --log "$tmp/unknown-milestone-dry.log")" = 0 ] ||
+    fail "dry-run must not resolve milestone titles: $(cat "$tmp/out" "$tmp/err")"
+grep -q "^PLAN " "$tmp/out" || fail "dry-run must still print the PLAN line"
+
+echo "==> apply-plan: WRITE log lines preserve argv boundaries for values containing spaces and quotes (Codex 4012242585)"
+tricky_comment="two words and a 'single quote'"
+quote_plan="$tmp/quote-plan.jsonl"
+jq -nc --arg comment "$tricky_comment" \
+    '{"op":"close","issue":30,"reason":"completed","comment":$comment,"bot_owned":false}' >"$quote_plan"
+: >"$GH_STUB_LOG"
+quote_log="$tmp/quote.log"
+: >"$quote_log"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$quote_plan" \
+    --log "$quote_log" --execute)" = 0 ] ||
+    fail "execute with a comment containing spaces and a quote should succeed: $(cat "$tmp/out" "$tmp/err")"
+write_line="$(grep '^WRITE gh issue close 30' "$quote_log" | tail -1)"
+[ -n "$write_line" ] || fail "close must be logged"
+reconstructed=()
+eval "reconstructed=(${write_line#WRITE })"
+last_idx=$((${#reconstructed[@]} - 1))
+[ "${reconstructed[$last_idx]}" = "$tricky_comment" ] ||
+    fail "the logged WRITE line must reconstruct the exact comment argument:" \
+        "got '${reconstructed[$last_idx]:-}' from '$write_line'"
 
 echo "==> apply-plan: pass 1 validates every row before pass 2 writes any (finding 5)"
 partial_plan="$tmp/partial-plan.jsonl"
@@ -901,6 +1027,29 @@ printf 'not valid json at all\n' >"$tmp/malformed-plan.jsonl"
 [ "$(run "$apply" apply-plan --repo "$repo" --plan-file "$tmp/malformed-plan.jsonl" \
     --log "$tmp/apply.log")" = 2 ] || fail "a malformed plan file must exit 2 (documented), not a raw jq code"
 
+echo "==> apply-plan: a 'duplicate' close with no canonical-issue comment is refused (Codex 4012242606)"
+no_pointer_plan="$tmp/no-pointer-plan.jsonl"
+printf '%s\n' '{"op":"close","issue":30,"reason":"duplicate","comment":"see the other one","bot_owned":false}' >"$no_pointer_plan"
+[ "$(run "$apply" apply-plan --repo "$repo" --plan-file "$no_pointer_plan" --log "$tmp/apply.log")" = 2 ] ||
+    fail "a duplicate close whose comment names no canonical issue must exit 2"
+grep -qi "canonical issue" "$tmp/err" || fail "refusal must explain the missing canonical pointer"
+
+echo "==> apply-plan: a 'duplicate' close whose comment names itself is refused"
+self_pointer_plan="$tmp/self-pointer-plan.jsonl"
+printf '%s\n' '{"op":"close","issue":30,"reason":"duplicate","comment":"same as #30","bot_owned":false}' >"$self_pointer_plan"
+[ "$(run "$apply" apply-plan --repo "$repo" --plan-file "$self_pointer_plan" --log "$tmp/apply.log")" = 2 ] ||
+    fail "a duplicate close pointing at itself must exit 2"
+grep -qi "names itself" "$tmp/err" || fail "refusal must explain the self-referential pointer"
+
+echo "==> apply-plan: a 'duplicate' close with a distinct canonical-issue pointer proceeds"
+good_pointer_plan="$tmp/good-pointer-plan.jsonl"
+printf '%s\n' '{"op":"close","issue":30,"reason":"duplicate","comment":"same as #12","bot_owned":false}' >"$good_pointer_plan"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$good_pointer_plan" \
+    --log "$tmp/good-pointer.log" --execute)" = 0 ] ||
+    fail "a duplicate close with a distinct canonical pointer should succeed: $(cat "$tmp/out" "$tmp/err")"
+grep -qE "^issue close 30" "$GH_STUB_LOG" || fail "a well-formed duplicate close must actually run"
+
 # ── groom-decide.sh ──────────────────────────────────────────────────────────
 decision_file="$tmp/decision.md"
 printf 'We are closing #40 in favor of #12 because it duplicates the same fix.\n' >"$decision_file"
@@ -936,6 +1085,29 @@ echo "==> groom-decide: a duplicate --blocked-by value is refused"
 [ "$(run "$decide" --repo "$repo" --issue 12 --decision-file "$decision_file" \
     --blocked-by 7 --blocked-by 7)" = 2 ] || fail "a duplicate --blocked-by must exit 2"
 [ -s "$GH_STUB_LOG" ] && fail "a duplicate --blocked-by must never call gh at all"
+
+echo "==> groom-decide: a number in BOTH --supersedes and --blocked-by is refused (Codex 4012242629)"
+: >"$GH_STUB_LOG"
+[ "$(run "$decide" --repo "$repo" --issue 12 --decision-file "$decision_file" \
+    --supersedes 40 --blocked-by 40)" = 2 ] ||
+    fail "a number in both --supersedes and --blocked-by must exit 2"
+[ -s "$GH_STUB_LOG" ] && fail "a supersedes/blocked-by intersection must never call gh at all"
+
+echo "==> groom-decide: an empty decision file is refused before any write (Codex 4012242616)"
+empty_decision_file="$tmp/empty-decision.md"
+: >"$empty_decision_file"
+: >"$GH_STUB_LOG"
+[ "$(run "$decide" --repo "$repo" --issue 12 --decision-file "$empty_decision_file")" = 2 ] ||
+    fail "an empty decision file must exit 2"
+[ -s "$GH_STUB_LOG" ] && fail "an empty decision file must never call gh at all"
+
+echo "==> groom-decide: a whitespace-only decision file is refused before any write"
+ws_decision_file="$tmp/ws-decision.md"
+printf '   \n\t\n' >"$ws_decision_file"
+: >"$GH_STUB_LOG"
+[ "$(run "$decide" --repo "$repo" --issue 12 --decision-file "$ws_decision_file")" = 2 ] ||
+    fail "a whitespace-only decision file must exit 2"
+[ -s "$GH_STUB_LOG" ] && fail "a whitespace-only decision file must never call gh at all"
 
 echo "==> groom-decide: a bot-owned --supersedes sibling is refused, even in dry-run"
 cat >"$stub_dir/issue-41.json" <<'JSON'
@@ -1007,7 +1179,7 @@ second_decide_lines="$(wc -l <"$rerun_decide_log")"
 [ "$second_decide_lines" -gt "$first_decide_lines" ] || fail "a rerun must APPEND to the log, not truncate it"
 [ "$(grep -c '^# run ' "$rerun_decide_log")" = 2 ] || fail "each execute run must add its own header line"
 
-echo "==> groom-decide: --outcomes records DECIDED for the issue, DONE for each closed sibling, and DONE for each blocked-by edge (finding 8, Codex 4011648572)"
+echo "==> groom-decide: --outcomes records DECIDED for the issue, DONE for each closed sibling, and DECIDED (not DONE) for each blocked-by edge (finding 8, Codex 4011648572, Codex 4012242590)"
 decide_outcomes="$tmp/decide-outcomes.jsonl"
 : >"$GH_STUB_LOG"
 [ "$(run env GROOM_EXECUTE=1 GROOM_NOW_DATE=2026-01-02 "$decide" --repo "$repo" --issue 12 \
@@ -1018,8 +1190,15 @@ decide_outcomes="$tmp/decide-outcomes.jsonl"
     "$decide_outcomes")" -ge 1 ] || fail "decision outcome must be recorded"
 [ "$(jq -s '[.[] | select(.issue == 40 and .op == "close" and .status == "DONE")] | length' \
     "$decide_outcomes")" -ge 1 ] || fail "superseded-sibling close outcome must be recorded"
+# Recorded as DECIDED, not DONE (Codex review on PR #1032, comment
+# 4012242590): groom-report.sh's outcomes merge keeps only the LAST record
+# per issue number, and this edge is recorded against the SAME decided-issue
+# number (#12) as the decision outcome above — a trailing DONE record would
+# silently overwrite the dated DECIDED status the report shows for #12.
+[ "$(jq -s '[.[] | select(.issue == 12 and .op == "blocked-by" and .status == "DECIDED 2026-01-02")] | length' \
+    "$decide_outcomes")" -ge 1 ] || fail "blocked-by outcome must be recorded as DECIDED, not DONE"
 [ "$(jq -s '[.[] | select(.issue == 12 and .op == "blocked-by" and .status == "DONE")] | length' \
-    "$decide_outcomes")" -ge 1 ] || fail "blocked-by outcome must be recorded"
+    "$decide_outcomes")" = 0 ] || fail "blocked-by outcome must never be recorded as DONE"
 
 echo "==> groom-decide: an unwritable --outcomes sink is refused before any write (finding 8)"
 : >"$GH_STUB_LOG"
@@ -1073,6 +1252,29 @@ audit_scratch="$(grep -o 'GROOM_SCRATCH=/[^[:space:]]*' "$GH_STUB_LOG" | tail -1
 echo "==> wrapper: the run's output directory is created 0700 (findings 6, 9)"
 audit_scratch_mode="$(stat -c '%a' "$audit_scratch" 2>/dev/null || stat -f '%Lp' "$audit_scratch")"
 [ "$audit_scratch_mode" = "700" ] || fail "run directory must be mode 700 (got $audit_scratch_mode)"
+
+echo "==> wrapper: a pre-existing GROOM_OUT_DIR root's mode is untouched, only the groom-owned child is secured (Codex 4012242612)"
+shared_out_dir="$tmp/shared-out"
+mkdir -p "$shared_out_dir"
+chmod 1777 "$shared_out_dir"
+before_mode="$(stat -c '%a' "$shared_out_dir" 2>/dev/null || stat -f '%Lp' "$shared_out_dir")"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_OUT_DIR="$shared_out_dir" "$wrapper")" = 0 ] ||
+    fail "wrapper audit run with a shared GROOM_OUT_DIR failed: $(cat "$tmp/out" "$tmp/err")"
+after_mode="$(stat -c '%a' "$shared_out_dir" 2>/dev/null || stat -f '%Lp' "$shared_out_dir")"
+[ "$after_mode" = "$before_mode" ] ||
+    fail "a pre-existing GROOM_OUT_DIR root must never have its own mode changed (was $before_mode, now $after_mode)"
+[ -d "$shared_out_dir/harmon-groom" ] || fail "a groom-owned child directory must be created under the root"
+child_mode="$(stat -c '%a' "$shared_out_dir/harmon-groom" 2>/dev/null || stat -f '%Lp' "$shared_out_dir/harmon-groom")"
+[ "$child_mode" = "700" ] || fail "the groom-owned child directory must be secured to 700 (got $child_mode)"
+
+echo "==> wrapper: a GROOM_OUT_DIR root that exists but is not a directory is refused"
+not_a_dir="$tmp/not-a-dir"
+: >"$not_a_dir"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_OUT_DIR="$not_a_dir" "$wrapper")" = 2 ] ||
+    fail "a non-directory GROOM_OUT_DIR root must be refused"
+grep -qi "not a directory" "$tmp/err" || fail "the refusal must explain why: $(cat "$tmp/err")"
 
 echo "==> wrapper: --execute needs a script name (challenge round 3: no --run/--plan/--decisions orchestration left)"
 : >"$GH_STUB_LOG"
@@ -1144,12 +1346,26 @@ grep -q "SCRIPT=groom-report.sh" "$report_exec_log" ||
     fail "--execute groom-report.sh must exec the report script: $(cat "$report_exec_log")"
 grep -q "GROOM_EXECUTE=unset" "$report_exec_log" ||
     fail "groom-report.sh must never see GROOM_EXECUTE exported by the wrapper: $(cat "$report_exec_log")"
-grep -q "GROOM_REPO=$repo" "$report_exec_log" ||
-    fail "groom-report.sh must still see GROOM_REPO=$repo: $(cat "$report_exec_log")"
+grep -q "GROOM_REPO=unset" "$report_exec_log" ||
+    fail "groom-report.sh must never see GROOM_REPO — it runs before repo" \
+        "resolution (Codex 4012242636): $(cat "$report_exec_log")"
 grep -q "ARGV: --marker report-arg --outcomes /tmp/does-not-need-to-exist.jsonl" "$report_exec_log" ||
     fail "groom-report.sh must receive the operator's arguments verbatim: $(cat "$report_exec_log")"
 grep -qi 'type "yes"' "$tmp/report-wrap-out" "$tmp/report-wrap-err" &&
     fail "groom-report.sh must never be gated behind the confirmation prompt"
+
+echo "==> wrapper: --execute groom-report.sh works even when 'gh repo view' would fail (Codex 4012242636)"
+report_offline_log="$tmp/report-offline.log"
+: >"$report_offline_log"
+offline_rc=0
+env -u GH_STUB_REPO PATH="$tmp/bin:$PATH" EXEC_LOG="$report_offline_log" \
+    "$fake_root/scripts/groom.sh" --execute groom-report.sh --marker offline-arg \
+    </dev/null >"$tmp/report-offline-out" 2>"$tmp/report-offline-err" || offline_rc=$?
+[ "$offline_rc" = 0 ] ||
+    fail "groom-report.sh must run even though 'gh repo view' would fail:" \
+        "$(cat "$tmp/report-offline-out" "$tmp/report-offline-err")"
+grep -q "SCRIPT=groom-report.sh" "$report_offline_log" ||
+    fail "the report script must still run when the repo cannot be resolved: $(cat "$report_offline_log")"
 
 echo "==> wrapper: a confirmed --execute execs groom-apply.sh/groom-decide.sh verbatim, with GROOM_EXECUTE=1 and GROOM_REPO set (write gate unchanged)"
 if [ "$PTY_OK" = true ]; then
