@@ -2043,21 +2043,27 @@ mv "${state}.next" "$state"
 # review that runs during integration). One regression per finding.
 # --------------------------------------------------------------------------
 
-echo "==> a future-dated commit combined with a trigger before the check suite exists is not hidden (harmon-devkit#1014 integration remediation 1, finding 4010207979)"
+echo "==> a trigger that predates the check suite itself is a known, documented gap, not silently mis-fixed (harmon-devkit#1014 integration remediation 2, finding 4010671547, filed as harmon-devkit#1030)"
 trigger_id=180
 request_time='2026-07-31T08:10:00Z'
 write_defaults
 rm -f "$state"
-# Commit dates are future-dated (spoofed later than reality) -- min() alone
-# would still pick the check-suite boundary here since it is smaller, but
-# only because the suite boundary itself is genuinely early. This is the
-# COMBINED attack the earlier challenge-round-1 tests do not cover
-# separately: a spoofed commit date together with a real trigger posted
-# before the check suite was even created (the suite hasn't formed yet,
-# not just "no run has started").
+# Commit dates are future-dated (spoofed later than reality), and -- unlike
+# the remediation-1 version of this test, which Codex cycle 2 correctly
+# found was not adversarial (its suite predated its own trigger) -- the
+# check suite here is created AFTER the real prior trigger. This is the
+# genuine "trigger precedes every server-side signal" case: the check-suite
+# refinement still wins over the wildly spoofed commit date
+# (boundary_source stays "check-suite"), but that boundary (08:05) itself
+# postdates the real trigger (07:58), so the trigger is filtered out of
+# prior_trigger_candidates and every field below stays at its no-prior-
+# trigger default. No timestamp comparison can close this gap; this
+# asserts the CURRENT, documented behaviour (see the KNOWN RESIDUAL comment
+# beside `boundary_source` in `attach`) rather than a false claim that it
+# is caught -- harmon-devkit#1030 tracks the structural fix.
 printf '%s\n' '2026-07-31T23:00:00Z' >"${fixtures}/head-authored-at"
 printf '%s\n' '2026-07-31T23:00:00Z' >"${fixtures}/head-committed-at"
-jq -cn '[{total_count:1,check_suites:[{created_at:"2026-07-31T07:50:00Z"}]}]' \
+jq -cn '[{total_count:1,check_suites:[{created_at:"2026-07-31T08:05:00Z"}]}]' \
     >"${fixtures}/check-suites.pages.json"
 jq -cn \
     --argjson trusted "$trusted_trigger_actor_id" '
@@ -2073,12 +2079,12 @@ jq -cn \
 jq '.reserved_at = "2026-07-31T07:56:00Z"' "$state" >"${state}.next"
 mv "${state}.next" "$state"
 "$helper" attach --state "$state" --trigger-id "$trigger_id" >/dev/null
-[ "$(jq -r '.requires_full_window' "$state")" = true ] ||
-    fail "a future-dated commit plus a pre-suite trigger must not hide the real trigger: $(jq -c . "$state")"
-[ "$(jq -r '.previous_trigger_comment_id' "$state")" = 179 ] ||
-    fail "the pre-suite prior trigger was not recorded: $(jq -c . "$state")"
 [ "$(jq -r '.boundary_source' "$state")" = "check-suite" ] ||
-    fail "the check-suite boundary should have won over the future-dated commit: $(jq -c . "$state")"
+    fail "the check-suite boundary should still win over the future-dated commit: $(jq -c . "$state")"
+[ "$(jq -r '.requires_full_window' "$state")" = false ] ||
+    fail "a trigger predating the check suite is a documented gap (harmon-devkit#1030), not something this boundary catches: $(jq -c . "$state")"
+[ "$(jq -r '.previous_trigger_comment_id' "$state")" = null ] ||
+    fail "no prior trigger should be recorded when it predates every available server-side boundary: $(jq -c . "$state")"
 
 echo "==> a cross-surface tie with an actionable finding is classified, not left indeterminate (harmon-devkit#1014 integration remediation 1, finding 4010207991)"
 trigger_id=123
@@ -2120,7 +2126,7 @@ run_check '2026-07-31T08:16:00Z'
 assert_status 0 clean
 assert_accepted review 200
 
-echo "==> a fractional or non-positive comment id is rejected as unusable evidence (harmon-devkit#1014 integration remediation 1, finding 4010207997)"
+echo "==> a fractional or non-positive comment id is rejected as unusable evidence (harmon-devkit#1014 integration remediation 1, finding 4010207997; status updated to indeterminate by remediation 2, finding 4010671551 -- the malformed scan below now applies the same is_positive_integer predicate, so a solitary malformed-id comment is caught there instead of silently falling through to retry)"
 trigger_id=123
 request_time='2026-07-31T08:00:00Z'
 new_cycle
@@ -2134,7 +2140,38 @@ jq -cn \
       body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + ($head[0:10]) + "`")
     }]]' >"${fixtures}/comments.pages.json"
 run_check '2026-07-31T08:16:00Z'
-assert_status 12 retry
+assert_status 2 indeterminate
+
+echo "==> a newer malformed top-level id is not masked by an older clean result (harmon-devkit#1014 integration remediation 2, finding 4010671551)"
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+new_cycle
+prefix="${head_sha:0:10}"
+# An older, well-formed clean comment sits at the same head alongside a
+# newer one whose id is fractional. Before this fix, the malformed scan
+# only rejected non-"number"-typed ids, so 1.5 (JSON type "number") slid
+# past it while `is_positive_integer` correctly excluded it from
+# `newest_result_record`'s own candidates -- leaving the OLDER clean
+# comment 77 as the only remaining candidate and reporting a stale clean
+# verdict instead of failing closed on the newer, unclassifiable comment.
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "$prefix" '
+    [[
+      {
+        id:77,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:05:00Z",
+        body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + $prefix + "`")
+      },
+      {
+        id:1.5,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:06:00Z",
+        body:("Codex Review: Didn\u0027t find any major issues.\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:16:00Z'
+assert_status 2 indeterminate
 
 echo "==> re-reserving attempt 2 carries the replaced trigger id forward (harmon-devkit#1014 ruling 2)"
 trigger_id=123

@@ -1021,6 +1021,22 @@ attach)
     # `boundary_source` names only which one actually won the comparison — a
     # later reader can audit the comparison itself rather than trust a
     # single opaque label.
+    #
+    # KNOWN RESIDUAL (harmon-devkit#1030, Codex cycle 2 on `30b613c`,
+    # confirmed finding `4010671547`, adjudicated P2 — a residual of the
+    # timestamp approach itself, not a defect in this change): when the
+    # commit dates are ALSO future-dated AND the trusted trigger is posted
+    # before the first check SUITE exists (not merely before the first
+    # run), every available lower bound — commit dates and check-suite
+    # creation alike — postdates the trigger, so it is filtered out and
+    # `requires_full_window` stays false. No further timestamp refinement
+    # closes this: the trigger genuinely precedes every server-side signal
+    # available at reconstruction time. #1030 tracks the structural fix —
+    # on a reservation with no prior local state for the head, treat any
+    # other trusted `@codex review` comment on the PR, posted after the
+    # previous head's last accepted result (or, absent such a record, any
+    # at all), as a prior trigger regardless of its timestamp ordering
+    # against commit or check-suite creation.
     head_payload=$(run_gh api "repos/$state_repo/commits/$state_head") ||
         die "cannot fetch the current head commit for trigger reconstruction"
     printf '%s' "$head_payload" | jq -e --arg head "$state_head" \
@@ -2067,9 +2083,19 @@ check)
     # dropping one let the checker fall back to older or absent evidence
     # while real, unclassifiable evidence about this head sat right there;
     # fail closed instead.
+    #
+    # Integration remediation 2 (2026-09-15, Codex cloud review on `30b613c`,
+    # confirmed finding `4010671551`) found this scan itself used a looser
+    # `type == "number"` check than the `is_positive_integer` predicate the
+    # candidate filters use, so a fractional or non-positive id (JSON type
+    # still "number") slid past THIS scan while being silently excluded from
+    # candidacy elsewhere — an older, unrelated clean result could then be
+    # accepted instead of failing closed on the newer, unclassifiable
+    # comment. Matching the predicate here closes that gap.
     malformed_top_level=$(jq -r \
         --argjson id "$actor_id" \
-        --arg head "$state_head" '
+        --arg head "$state_head" \
+        "$codex_verdict_defs"'
           [.[] | select(.user.id? == $id) |
             ((.body // "") |
               try match(
@@ -2078,7 +2104,7 @@ check)
               ).captures[0].string catch "") as $prefix |
             select($prefix != "") |
             select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
-            select((.id? | type) != "number")
+            select((.id? | is_positive_integer) | not)
           ] | length
         ' "$workdir/comments.json") || {
         emit indeterminate "current-head conversation comments could not be scanned for malformed ids"
