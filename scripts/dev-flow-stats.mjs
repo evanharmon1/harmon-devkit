@@ -1978,16 +1978,37 @@ function currentHeadForLocalStage(passEntries, adjudicationEntries, slotFailures
 // executed under, rather than whatever .devflow.toml's default_rigor
 // happens to resolve to today (defaults legitimately change over time). The
 // policy projection is written beside run.json by the orchestrating session
-// at dispatch time; an older or hand-built record may not have one. Absent
-// or unreadable: return null and let the CLI apply .devflow.toml's own
-// default_rigor, exactly as any other caller that omits --rigor.
+// at dispatch time; a TRULY ABSENT file is an older or hand-built record
+// that may not have one — return null and let the CLI apply .devflow.toml's
+// own default_rigor, exactly as any other caller that omits --rigor.
+//
+// Integration cycle 7 (P2), confirmed and fixed: a PRESENT policy.json with
+// a missing/malformed rigor.level or rigor.source used to collapse to the
+// same null as genuine absence — but ai/schemas/README.md requires both as
+// non-empty strings whenever policy.json exists at all, the same contract
+// sentence that requires the `rounds` object recordedRoundsPolicy below
+// already fails closed on. Omitting --rigor here silently substitutes
+// TODAY's default_rigor level; if that level's numeric caps happen to match
+// the run's own retained `rounds`, the cycle-6 drift check below would
+// wrongly certify agreement without ever confirming which NAMED level
+// actually governed. Only a truly absent file returns null now.
 function recordedRigorLevel(runDir) {
+  const policyFile = path.join(runDir, "policy.json");
+  if (!existsSync(policyFile)) return null;
+  let projection;
   try {
-    const projection = JSON.parse(readFileSync(path.join(runDir, "policy.json"), "utf8"));
-    return typeof projection?.rigor?.level === "string" ? projection.rigor.level : null;
-  } catch {
-    return null;
+    projection = JSON.parse(readFileSync(policyFile, "utf8"));
+  } catch (err) {
+    throw new EvidenceError(`${policyFile} exists but is not readable JSON: ${err.message}`);
   }
+  const level = projection?.rigor?.level;
+  const source = projection?.rigor?.source;
+  if (typeof level !== "string" || level.length === 0 || typeof source !== "string" || source.length === 0) {
+    throw new EvidenceError(
+      `${policyFile} exists but its "rigor.level"/"rigor.source" is missing or malformed (ai/schemas/README.md requires both whenever policy.json exists)`,
+    );
+  }
+  return level;
 }
 
 const ROUNDS_POLICY_KEYS = ["challenge", "review", "integration", "remediation", "min_rounds"];

@@ -3943,6 +3943,38 @@ function writeScenario(name, db) {
     writeScenario("malformed-policy-json", { issues: [{ number: 235, pull_request: null }], comments: { "235": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
   }
 
+  // Integration cycle 7 (P2), confirmed and fixed: a present policy.json
+  // with a fully valid $(rounds) object but a missing/malformed rigor.level
+  // used to collapse to the same null as genuine absence, silently omitting
+  // --rigor and letting the engine fall back to TODAY's default_rigor —
+  // the cycle-6 drift check only compares NUMBERS, so it would wrongly
+  // certify agreement without ever confirming which named level governed.
+  {
+    const runId = "run-238-malformed-rigor-metadata";
+    const at = "2026-09-01T00:00:00Z";
+    const ev = evidenceSummaryComment(TRUSTED_ORCHESTRATOR, "orchestrator", runId, "review", "issue", 1, 1, at);
+    const runBody = {
+      schema: 2, run_id: runId, initiated_by: "human", started_at: at,
+      stage_transitions: lifecycleTo("review", at),
+      interventions: chain([]), settlements: chain([]), outcome: null, pr: null,
+      evidence_comments: [{ id: String(ev.id), author_actor_id: TRUSTED_ORCHESTRATOR, login: "orchestrator", digest: payloadDigest(ev.body), marker: { run_id: runId, stage: "review", destination: "issue", round: 1, sequence: 1 } }],
+      promotion: null,
+    };
+    const runDir = path.join("${tmp}", "local-records", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(path.join(runDir, "run.json"), JSON.stringify({ ...runBody, ...deriveDefaultChains(runBody) }, null, 2));
+    writeZeroFindingAdjudication(runDir, runId, "review", 1);
+    writeCompletedZeroFindingPass(runDir, runId, "review", 1);
+    // rounds is fully valid (and matches the live .devflow.toml's own
+    // "standard" numbers, so the cycle-6 drift check alone would pass this
+    // clean) — only rigor.level is missing.
+    writeFileSync(path.join(runDir, "policy.json"), JSON.stringify({
+      rigor: { source: "default_rigor" },
+      rounds: { challenge: 3, review: 3, integration: 4, remediation: 4, min_rounds: 1 },
+    }, null, 2));
+    writeScenario("malformed-rigor-metadata", { issues: [{ number: 238, pull_request: null }], comments: { "238": [ev] }, commits: {}, meta: { runId, trustedActorIds: [TRUSTED_ORCHESTRATOR] } });
+  }
+
   // Integration cycle 6 (P2), confirmed and fixed: the cycle-5 retry took
   // the LAST validated round unconditionally, even when that round is a
   // legitimate terminal capped/finder_unavailable slot failure carrying no
@@ -5434,6 +5466,16 @@ rc=$?
 set -e
 [ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'policy.json exists but its' <<<"$out" ||
     fail "malformed-policy-json: a present policy.json missing min_rounds was not caught, rc=$rc: $out"
+
+echo "== integration cycle 7: a present policy.json with valid rounds but malformed rigor metadata fails closed (fixed remediation 7/7) =="
+export DFSTATS_DB="$tmp/scenarios/malformed-rigor-metadata.json"
+run_id="$(meta malformed-rigor-metadata .meta.runId)"
+set +e
+out="$(node scripts/dev-flow-stats.mjs --repo o/r --run "$run_id" --record-dir "$tmp/local-records" --trusted-actor-id 9001 --json 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] && ! grep -Fq '"status": "ok"' <<<"$out" && grep -Fq 'rigor.level' <<<"$out" ||
+    fail "malformed-rigor-metadata: a present policy.json missing rigor.level was not caught (numerically-matching rounds masked it), rc=$rc: $out"
 
 echo "== integration cycle 6: the retry falls back past a headless terminal round to an earlier round's real head (fixed remediation 6/6) =="
 export DFSTATS_DB="$tmp/scenarios/headless-terminal-round.json"
