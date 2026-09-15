@@ -14,6 +14,12 @@
 # resolved promotion event (see promotion_epoch()/poll_activity()); state adopted from
 # before that encoding existed reads back with an empty id and may re-arm once more on
 # adoption, the same legacy-adoption tolerance already documented for ACTIVITY keys.
+# ARMED persists, per lane, the "since:event_id" identity of the promotion
+# epoch the lane's most-recently-armed WINDOW was armed from. Unlike WINDOW,
+# it is never deleted when a window closes, so check_repromotion_after_close()
+# can still tell a genuinely new promotion apart from the one that already
+# closed even once WINDOW itself is gone -- see that function for why WINDOW
+# alone cannot do this once its own close/delete has already run.
 # Clearing PR state on POST-PROMOTION-INDETERMINATE (so a later observation re-arms
 # the window) also re-emits one identical PR line once that observation lands.
 # Every herdr/gh call is bounded. Failures mean indeterminate/no event; this watcher
@@ -216,7 +222,7 @@ load_state() {
     [ -n "$state_file" ] && [ -f "$state_file" ] || return 0
     while IFS=$'\t' read -r kind lane value extra detail; do
         case "$kind" in
-        AGENT | PR | USAGE | CLOSING) state_set "$kind" "$lane" "$value" ;;
+        AGENT | PR | USAGE | CLOSING | ARMED) state_set "$kind" "$lane" "$value" ;;
         SENTINEL) state_set SENTINEL "$lane:$value" 1 ;;
         WINDOW) state_set WINDOW "$lane" "$value" "$extra" "$detail" ;;
         ACTIVITY) state_set ACTIVITY "$lane:$value:$extra" 1 ;;
@@ -240,7 +246,7 @@ save_state() {
             extra=${state_extras[$index]}
             detail=${state_details[$index]}
             case "$kind" in
-            AGENT | PR | USAGE | CLOSING)
+            AGENT | PR | USAGE | CLOSING | ARMED)
                 printf '%s\t%s\t%s\t\n' "$kind" "$key" "$value"
                 ;;
             SENTINEL) printf 'SENTINEL\t%s\t%s\t\n' "${key%%:*}" "${key#*:}" ;;
@@ -463,6 +469,17 @@ poll_activity() {
     else
         IFS=$'\t' read -r since since_event_id <<<"$epoch_id_pair"
         until=$((since + post_promotion_seconds))
+        # ARMED tracks the identity of the epoch actually resolved here,
+        # independent of whether it turns out to be a change (rearmed=1
+        # below) or, on an already-expired resolution, whether the window
+        # ever gets persisted via the rearmed/expired block further down.
+        # Keeping it current on every fresh resolution -- not only on a
+        # detected change -- is what lets check_repromotion_after_close()
+        # correctly recognize "this promotion was already seen and closed"
+        # once WINDOW itself is gone, instead of mistaking an
+        # already-handled promotion for a new one and re-arming a duplicate,
+        # already-expired window for it every poll.
+        state_set ARMED "$lane" "$since:$since_event_id"
         # A same-second withdrawal-then-re-promotion resolves to an
         # identical `since` epoch but a different event id; comparing the
         # epoch alone (the pre-fix check) sees "no change" and never
@@ -601,6 +618,77 @@ promotion_epoch() {
     printf '%s' "$result"
 }
 
+# Once a post-promotion window closes cleanly, WINDOW is deleted by design --
+# the window itself really is over -- but poll_activity() (the only place
+# that re-validates promotion identity against a freshly resolved
+# promotion_epoch()) only ever runs while a WINDOW is active, because the
+# main loop below gates the call on WINDOW existing. A PR withdrawn (gh pr
+# ready --undo) and re-promoted at the same head, entirely between two polls
+# and entirely AFTER its previous window already closed and was torn down,
+# collapses back to the identical discover_pr() tuple: observe_pr() never
+# notices it and never re-arms WINDOW, so without this check nothing in this
+# file would ever detect it again -- the lane goes dormant for that PR
+# forever, even though a brand-new promotion with its own legitimate window
+# genuinely started.
+#
+# Called from the main loop only when there is currently no active WINDOW
+# for the lane, so this never duplicates poll_activity()'s own per-poll
+# promotion_epoch() re-check while a window is live. It further gates its one
+# extra `gh api` call on discover_pr()'s own freshly observed PR tuple still
+# reading as promoted (non-draft) at all: a dormant lane whose PR has since
+# gone back to draft, was never promoted, or was observed some other way
+# costs nothing extra here -- the added cost is bounded to one
+# promotion_epoch() call per poll per lane that is BOTH windowless AND
+# currently promoted, not one per poll for every lane that has ever been
+# promoted.
+#
+# ARMED (see the header comment and poll_activity()) is what makes the
+# comparison possible after WINDOW's own close/delete has already run: it
+# persists the epoch:event_id identity of whichever promotion this lane's
+# WINDOW was most recently armed from, and unlike WINDOW it survives a clean
+# close. A freshly resolved epoch that still matches ARMED is the same
+# promotion this lane already watched and closed -- stay dormant. One that
+# differs (or no ARMED yet recorded) is a promotion this lane has not armed a
+# window for yet -- arm a fresh one from it, exactly as poll_activity()'s own
+# cold-start path would.
+check_repromotion_after_close() {
+    lane=$1
+    repo=$2
+    pr=$3
+    now=$4
+    [[ "$pr" =~ ^#([0-9]+)\ draft=false\ (OPEN|CLOSED|MERGED)\ head=[0-9A-Fa-f]{8,64}$ ]] || return 0
+    promoted_pr=${BASH_REMATCH[1]}
+
+    epoch_id_pair="$(promotion_epoch "$repo" "$promoted_pr")"
+    promotion_status=$?
+    if [ "$promotion_status" -eq 10 ]; then
+        # No resolvable ready_for_review event this poll -- ordinary GitHub
+        # eventual consistency, not a hard failure. Nothing to compare
+        # against yet; stay dormant rather than arming from an unresolved
+        # epoch.
+        return 0
+    elif [ "$promotion_status" -ne 0 ]; then
+        return 1
+    fi
+    IFS=$'\t' read -r since since_event_id <<<"$epoch_id_pair"
+
+    armed_raw="$(state_get ARMED "$lane" || true)"
+    IFS=: read -r armed_since armed_event_id <<<"$armed_raw"
+    # Record the freshly resolved identity unconditionally, mirroring
+    # poll_activity()'s own unconditional ARMED update, before deciding
+    # whether it differs from what was previously armed.
+    state_set ARMED "$lane" "$since:$since_event_id"
+
+    if [ -n "$armed_raw" ] && [ "$since" = "$armed_since" ] && [ "$since_event_id" = "$armed_event_id" ]; then
+        return 0
+    fi
+
+    until=$((since + post_promotion_seconds))
+    state_set WINDOW "$lane" "$promoted_pr" "$until" "$since:$since_event_id"
+    state_delete CLOSING "$lane"
+    return 0
+}
+
 discover_pr() {
     repo=$1
     branch=$2
@@ -726,6 +814,12 @@ while true; do
         observe_pr "$lane" "$pr" "$now"
 
         active_pr="$(state_get WINDOW "$lane" || true)"
+        if [ -z "$active_pr" ]; then
+            if ! check_repromotion_after_close "$lane" "$repo" "$pr" "$now"; then
+                observation_failed "GitHub promotion-identity observation failed for lane $lane"
+            fi
+            active_pr="$(state_get WINDOW "$lane" || true)"
+        fi
         if [ -n "$active_pr" ]; then
             if ! poll_activity "$lane" "$repo" "$active_pr" "$now"; then
                 observation_failed "GitHub activity observation failed for lane $lane"

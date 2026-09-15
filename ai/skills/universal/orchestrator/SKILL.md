@@ -267,13 +267,20 @@ watch instead reads "promoted at T, post-promotion watch until T+15", never "rea
 Immediately before actually sending the delayed ready report, re-read the
 current `headRefOid` and recompute the gate fingerprint with the same
 `readiness-gate.sh fingerprint` mechanism `AGENTS.md` § Readiness gate names
-for the promotion-time check, then compare both against what promotion
-itself captured. `assets/lane-watch.sh`'s own polling covers PR head/draft
-state and new reviews plus top-level and inline comments; it does not cover
-a PR-body edit or a thread-resolution toggle made during the watch, both
-content the readiness-gate fingerprint already covers. If either the head
-or the fingerprint changed since promotion, the report must not claim
-readiness against that stale value — escalate or re-verify instead.
+for the promotion-time check. Then re-read `headRefOid` once more, **after**
+the fingerprint, exactly as that promotion-time check does: the fingerprint
+deliberately excludes the head, so a push landing between the scalar fetch
+and the fingerprint read leaves the hash identical, and only a head re-read
+on the far side proves the content just fingerprinted belongs to the head
+both reads name.
+`assets/lane-watch.sh`'s own polling covers PR head/draft state and new
+reviews plus top-level and inline comments; it does not cover a PR-body edit
+or a thread-resolution toggle made during the watch, both content the
+readiness-gate fingerprint already covers. Require the near-side head, the
+far-side head, and the head promotion itself captured all to agree, and the
+fingerprint to match what promotion captured; if any of those disagree, the
+report must not claim readiness against that stale value — escalate or
+re-verify instead.
 This maintainer-facing report is distinct from § Persistent supervision's
 internal per-lane ledger entry ("a ready PR is reported"), which is
 orchestrator bookkeeping, not the maintainer-facing message this rule defines.

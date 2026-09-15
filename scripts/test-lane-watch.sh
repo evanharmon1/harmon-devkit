@@ -103,6 +103,10 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
         if [ "$previous" = --head ]; then branch=$arg; fi
         previous=$arg
     done
+    if [ "$branch" = branch-theta ] && [ -f "$WATCH_FIXTURES/dormant-pr-json" ]; then
+        cat "$WATCH_FIXTURES/dormant-pr-json"
+        exit 0
+    fi
     if [ "$branch" != branch-alpha ]; then
         printf '%s\n' '[]'
         exit 0
@@ -172,6 +176,30 @@ if [ "${1:-}" = api ]; then
             ce_created="$(<"$WATCH_FIXTURES/created-edit-created-at")"
             ce_updated="$(<"$WATCH_FIXTURES/created-edit-updated-at")"
             printf '%s\n' "[{\"id\":801,\"created_at\":\"$ce_created\",\"updated_at\":\"$ce_updated\",\"user\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
+            ;;
+        *) printf '%s\n' '[]' ;;
+        esac
+        exit 0
+    fi
+    if [ -f "$WATCH_FIXTURES/dormant-events" ]; then
+        dphase="$(<"$WATCH_FIXTURES/dormant-phase")"
+        dsince1="$(<"$WATCH_FIXTURES/dormant-since1")"
+        case "$endpoint" in
+        */events?per_page=100)
+            if [ "$dphase" = 1 ]; then
+                printf '%s\n' "[{\"id\":701,\"event\":\"ready_for_review\",\"created_at\":\"$dsince1\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
+            else
+                dsince2="$(<"$WATCH_FIXTURES/dormant-since2")"
+                printf '%s\n' "[{\"id\":701,\"event\":\"ready_for_review\",\"created_at\":\"$dsince1\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}},{\"id\":702,\"event\":\"ready_for_review\",\"created_at\":\"$dsince2\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
+            fi
+            ;;
+        */reviews?per_page=100)
+            if [ "$dphase" = 2 ]; then
+                dactivity="$(<"$WATCH_FIXTURES/dormant-activity")"
+                printf '%s\n' "[{\"id\":903,\"submitted_at\":\"$dactivity\",\"user\":{\"id\":999,\"login\":\"trusted-codex\",\"type\":\"Bot\"}}]"
+            else
+                printf '%s\n' '[]'
+            fi
             ;;
         *) printf '%s\n' '[]' ;;
         esac
@@ -805,6 +833,114 @@ assert_count "$test_tmp/samehead-rearm.state" 1 \
     "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+${samehead_until2}[[:space:]]+${samehead_since2}:401\$"
 assert_count "$test_tmp/samehead-rearm.state" 0 '^CLOSING[[:space:]]+alpha[[:space:]]+'
 
+# Finding integration-r2-codex-cloud-2: promotion-identity re-checking goes
+# dormant once a window closes, because poll_activity() -- the only place
+# that re-validates promotion identity against a freshly resolved
+# promotion_epoch() -- is only ever called while a WINDOW is active. Once a
+# window closes cleanly, WINDOW is deleted, and a same-head withdraw-then-
+# re-promote occurring entirely between two polls AFTER that close collapses
+# back to the identical discover_pr() tuple: observe_pr() never notices it
+# and never re-arms WINDOW, so pre-fix nothing in this file would ever poll
+# activity for that lane again. This reproduces the exact sequence: (1) a
+# window that closes cleanly through the watcher's OWN normal close path
+# (lane theta below reaches that close by resolving, on its very first
+# observation, an already-long-expired promotion epoch -- exactly how the
+# existing cold-start-expired tests above establish a genuine watcher-
+# produced close, not a hand-seeded already-closed state), (2) a same-head
+# re-promotion presented between polls two and three with an UNCHANGED
+# discover_pr() PR tuple (the dormant-pr-json fixture is byte-for-byte
+# identical across all three invocations below) but a freshly resolved,
+# LATER promotion_epoch() event, and (3) activity landing inside that new
+# promotion's real window. Pre-fix, step (2) would never even attempt a
+# promotion_epoch() re-check (poll_activity() is simply never called once
+# WINDOW is gone), so the activity in step (3) would never be reported and
+# no POST-PROMOTION-ACTIVITY line would ever appear for lane theta again --
+# permanent, silent dormancy. Fixed, check_repromotion_after_close() runs
+# exactly when WINDOW is absent and the observed tuple still reads promoted,
+# compares the freshly resolved epoch:event_id against the ARMED identity
+# persisted from the first (closed) window, finds it differs, and re-arms a
+# fresh WINDOW from it -- which the same poll's poll_activity() call then
+# uses to report the in-window activity.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+dormant_now="$(date -u +%s)"
+# Window 1 resolves to an epoch already long expired at the moment of its
+# own first observation, so it closes within the same single poll that
+# discovers it -- a genuine watcher-produced close, per the existing
+# cold-start-expired tests' own established pattern.
+dormant_since1=$((dormant_now - 5000))
+# Window 2 is the new promotion: a fresh epoch, still comfortably open.
+dormant_since2=$((dormant_now - 100))
+dormant_until2=$((dormant_since2 + 900))
+dormant_activity_at=$((dormant_since2 + 20))
+dormant_since1_iso="$(date -u -d "@$dormant_since1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$dormant_since1_iso" ] || dormant_since1_iso="$(date -u -r "$dormant_since1" +%Y-%m-%dT%H:%M:%SZ)"
+dormant_since2_iso="$(date -u -d "@$dormant_since2" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$dormant_since2_iso" ] || dormant_since2_iso="$(date -u -r "$dormant_since2" +%Y-%m-%dT%H:%M:%SZ)"
+dormant_activity_iso="$(date -u -d "@$dormant_activity_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$dormant_activity_iso" ] || dormant_activity_iso="$(date -u -r "$dormant_activity_at" +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' '[{"number":88,"isDraft":false,"state":"OPEN","headRefOid":"dddddddddddddddddddddddddddddddddddddddd"}]' \
+    >"$fixture_dir/dormant-pr-json"
+printf '%s\n' "$dormant_since1_iso" >"$fixture_dir/dormant-since1"
+touch "$fixture_dir/dormant-events"
+dormant_state="$test_tmp/dormant.state"
+
+# Poll 1 (fresh state, lane theta first observed): the tuple is promoted from
+# the start, so observe_pr() arms a provisional WINDOW; poll_activity() then
+# cold-start-resolves dormant-since1 (already 5000s in the past), finds the
+# window already expired, and closes it in this same poll -- genuine watcher
+# output, matching the established cold-resolve pattern above.
+printf '%s\n' 1 >"$fixture_dir/dormant-phase"
+dormant_out1="$test_tmp/dormant-1.out"
+bash "$watcher" --iterations 1 --state-file "$dormant_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z theta:branch-theta:n7:evanharmon1/harmon-devkit \
+    >"$dormant_out1"
+assert_line "$dormant_out1" 'POST-PROMOTION-CLOSED theta: #88'
+assert_count "$dormant_out1" 0 '^POST-PROMOTION-ACTIVITY '
+assert_count "$dormant_state" 0 '^WINDOW[[:space:]]+theta[[:space:]]+'
+assert_count "$dormant_state" 0 '^CLOSING[[:space:]]+theta[[:space:]]+'
+assert_count "$dormant_state" 1 "^ARMED[[:space:]]+theta[[:space:]]+${dormant_since1}:701"
+
+# Poll 2: nothing changes -- same tuple, same phase 1 epoch. WINDOW must stay
+# absent (dormant, correctly): the already-seen promotion is not a new one.
+dormant_out2="$test_tmp/dormant-2.out"
+bash "$watcher" --iterations 1 --state-file "$dormant_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z theta:branch-theta:n7:evanharmon1/harmon-devkit \
+    >"$dormant_out2"
+assert_count "$dormant_out2" 0 '^POST-PROMOTION-ACTIVITY '
+assert_count "$dormant_out2" 0 '^POST-PROMOTION-CLOSED '
+assert_count "$dormant_out2" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$dormant_state" 0 '^WINDOW[[:space:]]+theta[[:space:]]+'
+
+# Poll 3: the off-watch withdraw-then-re-promote. discover_pr()'s tuple is
+# STILL byte-for-byte the dormant-pr-json fixture (unchanged), but the events
+# endpoint now also reports event 702 at dormant_since2 -- a genuinely later
+# ready_for_review event that promotion_epoch() must pick as the new latest.
+printf '%s\n' "$dormant_since2_iso" >"$fixture_dir/dormant-since2"
+printf '%s\n' "$dormant_activity_iso" >"$fixture_dir/dormant-activity"
+printf '%s\n' 2 >"$fixture_dir/dormant-phase"
+dormant_out3="$test_tmp/dormant-3.out"
+bash "$watcher" --iterations 1 --state-file "$dormant_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z theta:branch-theta:n7:evanharmon1/harmon-devkit \
+    >"$dormant_out3"
+rm "$fixture_dir/dormant-events" "$fixture_dir/dormant-phase" "$fixture_dir/dormant-since1" \
+    "$fixture_dir/dormant-since2" "$fixture_dir/dormant-activity" "$fixture_dir/dormant-pr-json"
+assert_line "$dormant_out3" 'POST-PROMOTION-ACTIVITY theta: trusted-codex review 903'
+assert_count "$dormant_out3" 1 '^POST-PROMOTION-ACTIVITY '
+assert_count "$dormant_out3" 0 '^POST-PROMOTION-CLOSED '
+assert_count "$dormant_out3" 0 '^POST-PROMOTION-INDETERMINATE '
+# WINDOW is re-armed from the NEW epoch and ARMED tracks it, proving a
+# genuine re-arm of a fresh window rather than an accidental reuse of the
+# first, already-closed one's bounds.
+assert_count "$dormant_state" 1 \
+    "^WINDOW[[:space:]]+theta[[:space:]]+88[[:space:]]+${dormant_until2}[[:space:]]+${dormant_since2}:702\$"
+assert_count "$dormant_state" 1 "^ARMED[[:space:]]+theta[[:space:]]+${dormant_since2}:702"
+
 # Finding integration-r1-codex-cloud-1: a withdrawal and a same-head
 # re-promotion that both land inside the same wall-clock second produce two
 # ready_for_review timeline events with an IDENTICAL created_at but distinct
@@ -1062,6 +1198,7 @@ if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READ
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
     "$tail_out" "$closed_quiet_out" "$closing_out" "$persistfail_out" "$cold_resolve_out" "$stillopen_out" "$realexpired_out" \
     "$samehead_rearm_out" "$cold_never_out" "$rearm_restart_out" "$created_edit_out" \
+    "$dormant_out1" "$dormant_out2" "$dormant_out3" \
     "$samesecond_out1" "$samesecond_out2" \
     "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'

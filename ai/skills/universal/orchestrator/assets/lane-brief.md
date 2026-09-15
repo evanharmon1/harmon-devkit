@@ -300,8 +300,15 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
     Immediately before appending this sentinel, the orchestrator re-reads
     the current `headRefOid` and recomputes the gate fingerprint (the same
     `readiness-gate.sh fingerprint` mechanism `AGENTS.md` § Readiness gate
-    names for the promotion-time check) and compares both against what
-    promotion captured; a changed head or fingerprint means the report is
+    names for the promotion-time check), then re-reads `headRefOid` once
+    more, after the fingerprint, exactly as that promotion-time check does:
+    the fingerprint deliberately excludes the head, so a push landing
+    between the scalar fetch and the fingerprint read leaves the hash
+    identical, and only a head re-read on the far side proves the content
+    just fingerprinted belongs to the head both reads name. The
+    orchestrator requires the near-side head, the far-side head, and the
+    head promotion itself captured all to agree, and the fingerprint to
+    match what promotion captured; if any of those disagree, the report is
     not sent as ready — escalate or re-verify instead.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
