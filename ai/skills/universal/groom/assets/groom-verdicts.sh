@@ -368,8 +368,11 @@ cmd_join() {
     fi
 
     # Validate themes in proposals (Issue #1063):
+    local scan_json
+    scan_json="$(cat "$scan")"
     local themes_bad
-    themes_bad="$(jq -r '
+    themes_bad="$(jq -r --argjson scan "$scan_json" '
+      ($scan.open // [] | map(.number)) as $open_numbers |
       if has("themes") and .themes != null then
         if (.themes | type != "array") then
           "themes must be a JSON array"
@@ -377,7 +380,7 @@ cmd_join() {
           ([ .themes[] |
              if (type != "object") then "theme entry must be an object"
              elif ((.title // empty | type) != "string" or ((.title // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty title"
-             elif ((.issues // empty | type) != "array" or (.issues | length == 0) or ([.issues[] | select(type != "number" or . <= 0)] | length > 0)) then "theme requires issues array of positive integers"
+             elif ((.issues // empty | type) != "array" or (.issues | length == 0) or ([.issues[] | select(type != "number" or . <= 0 or ($open_numbers | index(.) | not))] | length > 0)) then "theme requires issues array of positive integers from scanned backlog"
              elif ((.reason // empty | type) != "string" or ((.reason // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty reason"
              elif ((.recommended_vehicle // empty | type) != "string" or ((.recommended_vehicle // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty recommended_vehicle"
              else empty end
@@ -386,7 +389,7 @@ cmd_join() {
       else "" end
     ' <<<"$proposals_json")"
     if [ -n "$themes_bad" ]; then
-        echo "groom-verdicts: refused: theme requires 'title', 'issues' array, 'reason', and 'recommended_vehicle'" >&2
+        echo "groom-verdicts: refused: $themes_bad" >&2
         exit 1
     fi
 
@@ -528,13 +531,13 @@ cmd_join() {
               days_since_update: ($issue.days_since_update // null),
               status: (.status // "PENDING"),
               milestone: ($issue.milestone // null),
+              blocking_count: (
+                $issue.blocking_count //
+                ($issue.blocking.totalCount // ($issue.blocking.nodes // [] | length) // ($issue.blocking // [] | length) // 0)
+              ),
               blocked_by_count: (
                 $issue.blocked_by_count //
-                ($issue.blocked_by // [] | length) //
-                ($issue.blockedBy // [] | length) //
-                ($issue.sub_issues // [] | length) //
-                ($issue.subIssues // [] | length) //
-                0
+                ($issue.blockedBy.totalCount // ($issue.blockedBy.nodes // [] | length) // ($issue.blockedBy // [] | length) // 0)
               )
             }
         ] as $dispositions

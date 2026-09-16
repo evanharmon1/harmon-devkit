@@ -109,7 +109,7 @@ done
 guard_repo_binding "$repo"
 guard_out_path "$out"
 
-open_fields="number,title,body,labels,milestone,assignees,author,createdAt,updatedAt"
+open_fields="number,title,body,labels,milestone,assignees,author,createdAt,updatedAt,blockedBy,blocking,subIssues"
 open_json="$(gh issue list --repo "$repo" --state open --limit "$limit" \
     --json "$open_fields")" ||
     die "could not list open issues of $repo"

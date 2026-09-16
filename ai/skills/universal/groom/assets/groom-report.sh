@@ -210,8 +210,8 @@ cmd_render() {
       | ($d.proposals.themes // []) as $themes
       | ($stats.unverified // []) as $unverified
 
-      # Ranking decisions: priority (P0 > P1 > P2 > P3), blocked-by count (descending), age (descending)
-      | ($decisions | sort_by([ pscore, (- (.blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
+      # Ranking decisions: priority (P0 > P1 > P2 > P3), blocking count (descending), age (descending)
+      | ($decisions | sort_by([ pscore, (- (.blocking_count // .blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
       | ($decisions_ranked[0:5]) as $top_five
       | ($decisions_ranked[5:15]) as $next_ten
       | ($decisions_ranked[15:]) as $remainder
@@ -242,7 +242,7 @@ cmd_render() {
          else
            "| # | Title | Verdict | Priority | Group | Status | Reason / Evidence |",
            "| --- | --- | --- | --- | --- | --- | --- |",
-           ($close[] | "| #\(.number) | \(.title // "(title unavailable)" | mdesc) | \(.verdict | mdesc) | \(.priority | mdesc) | \(.group | mdesc) | \(.status // "PENDING" | mdesc) | \(.reason | mdesc) |")
+           ($close[] | "| #\(.number) | \(.title // "(title unavailable)" | mdesc) | \(.verdict | mdesc) | \(.priority | mdesc) | \(.group | mdesc) | \(.status // "PENDING" | mdesc) | \(.reason | mdesc)" + (if (.evidence // "") != "" then " — *Evidence:* " + (.evidence | mdesc) else "" end) + " |")
          end),
         "",
         "## Milestones",
@@ -460,8 +460,8 @@ cmd_render() {
 
       # ── Inline SVG Chart 3: Backlog age distribution ──
       | [
-          { label: "< 30d", count: ([$rows[] | select((.age_days // 0) <= 30)] | length), color: "#2da44e" },
-          { label: "30–90d", count: ([$rows[] | select((.age_days // 0) > 30 and (.age_days // 0) <= 90)] | length), color: "#0969da" },
+          { label: "< 30d", count: ([$rows[] | select((.age_days // 0) < 30)] | length), color: "#2da44e" },
+          { label: "30–90d", count: ([$rows[] | select((.age_days // 0) >= 30 and (.age_days // 0) <= 90)] | length), color: "#0969da" },
           { label: "90–180d", count: ([$rows[] | select((.age_days // 0) > 90 and (.age_days // 0) <= 180)] | length), color: "#d4a72c" },
           { label: "180–365d", count: ([$rows[] | select((.age_days // 0) > 180 and (.age_days // 0) <= 365)] | length), color: "#bc4c00" },
           { label: "> 365d", count: ([$rows[] | select((.age_days // 0) > 365)] | length), color: "#cf222e" }
@@ -646,7 +646,7 @@ cmd_render() {
            + "<th class=\"sortable\" onclick=\"groomSortTable('table-close', 5)\">Status</th>"
            + "<th class=\"sortable\" onclick=\"groomSortTable('table-close', 6)\">Reason / Evidence</th>"
            + "</tr></thead><tbody>"
-           + ([$close[] | "<tr><td>#\(.number)</td><td>\(.title // "(title unavailable)"|h)</td><td><span class=\"badge\">\(.verdict|h)</span></td><td><span class=\"badge badge-priority-\(.priority|h)\">\(.priority|h)</span></td><td>\(.group|h)</td><td>\(.status // "PENDING"|h)</td><td>\(.reason|h)</td></tr>"] | join(""))
+           + ([$close[] | "<tr><td>#\(.number)</td><td>\(.title // "(title unavailable)"|h)</td><td><span class=\"badge\">\(.verdict|h)</span></td><td><span class=\"badge badge-priority-\(.priority|h)\">\(.priority|h)</span></td><td>\(.group|h)</td><td>\(.status // "PENDING"|h)</td><td>\(.reason|h)" + (if (.evidence // "") != "" then "<br><small><strong>Evidence:</strong> \(.evidence|h)</small>" else "" end) + "</td></tr>"] | join(""))
            + "</tbody></table>"
          end),
         "<h2 id=\"milestones\">Milestones</h2>",
