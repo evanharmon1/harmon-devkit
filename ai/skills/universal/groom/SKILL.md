@@ -163,8 +163,10 @@ above it (an `apex` family model) dispatches fan-out subagents at the
 resolved tier, capping the cost below whatever the coordinator's own
 tier costs — this is the case the override exists for. Depart from this
 default only for a stated reason (e.g. an unusually ambiguous backlog
-where a stronger tier is worth the cost for verification too), not by
-default inheritance.
+where a stronger tier is worth the cost for verification too, or an operator
+overriding it via `GROOM_FANOUT_MODEL` or a dispatch parameter for a cheap
+smoke run when budget or turnaround takes precedence over verdict accuracy),
+not by default inheritance.
 
 Each subagent verifies against the **live code and merged PRs**, never from
 memory, and returns verdicts in the fixed vocabulary
