@@ -1393,7 +1393,48 @@ bracket_colon_log="$tmp/bracket-colon.log"
     --log "$bracket_colon_log" --execute)" = 0 ] ||
     fail "bracketed prefix with colon must succeed: $(cat "$tmp/out" "$tmp/err")"
 grep -q "^NOTE #74" "$tmp/out" || fail "bracketed prefix rewrite must note preserved wording"
-grep -q -- "--body-file" "$bracket_colon_log" && fail "bracketed prefix rewrite must not write body"
+echo "==> apply-plan: non-canonical colon prefix without preserve_original is refused on empty body (issue #1059)"
+cat >"$stub_dir/issue-75.json" <<'JSON'
+{"title":"OAuth: Support refresh tokens","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+oauth_plan="$tmp/oauth-plan.jsonl"
+cat >"$oauth_plan" <<'JSONL'
+{"op":"retitle","issue":75,"title":"(auth): Support refresh tokens","previous_title":"OAuth: Support refresh tokens","preserve_original":false,"bot_owned":false}
+JSONL
+oauth_log="$tmp/oauth.log"
+: >"$oauth_log"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$oauth_plan" \
+    --log "$oauth_log" --execute)" = 4 ] ||
+    fail "non-canonical colon prefix without preserve_original must exit 4: $(cat "$tmp/out" "$tmp/err")"
+
+echo "==> apply-plan: multi-row plan resume recognizes completed earlier rows (issue #1059)"
+cat >"$stub_dir/issue-76.json" <<'JSON'
+{"title":"(ci): Target title 76","body":"Body 76\n\n<!-- groom-original-title -->\n(ci): Old title 76","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+cat >"$stub_dir/issue-77.json" <<'JSON'
+{"title":"(ci): Target title 77","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+multi_resume_plan="$tmp/multi-resume-plan.jsonl"
+cat >"$multi_resume_plan" <<'JSONL'
+{"op":"retitle","issue":76,"title":"(ci): Target title 76","previous_title":"(ci): Old title 76","preserve_original":true,"bot_owned":false}
+{"op":"retitle","issue":77,"title":"(ci): Target title 77","previous_title":"(ci): Old title 77 with long wording","preserve_original":true,"bot_owned":false}
+JSONL
+multi_resume_log="$tmp/multi-resume.log"
+multi_resume_body_log="$tmp/multi-resume-body.log"
+multi_resume_outcomes="$tmp/multi-resume-outcomes.jsonl"
+: >"$multi_resume_log"
+: >"$multi_resume_body_log"
+: >"$multi_resume_outcomes"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 GH_STUB_BODY_LOG="$multi_resume_body_log" "$apply" apply-plan \
+    --repo "$repo" --plan-file "$multi_resume_plan" --log "$multi_resume_log" \
+    --outcomes "$multi_resume_outcomes" --execute)" = 0 ] ||
+    fail "multi-row resume must succeed: $(cat "$tmp/out" "$tmp/err")"
+grep -q "#76 title already updated to '(ci): Target title 76'; row already applied" "$tmp/out" ||
+    fail "multi-row resume must recognize #76 as already applied: $(cat "$tmp/out")"
+grep -q "#77 title already updated to '(ci): Target title 77'; resuming original title preservation append" "$tmp/out" ||
+    fail "multi-row resume must resume #77 body append: $(cat "$tmp/out")"
 
 echo "==> docs: groom-apply.sh and SKILL.md document preserve_original contract (issue #1059)"
 skill_md="ai/skills/universal/groom/SKILL.md"

@@ -133,7 +133,7 @@ retitle_loses_wording() {
     jq -n -L "$title_module_dir" --arg prev "$prev" --arg new "$new" '
       include "issue-title";
       def clean_outcome:
-        sub("^(\\[[^\\]]*\\]\\s*:?|[a-zA-Z0-9_-]+(\\([^)]*\\))?!?:)\\s*"; "")
+        sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
         | issue_title_outcome
         | gsub("[[:space:]]+"; " ")
         | sub("^ "; "")
@@ -396,17 +396,21 @@ validate_retitle() {
             die 2 "could not re-read the live title and body of $repo#$issue"
         live_title="$(jq -r '.title // empty' <<<"$live_json")"
         live_body="$(jq -r '.body // ""' <<<"$live_json")"
+        local loses_wording
+        loses_wording="$(retitle_loses_wording "$previous_title" "$title")"
         if [ "$live_title" != "$previous_title" ]; then
-            if [ "$live_title" = "$title" ] && [ "$preserve_original" = "true" ] && ! grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
-                echo "NOTE #$issue title already updated to '$title'; original title preservation will be resumed" >&2
+            if [ "$live_title" = "$title" ]; then
+                if [ "$preserve_original" = "true" ] && [ "$loses_wording" = "true" ] && ! grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
+                    echo "NOTE #$issue title already updated to '$title'; original title preservation will be resumed" >&2
+                else
+                    echo "NOTE #$issue title already updated to '$title'; row already applied" >&2
+                fi
             else
                 die 4 "refused: #$issue's live title no longer matches the plan's" \
                     "previous_title (expected '$previous_title', found" \
                     "'$live_title') — refresh the plan and re-approve"
             fi
         fi
-        local loses_wording
-        loses_wording="$(retitle_loses_wording "$previous_title" "$title")"
         if [ "$loses_wording" = "true" ]; then
             local stripped_live_body
             stripped_live_body="$(printf '%s' "$live_body" | tr -d '[:space:]')"
@@ -577,9 +581,15 @@ apply_retitle() {
     live_body="$(jq -r '.body // ""' <<<"$live_json")"
     local is_resume=false
     if [ "$live_title" != "$previous_title" ]; then
-        if [ "$live_title" = "$title" ] && [ "$preserve_original" = "true" ] && ! grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
-            is_resume=true
-            echo "NOTE #$issue title already updated to '$title'; resuming original title preservation append"
+        if [ "$live_title" = "$title" ]; then
+            if [ "$preserve_original" = "true" ] && [ "$loses_wording" = "true" ] && ! grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
+                is_resume=true
+                echo "NOTE #$issue title already updated to '$title'; resuming original title preservation append"
+            else
+                echo "NOTE #$issue title already updated to '$title'; row already applied"
+                write_outcome "$outcomes" "$issue" "retitle" "DONE"
+                return 0
+            fi
         else
             die 4 "refused: plan row $lineno (#$issue retitle) conflicts with a" \
                 "concurrent edit — the live title changed since pass 1 validated" \
@@ -610,7 +620,7 @@ apply_retitle() {
     fi
 
     if [ "$preserve_original" = "true" ]; then
-        if [ "$is_resume" = "false" ] && [ "$loses_wording" != "true" ]; then
+        if [ "$loses_wording" != "true" ]; then
             echo "NOTE #$issue title wording preserved in new title; body left unchanged"
             return 0
         fi
