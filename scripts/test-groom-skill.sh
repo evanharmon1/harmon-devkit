@@ -1267,6 +1267,18 @@ JSON
 grep -q "#70" "$tmp/err" || fail "refusal must name the issue number"
 grep -q "^WRITE " "$empty_body_retitle_log" && fail "pass 1 refusal must not log any WRITE lines"
 
+echo "==> apply-plan: shortening retitle on zero-width body without flag is refused in pass 1 (exit 4, issue #1059)"
+cat >"$stub_dir/issue-70.json" <<'JSON'
+{"title":"(ci): Original long title with extra detail","body":"\u200b\ufeff","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+: >"$empty_body_retitle_log"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$empty_body_retitle_plan" \
+    --log "$empty_body_retitle_log" --execute)" = 4 ] ||
+    fail "shortening retitle on zero-width body without preserve_original must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q "#70" "$tmp/err" || fail "refusal must name the issue number"
+grep -q "^WRITE " "$empty_body_retitle_log" && fail "pass 1 refusal must not log any WRITE lines"
+
 echo "==> apply-plan: verbatim restore or prefix-only rewrite with flag sets NOTE, no body write (issue #1059)"
 cat >"$stub_dir/issue-70.json" <<'JSON'
 {"title":"fix(ci): Same title","body":"Existing body","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
@@ -1419,6 +1431,22 @@ nested_log="$tmp/nested.log"
     --log "$nested_log" --execute)" = 0 ] ||
     fail "scoped outcome with nested prefix must succeed without preserve_original: $(cat "$tmp/out" "$tmp/err")"
 grep -q "^NOTE #78" "$tmp/out" || fail "scoped outcome rewrite must note preserved wording"
+
+echo "==> apply-plan: stacked legacy prefixes are stripped and not classified as losing wording (issue #1059)"
+cat >"$stub_dir/issue-79.json" <<'JSON'
+{"title":"(ci): [P1]: bug: Fix parser","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+stacked_plan="$tmp/stacked-plan.jsonl"
+cat >"$stacked_plan" <<'JSONL'
+{"op":"retitle","issue":79,"title":"(ci): Fix parser","previous_title":"(ci): [P1]: bug: Fix parser","preserve_original":true,"bot_owned":false}
+JSONL
+stacked_log="$tmp/stacked.log"
+: >"$stacked_log"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$stacked_plan" \
+    --log "$stacked_log" --execute)" = 0 ] ||
+    fail "stacked legacy prefixes must succeed without preserve_original: $(cat "$tmp/out" "$tmp/err")"
+grep -q "^NOTE #79" "$tmp/out" || fail "stacked prefix rewrite must note preserved wording"
 
 echo "==> apply-plan: non-canonical colon prefix without preserve_original is refused on empty body (issue #1059)"
 cat >"$stub_dir/issue-75.json" <<'JSON'

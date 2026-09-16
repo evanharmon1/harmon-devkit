@@ -134,7 +134,12 @@ retitle_loses_wording() {
       include "issue-title";
       def clean_outcome:
         issue_title_outcome
-        | sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
+        | until(
+            . as $b
+            | (sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")) as $a
+            | $b == $a;
+            sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
+          )
         | gsub("[[:space:]]+"; " ")
         | sub("^ "; "")
         | sub(" $"; "");
@@ -269,7 +274,9 @@ sha256_stream() {
 
 is_blank_body() {
     local body="$1"
-    jq -rn --arg b "$body" '($b | test("^[[:space:]\\p{Z}\\u200B\\uFEFF]*$"))'
+    jq -rn --arg b "$body" '
+      ($b | explode | all(. as $c | ($c <= 32) or ($c == 160) or ($c == 8203) or ($c == 65279) or ($c >= 8192 and $c <= 8202) or ($c == 8232) or ($c == 8233) or ($c == 8239) or ($c == 8287) or ($c == 12288)))
+    '
 }
 
 # Resolve every milestone TITLE of $repo, once, in execute mode (Codex review
@@ -447,6 +454,10 @@ validate_retitle() {
                 die 4 "refused: #$issue retitle loses original title wording on an" \
                     "empty body — track-work's retitle contract requires" \
                     "preserve_original: true on the plan row to preserve wording"
+            fi
+            if [ "$preserve_original" = "true" ]; then
+                command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 ||
+                    die 2 "sha256sum or shasum is required to compute body digest for #$issue"
             fi
         fi
     fi
@@ -671,7 +682,8 @@ apply_retitle() {
 
         local body_cmd=(gh issue edit "$issue" --repo "$repo" --body-file -)
         local body_sha
-        body_sha="$(printf '%s' "$new_body" | sha256_stream)"
+        body_sha="$(printf '%s' "$new_body" | sha256_stream)" ||
+            die 1 "write failed: compute body sha256 for $repo#$issue (title already changed to '$title')"
         log_write_body "$log" "$body_sha" "${body_cmd[@]}"
         if ! printf '%s' "$new_body" | "${body_cmd[@]}" >/dev/null; then
             die 1 "write failed: append original title to $repo#$issue (title already changed to '$title')"
