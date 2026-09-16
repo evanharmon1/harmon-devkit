@@ -610,6 +610,28 @@ echo "==> scan: refuses (exit 4, naming --limit) when the result hits --limit ex
 grep -q -- "--limit" "$tmp/err" || fail "refusal must name --limit"
 [ ! -f "$tmp/scan-truncated.json" ] || fail "a refused scan must not write --out"
 
+# Challenge round 2, finding 1: guard_out_path's GROOM_SCRATCH canonicalization
+# (#1079) had no coverage at all in this file before this case.
+echo "==> scan: GROOM_SCRATCH itself missing is refused (exit 4) when --out is given"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_SCRATCH="$tmp/scan-scratch-missing" \
+    "./ai/skills/universal/groom/assets/groom-scan.sh" --repo "$repo" \
+    --out "$tmp/scan-scratch-missing/scan.json")" = 4 ] ||
+    fail "a missing GROOM_SCRATCH with --out given must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q -- "does not exist" "$tmp/err" || fail "the refusal must say the scratch directory does not exist"
+
+echo "==> scan: --out inside a SYMLINKED GROOM_SCRATCH is still accepted"
+scan_scratch_real="$tmp/scan-scratch-real"
+mkdir -p "$scan_scratch_real"
+scan_scratch_link="$tmp/scan-scratch-link"
+ln -s "$scan_scratch_real" "$scan_scratch_link"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_SCRATCH="$scan_scratch_link" \
+    "./ai/skills/universal/groom/assets/groom-scan.sh" --repo "$repo" \
+    --out "$scan_scratch_link/scan.json")" = 0 ] ||
+    fail "--out inside a symlinked scratch dir should still succeed: $(cat "$tmp/out" "$tmp/err")"
+[ -f "$scan_scratch_real/scan.json" ] || fail "the scan output must actually land under the real scratch dir"
+
 echo "==> report: is deterministic (byte-identical on an unchanged dataset)"
 out_html2="$tmp/report2.html"
 GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$disp" \
@@ -776,6 +798,27 @@ echo "==> report: every path under GROOM_SCRATCH succeeds"
     --dispositions "$report_scratch/dispositions.json" \
     --out-html "$report_scratch/out.html" --out-md "$report_scratch/out.md")" = 0 ] ||
     fail "render with every path under the scratch dir should succeed: $(cat "$tmp/out" "$tmp/err")"
+
+# Challenge round 2, finding 1: guard_scratch_path's GROOM_SCRATCH
+# canonicalization (#1079) had no missing-scratch or symlinked-scratch case
+# in this file before these two.
+echo "==> report: GROOM_SCRATCH itself missing is refused (exit 4)"
+[ "$(run env GROOM_SCRATCH="$tmp/report-scratch-missing" "$report" render \
+    --dispositions "$disp" --out-html "$tmp/report-scratch-missing/out.html" \
+    --out-md "$tmp/report-scratch-missing/out.md")" = 4 ] ||
+    fail "a missing GROOM_SCRATCH must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q -- "does not exist" "$tmp/err" || fail "the refusal must say the scratch directory does not exist"
+
+echo "==> report: every path inside a SYMLINKED GROOM_SCRATCH is still accepted"
+report_scratch_link="$tmp/report-scratch-link"
+ln -s "$report_scratch" "$report_scratch_link"
+[ "$(run env GROOM_SCRATCH="$report_scratch_link" "$report" render \
+    --dispositions "$report_scratch_link/dispositions.json" \
+    --out-html "$report_scratch_link/symlink-out.html" \
+    --out-md "$report_scratch_link/symlink-out.md")" = 0 ] ||
+    fail "render through a symlinked scratch dir should still succeed: $(cat "$tmp/out" "$tmp/err")"
+[ -f "$report_scratch/symlink-out.html" ] ||
+    fail "the html output must actually land under the real scratch dir"
 
 echo "==> apply-plan / groom-decide: a mismatched --repo is refused when the run is bound"
 noop_plan="$tmp/noop-plan.jsonl"

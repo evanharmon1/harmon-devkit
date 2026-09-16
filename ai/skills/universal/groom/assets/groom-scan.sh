@@ -28,7 +28,8 @@
 #
 # Exit: 0 = scan emitted, 2 = usage/environment error, 4 = refused (repo or
 #       out-path outside this run's binding, the open-issue count hit
-#       --limit, or GROOM_SCRATCH itself does not exist).
+#       --limit, or, when --out is given, GROOM_SCRATCH itself does not
+#       exist).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
