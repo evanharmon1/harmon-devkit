@@ -10,7 +10,7 @@ below are exactly what it checks.
 | --- | --- | --- |
 | `number` | integer | the issue number |
 | `verdict` | string | exactly one value from the vocabulary below |
-| `priority` | string | `high`, `medium`, or `low` |
+| `priority` | string | `p0`, `p1`, `p2`, `p3`, `high`, `medium`, or `low` |
 | `reason` | string | one line, nonempty |
 | `evidence` | string | required nonempty for every `CLOSE-*` verdict; empty is fine for `KEEP`/`NEEDS-INFO` |
 | `group` | string | the proposed cluster/area grouping |

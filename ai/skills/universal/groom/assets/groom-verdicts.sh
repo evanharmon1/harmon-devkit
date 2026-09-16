@@ -359,23 +359,32 @@ cmd_join() {
         exit 1
     fi
 
-    local proposals_json="{}"
+    local rows_tmp proposals_tmp="" findings_tmp="" pf_tmp=""
+    rows_tmp="$(mktemp)" || die "could not create a temp file"
+    proposals_tmp="$(mktemp)" || die "could not create a temp file"
+    findings_tmp="$(mktemp)" || die "could not create a temp file"
+    pf_tmp="$(mktemp)" || die "could not create a temp file"
+    trap 'rm -f "$rows_tmp" "$proposals_tmp" "$findings_tmp" "$pf_tmp"' RETURN
+
     if [ -n "$proposals" ]; then
         [ -r "$proposals" ] || die "cannot read proposals file: $proposals"
         jq -e . "$proposals" >/dev/null 2>&1 ||
             die "proposals file is not valid JSON: $proposals"
-        proposals_json="$(cat "$proposals")"
+        cp "$proposals" "$proposals_tmp"
+    else
+        echo "{}" >"$proposals_tmp"
     fi
 
     # Validate themes in proposals (Issue #1063):
     local themes_bad
-    themes_bad="$(jq -r --slurpfile scan "$scan" '
+    themes_bad="$(jq -r --slurpfile scan "$scan" --slurpfile p "$proposals_tmp" '
       ($scan[0].open // [] | map(.number)) as $open_numbers |
-      if has("themes") and .themes != null then
-        if (.themes | type != "array") then
+      ($p[0] // {}) as $prop |
+      if ($prop | has("themes")) and $prop.themes != null then
+        if ($prop.themes | type != "array") then
           "themes must be a JSON array"
         else
-          ([ .themes[] |
+          ([ $prop.themes[] |
              if (type != "object") then "theme entry must be an object"
              elif (.title == null or (.title | type != "string") or ((.title | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty title"
              elif (.issues == null or (.issues | type != "array") or (.issues | length == 0) or ([.issues[] | . as $iss | select((type != "number") or (. <= 0) or ($open_numbers | index($iss) | not))] | length > 0)) then "theme requires issues array of positive integers from scanned backlog"
@@ -385,59 +394,62 @@ cmd_join() {
           ] | first // "")
         end
       else "" end
-    ' <<<"$proposals_json")"
+    ' <<<"{}")"
     if [ -n "$themes_bad" ]; then
         echo "groom-verdicts: refused: $themes_bad" >&2
         exit 1
     fi
 
-    local findings_json="[]"
     if [ -n "$findings" ]; then
         [ -r "$findings" ] || die "cannot read findings file: $findings"
         jq -e . "$findings" >/dev/null 2>&1 ||
             die "findings file is not valid JSON: $findings"
-        findings_json="$(cat "$findings")"
+        cp "$findings" "$findings_tmp"
         local findings_type_bad
-        findings_type_bad="$(jq -r 'if type != "array" then "findings file must be a JSON array" else "" end' <<<"$findings_json")"
+        findings_type_bad="$(jq -r --slurpfile f "$findings_tmp" 'if ($f[0] | type != "array") then "findings file must be a JSON array" else "" end' <<<"{}")"
         if [ -n "$findings_type_bad" ]; then
             echo "groom-verdicts: refused: $findings_type_bad" >&2
             exit 1
         fi
+    else
+        echo "[]" >"$findings_tmp"
     fi
 
     # Validate process_findings in proposals (Issue #1062):
     local prop_pf_bad
-    prop_pf_bad="$(jq -r '
-      if has("process_findings") and .process_findings != null then
-        if (.process_findings | type != "array") then
+    prop_pf_bad="$(jq -r --slurpfile p "$proposals_tmp" '
+      ($p[0] // {}) as $prop |
+      if ($prop | has("process_findings")) and $prop.process_findings != null then
+        if ($prop.process_findings | type != "array") then
           "process_findings must be a JSON array"
         else "" end
       else "" end
-    ' <<<"$proposals_json")"
+    ' <<<"{}")"
     if [ -n "$prop_pf_bad" ]; then
         echo "groom-verdicts: refused: $prop_pf_bad" >&2
         exit 1
     fi
 
     # Validate process_findings in proposals and/or findings file (Issue #1062):
-    local pf_source
-    pf_source="$(jq -c --argjson f "$findings_json" --argjson p "$proposals_json" '
-      ((($p.process_findings // []) | if type == "array" then . else [] end) +
-       ($f | if type == "array" then . else [] end))
-    ' <<<"{}")"
+    jq -c --slurpfile f "$findings_tmp" --slurpfile p "$proposals_tmp" '
+      (((($p[0] // {}).process_findings // []) | if type == "array" then . else [] end) +
+       (($f[0] // []) | if type == "array" then . else [] end))
+    ' <<<"{}" >"$pf_tmp"
+
     local pf_bad
-    pf_bad="$(jq -r '
-      if type != "array" then
+    pf_bad="$(jq -r --slurpfile pf "$pf_tmp" '
+      ($pf[0] // []) as $items |
+      if ($items | type != "array") then
         "process_findings must be a JSON array"
       else
-        ([ .[] |
+        ([ $items[] |
            if (type != "object") then "process finding entry must be an object"
            elif (.finding == null or (.finding | type != "string") or ((.finding | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "process finding requires nonempty finding"
            elif (.recommended_action == null or (.recommended_action | type != "string") or ((.recommended_action | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "process finding requires nonempty recommended_action"
            else empty end
         ] | first // "")
       end
-    ' <<<"$pf_source")"
+    ' <<<"{}")"
     if [ -n "$pf_bad" ]; then
         echo "groom-verdicts: refused: $pf_bad" >&2
         exit 1
@@ -449,9 +461,6 @@ cmd_join() {
         [ "$bad" -eq 0 ] || exit 1
     fi
 
-    local rows_tmp
-    rows_tmp="$(mktemp)" || die "could not create a temp file"
-    trap 'rm -f "$rows_tmp"' RETURN
     for file in "$@"; do
         cat "$file" >>"$rows_tmp"
         printf '\n' >>"$rows_tmp"
@@ -532,11 +541,13 @@ cmd_join() {
     jq -n --arg repo "$repo" \
         --slurpfile scan "$scan" \
         --slurpfile rows "$rows_tmp" \
-        --argjson proposals "$proposals_json" \
-        --argjson findings "$pf_source" \
+        --slurpfile proposals "$proposals_tmp" \
+        --slurpfile findings "$pf_tmp" \
         --argjson unverified "$missing_json" '
       ($scan[0]) as $scan
       | ($rows) as $dispositions0
+      | ($proposals[0] // {}) as $proposals
+      | ($findings[0] // []) as $findings
       | ($scan.open | map({key: (.number|tostring), value: .}) | from_entries) as $by_number
       | [ $dispositions0[]
           | . as $row

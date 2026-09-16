@@ -23,7 +23,7 @@ For each issue:
    references/verdict-vocabulary.md for the full contract:
    CLOSE-done, CLOSE-obsolete, CLOSE-dup-of-#N, "CLOSE-wrong-repo (target)",
    KEEP, NEEDS-DECISION, NEEDS-INFO.
-4. Pick a priority: high, medium, or low — see references/priority-rubric.md.
+4. Pick a priority: p0, p1 (or high), p2 (or medium), or p3 (or low) — see references/priority-rubric.md.
 5. Write a one-line reason and, for any CLOSE-* verdict, concrete evidence
    (file:line, a merged PR number, or a commit — never a comment claiming
    "done"). Never refer to an issue by number alone — always include the title
@@ -45,7 +45,7 @@ For each issue:
 
 Output: one JSON object per line (JSON Lines, no surrounding array), written
 to <output file path>. Exact shape:
-  {"number": N, "verdict": "...", "priority": "high|medium|low",
+  {"number": N, "verdict": "...", "priority": "p0|p1|p2|p3|high|medium|low",
    "reason": "...", "evidence": "...", "group": "...", "question": "...",
    "recommendation": "..." }
 Omit "question" and "recommendation" unless verdict is NEEDS-DECISION, where
