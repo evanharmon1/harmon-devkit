@@ -10,12 +10,14 @@
 # or the pattern CLOSE-dup-of-#<N>. priority must be high, medium, or low.
 # Every CLOSE-* verdict requires a nonempty `evidence` field (file:line,
 # merged PR, or commit — never a comment). NEEDS-DECISION additionally
-# requires a nonempty `question` field, phrased as one sentence.
+# requires a nonempty `question` field (one sentence) and a nonempty
+# `recommendation` field.
 #
 # Usage:
 #   groom-verdicts.sh validate FILE...
 #   groom-verdicts.sh join --repo owner/repo --scan PATH --out PATH
-#                          [--allow-missing] [--proposals PATH] FILE...
+#                          [--allow-missing] [--proposals PATH]
+#                          [--findings PATH] FILE...
 #
 # `validate` only checks the vocabulary/evidence contract, printing every
 # violation it finds (never stopping at the first) and exiting 1 if any row is
@@ -35,31 +37,34 @@
 # dataset instead of a hard failure — finding 4); it is refused otherwise.
 #
 # --proposals PATH (optional) is a JSON file of the fan-out subagents'
-# collected parent/milestone regrouping proposals (finding 9):
+# collected parent/milestone regrouping proposals and themes:
 #   {"parents":[{"parent":N|null,"title":"...","children":[N,...]}],
 #    "milestones":[{"action":"close|rename|widen|create","title":"...",
-#                    "new_title":"...","issues":[N,...]}]}
-# carried into the dataset verbatim as `proposals` for groom-report.sh's
-# Parent issues / Milestones sections to render.
+#                    "new_title":"...","issues":[N,...],"reason":"..."}],
+#    "themes":[{"title":"...","issues":[N,...],"reason":"...",
+#              "recommended_vehicle":"openspec|bmad|adr"}],
+#    "process_findings":[{"finding":"...","recommended_action":"..."}]}
+# carried into the dataset for groom-report.sh to render.
 #
-# Every path argument (FILE..., --scan, --out, --proposals) is canonicalized
-# and, when GROOM_SCRATCH is set, must lie under it — exactly like
-# groom-scan.sh's guard_out_path — refused (exit 4) otherwise. Interactive
+# Every path argument (FILE..., --scan, --out, --proposals, --findings) is
+# canonicalized and, when GROOM_SCRATCH is set, must lie under it — exactly
+# like groom-scan.sh's guard_out_path — refused (exit 4) otherwise. Interactive
 # use with GROOM_SCRATCH unset is unchanged.
 #
 # Exit: 0 = valid (validate) / dataset written (join), 1 = a row violates the
 #       vocabulary contract, or coverage finds a duplicate/unknown/unallowed-
 #       missing number, or a CLOSE-dup-of-# target is self-referential or not
-#       in scan.open (each names the offending issue number(s)), 2 = usage,
-#       or (join) the scan's own repo field does not match --repo,
-#       4 = refused (a path argument outside GROOM_SCRATCH, when set, or
-#       GROOM_SCRATCH itself does not exist).
+#       in scan.open, or a proposals/findings payload is malformed (each names
+#       the offending issue number(s) or payload), 2 = usage, or (join) the
+#       scan's own repo field does not match --repo, 4 = refused (a path
+#       argument outside GROOM_SCRATCH, when set, or GROOM_SCRATCH itself
+#       does not exist).
 set -euo pipefail
 
 usage() {
     echo "Usage: $0 validate FILE..." >&2
     echo "       $0 join --repo owner/repo --scan PATH --out PATH" >&2
-    echo "               [--allow-missing] [--proposals PATH] FILE..." >&2
+    echo "               [--allow-missing] [--proposals PATH] [--findings PATH] FILE..." >&2
     exit 2
 }
 
@@ -130,7 +135,7 @@ validate_files() {
                 bad=$((bad + 1))
                 continue
             fi
-            local number verdict priority reason evidence group question
+            local number verdict priority reason evidence group question recommendation
             number="$(jq -r '.number // empty' <<<"$line")"
             verdict="$(jq -r '.verdict // empty' <<<"$line")"
             priority="$(jq -r '.priority // empty' <<<"$line")"
@@ -138,6 +143,7 @@ validate_files() {
             evidence="$(jq -r '.evidence // empty' <<<"$line")"
             group="$(jq -r '.group // empty' <<<"$line")"
             question="$(jq -r '.question // empty' <<<"$line")"
+            recommendation="$(jq -r '.recommendation // empty' <<<"$line")"
 
             if ! [[ "$number" =~ ^[0-9]+$ ]]; then
                 echo "groom-verdicts: refused: $file:$lineno issue '$number' — number must be a positive integer" >&2
@@ -242,6 +248,20 @@ validate_files() {
                     bad=$((bad + 1))
                     continue
                 fi
+
+                local recommendation_type recommendation_trimmed
+                recommendation_type="$(jq -r '.recommendation | type' <<<"$line")"
+                if [ "$recommendation_type" != "string" ]; then
+                    echo "groom-verdicts: refused: #$number — NEEDS-DECISION requires recommendation to be a JSON string (got $recommendation_type)" >&2
+                    bad=$((bad + 1))
+                    continue
+                fi
+                recommendation_trimmed="$(printf '%s' "$recommendation" | tr -d '[:space:]')"
+                if [ -z "$recommendation_trimmed" ]; then
+                    echo "groom-verdicts: refused: #$number — NEEDS-DECISION requires a nonempty recommendation" >&2
+                    bad=$((bad + 1))
+                    continue
+                fi
             fi
         done <"$file"
     done
@@ -266,7 +286,7 @@ cmd_validate() {
 }
 
 cmd_join() {
-    local repo="" scan="" out="" allow_missing=0 proposals=""
+    local repo="" scan="" out="" allow_missing=0 proposals="" findings=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --repo)
@@ -293,6 +313,11 @@ cmd_join() {
             proposals="$2"
             shift 2
             ;;
+        --findings)
+            [ "$#" -ge 2 ] || usage
+            findings="$2"
+            shift 2
+            ;;
         --)
             shift
             break
@@ -305,6 +330,7 @@ cmd_join() {
     guard_scratch_path --scan "$scan"
     guard_scratch_path --out "$out"
     [ -z "$proposals" ] || guard_scratch_path --proposals "$proposals"
+    [ -z "$findings" ] || guard_scratch_path --findings "$findings"
     local f
     for f in "$@"; do
         guard_scratch_path "verdict file" "$f"
@@ -339,6 +365,62 @@ cmd_join() {
         jq -e . "$proposals" >/dev/null 2>&1 ||
             die "proposals file is not valid JSON: $proposals"
         proposals_json="$(cat "$proposals")"
+    fi
+
+    # Validate themes in proposals (Issue #1063):
+    local themes_bad
+    themes_bad="$(jq -r '
+      if has("themes") and .themes != null then
+        if (.themes | type != "array") then
+          "themes must be a JSON array"
+        else
+          ([ .themes[] |
+             if (type != "object") then "theme entry must be an object"
+             elif ((.title // empty | type) != "string" or ((.title // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty title"
+             elif ((.issues // empty | type) != "array" or (.issues | length == 0) or ([.issues[] | select(type != "number" or . <= 0)] | length > 0)) then "theme requires issues array of positive integers"
+             elif ((.reason // empty | type) != "string" or ((.reason // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty reason"
+             elif ((.recommended_vehicle // empty | type) != "string" or ((.recommended_vehicle // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty recommended_vehicle"
+             else empty end
+          ] | first // "")
+        end
+      else "" end
+    ' <<<"$proposals_json")"
+    if [ -n "$themes_bad" ]; then
+        echo "groom-verdicts: refused: theme requires 'title', 'issues' array, 'reason', and 'recommended_vehicle'" >&2
+        exit 1
+    fi
+
+    local findings_json="[]"
+    if [ -n "$findings" ]; then
+        [ -r "$findings" ] || die "cannot read findings file: $findings"
+        jq -e . "$findings" >/dev/null 2>&1 ||
+            die "findings file is not valid JSON: $findings"
+        findings_json="$(cat "$findings")"
+    fi
+
+    # Validate process_findings in proposals or findings file (Issue #1062):
+    local pf_source
+    if [ "$findings_json" != "[]" ]; then
+        pf_source="$findings_json"
+    else
+        pf_source="$(jq -c '.process_findings // []' <<<"$proposals_json")"
+    fi
+    local pf_bad
+    pf_bad="$(jq -r '
+      if type != "array" then
+        "process_findings must be a JSON array"
+      else
+        ([ .[] |
+           if (type != "object") then "process finding entry must be an object"
+           elif ((.finding // empty | type) != "string" or ((.finding // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "process finding requires nonempty finding"
+           elif ((.recommended_action // empty | type) != "string" or ((.recommended_action // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "process finding requires nonempty recommended_action"
+           else empty end
+        ] | first // "")
+      end
+    ' <<<"$pf_source")"
+    if [ -n "$pf_bad" ]; then
+        echo "groom-verdicts: refused: process finding requires nonempty 'finding' and 'recommended_action'" >&2
+        exit 1
     fi
 
     local bad=0
@@ -431,6 +513,7 @@ cmd_join() {
         --slurpfile scan "$scan" \
         --slurpfile rows "$rows_tmp" \
         --argjson proposals "$proposals_json" \
+        --argjson findings "$pf_source" \
         --argjson unverified "$missing_json" '
       ($scan[0]) as $scan
       | ($rows) as $dispositions0
@@ -443,7 +526,16 @@ cmd_join() {
               bot_owned: ($issue.bot_owned // false),
               age_days: ($issue.age_days // null),
               days_since_update: ($issue.days_since_update // null),
-              status: (.status // "PENDING")
+              status: (.status // "PENDING"),
+              milestone: ($issue.milestone // null),
+              blocked_by_count: (
+                $issue.blocked_by_count //
+                ($issue.blocked_by // [] | length) //
+                ($issue.blockedBy // [] | length) //
+                ($issue.sub_issues // [] | length) //
+                ($issue.subIssues // [] | length) //
+                0
+              )
             }
         ] as $dispositions
       | {
@@ -460,9 +552,12 @@ cmd_join() {
             unverified: $unverified
           },
           milestones: ($scan.milestones // []),
+          process_findings: $findings,
           proposals: {
             parents: ($proposals.parents // []),
-            milestones: ($proposals.milestones // [])
+            milestones: ($proposals.milestones // []),
+            themes: ($proposals.themes // []),
+            process_findings: $findings
           }
         }' >"$out"
     echo "groom-verdicts: wrote $(jq '.dispositions | length' "$out") dispositions to $out"

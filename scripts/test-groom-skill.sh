@@ -196,7 +196,7 @@ good="$tmp/good.jsonl"
 cat >"$good" <<'JSONL'
 {"number":1,"verdict":"CLOSE-done","priority":"high","reason":"merged in PR","evidence":"PR #9","group":"ci"}
 {"number":2,"verdict":"KEEP","priority":"low","reason":"still relevant","evidence":"","group":"infra"}
-{"number":3,"verdict":"NEEDS-DECISION","priority":"medium","reason":"pick an approach","evidence":"","group":"design","question":"Ship A or B?"}
+{"number":3,"verdict":"NEEDS-DECISION","priority":"medium","reason":"pick an approach","evidence":"","group":"design","question":"Ship A or B?","recommendation":"Ship option A with rollout flag"}
 {"number":4,"verdict":"CLOSE-dup-of-#2","priority":"low","reason":"same as #2","evidence":"identical repro","group":"infra"}
 {"number":5,"verdict":"CLOSE-wrong-repo (evanharmon1/other-repo)","priority":"low","reason":"belongs elsewhere","evidence":"targets other-repo","group":"misc"}
 JSONL
@@ -216,21 +216,40 @@ grep -q "#10" "$tmp/err" || fail "refusal must name the issue number"
 
 echo "==> validate: NEEDS-DECISION with no question is refused"
 bad_question="$tmp/bad-question.jsonl"
-printf '%s\n' '{"number":11,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci"}' >"$bad_question"
+printf '%s\n' '{"number":11,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","recommendation":"rec"}' >"$bad_question"
 [ "$(run "$verdicts" validate "$bad_question")" = 1 ] || fail "missing question must exit 1"
 
 echo "==> validate: NEEDS-DECISION with a whitespace-only question is refused (Codex 4012885444)"
 ws_question="$tmp/ws-question.jsonl"
-printf '%s\n' '{"number":25,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","question":"   "}' >"$ws_question"
+printf '%s\n' '{"number":25,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","question":"   ","recommendation":"rec"}' >"$ws_question"
 [ "$(run "$verdicts" validate "$ws_question")" = 1 ] || fail "whitespace-only question must be refused"
 
 echo "==> validate: a non-string question value ([] or a number) is refused (Codex 4012885444)"
 array_question="$tmp/array-question.jsonl"
-printf '%s\n' '{"number":26,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","question":[]}' >"$array_question"
+printf '%s\n' '{"number":26,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","question":[],"recommendation":"rec"}' >"$array_question"
 [ "$(run "$verdicts" validate "$array_question")" = 1 ] || fail "an array question value must be refused"
 number_question="$tmp/number-question.jsonl"
-printf '%s\n' '{"number":27,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","question":123}' >"$number_question"
+printf '%s\n' '{"number":27,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","question":123,"recommendation":"rec"}' >"$number_question"
 [ "$(run "$verdicts" validate "$number_question")" = 1 ] || fail "a numeric question value must be refused"
+
+echo "==> validate: NEEDS-DECISION with no recommendation is refused (issue #1062)"
+bad_rec="$tmp/bad-rec.jsonl"
+printf '%s\n' '{"number":28,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","question":"Ship A or B?"}' >"$bad_rec"
+[ "$(run "$verdicts" validate "$bad_rec")" = 1 ] || fail "missing recommendation must exit 1"
+grep -q "#28" "$tmp/err" || fail "missing recommendation refusal must name the issue number"
+
+echo "==> validate: NEEDS-DECISION with a whitespace-only recommendation is refused"
+ws_rec="$tmp/ws-rec.jsonl"
+printf '%s\n' '{"number":29,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","question":"Ship A or B?","recommendation":"   "}' >"$ws_rec"
+[ "$(run "$verdicts" validate "$ws_rec")" = 1 ] || fail "whitespace-only recommendation must be refused"
+
+echo "==> validate: a non-string recommendation value ([] or a number) is refused"
+array_rec="$tmp/array-rec.jsonl"
+printf '%s\n' '{"number":30,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","question":"Ship A or B?","recommendation":[]}' >"$array_rec"
+[ "$(run "$verdicts" validate "$array_rec")" = 1 ] || fail "an array recommendation value must be refused"
+number_rec="$tmp/number-rec.jsonl"
+printf '%s\n' '{"number":31,"verdict":"NEEDS-DECISION","priority":"medium","reason":"x","evidence":"","group":"ci","question":"Ship A or B?","recommendation":123}' >"$number_rec"
+[ "$(run "$verdicts" validate "$number_rec")" = 1 ] || fail "a numeric recommendation value must be refused"
 
 echo "==> validate: an invalid priority is refused"
 bad_priority="$tmp/bad-priority.jsonl"
@@ -435,6 +454,46 @@ proposals_disp="$tmp/proposals-disp.json"
 [ "$(jq -r '.proposals.milestones[0].new_title' "$proposals_disp")" = "v1.1" ] ||
     fail "join must carry proposals.milestones into the dataset"
 
+echo "==> join: carries themes and process_findings into dataset"
+cat >"$proposals" <<'JSON'
+{"parents":[{"parent":1,"title":"Parser work","children":[3,4]}],
+ "milestones":[{"action":"rename","title":"v1","new_title":"v1.1","issues":[3,4]}],
+ "themes":[{"title":"Parser modernization","issues":[1,3],"reason":"Shared parser refactor","recommended_vehicle":"openspec"}],
+ "process_findings":[{"finding":"Missing triage labels","recommended_action":"Run triage skill"}]}
+JSON
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$proposals_disp" \
+    --proposals "$proposals" "$good")" = 0 ] ||
+    fail "join --proposals with themes and findings should succeed: $(cat "$tmp/out" "$tmp/err")"
+[ "$(jq -r '.proposals.themes[0].title' "$proposals_disp")" = "Parser modernization" ] ||
+    fail "join must carry proposals.themes into dataset"
+[ "$(jq -r '.process_findings[0].finding' "$proposals_disp")" = "Missing triage labels" ] ||
+    fail "join must carry process_findings into dataset"
+
+echo "==> join: refuses malformed themes in proposals"
+for bad_theme_json in \
+    '{"themes":"not-an-array"}' \
+    '{"themes":[{"title":"","issues":[1],"reason":"r","recommended_vehicle":"v"}]}' \
+    '{"themes":[{"title":"t","issues":[],"reason":"r","recommended_vehicle":"v"}]}' \
+    '{"themes":[{"title":"t","issues":["one"],"reason":"r","recommended_vehicle":"v"}]}' \
+    '{"themes":[{"title":"t","issues":[1],"reason":"","recommended_vehicle":"v"}]}' \
+    '{"themes":[{"title":"t","issues":[1],"reason":"r","recommended_vehicle":""}]}'; do
+    printf '%s\n' "$bad_theme_json" >"$tmp/bad-theme.json"
+    [ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/bad-theme-out.json" \
+        --proposals "$tmp/bad-theme.json" "$good")" = 1 ] ||
+        fail "join must refuse malformed theme: $bad_theme_json"
+done
+
+echo "==> join: refuses malformed process_findings in proposals"
+for bad_pf_json in \
+    '{"process_findings":"not-an-array"}' \
+    '{"process_findings":[{"finding":"","recommended_action":"act"}]}' \
+    '{"process_findings":[{"finding":"f","recommended_action":""}]}'; do
+    printf '%s\n' "$bad_pf_json" >"$tmp/bad-pf.json"
+    [ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/bad-pf-out.json" \
+        --proposals "$tmp/bad-pf.json" "$good")" = 1 ] ||
+        fail "join must refuse malformed process_findings: $bad_pf_json"
+done
+
 echo "==> join: refuses when the scan's repo differs from --repo (Codex 4012885488)"
 other_repo_scan="$tmp/other-repo-scan.json"
 cat >"$other_repo_scan" <<'JSON'
@@ -532,8 +591,8 @@ out_md="$tmp/report.md"
 GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$disp" \
     --out-html "$out_html" --out-md "$out_md" >/dev/null
 for section in "## Stats" "## What to do next" "## Close now" "## Milestones" \
-    "## Parent issues" "## Decisions" "## Completed this run" "## Process findings" \
-    "## Every issue"; do
+    "## Parent issues" "## Spec-worthy themes" "## Decisions" "## Completed this run" \
+    "## Process findings" "## Every issue"; do
     grep -qF "$section" "$out_md" || fail "missing section: $section"
 done
 order="$(grep -n '^## ' "$out_md" | cut -d: -f2)"
@@ -542,6 +601,7 @@ expected="## Stats
 ## Close now
 ## Milestones
 ## Parent issues
+## Spec-worthy themes
 ## Decisions
 ## Completed this run
 ## Process findings
@@ -549,11 +609,150 @@ expected="## Stats
 ## Every issue"
 [ "$order" = "$expected" ] || fail "sections must appear in the required order: got:
 $order"
-grep -q "#1 — Fix the parser" "$out_md" || fail "close candidate must show number and title"
+grep -q "| #1 | Fix the parser |" "$out_md" || fail "close candidate must show number and title in table"
 grep -q "#2 — Bot-filed task" "$out_md" || fail "bot-owned section must show number and title"
 grep -qF "Generated: 2026-01-01 00:00 UTC" "$out_md" || fail "GROOM_NOW override must be honored"
 grep -q "<title>Groom report" "$out_html" || fail "HTML must carry a title"
-grep -q "id=q" "$out_html" || fail "HTML must carry the filter/search input"
+grep -q 'id="q"' "$out_html" || fail "HTML must carry the filter/search input"
+
+# ── Issue #1061: Visual redesign, SVG charts & deterministic output ───────────
+echo "==> report: HTML carries section navigation, theme CSS, and interactive controls"
+grep -q '<nav class="nav">' "$out_html" || fail "HTML must carry section navigation"
+grep -q '<a href="#stats">' "$out_html" || fail "HTML nav must link to stats"
+grep -q '<a href="#visualizations">' "$out_html" || fail "HTML nav must link to visualizations"
+grep -q '<a href="#close">' "$out_html" || fail "HTML nav must link to close"
+grep -q '<a href="#decisions">' "$out_html" || fail "HTML nav must link to decisions"
+grep -q '<a href="#every-issue">' "$out_html" || fail "HTML nav must link to every issue"
+grep -q -- "--bg:" "$out_html" || fail "HTML must define light theme palette CSS variables"
+grep -q "@media (prefers-color-scheme: dark)" "$out_html" || fail "HTML must define dark theme CSS variables"
+grep -q "function groomSortTable" "$out_html" || fail "HTML must include table sorting script"
+grep -q "function groomFilterTable" "$out_html" || fail "HTML must include table filtering script"
+
+echo "==> report: renders 4 inline SVG charts in HTML"
+grep -q 'id="chart-verdicts"' "$out_html" || fail "HTML must render Verdict breakdown chart"
+grep -q 'id="chart-priority"' "$out_html" || fail "HTML must render Priority mix chart"
+grep -q 'id="chart-age"' "$out_html" || fail "HTML must render Backlog age distribution chart"
+grep -q 'id="chart-evidence"' "$out_html" || fail "HTML must render Closes by evidence type chart"
+grep -q '<svg viewBox="0 0 380' "$out_html" || fail "SVG charts must use viewBox for scaling"
+
+echo "==> report: render is byte-identical for same input and GROOM_NOW (deterministic)"
+out_html2="$tmp/report2.html"
+out_md2="$tmp/report2.md"
+GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$disp" \
+    --out-html "$out_html2" --out-md "$out_md2" >/dev/null
+cmp -s "$out_html" "$out_html2" || fail "HTML render must be byte-identical on repeated runs with same GROOM_NOW"
+cmp -s "$out_md" "$out_md2" || fail "Markdown render must be byte-identical on repeated runs with same GROOM_NOW"
+
+# ── Issue #1062 & #1063: 20-decision ranking, milestone health, themes, titles ──
+echo "==> report: ranks 20 decisions into Top five (with reasons), Next ten, and Remainder by area"
+dec_scan="$tmp/dec-scan.json"
+cat >"$dec_scan" <<'JSON'
+{
+  "repo": "o/r",
+  "open_total": 20,
+  "milestones": [
+    {"number":1,"title":"v1","state":"open","description":"Release 1","open_issues":5,"closed_issues":10}
+  ],
+  "open": [
+    {"number":1,"title":"Decision issue 1","bot_owned":false,"age_days":100,"days_since_update":1,"blocked_by_count":5,"milestone":"v1"},
+    {"number":2,"title":"Decision issue 2","bot_owned":false,"age_days":90,"days_since_update":1,"blocked_by_count":4,"milestone":"v1"},
+    {"number":3,"title":"Decision issue 3","bot_owned":false,"age_days":80,"days_since_update":1,"blocked_by_count":3,"milestone":"v1"},
+    {"number":4,"title":"Decision issue 4","bot_owned":false,"age_days":70,"days_since_update":1,"blocked_by_count":2,"milestone":"v1"},
+    {"number":5,"title":"Decision issue 5","bot_owned":false,"age_days":60,"days_since_update":1,"blocked_by_count":1,"milestone":"v1"},
+    {"number":6,"title":"Decision issue 6","bot_owned":false,"age_days":50,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":7,"title":"Decision issue 7","bot_owned":false,"age_days":45,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":8,"title":"Decision issue 8","bot_owned":false,"age_days":40,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":9,"title":"Decision issue 9","bot_owned":false,"age_days":35,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":10,"title":"Decision issue 10","bot_owned":false,"age_days":30,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":11,"title":"Decision issue 11","bot_owned":false,"age_days":25,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":12,"title":"Decision issue 12","bot_owned":false,"age_days":20,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":13,"title":"Decision issue 13","bot_owned":false,"age_days":18,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":14,"title":"Decision issue 14","bot_owned":false,"age_days":16,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":15,"title":"Decision issue 15","bot_owned":false,"age_days":14,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":16,"title":"Decision issue 16","bot_owned":false,"age_days":12,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":17,"title":"Decision issue 17","bot_owned":false,"age_days":10,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":18,"title":"Decision issue 18","bot_owned":false,"age_days":8,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":19,"title":"Decision issue 19","bot_owned":false,"age_days":6,"days_since_update":1,"blocked_by_count":0,"milestone":null},
+    {"number":20,"title":"Decision issue 20","bot_owned":false,"age_days":4,"days_since_update":1,"blocked_by_count":0,"milestone":null}
+  ]
+}
+JSON
+dec_rows="$tmp/dec-rows.jsonl"
+: >"$dec_rows"
+for i in $(seq 1 20); do
+    p="medium"
+    grp="area-b"
+    if [ "$i" -le 5 ]; then
+        p="high"
+        grp="area-a"
+    elif [ "$i" -gt 15 ]; then
+        grp="area-c"
+    fi
+    printf '{"number":%d,"verdict":"NEEDS-DECISION","priority":"%s","question":"Should we do task %d?","recommendation":"Yes, do task %d","group":"%s","evidence":"","reason":"important"}\n' \
+        "$i" "$p" "$i" "$i" "$grp" >>"$dec_rows"
+done
+dec_proposals="$tmp/dec-proposals.json"
+cat >"$dec_proposals" <<'JSON'
+{
+  "milestones": [
+    {"action":"create","title":"v2","issues":[16,17],"reason":"Next major release"},
+    {"action":"rename","title":"v1","new_title":"v1.0","issues":[1,2],"reason":"Semantic versioning"},
+    {"action":"widen","title":"v1","issues":[3,4],"reason":"Scope expansion"},
+    {"action":"close","title":"v1","issues":[5],"reason":"Milestone done"}
+  ],
+  "themes": [
+    {"title":"Architecture overhaul","issues":[1,2,3],"reason":"Shared domain redesign","recommended_vehicle":"openspec"}
+  ],
+  "process_findings": [
+    {"finding":"Stale issues lacking area labels","recommended_action":"Run triage audit and add area labels"}
+  ]
+}
+JSON
+dec_disp="$tmp/dec-disp.json"
+[ "$(run "$verdicts" join --repo "o/r" --scan "$dec_scan" --out "$dec_disp" \
+    --proposals "$dec_proposals" "$dec_rows")" = 0 ] ||
+    fail "join 20 decisions should succeed: $(cat "$tmp/out" "$tmp/err")"
+
+dec_html="$tmp/dec-report.html"
+dec_md="$tmp/dec-report.md"
+GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$dec_disp" \
+    --out-html "$dec_html" --out-md "$dec_md" >/dev/null
+
+# Assert ranking sections in Markdown:
+grep -q "### Top five" "$dec_md" || fail "Decisions must have 'Top five' heading"
+grep -q "### Next ten" "$dec_md" || fail "Decisions must have 'Next ten' heading"
+grep -q "### Remainder by area" "$dec_md" || fail "Decisions must have 'Remainder by area' heading"
+
+# Top five ranking checks: issues 1-5 must be in top five with reasons
+for i in $(seq 1 5); do
+    grep -q "#$i — Decision issue $i" "$dec_md" || fail "Issue #$i must be in report with title"
+done
+grep -q "Why ranked in top five:" "$dec_md" || fail "Top five must include ranking rationale"
+grep -q "How to respond:" "$dec_md" || fail "Decisions must include how to respond guidance"
+
+# Milestone proposals with health:
+grep -q "create v2" "$dec_md" || fail "Milestones must show create action"
+grep -q "rename v1 → v1.0" "$dec_md" || fail "Milestones must show rename action"
+grep -q "widen v1" "$dec_md" || fail "Milestones must show widen action"
+grep -q "close v1" "$dec_md" || fail "Milestones must show close action"
+grep -q "health: open: 5, closed: 10, oldest open issue: #1 — Decision issue 1 (100 days old)" "$dec_md" ||
+    fail "Milestones must show health with open/closed counts and oldest open issue"
+
+# Spec-worthy themes:
+grep -q "## Spec-worthy themes" "$dec_md" || fail "Spec-worthy themes section must be present"
+grep -q "Architecture overhaul" "$dec_md" || fail "Theme title must appear"
+grep -q "Recommended vehicle: openspec" "$dec_md" || fail "Theme recommended vehicle must appear"
+grep -q "#1 — Decision issue 1" "$dec_md" || fail "Theme candidate issues must include titles"
+
+# Process findings table:
+grep -q "| Finding | Recommended action |" "$dec_md" || fail "Process findings must render as two-column table"
+grep -q "Stale issues lacking area labels" "$dec_md" || fail "Process finding text must appear in table"
+grep -q "Run triage audit and add area labels" "$dec_md" || fail "Process finding recommendation must appear in table"
+
+# Issue titles alongside numbers everywhere:
+# In dec_md, ensure no bare '#N' appears without an em-dash or outside a table row.
+bare_numbers="$(grep -v "^|" "$dec_md" | grep -v -- " — " | grep -E "#[0-9]+" || true)"
+[ -z "$bare_numbers" ] || fail "Found bare issue numbers without titles in report: $bare_numbers"
 
 # ── groom-scan.sh ────────────────────────────────────────────────────────────
 echo "==> scan: read-only, computes age/bot_owned/title health, notes board access"
@@ -697,9 +896,9 @@ done_md="$tmp/done.md"
 run "$report" render --dispositions "$disp" --outcomes "$done_outcomes" \
     --out-html "$tmp/done.html" --out-md "$done_md" >/dev/null
 close_now_section="$(sed -n '/^## Close now$/,/^## /p' "$done_md")"
-grep -q '#1 —' <<<"$close_now_section" &&
+grep -q '| #1 |' <<<"$close_now_section" &&
     fail "a DONE close must not remain listed under Close now"
-grep -q '#4 —' <<<"$close_now_section" ||
+grep -q '| #4 |' <<<"$close_now_section" ||
     fail "an untouched close candidate must still be listed under Close now"
 decisions_section="$(sed -n '/^## Decisions$/,/^## /p' "$done_md")"
 grep -q '#3 —' <<<"$decisions_section" &&
@@ -726,7 +925,7 @@ retitle_only_md="$tmp/retitle-only.md"
 run "$report" render --dispositions "$disp" --outcomes "$retitle_only_outcomes" \
     --out-html "$tmp/retitle-only.html" --out-md "$retitle_only_md" >/dev/null
 close_now_retitle_section="$(sed -n '/^## Close now$/,/^## /p' "$retitle_only_md")"
-grep -q '#1 —' <<<"$close_now_retitle_section" ||
+grep -q '| #1 |' <<<"$close_now_retitle_section" ||
     fail "a retitle-only outcome for #1 must leave its CLOSE row PENDING (still listed under Close now)"
 completed_retitle_section="$(sed -n '/^## Completed this run$/,/^## /p' "$retitle_only_md")"
 grep -q '#1 —' <<<"$completed_retitle_section" &&
@@ -775,10 +974,14 @@ grep -qF "Nothing to do — backlog is clean this run." "$clean_md" ||
 echo "==> report: Parent issues and Milestones render from dataset proposals"
 run "$report" render --dispositions "$proposals_disp" --out-html "$tmp/proposals.html" \
     --out-md "$tmp/proposals.md" >/dev/null
-grep -q "#1 Parser work: #3, #4" "$tmp/proposals.md" ||
-    fail "Parent issues must render a proposal's parent, title, and children in order"
-grep -q "rename v1 → v1.1 (#3, #4)" "$tmp/proposals.md" ||
-    fail "Milestones must render a proposal action/title/new_title/issues"
+grep -q "#1 — Parser work: #3 — Pick an approach, #4 — Duplicate report" "$tmp/proposals.md" ||
+    fail "Parent issues must render a proposal's parent, title, and children in order with titles"
+grep -q "rename v1 → v1.1" "$tmp/proposals.md" ||
+    fail "Milestones must render proposal action, title, and new_title"
+grep -q "health: open: " "$tmp/proposals.md" ||
+    fail "Milestones must render milestone health"
+grep -q "#3 — Pick an approach, #4 — Duplicate report" "$tmp/proposals.md" ||
+    fail "Milestones must render candidate issues with titles beside numbers"
 grep -q "Parser work" "$tmp/proposals.html" || fail "HTML must also render the parent proposal"
 grep -q "v1.1" "$tmp/proposals.html" || fail "HTML must also render the milestone proposal"
 
@@ -790,11 +993,12 @@ missing_outcomes="$tmp/does-not-exist-yet/outcomes.jsonl"
     fail "render with a nonexistent --outcomes path must exit 0: $(cat "$tmp/out" "$tmp/err")"
 grep -q "no outcomes file yet at $missing_outcomes" "$tmp/err" ||
     fail "a missing --outcomes path must note it on stderr"
-[ "$(grep -c '^| #[0-9]' "$tmp/missing-outcomes.md")" = 5 ] ||
+every_issue_section="$(sed -n '/^## Every issue$/,//p' "$tmp/missing-outcomes.md")"
+[ "$(grep -c '^| #[0-9]' <<<"$every_issue_section")" = 5 ] ||
     fail "every disposition row must still render in the Every issue table"
 while IFS= read -r status_col; do
     [ "$status_col" = "PENDING" ] || fail "every row must be PENDING when --outcomes is missing: got '$status_col'"
-done < <(awk -F'|' '/^\| #[0-9]/{n=NF-1; gsub(/^ +| +$/, "", $n); print $n}' "$tmp/missing-outcomes.md")
+done < <(awk -F'|' '/^\| #[0-9]/{n=NF-1; gsub(/^ +| +$/, "", $n); print $n}' <<<"$every_issue_section")
 
 # ── groom-report.sh: GROOM_SCRATCH path binding (Codex 4011648576) ─────────
 report_scratch="$tmp/report-scratch"
