@@ -72,13 +72,29 @@ mkdir -p \
     "$fixture/.agents/skills/orchestrator/assets" \
     "$tmp/nodebin"
 cp "$fence_check" "$fixture/.agents/skills/orchestrator/assets/fence-check.sh"
-printf '#!/bin/sh\n[ "$1" = "%s/scripts/validate-result-schemas.mjs" ]\n' "$fixture" >"$tmp/nodebin/node"
+# fence-check.sh derives the validator path from `git rev-parse --show-toplevel`,
+# which always returns the resolved (symlink-free) repository root — so the
+# stub must expect that resolved path, not $fixture's own (possibly
+# symlinked, e.g. macOS's TMPDIR under /var -> /private/var) spelling.
+fixture_resolved="$(cd "$fixture" && pwd -P)"
+printf '#!/bin/sh\n[ "$1" = "%s/scripts/validate-result-schemas.mjs" ]\n' "$fixture_resolved" >"$tmp/nodebin/node"
 chmod +x "$tmp/nodebin/node"
 (
     cd "$fixture"
     PATH="$tmp/nodebin:$PATH" .agents/skills/orchestrator/assets/fence-check.sh \
         --brief "$tmp/allowed.md"
 ) >/dev/null || fail "a vendored-layout fence check did not resolve the repository validator"
+
+# #1080: exercise the same resolution through a DELIBERATE symlink alias to
+# the fixture root, so the case fails on every platform (not only where
+# TMPDIR itself happens to be a symlink, as on macOS) until fixed.
+fixture_link="$tmp/repo-symlink"
+ln -s "$fixture" "$fixture_link"
+(
+    cd "$fixture_link"
+    PATH="$tmp/nodebin:$PATH" .agents/skills/orchestrator/assets/fence-check.sh \
+        --brief "$tmp/allowed.md"
+) >/dev/null || fail "a vendored-layout fence check invoked through a symlinked fixture root did not resolve the repository validator"
 
 printf '%s\n' changed >"$fixture/outside.txt"
 git -C "$fixture" add outside.txt

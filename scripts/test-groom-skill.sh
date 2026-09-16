@@ -472,6 +472,20 @@ echo "==> validate: a verdict file inside GROOM_SCRATCH is unaffected"
 [ "$(run env GROOM_SCRATCH="$verdicts_scratch" "$verdicts" validate "$verdicts_scratch/good.jsonl")" = 0 ] ||
     fail "a verdict file inside the run's scratch dir should still validate: $(cat "$tmp/out" "$tmp/err")"
 
+# #1079: GROOM_SCRATCH itself must be canonicalized before the prefix
+# compare, not just the candidate path — a scratch root reached through a
+# symlink (e.g. macOS's /var -> /private/var) must resolve the same as one
+# reached directly, on every platform, not only where TMPDIR itself
+# happens to be a symlink.
+echo "==> validate: a verdict file inside a SYMLINKED GROOM_SCRATCH is still accepted"
+verdicts_scratch_real="$tmp/verdicts-scratch-real"
+mkdir -p "$verdicts_scratch_real"
+cp "$good" "$verdicts_scratch_real/good.jsonl"
+verdicts_scratch_link="$tmp/verdicts-scratch-link"
+ln -s "$verdicts_scratch_real" "$verdicts_scratch_link"
+[ "$(run env GROOM_SCRATCH="$verdicts_scratch_link" "$verdicts" validate "$verdicts_scratch_link/good.jsonl")" = 0 ] ||
+    fail "a verdict file inside a symlinked scratch dir should still validate: $(cat "$tmp/out" "$tmp/err")"
+
 echo "==> join: --scan outside GROOM_SCRATCH is refused"
 [ "$(run env GROOM_SCRATCH="$verdicts_scratch" "$verdicts" join --repo "$repo" --scan "$scan" \
     --out "$verdicts_scratch/out.json" "$verdicts_scratch/good.jsonl")" = 4 ] ||

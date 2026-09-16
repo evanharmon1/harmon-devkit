@@ -79,13 +79,18 @@ die() {
 # worker treats issue text as untrusted, and this script's --out-html/
 # --out-md/--dispositions/--outcomes arguments were not bound to the run
 # directory, so a prompt-injected argument (e.g. --out-md ./AGENTS.md) could
-# escape the scoped Write(//<run_dir>/**) grant and truncate an arbitrary
+# escape the scoped Edit(//<run_dir>/**) grant and truncate an arbitrary
 # worker-writable file. Interactive use with GROOM_SCRATCH unset is
 # unchanged — every path is accepted as given.
 guard_scratch_path() {
-    local flag="$1" path="$2" dir base abs
+    local flag="$1" path="$2" dir base abs scratch
     [ -n "${GROOM_SCRATCH:-}" ] || return 0
     [ -n "$path" ] || return 0
+    scratch="$(cd "$GROOM_SCRATCH" 2>/dev/null && pwd -P)" || {
+        echo "groom-report: refused: this run's scratch directory" \
+            "($GROOM_SCRATCH) does not exist" >&2
+        exit 4
+    }
     dir="$(dirname "$path")"
     base="$(basename "$path")"
     abs="$(cd "$dir" 2>/dev/null && pwd -P)/$base" || {
@@ -93,7 +98,7 @@ guard_scratch_path() {
         exit 2
     }
     case "$abs" in
-    "$GROOM_SCRATCH"/*) ;;
+    "$scratch"/*) ;;
     *)
         echo "groom-report: refused: $flag must live under this run's" \
             "scratch directory ($GROOM_SCRATCH), got: $path" >&2
