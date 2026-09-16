@@ -1353,6 +1353,48 @@ grep -q "title already changed" "$tmp/err" ||
     fail "failure must state that title already changed: $(cat "$tmp/err")"
 grep -q "#73" "$tmp/err" || fail "failure must name issue number: $(cat "$tmp/err")"
 
+echo "==> apply-plan: retrying after title edit succeeds resumes body append without re-editing title (issue #1059)"
+cat >"$stub_dir/issue-73.json" <<'JSON'
+{"title":"(ci): Short","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+retry_body_log="$tmp/retry-body.log"
+retry_log="$tmp/retry.log"
+retry_outcomes="$tmp/retry-outcomes.jsonl"
+: >"$retry_body_log"
+: >"$retry_log"
+: >"$retry_outcomes"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 GH_STUB_BODY_LOG="$retry_body_log" "$apply" apply-plan \
+    --repo "$repo" --plan-file "$fail_body_plan" --log "$retry_log" \
+    --outcomes "$retry_outcomes" --execute)" = 0 ] ||
+    fail "retry after title edit succeeded must succeed: $(cat "$tmp/out" "$tmp/err")"
+grep -q "resuming original title preservation append" "$tmp/out" ||
+    fail "retry must announce resuming original title preservation"
+grep -q -- "--title" "$retry_log" && fail "retry must not re-run title edit"
+grep -q "^WRITE gh issue edit 73 .*--body-file -" "$retry_log" ||
+    fail "retry must log body edit"
+grep -qF "<!-- groom-original-title -->" "$retry_body_log" ||
+    fail "retry body edit must carry marker"
+grep -q '"op":"retitle"' "$retry_outcomes" || fail "outcomes must record retitle"
+grep -q '"op":"retitle-preserve"' "$retry_outcomes" || fail "outcomes must record retitle-preserve"
+
+echo "==> apply-plan: bracketed prefix with colon is stripped and not classified as losing wording (issue #1059)"
+cat >"$stub_dir/issue-74.json" <<'JSON'
+{"title":"[P1]: Fix parser bug","body":"Existing body","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+bracket_colon_plan="$tmp/bracket-colon-plan.jsonl"
+cat >"$bracket_colon_plan" <<'JSONL'
+{"op":"retitle","issue":74,"title":"(ci): Fix parser bug","previous_title":"[P1]: Fix parser bug","preserve_original":true,"bot_owned":false}
+JSONL
+bracket_colon_log="$tmp/bracket-colon.log"
+: >"$bracket_colon_log"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$bracket_colon_plan" \
+    --log "$bracket_colon_log" --execute)" = 0 ] ||
+    fail "bracketed prefix with colon must succeed: $(cat "$tmp/out" "$tmp/err")"
+grep -q "^NOTE #74" "$tmp/out" || fail "bracketed prefix rewrite must note preserved wording"
+grep -q -- "--body-file" "$bracket_colon_log" && fail "bracketed prefix rewrite must not write body"
+
 echo "==> docs: groom-apply.sh and SKILL.md document preserve_original contract (issue #1059)"
 skill_md="ai/skills/universal/groom/SKILL.md"
 grep -qF "preserve_original: true" "$apply" || fail "groom-apply.sh header must document preserve_original: true"

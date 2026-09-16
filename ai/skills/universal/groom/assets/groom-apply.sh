@@ -133,7 +133,7 @@ retitle_loses_wording() {
     jq -n -L "$title_module_dir" --arg prev "$prev" --arg new "$new" '
       include "issue-title";
       def clean_outcome:
-        sub("^(\\[[^\\]]*\\]|[a-zA-Z0-9_-]+(\\([^)]*\\))?!?:)\\s*"; "")
+        sub("^(\\[[^\\]]*\\]\\s*:?|[a-zA-Z0-9_-]+(\\([^)]*\\))?!?:)\\s*"; "")
         | issue_title_outcome
         | gsub("[[:space:]]+"; " ")
         | sub("^ "; "")
@@ -395,12 +395,16 @@ validate_retitle() {
         live_json="$(gh issue view "$issue" --repo "$repo" --json title,body)" ||
             die 2 "could not re-read the live title and body of $repo#$issue"
         live_title="$(jq -r '.title // empty' <<<"$live_json")"
-        [ "$live_title" = "$previous_title" ] ||
-            die 4 "refused: #$issue's live title no longer matches the plan's" \
-                "previous_title (expected '$previous_title', found" \
-                "'$live_title') — refresh the plan and re-approve"
-
         live_body="$(jq -r '.body // ""' <<<"$live_json")"
+        if [ "$live_title" != "$previous_title" ]; then
+            if [ "$live_title" = "$title" ] && [ "$preserve_original" = "true" ] && ! grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
+                echo "NOTE #$issue title already updated to '$title'; original title preservation will be resumed" >&2
+            else
+                die 4 "refused: #$issue's live title no longer matches the plan's" \
+                    "previous_title (expected '$previous_title', found" \
+                    "'$live_title') — refresh the plan and re-approve"
+            fi
+        fi
         local loses_wording
         loses_wording="$(retitle_loses_wording "$previous_title" "$title")"
         if [ "$loses_wording" = "true" ]; then
@@ -571,31 +575,42 @@ apply_retitle() {
         die 2 "could not re-read the live title and body of $repo#$issue"
     live_title="$(jq -r '.title // empty' <<<"$live_json")"
     live_body="$(jq -r '.body // ""' <<<"$live_json")"
-    [ "$live_title" = "$previous_title" ] ||
-        die 4 "refused: plan row $lineno (#$issue retitle) conflicts with a" \
-            "concurrent edit — the live title changed since pass 1 validated" \
-            "this plan (expected '$previous_title', found '$live_title')." \
-            "Refresh the plan and re-approve; writes already applied by this" \
-            "run are recorded in $log."
-
-    if [ "$preserve_original" != "true" ] && [ "$loses_wording" = "true" ]; then
-        local stripped_live_body
-        stripped_live_body="$(printf '%s' "$live_body" | tr -d '[:space:]')"
-        [ -n "$stripped_live_body" ] ||
-            die 4 "refused: plan row $lineno (#$issue retitle) loses wording from" \
-                "the title, the live issue body is empty, and preserve_original is" \
-                "not true. Set preserve_original: true on the plan row to append" \
-                "an 'Original title' section to the body, or rewrite the title" \
-                "to preserve the outcome wording."
+    local is_resume=false
+    if [ "$live_title" != "$previous_title" ]; then
+        if [ "$live_title" = "$title" ] && [ "$preserve_original" = "true" ] && ! grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
+            is_resume=true
+            echo "NOTE #$issue title already updated to '$title'; resuming original title preservation append"
+        else
+            die 4 "refused: plan row $lineno (#$issue retitle) conflicts with a" \
+                "concurrent edit — the live title changed since pass 1 validated" \
+                "this plan (expected '$previous_title', found '$live_title')." \
+                "Refresh the plan and re-approve; writes already applied by this" \
+                "run are recorded in $log."
+        fi
     fi
 
-    log_write "$log" "${cmd[@]}"
-    "${cmd[@]}" >/dev/null || die 1 "write failed: retitle $repo#$issue"
-    echo "APPLIED retitle $repo#$issue"
-    write_outcome "$outcomes" "$issue" "retitle" "DONE"
+    if [ "$is_resume" = "false" ]; then
+        if [ "$preserve_original" != "true" ] && [ "$loses_wording" = "true" ]; then
+            local stripped_live_body
+            stripped_live_body="$(printf '%s' "$live_body" | tr -d '[:space:]')"
+            [ -n "$stripped_live_body" ] ||
+                die 4 "refused: plan row $lineno (#$issue retitle) loses wording from" \
+                    "the title, the live issue body is empty, and preserve_original is" \
+                    "not true. Set preserve_original: true on the plan row to append" \
+                    "an 'Original title' section to the body, or rewrite the title" \
+                    "to preserve the outcome wording."
+        fi
+
+        log_write "$log" "${cmd[@]}"
+        "${cmd[@]}" >/dev/null || die 1 "write failed: retitle $repo#$issue"
+        echo "APPLIED retitle $repo#$issue"
+        write_outcome "$outcomes" "$issue" "retitle" "DONE"
+    else
+        write_outcome "$outcomes" "$issue" "retitle" "DONE"
+    fi
 
     if [ "$preserve_original" = "true" ]; then
-        if [ "$loses_wording" != "true" ]; then
+        if [ "$is_resume" = "false" ] && [ "$loses_wording" != "true" ]; then
             echo "NOTE #$issue title wording preserved in new title; body left unchanged"
             return 0
         fi
