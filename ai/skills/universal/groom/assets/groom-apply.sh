@@ -616,7 +616,7 @@ apply_retitle() {
         fi
 
         live_body="$(gh issue view "$issue" --repo "$repo" --json body -q '.body // ""')" ||
-            die 2 "could not re-read the live body of $repo#$issue before appending original title"
+            die 1 "write failed: could not re-read live body of $repo#$issue before appending original title (title already changed to '$title')"
 
         if grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
             echo "NOTE #$issue body already carries <!-- groom-original-title -->; skipped append"
