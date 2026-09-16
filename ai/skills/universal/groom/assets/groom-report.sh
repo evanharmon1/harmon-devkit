@@ -268,7 +268,7 @@ cmd_render() {
          else
            ($milestones[] |
             . as $m |
-            ([$rows[] | select(.milestone == $m.title and .status == "PENDING")] | sort_by(- (.age_days // 0)) | first) as $oldest |
+            ([$rows[] | select(.milestone == $m.title and .status != "DONE")] | sort_by(- (.age_days // 0)) | first) as $oldest |
             "- #\($m.number) \($m.title | mdesc) (\($m.state | mdesc)) — \($m.open_issues // 0) open, \($m.closed_issues // 0) closed"
             + (if $oldest then " (health: open: \($m.open_issues // 0), closed: \($m.closed_issues // 0), oldest open issue: " + ititle($titles; $oldest.number) + " (\($oldest.age_days // 0) days old))" else " (health: open: \($m.open_issues // 0), closed: \($m.closed_issues // 0), no open issues)" end))
          end),
@@ -309,7 +309,7 @@ cmd_render() {
                (if pscore == 0 then "P0 (urgent)" elif pscore == 1 then "High (P1)" elif pscore == 2 then "Medium (P2)" else "Low (P3)" end) as $pr |
                "- " + ititle($titles; $dec.number) + " — \($dec.question // "" | mdesc)",
                "  - Recommendation: \($dec.recommendation // $dec.reason | mdesc)",
-               "  - Why ranked in top five: \($pr) priority, blocks \($dec.blocked_by_count // 0) downstream issue(s), \($dec.age_days // 0) days old.",
+               "  - Why ranked in top five: \($pr) priority, blocks \($dec.blocking_count // $dec.blocked_by_count // 0) downstream issue(s), \($dec.age_days // 0) days old.",
                "  - How to respond: Reply \"agree\" to accept recommendation, \"decline\" to reject, or specify an alternative.",
                "  - Status: \($dec.status // "PENDING" | mdesc)",
                "")
@@ -654,7 +654,7 @@ cmd_render() {
            "<ul>" + ([$milestone_proposals[] |
              . as $p |
              ([$milestones[] | select(.title == $p.title)] | first) as $m |
-             ([$rows[] | select(.milestone == $p.title and .status == "PENDING")] | sort_by(- (.age_days // 0)) | first) as $oldest |
+             ([$rows[] | select(.milestone == $p.title and .status != "DONE")] | sort_by(- (.age_days // 0)) | first) as $oldest |
              (if $m then
                 "open: \($m.open_issues // 0), closed: \($m.closed_issues // 0)" + (if $oldest then ", oldest open issue: " + ititle_h($titles; $oldest.number) + " (\($oldest.age_days // 0) days old)" else ", no open issues" end)
               else
@@ -672,7 +672,7 @@ cmd_render() {
          else
            "<ul>" + ([$milestones[] |
              . as $m |
-             ([$rows[] | select(.milestone == $m.title and .status == "PENDING")] | sort_by(- (.age_days // 0)) | first) as $oldest |
+             ([$rows[] | select(.milestone == $m.title and .status != "DONE")] | sort_by(- (.age_days // 0)) | first) as $oldest |
              "<li>#\($m.number) \($m.title|h) (\($m.state|h)) — \($m.open_issues // 0) open, \($m.closed_issues // 0) closed"
              + (if $oldest then " (health: open: \($m.open_issues // 0), closed: \($m.closed_issues // 0), oldest open issue: " + ititle_h($titles; $oldest.number) + " (\($oldest.age_days // 0) days old))" else " (health: open: \($m.open_issues // 0), closed: \($m.closed_issues // 0), no open issues)" end)
              + "</li>"] | join("")) + "</ul>"
@@ -711,7 +711,7 @@ cmd_render() {
                  + "<div class=\"callout callout-decision\">"
                  + "<div class=\"callout-title\">Recommendation</div>"
                  + "<p class=\"callout-body\">\($dec.recommendation // $dec.reason | h)</p>"
-                 + "<p class=\"callout-body\"><small><strong>Why ranked in top five:</strong> \($pr) priority, blocks \($dec.blocked_by_count // 0) downstream issue(s), \($dec.age_days // 0) days old.</small></p>"
+                 + "<p class=\"callout-body\"><small><strong>Why ranked in top five:</strong> \($pr) priority, blocks \($dec.blocking_count // $dec.blocked_by_count // 0) downstream issue(s), \($dec.age_days // 0) days old.</small></p>"
                  + "<p class=\"callout-response\"><strong>How to respond:</strong> Reply &quot;agree&quot; to accept recommendation, &quot;decline&quot; to reject, or specify an alternative.</p>"
                  + "</div>"
                  + "<p><small>Status: \($dec.status // "PENDING"|h)</small></p>"

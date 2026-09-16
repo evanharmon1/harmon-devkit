@@ -382,7 +382,7 @@ cmd_join() {
              elif ((.title // empty | type) != "string" or ((.title // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty title"
              elif ((.issues // empty | type) != "array" or (.issues | length == 0) or ([.issues[] | select(type != "number" or . <= 0 or ($open_numbers | index(.) | not))] | length > 0)) then "theme requires issues array of positive integers from scanned backlog"
              elif ((.reason // empty | type) != "string" or ((.reason // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty reason"
-             elif ((.recommended_vehicle // empty | type) != "string" or ((.recommended_vehicle // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty recommended_vehicle"
+             elif ((.recommended_vehicle // empty | type) != "string" or ((.recommended_vehicle // "") | ascii_downcase | IN("openspec", "bmad", "adr") | not)) then "theme recommended_vehicle must be openspec, bmad, or adr"
              else empty end
           ] | first // "")
         end

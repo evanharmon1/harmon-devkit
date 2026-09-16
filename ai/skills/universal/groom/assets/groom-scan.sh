@@ -191,7 +191,9 @@ jq -n -L "$title_module_dir" \
             age_days: $age_days,
             days_since_update: $updated_days,
             title_valid: (.title | issue_title_valid),
-            title_warn: (.title | issue_title_warn)
+            title_warn: (.title | issue_title_warn),
+            blocking_count: (.blocking.totalCount // (.blocking.nodes // [] | length) // (.blocking // [] | length) // 0),
+            blocked_by_count: (.blockedBy.totalCount // (.blockedBy.nodes // [] | length) // (.blockedBy // [] | length) // 0)
           }
       ]
   }'
