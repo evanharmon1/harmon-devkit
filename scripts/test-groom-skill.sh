@@ -1257,7 +1257,7 @@ grep -q '"op":"retitle-preserve"' "$preserving_outcomes" || fail "outcomes must 
 
 echo "==> apply-plan: shortening retitle on unicode-whitespace body without flag is refused in pass 1 (exit 4, issue #1059)"
 cat >"$stub_dir/issue-70.json" <<'JSON'
-{"title":"(ci): Original long title with extra detail","body":"  \u00a0 \u2003 \n\t ","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+{"title":"(ci): Original long title with extra detail","body":"  \u00a0 \u2003 \u1680 \u0085 \n\t ","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
 JSON
 : >"$empty_body_retitle_log"
 : >"$GH_STUB_LOG"

@@ -275,7 +275,11 @@ sha256_stream() {
 is_blank_body() {
     local body="$1"
     jq -rn --arg b "$body" '
-      ($b | explode | all(. as $c | ($c <= 32) or ($c == 160) or ($c == 8203) or ($c == 65279) or ($c >= 8192 and $c <= 8202) or ($c == 8232) or ($c == 8233) or ($c == 8239) or ($c == 8287) or ($c == 12288)))
+      def is_blank_codepoint:
+        . < 32 or (. >= 127 and . <= 159) or . == 32 or . == 160 or . == 5760
+        or (. >= 8192 and . <= 8205) or . == 8232 or . == 8233
+        or . == 8239 or . == 8287 or . == 8288 or . == 12288 or . == 65279;
+      ($b | explode | all(is_blank_codepoint))
     '
 }
 
