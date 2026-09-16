@@ -9,7 +9,9 @@ Run `/groom` (audit mode) when any of these hold:
   possible-completion candidates — that is exactly the signal `triage` cannot
   act on and `groom` exists to close.
 
-## Sizing (from the 2026-09-13 harmon-init reference run)
+## Sizing references
+
+### 2026-09-13 harmon-init reference run
 
 - ~384 open issues, split into 50–70-issue clusters (~6 clusters).
 - Each cluster subagent spent roughly 160k–240k tokens on the audit
@@ -17,6 +19,12 @@ Run `/groom` (audit mode) when any of these hold:
   live tree).
 - The apply phase that followed was ~200 individual writes (closes, pointer
   comments, milestone/parent edits, decision comments).
+
+### 2026-09-15 harmon-devkit reference run
+
+- 8 clusters, roughly 200k tokens each (~1.6M total audit tokens).
+- Subagents ran on a frontier-tier model for verdict accuracy.
+- Covered ~40–50 issues per cluster.
 
 A first run on an unusually large or old backlog costs more than a steady-state
 monthly run, because more of the audit's findings are genuinely new. Budget

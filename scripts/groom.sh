@@ -63,12 +63,12 @@
 # Env: GROOM_MODEL (default: sonnet) picks the AUDIT model — the
 #      coordinating session that reads SKILL.md and fans out Step 2's
 #      cluster subagents.
-#      GROOM_FANOUT_MODEL (default: opus) picks the model each Step 2
+#      GROOM_FANOUT_MODEL (default: opus, frontier tier) picks the model each Step 2
 #      cluster subagent is dispatched on — independent of GROOM_MODEL, so
 #      raising the coordinating session's own tier (a harder backlog, an
 #      operator's preference) does not silently multiply that cost across
 #      every fan-out subagent too, and so the fan-out step (the run's real
-#      verification judgment) defaults to a stronger tier than the
+#      verification judgment) defaults to a stronger frontier tier than the
 #      comparatively mechanical coordinating session does (issue #1044).
 #      Forwarded to the coordinating session as an explicit instruction;
 #      SKILL.md Step 2 carries the same default for the interactive path,

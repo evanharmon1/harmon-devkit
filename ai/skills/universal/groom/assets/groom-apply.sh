@@ -74,7 +74,7 @@
 #
 # Plan file: JSON Lines, one op per line:
 #   {"op":"close","issue":N,"reason":"completed|not planned|duplicate","comment":"...","bot_owned":false,"unticked":false}
-#   {"op":"retitle","issue":N,"title":"...","previous_title":"...","bot_owned":false}
+#   {"op":"retitle","issue":N,"title":"...","previous_title":"...","preserve_original":true,"bot_owned":false}
 #   {"op":"label","issue":N,"add":["..."],"remove":["needs-triage"],"bot_owned":false}
 #   {"op":"milestone-assign","issue":N,"milestone_title":"...","bot_owned":false}
 #   {"op":"sub-issue-link","parent":N,"child":N}
@@ -82,6 +82,21 @@
 # A "close" row's optional "unticked" field is a plan-authoring hint only
 # (surfaced as a dry-run NOTE); the real gate is the live-body re-check below,
 # which runs only in --execute mode.
+#
+# A "retitle" row gains an optional field: preserve_original: true. A retitle
+# loses wording when the new title does not contain the previous title's
+# outcome verbatim (detected via issue-title.jq's issue_title_outcome helper).
+# In execute mode, pass 1 refuses (exit 4) any retitle that loses wording on an
+# empty-body issue unless preserve_original is true. In pass 2, when
+# preserve_original is true and wording is lost, after the title write succeeds
+# a marked section ("## Original title\n<!-- groom-original-title -->\n<previous_title, verbatim>")
+# is appended to the body via `gh issue edit N --repo R --body-file -` on stdin.
+# The body append is idempotent: if the live body already carries the marker,
+# the append is skipped and noted on stdout. If preserve_original is set but no
+# wording is lost, nothing is appended and a NOTE is printed. In dry-run mode,
+# a second PLAN line is printed for the body append whenever execute mode would
+# append. The body append logs its own WRITE line and records a write_outcome
+# with op "retitle-preserve".
 #
 # Exit: 0 = dry-run resolved or every write applied, 1 = a write failed,
 #       2 = usage/environment error (including --execute without the env gate,
@@ -93,7 +108,8 @@
 #       Codex review on PR #1032, comment 4012885462),
 #       4 = refused (bot-owned issue, an unknown op, a label op triage-
 #       apply.sh's own dry run would reject, a retitle whose live title no
-#       longer matches the plan's previous_title, a completed close whose
+#       longer matches the plan's previous_title, a shortening retitle on an
+#       empty body lacking preserve_original: true, a completed close whose
 #       live body still has an unticked task item, a sub-issue-link whose
 #       parent or child id could not be resolved, or a milestone-assign whose
 #       milestone_title or target issue could not be resolved — Codex review
@@ -103,6 +119,40 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 triage_apply="$script_dir/../../triage/assets/triage-apply.sh"
 check_metadata="$script_dir/../../track-work/assets/check-issue-metadata.sh"
+title_module_dir="$script_dir/../../issue-title-support/assets"
+
+# Check whether proposed title loses wording from previous_title
+# (issue #1059). Lost means the new outcome does not contain the previous
+# outcome as a substring, case-sensitive, after collapsing whitespace.
+# A verbatim restore or a pure prefix rewrite (e.g. fix(review): -> (review):)
+# is not lost.
+retitle_loses_wording() {
+    local prev="$1" new="$2"
+    [ -r "$title_module_dir/issue-title.jq" ] ||
+        die 2 "shared issue-title predicate is missing: $title_module_dir/issue-title.jq"
+    jq -n -L "$title_module_dir" --arg prev "$prev" --arg new "$new" '
+      include "issue-title";
+      def clean_outcome:
+        issue_title_outcome
+        | until(
+            . as $b
+            | (sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")) as $a
+            | $b == $a;
+            sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
+          )
+        | gsub("[[:space:]]+"; " ")
+        | sub("^ "; "")
+        | sub(" $"; "");
+      if $prev == $new then false
+      else
+        (($prev | clean_outcome) as $p | ($new | clean_outcome) as $n |
+          if ($p | length) == 0 then false
+          else ($n | contains($p) | not)
+          end
+        )
+      end
+    '
+}
 
 # sub-issue-link's resolved CHILD numeric id, cached in pass 1 (execute mode
 # only) and consumed by pass 2 — indexed by plan-file line number. A plain
@@ -194,6 +244,43 @@ log_write() {
         done
         printf '\n'
     } >>"$log"
+}
+
+# Same as log_write, but for body append writes: appends
+# " # body-sha256=<hex>" of the posted body on the SAME WRITE line (Codex
+# review on PR #1089, comment 4030604913; mirrors groom-decide.sh comment 4012885422).
+log_write_body() {
+    local log="$1" body_sha="$2"
+    shift 2
+    {
+        printf 'WRITE'
+        local arg
+        for arg in "$@"; do
+            printf ' %q' "$arg"
+        done
+        printf ' # body-sha256=%s\n' "$body_sha"
+    } >>"$log"
+}
+
+sha256_stream() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        die 2 "sha256sum or shasum is required"
+    fi
+}
+
+is_blank_body() {
+    local body="$1"
+    jq -rn --arg b "$body" '
+      def is_blank_codepoint:
+        . < 32 or (. >= 127 and . <= 159) or . == 32 or . == 160 or . == 5760
+        or (. >= 8192 and . <= 8205) or . == 8232 or . == 8233
+        or . == 8239 or . == 8287 or . == 8288 or . == 12288 or . == 65279;
+      ($b | explode | all(is_blank_codepoint))
+    '
 }
 
 # Resolve every milestone TITLE of $repo, once, in execute mode (Codex review
@@ -327,11 +414,12 @@ validate_close() {
 
 validate_retitle() {
     local repo="$1" row="$2" execute="$3"
-    local issue title previous_title
+    local issue title previous_title preserve_original
     issue="$(jq -r '.issue // empty' <<<"$row")"
     guard_issue_number "$issue"
     title="$(jq -r '.title // empty' <<<"$row")"
     previous_title="$(jq -r '.previous_title // empty' <<<"$row")"
+    preserve_original="$(jq -r '.preserve_original // false' <<<"$row")"
     [ -n "$title" ] && [ -n "$previous_title" ] ||
         die 2 "refused: #$issue retitle needs both title and previous_title"
     refuse_if_bot "$repo" "$issue" "$row" "$execute" retitle
@@ -345,14 +433,37 @@ validate_retitle() {
         # from when the plan was authored. If the issue's live title has
         # since changed, applying the plan's new title would silently
         # overwrite that concurrent edit with no conflict signal at all.
-        local live_json live_title
-        live_json="$(gh issue view "$issue" --repo "$repo" --json title)" ||
-            die 2 "could not re-read the live title of $repo#$issue"
+        local live_json live_title live_body
+        live_json="$(gh issue view "$issue" --repo "$repo" --json title,body)" ||
+            die 2 "could not re-read the live title and body of $repo#$issue"
         live_title="$(jq -r '.title // empty' <<<"$live_json")"
-        [ "$live_title" = "$previous_title" ] ||
-            die 4 "refused: #$issue's live title no longer matches the plan's" \
-                "previous_title (expected '$previous_title', found" \
-                "'$live_title') — refresh the plan and re-approve"
+        live_body="$(jq -r '.body // ""' <<<"$live_json")"
+        local loses_wording
+        loses_wording="$(retitle_loses_wording "$previous_title" "$title")"
+        if [ "$live_title" != "$previous_title" ]; then
+            if [ "$live_title" = "$title" ]; then
+                if [ "$preserve_original" = "true" ] && [ "$loses_wording" = "true" ] && ! grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
+                    echo "NOTE #$issue title already updated to '$title'; original title preservation will be resumed" >&2
+                else
+                    echo "NOTE #$issue title already updated to '$title'; row already applied" >&2
+                fi
+            else
+                die 4 "refused: #$issue's live title no longer matches the plan's" \
+                    "previous_title (expected '$previous_title', found" \
+                    "'$live_title') — refresh the plan and re-approve"
+            fi
+        fi
+        if [ "$loses_wording" = "true" ]; then
+            if [ "$(is_blank_body "$live_body")" = "true" ] && [ "$preserve_original" != "true" ]; then
+                die 4 "refused: #$issue retitle loses original title wording on an" \
+                    "empty body — track-work's retitle contract requires" \
+                    "preserve_original: true on the plan row to preserve wording"
+            fi
+            if [ "$preserve_original" = "true" ]; then
+                command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 ||
+                    die 2 "sha256sum or shasum is required to compute body digest for #$issue"
+            fi
+        fi
     fi
 }
 
@@ -478,14 +589,25 @@ apply_close() {
 
 apply_retitle() {
     local repo="$1" row="$2" log="$3" execute="$4" outcomes="$5" lineno="$6"
-    local issue title previous_title
+    local issue title previous_title preserve_original
     issue="$(jq -r '.issue // empty' <<<"$row")"
     title="$(jq -r '.title // empty' <<<"$row")"
     previous_title="$(jq -r '.previous_title // empty' <<<"$row")"
+    preserve_original="$(jq -r '.preserve_original // false' <<<"$row")"
 
     local cmd=(gh issue edit "$issue" --repo "$repo" --title "$title")
+    local loses_wording
+    loses_wording="$(retitle_loses_wording "$previous_title" "$title")"
+
     if [ "$execute" -eq 0 ]; then
         print_plan "${cmd[@]}"
+        if [ "$preserve_original" = "true" ]; then
+            if [ "$loses_wording" = "true" ]; then
+                print_plan gh issue edit "$issue" --repo "$repo" --body-file -
+            else
+                echo "NOTE #$issue title wording preserved in new title; body left unchanged"
+            fi
+        fi
         return 0
     fi
 
@@ -496,21 +618,83 @@ apply_retitle() {
     # here. Pass 1 already accepted the plan, so this is reported as a
     # conflict naming the row, not a fresh validation failure; whatever pass 2
     # already wrote for earlier rows is recorded in $log.
-    local live_json live_title
-    live_json="$(gh issue view "$issue" --repo "$repo" --json title)" ||
-        die 2 "could not re-read the live title of $repo#$issue"
+    local live_json live_title live_body
+    live_json="$(gh issue view "$issue" --repo "$repo" --json title,body)" ||
+        die 2 "could not re-read the live title and body of $repo#$issue"
     live_title="$(jq -r '.title // empty' <<<"$live_json")"
-    [ "$live_title" = "$previous_title" ] ||
-        die 4 "refused: plan row $lineno (#$issue retitle) conflicts with a" \
-            "concurrent edit — the live title changed since pass 1 validated" \
-            "this plan (expected '$previous_title', found '$live_title')." \
-            "Refresh the plan and re-approve; writes already applied by this" \
-            "run are recorded in $log."
+    live_body="$(jq -r '.body // ""' <<<"$live_json")"
+    local is_resume=false
+    if [ "$live_title" != "$previous_title" ]; then
+        if [ "$live_title" = "$title" ]; then
+            if [ "$preserve_original" = "true" ] && [ "$loses_wording" = "true" ] && ! grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
+                is_resume=true
+                echo "NOTE #$issue title already updated to '$title'; resuming original title preservation append"
+            else
+                echo "NOTE #$issue title already updated to '$title'; row already applied"
+                write_outcome "$outcomes" "$issue" "retitle" "DONE"
+                return 0
+            fi
+        else
+            die 4 "refused: plan row $lineno (#$issue retitle) conflicts with a" \
+                "concurrent edit — the live title changed since pass 1 validated" \
+                "this plan (expected '$previous_title', found '$live_title')." \
+                "Refresh the plan and re-approve; writes already applied by this" \
+                "run are recorded in $log."
+        fi
+    fi
 
-    log_write "$log" "${cmd[@]}"
-    "${cmd[@]}" >/dev/null || die 1 "write failed: retitle $repo#$issue"
-    echo "APPLIED retitle $repo#$issue"
-    write_outcome "$outcomes" "$issue" "retitle" "DONE"
+    if [ "$is_resume" = "false" ]; then
+        if [ "$preserve_original" != "true" ] && [ "$loses_wording" = "true" ]; then
+            [ "$(is_blank_body "$live_body")" = "false" ] ||
+                die 4 "refused: plan row $lineno (#$issue retitle) loses wording from" \
+                    "the title, the live issue body is empty, and preserve_original is" \
+                    "not true. Set preserve_original: true on the plan row to append" \
+                    "an 'Original title' section to the body, or rewrite the title" \
+                    "to preserve the outcome wording."
+        fi
+
+        log_write "$log" "${cmd[@]}"
+        "${cmd[@]}" >/dev/null || die 1 "write failed: retitle $repo#$issue"
+        echo "APPLIED retitle $repo#$issue"
+        write_outcome "$outcomes" "$issue" "retitle" "DONE"
+    else
+        write_outcome "$outcomes" "$issue" "retitle" "DONE"
+    fi
+
+    if [ "$preserve_original" = "true" ]; then
+        if [ "$loses_wording" != "true" ]; then
+            echo "NOTE #$issue title wording preserved in new title; body left unchanged"
+            return 0
+        fi
+
+        live_body="$(gh issue view "$issue" --repo "$repo" --json body -q '.body // ""')" ||
+            die 1 "write failed: could not re-read live body of $repo#$issue before appending original title (title already changed to '$title')"
+
+        if grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
+            echo "NOTE #$issue body already carries <!-- groom-original-title -->; skipped append"
+            return 0
+        fi
+
+        local new_body
+        if [ "$(is_blank_body "$live_body")" = "true" ]; then
+            new_body="$(printf '## Original title\n<!-- groom-original-title -->\n%s\n' "$previous_title")"
+        elif [[ "$live_body" =~ $'\n'$ ]]; then
+            new_body="${live_body}"$'\n'"## Original title"$'\n'"<!-- groom-original-title -->"$'\n'"$previous_title"$'\n'
+        else
+            new_body="${live_body}"$'\n\n'"## Original title"$'\n'"<!-- groom-original-title -->"$'\n'"$previous_title"$'\n'
+        fi
+
+        local body_cmd=(gh issue edit "$issue" --repo "$repo" --body-file -)
+        local body_sha
+        body_sha="$(printf '%s' "$new_body" | sha256_stream)" ||
+            die 1 "write failed: compute body sha256 for $repo#$issue (title already changed to '$title')"
+        log_write_body "$log" "$body_sha" "${body_cmd[@]}"
+        if ! printf '%s' "$new_body" | "${body_cmd[@]}" >/dev/null; then
+            die 1 "write failed: append original title to $repo#$issue (title already changed to '$title')"
+        fi
+        echo "APPLIED retitle-preserve $repo#$issue"
+        write_outcome "$outcomes" "$issue" "retitle-preserve" "DONE"
+    fi
 }
 
 apply_label() {

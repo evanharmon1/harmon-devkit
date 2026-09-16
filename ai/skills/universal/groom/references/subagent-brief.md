@@ -1,5 +1,13 @@
 # Fan-out subagent brief (template)
 
+Verification subagents are dispatched on a **frontier-tier** model by default
+(e.g., `opus` for Claude Code; see `SKILL.md` Step 2). Verdict accuracy matters
+more than the token cost of the audit, because a wrong `CLOSE` verdict incorrectly
+drops tracked work. An operator can override this model tier (e.g., setting
+`GROOM_FANOUT_MODEL` in headless runs or passing a model override when dispatching)
+for a cheap smoke run when rapid turnaround or budget takes precedence over verdict
+accuracy.
+
 Copy this brief for each cluster when dispatching a read-only verification
 subagent (Step 2 of `SKILL.md`). Fill in the bracketed values. The brief must
 be self-contained — the subagent has no memory of this conversation.
