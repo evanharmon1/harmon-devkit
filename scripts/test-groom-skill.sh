@@ -486,6 +486,16 @@ ln -s "$verdicts_scratch_real" "$verdicts_scratch_link"
 [ "$(run env GROOM_SCRATCH="$verdicts_scratch_link" "$verdicts" validate "$verdicts_scratch_link/good.jsonl")" = 0 ] ||
     fail "a verdict file inside a symlinked scratch dir should still validate: $(cat "$tmp/out" "$tmp/err")"
 
+# Review round 1, finding 1: groom-scan.sh and groom-report.sh each got a
+# missing-scratch case in the challenge round-2 remediation; groom-verdicts.sh
+# never did, despite guard_scratch_path being byte-identical across all
+# three files' copies.
+echo "==> validate: GROOM_SCRATCH itself missing is refused (exit 4)"
+[ "$(run env GROOM_SCRATCH="$tmp/verdicts-scratch-missing" "$verdicts" validate \
+    "$tmp/verdicts-scratch-missing/good.jsonl")" = 4 ] ||
+    fail "a missing GROOM_SCRATCH must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q -- "does not exist" "$tmp/err" || fail "the refusal must say the scratch directory does not exist"
+
 echo "==> join: --scan outside GROOM_SCRATCH is refused"
 [ "$(run env GROOM_SCRATCH="$verdicts_scratch" "$verdicts" join --repo "$repo" --scan "$scan" \
     --out "$verdicts_scratch/out.json" "$verdicts_scratch/good.jsonl")" = 4 ] ||
@@ -631,6 +641,16 @@ ln -s "$scan_scratch_real" "$scan_scratch_link"
     --out "$scan_scratch_link/scan.json")" = 0 ] ||
     fail "--out inside a symlinked scratch dir should still succeed: $(cat "$tmp/out" "$tmp/err")"
 [ -f "$scan_scratch_real/scan.json" ] || fail "the scan output must actually land under the real scratch dir"
+
+# Review round 1, finding 1: guard_out_path returns early, before the
+# scratch-existence check, when --out is omitted (groom-scan.sh's Exit:
+# docstring documents this conditioning) — every other case in this file
+# passes --out, so that early-return path itself was never exercised.
+echo "==> scan: a broken GROOM_SCRATCH is not refused when --out is omitted"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_SCRATCH="$tmp/scan-scratch-never-created" \
+    "./ai/skills/universal/groom/assets/groom-scan.sh" --repo "$repo")" = 0 ] ||
+    fail "a scan with no --out must ignore a broken GROOM_SCRATCH entirely: $(cat "$tmp/out" "$tmp/err")"
 
 echo "==> report: is deterministic (byte-identical on an unchanged dataset)"
 out_html2="$tmp/report2.html"
