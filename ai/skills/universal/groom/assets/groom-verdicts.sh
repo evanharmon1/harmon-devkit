@@ -52,7 +52,8 @@
 #       missing number, or a CLOSE-dup-of-# target is self-referential or not
 #       in scan.open (each names the offending issue number(s)), 2 = usage,
 #       or (join) the scan's own repo field does not match --repo,
-#       4 = refused (a path argument outside GROOM_SCRATCH, when set).
+#       4 = refused (a path argument outside GROOM_SCRATCH, when set, or
+#       GROOM_SCRATCH itself does not exist).
 set -euo pipefail
 
 usage() {

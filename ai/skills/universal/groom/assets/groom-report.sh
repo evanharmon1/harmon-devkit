@@ -59,7 +59,8 @@
 # Interactive use with GROOM_SCRATCH unset is unchanged.
 #
 # Exit: 0 = rendered, 2 = usage/read error, 4 = refused (a path argument
-#       outside GROOM_SCRATCH, when set).
+#       outside GROOM_SCRATCH, when set, or GROOM_SCRATCH itself does not
+#       exist).
 set -euo pipefail
 
 usage() {
