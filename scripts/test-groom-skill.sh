@@ -1244,8 +1244,8 @@ grep -q "^WRITE gh issue edit 70 .*--title" "$preserving_log" ||
     fail "title edit must be logged"
 grep -q "Shortened" "$preserving_log" ||
     fail "title edit must contain new title"
-grep -q "^WRITE gh issue edit 70 .*--body-file -" "$preserving_log" ||
-    fail "body edit must be logged"
+grep -q "^WRITE gh issue edit 70 .*--body-file - # body-sha256=" "$preserving_log" ||
+    fail "body edit must be logged with body-sha256 digest"
 [ "$(grep -c '^WRITE ' "$preserving_log")" = 2 ] ||
     fail "preserving retitle must produce exactly two WRITE lines in log"
 grep -qF "<!-- groom-original-title -->" "$preserving_body_log" ||
@@ -1254,6 +1254,18 @@ grep -qF "(ci): Original long title with extra detail" "$preserving_body_log" ||
     fail "body edit stdin must carry the verbatim previous title"
 grep -q '"op":"retitle"' "$preserving_outcomes" || fail "outcomes must record retitle"
 grep -q '"op":"retitle-preserve"' "$preserving_outcomes" || fail "outcomes must record retitle-preserve"
+
+echo "==> apply-plan: shortening retitle on unicode-whitespace body without flag is refused in pass 1 (exit 4, issue #1059)"
+cat >"$stub_dir/issue-70.json" <<'JSON'
+{"title":"(ci): Original long title with extra detail","body":"  \u00a0 \u2003 \n\t ","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+: >"$empty_body_retitle_log"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$empty_body_retitle_plan" \
+    --log "$empty_body_retitle_log" --execute)" = 4 ] ||
+    fail "shortening retitle on unicode-whitespace body without preserve_original must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q "#70" "$tmp/err" || fail "refusal must name the issue number"
+grep -q "^WRITE " "$empty_body_retitle_log" && fail "pass 1 refusal must not log any WRITE lines"
 
 echo "==> apply-plan: verbatim restore or prefix-only rewrite with flag sets NOTE, no body write (issue #1059)"
 cat >"$stub_dir/issue-70.json" <<'JSON'

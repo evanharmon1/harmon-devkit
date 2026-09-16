@@ -241,6 +241,37 @@ log_write() {
     } >>"$log"
 }
 
+# Same as log_write, but for body append writes: appends
+# " # body-sha256=<hex>" of the posted body on the SAME WRITE line (Codex
+# review on PR #1089, comment 4030604913; mirrors groom-decide.sh comment 4012885422).
+log_write_body() {
+    local log="$1" body_sha="$2"
+    shift 2
+    {
+        printf 'WRITE'
+        local arg
+        for arg in "$@"; do
+            printf ' %q' "$arg"
+        done
+        printf ' # body-sha256=%s\n' "$body_sha"
+    } >>"$log"
+}
+
+sha256_stream() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        die 2 "sha256sum or shasum is required"
+    fi
+}
+
+is_blank_body() {
+    local body="$1"
+    jq -rn --arg b "$body" '($b | test("^[[:space:]\\p{Z}\\u200B\\uFEFF]*$"))'
+}
+
 # Resolve every milestone TITLE of $repo, once, in execute mode (Codex review
 # on PR #1032, comment 4012242580): without this, an approved plan's
 # milestone-assign row was accepted in pass 1 even when its milestone_title
@@ -412,9 +443,7 @@ validate_retitle() {
             fi
         fi
         if [ "$loses_wording" = "true" ]; then
-            local stripped_live_body
-            stripped_live_body="$(printf '%s' "$live_body" | tr -d '[:space:]')"
-            if [ -z "$stripped_live_body" ] && [ "$preserve_original" != "true" ]; then
+            if [ "$(is_blank_body "$live_body")" = "true" ] && [ "$preserve_original" != "true" ]; then
                 die 4 "refused: #$issue retitle loses original title wording on an" \
                     "empty body — track-work's retitle contract requires" \
                     "preserve_original: true on the plan row to preserve wording"
@@ -601,9 +630,7 @@ apply_retitle() {
 
     if [ "$is_resume" = "false" ]; then
         if [ "$preserve_original" != "true" ] && [ "$loses_wording" = "true" ]; then
-            local stripped_live_body
-            stripped_live_body="$(printf '%s' "$live_body" | tr -d '[:space:]')"
-            [ -n "$stripped_live_body" ] ||
+            [ "$(is_blank_body "$live_body")" = "false" ] ||
                 die 4 "refused: plan row $lineno (#$issue retitle) loses wording from" \
                     "the title, the live issue body is empty, and preserve_original is" \
                     "not true. Set preserve_original: true on the plan row to append" \
@@ -634,9 +661,7 @@ apply_retitle() {
         fi
 
         local new_body
-        local stripped_live_body
-        stripped_live_body="$(printf '%s' "$live_body" | tr -d '[:space:]')"
-        if [ -z "$stripped_live_body" ]; then
+        if [ "$(is_blank_body "$live_body")" = "true" ]; then
             new_body="$(printf '## Original title\n<!-- groom-original-title -->\n%s\n' "$previous_title")"
         elif [[ "$live_body" =~ $'\n'$ ]]; then
             new_body="${live_body}"$'\n'"## Original title"$'\n'"<!-- groom-original-title -->"$'\n'"$previous_title"$'\n'
@@ -645,7 +670,9 @@ apply_retitle() {
         fi
 
         local body_cmd=(gh issue edit "$issue" --repo "$repo" --body-file -)
-        log_write "$log" "${body_cmd[@]}"
+        local body_sha
+        body_sha="$(printf '%s' "$new_body" | sha256_stream)"
+        log_write_body "$log" "$body_sha" "${body_cmd[@]}"
         if ! printf '%s' "$new_body" | "${body_cmd[@]}" >/dev/null; then
             die 1 "write failed: append original title to $repo#$issue (title already changed to '$title')"
         fi
