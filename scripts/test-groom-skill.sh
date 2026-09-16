@@ -65,7 +65,16 @@ case "${1:-} ${2:-}" in
         printf '%s\n' '  --type string   Set the issue type by name'
         exit 0
     fi
-    [ -t 0 ] || cat >/dev/null
+    if [ "${GH_STUB_FAIL_BODY_EDIT:-0}" != 0 ] && grep -q -- '--body-file' <<<"$*"; then
+        exit 1
+    fi
+    if [ ! -t 0 ]; then
+        if grep -q -- '--body-file -' <<<"$*"; then
+            cat >>"${GH_STUB_BODY_LOG:-/dev/null}"
+        else
+            cat >/dev/null
+        fi
+    fi
     ;;
 "issue view")
     n="$3"
@@ -871,7 +880,7 @@ printf 'placeholder decision text\n' >"$tmp/noop-decision.md"
 
 # ── groom-apply.sh: write gate ──────────────────────────────────────────────
 cat >"$stub_dir/issue-30.json" <<'JSON'
-{"title":"(ci): Fix parser bug","labels":[{"name":"needs-triage"}],"author":{"login":"someone","type":"User","is_bot":false}}
+{"title":"(ci): Fix parser bug","body":"Details about parser bug.","labels":[{"name":"needs-triage"}],"author":{"login":"someone","type":"User","is_bot":false}}
 JSON
 cat >"$stub_dir/issue-31.json" <<'JSON'
 {"labels":[],"author":{"login":"dependabot[bot]","type":"Bot","is_bot":true}}
@@ -1176,10 +1185,10 @@ grep -q "#50" "$tmp/err" || fail "duplicate refusal must name the issue number"
 
 echo "==> apply-plan: retitle refuses (exit 4) as a pass-2 conflict when a concurrent edit lands between pass 1 and pass 2 (finding 4)"
 cat >"$stub_dir/issue-50.json" <<'JSON'
-{"title":"(ci): Original title","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+{"title":"(ci): Original title","body":"Issue 50 body","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
 JSON
 cat >"$stub_dir/issue-50-race.json" <<'JSON'
-{"title":"(ci): Changed by someone else","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+{"title":"(ci): Changed by someone else","body":"Issue 50 body","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
 JSON
 race_plan="$tmp/race-plan.jsonl"
 printf '%s\n' '{"op":"retitle","issue":50,"title":"(ci): New title","previous_title":"(ci): Original title","bot_owned":false}' >"$race_plan"
@@ -1193,6 +1202,166 @@ rm -f "$race_counter"
 grep -q "conflicts with a" "$tmp/err" || fail "pass-2 refusal must report a conflict, not a plain validation failure"
 grep -q "plan row 1" "$tmp/err" || fail "pass-2 refusal must name the plan row number"
 grep -qE "^issue edit 50" "$GH_STUB_LOG" && fail "a pass-2-refused retitle must never call gh issue edit"
+
+echo "==> apply-plan: a shortening retitle on an empty body with no flag is refused in pass 1 (exit 4, issue #1059)"
+cat >"$stub_dir/issue-70.json" <<'JSON'
+{"title":"(ci): Original long title with extra detail","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+empty_body_retitle_plan="$tmp/empty-body-retitle-plan.jsonl"
+cat >"$empty_body_retitle_plan" <<'JSONL'
+{"op":"retitle","issue":70,"title":"(ci): Shortened title","previous_title":"(ci): Original long title with extra detail","bot_owned":false}
+JSONL
+empty_body_retitle_log="$tmp/empty-body-retitle.log"
+: >"$empty_body_retitle_log"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$empty_body_retitle_plan" \
+    --log "$empty_body_retitle_log" --execute)" = 4 ] ||
+    fail "shortening retitle on empty body without preserve_original must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q "#70" "$tmp/err" || fail "refusal must name the issue number"
+grep -q "^WRITE " "$empty_body_retitle_log" && fail "pass 1 refusal must not log any WRITE lines"
+grep -qE "^issue edit 70" "$GH_STUB_LOG" && fail "pass 1 refusal must never call gh issue edit"
+
+echo "==> apply-plan: shortening retitle with preserve_original: true appends original title to body (issue #1059)"
+cat >"$stub_dir/issue-70.json" <<'JSON'
+{"title":"(ci): Original long title with extra detail","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+preserving_plan="$tmp/preserving-plan.jsonl"
+cat >"$preserving_plan" <<'JSONL'
+{"op":"retitle","issue":70,"title":"(ci): Shortened title","previous_title":"(ci): Original long title with extra detail","preserve_original":true,"bot_owned":false}
+JSONL
+preserving_log="$tmp/preserving.log"
+preserving_outcomes="$tmp/preserving-outcomes.jsonl"
+preserving_body_log="$tmp/preserving-body.log"
+: >"$preserving_log"
+: >"$preserving_outcomes"
+: >"$preserving_body_log"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 GH_STUB_BODY_LOG="$preserving_body_log" "$apply" apply-plan \
+    --repo "$repo" --plan-file "$preserving_plan" --log "$preserving_log" \
+    --outcomes "$preserving_outcomes" --execute)" = 0 ] ||
+    fail "preserving retitle must succeed: $(cat "$tmp/out" "$tmp/err")"
+grep -q "^WRITE gh issue edit 70 .*--title" "$preserving_log" ||
+    fail "title edit must be logged"
+grep -q "Shortened" "$preserving_log" ||
+    fail "title edit must contain new title"
+grep -q "^WRITE gh issue edit 70 .*--body-file -" "$preserving_log" ||
+    fail "body edit must be logged"
+[ "$(grep -c '^WRITE ' "$preserving_log")" = 2 ] ||
+    fail "preserving retitle must produce exactly two WRITE lines in log"
+grep -qF "<!-- groom-original-title -->" "$preserving_body_log" ||
+    fail "body edit stdin must carry the marker"
+grep -qF "(ci): Original long title with extra detail" "$preserving_body_log" ||
+    fail "body edit stdin must carry the verbatim previous title"
+grep -q '"op":"retitle"' "$preserving_outcomes" || fail "outcomes must record retitle"
+grep -q '"op":"retitle-preserve"' "$preserving_outcomes" || fail "outcomes must record retitle-preserve"
+
+echo "==> apply-plan: verbatim restore or prefix-only rewrite with flag sets NOTE, no body write (issue #1059)"
+cat >"$stub_dir/issue-70.json" <<'JSON'
+{"title":"fix(ci): Same title","body":"Existing body","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+prefix_plan="$tmp/prefix-plan.jsonl"
+cat >"$prefix_plan" <<'JSONL'
+{"op":"retitle","issue":70,"title":"(ci): Same title","previous_title":"fix(ci): Same title","preserve_original":true,"bot_owned":false}
+JSONL
+prefix_log="$tmp/prefix.log"
+prefix_outcomes="$tmp/prefix-outcomes.jsonl"
+: >"$prefix_log"
+: >"$prefix_outcomes"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$prefix_plan" \
+    --log "$prefix_log" --outcomes "$prefix_outcomes" --execute)" = 0 ] ||
+    fail "prefix-only rewrite with preserve_original must succeed: $(cat "$tmp/out" "$tmp/err")"
+grep -q "^NOTE #70" "$tmp/out" || fail "prefix-only rewrite must print a NOTE on stdout"
+[ "$(grep -c '^WRITE ' "$prefix_log")" = 1 ] ||
+    fail "prefix-only rewrite must produce exactly one WRITE line (title only)"
+grep -q -- '--body-file' "$prefix_log" && fail "prefix-only rewrite must not write body"
+grep -q '"op":"retitle-preserve"' "$prefix_outcomes" &&
+    fail "prefix-only rewrite must not record retitle-preserve outcome"
+
+echo "==> apply-plan: body already carrying marker gets no second append (issue #1059)"
+cat >"$stub_dir/issue-71.json" <<'JSON'
+{"title":"(ci): Long title","body":"Existing body\n\n## Original title\n<!-- groom-original-title -->\n(ci): Long title","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+marker_plan="$tmp/marker-plan.jsonl"
+cat >"$marker_plan" <<'JSONL'
+{"op":"retitle","issue":71,"title":"(ci): Short","previous_title":"(ci): Long title","preserve_original":true,"bot_owned":false}
+JSONL
+marker_log="$tmp/marker.log"
+marker_outcomes="$tmp/marker-outcomes.jsonl"
+: >"$marker_log"
+: >"$marker_outcomes"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$marker_plan" \
+    --log "$marker_log" --outcomes "$marker_outcomes" --execute)" = 0 ] ||
+    fail "retitle on issue with existing marker must succeed: $(cat "$tmp/out" "$tmp/err")"
+grep -q "body already carries <!-- groom-original-title -->" "$tmp/out" ||
+    fail "stdout must note existing marker and skipped append"
+[ "$(grep -c '^WRITE ' "$marker_log")" = 1 ] ||
+    fail "must produce only title WRITE line when marker already present"
+grep -q '"op":"retitle-preserve"' "$marker_outcomes" &&
+    fail "must not record retitle-preserve outcome when marker already present"
+
+echo "==> apply-plan: dry run of preserving row prints two PLAN lines, writes nothing (issue #1059)"
+dry_outcomes="$tmp/dry-preserving-outcomes.jsonl"
+rm -f "$dry_outcomes"
+dry_log="$tmp/dry-preserving.log"
+: >"$dry_log"
+: >"$GH_STUB_LOG"
+[ "$(run "$apply" apply-plan --repo "$repo" --plan-file "$preserving_plan" \
+    --log "$dry_log" --outcomes "$dry_outcomes")" = 0 ] ||
+    fail "dry-run of preserving row must succeed: $(cat "$tmp/out" "$tmp/err")"
+[ "$(grep -c '^PLAN ' "$tmp/out")" = 2 ] ||
+    fail "dry-run of preserving row must print exactly two PLAN lines: $(cat "$tmp/out")"
+grep -q "^PLAN gh issue edit 70 .*--title" "$tmp/out" ||
+    fail "dry-run must print title PLAN line"
+grep -q "Shortened" "$tmp/out" ||
+    fail "dry-run title PLAN line must contain new title"
+grep -q "^PLAN gh issue edit 70 .*--body-file -" "$tmp/out" ||
+    fail "dry-run must print body-file PLAN line"
+[ ! -s "$dry_log" ] || fail "dry-run must not write log file"
+[ ! -e "$dry_outcomes" ] || fail "dry-run must not touch outcomes file"
+grep -qE "^issue edit" "$GH_STUB_LOG" && fail "dry-run must not call gh write commands"
+
+echo "==> apply-plan: bot-owned issue with preserve_original is refused (exit 4, issue #1059)"
+cat >"$stub_dir/issue-72.json" <<'JSON'
+{"title":"(ci): Old title","body":"","labels":[],"author":{"login":"renovate[bot]","type":"Bot","is_bot":true}}
+JSON
+bot_preserving_plan="$tmp/bot-preserving-plan.jsonl"
+cat >"$bot_preserving_plan" <<'JSONL'
+{"op":"retitle","issue":72,"title":"(ci): New title","previous_title":"(ci): Old title","preserve_original":true,"bot_owned":false}
+JSONL
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$bot_preserving_plan" \
+    --log "$tmp/bot-preserving.log" --execute)" = 4 ] ||
+    fail "bot-owned issue with preserve_original must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q "bot-authored" "$tmp/err" || fail "refusal must explain bot ownership"
+
+echo "==> apply-plan: failing body append exits 1 and states title already changed (issue #1059)"
+cat >"$stub_dir/issue-73.json" <<'JSON'
+{"title":"(ci): Long title to preserve","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+fail_body_plan="$tmp/fail-body-plan.jsonl"
+cat >"$fail_body_plan" <<'JSONL'
+{"op":"retitle","issue":73,"title":"(ci): Short","previous_title":"(ci): Long title to preserve","preserve_original":true,"bot_owned":false}
+JSONL
+fail_body_log="$tmp/fail-body.log"
+: >"$fail_body_log"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 GH_STUB_FAIL_BODY_EDIT=1 "$apply" apply-plan \
+    --repo "$repo" --plan-file "$fail_body_plan" --log "$fail_body_log" --execute)" = 1 ] ||
+    fail "failing body edit must exit 1: $(cat "$tmp/out" "$tmp/err")"
+grep -q "title already changed" "$tmp/err" ||
+    fail "failure must state that title already changed: $(cat "$tmp/err")"
+grep -q "#73" "$tmp/err" || fail "failure must name issue number: $(cat "$tmp/err")"
+
+echo "==> docs: groom-apply.sh and SKILL.md document preserve_original contract (issue #1059)"
+skill_md="ai/skills/universal/groom/SKILL.md"
+grep -qF "preserve_original: true" "$apply" || fail "groom-apply.sh header must document preserve_original: true"
+grep -qF "<!-- groom-original-title -->" "$apply" || fail "groom-apply.sh header must document the marker"
+grep -q "empty-body" "$apply" || fail "groom-apply.sh header must document empty body refusal"
+grep -q "exit 4" "$apply" || fail "groom-apply.sh header must document exit 4"
+grep -qF "preserve_original: true" "$skill_md" || fail "SKILL.md Step 5 must document preserve_original: true"
+grep -q "empty" "$skill_md" || fail "SKILL.md Step 5 must mention empty body refusal"
+grep -q "Original title" "$skill_md" || fail "SKILL.md Step 5 must mention Original title section"
 
 echo "==> apply-plan: pass 1 refuses (exit 4) a label op triage-apply.sh's own dry run would reject, before any write (finding 3)"
 label_never_plan="$tmp/label-never-list-plan.jsonl"

@@ -247,7 +247,12 @@ requests. **Do not proceed to Step 6 without that go-ahead** — the contract's
 Turn the maintainer's approvals into a plan file (JSON Lines, one op per
 line — see `groom-apply.sh`'s header for the exact shape: `close`, `retitle`,
 `label`, `milestone-assign`, `sub-issue-link`) and, for any answered
-decisions, a decisions directory (see Step 6). Both live under `$SCRATCH` —
+decisions, a decisions directory (see Step 6). A `retitle` op supports an
+optional `preserve_original: true` field. When a retitle shortens or loses
+original title wording on an issue whose body is empty, it must carry
+`preserve_original: true` or `groom-apply.sh` will refuse it in pass 1 with
+exit 4; when set, the op appends a marked `## Original title` section to the
+body rather than editing the body freely. Both live under `$SCRATCH` —
 the apply commands in Step 6 point straight back at this same directory's
 files. This is where the session's job stops: applying is a deterministic
 script a human runs directly, with no model involved, so there is nothing
