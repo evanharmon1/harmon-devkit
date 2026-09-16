@@ -269,7 +269,7 @@ mode_text="AUDIT — never pass --execute to any script. Report what the
 scripts say they WOULD write."
 
 # The run-directory grant below is spelled Edit(path), not Write(path):
-# Claude Code 2.1.272 reports that Write(path) permission rules are not
+# Claude Code 2.1.x reports that Write(path) permission rules are not
 # matched by file permission checks, and only Edit(path) covers every
 # file-editing tool (Write included). claude_tools below still lists Write
 # as a built-in; only the permission-rule spelling changes (issue #1060).
