@@ -170,8 +170,15 @@ cmd_render() {
       def mdesc: if . == null then "" else
         (. | tostring | gsub("\r\n|\r|\n"; " ") | gsub("\\|"; "\\|")) end;
       def ititle(titles; n): "#" + (n|tostring) + " — " + (titles[(n|tostring)] // "(title unavailable)" | mdesc);
+      def format_verdict(titles):
+        if test("^CLOSE-dup-of-#[0-9]+$") then
+          capture("^CLOSE-dup-of-#(?<t>[0-9]+)$").t as $t |
+          "CLOSE-dup-of-#" + $t + " — " + (titles[$t] // "(title unavailable)" | mdesc)
+        else
+          (. | mdesc)
+        end;
       def pscore:
-        if ((.priority // "") | test("(?i)^p0$")) then 0
+        if ((.priority // "") | test("(?i)^p0$|urgent")) then 0
         elif ((.priority // "") | test("(?i)^p1$|high")) then 1
         elif ((.priority // "") | test("(?i)^p2$|medium")) then 2
         else 3 end;
@@ -231,8 +238,9 @@ cmd_render() {
         "",
         (if ($close|length) > 0 then "1. Review \($close|length) close candidate(s) below." else empty end),
         (if ($decisions|length) > 0 then "1. Answer \($decisions|length) decision(s) below." else empty end),
+        (if ($themes|length) > 0 then "1. Review \($themes|length) spec-worthy theme proposal(s) below." else empty end),
         (if ($findings|length) > 0 then "1. Review \($findings|length) process finding(s) below." else empty end),
-        (if ($close|length) == 0 and ($decisions|length) == 0 and ($findings|length) == 0
+        (if ($close|length) == 0 and ($decisions|length) == 0 and ($themes|length) == 0 and ($findings|length) == 0
             and ($unverified|length) == 0
          then "Nothing to do — backlog is clean this run." else empty end),
         "",
@@ -242,7 +250,7 @@ cmd_render() {
          else
            "| # | Title | Verdict | Priority | Group | Status | Reason / Evidence |",
            "| --- | --- | --- | --- | --- | --- | --- |",
-           ($close[] | "| #\(.number) | \(.title // "(title unavailable)" | mdesc) | \(.verdict | mdesc) | \(.priority | mdesc) | \(.group | mdesc) | \(.status // "PENDING" | mdesc) | \(.reason | mdesc)" + (if (.evidence // "") != "" then " — *Evidence:* " + (.evidence | mdesc) else "" end) + " |")
+           ($close[] | "| #\(.number) | \(.title // "(title unavailable)" | mdesc) | \(.verdict | format_verdict($titles)) | \(.priority | mdesc) | \(.group | mdesc) | \(.status // "PENDING" | mdesc) | \(.reason | mdesc)" + (if (.evidence // "") != "" then " — *Evidence:* " + (.evidence | mdesc) else "" end) + " |")
          end),
         "",
         "## Milestones",
@@ -251,9 +259,12 @@ cmd_render() {
            ($milestone_proposals[] |
             . as $p |
             ([$milestones[] | select(.title == $p.title)] | first) as $m |
-            ([$rows[] | select(.milestone == $p.title and .status == "PENDING")] | sort_by(- (.age_days // 0)) | first) as $oldest |
+            ([$rows[] | select(.milestone == $p.title and .status != "DONE")] | sort_by(- (.age_days // 0)) | first) as $oldest |
+            ([$rows[] | select(.milestone == $p.title and .status == "DONE" and (.verdict | startswith("CLOSE-")))] | length) as $closed_here |
+            ((($m.open_issues // 0) - $closed_here) | if . < 0 then 0 else . end) as $m_open |
+            (($m.closed_issues // 0) + $closed_here) as $m_closed |
             (if $m then
-               "open: \($m.open_issues // 0), closed: \($m.closed_issues // 0)" + (if $oldest then ", oldest open issue: " + ititle($titles; $oldest.number) + " (\($oldest.age_days // 0) days old)" else ", no open issues" end)
+               "open: \($m_open), closed: \($m_closed)" + (if $oldest then ", oldest open issue: " + ititle($titles; $oldest.number) + " (\($oldest.age_days // 0) days old)" else ", no open issues" end)
              else
                "new milestone proposal"
              end) as $health |
@@ -269,8 +280,11 @@ cmd_render() {
            ($milestones[] |
             . as $m |
             ([$rows[] | select(.milestone == $m.title and .status != "DONE")] | sort_by(- (.age_days // 0)) | first) as $oldest |
-            "- #\($m.number) \($m.title | mdesc) (\($m.state | mdesc)) — \($m.open_issues // 0) open, \($m.closed_issues // 0) closed"
-            + (if $oldest then " (health: open: \($m.open_issues // 0), closed: \($m.closed_issues // 0), oldest open issue: " + ititle($titles; $oldest.number) + " (\($oldest.age_days // 0) days old))" else " (health: open: \($m.open_issues // 0), closed: \($m.closed_issues // 0), no open issues)" end))
+            ([$rows[] | select(.milestone == $m.title and .status == "DONE" and (.verdict | startswith("CLOSE-")))] | length) as $closed_here |
+            ((($m.open_issues // 0) - $closed_here) | if . < 0 then 0 else . end) as $m_open |
+            (($m.closed_issues // 0) + $closed_here) as $m_closed |
+            "- #\($m.number) \($m.title | mdesc) (\($m.state | mdesc)) — \($m_open) open, \($m_closed) closed"
+            + (if $oldest then " (health: open: \($m_open), closed: \($m_closed), oldest open issue: " + ititle($titles; $oldest.number) + " (\($oldest.age_days // 0) days old))" else " (health: open: \($m_open), closed: \($m_closed), no open issues)" end))
          end),
         "",
         "## Parent issues",
@@ -389,8 +403,15 @@ cmd_render() {
         | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")
         | gsub("\""; "&quot;");
       def ititle_h(titles; n): "#" + (n|tostring) + " — " + (titles[(n|tostring)] // "(title unavailable)" | h);
+      def format_verdict_h(titles):
+        if test("^CLOSE-dup-of-#[0-9]+$") then
+          capture("^CLOSE-dup-of-#(?<t>[0-9]+)$").t as $t |
+          "CLOSE-dup-of-#" + $t + " — " + (titles[$t] // "(title unavailable)" | h)
+        else
+          (. | h)
+        end;
       def pscore:
-        if ((.priority // "") | test("(?i)^p0$")) then 0
+        if ((.priority // "") | test("(?i)^p0$|urgent")) then 0
         elif ((.priority // "") | test("(?i)^p1$|high")) then 1
         elif ((.priority // "") | test("(?i)^p2$|medium")) then 2
         else 3 end;
@@ -471,7 +492,7 @@ cmd_render() {
 
       # ── Inline SVG Chart 4: Closes by evidence type ──
       | [
-          { label: "Merged PR", count: ([$close_all[] | select((.evidence // "") | test("(?i)pr|pull|merged"))] | length), color: "#2da44e" },
+          { label: "Merged PR", count: ([$close_all[] | select((.evidence // "") | test("(?i)\\b(pull request|pull|pr)\\b|#[0-9]+|\\bmerged\\b"))] | length), color: "#2da44e" },
           { label: "Commit / SHA", count: ([$close_all[] | select(((.evidence // "") | test("(?i)pr|pull|merged") | not) and ((.evidence // "") | test("(?i)commit|sha|[0-9a-f]{7,40}")))] | length), color: "#0969da" },
           { label: "File:line", count: ([$close_all[] | select(((.evidence // "") | test("(?i)pr|pull|merged|commit|sha|[0-9a-f]{7,40}") | not) and ((.evidence // "") | test("(?i):[0-9]+|/|\\.[a-z]+:")))] | length), color: "#8250df" },
           { label: "Duplicate link", count: ([$close_all[] | select(((.evidence // "") | test("(?i)pr|pull|merged|commit|sha|[0-9a-f]{7,40}|:[0-9]+|/|\\.[a-z]+:") | not) and ((.evidence // "") | test("(?i)dup|#[0-9]+")))] | length), color: "#d4a72c" },
@@ -628,8 +649,9 @@ cmd_render() {
         "<ol>",
         (if ($close|length) > 0 then "<li>Review \($close|length) close candidate(s) below.</li>" else empty end),
         (if ($decisions|length) > 0 then "<li>Answer \($decisions|length) decision(s) below.</li>" else empty end),
+        (if ($themes|length) > 0 then "<li>Review \($themes|length) spec-worthy theme proposal(s) below.</li>" else empty end),
         (if ($findings|length) > 0 then "<li>Review \($findings|length) process finding(s) below.</li>" else empty end),
-        (if ($close|length) == 0 and ($decisions|length) == 0 and ($findings|length) == 0
+        (if ($close|length) == 0 and ($decisions|length) == 0 and ($themes|length) == 0 and ($findings|length) == 0
             and ($unverified|length) == 0
          then "<li>Nothing to do — backlog is clean this run.</li>" else empty end),
         "</ol>",
@@ -646,7 +668,7 @@ cmd_render() {
            + "<th class=\"sortable\" onclick=\"groomSortTable('table-close', 5)\">Status</th>"
            + "<th class=\"sortable\" onclick=\"groomSortTable('table-close', 6)\">Reason / Evidence</th>"
            + "</tr></thead><tbody>"
-           + ([$close[] | "<tr><td>#\(.number)</td><td>\(.title // "(title unavailable)"|h)</td><td><span class=\"badge\">\(.verdict|h)</span></td><td><span class=\"badge badge-priority-\(.priority|h)\">\(.priority|h)</span></td><td>\(.group|h)</td><td>\(.status // "PENDING"|h)</td><td>\(.reason|h)" + (if (.evidence // "") != "" then "<br><small><strong>Evidence:</strong> \(.evidence|h)</small>" else "" end) + "</td></tr>"] | join(""))
+           + ([$close[] | "<tr><td>#\(.number)</td><td>\(.title // "(title unavailable)"|h)</td><td><span class=\"badge\">\(.verdict | format_verdict_h($titles))</span></td><td><span class=\"badge badge-priority-\(.priority|h)\">\(.priority|h)</span></td><td>\(.group|h)</td><td>\(.status // "PENDING"|h)</td><td>\(.reason|h)" + (if (.evidence // "") != "" then "<br><small><strong>Evidence:</strong> \(.evidence|h)</small>" else "" end) + "</td></tr>"] | join(""))
            + "</tbody></table>"
          end),
         "<h2 id=\"milestones\">Milestones</h2>",
@@ -655,8 +677,11 @@ cmd_render() {
              . as $p |
              ([$milestones[] | select(.title == $p.title)] | first) as $m |
              ([$rows[] | select(.milestone == $p.title and .status != "DONE")] | sort_by(- (.age_days // 0)) | first) as $oldest |
+             ([$rows[] | select(.milestone == $p.title and .status == "DONE" and (.verdict | startswith("CLOSE-")))] | length) as $closed_here |
+             ((($m.open_issues // 0) - $closed_here) | if . < 0 then 0 else . end) as $m_open |
+             (($m.closed_issues // 0) + $closed_here) as $m_closed |
              (if $m then
-                "open: \($m.open_issues // 0), closed: \($m.closed_issues // 0)" + (if $oldest then ", oldest open issue: " + ititle_h($titles; $oldest.number) + " (\($oldest.age_days // 0) days old)" else ", no open issues" end)
+                "open: \($m_open), closed: \($m_closed)" + (if $oldest then ", oldest open issue: " + ititle_h($titles; $oldest.number) + " (\($oldest.age_days // 0) days old)" else ", no open issues" end)
               else
                 "new milestone proposal"
               end) as $health |
@@ -673,8 +698,11 @@ cmd_render() {
            "<ul>" + ([$milestones[] |
              . as $m |
              ([$rows[] | select(.milestone == $m.title and .status != "DONE")] | sort_by(- (.age_days // 0)) | first) as $oldest |
-             "<li>#\($m.number) \($m.title|h) (\($m.state|h)) — \($m.open_issues // 0) open, \($m.closed_issues // 0) closed"
-             + (if $oldest then " (health: open: \($m.open_issues // 0), closed: \($m.closed_issues // 0), oldest open issue: " + ititle_h($titles; $oldest.number) + " (\($oldest.age_days // 0) days old))" else " (health: open: \($m.open_issues // 0), closed: \($m.closed_issues // 0), no open issues)" end)
+             ([$rows[] | select(.milestone == $m.title and .status == "DONE" and (.verdict | startswith("CLOSE-")))] | length) as $closed_here |
+             ((($m.open_issues // 0) - $closed_here) | if . < 0 then 0 else . end) as $m_open |
+             (($m.closed_issues // 0) + $closed_here) as $m_closed |
+             "<li>#\($m.number) \($m.title|h) (\($m.state|h)) — \($m_open) open, \($m_closed) closed"
+             + (if $oldest then " (health: open: \($m_open), closed: \($m_closed), oldest open issue: " + ititle_h($titles; $oldest.number) + " (\($oldest.age_days // 0) days old))" else " (health: open: \($m_open), closed: \($m_closed), no open issues)" end)
              + "</li>"] | join("")) + "</ul>"
          end),
         "<h2 id=\"parents\">Parent issues</h2>",

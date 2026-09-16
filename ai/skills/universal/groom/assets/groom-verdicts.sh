@@ -176,9 +176,9 @@ validate_files() {
                 fi
             fi
             case "$priority" in
-            high | medium | low) ;;
+            p0 | p1 | p2 | p3 | P0 | P1 | P2 | P3 | high | medium | low) ;;
             *)
-                echo "groom-verdicts: refused: #$number — priority must be high, medium, or low (got '$priority')" >&2
+                echo "groom-verdicts: refused: #$number — priority must be p0, p1, p2, p3, high, medium, or low (got '$priority')" >&2
                 bad=$((bad + 1))
                 continue
                 ;;
@@ -368,21 +368,19 @@ cmd_join() {
     fi
 
     # Validate themes in proposals (Issue #1063):
-    local scan_json
-    scan_json="$(cat "$scan")"
     local themes_bad
-    themes_bad="$(jq -r --argjson scan "$scan_json" '
-      ($scan.open // [] | map(.number)) as $open_numbers |
+    themes_bad="$(jq -r --slurpfile scan "$scan" '
+      ($scan[0].open // [] | map(.number)) as $open_numbers |
       if has("themes") and .themes != null then
         if (.themes | type != "array") then
           "themes must be a JSON array"
         else
           ([ .themes[] |
              if (type != "object") then "theme entry must be an object"
-             elif ((.title // empty | type) != "string" or ((.title // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty title"
-             elif ((.issues // empty | type) != "array" or (.issues | length == 0) or ([.issues[] | select(type != "number" or . <= 0 or ($open_numbers | index(.) | not))] | length > 0)) then "theme requires issues array of positive integers from scanned backlog"
-             elif ((.reason // empty | type) != "string" or ((.reason // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty reason"
-             elif ((.recommended_vehicle // empty | type) != "string" or ((.recommended_vehicle // "") | ascii_downcase | IN("openspec", "bmad", "adr") | not)) then "theme recommended_vehicle must be openspec, bmad, or adr"
+             elif (.title == null or (.title | type != "string") or ((.title | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty title"
+             elif (.issues == null or (.issues | type != "array") or (.issues | length == 0) or ([.issues[] | . as $iss | select((type != "number") or (. <= 0) or ($open_numbers | index($iss) | not))] | length > 0)) then "theme requires issues array of positive integers from scanned backlog"
+             elif (.reason == null or (.reason | type != "string") or ((.reason | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "theme requires nonempty reason"
+             elif (.recommended_vehicle == null or (.recommended_vehicle | type != "string") or ((.recommended_vehicle | tostring) | ascii_downcase | IN("openspec", "bmad", "adr") | not)) then "theme recommended_vehicle must be openspec, bmad, or adr"
              else empty end
           ] | first // "")
         end
@@ -401,13 +399,26 @@ cmd_join() {
         findings_json="$(cat "$findings")"
     fi
 
-    # Validate process_findings in proposals or findings file (Issue #1062):
-    local pf_source
-    if [ "$findings_json" != "[]" ]; then
-        pf_source="$findings_json"
-    else
-        pf_source="$(jq -c '.process_findings // []' <<<"$proposals_json")"
+    # Validate process_findings in proposals (Issue #1062):
+    local prop_pf_bad
+    prop_pf_bad="$(jq -r '
+      if has("process_findings") and .process_findings != null then
+        if (.process_findings | type != "array") then
+          "process_findings must be a JSON array"
+        else "" end
+      else "" end
+    ' <<<"$proposals_json")"
+    if [ -n "$prop_pf_bad" ]; then
+        echo "groom-verdicts: refused: $prop_pf_bad" >&2
+        exit 1
     fi
+
+    # Validate process_findings in proposals and/or findings file (Issue #1062):
+    local pf_source
+    pf_source="$(jq -c --argjson f "$findings_json" --argjson p "$proposals_json" '
+      ((($p.process_findings // []) | if type == "array" then . else [] end) +
+       ($f | if type == "array" then . else [] end))
+    ' <<<"{}")"
     local pf_bad
     pf_bad="$(jq -r '
       if type != "array" then
@@ -415,14 +426,14 @@ cmd_join() {
       else
         ([ .[] |
            if (type != "object") then "process finding entry must be an object"
-           elif ((.finding // empty | type) != "string" or ((.finding // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "process finding requires nonempty finding"
-           elif ((.recommended_action // empty | type) != "string" or ((.recommended_action // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "process finding requires nonempty recommended_action"
+           elif (.finding == null or (.finding | type != "string") or ((.finding | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "process finding requires nonempty finding"
+           elif (.recommended_action == null or (.recommended_action | type != "string") or ((.recommended_action | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "process finding requires nonempty recommended_action"
            else empty end
         ] | first // "")
       end
     ' <<<"$pf_source")"
     if [ -n "$pf_bad" ]; then
-        echo "groom-verdicts: refused: process finding requires nonempty 'finding' and 'recommended_action'" >&2
+        echo "groom-verdicts: refused: $pf_bad" >&2
         exit 1
     fi
 
@@ -551,7 +562,7 @@ cmd_join() {
             decisions:
               ([$dispositions[] | select(.verdict == "NEEDS-DECISION")] | length),
             high_priority:
-              ([$dispositions[] | select(.priority == "high")] | length),
+              ([$dispositions[] | select((.priority // "") | test("(?i)^p[01]$|high"))] | length),
             unverified: $unverified
           },
           milestones: ($scan.milestones // []),
