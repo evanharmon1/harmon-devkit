@@ -67,7 +67,7 @@ repo="$(gh repo view "$(git remote get-url origin)" \
 export TRIAGE_REPO="$repo"
 
 # The worker gets no mktemp and no general Write: the wrapper owns the scratch
-# directory, the Write grant below is scoped to it, and triage-report.sh
+# directory, the Edit grant below is scoped to it, and triage-report.sh
 # refuses an entries file outside it — so the report can only ever publish
 # run-generated content, never an arbitrary readable file.
 scratch="$(mktemp -d)" || die "could not create a scratch directory"
@@ -101,7 +101,7 @@ fi
 # are omitted entirely; scan.json is the worker's data.
 skill_abs="$(cd "$skill_dir" && pwd)"
 tools="Read(//${scratch#/}/**),Read(//${skill_abs#/}/**)"
-tools="$tools,Write(//${scratch#/}/**)"
+tools="$tools,Edit(//${scratch#/}/**)"
 tools="$tools,Bash($skill_dir/assets/triage-scan.sh:*)"
 tools="$tools,Bash($skill_dir/assets/triage-apply.sh:*)"
 tools="$tools,Bash($skill_dir/assets/triage-report.sh:*)"
@@ -131,6 +131,11 @@ fi
 # --tools restricts which built-ins EXIST for the worker (permission rules
 # alone cannot remove default-allowed tools); the allow/disallow rules then
 # scope the three that remain.
+# The scratch grant above is spelled Edit(path), not Write(path): Claude Code
+# 2.1.x reports that Write(path) permission rules are not matched by file
+# permission checks, and only Edit(path) covers every file-editing tool
+# (Write included). --tools below still lists Write as a built-in; only the
+# permission-rule spelling changes (issue #1060).
 claude -p "$prompt" \
     --model "${TRIAGE_MODEL:-haiku}" \
     --setting-sources "" \
