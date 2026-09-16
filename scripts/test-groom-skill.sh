@@ -652,6 +652,21 @@ echo "==> scan: a broken GROOM_SCRATCH is not refused when --out is omitted"
     "./ai/skills/universal/groom/assets/groom-scan.sh" --repo "$repo")" = 0 ] ||
     fail "a scan with no --out must ignore a broken GROOM_SCRATCH entirely: $(cat "$tmp/out" "$tmp/err")"
 
+# Review round 2, finding 1: guard_out_path's OTHER exit-4 branch (--out
+# resolves outside an existing GROOM_SCRATCH) had no coverage for
+# groom-scan.sh anywhere, unlike groom-report.sh/groom-verdicts.sh, even
+# though this branch's comparison logic is exactly what #1079 changed.
+echo "==> scan: --out outside an existing GROOM_SCRATCH is refused"
+scan_scratch_existing="$tmp/scan-scratch-existing"
+mkdir -p "$scan_scratch_existing"
+[ "$(run env GROOM_SCRATCH="$scan_scratch_existing" \
+    "./ai/skills/universal/groom/assets/groom-scan.sh" --repo "$repo" \
+    --out "$tmp/scan-escape.json")" = 4 ] ||
+    fail "--out outside the run's scratch dir must exit 4"
+grep -q -- "must live under this run's scratch" "$tmp/err" ||
+    fail "the refusal must explain the scratch-dir binding"
+[ ! -f "$tmp/scan-escape.json" ] || fail "a refused --out must never be written (prompt-injection escape)"
+
 echo "==> report: is deterministic (byte-identical on an unchanged dataset)"
 out_html2="$tmp/report2.html"
 GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$disp" \
