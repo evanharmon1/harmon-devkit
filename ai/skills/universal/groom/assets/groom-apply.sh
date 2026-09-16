@@ -133,8 +133,8 @@ retitle_loses_wording() {
     jq -n -L "$title_module_dir" --arg prev "$prev" --arg new "$new" '
       include "issue-title";
       def clean_outcome:
-        sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
-        | issue_title_outcome
+        issue_title_outcome
+        | sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
         | gsub("[[:space:]]+"; " ")
         | sub("^ "; "")
         | sub(" $"; "");

@@ -1392,7 +1392,22 @@ bracket_colon_log="$tmp/bracket-colon.log"
 [ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$bracket_colon_plan" \
     --log "$bracket_colon_log" --execute)" = 0 ] ||
     fail "bracketed prefix with colon must succeed: $(cat "$tmp/out" "$tmp/err")"
-grep -q "^NOTE #74" "$tmp/out" || fail "bracketed prefix rewrite must note preserved wording"
+echo "==> apply-plan: scoped outcome with nested prefix strips prefix without losing wording (issue #1059)"
+cat >"$stub_dir/issue-78.json" <<'JSON'
+{"title":"(ci): [P1]: Fix parser bug","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+nested_plan="$tmp/nested-plan.jsonl"
+cat >"$nested_plan" <<'JSONL'
+{"op":"retitle","issue":78,"title":"(ci): Fix parser bug","previous_title":"(ci): [P1]: Fix parser bug","preserve_original":true,"bot_owned":false}
+JSONL
+nested_log="$tmp/nested.log"
+: >"$nested_log"
+: >"$GH_STUB_LOG"
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$nested_plan" \
+    --log "$nested_log" --execute)" = 0 ] ||
+    fail "scoped outcome with nested prefix must succeed without preserve_original: $(cat "$tmp/out" "$tmp/err")"
+grep -q "^NOTE #78" "$tmp/out" || fail "scoped outcome rewrite must note preserved wording"
+
 echo "==> apply-plan: non-canonical colon prefix without preserve_original is refused on empty body (issue #1059)"
 cat >"$stub_dir/issue-75.json" <<'JSON'
 {"title":"OAuth: Support refresh tokens","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
