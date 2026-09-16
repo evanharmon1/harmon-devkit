@@ -578,6 +578,17 @@ apply_retitle() {
             "Refresh the plan and re-approve; writes already applied by this" \
             "run are recorded in $log."
 
+    if [ "$preserve_original" != "true" ] && [ "$loses_wording" = "true" ]; then
+        local stripped_live_body
+        stripped_live_body="$(printf '%s' "$live_body" | tr -d '[:space:]')"
+        [ -n "$stripped_live_body" ] ||
+            die 4 "refused: plan row $lineno (#$issue retitle) loses wording from" \
+                "the title, the live issue body is empty, and preserve_original is" \
+                "not true. Set preserve_original: true on the plan row to append" \
+                "an 'Original title' section to the body, or rewrite the title" \
+                "to preserve the outcome wording."
+    fi
+
     log_write "$log" "${cmd[@]}"
     "${cmd[@]}" >/dev/null || die 1 "write failed: retitle $repo#$issue"
     echo "APPLIED retitle $repo#$issue"
@@ -588,6 +599,9 @@ apply_retitle() {
             echo "NOTE #$issue title wording preserved in new title; body left unchanged"
             return 0
         fi
+
+        live_body="$(gh issue view "$issue" --repo "$repo" --json body -q '.body // ""')" ||
+            die 2 "could not re-read the live body of $repo#$issue before appending original title"
 
         if grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
             echo "NOTE #$issue body already carries <!-- groom-original-title -->; skipped append"
