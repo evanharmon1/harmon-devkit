@@ -1507,19 +1507,21 @@ grep -q "AUDIT" "$GH_STUB_LOG" || fail "prompt must state AUDIT"
 grep -q -- "--model sonnet" "$GH_STUB_LOG" || fail "default model must be sonnet"
 grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "opus"' "$GH_STUB_LOG" ||
     fail "default fan-out model must be opus (issue #1044) — fan-out verification defaults to frontier, independent of the standard-tier coordinator"
-grep -q "GROOM_SCRATCH=/" "$GH_STUB_LOG" || fail "run must bind a scratch dir"
+grep -q '^GROOM_SCRATCH=/' "$GH_STUB_LOG" || fail "run must bind a scratch dir"
 grep -q "GROOM_SCRATCH=$GROOM_OUT_DIR/" "$GH_STUB_LOG" ||
     fail "the scratch dir must be created under GROOM_OUT_DIR"
 scratch_val="$(grep -m1 '^GROOM_SCRATCH=' "$GH_STUB_LOG" | cut -d= -f2-)"
 expected_grant="Edit(//${scratch_val#/}/**)"
-grep -qF -- "$expected_grant" "$GH_STUB_LOG" ||
+# Anchored on the leading comma the wrapper always emits before the grant
+# (tools="$tools,Edit(...)"), so a MultiEdit(...)/NotebookEdit(...) grant —
+# which has no comma directly before "Edit(" — cannot satisfy this on its
+# own; no separate denylist needed (challenge round 2 finding).
+grep -qF -- ",$expected_grant" "$GH_STUB_LOG" ||
     fail "worker Edit grant must be exactly run-dir-scoped"
-grep -qF -- "Multi$expected_grant" "$GH_STUB_LOG" &&
-    fail "worker must not be granted MultiEdit(path) in place of Edit(path)"
-grep -qF -- "Notebook$expected_grant" "$GH_STUB_LOG" &&
-    fail "worker must not be granted NotebookEdit(path) in place of Edit(path)"
 grep -q -- "Write(//" "$GH_STUB_LOG" &&
     fail "worker must not be granted a Write(path) rule (Claude Code does not honor it)"
+grep -q -- "--tools Read,Write,Bash,Agent,Task,Glob,Grep" "$GH_STUB_LOG" ||
+    fail "worker must run with the audit-mode built-in tool set (Write included, per the comment above the grant)"
 for grant in "groom-scan.sh" "groom-verdicts.sh" "groom-report.sh" "Agent,Task,Glob,Grep"; do
     grep -qF "$grant" "$GH_STUB_LOG" ||
         fail "audit mode's tool grant must be unchanged — missing '$grant'"
