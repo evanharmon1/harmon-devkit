@@ -1988,8 +1988,10 @@ grep -q -- "--model haiku" "$GH_STUB_LOG" || fail "default model must be haiku"
 grep -q -- "--setting-sources" "$GH_STUB_LOG" ||
     fail "worker must run with settings isolated"
 grep -q "TRIAGE_SCRATCH=/" "$GH_STUB_LOG" || fail "run must bind a scratch dir"
-grep -q -- "Write(//" "$GH_STUB_LOG" ||
-    fail "worker Write grant must be scratch-scoped"
+grep -q -- "Edit(//" "$GH_STUB_LOG" ||
+    fail "worker Edit grant must be scratch-scoped"
+grep -q -- "Write(//" "$GH_STUB_LOG" &&
+    fail "worker must not be granted a Write(path) rule (Claude Code does not honor it)"
 grep -q -- "Read(//" "$GH_STUB_LOG" ||
     fail "worker Read grant must be path-scoped"
 grep -qE "ARGS: .*(Glob|Grep)" "$GH_STUB_LOG" &&

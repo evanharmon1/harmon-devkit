@@ -1510,6 +1510,10 @@ grep -qF 'Step 2 fan-out: dispatch every cluster subagent with model: "opus"' "$
 grep -q "GROOM_SCRATCH=/" "$GH_STUB_LOG" || fail "run must bind a scratch dir"
 grep -q "GROOM_SCRATCH=$GROOM_OUT_DIR/" "$GH_STUB_LOG" ||
     fail "the scratch dir must be created under GROOM_OUT_DIR"
+grep -q -- "Edit(//" "$GH_STUB_LOG" ||
+    fail "worker Edit grant must be run-dir-scoped"
+grep -q -- "Write(//" "$GH_STUB_LOG" &&
+    fail "worker must not be granted a Write(path) rule (Claude Code does not honor it)"
 for grant in "groom-scan.sh" "groom-verdicts.sh" "groom-report.sh" "Agent,Task,Glob,Grep"; do
     grep -qF "$grant" "$GH_STUB_LOG" ||
         fail "audit mode's tool grant must be unchanged — missing '$grant'"

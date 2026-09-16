@@ -268,9 +268,14 @@ export GROOM_EXECUTE=0
 mode_text="AUDIT — never pass --execute to any script. Report what the
 scripts say they WOULD write."
 
+# The run-directory grant below is spelled Edit(path), not Write(path):
+# Claude Code 2.1.272 reports that Write(path) permission rules are not
+# matched by file permission checks, and only Edit(path) covers every
+# file-editing tool (Write included). claude_tools below still lists Write
+# as a built-in; only the permission-rule spelling changes (issue #1060).
 skill_abs="$(cd "$skill_dir" && pwd)"
 tools="Read(//${run_dir#/}/**),Read(//${skill_abs#/}/**)"
-tools="$tools,Write(//${run_dir#/}/**)"
+tools="$tools,Edit(//${run_dir#/}/**)"
 gh_read_tools="Bash(gh issue view:*),Bash(gh issue list:*)"
 gh_read_tools="$gh_read_tools,Bash(gh pr view:*),Bash(gh pr list:*)"
 tools="$tools,Bash($skill_dir/assets/groom-scan.sh:*)"
