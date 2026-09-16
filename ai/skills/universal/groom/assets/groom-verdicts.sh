@@ -52,7 +52,8 @@
 #       missing number, or a CLOSE-dup-of-# target is self-referential or not
 #       in scan.open (each names the offending issue number(s)), 2 = usage,
 #       or (join) the scan's own repo field does not match --repo,
-#       4 = refused (a path argument outside GROOM_SCRATCH, when set).
+#       4 = refused (a path argument outside GROOM_SCRATCH, when set, or
+#       GROOM_SCRATCH itself does not exist).
 set -euo pipefail
 
 usage() {
@@ -73,12 +74,17 @@ die() {
 # worker treats issue text as untrusted, and unlike groom-scan.sh, neither
 # this script nor groom-report.sh enforced GROOM_SCRATCH on the paths a
 # model can pass, so a prompt-injected --out/--scan/verdict-file argument
-# could escape the scoped Write(//<run_dir>/**) grant. Interactive use with
+# could escape the scoped Edit(//<run_dir>/**) grant. Interactive use with
 # GROOM_SCRATCH unset is unchanged — every path is accepted as given.
 guard_scratch_path() {
-    local flag="$1" path="$2" dir base abs
+    local flag="$1" path="$2" dir base abs scratch
     [ -n "${GROOM_SCRATCH:-}" ] || return 0
     [ -n "$path" ] || return 0
+    scratch="$(cd "$GROOM_SCRATCH" 2>/dev/null && pwd -P)" || {
+        echo "groom-verdicts: refused: this run's scratch directory" \
+            "($GROOM_SCRATCH) does not exist" >&2
+        exit 4
+    }
     dir="$(dirname "$path")"
     base="$(basename "$path")"
     abs="$(cd "$dir" 2>/dev/null && pwd -P)/$base" || {
@@ -86,7 +92,7 @@ guard_scratch_path() {
         exit 2
     }
     case "$abs" in
-    "$GROOM_SCRATCH"/*) ;;
+    "$scratch"/*) ;;
     *)
         echo "groom-verdicts: refused: $flag must live under this run's" \
             "scratch directory ($GROOM_SCRATCH), got: $path" >&2

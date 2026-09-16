@@ -381,7 +381,7 @@ check_path() {
         fi
     done <"$allowed"
     if [ "$matched" = false ]; then
-        report_line="$(awk -F '\t' -v path="$path" '$1 == path { print $2; exit }' "$expanded")"
+        report_line="$(path="$path" awk -F '\t' '$1 == ENVIRON["path"] { print $2; exit }' "$expanded")"
         if [ -n "$report_line" ]; then
             printf '%s\0%s\0' "$path" "$report_line" >>"$claims"
         else

@@ -27,8 +27,9 @@
 # proceed on a backlog that large.
 #
 # Exit: 0 = scan emitted, 2 = usage/environment error, 4 = refused (repo or
-#       out-path outside this run's binding, or the open-issue count hit
-#       --limit).
+#       out-path outside this run's binding, the open-issue count hit
+#       --limit, or, when --out is given, GROOM_SCRATCH itself does not
+#       exist).
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -56,15 +57,20 @@ guard_repo_binding() {
 }
 
 guard_out_path() {
-    local out="$1" out_abs
+    local out="$1" out_abs scratch
     [ -n "$out" ] || return 0
     [ -n "${GROOM_SCRATCH:-}" ] || return 0
-    out_abs="$(cd "$(dirname "$out")" 2>/dev/null && pwd)/$(basename "$out")" || {
+    scratch="$(cd "$GROOM_SCRATCH" 2>/dev/null && pwd -P)" || {
+        echo "groom-scan: refused: this run's scratch directory" \
+            "($GROOM_SCRATCH) does not exist" >&2
+        exit 4
+    }
+    out_abs="$(cd "$(dirname "$out")" 2>/dev/null && pwd -P)/$(basename "$out")" || {
         echo "groom-scan: could not resolve --out path" >&2
         exit 2
     }
     case "$out_abs" in
-    "$GROOM_SCRATCH"/*) ;;
+    "$scratch"/*) ;;
     *)
         echo "groom-scan: refused: --out must live under this run's scratch" \
             "directory ($GROOM_SCRATCH)" >&2

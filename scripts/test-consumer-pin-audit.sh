@@ -166,6 +166,15 @@ YAML
     printf '%s' "$root"
 }
 
+# sed_inplace SCRIPT FILE — apply a sed SCRIPT to FILE in place via a temp
+# file in the same directory. BSD sed (macOS) requires an explicit -i backup
+# extension where GNU sed does not, so plain `sed -i` is not portable here.
+sed_inplace() {
+    local tmp
+    tmp="$(mktemp "$2.XXXXXX")"
+    sed "$1" "$2" >"$tmp" && mv "$tmp" "$2"
+}
+
 echo "== consumer-pin-audit: both halves still pre-v2 =="
 c="$(make_consumer both-pre "$LEGACY_POLICY" v0.34.1 gauntlet:pre shepherd:pre)"
 run_audit "$c"
@@ -243,7 +252,7 @@ expect_says "the unmanaged skill is not listed as requiring anything" "requiring
 echo
 echo "== consumer-pin-audit: provenance outranks an edited manifest =="
 c="$(make_consumer prov-wins "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
-sed -i 's/ref: v0.34.1/ref: v9.9.9/' "$c/.skills-sync.yaml"
+sed_inplace 's/ref: v0.34.1/ref: v9.9.9/' "$c/.skills-sync.yaml"
 run_audit "$c" --json
 expect_status "an edited-but-unsynced manifest still audits the vendored ref" 0
 if printf '%s' "$out" | jq -e '.pin == "v0.34.1" and .pin_source == "provenance" and .manifest_ref == "v9.9.9"' >/dev/null 2>&1; then
@@ -361,7 +370,7 @@ expect_says "real pin lag still says to advance source.ref" "advance source.ref"
 # gains no policy contract, so the work is pointless. The signal is the
 # provenance stamp's `# categories:` line, not a table of skill names.
 c="$(make_consumer repo-only-pre-boundary "$V2_POLICY" v0.39.0 repo-tool:pre)"
-sed -i 's/^# categories: universal$/# categories: repo/' "$c/.claude/skills/.SKILLS_PROVENANCE"
+sed_inplace 's/^# categories: universal$/# categories: repo/' "$c/.claude/skills/.SKILLS_PROVENANCE"
 run_audit "$c"
 expect_status "#842: a pre-boundary pin vendoring only non-policy categories is not pin-lag" 0
 expect_says "#842: it says the categories do not include universal" "do not include"
@@ -371,8 +380,8 @@ expect_not_says "#842: it does not tell anyone to advance a useless pin" "advanc
 # classify as no-policy-consumer. sync-skills.sh:419-428 reconstructs the
 # managed set from categories, so they are authoritative for legacy stamps too.
 c="$(make_consumer legacy-repo-only "$V2_POLICY" v0.39.0 repo-tool:pre)"
-sed -i 's/^# categories: universal$/# categories: repo/' "$c/.claude/skills/.SKILLS_PROVENANCE"
-sed -i '/^# managed:/d' "$c/.claude/skills/.SKILLS_PROVENANCE"
+sed_inplace 's/^# categories: universal$/# categories: repo/' "$c/.claude/skills/.SKILLS_PROVENANCE"
+sed_inplace '/^# managed:/d' "$c/.claude/skills/.SKILLS_PROVENANCE"
 run_audit "$c"
 expect_status "#842: a legacy stamp with only repo categories is not pin-lag" 0
 expect_says "#842: legacy stamp says categories do not include universal" "do not include"
@@ -532,7 +541,7 @@ apply_mutation() {
     strip_ref) grep -v '^# ref:' "$d/.SKILLS_PROVENANCE" >"$root/p.tmp" && mv "$root/p.tmp" "$d/.SKILLS_PROVENANCE" ;;
     drop_dir) rm -rf "$d/review" ;;
     drop_skill_md) rm -f "$d/review/SKILL.md" ;;
-    traversal_name) sed -i 's/^# managed:.*$/# managed: ..\/evil/' "$d/.SKILLS_PROVENANCE" ;;
+    traversal_name) sed_inplace 's/^# managed:.*$/# managed: ..\/evil/' "$d/.SKILLS_PROVENANCE" ;;
     symlink_entry)
         local _t="$root/real-review"
         mv "$d/review" "$_t"
@@ -541,10 +550,10 @@ apply_mutation() {
     drop_stamp) rm -f "$d/.SKILLS_PROVENANCE" ;;
     malformed_older_policy) printf 'schema_version = 1\n' >"$root/.devflow.toml" ;;
     duplicate_ref)
-        sed -i '/^# ref:/a # ref: v0.1.0 (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)' "$d/.SKILLS_PROVENANCE"
+        sed_inplace 's/^\(# ref:.*\)$/\1\n# ref: v0.1.0 (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)/' "$d/.SKILLS_PROVENANCE"
         ;;
     duplicate_managed)
-        sed -i '/^# managed:/a # managed:' "$d/.SKILLS_PROVENANCE"
+        sed_inplace 's/^\(# managed:.*\)$/\1\n# managed:/' "$d/.SKILLS_PROVENANCE"
         ;;
     symlink_stamp)
         local _real="$root/real-provenance"
@@ -705,13 +714,13 @@ echo "== consumer-pin-audit: #847 — path traversal in managed provenance names
 # sync-skills.sh's assert_sane_name does.
 c="$(make_consumer traversal-dotdot "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
 # Inject a path-traversal name into the provenance stamp.
-sed -i 's/^# managed: gauntlet$/# managed: gauntlet, ..\/foo/' "$c/.claude/skills/.SKILLS_PROVENANCE"
+sed_inplace 's/^# managed: gauntlet$/# managed: gauntlet, ..\/foo/' "$c/.claude/skills/.SKILLS_PROVENANCE"
 run_audit "$c"
 expect_status "a managed name with '..' is indeterminate" 2
 expect_says "it names the offending token" "../foo"
 
 c="$(make_consumer traversal-slash "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
-sed -i 's/^# managed: gauntlet$/# managed: gauntlet, sub\/dir/' "$c/.claude/skills/.SKILLS_PROVENANCE"
+sed_inplace 's/^# managed: gauntlet$/# managed: gauntlet, sub\/dir/' "$c/.claude/skills/.SKILLS_PROVENANCE"
 run_audit "$c"
 expect_status "a managed name with a path separator is indeterminate" 2
 expect_says "it names the offending token" "sub/dir"
@@ -1061,7 +1070,7 @@ echo "== a dest edit does not silence the audit while a stamped tree survives ==
 c="$(make_consumer moved-dest "$LEGACY_POLICY" v0.41.0 review:v2)"
 run_audit "$c"
 expect_status "before the edit it is the incompatibility it should be" 1
-sed -i 's|^dest: .claude/skills$|dest: .claude/skills-moved|' "$c/.skills-sync.yaml"
+sed_inplace 's|^dest: .claude/skills$|dest: .claude/skills-moved|' "$c/.skills-sync.yaml"
 mkdir -p "$c/.claude/skills-moved"
 run_audit "$c"
 expect_status "after the edit it is indeterminate, not not-vendored" 2
@@ -1181,7 +1190,7 @@ echo "== consumer-pin-audit: #859 — destination-escape validation =="
 # An absolute destination dereferences another checkout's tree; a `..`
 # component escapes the repository root. sync-skills.sh rejects both.
 c="$(make_consumer dest-absolute "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
-sed -i 's|^dest: .claude/skills$|dest: /tmp/evil/skills|' "$c/.skills-sync.yaml"
+sed_inplace 's|^dest: .claude/skills$|dest: /tmp/evil/skills|' "$c/.skills-sync.yaml"
 run_audit "$c"
 expect_status "#859: an absolute destination is indeterminate" 2
 expect_says "#859: absolute dest names the manifest" "manifest"
@@ -1189,7 +1198,7 @@ expect_says "#859: absolute dest says it would dereference another tree" "anothe
 expect_not_says "#859: absolute dest is never compatible" "compatible"
 
 c="$(make_consumer dest-dotdot "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
-sed -i 's|^dest: .claude/skills$|dest: ../other/.claude/skills|' "$c/.skills-sync.yaml"
+sed_inplace 's|^dest: .claude/skills$|dest: ../other/.claude/skills|' "$c/.skills-sync.yaml"
 run_audit "$c"
 expect_status "#859: a ../  destination is indeterminate" 2
 expect_says "#859: dotdot dest names the manifest" "manifest"
@@ -1200,7 +1209,7 @@ expect_not_says "#859: dotdot dest is never compatible" "compatible"
 # component) must still work — e.g. `my..dir` is fine, `../foo` is not.
 c="$(make_consumer dest-dotdot-in-name "$LEGACY_POLICY" v0.34.1 gauntlet:pre)"
 mkdir -p "$c/my..dir"
-sed -i 's|^dest: .claude/skills$|dest: my..dir|' "$c/.skills-sync.yaml"
+sed_inplace 's|^dest: .claude/skills$|dest: my..dir|' "$c/.skills-sync.yaml"
 # Move the skills and stamp to the new dest for the audit to find them.
 mv "$c/.claude/skills/.SKILLS_PROVENANCE" "$c/my..dir/"
 mv "$c/.claude/skills/gauntlet" "$c/my..dir/"
