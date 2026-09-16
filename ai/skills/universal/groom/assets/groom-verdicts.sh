@@ -397,6 +397,12 @@ cmd_join() {
         jq -e . "$findings" >/dev/null 2>&1 ||
             die "findings file is not valid JSON: $findings"
         findings_json="$(cat "$findings")"
+        local findings_type_bad
+        findings_type_bad="$(jq -r 'if type != "array" then "findings file must be a JSON array" else "" end' <<<"$findings_json")"
+        if [ -n "$findings_type_bad" ]; then
+            echo "groom-verdicts: refused: $findings_type_bad" >&2
+            exit 1
+        fi
     fi
 
     # Validate process_findings in proposals (Issue #1062):

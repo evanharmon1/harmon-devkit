@@ -164,6 +164,10 @@ jq -n -L "$title_module_dir" \
     --slurpfile open_arr "$scan_tmp/open.json" \
     --slurpfile milestones_arr "$scan_tmp/milestones.pages" '
   include "issue-title";
+  def rel_count:
+    if type == "object" then (.totalCount // (.nodes // [] | length) // 0)
+    elif type == "array" then length
+    else 0 end;
   ($open_arr[0]) as $open |
   {
     repo: $repo,
@@ -192,8 +196,8 @@ jq -n -L "$title_module_dir" \
             days_since_update: $updated_days,
             title_valid: (.title | issue_title_valid),
             title_warn: (.title | issue_title_warn),
-            blocking_count: (.blocking.totalCount // (.blocking.nodes // [] | length) // (.blocking // [] | length) // 0),
-            blocked_by_count: (.blockedBy.totalCount // (.blockedBy.nodes // [] | length) // (.blockedBy // [] | length) // 0)
+            blocking_count: (.blocking | rel_count),
+            blocked_by_count: (.blockedBy | rel_count)
           }
       ]
   }'

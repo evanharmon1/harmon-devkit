@@ -472,9 +472,9 @@ cmd_render() {
 
       # ── Inline SVG Chart 2: Priority mix ──
       | [
-          { label: "High", count: ([$rows[] | select(.priority == "high")] | length), color: "#cf222e" },
-          { label: "Medium", count: ([$rows[] | select(.priority == "medium")] | length), color: "#d4a72c" },
-          { label: "Low", count: ([$rows[] | select(.priority == "low")] | length), color: "#0969da" }
+          { label: "High", count: ([$rows[] | select((.priority // "") | test("(?i)^p[01]$|high"))] | length), color: "#cf222e" },
+          { label: "Medium", count: ([$rows[] | select((.priority // "") | test("(?i)^p2$|medium"))] | length), color: "#d4a72c" },
+          { label: "Low", count: ([$rows[] | select((.priority // "") | test("(?i)^p3$|low"))] | length), color: "#0969da" }
         ] as $p_data
       | (([$p_data[].count] | max) // 1) as $p_max0
       | (if $p_max0 == 0 then 1 else $p_max0 end) as $p_max
@@ -492,11 +492,11 @@ cmd_render() {
 
       # ── Inline SVG Chart 4: Closes by evidence type ──
       | [
-          { label: "Merged PR", count: ([$close_all[] | select((.evidence // "") | test("(?i)\\b(pull request|pull|pr)\\b|#[0-9]+|\\bmerged\\b"))] | length), color: "#2da44e" },
-          { label: "Commit / SHA", count: ([$close_all[] | select(((.evidence // "") | test("(?i)pr|pull|merged") | not) and ((.evidence // "") | test("(?i)commit|sha|[0-9a-f]{7,40}")))] | length), color: "#0969da" },
-          { label: "File:line", count: ([$close_all[] | select(((.evidence // "") | test("(?i)pr|pull|merged|commit|sha|[0-9a-f]{7,40}") | not) and ((.evidence // "") | test("(?i):[0-9]+|/|\\.[a-z]+:")))] | length), color: "#8250df" },
-          { label: "Duplicate link", count: ([$close_all[] | select(((.evidence // "") | test("(?i)pr|pull|merged|commit|sha|[0-9a-f]{7,40}|:[0-9]+|/|\\.[a-z]+:") | not) and ((.evidence // "") | test("(?i)dup|#[0-9]+")))] | length), color: "#d4a72c" },
-          { label: "Other / target", count: ([$close_all[] | select((.evidence // "") | test("(?i)pr|pull|merged|commit|sha|[0-9a-f]{7,40}|:[0-9]+|/|\\.[a-z]+:|dup|#[0-9]+") | not)] | length), color: "#656d76" }
+          { label: "Duplicate link", count: ([$close_all[] | select((.verdict | startswith("CLOSE-dup-of-")) or ((.evidence // "") | test("(?i)\\bdup(licate)?\\b|#[0-9]+")))] | length), color: "#d4a72c" },
+          { label: "Merged PR", count: ([$close_all[] | select(((.verdict | startswith("CLOSE-dup-of-")) | not) and (((.evidence // "") | test("(?i)\\bdup(licate)?\\b|#[0-9]+") | not)) and ((.evidence // "") | test("(?i)\\b(pull request|pull|pr)\\b|\\bmerged\\b")))] | length), color: "#2da44e" },
+          { label: "Commit / SHA", count: ([$close_all[] | select(((.verdict | startswith("CLOSE-dup-of-")) | not) and (((.evidence // "") | test("(?i)\\bdup(licate)?\\b|#[0-9]+") | not)) and (((.evidence // "") | test("(?i)\\b(pull request|pull|pr)\\b|\\bmerged\\b") | not)) and ((.evidence // "") | test("(?i)\\b(commit|sha)\\b|[0-9a-f]{7,40}")))] | length), color: "#0969da" },
+          { label: "File:line", count: ([$close_all[] | select(((.verdict | startswith("CLOSE-dup-of-")) | not) and (((.evidence // "") | test("(?i)\\bdup(licate)?\\b|#[0-9]+") | not)) and (((.evidence // "") | test("(?i)\\b(pull request|pull|pr)\\b|\\bmerged\\b|\\b(commit|sha)\\b|[0-9a-f]{7,40}") | not)) and ((.evidence // "") | test("(?i):[0-9]+|/|\\.[a-z]+:")))] | length), color: "#8250df" },
+          { label: "Other / target", count: ([$close_all[] | select(((.verdict | startswith("CLOSE-dup-of-")) | not) and (((.evidence // "") | test("(?i)\\bdup(licate)?\\b|#[0-9]+") | not)) and (((.evidence // "") | test("(?i)\\b(pull request|pull|pr)\\b|\\bmerged\\b|\\b(commit|sha)\\b|[0-9a-f]{7,40}|:[0-9]+|/|\\.[a-z]+:") | not)))] | length), color: "#656d76" }
         ] as $e_data
       | (([$e_data[].count] | max) // 1) as $e_max0
       | (if $e_max0 == 0 then 1 else $e_max0 end) as $e_max
@@ -560,13 +560,13 @@ cmd_render() {
         ".callout-body { margin: 0.25rem 0; }",
         ".callout-response { font-size: 0.85rem; color: var(--muted); margin: 0.5rem 0 0 0; font-style: italic; }",
         ".badge { display: inline-block; padding: 0.15rem 0.45rem; font-size: 0.75rem; font-weight: 600; border-radius: 12px; background: var(--badge-bg); color: var(--badge-text); }",
-        ".badge-priority-high { background: #ffebe9; color: #cf222e; }",
-        ".badge-priority-medium { background: #fff8c5; color: #9a6700; }",
-        ".badge-priority-low { background: #ddf4ff; color: #0969da; }",
+        ".badge-priority-high, .badge-priority-p0, .badge-priority-p1, .badge-priority-P0, .badge-priority-P1 { background: #ffebe9; color: #cf222e; }",
+        ".badge-priority-medium, .badge-priority-p2, .badge-priority-P2 { background: #fff8c5; color: #9a6700; }",
+        ".badge-priority-low, .badge-priority-p3, .badge-priority-P3 { background: #ddf4ff; color: #0969da; }",
         "@media (prefers-color-scheme: dark) {",
-        "  .badge-priority-high { background: #490202; color: #ff8182; }",
-        "  .badge-priority-medium { background: #3d2a00; color: #d29922; }",
-        "  .badge-priority-low { background: #0c2d6b; color: #58a6ff; }",
+        "  .badge-priority-high, .badge-priority-p0, .badge-priority-p1, .badge-priority-P0, .badge-priority-P1 { background: #490202; color: #ff8182; }",
+        "  .badge-priority-medium, .badge-priority-p2, .badge-priority-P2 { background: #3d2a00; color: #d29922; }",
+        "  .badge-priority-low, .badge-priority-p3, .badge-priority-P3 { background: #0c2d6b; color: #58a6ff; }",
         "}",
         ".card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; margin: 0.75rem 0; }",
         "svg text { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif; font-size: 11px; fill: currentColor; }",
