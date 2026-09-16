@@ -237,6 +237,36 @@ produce evidence and did not; when the condition fails and the skill
 path is available for the lane's topology, the routing failed and the
 lane must be re-run before the PR is promoted.
 
+The maintainer-facing ready report is the last message about a promoted PR,
+not the first one after promotion. **Invariant: the ready report is sent
+only for a `POST-PROMOTION-CLOSED` event that names the promotion event id
+the watcher armed on, with zero activity rows in that window, and only
+after one re-read taken after the close shows the same head, the same
+readiness fingerprint, and every check still concluded green; any other
+observation (a different promotion id, any activity row, any changed
+value, any indeterminate read) withdraws the report and re-arms.** The
+re-read uses the same mechanisms `AGENTS.md` § Readiness gate names for the
+promotion-time check (`headRefOid`/`isDraft`, required CI status, and
+`readiness-gate.sh fingerprint`); promotion itself is never reported as
+readiness, and a status sent during the watch instead reads "promoted at
+T, post-promotion watch until T+15", never "ready". Matching the vendored
+`/integrate` skill's own handling of an invalidated promotion
+(`.claude/skills/integrate/SKILL.md` step 6): withdrawing runs
+`gh pr ready --undo` and confirms the PR is draft on the current head
+before deciding whether to re-verify or escalate. The mechanism that
+satisfies this invariant — window arming, activity/close correlation by
+promotion event id, retry on an indeterminate read — belongs to
+`assets/lane-watch.sh`; this section states only what must be true before
+the report is sent, never the ordering or per-endpoint steps the watcher
+uses to get there.
+This maintainer-facing report is distinct from § Persistent supervision's
+internal per-lane ledger entry ("a ready PR is reported"), which is
+orchestrator bookkeeping, not the maintainer-facing message this rule defines.
+
+If the orchestrator reverses its own promotion (`gh pr ready --undo`, for any
+reason, including mid-watch), the withdrawal is announced before anything
+else in the next maintainer-facing message — "#n is no longer ready: `<reason>`; back to draft on `<head>`" — ahead of any other status in that same message.
+
 ## Implementer selection
 
 Select implementers only from
@@ -281,11 +311,34 @@ never paste its loop inline. Keep the state file across re-arms so reported
 sentinels and post-promotion activity remain deduplicated. The watcher bounds
 every `herdr` and `gh` read, prefers each lane's `.lane-report.md` sentinel,
 tags pane-only fallback results, and watches reviews plus top-level and inline
-comments for 15 minutes after a draft becomes ready. Keep the registry argument
+comments for 15 minutes after a draft becomes ready. When a lane's
+post-promotion window's promotion event cannot be resolved before that
+window's own deadline passes, the watcher emits
+`POST-PROMOTION-INDETERMINATE <lane>: #<pr>` instead of silently abandoning
+the window — the event means only that the promotion epoch could not be
+confirmed in time; that path also clears the lane's tracked `PR` state as it
+tears the window down, so the very next observation — the watcher's own next
+poll, or a fresh process restarted against the same `--state-file` — sees
+the still-promoted PR as newly observed and re-arms a fresh window on its
+own, which is what makes restarting with the same state file a genuine
+retry rather than a no-op. Keep the registry argument
 bound to the immutable kickoff snapshot across every re-arm. It only reports
 events; the orchestrator remains responsible for every action. The watcher-owned
 `lane-watch.state` is separate from the run's canonical `monitor.json`; never
 pass that JSON monitor state to `--state-file`.
+
+The watcher's own restart durability does not, by itself, make the
+orchestrator's reporting durable: `POST-PROMOTION-ACTIVITY` and
+`POST-PROMOTION-CLOSED` are lines on the watcher's stdout, consumed by a
+separate orchestrator process, and the § PR-open confirmation gate depends
+on the orchestrator having durably seen every activity line for the
+*current* window — never merely on what its own live stdout stream has shown
+since its own last restart. An orchestrator restart mid-window must not
+silently default to "no activity seen"; confirm that against durable state,
+either by re-deriving what happened over the window's `[since,until]`
+directly from the same GitHub activity sources `lane-watch.sh` itself polls,
+or by maintaining its own durable log of every `POST-PROMOTION-ACTIVITY` /
+`POST-PROMOTION-CLOSED` line it has actually processed.
 
 Every emitted transition terminates in a recorded action: idle reads and
 adjudicates the lane status (including any unsupported claim that the user was

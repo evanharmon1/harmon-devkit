@@ -274,9 +274,38 @@ ledger denominators. Stop at **{{deadline}}** with a blocker report.
   substring match is never completion evidence. Append exactly one of the
   following to `{{report-path}}` and print the same value as the final line of
   the final message:
-  - `{{ready-sentinel}}-{{attempt-nonce}}` — the orchestrator promoted the PR through the readiness gate.
+  - `{{ready-sentinel}}-{{attempt-nonce}}` — the orchestrator promoted the PR
+    through the readiness gate. This sentinel is the orchestrator's own mark:
+    a lane never promotes its own PR and never writes this sentinel.
+    **Invariant: the orchestrator appends this sentinel only for a
+    `POST-PROMOTION-CLOSED` event that names the promotion event id the
+    watcher armed on, with zero activity rows in that window, and only
+    after one re-read taken after the close shows the same head, the same
+    readiness fingerprint, and every check still concluded green; any other
+    observation (a different promotion id, any activity row, any changed
+    value, any indeterminate read) withdraws the report and re-arms
+    instead of appending this sentinel.** The re-read uses the same
+    mechanisms `AGENTS.md` § Readiness gate names for the promotion-time
+    check (`headRefOid`/`isDraft`, required CI status, and
+    `readiness-gate.sh fingerprint`); the sentinel is never appended at the
+    moment of promotion itself. Matching the vendored `/integrate` skill's
+    own handling of an invalidated promotion
+    (`.claude/skills/integrate/SKILL.md` step 6): withdrawing runs
+    `gh pr ready --undo` and confirms the PR is draft on the current head
+    before deciding whether to re-verify or escalate. The mechanism that
+    satisfies this invariant — window arming, activity/close correlation by
+    promotion event id, retry on an indeterminate read — belongs to
+    `assets/lane-watch.sh`; this bullet states only what must be true
+    before the sentinel is appended, never the ordering or per-endpoint
+    steps the watcher uses to get there.
   - `{{handoff-sentinel}}-{{attempt-nonce}}` — the lane published and verified its draft PR, then returned integration to the orchestrator.
   - `{{blocked-sentinel}}-{{attempt-nonce}}` — stopped on a blocker, cap, deadline, or indeterminate gate.
+
+  The lane's own handoff sentinel and the orchestrator's later ready
+  sentinel are two different actors' two different attempts, both
+  legitimately appended in sequence to this same accumulating, never-deleted
+  report — not a violation of "exactly one sentinel per attempt," which
+  scopes to one actor's one attempt, never the file's whole lifetime.
 
 Begin now: perform the startup-capability check, read the issue, policy, stage
 skill, existing asset, and relevant archived briefs; write the plan; then enter
