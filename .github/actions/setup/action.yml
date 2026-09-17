@@ -30,7 +30,7 @@ runs:
         python-version: "3.14"
     # uv provides uvx for pinned Semgrep CE and the pinned
     # foreman CLI (see taskfiles/foreman.yml).
-    - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+    - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
     - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
       with:
         # renovate: datasource=github-releases depName=go-task/task extractVersion=^v(?<version>.+)$
@@ -46,33 +46,33 @@ runs:
         # probes for a package manager rather than assuming apt-get.
         ./scripts/ensure-file.sh
         # renovate: datasource=github-releases depName=koalaman/shellcheck extractVersion=^v(?<version>.+)$
-        SHELLCHECK_VERSION=0.10.0
+        SHELLCHECK_VERSION=0.11.0
         # renovate: datasource=github-releases depName=mvdan/sh extractVersion=^v?(?<version>.+)$
-        SHFMT_VERSION=3.13.1
+        SHFMT_VERSION=3.14.1
         # renovate: datasource=github-releases depName=rhysd/actionlint extractVersion=^v?(?<version>.+)$
         ACTIONLINT_VERSION=1.7.12
         # renovate: datasource=pypi depName=yamllint
         YAMLLINT_VERSION=1.38.0
         # renovate: datasource=github-releases depName=mikefarah/yq extractVersion=^v?(?<version>.+)$
-        YQ_VERSION=4.44.3
+        YQ_VERSION=4.53.6
 
         runner_arch="${RUNNER_ARCH:-$(uname -m)}"
         case "$runner_arch" in
           X64|x86_64)
             shellcheck_arch=x86_64
             shfmt_arch=amd64
-            shfmt_sha256=fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1
+            shfmt_sha256=76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf
             actionlint_arch=amd64
             yq_arch=amd64
-            yq_sha256=a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7
+            yq_sha256=c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385
             ;;
           ARM64|arm64|aarch64)
             shellcheck_arch=aarch64
             shfmt_arch=arm64
-            shfmt_sha256=32d92acaa5cd8abb29fc49dac123dc412442d5713967819d8af2c29f1b3857c7
+            shfmt_sha256=5f2db09dae91fca848f7adbdd014632e921a383863a2ad7e0450ad3aba0c6489
             actionlint_arch=arm64
             yq_arch=arm64
-            yq_sha256=0e7e1524f68d91b3ff9b089872d185940ab0fa020a5a9052046ef10547023156
+            yq_sha256=88a1016bc1d657375a35864e4f44b6f333df8ff97b559f51bba0adcb2169df09
             ;;
           *)
             echo "::error::Unsupported runner architecture for pinned lint tools: ${runner_arch}" >&2
@@ -164,6 +164,6 @@ runs:
       run: |
         if ! command -v snyk >/dev/null 2>&1; then
           # renovate: datasource=npm depName=snyk
-          SNYK_VERSION=1.1307.0
+          SNYK_VERSION=1.1307.2
           npm install --global "snyk@${SNYK_VERSION}"
         fi
