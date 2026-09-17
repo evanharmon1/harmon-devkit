@@ -297,7 +297,7 @@ cp label-registry.schema.json "$mutation_tmp/label-registry.schema.json"
 
 rejects() {
     local description="$1" mutation="$2" expected="$3" output
-    if ! node --input-type=module - label-registry.json "$mutated_manifest" "$mutation" <<'NODE'; then
+    node --input-type=module - label-registry.json "$mutated_manifest" "$mutation" <<'NODE' || fail "could not build mutation: $description"
 import { readFile, writeFile } from 'node:fs/promises'
 
 const [inputPath, outputPath, mutation] = process.argv.slice(2)
@@ -344,9 +344,6 @@ switch (mutation) {
 
 await writeFile(outputPath, `${JSON.stringify(manifest, null, 2)}\n`)
 NODE
-        fail "could not build mutation: $description"
-        return
-    fi
     if output="$(node scripts/validate-label-registry.mjs "$mutated_manifest" 2>&1)"; then
         fail "validator accepted mutation: $description"
         return

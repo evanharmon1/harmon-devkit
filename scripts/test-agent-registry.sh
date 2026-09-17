@@ -96,7 +96,7 @@ rejects() {
     local expected="$3"
     local output
 
-    if ! node --input-type=module - "$registry" "$mutated" "$mutation" <<'NODE'; then
+    node --input-type=module - "$registry" "$mutated" "$mutation" <<'NODE' || fail "could not build mutation: $description"
 import { readFile, writeFile } from 'node:fs/promises'
 
 const [inputPath, outputPath, mutation] = process.argv.slice(2)
@@ -425,8 +425,6 @@ switch (mutation) {
 
 await writeFile(outputPath, `${JSON.stringify(registry, null, 2)}\n`)
 NODE
-        fail "could not build mutation: $description"
-    fi
     if output="$(node "$validator" "$mutated" "$schema" 2>&1)"; then
         fail "validator accepted mutation: $description"
     fi
@@ -442,7 +440,7 @@ accepts() {
     local mutation="$2"
     local output
 
-    if ! node --input-type=module - "$registry" "$mutated" "$mutation" <<'NODE'; then
+    node --input-type=module - "$registry" "$mutated" "$mutation" <<'NODE' || fail "could not build accepted mutation: $description"
 import { readFile, writeFile } from 'node:fs/promises'
 
 const [inputPath, outputPath, mutation] = process.argv.slice(2)
@@ -496,8 +494,6 @@ switch (mutation) {
 
 await writeFile(outputPath, `${JSON.stringify(registry, null, 2)}\n`)
 NODE
-        fail "could not build accepted mutation: $description"
-    fi
     if ! output="$(node "$validator" "$mutated" "$schema" 2>&1)"; then
         fail "validator rejected $description: $output"
     fi
