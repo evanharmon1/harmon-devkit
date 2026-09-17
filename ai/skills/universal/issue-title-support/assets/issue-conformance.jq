@@ -129,7 +129,7 @@ def issue_conformance($issue; $axes; $known; $wt; $owner_type; $nts; $claim_stal
   | criteria_facts($issue.body // "") as $crit
   | completion_reasons($crit) as $creasons
   | ([
-       (if ($have_wt | length) == 0 and ($owner_type == "User" or $nts != "set")
+       (if ($have_wt | length) == 0 and ($owner_type == "User" or $nts == "unset")
         then "missing-work-type" else empty end),
        ($ax | to_entries[]
         | select(.value == "none" and (axis_optional_when_absent(.key) | not))
@@ -140,7 +140,7 @@ def issue_conformance($issue; $axes; $known; $wt; $owner_type; $nts; $claim_stal
         | "axis-unknown-value:\($a)"),
        (if $needs_triage_worthy and (($ls | index("needs-triage")) == null)
         then "missing-needs-triage" else empty end),
-       (if $owner_type == "Organization" and ($have_wt | length) > 0 and $nts != "set"
+       (if $owner_type == "Organization" and ($have_wt | length) > 0 and $nts == "unset"
         then "legacy-work-type-label" else empty end),
        (if $incomplete and (($ls | index("needs-triage")) != null)
         then "partially-classified" else empty end),

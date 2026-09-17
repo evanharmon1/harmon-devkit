@@ -530,6 +530,37 @@ printf '%s\n' "$bad_conf_kind" >"$tmp/bad-conf.json"
     fail "join must refuse conformance with empty kind"
 grep -q "conformance defect requires nonempty kind" "$tmp/err" ||
     fail "refusal must cite nonempty kind"
+
+bad_conf_invalid_kind='[{"number": 1, "kind": "titel", "defect": "d"}]'
+printf '%s\n' "$bad_conf_invalid_kind" >"$tmp/bad-conf.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/bad-conf-out.json" --conformance "$tmp/bad-conf.json" "$good")" = 1 ] ||
+    fail "join must refuse conformance with invalid kind"
+grep -q "conformance defect kind must be one of: title, labels, body, claim, assignee" "$tmp/err" ||
+    fail "refusal must cite allowed conformance defect kinds"
+
+trailing_conf='[{"number": 1, "kind": "title", "defect": "d"}]
+[{"number": 1, "kind": "title", "defect": "d2"}]'
+printf '%s\n' "$trailing_conf" >"$tmp/trailing-conf.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/trailing-conf-out.json" --conformance "$tmp/trailing-conf.json" "$good")" = 1 ] ||
+    fail "join must refuse conformance with trailing JSON document"
+grep -q "conformance file must contain exactly one JSON document" "$tmp/err" ||
+    fail "refusal must cite exactly one JSON document for conformance file"
+
+trailing_findings='[{"finding": "f1", "recommended_action": "a1"}]
+[{"finding": "f2", "recommended_action": "a2"}]'
+printf '%s\n' "$trailing_findings" >"$tmp/trailing-findings.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/trailing-findings-out.json" --findings "$tmp/trailing-findings.json" "$good")" = 1 ] ||
+    fail "join must refuse findings with trailing JSON document"
+grep -q "findings file must contain exactly one JSON document" "$tmp/err" ||
+    fail "refusal must cite exactly one JSON document for findings file"
+
+embedded_conf_row='{"number":1,"verdict":"KEEP","priority":"low","evidence":"","reason":"valid","group":"ci","conformance":[{"number":2,"kind":"title","defect":"d"}]}'
+printf '%s\n' "$embedded_conf_row" >"$tmp/embedded-conf-verdict.jsonl"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --allow-missing --out "$tmp/embedded-conf-out.json" "$tmp/embedded-conf-verdict.jsonl")" = 0 ] ||
+    fail "join with embedded conformance should succeed: $(cat "$tmp/out" "$tmp/err")"
+[ "$(jq -r '.conformance_defects[0].number' "$tmp/embedded-conf-out.json")" = "1" ] ||
+    fail "embedded conformance defect must be bound to verdict row number 1, got $(jq -r '.conformance_defects[0].number' "$tmp/embedded-conf-out.json")"
+
 echo "==> validate: a verdict file with non-array conformance is refused"
 bad_conf_verdict="$tmp/bad-conf-verdict.jsonl"
 cat >"$bad_conf_verdict" <<'JSON'
@@ -1737,6 +1768,20 @@ stacked_log="$tmp/stacked.log"
     --log "$stacked_log" --execute)" = 0 ] ||
     fail "stacked legacy prefixes must succeed without preserve_original: $(cat "$tmp/out" "$tmp/err")"
 grep -q "^NOTE #79" "$tmp/out" || fail "stacked prefix rewrite must note preserved wording"
+
+echo "==> apply-plan: semantic bracket qualifier is not stripped and requires preserve_original on empty body"
+cat >"$stub_dir/issue-85.json" <<'JSON'
+{"title":"(ci): [Windows] Fix parser","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+semantic_plan="$tmp/semantic-plan.jsonl"
+cat >"$semantic_plan" <<'JSONL'
+{"op":"retitle","issue":85,"title":"(ci): Fix parser","previous_title":"(ci): [Windows] Fix parser","bot_owned":false}
+JSONL
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$semantic_plan" \
+    --log "$tmp/semantic.log" --execute)" = 4 ] ||
+    fail "semantic qualifier [Windows] dropped without preserve_original must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q "retitle loses original title wording on an empty body" "$tmp/err" ||
+    fail "error must cite losing original title wording"
 
 echo "==> apply-plan: non-canonical colon prefix without preserve_original is refused on empty body (issue #1059)"
 cat >"$stub_dir/issue-75.json" <<'JSON'

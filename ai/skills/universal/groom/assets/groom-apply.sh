@@ -136,9 +136,9 @@ retitle_loses_wording() {
         issue_title_outcome
         | until(
             . as $b
-            | (sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")) as $a
+            | (sub("^(\\[(P[0-9]+|bug|feature|task|research|documentation|question|enhancement|build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")) as $a
             | $b == $a;
-            sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
+            sub("^(\\[(P[0-9]+|bug|feature|task|research|documentation|question|enhancement|build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
           )
         | gsub("[[:space:]]+"; " ")
         | sub("^ "; "")

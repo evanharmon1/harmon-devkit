@@ -61,6 +61,9 @@
 #       does not exist).
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+title_module_dir="$script_dir/../../issue-title-support/assets"
+
 usage() {
     echo "Usage: $0 validate FILE..." >&2
     echo "       $0 join --repo owner/repo --scan PATH --out PATH" >&2
@@ -423,7 +426,7 @@ cmd_join() {
             die "findings file is not valid JSON: $findings"
         cp "$findings" "$findings_tmp"
         local findings_type_bad
-        findings_type_bad="$(jq -r --slurpfile f "$findings_tmp" 'if ($f[0] | type != "array") then "findings file must be a JSON array" else "" end' <<<"{}")"
+        findings_type_bad="$(jq -r --slurpfile f "$findings_tmp" 'if ($f | length != 1) then "findings file must contain exactly one JSON document" elif ($f[0] | type != "array") then "findings file must be a JSON array" else "" end' <<<"{}")"
         if [ -n "$findings_type_bad" ]; then
             echo "groom-verdicts: refused: $findings_type_bad" >&2
             exit 1
@@ -438,7 +441,7 @@ cmd_join() {
             die "conformance file is not valid JSON: $conformance"
         cp "$conformance" "$conformance_tmp"
         local conf_type_bad
-        conf_type_bad="$(jq -r --slurpfile c "$conformance_tmp" 'if ($c[0] | type != "array") then "conformance file must be a JSON array" else "" end' <<<"{}")"
+        conf_type_bad="$(jq -r --slurpfile c "$conformance_tmp" 'if ($c | length != 1) then "conformance file must contain exactly one JSON document" elif ($c[0] | type != "array") then "conformance file must be a JSON array" else "" end' <<<"{}")"
         if [ -n "$conf_type_bad" ]; then
             echo "groom-verdicts: refused: $conf_type_bad" >&2
             exit 1
@@ -579,11 +582,12 @@ cmd_join() {
       if $row_conf_err != "" then $row_conf_err
       else
         ((($c[0] // []) | if type == "array" then . else [] end) +
-         [ ($rows // [])[] | select(.conformance != null) | . as $r | (.conformance | if type == "array" then . else [] end)[] | . + {number: (.number // $r.number)} ]) as $items |
+         [ ($rows // [])[] | select(.conformance != null) | . as $r | (.conformance | if type == "array" then . else [] end)[] | . + {number: $r.number} ]) as $items |
         ([ $items[] | . as $item |
            if ($item | type != "object") then "conformance defect entry must be an object"
            elif ($item.number == null or ($item.number | type != "number") or ($item.number <= 0) or ($open_numbers | index($item.number) | not)) then "conformance defect requires positive number from scanned backlog"
            elif ($item.kind == null or ($item.kind | type != "string") or (($item.kind | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "conformance defect requires nonempty kind"
+           elif (["title", "labels", "body", "claim", "assignee"] | index(($item.kind | tostring) | ascii_downcase) | not) then "conformance defect kind must be one of: title, labels, body, claim, assignee"
            elif ($item.defect == null or ($item.defect | type != "string") or (($item.defect | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "conformance defect requires nonempty defect"
            elif ($item.fix != null and (($item.fix | type != "string") or (($item.fix | tostring) | ascii_downcase | IN("a triage apply", "a retitle plan row", "a track-work tick", "a manual edit") | not))) then "conformance defect fix must be one of: a triage apply, a retitle plan row, a track-work tick, a manual edit"
            else empty end
@@ -595,7 +599,7 @@ cmd_join() {
         exit 1
     fi
 
-    jq -n --arg repo "$repo" \
+    jq -n -L "$title_module_dir" --arg repo "$repo" \
         --arg pre_audit_triage "${pre_audit_triage:-}" \
         --slurpfile scan "$scan" \
         --slurpfile rows "$rows_tmp" \
@@ -603,6 +607,7 @@ cmd_join() {
         --slurpfile findings "$pf_tmp" \
         --slurpfile conf_in "$conformance_tmp" \
         --argjson unverified "$missing_json" '
+      include "issue-title";
       def normalize_conf_kind($k):
         ($k | tostring | ascii_downcase) as $l |
         if ($l | test("title")) then "Title"
@@ -646,7 +651,7 @@ cmd_join() {
             }
         ] as $dispositions
       | (((($conf_in[0] // []) | if type == "array" then . else [] end) +
-          [ $dispositions0[] | select(.conformance != null) | . as $r | (.conformance | if type == "array" then . else [] end)[] | . + {number: (.number // $r.number)} ])
+          [ $dispositions0[] | select(.conformance != null) | . as $r | (.conformance | if type == "array" then . else [] end)[] | . + {number: $r.number} ])
          | map({
              number: .number,
              title: ($by_number[(.number|tostring)].title // .title // ""),
@@ -676,16 +681,10 @@ cmd_join() {
           (if (($c.flags // []) | index("legacy-work-type-label") != null) then
              {number: $iss.number, title: $iss.title, kind: "Labels", defect: "legacy work-type label", fix: "a triage apply"}
            else empty end),
-          (if (($c.flags // []) | index("stale-claim-candidate") != null) then
-             {number: $iss.number, title: $iss.title, kind: "Stale claims / assignees", defect: "stale claim candidate", fix: "a manual edit"}
-           else empty end),
-          (if (($c.flags // []) | index("blocked-candidate") != null) then
-             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "blocked candidate", fix: "a manual edit"}
-           else empty end),
           (if (($c.flags // []) | index("aging-needs-candidate") != null) then
              {number: $iss.number, title: $iss.title, kind: "Labels", defect: "aging needs candidate", fix: "a manual edit"}
            else empty end),
-          (if (($iss.body == null or (($iss.body | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "")) or (($c.flags // []) | index("empty-body") != null)) then
+          (if (($iss.body == null or ($iss.body | is_blank_body)) or (($c.flags // []) | index("empty-body") != null)) then
              {number: $iss.number, title: $iss.title, kind: "Body profile", defect: "empty body", fix: "a manual edit"}
            else empty end),
           (($c.flags // [])[] | select(startswith("axis-missing:")) |

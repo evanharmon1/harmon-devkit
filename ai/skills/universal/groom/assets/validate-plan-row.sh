@@ -108,9 +108,9 @@ retitle_loses_wording() {
         issue_title_outcome
         | until(
             . as $b
-            | (sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")) as $a
+            | (sub("^(\\[(P[0-9]+|bug|feature|task|research|documentation|question|enhancement|build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")) as $a
             | $b == $a;
-            sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
+            sub("^(\\[(P[0-9]+|bug|feature|task|research|documentation|question|enhancement|build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
           )
         | gsub("[[:space:]]+"; " ")
         | sub("^ "; "")
@@ -128,13 +128,7 @@ retitle_loses_wording() {
 
 is_blank_body() {
     local body="$1"
-    jq -rn --arg b "$body" '
-      def is_blank_codepoint:
-        . < 32 or (. >= 127 and . <= 159) or . == 32 or . == 160 or . == 5760
-        or (. >= 8192 and . <= 8205) or . == 8232 or . == 8233
-        or . == 8239 or . == 8287 or . == 8288 or . == 12288 or . == 65279;
-      ($b | explode | all(is_blank_codepoint))
-    '
+    jq -rn -L "$title_module_dir" --arg b "$body" 'include "issue-title"; ($b | is_blank_body)'
 }
 
 validate_retitle() {
