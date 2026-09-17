@@ -13,6 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 fail() {
+    # shell-robustness: ok — always exits, so its status is never read
     echo "TEST FAIL: $*" >&2
     exit 1
 }
