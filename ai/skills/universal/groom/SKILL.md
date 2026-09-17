@@ -175,19 +175,21 @@ process findings as prose in its final message (not in the JSONL file).
 
 ## Step 3 — Consolidate
 
-Collect the subagents' parent/milestone proposals from their summaries into
-one JSON file before joining, so the report can render them (rather than
-carrying them by hand):
+Collect the subagents' parent/milestone proposals, spec-worthy themes, and
+process findings from their summaries into one JSON file before joining, so
+the report can render them (rather than carrying them by hand):
 
 ```sh
 cat >"$SCRATCH/proposals.json" <<'JSON'
 {"parents":[{"parent":12,"title":"CI hardening","children":[45,46]}],
- "milestones":[{"action":"rename","title":"v1","new_title":"v1.1","issues":[45,46]}]}
+ "milestones":[{"action":"rename","title":"v1","new_title":"v1.1","issues":[45,46],"reason":"extend scope"}],
+ "themes":[{"title":"Report engine redesign","issues":[1061,1062,1063],"reason":"cohesive architectural refresh","recommended_vehicle":"openspec"}],
+ "process_findings":[{"finding":"Issue titles truncated by bulk retitle","recommended_action":"Restore full titles from git log history"}]}
 JSON
 ```
 
 Omit fields/entries you have nothing to propose this run — an empty
-`{"parents":[],"milestones":[]}` is fine.
+`{"parents":[],"milestones":[],"themes":[],"process_findings":[]}` is fine.
 
 Validate and join every cluster's verdict file into one dataset. `shopt -s
 nullglob` first so a clean run with zero cluster files (nothing to verify
@@ -203,20 +205,17 @@ shopt -s nullglob
 
 `groom-verdicts.sh` refuses (naming the issue) any `CLOSE-*` row missing
 evidence, any unknown verdict, or any `NEEDS-DECISION` row missing a
-`question`. It then checks COVERAGE against the scan: a duplicate verdict row
-for the same issue, or a verdict row for a number that is not in
-`scan.open`, is always refused; an open issue with no verdict row at all
-(a subagent skipped it) is refused too, unless you pass `--allow-missing`,
-in which case those numbers land in `stats.unverified` and the report shows
-an "Unverified" section instead of silently shipping an incomplete dataset.
-Zero cluster files is accepted only when `scan.open` is itself empty. Fix the
-offending subagent's file (or re-dispatch it) and re-run before continuing —
-never hand-patch around a refusal, and do not reach for `--allow-missing` to
-paper over a subagent that should be re-run.
-
-Collect the subagents' process findings from their summaries into your own
-notes; there is no dedicated dataset field for those yet — carry them into
-the report by hand for now.
+`question` or `recommendation`. It validates `themes` and `process_findings`
+in `--proposals` (or `--findings`). It then checks COVERAGE against the scan:
+a duplicate verdict row for the same issue, or a verdict row for a number
+that is not in `scan.open`, is always refused; an open issue with no verdict
+row at all (a subagent skipped it) is refused too, unless you pass
+`--allow-missing`, in which case those numbers land in `stats.unverified` and
+the report shows an "Unverified" section instead of silently shipping an
+incomplete dataset. Zero cluster files is accepted only when `scan.open` is
+itself empty. Fix the offending subagent's file (or re-dispatch it) and
+re-run before continuing — never hand-patch around a refusal, and do not reach
+for `--allow-missing` to paper over a subagent that should be re-run.
 
 ## Step 4 — Report
 
@@ -227,8 +226,9 @@ the report by hand for now.
 
 Sections, in this fixed order: Stats; What to do next; Close now (grouped by
 verdict, every entry showing number **and title**); Milestones; Parent
-issues; Decisions (with a status column); Process findings; Bot-owned issues;
-Unverified (only rendered when `stats.unverified` is nonempty — see Step 3's
+issues; Spec-worthy themes; Decisions (with a status column); Completed this
+run; Process findings (two-column table); Bot-owned issues; Unverified (only
+rendered when `stats.unverified` is nonempty — see Step 3's
 `--allow-missing`); Every issue (full table, inline filter/search).
 
 **Publish the HTML with the Artifact tool when it is available** — private by
@@ -314,13 +314,17 @@ or the committed path) — the report is the single view of what is done.
 ## Step 7 — Hand-off
 
 Recommend a `/triage` run next. Summarize what was decided but deliberately
-not started (a milestone rename that needs a name the maintainer has not
-picked, a cross-repo transfer that needs confirmation) so the next run — or
-the next person — knows what is still open without re-deriving it.
+not started (a milestone rename or closure that needs confirmation, unstarted
+spec themes, a cross-repo transfer) so the next run — or the next person —
+knows what is still open without re-deriving it. Never refer to an issue by
+number alone — always carry both number and title together (e.g. `#12 Fix the
+parser`). Include a recommended resolution and how to respond for every
+decision and process finding.
 
 ## Summary
 
-End with exactly this shape:
+End with exactly this shape (always carrying number and title together for any
+referenced issue, and including recommendations for all findings and decisions):
 
 ```text
 Groom run — <AUDIT | APPLY> over <repo>
