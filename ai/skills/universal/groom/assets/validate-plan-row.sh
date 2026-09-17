@@ -92,19 +92,59 @@ validate_close() {
             local plan_unticked
             plan_unticked="$(jq -r '.unticked // false' <<<"$row")"
             if [ "$plan_unticked" = "true" ]; then
-                echo "NOTE #$issue close reason is completed but the plan row's own 'unticked' hint says an acceptance item is still unchecked — verify before approving" >&2
+                echo "NOTE #$issue close reason is completed but the plan row's own 'unticked' hint says an acceptance item is still unchecked — verify before approving"
             fi
         fi
     fi
 }
 
+retitle_loses_wording() {
+    local prev="$1" new="$2"
+    [ -r "$title_module_dir/issue-title.jq" ] ||
+        die 2 "shared issue-title predicate is missing: $title_module_dir/issue-title.jq"
+    jq -n -L "$title_module_dir" --arg prev "$prev" --arg new "$new" '
+      include "issue-title";
+      def clean_outcome:
+        issue_title_outcome
+        | until(
+            . as $b
+            | (sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")) as $a
+            | $b == $a;
+            sub("^(\\[[^\\]]*\\]\\s*:?\\s*|(bug|feature|task|research|documentation|question|enhancement):\\s*|(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([^)]*\\))?!?:\\s*|P[0-9]+:\\s*)"; ""; "i")
+          )
+        | gsub("[[:space:]]+"; " ")
+        | sub("^ "; "")
+        | sub(" $"; "");
+      if $prev == $new then false
+      else
+        (($prev | clean_outcome) as $p | ($new | clean_outcome) as $n |
+          if ($p | length) == 0 then false
+          else ($n | contains($p) | not)
+          end
+        )
+      end
+    '
+}
+
+is_blank_body() {
+    local body="$1"
+    jq -rn --arg b "$body" '
+      def is_blank_codepoint:
+        . < 32 or (. >= 127 and . <= 159) or . == 32 or . == 160 or . == 5760
+        or (. >= 8192 and . <= 8205) or . == 8232 or . == 8233
+        or . == 8239 or . == 8287 or . == 8288 or . == 12288 or . == 65279;
+      ($b | explode | all(is_blank_codepoint))
+    '
+}
+
 validate_retitle() {
     local repo="$1" row="$2" execute="$3"
-    local issue title previous_title
+    local issue title previous_title preserve_original
     issue="$(jq -r '.issue // empty' <<<"$row")"
     guard_issue_number "$issue"
     title="$(jq -r '.title // empty' <<<"$row")"
     previous_title="$(jq -r '.previous_title // empty' <<<"$row")"
+    preserve_original="$(jq -r '.preserve_original // false' <<<"$row")"
     [ -n "$title" ] && [ -n "$previous_title" ] ||
         die 2 "refused: #$issue retitle needs both title and previous_title"
     refuse_if_bot "$repo" "$issue" "$row" "$execute" retitle
@@ -114,12 +154,32 @@ validate_retitle() {
         >/dev/null || die 4 "refused: #$issue retitle failed check-issue-metadata.sh --title-only"
 
     if [ "$execute" -eq 1 ]; then
-        local live_json live_title
-        live_json="$(gh issue view "$issue" --repo "$repo" --json title)" ||
-            die 2 "could not re-read the live title of $repo#$issue"
+        local live_json live_title live_body
+        live_json="$(gh issue view "$issue" --repo "$repo" --json title,body)" ||
+            die 2 "could not re-read the live title and body of $repo#$issue"
         live_title="$(jq -r '.title // empty' <<<"$live_json")"
+        live_body="$(jq -r '.body // ""' <<<"$live_json")"
+        local loses_wording
+        loses_wording="$(retitle_loses_wording "$previous_title" "$title")"
         if [ "$live_title" != "$previous_title" ]; then
-            die 4 "refused: #$issue live title '$live_title' no longer matches plan's previous_title '$previous_title' — concurrent edit detected, aborting"
+            if [ "$live_title" = "$title" ]; then
+                if [ "$preserve_original" = "true" ] && [ "$loses_wording" = "true" ] && ! grep -qF '<!-- groom-original-title -->' <<<"$live_body"; then
+                    echo "NOTE #$issue title already updated to '$title'; original title preservation will be resumed" >&2
+                else
+                    echo "NOTE #$issue title already updated to '$title'; row already applied" >&2
+                fi
+            else
+                die 4 "refused: #$issue's live title no longer matches the plan's previous_title (expected '$previous_title', found '$live_title') — refresh the plan and re-approve"
+            fi
+        fi
+        if [ "$loses_wording" = "true" ]; then
+            if [ "$(is_blank_body "$live_body")" = "true" ] && [ "$preserve_original" != "true" ]; then
+                die 4 "refused: #$issue retitle loses original title wording on an empty body — track-work's retitle contract requires preserve_original: true on the plan row to preserve wording"
+            fi
+            if [ "$preserve_original" = "true" ]; then
+                command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 ||
+                    die 2 "sha256sum or shasum is required to compute body digest for #$issue"
+            fi
         fi
     fi
 }

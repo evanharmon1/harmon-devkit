@@ -530,6 +530,21 @@ printf '%s\n' "$bad_conf_kind" >"$tmp/bad-conf.json"
     fail "join must refuse conformance with empty kind"
 grep -q "conformance defect requires nonempty kind" "$tmp/err" ||
     fail "refusal must cite nonempty kind"
+echo "==> validate: a verdict file with non-array conformance is refused"
+bad_conf_verdict="$tmp/bad-conf-verdict.jsonl"
+cat >"$bad_conf_verdict" <<'JSON'
+{"number":1,"verdict":"KEEP","priority":"low","evidence":"","reason":"valid","group":"ci","conformance":"not-an-array"}
+JSON
+[ "$(run "$verdicts" validate "$bad_conf_verdict")" = 1 ] ||
+    fail "validate must refuse verdict row with non-array conformance"
+grep -q "conformance must be a JSON array" "$tmp/err" ||
+    fail "refusal must explain conformance must be a JSON array"
+
+echo "==> join: refuses verdict row with non-array conformance"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/bad-conf-row-out.json" "$bad_conf_verdict")" = 1 ] ||
+    fail "join must refuse verdict row with non-array conformance"
+grep -q "conformance must be a JSON array" "$tmp/err" ||
+    fail "refusal must cite conformance must be a JSON array"
 
 echo "==> join: refuses when the scan's repo differs from --repo (Codex 4012885488)"
 other_repo_scan="$tmp/other-repo-scan.json"
@@ -691,6 +706,28 @@ grep -q "### Title" "$conf_md" || fail "markdown must group conformance defects 
 grep -q "(proposed fix: a retitle plan row)" "$conf_md" || fail "markdown must show proposed fix"
 grep -q 'id="conformance"' "$conf_html" || fail "HTML must render conformance section"
 grep -q 'Pre-audit triage' "$conf_html" || fail "HTML must show pre-audit triage stat"
+
+echo "==> report: conformance defects prevent clean backlog message and show in What to do next"
+conf_defect_disp="$tmp/conf-defect-disp.json"
+cat >"$conf_defect_disp" <<'JSON'
+{
+  "repo": "o/r",
+  "dispositions": [],
+  "stats": {"open_total": 1, "close_candidates": 0, "decisions": 0, "high_priority": 0, "unverified": []},
+  "conformance_defects": [{"number": 1, "title": "t", "kind": "Title", "defect": "malformed title", "fix": "a retitle plan row"}]
+}
+JSON
+conf_defect_md="$tmp/conf-defect-report.md"
+conf_defect_html="$tmp/conf-defect-report.html"
+run "$report" render --dispositions "$conf_defect_disp" --out-html "$conf_defect_html" --out-md "$conf_defect_md" >/dev/null
+grep -q "Nothing to do — backlog is clean" "$conf_defect_md" &&
+    fail "conformance defects must prevent clean backlog message in markdown"
+grep -q "Nothing to do — backlog is clean" "$conf_defect_html" &&
+    fail "conformance defects must prevent clean backlog message in html"
+grep -q "Resolve 1 conformance defect" "$conf_defect_md" ||
+    fail "What to do next must note conformance defects in markdown"
+grep -q "Resolve 1 conformance defect" "$conf_defect_html" ||
+    fail "What to do next must note conformance defects in html"
 
 echo "==> SKILL.md: documents pre-audit triage pass and scratch sharing (Issue #1064, AC4)"
 grep -q "Pre-audit triage pass" "./ai/skills/universal/groom/SKILL.md" ||

@@ -109,10 +109,31 @@ done
 guard_repo_binding "$repo"
 guard_out_path "$out"
 
+# Issue bodies at real-repo scale can exceed ARG_MAX via --argjson; a temp file
+# + --slurpfile read does not share that limit (same fix triage-scan.sh uses).
+scan_tmp="$(mktemp -d)" || die "could not create a temp directory"
+trap 'rm -rf "$scan_tmp"' EXIT
+
+owner_type="$(gh api "repos/$repo" -q .owner.type 2>"$scan_tmp/owner.err")" ||
+    die "could not determine owner type of $repo: $(cat "$scan_tmp/owner.err" 2>/dev/null)"
+
 open_fields="number,title,body,labels,milestone,assignees,author,createdAt,updatedAt,blockedBy,blocking"
-open_json="$(gh issue list --repo "$repo" --state open --limit "$limit" \
-    --json "$open_fields")" ||
-    die "could not list open issues of $repo"
+native_type_mode="n/a"
+open_json=""
+if [ "$owner_type" = "Organization" ]; then
+    native_type_mode="per-issue"
+    if open_json="$(gh issue list --repo "$repo" --state open \
+        --limit "$limit" --json "$open_fields,issueType" 2>/dev/null)"; then
+        native_type_mode="bulk"
+    else
+        open_json=""
+    fi
+fi
+if [ -z "$open_json" ]; then
+    open_json="$(gh issue list --repo "$repo" --state open --limit "$limit" \
+        --json "$open_fields")" ||
+        die "could not list open issues of $repo"
+fi
 
 open_count="$(jq length <<<"$open_json")"
 if [ "$open_count" -ge "$limit" ]; then
@@ -130,10 +151,6 @@ if gh project list --owner "$owner" --format json >/dev/null 2>&1; then
     board_access="available"
 fi
 
-# Issue bodies at real-repo scale can exceed ARG_MAX via --argjson; a temp file
-# + --slurpfile read does not share that limit (same fix triage-scan.sh uses).
-scan_tmp="$(mktemp -d)" || die "could not create a temp directory"
-trap 'rm -rf "$scan_tmp"' EXIT
 printf '%s' "$open_json" >"$scan_tmp/open.json"
 
 # --paginate on an array-shaped endpoint writes ONE JSON array per page to
@@ -156,33 +173,22 @@ gh api "repos/$repo/milestones" --paginate -X GET -f state=all \
     -f per_page=100 >"$scan_tmp/milestones.pages" 2>"$scan_tmp/milestones.err" ||
     die "could not list milestones of $repo: $(cat "$scan_tmp/milestones.err")"
 
-owner_type="$(gh api "repos/$repo" -q .owner.type 2>/dev/null || echo "User")"
-native_type_mode="n/a"
-if [ "$owner_type" = "Organization" ]; then
-    native_type_mode="unknown"
-fi
-
 triage_apply="$script_dir/../../triage/assets/triage-apply.sh"
 manifest="./label-registry.json"
 [ -f "$manifest" ] || manifest=""
 manifest_arg=()
 [ -z "$manifest" ] || manifest_arg=(--manifest "$manifest")
 
-allowlist=""
-work_types=""
-axes=""
-axis_values=""
-if [ -x "$triage_apply" ]; then
-    allowlist="$("$triage_apply" allowlist --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"} 2>/dev/null)" || allowlist=""
-    work_types="$("$triage_apply" work-types --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"} 2>/dev/null)" || work_types=""
-    axes="$("$triage_apply" axes --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"} 2>/dev/null)" || axes=""
-    axis_values="$("$triage_apply" axis-values --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"} 2>/dev/null)" || axis_values=""
-fi
-if [ -z "$axes" ]; then
-    axes="area layer domain"
-    axis_values=""
-    work_types="bug feature task research documentation question"
-fi
+[ -x "$triage_apply" ] || die "triage-apply.sh is missing or not executable at $triage_apply"
+
+allowlist="$("$triage_apply" allowlist --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"})" ||
+    die "could not compute the classification allowlist via triage-apply.sh"
+work_types="$("$triage_apply" work-types --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"})" ||
+    die "could not compute the recognized work-type vocabulary via triage-apply.sh"
+axes="$("$triage_apply" axes --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"})" ||
+    die "could not compute the active classification axes via triage-apply.sh"
+axis_values="$("$triage_apply" axis-values --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"})" ||
+    die "could not compute the recognized axis values via triage-apply.sh"
 
 axes_json="$(printf '%s\n' "$axes" | jq -R . | jq -s 'map(select(. != ""))')"
 known_json="$(printf '%s\n' "$axis_values" | jq -R . | jq -s 'map(select(. != ""))')"

@@ -96,7 +96,7 @@ guessing when it is not.
 
 Before clustering and fanning out to subagents (Step 2), check whether the backlog requires a triage pass first:
 
-- **When to run**: By default, run a triage pass when `scan.json` reveals unclassified issues (e.g., more than a threshold of issues carry `missing-work-type` or `needs-triage` flags, or >10% of the open backlog lacks taxonomy classification). Running a triage pass first ensures issues carry proper area/domain and work-type labels, which produces coherent domain clusters for Step 2.
+- **When to run**: Run a triage pass whenever `unclassified > 5` or `(unclassified / total_open) > 0.10` (where `unclassified` is the count of open issues carrying `missing-work-type` or `needs-triage` flags). Running a triage pass first ensures issues carry proper area/domain and work-type labels, which produces coherent domain clusters for Step 2.
 - **Sharing `$SCRATCH`**: Both skills run in the same `$SCRATCH` workspace. Triage writes its scan to `$SCRATCH/triage-scan.json` and its report to `$SCRATCH/triage-report.md`. Both skills share the underlying scan projection (`ai/skills/universal/issue-title-support/assets/issue-conformance.jq`) and label vocabulary discovery (`ai/skills/universal/triage/assets/triage-apply.sh`).
 - **Reporting**: Groom's consolidation step records whether the pre-audit triage pass ran via `groom-verdicts.sh join ... --pre-audit-triage <ran|not run>`, and the generated report's `## Stats` summary block explicitly reports `- Pre-audit triage pass: <ran|not run>`.
 
@@ -235,7 +235,7 @@ for `--allow-missing` to paper over a subagent that should be re-run.
 Sections, in this fixed order: Stats; What to do next; Close now (grouped by
 verdict, every entry showing number **and title**); Milestones; Parent
 issues; Spec-worthy themes; Decisions (with a status column); Completed this
-run; Process findings (two-column table); Bot-owned issues; Unverified (only
+run; Process findings (two-column table); Conformance; Bot-owned issues; Unverified (only
 rendered when `stats.unverified` is nonempty — see Step 3's
 `--allow-missing`); Every issue (full table, inline filter/search).
 

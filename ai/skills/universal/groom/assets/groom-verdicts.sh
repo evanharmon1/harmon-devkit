@@ -263,6 +263,11 @@ validate_files() {
                     continue
                 fi
             fi
+            if jq -e '.conformance != null and (.conformance | type != "array")' <<<"$line" >/dev/null 2>&1; then
+                echo "groom-verdicts: refused: $file:$lineno issue '#$number' — conformance must be a JSON array" >&2
+                bad=$((bad + 1))
+                continue
+            fi
         done <"$file"
     done
     # Cap the returned status at 1, never return the raw count (Codex review
@@ -569,16 +574,22 @@ cmd_join() {
     local conf_bad
     conf_bad="$(jq -r --slurpfile scan "$scan" --slurpfile c "$conformance_tmp" --slurpfile rows "$rows_tmp" '
       (($scan[0].open // []) | map(.number)) as $open_numbers |
-      ((($c[0] // []) | if type == "array" then . else [] end) +
-       [ ($rows // [])[] | select(.conformance != null) | . as $r | (.conformance | if type == "array" then . else [] end)[] | . + {number: (.number // $r.number)} ]) as $items |
-      ([ $items[] | . as $item |
-         if ($item | type != "object") then "conformance defect entry must be an object"
-         elif ($item.number == null or ($item.number | type != "number") or ($item.number <= 0) or ($open_numbers | index($item.number) | not)) then "conformance defect requires positive number from scanned backlog"
-         elif ($item.kind == null or ($item.kind | type != "string") or (($item.kind | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "conformance defect requires nonempty kind"
-         elif ($item.defect == null or ($item.defect | type != "string") or (($item.defect | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "conformance defect requires nonempty defect"
-         elif ($item.fix != null and (($item.fix | type != "string") or (($item.fix | tostring) | ascii_downcase | IN("a triage apply", "a retitle plan row", "a track-work tick", "a manual edit") | not))) then "conformance defect fix must be one of: a triage apply, a retitle plan row, a track-work tick, a manual edit"
-         else empty end
-      ] | first // "")
+      (if ([$rows[] | select(.conformance != null and (.conformance | type != "array"))] | length > 0)
+       then "conformance on verdict row must be a JSON array"
+       else "" end) as $row_conf_err |
+      if $row_conf_err != "" then $row_conf_err
+      else
+        ((($c[0] // []) | if type == "array" then . else [] end) +
+         [ ($rows // [])[] | select(.conformance != null) | . as $r | (.conformance | if type == "array" then . else [] end)[] | . + {number: (.number // $r.number)} ]) as $items |
+        ([ $items[] | . as $item |
+           if ($item | type != "object") then "conformance defect entry must be an object"
+           elif ($item.number == null or ($item.number | type != "number") or ($item.number <= 0) or ($open_numbers | index($item.number) | not)) then "conformance defect requires positive number from scanned backlog"
+           elif ($item.kind == null or ($item.kind | type != "string") or (($item.kind | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "conformance defect requires nonempty kind"
+           elif ($item.defect == null or ($item.defect | type != "string") or (($item.defect | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "conformance defect requires nonempty defect"
+           elif ($item.fix != null and (($item.fix | type != "string") or (($item.fix | tostring) | ascii_downcase | IN("a triage apply", "a retitle plan row", "a track-work tick", "a manual edit") | not))) then "conformance defect fix must be one of: a triage apply, a retitle plan row, a track-work tick, a manual edit"
+           else empty end
+        ] | first // "")
+      end
     ' <<<"{}")"
     if [ -n "$conf_bad" ]; then
         echo "groom-verdicts: refused: $conf_bad" >&2
@@ -645,7 +656,7 @@ cmd_join() {
              fix: normalize_conf_fix(.fix; .kind)
            })) as $subagent_defects
       | [ ($scan.open // [])[] | . as $iss | ($iss.conformance // {}) as $c |
-          (if ($c.title_valid == false) then
+          (if ($c.title_valid == false or (($c.flags // []) | index("title-malformed") != null)) then
              {number: $iss.number, title: $iss.title, kind: "Title", defect: "malformed issue title", fix: "a retitle plan row"}
            else empty end),
           (if (($c.flags // []) | index("title-long") != null) then
@@ -660,8 +671,23 @@ cmd_join() {
           (if (($c.flags // []) | index("partially-classified") != null) then
              {number: $iss.number, title: $iss.title, kind: "Labels", defect: "partially classified", fix: "a triage apply"}
            else empty end),
+          (if (($c.flags // []) | index("needs-triage-removable") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "needs-triage label is removable", fix: "a triage apply"}
+           else empty end),
+          (if (($c.flags // []) | index("legacy-work-type-label") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "legacy work-type label", fix: "a triage apply"}
+           else empty end),
           (if (($c.flags // []) | index("stale-claim-candidate") != null) then
              {number: $iss.number, title: $iss.title, kind: "Stale claims / assignees", defect: "stale claim candidate", fix: "a manual edit"}
+           else empty end),
+          (if (($c.flags // []) | index("blocked-candidate") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "blocked candidate", fix: "a manual edit"}
+           else empty end),
+          (if (($c.flags // []) | index("aging-needs-candidate") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "aging needs candidate", fix: "a manual edit"}
+           else empty end),
+          (if (($iss.body == null or (($iss.body | gsub("^[[:space:]]+|[[:space:]]+$"; "")) == "")) or (($c.flags // []) | index("empty-body") != null)) then
+             {number: $iss.number, title: $iss.title, kind: "Body profile", defect: "empty body", fix: "a manual edit"}
            else empty end),
           (($c.flags // [])[] | select(startswith("axis-missing:")) |
              {number: $iss.number, title: $iss.title, kind: "Labels", defect: ., fix: "a triage apply"}),

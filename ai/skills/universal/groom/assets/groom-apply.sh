@@ -877,17 +877,19 @@ cmd_apply_plan() {
         seen_keys="$(printf '%s\n%s' "$seen_keys" "$key")"
     done
 
+    local validate_script="$script_dir/validate-plan-row.sh"
+    [ -x "$validate_script" ] || die 2 "validate-plan-row.sh is missing: $validate_script"
+
     # Pass 1 — validate every row; write NOTHING (finding 5). A refusal here
     # aborts before pass 2 has run at all, so no earlier row in the plan has
     # been written either.
     for line in "${lines[@]+"${lines[@]}"}"; do
         lineno=$((lineno + 1))
         [ -n "$line" ] || continue
+        "$validate_script" --repo "$repo" --row "$line" $([ "$execute" -eq 1 ] && echo "--execute") || exit $?
         op="$(jq -r '.op // empty' <<<"$line")"
         case "$op" in
-        close) validate_close "$repo" "$line" "$execute" ;;
-        retitle) validate_retitle "$repo" "$line" "$execute" ;;
-        label) validate_label "$repo" "$line" "$execute" ;;
+        close | retitle | label) ;;
         milestone-assign) validate_milestone_assign "$repo" "$line" "$execute" ;;
         sub-issue-link) validate_sub_issue_link "$repo" "$line" "$execute" "$lineno" ;;
         *) die 4 "refused: plan-file line $lineno has an unknown op '$op'" ;;

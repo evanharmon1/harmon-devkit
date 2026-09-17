@@ -12,7 +12,7 @@
 # Close now (table, every entry showing number AND title); Milestones;
 # Parent issues; Spec-worthy themes; Decisions (ranked into top five, next
 # ten, remainder by area with callouts and response lines); Completed this run;
-# Process findings (two-column table); Bot-owned issues; Unverified (only when
+# Process findings (two-column table); Conformance; Bot-owned issues; Unverified (only when
 # the dataset carries any — stats.unverified, from groom-verdicts.sh join
 # --allow-missing); Every issue (full table with inline filter/search).
 #
@@ -242,8 +242,9 @@ cmd_render() {
         (if ($decisions|length) > 0 then "1. Answer \($decisions|length) decision(s) below." else empty end),
         (if ($themes|length) > 0 then "1. Review \($themes|length) spec-worthy theme proposal(s) below." else empty end),
         (if ($findings|length) > 0 then "1. Review \($findings|length) process finding(s) below." else empty end),
+        (if ($conf_defects|length) > 0 then "1. Resolve \($conf_defects|length) conformance defect(s) below." else empty end),
         (if ($close|length) == 0 and ($decisions|length) == 0 and ($themes|length) == 0 and ($findings|length) == 0
-            and ($unverified|length) == 0
+            and ($conf_defects|length) == 0 and ($unverified|length) == 0
          then "Nothing to do — backlog is clean this run." else empty end),
         "",
         "## Close now",
@@ -467,8 +468,8 @@ cmd_render() {
       | ($stats.unverified // []) as $unverified
       | ($d.conformance_defects // []) as $conf_defects
 
-      # Ranking decisions: priority (P0 > P1 > P2 > P3), blocked-by count (descending), age (descending)
-      | ($decisions | sort_by([ pscore, (- (.blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
+      # Ranking decisions: priority (P0 > P1 > P2 > P3), blocking count (descending), age (descending)
+      | ($decisions | sort_by([ pscore, (- (.blocking_count // .blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
       | ($decisions_ranked[0:5]) as $top_five
       | ($decisions_ranked[5:15]) as $next_ten
       | ($decisions_ranked[15:]) as $remainder
@@ -669,8 +670,9 @@ cmd_render() {
         (if ($decisions|length) > 0 then "<li>Answer \($decisions|length) decision(s) below.</li>" else empty end),
         (if ($themes|length) > 0 then "<li>Review \($themes|length) spec-worthy theme proposal(s) below.</li>" else empty end),
         (if ($findings|length) > 0 then "<li>Review \($findings|length) process finding(s) below.</li>" else empty end),
+        (if ($conf_defects|length) > 0 then "<li>Resolve \($conf_defects|length) conformance defect(s) below.</li>" else empty end),
         (if ($close|length) == 0 and ($decisions|length) == 0 and ($themes|length) == 0 and ($findings|length) == 0
-            and ($unverified|length) == 0
+            and ($conf_defects|length) == 0 and ($unverified|length) == 0
          then "<li>Nothing to do — backlog is clean this run.</li>" else empty end),
         "</ol>",
         "<h2 id=\"close\">Close now</h2>",

@@ -36,6 +36,10 @@ grep -q 'include "issue-conformance";' "ai/skills/universal/triage/assets/triage
     fail "triage-scan.sh must include issue-conformance"
 grep -q 'include "issue-conformance";' "ai/skills/universal/groom/assets/groom-scan.sh" ||
     fail "groom-scan.sh must include issue-conformance"
+grep -q 'issue_conformance(' "ai/skills/universal/triage/assets/triage-scan.sh" ||
+    fail "triage-scan.sh must invoke issue_conformance"
+grep -q 'issue_conformance(' "ai/skills/universal/groom/assets/groom-scan.sh" ||
+    fail "groom-scan.sh must invoke issue_conformance"
 
 echo "==> checking shared title validation reuse"
 grep -q 'include "issue-title";' "ai/skills/universal/triage/assets/triage-scan.sh" ||
@@ -46,6 +50,10 @@ grep -q 'include "issue-title";' "ai/skills/universal/groom/assets/groom-scan.sh
 echo "==> checking groom-scan.sh reuses triage label discovery"
 grep -q 'triage-apply.sh' "ai/skills/universal/groom/assets/groom-scan.sh" ||
     fail "groom-scan.sh must reference triage-apply.sh for label discovery"
+
+echo "==> checking groom-apply.sh uses validate-plan-row.sh in pass 1"
+grep -q 'validate-plan-row.sh' "ai/skills/universal/groom/assets/groom-apply.sh" ||
+    fail "groom-apply.sh must reference validate-plan-row.sh in pass 1"
 
 echo "==> testing shared conformance projection produces identical results across callers"
 fixture_issue='{
