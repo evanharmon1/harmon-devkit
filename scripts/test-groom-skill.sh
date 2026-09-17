@@ -503,6 +503,34 @@ for bad_pf_json in \
         fail "join must refuse malformed process_findings: $bad_pf_json"
 done
 
+echo "==> join: carries and validates --conformance file (Issue #1064, AC2)"
+cat >"$tmp/conformance.json" <<'JSON'
+[
+  {"number": 1, "kind": "title", "defect": "malformed title", "fix": "a retitle plan row"},
+  {"number": 3, "kind": "labels", "defect": "missing work-type", "fix": "a triage apply"}
+]
+JSON
+conf_disp="$tmp/conf-disp.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$conf_disp" --conformance "$tmp/conformance.json" --pre-audit-triage ran "$good")" = 0 ] ||
+    fail "join with --conformance should succeed: $(cat "$tmp/out" "$tmp/err")"
+[ "$(jq '.conformance_defects | length' "$conf_disp")" -ge 2 ] || fail "conformance_defects must be populated"
+[ "$(jq -r '.stats.pre_audit_triage' "$conf_disp")" = "ran" ] || fail "pre_audit_triage must be recorded in stats"
+
+echo "==> join: refuses invalid conformance rows (bad number, missing kind, missing defect)"
+bad_conf_number='[{"number": 999, "kind": "title", "defect": "d"}]'
+printf '%s\n' "$bad_conf_number" >"$tmp/bad-conf.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/bad-conf-out.json" --conformance "$tmp/bad-conf.json" "$good")" = 1 ] ||
+    fail "join must refuse conformance with issue not in scan.open"
+grep -q "conformance defect requires positive number from scanned backlog" "$tmp/err" ||
+    fail "refusal must cite positive number from scanned backlog"
+
+bad_conf_kind='[{"number": 1, "kind": "", "defect": "d"}]'
+printf '%s\n' "$bad_conf_kind" >"$tmp/bad-conf.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/bad-conf-out.json" --conformance "$tmp/bad-conf.json" "$good")" = 1 ] ||
+    fail "join must refuse conformance with empty kind"
+grep -q "conformance defect requires nonempty kind" "$tmp/err" ||
+    fail "refusal must cite nonempty kind"
+
 echo "==> join: refuses when the scan's repo differs from --repo (Codex 4012885488)"
 other_repo_scan="$tmp/other-repo-scan.json"
 cat >"$other_repo_scan" <<'JSON'
@@ -601,7 +629,7 @@ GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$disp" \
     --out-html "$out_html" --out-md "$out_md" >/dev/null
 for section in "## Stats" "## What to do next" "## Close now" "## Milestones" \
     "## Parent issues" "## Spec-worthy themes" "## Decisions" "## Completed this run" \
-    "## Process findings" "## Every issue"; do
+    "## Process findings" "## Conformance" "## Every issue"; do
     grep -qF "$section" "$out_md" || fail "missing section: $section"
 done
 order="$(grep -n '^## ' "$out_md" | cut -d: -f2)"
@@ -614,6 +642,7 @@ expected="## Stats
 ## Decisions
 ## Completed this run
 ## Process findings
+## Conformance
 ## Bot-owned issues (excluded from retitle/close/relabel)
 ## Every issue"
 [ "$order" = "$expected" ] || fail "sections must appear in the required order: got:
@@ -651,6 +680,23 @@ GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$disp" \
     --out-html "$out_html2" --out-md "$out_md2" >/dev/null
 cmp -s "$out_html" "$out_html2" || fail "HTML render must be byte-identical on repeated runs with same GROOM_NOW"
 cmp -s "$out_md" "$out_md2" || fail "Markdown render must be byte-identical on repeated runs with same GROOM_NOW"
+
+echo "==> report: renders Conformance section and pre-audit triage stat (Issue #1064, AC3, AC4)"
+conf_md="$tmp/conf-report.md"
+conf_html="$tmp/conf-report.html"
+run "$report" render --dispositions "$conf_disp" --out-html "$conf_html" --out-md "$conf_md" >/dev/null
+grep -q "## Conformance" "$conf_md" || fail "markdown must render ## Conformance section"
+grep -q "Pre-audit triage pass: ran" "$conf_md" || fail "markdown must report pre-audit triage pass in Stats"
+grep -q "### Title" "$conf_md" || fail "markdown must group conformance defects by kind"
+grep -q "(proposed fix: a retitle plan row)" "$conf_md" || fail "markdown must show proposed fix"
+grep -q 'id="conformance"' "$conf_html" || fail "HTML must render conformance section"
+grep -q 'Pre-audit triage' "$conf_html" || fail "HTML must show pre-audit triage stat"
+
+echo "==> SKILL.md: documents pre-audit triage pass and scratch sharing (Issue #1064, AC4)"
+grep -q "Pre-audit triage pass" "./ai/skills/universal/groom/SKILL.md" ||
+    fail "SKILL.md must document pre-audit triage pass"
+grep -q "triage-scan.json" "./ai/skills/universal/groom/SKILL.md" ||
+    fail "SKILL.md must document scratch sharing with triage"
 
 # ── Issue #1062 & #1063: 20-decision ranking, milestone health, themes, titles ──
 echo "==> report: ranks 20 decisions into Top five (with reasons), Next ten, and Remainder by area"
@@ -799,6 +845,9 @@ grep -qE "^issue (edit|close|comment) " "$GH_STUB_LOG" && fail "scan must never 
 [ "$(jq -r '.milestones[0].number' "$scan_out")" = 1 ] || fail "scan must carry page 1's milestone"
 [ "$(jq -r '.milestones[1].number' "$scan_out")" = 2 ] || fail "scan must carry page 2's milestone"
 [ "$(jq -r '.board_access' "$scan_out")" != "null" ] || fail "scan must note board access"
+[ "$(jq -r '.open[0].conformance.title_valid' "$scan_out")" = "true" ] || fail "scan must attach conformance.title_valid"
+[ "$(jq -r '.open[1].conformance.title_valid' "$scan_out")" = "false" ] || fail "scan must attach conformance.title_valid for issue 2"
+[ "$(jq -r '.open[1].conformance.flags | length' "$scan_out")" -gt 0 ] || fail "scan must compute conformance flags"
 
 echo "==> scan: an empty milestones page flattens to an empty list, not an error"
 cat >"$stub_dir/milestones.json" <<'JSON'

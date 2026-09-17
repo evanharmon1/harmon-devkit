@@ -156,14 +156,56 @@ gh api "repos/$repo/milestones" --paginate -X GET -f state=all \
     -f per_page=100 >"$scan_tmp/milestones.pages" 2>"$scan_tmp/milestones.err" ||
     die "could not list milestones of $repo: $(cat "$scan_tmp/milestones.err")"
 
+owner_type="$(gh api "repos/$repo" -q .owner.type 2>/dev/null || echo "User")"
+native_type_mode="n/a"
+if [ "$owner_type" = "Organization" ]; then
+    native_type_mode="unknown"
+fi
+
+triage_apply="$script_dir/../../triage/assets/triage-apply.sh"
+manifest="./label-registry.json"
+[ -f "$manifest" ] || manifest=""
+manifest_arg=()
+[ -z "$manifest" ] || manifest_arg=(--manifest "$manifest")
+
+allowlist=""
+work_types=""
+axes=""
+axis_values=""
+if [ -x "$triage_apply" ]; then
+    allowlist="$("$triage_apply" allowlist --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"} 2>/dev/null)" || allowlist=""
+    work_types="$("$triage_apply" work-types --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"} 2>/dev/null)" || work_types=""
+    axes="$("$triage_apply" axes --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"} 2>/dev/null)" || axes=""
+    axis_values="$("$triage_apply" axis-values --repo "$repo" ${manifest_arg:+"${manifest_arg[@]}"} 2>/dev/null)" || axis_values=""
+fi
+if [ -z "$axes" ]; then
+    axes="area layer domain"
+    axis_values=""
+    work_types="bug feature task research documentation question"
+fi
+
+axes_json="$(printf '%s\n' "$axes" | jq -R . | jq -s 'map(select(. != ""))')"
+known_json="$(printf '%s\n' "$axis_values" | jq -R . | jq -s 'map(select(. != ""))')"
+wt_json="$(printf '%s\n' "$work_types" | jq -R . | jq -s 'map(select(. != ""))')"
+claim_stale="${TRIAGE_CLAIM_STALE_DAYS:-14}"
+needs_stale="${TRIAGE_NEEDS_STALE_DAYS:-30}"
+
 [ -z "$out" ] || exec >"$out"
 
 jq -n -L "$title_module_dir" \
     --arg repo "$repo" \
     --arg board_access "$board_access" \
+    --arg owner_type "$owner_type" \
+    --arg native_type_mode "$native_type_mode" \
+    --argjson axes "$axes_json" \
+    --argjson known "$known_json" \
+    --argjson wt "$wt_json" \
+    --argjson claim_stale "$claim_stale" \
+    --argjson needs_stale "$needs_stale" \
     --slurpfile open_arr "$scan_tmp/open.json" \
     --slurpfile milestones_arr "$scan_tmp/milestones.pages" '
   include "issue-title";
+  include "issue-conformance";
   def rel_count:
     if type == "object" then (.totalCount // (.nodes // [] | length) // 0)
     elif type == "array" then length
@@ -183,6 +225,11 @@ jq -n -L "$title_module_dir" \
         | ((.author.type == "Bot") or (.author.is_bot == true)
            or (.author.login == "app/renovate")
            or ((.author.login // "") | test("^app/|\\[bot\\]$"))) as $bot_owned
+        | (if $native_type_mode == "bulk"
+           then (if .issueType == null then "unset" else "set" end)
+           elif $owner_type == "Organization" then "unknown"
+           else "n/a" end) as $nts
+        | issue_conformance(.; $axes; $known; $wt; $owner_type; $nts; $claim_stale; $needs_stale) as $conf
         | {
             number, title,
             body: (.body // ""),
@@ -194,10 +241,11 @@ jq -n -L "$title_module_dir" \
             createdAt, updatedAt,
             age_days: $age_days,
             days_since_update: $updated_days,
-            title_valid: (.title | issue_title_valid),
-            title_warn: (.title | issue_title_warn),
+            title_valid: $conf.title_valid,
+            title_warn: $conf.title_warn,
             blocking_count: (.blocking | rel_count),
-            blocked_by_count: (.blockedBy | rel_count)
+            blocked_by_count: (.blockedBy | rel_count),
+            conformance: $conf
           }
       ]
   }'

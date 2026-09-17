@@ -216,6 +216,7 @@ cmd_render() {
       | ($d.proposals.milestones // []) as $milestone_proposals
       | ($d.proposals.themes // []) as $themes
       | ($stats.unverified // []) as $unverified
+      | ($d.conformance_defects // []) as $conf_defects
 
       # Ranking decisions: priority (P0 > P1 > P2 > P3), blocking count (descending), age (descending)
       | ($decisions | sort_by([ pscore, (- (.blocking_count // .blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
@@ -233,6 +234,7 @@ cmd_render() {
         "- Close candidates: \($close|length)",
         "- Decisions needed: \($decisions|length)",
         "- High priority: \($stats.high_priority // 0)",
+        "- Pre-audit triage pass: \($stats.pre_audit_triage // "not run")",
         "",
         "## What to do next",
         "",
@@ -374,6 +376,19 @@ cmd_render() {
            ($findings[] | "| \(if type == "object" then (.finding // "" | mdesc) else (. | mdesc) end) | \(if type == "object" then (.recommended_action // "" | mdesc) else "Review finding" end) (How to respond: reply \"agree\" to apply remediation, or \"decline\") |")
          end),
         "",
+        "## Conformance",
+        "",
+        (if ($conf_defects|length) == 0 then "None recorded this run."
+         else (
+           ($conf_defects | group_by(.kind // "Other")[] |
+            "### \(.[0].kind // "Other" | mdesc)",
+            "",
+            (.[] | "- #\(.number) — \(.title // (ititle($titles; .number) | sub("^#[0-9]+ "; "")) | mdesc) — \(.defect | mdesc) (proposed fix: \(.fix | mdesc))"),
+            ""
+           )
+         )
+         end),
+        "",
         "## Bot-owned issues (excluded from retitle/close/relabel)",
         "",
         (if ($bots|length) == 0 then "None this run."
@@ -450,6 +465,7 @@ cmd_render() {
       | ($d.proposals.milestones // []) as $milestone_proposals
       | ($d.proposals.themes // []) as $themes
       | ($stats.unverified // []) as $unverified
+      | ($d.conformance_defects // []) as $conf_defects
 
       # Ranking decisions: priority (P0 > P1 > P2 > P3), blocked-by count (descending), age (descending)
       | ($decisions | sort_by([ pscore, (- (.blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
@@ -582,6 +598,7 @@ cmd_render() {
         "<a href=\"#decisions\">Decisions</a>",
         "<a href=\"#completed\">Completed this run</a>",
         "<a href=\"#findings\">Process findings</a>",
+        "<a href=\"#conformance\">Conformance</a>",
         "<a href=\"#bots\">Bot-owned</a>",
         "<a href=\"#every-issue\">Every issue</a>",
         "</nav>",
@@ -593,6 +610,7 @@ cmd_render() {
         "<div class=\"stat-card\"><div class=\"stat-num\">\($close|length)</div><div class=\"stat-label\">Close candidates</div></div>",
         "<div class=\"stat-card\"><div class=\"stat-num\">\($decisions|length)</div><div class=\"stat-label\">Decisions needed</div></div>",
         "<div class=\"stat-card\"><div class=\"stat-num\">\($stats.high_priority // 0)</div><div class=\"stat-label\">High priority</div></div>",
+        "<div class=\"stat-card\"><div class=\"stat-num\">\($stats.pre_audit_triage // "not run"|h)</div><div class=\"stat-label\">Pre-audit triage</div></div>",
         "</div>",
         "<h2 id=\"visualizations\">Visualizations</h2>",
         "<div class=\"charts-grid\">",
@@ -797,6 +815,15 @@ cmd_render() {
               + "<p class=\"callout-response\"><strong>How to respond:</strong> Reply &quot;agree&quot; to apply remediation, or &quot;decline&quot;.</p>"
               + "</div>"
               + "</td></tr>"] | join(""))
+           + "</tbody></table>"
+         end),
+        "<h2 id=\"conformance\">Conformance</h2>",
+        (if ($conf_defects|length) == 0 then "<p>None recorded this run.</p>"
+         else
+           "<table><thead><tr><th>#</th><th>Title</th><th>Kind</th><th>Defect</th><th>Proposed fix</th></tr></thead><tbody>"
+           + ([$conf_defects[] |
+              "<tr><td>#\(.number)</td><td>\(.title // ""|h)</td><td>\(.kind // ""|h)</td><td>\(.defect // ""|h)</td><td><span class=\"badge\">\(.fix // ""|h)</span></td></tr>"
+             ] | join(""))
            + "</tbody></table>"
          end),
         "<h2 id=\"bots\">Bot-owned issues (excluded from retitle/close/relabel)</h2>",
