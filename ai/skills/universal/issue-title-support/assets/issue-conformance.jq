@@ -140,7 +140,7 @@ def issue_conformance($issue; $axes; $known; $wt; $owner_type; $nts; $claim_stal
         | "axis-unknown-value:\($a)"),
        (if $needs_triage_worthy and (($ls | index("needs-triage")) == null)
         then "missing-needs-triage" else empty end),
-       (if $owner_type == "Organization" and ($have_wt | length) > 0 and $nts == "unset"
+       (if $owner_type == "Organization" and ($have_wt | length) > 0 and $nts != "set"
         then "legacy-work-type-label" else empty end),
        (if $incomplete and (($ls | index("needs-triage")) != null)
         then "partially-classified" else empty end),
