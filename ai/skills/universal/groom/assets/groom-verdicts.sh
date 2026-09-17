@@ -17,7 +17,7 @@
 #   groom-verdicts.sh validate FILE...
 #   groom-verdicts.sh join --repo owner/repo --scan PATH --out PATH
 #                          [--allow-missing] [--proposals PATH]
-#                          [--findings PATH] FILE...
+#                          [--findings PATH] [--conformance PATH] FILE...
 #
 # `validate` only checks the vocabulary/evidence contract, printing every
 # violation it finds (never stopping at the first) and exiting 1 if any row is
@@ -60,6 +60,9 @@
 #       argument outside GROOM_SCRATCH, when set, or GROOM_SCRATCH itself
 #       does not exist).
 set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+title_module_dir="$script_dir/../../issue-title-support/assets"
 
 usage() {
     echo "Usage: $0 validate FILE..." >&2
@@ -263,6 +266,11 @@ validate_files() {
                     continue
                 fi
             fi
+            if jq -e '.conformance != null and (.conformance | type != "array")' <<<"$line" >/dev/null 2>&1; then
+                echo "groom-verdicts: refused: $file:$lineno issue '#$number' — conformance must be a JSON array" >&2
+                bad=$((bad + 1))
+                continue
+            fi
         done <"$file"
     done
     # Cap the returned status at 1, never return the raw count (Codex review
@@ -286,7 +294,7 @@ cmd_validate() {
 }
 
 cmd_join() {
-    local repo="" scan="" out="" allow_missing=0 proposals="" findings=""
+    local repo="" scan="" out="" allow_missing=0 proposals="" findings="" conformance="" pre_audit_triage=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --repo)
@@ -318,6 +326,16 @@ cmd_join() {
             findings="$2"
             shift 2
             ;;
+        --conformance)
+            [ "$#" -ge 2 ] || usage
+            conformance="$2"
+            shift 2
+            ;;
+        --pre-audit-triage)
+            [ "$#" -ge 2 ] || usage
+            pre_audit_triage="$2"
+            shift 2
+            ;;
         --)
             shift
             break
@@ -331,6 +349,7 @@ cmd_join() {
     guard_scratch_path --out "$out"
     [ -z "$proposals" ] || guard_scratch_path --proposals "$proposals"
     [ -z "$findings" ] || guard_scratch_path --findings "$findings"
+    [ -z "$conformance" ] || guard_scratch_path --conformance "$conformance"
     local f
     for f in "$@"; do
         guard_scratch_path "verdict file" "$f"
@@ -359,12 +378,13 @@ cmd_join() {
         exit 1
     fi
 
-    local rows_tmp proposals_tmp="" findings_tmp="" pf_tmp=""
+    local rows_tmp proposals_tmp="" findings_tmp="" pf_tmp="" conformance_tmp=""
     rows_tmp="$(mktemp)" || die "could not create a temp file"
     proposals_tmp="$(mktemp)" || die "could not create a temp file"
     findings_tmp="$(mktemp)" || die "could not create a temp file"
     pf_tmp="$(mktemp)" || die "could not create a temp file"
-    trap 'rm -f "$rows_tmp" "$proposals_tmp" "$findings_tmp" "$pf_tmp"' RETURN
+    conformance_tmp="$(mktemp)" || die "could not create a temp file"
+    trap 'rm -f "$rows_tmp" "$proposals_tmp" "$findings_tmp" "$pf_tmp" "$conformance_tmp"' RETURN
 
     if [ -n "$proposals" ]; then
         [ -r "$proposals" ] || die "cannot read proposals file: $proposals"
@@ -406,7 +426,7 @@ cmd_join() {
             die "findings file is not valid JSON: $findings"
         cp "$findings" "$findings_tmp"
         local findings_type_bad
-        findings_type_bad="$(jq -r --slurpfile f "$findings_tmp" 'if ($f[0] | type != "array") then "findings file must be a JSON array" else "" end' <<<"{}")"
+        findings_type_bad="$(jq -r --slurpfile f "$findings_tmp" 'if ($f | length != 1) then "findings file must contain exactly one JSON document" elif ($f[0] | type != "array") then "findings file must be a JSON array" else "" end' <<<"{}")"
         if [ -n "$findings_type_bad" ]; then
             echo "groom-verdicts: refused: $findings_type_bad" >&2
             exit 1
@@ -415,6 +435,20 @@ cmd_join() {
         echo "[]" >"$findings_tmp"
     fi
 
+    if [ -n "$conformance" ]; then
+        [ -r "$conformance" ] || die "cannot read conformance file: $conformance"
+        jq -e . "$conformance" >/dev/null 2>&1 ||
+            die "conformance file is not valid JSON: $conformance"
+        cp "$conformance" "$conformance_tmp"
+        local conf_type_bad
+        conf_type_bad="$(jq -r --slurpfile c "$conformance_tmp" 'if ($c | length != 1) then "conformance file must contain exactly one JSON document" elif ($c[0] | type != "array") then "conformance file must be a JSON array" else "" end' <<<"{}")"
+        if [ -n "$conf_type_bad" ]; then
+            echo "groom-verdicts: refused: $conf_type_bad" >&2
+            exit 1
+        fi
+    else
+        echo "[]" >"$conformance_tmp"
+    fi
     # Validate process_findings in proposals (Issue #1062):
     local prop_pf_bad
     prop_pf_bad="$(jq -r --slurpfile p "$proposals_tmp" '
@@ -538,12 +572,59 @@ cmd_join() {
         exit 1
     fi
 
-    jq -n --arg repo "$repo" \
+    # Validate conformance defects in --conformance and/or cluster verdict rows:
+    local conf_bad
+    conf_bad="$(jq -r --slurpfile scan "$scan" --slurpfile c "$conformance_tmp" --slurpfile rows "$rows_tmp" '
+      (($scan[0].open // []) | map(.number)) as $open_numbers |
+      (if ([$rows[] | select(.conformance != null and (.conformance | type != "array"))] | length > 0)
+       then "conformance on verdict row must be a JSON array"
+       else "" end) as $row_conf_err |
+      if $row_conf_err != "" then $row_conf_err
+      else
+        ((($c[0] // []) | if type == "array" then . else [] end) +
+         [ ($rows // [])[] | select(.conformance != null) | . as $r | (.conformance | if type == "array" then . else [] end)[] | . + {number: $r.number} ]) as $items |
+        ([ $items[] | . as $item |
+           if ($item | type != "object") then "conformance defect entry must be an object"
+           elif ($item.number == null or ($item.number | type != "number") or ($item.number <= 0) or ($open_numbers | index($item.number) | not)) then "conformance defect requires positive number from scanned backlog"
+           elif ($item.kind == null or ($item.kind | type != "string") or (($item.kind | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "conformance defect requires nonempty kind"
+           elif (["title", "labels", "body", "claim", "assignee"] | index(($item.kind | tostring) | ascii_downcase) | not) then "conformance defect kind must be one of: title, labels, body, claim, assignee"
+           elif ($item.defect == null or ($item.defect | type != "string") or (($item.defect | tostring) | gsub("^[[:space:]]+|[[:space:]]+$"; "") == "")) then "conformance defect requires nonempty defect"
+           elif ($item.fix != null and (($item.fix | type != "string") or (($item.fix | tostring) | ascii_downcase | IN("a triage apply", "a retitle plan row", "a track-work tick", "a manual edit") | not))) then "conformance defect fix must be one of: a triage apply, a retitle plan row, a track-work tick, a manual edit"
+           else empty end
+        ] | first // "")
+      end
+    ' <<<"{}")"
+    if [ -n "$conf_bad" ]; then
+        echo "groom-verdicts: refused: $conf_bad" >&2
+        exit 1
+    fi
+
+    jq -n -L "$title_module_dir" --arg repo "$repo" \
+        --arg pre_audit_triage "${pre_audit_triage:-}" \
         --slurpfile scan "$scan" \
         --slurpfile rows "$rows_tmp" \
         --slurpfile proposals "$proposals_tmp" \
         --slurpfile findings "$pf_tmp" \
+        --slurpfile conf_in "$conformance_tmp" \
         --argjson unverified "$missing_json" '
+      include "issue-title";
+      def normalize_conf_kind($k):
+        ($k | tostring | ascii_downcase) as $l |
+        if ($l | test("title")) then "Title"
+        elif ($l | test("label")) then "Labels"
+        elif ($l | test("body|criteria")) then "Body profile"
+        elif ($l | test("claim|assignee")) then "Stale claims / assignees"
+        else ($k | tostring) end;
+      def normalize_conf_fix($f; $k):
+        if ($f != null and ($f | tostring | length > 0)) then $f
+        else
+          (normalize_conf_kind($k)) as $nk |
+          if $nk == "Title" then "a retitle plan row"
+          elif $nk == "Labels" then "a triage apply"
+          elif $nk == "Body profile" then "a track-work tick"
+          elif $nk == "Stale claims / assignees" then "a manual edit"
+          else "a manual edit" end
+        end;
       ($scan[0]) as $scan
       | ($rows) as $dispositions0
       | ($proposals[0] // {}) as $proposals
@@ -569,6 +650,51 @@ cmd_join() {
               )
             }
         ] as $dispositions
+      | (((($conf_in[0] // []) | if type == "array" then . else [] end) +
+          [ $dispositions0[] | select(.conformance != null) | . as $r | (.conformance | if type == "array" then . else [] end)[] | . + {number: $r.number} ])
+         | map({
+             number: .number,
+             title: ($by_number[(.number|tostring)].title // .title // ""),
+             kind: normalize_conf_kind(.kind),
+             defect: .defect,
+             fix: normalize_conf_fix(.fix; .kind)
+           })) as $subagent_defects
+      | [ ($scan.open // [])[] | . as $iss | ($iss.conformance // {}) as $c |
+          (if ($c.title_valid == false or (($c.flags // []) | index("title-malformed") != null)) then
+             {number: $iss.number, title: $iss.title, kind: "Title", defect: "malformed issue title", fix: "a retitle plan row"}
+           else empty end),
+          (if (($c.flags // []) | index("title-long") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Title", defect: "title exceeds 100 characters", fix: "a retitle plan row"}
+           else empty end),
+          (if (($c.flags // []) | index("missing-work-type") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "missing work type", fix: "a triage apply"}
+           else empty end),
+          (if (($c.flags // []) | index("missing-needs-triage") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "missing needs-triage label", fix: "a triage apply"}
+           else empty end),
+          (if (($c.flags // []) | index("partially-classified") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "partially classified", fix: "a triage apply"}
+           else empty end),
+          (if (($c.flags // []) | index("needs-triage-removable") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "needs-triage label is removable", fix: "a triage apply"}
+           else empty end),
+          (if (($c.flags // []) | index("legacy-work-type-label") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "legacy work-type label", fix: "a triage apply"}
+           else empty end),
+          (if (($c.flags // []) | index("aging-needs-candidate") != null) then
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: "aging needs candidate", fix: "a manual edit"}
+           else empty end),
+          (if (($iss.body == null or ($iss.body | is_blank_body)) or (($c.flags // []) | index("empty-body") != null)) then
+             {number: $iss.number, title: $iss.title, kind: "Body profile", defect: "empty body", fix: "a manual edit"}
+           else empty end),
+          (($c.flags // [])[] | select(startswith("axis-missing:")) |
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: ., fix: "a triage apply"}),
+          (($c.flags // [])[] | select(startswith("axis-conflict:")) |
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: ., fix: "a triage apply"}),
+          (($c.flags // [])[] | select(startswith("axis-unknown-value:")) |
+             {number: $iss.number, title: $iss.title, kind: "Labels", defect: ., fix: "a triage apply"})
+        ] as $scan_defects
+      | ($subagent_defects + [ $scan_defects[] | . as $sd | select(($subagent_defects | any((.number == $sd.number) and (.defect == $sd.defect))) | not) ]) as $all_defects
       | {
           repo: $repo,
           dispositions: $dispositions,
@@ -580,8 +706,10 @@ cmd_join() {
               ([$dispositions[] | select(.verdict == "NEEDS-DECISION")] | length),
             high_priority:
               ([$dispositions[] | select((.priority // "") | test("(?i)^p[01]$|high"))] | length),
-            unverified: $unverified
+            unverified: $unverified,
+            pre_audit_triage: (if $pre_audit_triage != "" then $pre_audit_triage else ($scan.pre_audit_triage // "not run") end)
           },
+          conformance_defects: $all_defects,
           milestones: ($scan.milestones // []),
           process_findings: $findings,
           proposals: {

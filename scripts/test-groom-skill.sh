@@ -503,6 +503,80 @@ for bad_pf_json in \
         fail "join must refuse malformed process_findings: $bad_pf_json"
 done
 
+echo "==> join: carries and validates --conformance file (Issue #1064, AC2)"
+cat >"$tmp/conformance.json" <<'JSON'
+[
+  {"number": 1, "kind": "title", "defect": "malformed title", "fix": "a retitle plan row"},
+  {"number": 3, "kind": "labels", "defect": "missing work-type", "fix": "a triage apply"}
+]
+JSON
+conf_disp="$tmp/conf-disp.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$conf_disp" --conformance "$tmp/conformance.json" --pre-audit-triage ran "$good")" = 0 ] ||
+    fail "join with --conformance should succeed: $(cat "$tmp/out" "$tmp/err")"
+[ "$(jq '.conformance_defects | length' "$conf_disp")" -ge 2 ] || fail "conformance_defects must be populated"
+[ "$(jq -r '.stats.pre_audit_triage' "$conf_disp")" = "ran" ] || fail "pre_audit_triage must be recorded in stats"
+
+echo "==> join: refuses invalid conformance rows (bad number, missing kind, missing defect)"
+bad_conf_number='[{"number": 999, "kind": "title", "defect": "d"}]'
+printf '%s\n' "$bad_conf_number" >"$tmp/bad-conf.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/bad-conf-out.json" --conformance "$tmp/bad-conf.json" "$good")" = 1 ] ||
+    fail "join must refuse conformance with issue not in scan.open"
+grep -q "conformance defect requires positive number from scanned backlog" "$tmp/err" ||
+    fail "refusal must cite positive number from scanned backlog"
+
+bad_conf_kind='[{"number": 1, "kind": "", "defect": "d"}]'
+printf '%s\n' "$bad_conf_kind" >"$tmp/bad-conf.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/bad-conf-out.json" --conformance "$tmp/bad-conf.json" "$good")" = 1 ] ||
+    fail "join must refuse conformance with empty kind"
+grep -q "conformance defect requires nonempty kind" "$tmp/err" ||
+    fail "refusal must cite nonempty kind"
+
+bad_conf_invalid_kind='[{"number": 1, "kind": "titel", "defect": "d"}]'
+printf '%s\n' "$bad_conf_invalid_kind" >"$tmp/bad-conf.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/bad-conf-out.json" --conformance "$tmp/bad-conf.json" "$good")" = 1 ] ||
+    fail "join must refuse conformance with invalid kind"
+grep -q "conformance defect kind must be one of: title, labels, body, claim, assignee" "$tmp/err" ||
+    fail "refusal must cite allowed conformance defect kinds"
+
+trailing_conf='[{"number": 1, "kind": "title", "defect": "d"}]
+[{"number": 1, "kind": "title", "defect": "d2"}]'
+printf '%s\n' "$trailing_conf" >"$tmp/trailing-conf.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/trailing-conf-out.json" --conformance "$tmp/trailing-conf.json" "$good")" = 1 ] ||
+    fail "join must refuse conformance with trailing JSON document"
+grep -q "conformance file must contain exactly one JSON document" "$tmp/err" ||
+    fail "refusal must cite exactly one JSON document for conformance file"
+
+trailing_findings='[{"finding": "f1", "recommended_action": "a1"}]
+[{"finding": "f2", "recommended_action": "a2"}]'
+printf '%s\n' "$trailing_findings" >"$tmp/trailing-findings.json"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/trailing-findings-out.json" --findings "$tmp/trailing-findings.json" "$good")" = 1 ] ||
+    fail "join must refuse findings with trailing JSON document"
+grep -q "findings file must contain exactly one JSON document" "$tmp/err" ||
+    fail "refusal must cite exactly one JSON document for findings file"
+
+embedded_conf_row='{"number":1,"verdict":"KEEP","priority":"low","evidence":"","reason":"valid","group":"ci","conformance":[{"number":2,"kind":"title","defect":"d"}]}'
+printf '%s\n' "$embedded_conf_row" >"$tmp/embedded-conf-verdict.jsonl"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --allow-missing --out "$tmp/embedded-conf-out.json" "$tmp/embedded-conf-verdict.jsonl")" = 0 ] ||
+    fail "join with embedded conformance should succeed: $(cat "$tmp/out" "$tmp/err")"
+[ "$(jq -r '.conformance_defects[0].number' "$tmp/embedded-conf-out.json")" = "1" ] ||
+    fail "embedded conformance defect must be bound to verdict row number 1, got $(jq -r '.conformance_defects[0].number' "$tmp/embedded-conf-out.json")"
+
+echo "==> validate: a verdict file with non-array conformance is refused"
+bad_conf_verdict="$tmp/bad-conf-verdict.jsonl"
+cat >"$bad_conf_verdict" <<'JSON'
+{"number":1,"verdict":"KEEP","priority":"low","evidence":"","reason":"valid","group":"ci","conformance":"not-an-array"}
+JSON
+[ "$(run "$verdicts" validate "$bad_conf_verdict")" = 1 ] ||
+    fail "validate must refuse verdict row with non-array conformance"
+grep -q "conformance must be a JSON array" "$tmp/err" ||
+    fail "refusal must explain conformance must be a JSON array"
+
+echo "==> join: refuses verdict row with non-array conformance"
+[ "$(run "$verdicts" join --repo "$repo" --scan "$scan" --out "$tmp/bad-conf-row-out.json" "$bad_conf_verdict")" = 1 ] ||
+    fail "join must refuse verdict row with non-array conformance"
+grep -q "conformance must be a JSON array" "$tmp/err" ||
+    fail "refusal must cite conformance must be a JSON array"
+
 echo "==> join: refuses when the scan's repo differs from --repo (Codex 4012885488)"
 other_repo_scan="$tmp/other-repo-scan.json"
 cat >"$other_repo_scan" <<'JSON'
@@ -601,7 +675,7 @@ GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$disp" \
     --out-html "$out_html" --out-md "$out_md" >/dev/null
 for section in "## Stats" "## What to do next" "## Close now" "## Milestones" \
     "## Parent issues" "## Spec-worthy themes" "## Decisions" "## Completed this run" \
-    "## Process findings" "## Every issue"; do
+    "## Process findings" "## Conformance" "## Every issue"; do
     grep -qF "$section" "$out_md" || fail "missing section: $section"
 done
 order="$(grep -n '^## ' "$out_md" | cut -d: -f2)"
@@ -614,6 +688,7 @@ expected="## Stats
 ## Decisions
 ## Completed this run
 ## Process findings
+## Conformance
 ## Bot-owned issues (excluded from retitle/close/relabel)
 ## Every issue"
 [ "$order" = "$expected" ] || fail "sections must appear in the required order: got:
@@ -651,6 +726,45 @@ GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$disp" \
     --out-html "$out_html2" --out-md "$out_md2" >/dev/null
 cmp -s "$out_html" "$out_html2" || fail "HTML render must be byte-identical on repeated runs with same GROOM_NOW"
 cmp -s "$out_md" "$out_md2" || fail "Markdown render must be byte-identical on repeated runs with same GROOM_NOW"
+
+echo "==> report: renders Conformance section and pre-audit triage stat (Issue #1064, AC3, AC4)"
+conf_md="$tmp/conf-report.md"
+conf_html="$tmp/conf-report.html"
+run "$report" render --dispositions "$conf_disp" --out-html "$conf_html" --out-md "$conf_md" >/dev/null
+grep -q "## Conformance" "$conf_md" || fail "markdown must render ## Conformance section"
+grep -q "Pre-audit triage pass: ran" "$conf_md" || fail "markdown must report pre-audit triage pass in Stats"
+grep -q "### Title" "$conf_md" || fail "markdown must group conformance defects by kind"
+grep -q "(proposed fix: a retitle plan row)" "$conf_md" || fail "markdown must show proposed fix"
+grep -q 'id="conformance"' "$conf_html" || fail "HTML must render conformance section"
+grep -q 'Pre-audit triage' "$conf_html" || fail "HTML must show pre-audit triage stat"
+
+echo "==> report: conformance defects prevent clean backlog message and show in What to do next"
+conf_defect_disp="$tmp/conf-defect-disp.json"
+cat >"$conf_defect_disp" <<'JSON'
+{
+  "repo": "o/r",
+  "dispositions": [],
+  "stats": {"open_total": 1, "close_candidates": 0, "decisions": 0, "high_priority": 0, "unverified": []},
+  "conformance_defects": [{"number": 1, "title": "t", "kind": "Title", "defect": "malformed title", "fix": "a retitle plan row"}]
+}
+JSON
+conf_defect_md="$tmp/conf-defect-report.md"
+conf_defect_html="$tmp/conf-defect-report.html"
+run "$report" render --dispositions "$conf_defect_disp" --out-html "$conf_defect_html" --out-md "$conf_defect_md" >/dev/null
+grep -q "Nothing to do — backlog is clean" "$conf_defect_md" &&
+    fail "conformance defects must prevent clean backlog message in markdown"
+grep -q "Nothing to do — backlog is clean" "$conf_defect_html" &&
+    fail "conformance defects must prevent clean backlog message in html"
+grep -q "Resolve 1 conformance defect" "$conf_defect_md" ||
+    fail "What to do next must note conformance defects in markdown"
+grep -q "Resolve 1 conformance defect" "$conf_defect_html" ||
+    fail "What to do next must note conformance defects in html"
+
+echo "==> SKILL.md: documents pre-audit triage pass and scratch sharing (Issue #1064, AC4)"
+grep -q "Pre-audit triage pass" "./ai/skills/universal/groom/SKILL.md" ||
+    fail "SKILL.md must document pre-audit triage pass"
+grep -q "triage-scan.json" "./ai/skills/universal/groom/SKILL.md" ||
+    fail "SKILL.md must document scratch sharing with triage"
 
 # ── Issue #1062 & #1063: 20-decision ranking, milestone health, themes, titles ──
 echo "==> report: ranks 20 decisions into Top five (with reasons), Next ten, and Remainder by area"
@@ -799,6 +913,9 @@ grep -qE "^issue (edit|close|comment) " "$GH_STUB_LOG" && fail "scan must never 
 [ "$(jq -r '.milestones[0].number' "$scan_out")" = 1 ] || fail "scan must carry page 1's milestone"
 [ "$(jq -r '.milestones[1].number' "$scan_out")" = 2 ] || fail "scan must carry page 2's milestone"
 [ "$(jq -r '.board_access' "$scan_out")" != "null" ] || fail "scan must note board access"
+[ "$(jq -r '.open[0].conformance.title_valid' "$scan_out")" = "true" ] || fail "scan must attach conformance.title_valid"
+[ "$(jq -r '.open[1].conformance.title_valid' "$scan_out")" = "false" ] || fail "scan must attach conformance.title_valid for issue 2"
+[ "$(jq -r '.open[1].conformance.flags | length' "$scan_out")" -gt 0 ] || fail "scan must compute conformance flags"
 
 echo "==> scan: an empty milestones page flattens to an empty list, not an error"
 cat >"$stub_dir/milestones.json" <<'JSON'
@@ -1651,6 +1768,20 @@ stacked_log="$tmp/stacked.log"
     --log "$stacked_log" --execute)" = 0 ] ||
     fail "stacked legacy prefixes must succeed without preserve_original: $(cat "$tmp/out" "$tmp/err")"
 grep -q "^NOTE #79" "$tmp/out" || fail "stacked prefix rewrite must note preserved wording"
+
+echo "==> apply-plan: semantic bracket qualifier is not stripped and requires preserve_original on empty body"
+cat >"$stub_dir/issue-85.json" <<'JSON'
+{"title":"(ci): [Windows] Fix parser","body":"","labels":[],"author":{"login":"someone","type":"User","is_bot":false}}
+JSON
+semantic_plan="$tmp/semantic-plan.jsonl"
+cat >"$semantic_plan" <<'JSONL'
+{"op":"retitle","issue":85,"title":"(ci): Fix parser","previous_title":"(ci): [Windows] Fix parser","bot_owned":false}
+JSONL
+[ "$(run env GROOM_EXECUTE=1 "$apply" apply-plan --repo "$repo" --plan-file "$semantic_plan" \
+    --log "$tmp/semantic.log" --execute)" = 4 ] ||
+    fail "semantic qualifier [Windows] dropped without preserve_original must exit 4: $(cat "$tmp/out" "$tmp/err")"
+grep -q "retitle loses original title wording on an empty body" "$tmp/err" ||
+    fail "error must cite losing original title wording"
 
 echo "==> apply-plan: non-canonical colon prefix without preserve_original is refused on empty body (issue #1059)"
 cat >"$stub_dir/issue-75.json" <<'JSON'

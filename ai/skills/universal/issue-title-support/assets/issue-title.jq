@@ -15,6 +15,16 @@ def issue_title_is_whitespace:
   or (. >= 8192 and . <= 8202) or . == 8232 or . == 8233
   or . == 8239 or . == 8287 or . == 12288;
 
+def is_blank_codepoint:
+  . < 32 or (. >= 127 and . <= 159) or . == 32 or . == 160 or . == 5760
+  or (. >= 8192 and . <= 8205) or . == 8232 or . == 8233
+  or . == 8239 or . == 8287 or . == 8288 or . == 12288 or . == 65279;
+
+def is_blank_body:
+  if . == null then true
+  elif type == "string" then (explode | all(is_blank_codepoint))
+  else false end;
+
 def issue_title_parts:
   if test("^\\([^()]*\\): .*$")
   then capture("^\\((?<scope>[^()]*)\\): (?<outcome>.*)$")

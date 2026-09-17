@@ -12,7 +12,7 @@
 # Close now (table, every entry showing number AND title); Milestones;
 # Parent issues; Spec-worthy themes; Decisions (ranked into top five, next
 # ten, remainder by area with callouts and response lines); Completed this run;
-# Process findings (two-column table); Bot-owned issues; Unverified (only when
+# Process findings (two-column table); Conformance; Bot-owned issues; Unverified (only when
 # the dataset carries any — stats.unverified, from groom-verdicts.sh join
 # --allow-missing); Every issue (full table with inline filter/search).
 #
@@ -216,6 +216,13 @@ cmd_render() {
       | ($d.proposals.milestones // []) as $milestone_proposals
       | ($d.proposals.themes // []) as $themes
       | ($stats.unverified // []) as $unverified
+      | ($d.conformance_defects // []) as $conf_defects
+
+      # Ranking decisions: priority (P0 > P1 > P2 > P3), blocking count (descending), age (descending)
+      | ($decisions | sort_by([ pscore, (- (.blocking_count // .blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
+      | ($decisions_ranked[0:5]) as $top_five
+      | ($decisions_ranked[5:15]) as $next_ten
+      | ($decisions_ranked[15:]) as $remainder
 
       # Ranking decisions: priority (P0 > P1 > P2 > P3), blocking count (descending), age (descending)
       | ($decisions | sort_by([ pscore, (- (.blocking_count // .blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
@@ -233,6 +240,7 @@ cmd_render() {
         "- Close candidates: \($close|length)",
         "- Decisions needed: \($decisions|length)",
         "- High priority: \($stats.high_priority // 0)",
+        "- Pre-audit triage pass: \($stats.pre_audit_triage // "not run")",
         "",
         "## What to do next",
         "",
@@ -240,8 +248,9 @@ cmd_render() {
         (if ($decisions|length) > 0 then "1. Answer \($decisions|length) decision(s) below." else empty end),
         (if ($themes|length) > 0 then "1. Review \($themes|length) spec-worthy theme proposal(s) below." else empty end),
         (if ($findings|length) > 0 then "1. Review \($findings|length) process finding(s) below." else empty end),
+        (if ($conf_defects|length) > 0 then "1. Resolve \($conf_defects|length) conformance defect(s) below." else empty end),
         (if ($close|length) == 0 and ($decisions|length) == 0 and ($themes|length) == 0 and ($findings|length) == 0
-            and ($unverified|length) == 0
+            and ($conf_defects|length) == 0 and ($unverified|length) == 0
          then "Nothing to do — backlog is clean this run." else empty end),
         "",
         "## Close now",
@@ -374,6 +383,19 @@ cmd_render() {
            ($findings[] | "| \(if type == "object" then (.finding // "" | mdesc) else (. | mdesc) end) | \(if type == "object" then (.recommended_action // "" | mdesc) else "Review finding" end) (How to respond: reply \"agree\" to apply remediation, or \"decline\") |")
          end),
         "",
+        "## Conformance",
+        "",
+        (if ($conf_defects|length) == 0 then "None recorded this run."
+         else (
+           ($conf_defects | group_by(.kind // "Other")[] |
+            "### \(.[0].kind // "Other" | mdesc)",
+            "",
+            (.[] | "- #\(.number) — \(.title // (ititle($titles; .number) | sub("^#[0-9]+ "; "")) | mdesc) — \(.defect | mdesc) (proposed fix: \(.fix | mdesc))"),
+            ""
+           )
+         )
+         end),
+        "",
         "## Bot-owned issues (excluded from retitle/close/relabel)",
         "",
         (if ($bots|length) == 0 then "None this run."
@@ -450,9 +472,10 @@ cmd_render() {
       | ($d.proposals.milestones // []) as $milestone_proposals
       | ($d.proposals.themes // []) as $themes
       | ($stats.unverified // []) as $unverified
+      | ($d.conformance_defects // []) as $conf_defects
 
-      # Ranking decisions: priority (P0 > P1 > P2 > P3), blocked-by count (descending), age (descending)
-      | ($decisions | sort_by([ pscore, (- (.blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
+      # Ranking decisions: priority (P0 > P1 > P2 > P3), blocking count (descending), age (descending)
+      | ($decisions | sort_by([ pscore, (- (.blocking_count // .blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
       | ($decisions_ranked[0:5]) as $top_five
       | ($decisions_ranked[5:15]) as $next_ten
       | ($decisions_ranked[15:]) as $remainder
@@ -582,6 +605,7 @@ cmd_render() {
         "<a href=\"#decisions\">Decisions</a>",
         "<a href=\"#completed\">Completed this run</a>",
         "<a href=\"#findings\">Process findings</a>",
+        "<a href=\"#conformance\">Conformance</a>",
         "<a href=\"#bots\">Bot-owned</a>",
         "<a href=\"#every-issue\">Every issue</a>",
         "</nav>",
@@ -593,6 +617,7 @@ cmd_render() {
         "<div class=\"stat-card\"><div class=\"stat-num\">\($close|length)</div><div class=\"stat-label\">Close candidates</div></div>",
         "<div class=\"stat-card\"><div class=\"stat-num\">\($decisions|length)</div><div class=\"stat-label\">Decisions needed</div></div>",
         "<div class=\"stat-card\"><div class=\"stat-num\">\($stats.high_priority // 0)</div><div class=\"stat-label\">High priority</div></div>",
+        "<div class=\"stat-card\"><div class=\"stat-num\">\($stats.pre_audit_triage // "not run"|h)</div><div class=\"stat-label\">Pre-audit triage</div></div>",
         "</div>",
         "<h2 id=\"visualizations\">Visualizations</h2>",
         "<div class=\"charts-grid\">",
@@ -651,8 +676,9 @@ cmd_render() {
         (if ($decisions|length) > 0 then "<li>Answer \($decisions|length) decision(s) below.</li>" else empty end),
         (if ($themes|length) > 0 then "<li>Review \($themes|length) spec-worthy theme proposal(s) below.</li>" else empty end),
         (if ($findings|length) > 0 then "<li>Review \($findings|length) process finding(s) below.</li>" else empty end),
+        (if ($conf_defects|length) > 0 then "<li>Resolve \($conf_defects|length) conformance defect(s) below.</li>" else empty end),
         (if ($close|length) == 0 and ($decisions|length) == 0 and ($themes|length) == 0 and ($findings|length) == 0
-            and ($unverified|length) == 0
+            and ($conf_defects|length) == 0 and ($unverified|length) == 0
          then "<li>Nothing to do — backlog is clean this run.</li>" else empty end),
         "</ol>",
         "<h2 id=\"close\">Close now</h2>",
@@ -797,6 +823,15 @@ cmd_render() {
               + "<p class=\"callout-response\"><strong>How to respond:</strong> Reply &quot;agree&quot; to apply remediation, or &quot;decline&quot;.</p>"
               + "</div>"
               + "</td></tr>"] | join(""))
+           + "</tbody></table>"
+         end),
+        "<h2 id=\"conformance\">Conformance</h2>",
+        (if ($conf_defects|length) == 0 then "<p>None recorded this run.</p>"
+         else
+           "<table><thead><tr><th>#</th><th>Title</th><th>Kind</th><th>Defect</th><th>Proposed fix</th></tr></thead><tbody>"
+           + ([$conf_defects[] |
+              "<tr><td>#\(.number)</td><td>\(.title // ""|h)</td><td>\(.kind // ""|h)</td><td>\(.defect // ""|h)</td><td><span class=\"badge\">\(.fix // ""|h)</span></td></tr>"
+             ] | join(""))
            + "</tbody></table>"
          end),
         "<h2 id=\"bots\">Bot-owned issues (excluded from retitle/close/relabel)</h2>",

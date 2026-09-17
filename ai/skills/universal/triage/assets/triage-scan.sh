@@ -548,135 +548,8 @@ jq -n -L "$title_module_dir" \
     --arg native_type_mode "$native_type_mode" \
     --argjson wt "$wt_json" '
   include "issue-title";
+  include "issue-conformance";
   ($open_arr[0]) as $open | ($closed_arr[0]) as $closed |
-  def axis_labels($ls; $a): [$ls[] | select(startswith($a + ":"))];
-  def axis_known($ls; $a):
-    [axis_labels($ls; $a)[] | select(. as $l | $known | index($l) != null)];
-  def axis_unknown($ls; $a):
-    [axis_labels($ls; $a)[] | select(. as $l | $known | index($l) == null)];
-  # A label with an active prefix but a value outside the taxonomy does not
-  # classify the axis: state "unknown" (report it), never "ok".
-  def axis_state($ls; $a):
-    (axis_known($ls; $a) | length) as $n
-    | if $n > 1 then "conflict"
-      elif $n == 1 then "ok"
-      elif (axis_unknown($ls; $a) | length) > 0 then "unknown"
-      else "none" end;
-  def axis_optional_when_absent($a): $a == "layer";
-  def axis_incomplete($ls; $a):
-    axis_state($ls; $a) as $state
-    | ($state != "ok"
-       and ($state != "none" or (axis_optional_when_absent($a) | not)));
-
-  # Acceptance-criteria checkbox facts, for the "possible completion"
-  # candidates. checkbox_line_re is the SAME predicate closed_flagged uses
-  # below (unordered/ordered markers, any indentation, any blockquote depth),
-  # extended to also match a ticked box ([x]/[X]) so a line counts whether
-  # ticked or not; checkbox_unticked_re is the original, unticked-only form.
-  # Unlike the closed_flagged count, a CRITERION is a top-level rendered item
-  # only, and flush-left: a blockquoted `> - [x]` is a quoted example, an
-  # indented item is a nested child (or, at four spaces, a code block), and
-  # the authoring contract writes criteria at column 0 — so none of those
-  # may count; any of them would mint or suppress a completion candidate.
-  # The checkbox must be followed by whitespace (or end the line): GitHub
-  # renders `- [x][CI]` as plain text, not a task item.
-  def checkbox_line_re:
-    "^([-*+]|[0-9]{1,9}[.)])[ \\t]+\\[[ \\txX]\\]([ \\t]|$)";
-  def checkbox_unticked_re:
-    "^([-*+]|[0-9]{1,9}[.)])[ \\t]+\\[[ \\t]\\]([ \\t]|$)";
-  # The text immediately after an unticked checkbox marker — used only to
-  # classify the track-work [CI]/[HUMAN] tag grammar, never to decide whether
-  # a line counts as a criterion (checkbox_unticked_re already decided that).
-  def checkbox_rest($line):
-    ($line | capture(
-      "^([-*+]|[0-9]{1,9}[.)])[ \\t]+\\[[ \\txX]\\]([ \\t]+(?<rest>.*))?$"
-    )).rest // "";
-  # The track-work tag grammar exactly: case-insensitive [CI]/[HUMAN]
-  # immediately after the checkbox, followed by whitespace or end-of-line;
-  # anything else unticked is untagged.
-  def rest_tag($rest):
-    if ($rest | test("^\\[ci\\]([ \\t]|$)"; "i")) then "ci"
-    elif ($rest | test("^\\[human\\]([ \\t]|$)"; "i")) then "human"
-    else "untagged" end;
-  # Only the rendered `## Acceptance criteria` section holds criteria
-  # (the track-work authoring contract): a task list in another section, a
-  # quoted example, or a fenced code sample is not one, and an issue with no
-  # such section has no criteria at all. Lines are taken from that heading
-  # (case-insensitive, any trailing hashes) up to the next level-two
-  # heading, skipping fenced blocks — which is why this stays a line walk
-  # rather than a whole-body regex.
-  def criteria_lines($body):
-    (($body // "") | split("\n"))
-    # A fence closes only on the same delimiter character at least as long
-    # as the opener (CommonMark), so a ``` sample nested inside a ```` block
-    # does not end it early and count the sample as criteria.
-    # One walk tracks three states, fences first: inside a fence nothing is
-    # markup (a literal `<!--` in a code sample opens no comment); outside
-    # one, HTML-comment spans are invisible when rendered and are blanked
-    # (`<!--` to the next `-->`, across lines) before heading/criterion tests.
-    | reduce .[] as $raw ({in: false, fence: null, html: false, out: []};
-        # A backtick opener whose info string contains a backtick is prose,
-        # not a fence (CommonMark); tilde fences carry no such rule.
-        (($raw | capture("^[ ]{0,3}(?<f>`{3,}|~{3,})(?<info>.*)$")) // null
-         | if . != null and (.f | startswith("`")) and (.info | test("`"))
-           then null else . end) as $m
-        | if .fence != null then
-            (if $m != null and ($m.f[0:1] == .fence[0:1])
-                and (($m.f | length) >= (.fence | length))
-                and ($raw | test("^[ ]{0,3}(`+|~+)[ \\t]*$"))
-             then .fence = null else . end)
-          else
-            # blank comment spans on this line, carrying open state across
-            ((if .html then
-                (if ($raw | test("-->")) then {html: false, l: ($raw | sub("^.*?-->"; ""))}
-                 else {html: true, l: ""} end)
-              else {html: false, l: $raw} end)
-             | if (.html | not) and (.l | test("<!--")) then
-                 (.l | gsub("<!--.*?-->"; "")) as $g
-                 | if ($g | test("<!--")) then {html: true, l: ($g | sub("<!--.*$"; ""))}
-                   else {html: false, l: $g} end
-               else . end) as $c
-            | .html = $c.html
-            | ($c.l) as $line
-            | if $m != null and ($c.l == $raw) then .fence = $m.f
-              # Headings are flush-left, like the criteria: an indented
-              # heading may be scoped to an enclosing list item, where a
-              # later flush-left task item is a sibling of the list. A
-              # level-one heading ends the section too.
-              elif ($line | test("^#[ \\t]+")) then .in = false
-              elif ($line | test("^##[ \\t]+")) then
-                .in = ($line
-                       | sub("^##[ \\t]+"; "")
-                       | sub("[ \\t]+#+[ \\t]*$"; "")
-                       | sub("[ \\t]+$"; "")
-                       | ascii_downcase) == "acceptance criteria"
-              elif .in then .out += [$line]
-              else . end
-          end)
-    | .out;
-  # An untagged box is not a criterion (the track-work contract), ticked or
-  # not, so `total`/`unticked` count tagged items only. An UNTICKED untagged
-  # box is still reported separately and still blocks both candidates: it is
-  # a malformed criterion a human has to read, not one this scan may ignore.
-  def criteria_facts($body):
-    criteria_lines($body) as $lines
-    | ([$lines[] | select(test(checkbox_line_re))
-        | select(rest_tag(checkbox_rest(.)) != "untagged")] | length) as $total
-    | ([$lines[] | select(test(checkbox_unticked_re))]) as $unticked_lines
-    | ([$unticked_lines[] | rest_tag(checkbox_rest(.))]) as $tags
-    | ([$tags[] | select(. != "untagged")] | length) as $unticked
-    | { total: $total,
-        unticked: $unticked,
-        unticked_ci: ([$tags[] | select(. == "ci")] | length),
-        unticked_human: ([$tags[] | select(. == "human")] | length),
-        unticked_untagged: ([$tags[] | select(. == "untagged")] | length) };
-  def completion_reasons($crit):
-    [ (if ($crit.total >= 1 and $crit.unticked == 0
-           and $crit.unticked_untagged == 0)
-       then "completion-candidate:all-criteria-checked" else empty end),
-      (if ($crit.total >= 1 and $crit.unticked_ci == 0
-           and $crit.unticked_untagged == 0 and $crit.unticked_human >= 1)
-       then "completion-candidate:human-only-remaining" else empty end) ];
 
   {
     repo: $repo,
@@ -696,71 +569,23 @@ jq -n -L "$title_module_dir" \
     open:
       [ $open[]
         | select(.number != $report)
-        | (.labels | map(.name)) as $ls
+        | (.labels | map(if type == "object" then .name else . end)) as $ls
         | (((now - (.updatedAt | fromdateiso8601)) / 86400) | floor)
             as $days
-        | ($ls | map(select(. as $l | $wt | index($l) != null)))
-            as $have_wt
-        # State and name are separate so a real custom Type named "none" or
-        # "null" can never collide with an unset/unavailable sentinel.
         | (if $native_type_mode == "bulk"
            then (if .issueType == null then "unset" else "set" end)
            elif $owner_type == "Organization" then "unknown"
            else "n/a" end) as $nts
         | (if $nts == "set" then .issueType.name else null end) as $nt
-        | ($axes | map({key: ., value: axis_state($ls; .)})
-           | from_entries) as $ax
-        | ($ls | map(select(startswith("needs-")))) as $needs
-        | ($ls | map(select(startswith("claim:") or startswith("agent:"))))
-            as $claims
-        # Completeness reads the owner-appropriate source: on org repos a
-        # work-type LABEL proves nothing (native Type owns classification),
-        # so where the bulk read resolved the Type it alone decides — a
-        # legacy-labeled, natively-untyped issue must not read removable
-        # when the apply gate would refuse it. Personal repos, and org
-        # repos the bulk read could not cover, still read the labels.
-        | (if $owner_type == "Organization" and $nts != "unknown"
-           then ($nts == "set")
-           else (($have_wt | length) > 0) end)
-            as $typed
-        # A stray unrecognized label also blocks completeness — the apply
-        # script refuses that removal (exit 6), so the scan must not badge
-        # the same issue needs-triage-removable.
-        | (($typed | not)
-           or ([$axes[] | select(axis_incomplete($ls; .))] | length > 0)
-           or ([$axes[] | axis_unknown($ls; .) | length] | any(. > 0)))
-            as $incomplete
-        # needs-triage is RE-ADDED only on a missing work type (personal
-        # repos, where labels are authoritative) or a conflicted axis. A bare
-        # missing axis is not enough: a removed needs-triage may rest on an
-        # --inapplicable attestation, which no label records, and re-adding
-        # would churn every legitimately attested issue forever. Org repos
-        # remain exempt when native Type state is unknown — an empty label
-        # set proves nothing there until the bounded per-issue read runs.
-        # The absent layer axis is optional for completeness; a present layer
-        # conflict or unknown value still requeues needs-triage below.
-        # An unknown value requeues too — checked independently of the axis
-        # state (mirroring $incomplete), because a stray label beside a
-        # recognized one leaves the state "ok" while the issue still needs
-        # a human: an unknown value cannot stand for an inapplicability
-        # attestation.
-        | (([$ax[]] | any(. == "conflict"))
-           or ([$axes[] | axis_unknown($ls; .) | length] | any(. > 0))
-           or ($owner_type == "User" and ($have_wt | length) == 0)
-           # Bulk-resolved orgs requeue on a definitively unset Type too;
-           # the exemption stays only where native Type is unreadable.
-           or ($owner_type == "Organization" and $nts == "unset"))
-            as $needs_triage_worthy
-        | criteria_facts(.body) as $crit
-        | completion_reasons($crit) as $creasons
+        | issue_conformance(.; $axes; $known; $wt; $owner_type; $nts; $claim_stale; $needs_stale) as $conf
         | {number, title, updatedAt,
            days_since_update: $days,
            labels: $ls,
            assignees: [.assignees[].login],
-           work_type: $have_wt,
+           work_type: $conf.work_type,
            native_type_state: $nts,
            native_type: $nt,
-           axis_state: $ax,
+           axis_state: $conf.axis_state,
            axis_labels: ($axes | map({key: ., value: axis_labels($ls; .)})
                          | from_entries),
            # The stray labels by name, so a report entry can say which
@@ -770,59 +595,11 @@ jq -n -L "$title_module_dir" \
                             | map({key: ., value: axis_unknown($ls; .)})
                             | from_entries
                             | with_entries(select(.value | length > 0))),
-           needs_labels: $needs,
-           claim_labels: $claims,
-           criteria: $crit,
-           completion_reasons: $creasons,
-           flags:
-             ([ # With a bulk-read native Type state, a typed org
-                # issue needs no work-type attention at all — the flag fires
-                # only where the Type is genuinely unset or unreadable.
-                (if ($have_wt | length) == 0
-                    and ($owner_type == "User" or $nts != "set")
-                 then "missing-work-type" else empty end),
-                ($ax | to_entries[]
-                 | select(.value == "none"
-                         and (axis_optional_when_absent(.key) | not))
-                 | "axis-missing:\(.key)"),
-                ($ax | to_entries[]
-                 | select(.value == "conflict") | "axis-conflict:\(.key)"),
-                # Unknown values flag independently of the axis state: a
-                # recognized value beside a retired one still reads "ok",
-                # but the stray label must surface rather than go quiet.
-                ($axes[] | . as $a
-                 | select((axis_unknown($ls; $a) | length) > 0)
-                 | "axis-unknown-value:\($a)"),
-                (if $needs_triage_worthy
-                    and (($ls | index("needs-triage")) == null)
-                 then "missing-needs-triage" else empty end),
-                # Org repos classify by native Type; a work-type LABEL there
-                # is legacy and says nothing about the Type. Where the bulk
-                # read resolved the Type, flag only issues whose Type is
-                # unset; without it, flag every labeled issue so the skill
-                # still runs its per-issue native-Type check — otherwise a
-                # bug-labeled org issue with complete axes goes quiet and its
-                # missing native Type is never noticed.
-                (if $owner_type == "Organization" and ($have_wt | length) > 0
-                    and $nts != "set"
-                 then "legacy-work-type-label" else empty end),
-                (if $incomplete and (($ls | index("needs-triage")) != null)
-                 then "partially-classified" else empty end),
-                (if (($ls | index("needs-triage")) != null)
-                    and ($incomplete | not)
-                 then "needs-triage-removable" else empty end),
-                (if ($claims | length) > 0 and $days > $claim_stale
-                 then "stale-claim-candidate" else empty end),
-                (if ($ls | index("blocked")) != null
-                 then "blocked-candidate" else empty end),
-                (if ($needs | length) > 0 and $days > $needs_stale
-                 then "aging-needs-candidate" else empty end),
-                (if (.title | length) > 100
-                 then "title-long" else empty end),
-                (if (.title | issue_title_valid | not)
-                 then "title-malformed" else empty end),
-                $creasons[]
-              ])}
+           needs_labels: $conf.needs_labels,
+           claim_labels: $conf.claim_labels,
+           criteria: $conf.criteria,
+           completion_reasons: $conf.completion_reasons,
+           flags: $conf.flags}
         | select(($all == 1) or ((.flags | length) > 0))
       ],
     closed_flagged:

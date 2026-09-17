@@ -384,6 +384,7 @@ tasks:
       - test:claim-label-resolution
       - test:triage-skill
       - test:groom-skill
+      - test:shared-issue-assets
       - test:skill-index-lifecycle
       - test:independence
       - test:confirm-answers
@@ -630,6 +631,11 @@ tasks:
     desc: "Unit-test the groom skill's contract scripts (offline, stubbed gh/claude)"
     cmds:
       - ./scripts/test-groom-skill.sh
+
+  test:shared-issue-assets:
+    desc: "Assert no drift across shared issue skill assets (offline)"
+    cmds:
+      - ./scripts/test-shared-issue-assets.sh
 
   test:sync-devkit-release:
     desc: "Unit-test the harmon-devkit release→sync-PR automation (offline, stubbed gh/task)"

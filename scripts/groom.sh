@@ -275,12 +275,28 @@ scripts say they WOULD write."
 # as a built-in; only the permission-rule spelling changes (issue #1060).
 skill_abs="$(cd "$skill_dir" && pwd)"
 tools="Read(//${run_dir#/}/**),Read(//${skill_abs#/}/**)"
+
+triage_dir=""
+for d in ai/skills/universal/triage .agents/skills/triage .claude/skills/triage; do
+    if [ -f "$d/SKILL.md" ]; then
+        triage_dir="$d"
+        break
+    fi
+done
+if [ -n "$triage_dir" ]; then
+    triage_abs="$(cd "$triage_dir" && pwd)"
+    tools="$tools,Read(//${triage_abs#/}/**)"
+fi
+
 tools="$tools,Edit(//${run_dir#/}/**)"
 gh_read_tools="Bash(gh issue view:*),Bash(gh issue list:*)"
 gh_read_tools="$gh_read_tools,Bash(gh pr view:*),Bash(gh pr list:*)"
 tools="$tools,Bash($skill_dir/assets/groom-scan.sh:*)"
 tools="$tools,Bash($skill_dir/assets/groom-verdicts.sh:*)"
 tools="$tools,Bash($skill_dir/assets/groom-report.sh:*)"
+if [ -n "$triage_dir" ]; then
+    tools="$tools,Bash($triage_dir/assets/triage-scan.sh:*)"
+fi
 tools="$tools,$gh_read_tools"
 tools="$tools,Agent,Task,Glob,Grep"
 claude_tools="Read,Write,Bash,Agent,Task,Glob,Grep"
