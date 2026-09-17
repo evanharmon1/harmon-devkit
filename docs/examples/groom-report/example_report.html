@@ -1,0 +1,205 @@
+<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Groom report — evanharmon1/harmon-devkit</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --text: #1f2328;
+  --muted: #656d76;
+  --border: #d0d7de;
+  --th-bg: #f6f8fa;
+  --callout-bg: #ddf4ff;
+  --callout-border: #0969da;
+  --card-bg: #f6f8fa;
+  --nav-bg: #f6f8fa;
+  --link: #0969da;
+  --badge-bg: #eaeef2;
+  --badge-text: #24292f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --text: #e6edf3;
+    --muted: #848d97;
+    --border: #30363d;
+    --th-bg: #161b22;
+    --callout-bg: #0c2d6b;
+    --callout-border: #388bfd;
+    --card-bg: #161b22;
+    --nav-bg: #161b22;
+    --link: #58a6ff;
+    --badge-bg: #21262d;
+    --badge-text: #c9d1d9;
+  }
+}
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 2rem; color: var(--text); background: var(--bg); line-height: 1.5; }
+h1 { font-size: 1.6rem; margin: 0 0 0.5rem; }
+h2 { font-size: 1.25rem; margin-top: 2rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.35rem; }
+h3 { font-size: 1.05rem; margin-top: 1.25rem; margin-bottom: 0.5rem; }
+h4 { font-size: 0.95rem; margin-top: 1rem; margin-bottom: 0.25rem; }
+nav.nav { position: sticky; top: 0; background: var(--nav-bg); border-bottom: 1px solid var(--border); padding: 0.6rem 1rem; margin: -2rem -2rem 1.5rem -2rem; z-index: 100; display: flex; flex-wrap: wrap; gap: 0.85rem; font-size: 0.85rem; }
+nav.nav a { color: var(--link); text-decoration: none; font-weight: 500; }
+nav.nav a:hover { text-decoration: underline; }
+.stats-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin: 1rem 0; }
+.stat-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem 1rem; }
+.stat-num { font-size: 1.5rem; font-weight: 700; color: var(--link); }
+.stat-label { font-size: 0.85rem; color: var(--muted); }
+.charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; margin: 1rem 0; }
+.chart-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; }
+table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; font-size: 0.88rem; }
+th, td { border: 1px solid var(--border); padding: 0.45rem 0.65rem; text-align: left; }
+th { background: var(--th-bg); position: sticky; top: 2.2rem; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { text-decoration: underline; }
+input[type=search] { padding: 0.4rem 0.6rem; width: 100%; max-width: 26rem; margin: 0.5rem 0; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
+.callout { background: var(--callout-bg); border-left: 4px solid var(--callout-border); padding: 0.75rem 1rem; margin: 0.5rem 0; border-radius: 0 4px 4px 0; }
+.callout-title { font-weight: 600; margin-bottom: 0.25rem; }
+.callout-body { margin: 0.25rem 0; }
+.callout-response { font-size: 0.85rem; color: var(--muted); margin: 0.5rem 0 0 0; font-style: italic; }
+.badge { display: inline-block; padding: 0.15rem 0.45rem; font-size: 0.75rem; font-weight: 600; border-radius: 12px; background: var(--badge-bg); color: var(--badge-text); }
+.badge-priority-high, .badge-priority-p0, .badge-priority-p1, .badge-priority-P0, .badge-priority-P1 { background: #ffebe9; color: #cf222e; }
+.badge-priority-medium, .badge-priority-p2, .badge-priority-P2 { background: #fff8c5; color: #9a6700; }
+.badge-priority-low, .badge-priority-p3, .badge-priority-P3 { background: #ddf4ff; color: #0969da; }
+@media (prefers-color-scheme: dark) {
+  .badge-priority-high, .badge-priority-p0, .badge-priority-p1, .badge-priority-P0, .badge-priority-P1 { background: #490202; color: #ff8182; }
+  .badge-priority-medium, .badge-priority-p2, .badge-priority-P2 { background: #3d2a00; color: #d29922; }
+  .badge-priority-low, .badge-priority-p3, .badge-priority-P3 { background: #0c2d6b; color: #58a6ff; }
+}
+.card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; margin: 0.75rem 0; }
+svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; fill: currentColor; }
+</style>
+<nav class="nav">
+<a href="#stats">Stats</a>
+<a href="#visualizations">Visualizations</a>
+<a href="#next">What to do next</a>
+<a href="#close">Close now</a>
+<a href="#milestones">Milestones</a>
+<a href="#parents">Parent issues</a>
+<a href="#themes">Spec-worthy themes</a>
+<a href="#decisions">Decisions</a>
+<a href="#completed">Completed this run</a>
+<a href="#findings">Process findings</a>
+<a href="#conformance">Conformance</a>
+<a href="#bots">Bot-owned</a>
+<a href="#every-issue">Every issue</a>
+</nav>
+<h1>Groom report — evanharmon1/harmon-devkit</h1>
+<p><em>Generated: 2026-09-17 06:10 UTC</em></p>
+<h2 id="stats">Stats</h2>
+<div class="stats-strip">
+<div class="stat-card"><div class="stat-num">423</div><div class="stat-label">Open issues</div></div>
+<div class="stat-card"><div class="stat-num">3</div><div class="stat-label">Close candidates</div></div>
+<div class="stat-card"><div class="stat-num">2</div><div class="stat-label">Decisions needed</div></div>
+<div class="stat-card"><div class="stat-num">0</div><div class="stat-label">High priority</div></div>
+<div class="stat-card"><div class="stat-num">ran</div><div class="stat-label">Pre-audit triage</div></div>
+</div>
+<h2 id="visualizations">Visualizations</h2>
+<div class="charts-grid">
+<div class="chart-card" id="chart-verdicts">
+<h3>Verdict breakdown</h3>
+<svg viewBox="0 0 380 180" width="100%" height="180" role="img" aria-label="Verdict breakdown">
+<title>Verdict breakdown</title>
+<text x="10" y="23">CLOSE-done</text><rect x="145" y="12" width="85" height="14" rx="3" fill="#cf222e" /><text x="237" y="23">1</text><text x="10" y="47">CLOSE-obsolete</text><rect x="145" y="36" width="0" height="14" rx="3" fill="#bc4c00" /><text x="152" y="47">0</text><text x="10" y="71">CLOSE-dup</text><rect x="145" y="60" width="85" height="14" rx="3" fill="#8250df" /><text x="237" y="71">1</text><text x="10" y="95">CLOSE-wrong-repo</text><rect x="145" y="84" width="0" height="14" rx="3" fill="#bf8700" /><text x="152" y="95">0</text><text x="10" y="119">KEEP</text><rect x="145" y="108" width="170" height="14" rx="3" fill="#2da44e" /><text x="322" y="119">2</text><text x="10" y="143">NEEDS-DECISION</text><rect x="145" y="132" width="170" height="14" rx="3" fill="#0969da" /><text x="322" y="143">2</text><text x="10" y="167">NEEDS-INFO</text><rect x="145" y="156" width="0" height="14" rx="3" fill="#656d76" /><text x="152" y="167">0</text>
+</svg>
+</div>
+<div class="chart-card" id="chart-priority">
+<h3>Priority mix</h3>
+<svg viewBox="0 0 380 100" width="100%" height="100" role="img" aria-label="Priority mix">
+<title>Priority mix</title>
+<text x="10" y="28">High</text><rect x="100" y="16" width="170" height="16" rx="3" fill="#cf222e" /><text x="278" y="28">3</text><text x="10" y="54">Medium</text><rect x="100" y="42" width="113" height="16" rx="3" fill="#d4a72c" /><text x="221" y="54">2</text><text x="10" y="80">Low</text><rect x="100" y="68" width="113" height="16" rx="3" fill="#0969da" /><text x="221" y="80">2</text>
+</svg>
+</div>
+<div class="chart-card" id="chart-age">
+<h3>Backlog age distribution</h3>
+<svg viewBox="0 0 380 145" width="100%" height="145" role="img" aria-label="Backlog age distribution">
+<title>Backlog age distribution</title>
+<text x="10" y="24">&lt; 30d</text><rect x="100" y="12" width="170" height="15" rx="3" fill="#2da44e" /><text x="278" y="24">3</text><text x="10" y="49">30–90d</text><rect x="100" y="37" width="56" height="15" rx="3" fill="#0969da" /><text x="164" y="49">1</text><text x="10" y="74">90–180d</text><rect x="100" y="62" width="113" height="15" rx="3" fill="#d4a72c" /><text x="221" y="74">2</text><text x="10" y="99">180–365d</text><rect x="100" y="87" width="56" height="15" rx="3" fill="#bc4c00" /><text x="164" y="99">1</text><text x="10" y="124">&gt; 365d</text><rect x="100" y="112" width="0" height="15" rx="3" fill="#cf222e" /><text x="108" y="124">0</text>
+</svg>
+</div>
+<div class="chart-card" id="chart-evidence">
+<h3>Closes by evidence type</h3>
+<svg viewBox="0 0 380 145" width="100%" height="145" role="img" aria-label="Closes by evidence type">
+<title>Closes by evidence type</title>
+<text x="10" y="24">Duplicate link</text><rect x="130" y="12" width="170" height="15" rx="3" fill="#d4a72c" /><text x="308" y="24">2</text><text x="10" y="49">Merged PR</text><rect x="130" y="37" width="0" height="15" rx="3" fill="#2da44e" /><text x="138" y="49">0</text><text x="10" y="74">Commit / SHA</text><rect x="130" y="62" width="0" height="15" rx="3" fill="#0969da" /><text x="138" y="74">0</text><text x="10" y="99">File:line</text><rect x="130" y="87" width="85" height="15" rx="3" fill="#8250df" /><text x="223" y="99">1</text><text x="10" y="124">Other / target</text><rect x="130" y="112" width="0" height="15" rx="3" fill="#656d76" /><text x="138" y="124">0</text>
+</svg>
+</div>
+</div>
+<h2 id="next">What to do next</h2>
+<ol>
+<li>Review 3 close candidate(s) below.</li>
+<li>Answer 2 decision(s) below.</li>
+<li>Review 2 spec-worthy theme proposal(s) below.</li>
+<li>Review 2 process finding(s) below.</li>
+<li>Resolve 3 conformance defect(s) below.</li>
+</ol>
+<h2 id="close">Close now</h2>
+<input type="search" id="q-close" placeholder="Filter close candidates…" onkeyup="groomFilterTable(q-close, table-close)"><table id="table-close"><thead><tr><th class="sortable" onclick="groomSortTable(table-close, 0)">#</th><th class="sortable" onclick="groomSortTable(table-close, 1)">Title</th><th class="sortable" onclick="groomSortTable(table-close, 2)">Verdict</th><th class="sortable" onclick="groomSortTable(table-close, 3)">Priority</th><th class="sortable" onclick="groomSortTable(table-close, 4)">Group</th><th class="sortable" onclick="groomSortTable(table-close, 5)">Status</th><th class="sortable" onclick="groomSortTable(table-close, 6)">Reason / Evidence</th></tr></thead><tbody><tr><td>#982</td><td>Clean up deprecated docker compose v1 syntax in templates</td><td><span class="badge">CLOSE-done</span></td><td><span class="badge badge-priority-P1">P1</span></td><td>templates</td><td>PENDING</td><td>Superseded and fully implemented in PR #985 (commit b4e3697).<br><small><strong>Evidence:</strong> PR #985 merged on 2026-09-12; compose templates use Compose v2 specification.</small></td></tr><tr><td>#941</td><td>Duplicate taskfile entry for semgrep security scan</td><td><span class="badge">CLOSE-dup-of-#935 — (title unavailable)</span></td><td><span class="badge badge-priority-P2">P2</span></td><td>ci</td><td>PENDING</td><td>Exact duplicate of taskfile audit issue #935.<br><small><strong>Evidence:</strong> See #935 filed on 2026-08-30 covering identical task definition overlap.</small></td></tr><tr><td>#884</td><td>Add support for obsolete CentOS 7 devcontainers</td><td><span class="badge">CLOSE-not-planned</span></td><td><span class="badge badge-priority-P3">P3</span></td><td>devcontainers</td><td>PENDING</td><td>CentOS 7 reached EOL June 2024. Harmon devkit only targets active LTS distros.<br><small><strong>Evidence:</strong> docs/architecture/adr-002-supported-platforms.md specifies Ubuntu 22.04+ and Debian 12+.</small></td></tr></tbody></table>
+<h2 id="milestones">Milestones</h2>
+<ul><li><strong>close v0.45.0</strong> <span class="badge">health: open: 1, closed: 48, oldest open issue: #982 — Clean up deprecated docker compose v1 syntax in templates (110 days old)</span> (#982 — Clean up deprecated docker compose v1 syntax in templates) — All milestone deliverables merged; only release tag tagging remains.</li><li><strong>assign v0.46.0</strong> <span class="badge">health: open: 14, closed: 2, no open issues</span> (#1012 — Deprecate legacy ruby serverlessFunctionTemplates, #1048 — Evaluate adopting OpenTofu for homelab IaC snippets) — Active cycle items scheduled for the next release.</li></ul>
+<h2 id="parents">Parent issues</h2>
+<ul><li>#1066 — (groom): Follow-ups from the first supervised groom run: #1059 — (groom): Let the retitle op preserve the wording it removes instead of discarding it, #1061 — (title unavailable), #1062 — (title unavailable), #1063 — (title unavailable), #1064 — (title unavailable), #1065 — (title unavailable)</li></ul>
+<h2 id="themes">Spec-worthy themes</h2>
+<div class="card theme-card"><h3>Serverless Template Modernization <span class="badge">openspec</span></h3><p><strong>Reason:</strong> Unified overhaul of runtime versions across AWS Lambda and GCP Cloud Functions.</p><p><strong>Candidate issues:</strong></p><ul><li>#982 — Clean up deprecated docker compose v1 syntax in templates</li><li>#1012 — Deprecate legacy ruby serverlessFunctionTemplates</li></ul><div class="callout callout-theme"><p class="callout-response"><strong>How to respond:</strong> Agree to draft spec via openspec, or decline to keep as individual issues.</p></div></div><div class="card theme-card"><h3>Declarative IaC Alignment with OpenTofu <span class="badge">adr</span></h3><p><strong>Reason:</strong> Harmonize homelab IaC templates with harmon-infra ecosystem standards.</p><p><strong>Candidate issues:</strong></p><ul><li>#1048 — Evaluate adopting OpenTofu for homelab IaC snippets</li></ul><div class="callout callout-theme"><p class="callout-response"><strong>How to respond:</strong> Agree to draft spec via adr, or decline to keep as individual issues.</p></div></div>
+<h2 id="decisions">Decisions</h2>
+<h3>Top five</h3><ul><li><strong>#1012 — Deprecate legacy ruby serverlessFunctionTemplates</strong> — Should we archive Ruby serverless templates or update them to Ruby 3.3 runtime?<div class="callout callout-decision"><div class="callout-title">Recommendation</div><p class="callout-body">Archive to snippets/historical/ and drop active CI validation for Ruby 2.7.</p><p class="callout-body"><small><strong>Why ranked in top five:</strong> High (P1) priority, blocks 3 downstream issue(s), 95 days old.</small></p><p class="callout-response"><strong>How to respond:</strong> Reply &quot;agree&quot; to accept recommendation, &quot;decline&quot; to reject, or specify an alternative.</p></div><p><small>Status: PENDING</small></p></li><li><strong>#1048 — Evaluate adopting OpenTofu for homelab IaC snippets</strong> — Migrate homelab Terraform boilerplates to OpenTofu 1.8+ or maintain dual compatibility?<div class="callout callout-decision"><div class="callout-title">Recommendation</div><p class="callout-body">Switch templates to OpenTofu by default with terraform alias compatibility.</p><p class="callout-body"><small><strong>Why ranked in top five:</strong> Medium (P2) priority, blocks 1 downstream issue(s), 45 days old.</small></p><p class="callout-response"><strong>How to respond:</strong> Reply &quot;agree&quot; to accept recommendation, &quot;decline&quot; to reject, or specify an alternative.</p></div><p><small>Status: PENDING</small></p></li></ul>
+<h2 id="completed">Completed this run</h2>
+<p>None this run.</p>
+<h2 id="findings">Process findings</h2>
+<table><thead><tr><th>Finding</th><th>Recommended action</th></tr></thead><tbody><tr><td>14 issues carry missing needs-triage labels after recent bulk creation</td><td><div class="callout callout-finding"><p class="callout-body">Run /triage to classify pending backlog items against taxonomy.</p><p class="callout-response"><strong>How to respond:</strong> Reply &quot;agree&quot; to apply remediation, or &quot;decline&quot;.</p></div></td></tr><tr><td>3 stale PR branches remain on origin after squash merges</td><td><div class="callout callout-finding"><p class="callout-body">Prune origin remote branches for closed pull requests.</p><p class="callout-response"><strong>How to respond:</strong> Reply &quot;agree&quot; to apply remediation, or &quot;decline&quot;.</p></div></td></tr></tbody></table>
+<h2 id="conformance">Conformance</h2>
+<table><thead><tr><th>#</th><th>Title</th><th>Kind</th><th>Defect</th><th>Proposed fix</th></tr></thead><tbody><tr><td>#941</td><td></td><td>title</td><td>Title lacks component prefix</td><td><span class="badge">a retitle plan row</span></td></tr><tr><td>#884</td><td></td><td>labels</td><td>missing work-type label</td><td><span class="badge">a triage apply</span></td></tr><tr><td>#1012</td><td></td><td>body</td><td>Empty acceptance criteria section</td><td><span class="badge">a manual edit</span></td></tr></tbody></table>
+<h2 id="bots">Bot-owned issues (excluded from retitle/close/relabel)</h2>
+<ul><li>#1004 — chore(deps): update postgres docker tag to v18.6</li></ul>
+<h2 id="every-issue">Every issue</h2>
+<input type="search" id="q" placeholder="Filter by number, title, verdict, group…" onkeyup="groomFilter()">
+<table id="t"><thead><tr>
+<th class="sortable" onclick="groomSortTable(t, 0)">#</th>
+<th class="sortable" onclick="groomSortTable(t, 1)">Title</th>
+<th class="sortable" onclick="groomSortTable(t, 2)">Verdict</th>
+<th class="sortable" onclick="groomSortTable(t, 3)">Priority</th>
+<th class="sortable" onclick="groomSortTable(t, 4)">Group</th>
+<th class="sortable" onclick="groomSortTable(t, 5)">Status</th>
+</tr></thead><tbody>
+<tr><td>#982</td><td>Clean up deprecated docker compose v1 syntax in templates</td><td><span class="badge">CLOSE-done</span></td><td><span class="badge badge-priority-P1">P1</span></td><td>templates</td><td>PENDING</td></tr><tr><td>#941</td><td>Duplicate taskfile entry for semgrep security scan</td><td><span class="badge">CLOSE-dup-of-#935</span></td><td><span class="badge badge-priority-P2">P2</span></td><td>ci</td><td>PENDING</td></tr><tr><td>#884</td><td>Add support for obsolete CentOS 7 devcontainers</td><td><span class="badge">CLOSE-not-planned</span></td><td><span class="badge badge-priority-P3">P3</span></td><td>devcontainers</td><td>PENDING</td></tr><tr><td>#1059</td><td>(groom): Let the retitle op preserve the wording it removes instead of discarding it</td><td><span class="badge">KEEP</span></td><td><span class="badge badge-priority-P1">P1</span></td><td>skills</td><td>PENDING</td></tr><tr><td>#1012</td><td>Deprecate legacy ruby serverlessFunctionTemplates</td><td><span class="badge">NEEDS-DECISION</span></td><td><span class="badge badge-priority-P1">P1</span></td><td>templates</td><td>PENDING</td></tr><tr><td>#1048</td><td>Evaluate adopting OpenTofu for homelab IaC snippets</td><td><span class="badge">NEEDS-DECISION</span></td><td><span class="badge badge-priority-P2">P2</span></td><td>templates</td><td>PENDING</td></tr><tr><td>#1004</td><td>chore(deps): update postgres docker tag to v18.6</td><td><span class="badge">KEEP</span></td><td><span class="badge badge-priority-P3">P3</span></td><td>dependencies</td><td>PENDING</td></tr>
+</tbody></table>
+<script>
+function groomFilterTable(inputId, tableId) {
+  var input = document.getElementById(inputId);
+  if (!input) return;
+  var q = input.value.toLowerCase();
+  var rows = document.querySelectorAll("#" + tableId + " tbody tr");
+  for (var i = 0; i < rows.length; i++) {
+    var t = rows[i].textContent.toLowerCase();
+    rows[i].hidden = q.length > 0 && t.indexOf(q) === -1;
+  }
+}
+function groomFilter() {
+  groomFilterTable("q", "t");
+}
+var sortDirections = {};
+function groomSortTable(tableId, colIndex) {
+  var table = document.getElementById(tableId);
+  if (!table) return;
+  var tbody = table.querySelector("tbody");
+  if (!tbody) return;
+  var rows = Array.from(tbody.querySelectorAll("tr"));
+  var key = tableId + "-" + colIndex;
+  var dir = sortDirections[key] === "asc" ? "desc" : "asc";
+  sortDirections[key] = dir;
+  rows.sort(function(a, b) {
+    var aCell = a.children[colIndex];
+    var bCell = b.children[colIndex];
+    var aText = aCell ? aCell.textContent.trim() : "";
+    var bText = bCell ? bCell.textContent.trim() : "";
+    var aNum = parseFloat(aText.replace(/^[#]/, ""));
+    var bNum = parseFloat(bText.replace(/^[#]/, ""));
+    if (!isNaN(aNum) && !isNaN(bNum)) {
+      return dir === "asc" ? aNum - bNum : bNum - aNum;
+    }
+    return dir === "asc" ? aText.localeCompare(bText) : bText.localeCompare(aText);
+  });
+  for (var i = 0; i < rows.length; i++) {
+    tbody.appendChild(rows[i]);
+  }
+}
+</script>

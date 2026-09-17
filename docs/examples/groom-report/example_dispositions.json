@@ -1,0 +1,228 @@
+{
+  "repo": "evanharmon1/harmon-devkit",
+  "stats": {
+    "open_total": 423,
+    "close_candidates": 58,
+    "decisions": 12,
+    "pre_audit_triage": "ran",
+    "unverified": []
+  },
+  "dispositions": [
+    {
+      "number": 982,
+      "title": "Clean up deprecated docker compose v1 syntax in templates",
+      "verdict": "CLOSE-done",
+      "priority": "P1",
+      "reason": "Superseded and fully implemented in PR #985 (commit b4e3697).",
+      "evidence": "PR #985 merged on 2026-09-12; compose templates use Compose v2 specification.",
+      "group": "templates",
+      "age_days": 110,
+      "days_since_update": 5,
+      "bot_owned": false,
+      "blocking_count": 0,
+      "blocked_by_count": 0,
+      "milestone": "v0.45.0",
+      "status": "PENDING"
+    },
+    {
+      "number": 941,
+      "title": "Duplicate taskfile entry for semgrep security scan",
+      "verdict": "CLOSE-dup-of-#935",
+      "priority": "P2",
+      "reason": "Exact duplicate of taskfile audit issue #935.",
+      "evidence": "See #935 filed on 2026-08-30 covering identical task definition overlap.",
+      "group": "ci",
+      "age_days": 18,
+      "days_since_update": 18,
+      "bot_owned": false,
+      "blocking_count": 0,
+      "blocked_by_count": 0,
+      "milestone": null,
+      "status": "PENDING"
+    },
+    {
+      "number": 884,
+      "title": "Add support for obsolete CentOS 7 devcontainers",
+      "verdict": "CLOSE-not-planned",
+      "priority": "P3",
+      "reason": "CentOS 7 reached EOL June 2024. Harmon devkit only targets active LTS distros.",
+      "evidence": "docs/architecture/adr-002-supported-platforms.md specifies Ubuntu 22.04+ and Debian 12+.",
+      "group": "devcontainers",
+      "age_days": 210,
+      "days_since_update": 140,
+      "bot_owned": false,
+      "blocking_count": 0,
+      "blocked_by_count": 0,
+      "milestone": null,
+      "status": "PENDING"
+    },
+    {
+      "number": 1059,
+      "title": "(groom): Let the retitle op preserve the wording it removes instead of discarding it",
+      "verdict": "KEEP",
+      "priority": "P1",
+      "reason": "Active work item delivered via PR #1089.",
+      "evidence": "Delivered in PR #1089, verified in test suite.",
+      "group": "skills",
+      "age_days": 2,
+      "days_since_update": 0,
+      "bot_owned": false,
+      "blocking_count": 1,
+      "blocked_by_count": 0,
+      "milestone": "Milestone #1066",
+      "status": "PENDING"
+    },
+    {
+      "number": 1012,
+      "title": "Deprecate legacy ruby serverlessFunctionTemplates",
+      "verdict": "NEEDS-DECISION",
+      "priority": "P1",
+      "question": "Should we archive Ruby serverless templates or update them to Ruby 3.3 runtime?",
+      "recommendation": "Archive to snippets/historical/ and drop active CI validation for Ruby 2.7.",
+      "reason": "Ruby 2.7 and 3.0 runtimes are deprecated on AWS Lambda and Google Cloud Functions.",
+      "evidence": "AWS Lambda deprecation timeline for ruby2.7/3.0; zero repo downloads in 12 months.",
+      "group": "templates",
+      "age_days": 95,
+      "days_since_update": 12,
+      "bot_owned": false,
+      "blocking_count": 3,
+      "blocked_by_count": 0,
+      "milestone": null,
+      "status": "PENDING"
+    },
+    {
+      "number": 1048,
+      "title": "Evaluate adopting OpenTofu for homelab IaC snippets",
+      "verdict": "NEEDS-DECISION",
+      "priority": "P2",
+      "question": "Migrate homelab Terraform boilerplates to OpenTofu 1.8+ or maintain dual compatibility?",
+      "recommendation": "Switch templates to OpenTofu by default with terraform alias compatibility.",
+      "reason": "License changes in Terraform 1.6+ diverged from open-source platform goals.",
+      "evidence": "harmon-infra already uses OpenTofu 1.8.",
+      "group": "templates",
+      "age_days": 45,
+      "days_since_update": 30,
+      "bot_owned": false,
+      "blocking_count": 1,
+      "blocked_by_count": 0,
+      "milestone": null,
+      "status": "PENDING"
+    },
+    {
+      "number": 1004,
+      "title": "chore(deps): update postgres docker tag to v18.6",
+      "verdict": "KEEP",
+      "priority": "P3",
+      "reason": "Automated dependency update managed by Renovate.",
+      "evidence": "PR #1004 open.",
+      "group": "dependencies",
+      "age_days": 3,
+      "days_since_update": 3,
+      "bot_owned": true,
+      "blocking_count": 0,
+      "blocked_by_count": 0,
+      "milestone": null,
+      "status": "PENDING"
+    }
+  ],
+  "milestones": [
+    {
+      "number": 1,
+      "title": "v0.45.0",
+      "state": "open",
+      "open_issues": 1,
+      "closed_issues": 48
+    },
+    {
+      "number": 2,
+      "title": "v0.46.0",
+      "state": "open",
+      "open_issues": 14,
+      "closed_issues": 2
+    }
+  ],
+  "proposals": {
+    "parents": [
+      {
+        "parent": 1066,
+        "title": "(groom): Follow-ups from the first supervised groom run",
+        "children": [
+          1059,
+          1061,
+          1062,
+          1063,
+          1064,
+          1065
+        ]
+      }
+    ],
+    "milestones": [
+      {
+        "action": "close",
+        "title": "v0.45.0",
+        "reason": "All milestone deliverables merged; only release tag tagging remains.",
+        "issues": [
+          982
+        ]
+      },
+      {
+        "action": "assign",
+        "title": "v0.46.0",
+        "reason": "Active cycle items scheduled for the next release.",
+        "issues": [
+          1012,
+          1048
+        ]
+      }
+    ],
+    "themes": [
+      {
+        "title": "Serverless Template Modernization",
+        "issues": [
+          982,
+          1012
+        ],
+        "reason": "Unified overhaul of runtime versions across AWS Lambda and GCP Cloud Functions.",
+        "recommended_vehicle": "openspec"
+      },
+      {
+        "title": "Declarative IaC Alignment with OpenTofu",
+        "issues": [
+          1048
+        ],
+        "reason": "Harmonize homelab IaC templates with harmon-infra ecosystem standards.",
+        "recommended_vehicle": "adr"
+      }
+    ]
+  },
+  "process_findings": [
+    {
+      "finding": "14 issues carry missing needs-triage labels after recent bulk creation",
+      "recommended_action": "Run /triage to classify pending backlog items against taxonomy."
+    },
+    {
+      "finding": "3 stale PR branches remain on origin after squash merges",
+      "recommended_action": "Prune origin remote branches for closed pull requests."
+    }
+  ],
+  "conformance_defects": [
+    {
+      "number": 941,
+      "kind": "title",
+      "defect": "Title lacks component prefix",
+      "fix": "a retitle plan row"
+    },
+    {
+      "number": 884,
+      "kind": "labels",
+      "defect": "missing work-type label",
+      "fix": "a triage apply"
+    },
+    {
+      "number": 1012,
+      "kind": "body",
+      "defect": "Empty acceptance criteria section",
+      "fix": "a manual edit"
+    }
+  ]
+}
