@@ -16,8 +16,8 @@
 # Usage:
 #   groom-verdicts.sh validate FILE...
 #   groom-verdicts.sh join --repo owner/repo --scan PATH --out PATH
-#                          [--allow-missing] [--proposals PATH] [--findings PATH]
-#                          [--conformance PATH] FILE...[--findings PATH] FILE...
+#                          [--allow-missing] [--proposals PATH]
+#                          [--findings PATH] [--conformance PATH] FILE...
 #
 # `validate` only checks the vocabulary/evidence contract, printing every
 # violation it finds (never stopping at the first) and exiting 1 if any row is
@@ -446,7 +446,6 @@ cmd_join() {
     else
         echo "[]" >"$conformance_tmp"
     fi
-
     # Validate process_findings in proposals (Issue #1062):
     local prop_pf_bad
     prop_pf_bad="$(jq -r --slurpfile p "$proposals_tmp" '

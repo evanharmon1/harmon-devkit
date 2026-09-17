@@ -224,6 +224,12 @@ cmd_render() {
       | ($decisions_ranked[5:15]) as $next_ten
       | ($decisions_ranked[15:]) as $remainder
 
+      # Ranking decisions: priority (P0 > P1 > P2 > P3), blocking count (descending), age (descending)
+      | ($decisions | sort_by([ pscore, (- (.blocking_count // .blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
+      | ($decisions_ranked[0:5]) as $top_five
+      | ($decisions_ranked[5:15]) as $next_ten
+      | ($decisions_ranked[15:]) as $remainder
+
       | "# Groom report — \($d.repo // "unknown")",
         "",
         "_Generated: \($now)_",
