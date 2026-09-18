@@ -6883,6 +6883,50 @@ else
     bad "diff-template credits the template's declaration for an IGNORED file"
 fi
 
+# --- index.md and README.md active ADR log equivalence ----------------------
+rm -f "$DT_TARGET/docs/decisions/0007-record-architecture-decisions.md"
+printf '%s\n' '# Use Postgres' >"$DT_TARGET/docs/decisions/0002-use-postgres.md"
+printf '%s\n' '# Decisions' >"$DT_TARGET/docs/decisions/index.md"
+if adr_index_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template passes with an index.md-backed active ADR log"
+else
+    bad "diff-template passes with an index.md-backed active ADR log: $adr_index_out"
+fi
+if grep -qF "EQUIV    docs/decisions/0001-record-architecture-decisions.md  (repo already has an active ADR log; the seed ADR is redundant)" <<<"$adr_index_out"; then
+    ok "diff-template recognizes an index.md-backed active ADR log as equivalent"
+else
+    bad "diff-template recognizes an index.md-backed active ADR log as equivalent"
+fi
+
+# Fallback to README.md maintains equivalence
+mv "$DT_TARGET/docs/decisions/index.md" "$DT_TARGET/docs/decisions/README.md"
+if adr_readme_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    ok "diff-template passes with a README.md-backed active ADR log"
+else
+    bad "diff-template passes with a README.md-backed active ADR log: $adr_readme_out"
+fi
+if grep -qF "EQUIV    docs/decisions/0001-record-architecture-decisions.md  (repo already has an active ADR log; the seed ADR is redundant)" <<<"$adr_readme_out"; then
+    ok "diff-template recognizes a README.md-backed active ADR log as equivalent"
+else
+    bad "diff-template recognizes a README.md-backed active ADR log as equivalent"
+fi
+
+# Negative control: index.md present without any numbered ADR does not qualify as active log
+rm -f "$DT_TARGET/docs/decisions/0002-use-postgres.md" "$DT_TARGET/docs/decisions/README.md"
+printf '%s\n' '# Decisions' >"$DT_TARGET/docs/decisions/index.md"
+if adr_empty_out="$(HARMON_INIT="$DT_TEMPLATE" bash "$STANDARDIZE_ASSETS/diff-template.sh" "$DT_TARGET" 2>&1)"; then
+    bad "diff-template reports missing seed ADR when index.md has no numbered ADRs (expected non-zero exit)"
+elif grep -qF "MISSING  docs/decisions/0001-record-architecture-decisions.md" <<<"$adr_empty_out"; then
+    ok "diff-template reports missing seed ADR when index.md has no numbered ADRs"
+else
+    bad "diff-template reports missing seed ADR when index.md has no numbered ADRs (MISSING diagnostic missing)"
+fi
+
+# Restore target baseline for subsequent tests
+rm -f "$DT_TARGET/docs/decisions/index.md"
+printf '%s\n' '# Record architecture decisions' \
+    >"$DT_TARGET/docs/decisions/0007-record-architecture-decisions.md"
+
 # --- whole-render sweep: uncurated, co-owned, and symlink classes ------------
 # The baseline above is green, so each case below can attribute its exit code to
 # its own mutation. Every case mutates the clean target, runs the real script,
@@ -9491,6 +9535,21 @@ expect_ok "private_Brewfile without a chezmoi marker earns no annotation" \
 expect_ok "an unrelated numbered ADR does not verify the seed ADR" \
     grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; unverified-equivalent')" \
     "$GU_NA_TSV"
+printf '%s\n' '# Decisions' >"$GU_NA_REPO/docs/decisions/index.md"
+git_commit_all "$GU_NA_REPO" "index-backed log"
+expect_ok "note fixture re-runs clean with an index-backed ADR log" na_classify
+expect_ok "an index-backed numbered ADR log is recorded as verified" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; known-false-verified')" \
+    "$GU_NA_TSV"
+rm -f "$GU_NA_REPO/docs/decisions/0002-use-postgres.md"
+git_commit_all "$GU_NA_REPO" "empty index"
+expect_ok "note fixture re-runs clean with an empty ADR index (index.md)" na_classify
+expect_ok "an index.md with no numbered ADR does not verify the seed ADR" \
+    grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; unverified-equivalent')" \
+    "$GU_NA_TSV"
+rm -f "$GU_NA_REPO/docs/decisions/index.md"
+printf '%s\n' 'unrelated decision' \
+    >"$GU_NA_REPO/docs/decisions/0002-use-postgres.md"
 printf '%s\n' '# Decisions' >"$GU_NA_REPO/docs/decisions/README.md"
 git_commit_all "$GU_NA_REPO" "README-backed log"
 expect_ok "note fixture re-runs clean with a README-backed ADR log" na_classify
@@ -9498,8 +9557,8 @@ expect_ok "a README-backed numbered ADR log is recorded as verified" \
     grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; known-false-verified')" \
     "$GU_NA_TSV"
 rm -f "$GU_NA_REPO/docs/decisions/0002-use-postgres.md"
-git_commit_all "$GU_NA_REPO" "empty index"
-expect_ok "note fixture re-runs clean with an empty ADR index" na_classify
+git_commit_all "$GU_NA_REPO" "empty README index"
+expect_ok "note fixture re-runs clean with an empty ADR index (README.md)" na_classify
 expect_ok "a README with no numbered ADR does not verify the seed ADR" \
     grep -qxF "$(printf 'docs/decisions/0001-record-architecture-decisions.md\tnonadopt-both\tno\tbaseline+target\tco-owned-prose; unverified-equivalent')" \
     "$GU_NA_TSV"
