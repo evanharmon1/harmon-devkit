@@ -14,8 +14,8 @@ monorepo and has no application code of its own — it is a flat collection of
 independent, copy-paste assets organized by category under `templates/`,
 `scripts/`, and `ai/`.
 
-Repo: https://github.com/evanharmon1/harmon-devkit — see [docs/README.md](docs/README.md) for the
-documentation map, [docs/architecture/README.md](docs/architecture/README.md)
+Repo: https://github.com/evanharmon1/harmon-devkit — see [docs/index.md](docs/index.md) for the
+documentation map, [docs/architecture/index.md](docs/architecture/index.md)
 for the architecture, and [DESIGN.md](DESIGN.md) for design/UX intent.
 
 ## harmon-platform
@@ -48,7 +48,7 @@ One of four repos in **harmon-platform** (Evan's developer & DevOps platform + h
   dev-flow v2 agent results, with a conformance fixture corpus under
   `ai/schemas/fixtures/`.
 - `snippets/` — small reusable code snippets (placeholder).
-- `docs/` — project docs (see [docs/README.md](docs/README.md)); the
+- `docs/` — project docs (see [docs/index.md](docs/index.md)); the
   new-project [checklist](docs/CHECKLIST.md) lives here.
 
 ## Hard Rules

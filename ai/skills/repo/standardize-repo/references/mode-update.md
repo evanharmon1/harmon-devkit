@@ -1356,7 +1356,7 @@ if ! test -e "$GUARDED_STATE/ignored-snapshot-ready"; then
       esac
     done
     test "$NONADOPT_ADR_NUMBERED" -eq 1 || return 1
-    test -f docs/decisions/README.md
+    test -f docs/decisions/index.md || test -f docs/decisions/README.md
   }
   # Nested/split Terraform roots — a `*.tf` at least one directory BELOW
   # `terraform/`, which is what makes the flat seed files redundant. A flat

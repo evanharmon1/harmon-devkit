@@ -1,7 +1,7 @@
 # Guides
 
 Calm, repeatable how-tos read *in advance* (the crisis counterpart is
-[runbooks/](../runbooks/)).
+[runbooks/](../runbooks/index.md)).
 
 - [onboarding.md](onboarding.md) — get a new dev or agent productive: setup,
   where things live, the dev loop. The human entry procedure.

@@ -34,5 +34,5 @@ file wins if they disagree.
 ## Decisions & when to deviate
 
 Significant or hard-to-reverse design choices get an ADR in
-[`docs/decisions/`](docs/decisions/). Deviating from a rule here is allowed when
+[`docs/decisions/`](docs/decisions/index.md). Deviating from a rule here is allowed when
 justified — record *why* in an ADR rather than silently drifting.

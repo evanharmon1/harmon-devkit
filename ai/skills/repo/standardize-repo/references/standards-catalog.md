@@ -44,19 +44,19 @@ These apply regardless of `project_type`.
 ### 1.1 Docs-folder layout
 
 The `docs/` tree is a **routing hub** ("routes; does not hold facts"). Folder
-landing pages are always `README.md`. **[copier]** generates the whole skeleton.
+landing pages within `docs/` are `index.md`. **[copier]** generates the whole skeleton.
 
 | Path | Purpose | Source |
 |---|---|---|
-| `docs/README.md` | Hub; the four-buckets table | [copier] |
+| `docs/index.md` | Hub; the four-buckets table | [copier] |
 | `docs/conventions.md` | Flat-lookup of enforced rules (grep, don't read) | [copier] |
 | `docs/glossary.md` | Term → definition flat lookup | [copier] |
 | `docs/CHECKLIST.md` | Run-once post-generation setup list | [copier] |
-| `docs/product/` | Why it exists / who for — `vision.md`, `roadmap.md`, `domain.md`, `README.md` | [copier] |
-| `docs/architecture/` | How it's built — `README.md`, `ci-cd.md`, `security.md`, `branch-protection.md`, `tests.md` (+ `design-language.md` for web types) | [copier] |
-| `docs/decisions/` | ADRs, numbered `0001-`, zero-padded; `0001-record-architecture-decisions.md` ships as the template ADR; `README.md` index | [copier] |
-| `docs/guides/` | Calm how-tos read in advance — `onboarding.md`, `deploying.md`, `troubleshooting.md`, `README.md` | [copier] |
-| `docs/runbooks/` | Crisis procedures read under pressure — `README.md` | [copier] |
+| `docs/product/` | Why it exists / who for — `vision.md`, `roadmap.md`, `domain.md`, `index.md` | [copier] |
+| `docs/architecture/` | How it's built — `index.md`, `ci-cd.md`, `security.md`, `branch-protection.md`, `tests.md` (+ `design-language.md` for web types) | [copier] |
+| `docs/decisions/` | ADRs, numbered `0001-`, zero-padded; `0001-record-architecture-decisions.md` ships as the template ADR; `index.md` index | [copier] |
+| `docs/guides/` | Calm how-tos read in advance — `onboarding.md`, `deploying.md`, `troubleshooting.md`, `index.md` | [copier] |
+| `docs/runbooks/` | Crisis procedures read under pressure — `index.md` | [copier] |
 
 Repo-root siblings of `docs/` (deliberately NOT under `docs/`):
 

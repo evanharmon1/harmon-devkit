@@ -4471,7 +4471,7 @@ expect_ok "non-adoption snippet records the known-false verdict either way" \
 # "something that looks vaguely like a replacement".
 expect_ok "non-adoption snippet holds each equivalence to its documented evidence" \
     sh -c 'grep -qF "*-record-architecture-decisions.md) return 0 ;;" "$1" &&
-        grep -qF "test -f docs/decisions/README.md" "$1" &&
+        grep -qF "test -f docs/decisions/index.md || test -f docs/decisions/README.md" "$1" &&
         grep -qF -- "-name .terraform -prune -o -type f -name" "$1" &&
         grep -qF "yq -r '\''.prettier // \"\"'\'' package.json" "$1" &&
         ! grep -qF "grep -q '\''\"prettier\"'\'' package.json" "$1"' sh \

@@ -23,6 +23,7 @@ if [ "$#" -gt 0 ]; then shift; fi
 # present only in the template repo itself, an inert glob everywhere else).
 default_globs=(
     '**/*.md'
+    '#.git/**'
     '#template/**'
     '#.claude/**'
     '#.agents/skills/**'
