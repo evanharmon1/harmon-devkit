@@ -166,10 +166,10 @@ fails on the symlink). `_preserve_symlinks: true` in `copier.yml` keeps these as
 symlinks on re-template.
 
 **B. Docs layout drift.** Standard docs tree (from `template/docs/`):
-`docs/README.md`, `docs/architecture/{README,ci-cd,branch-protection,security,tests}.md`,
-`docs/glossary.md`, `docs/conventions.md`, `docs/guides/{README,onboarding,deploying,troubleshooting}.md`,
-`docs/product/{README,vision,domain,roadmap}.md`, `docs/decisions/` (ADRs, seeded
-with `0001-record-architecture-decisions.md` + `README.md`), and
+`docs/index.md`, `docs/architecture/{index,ci-cd,branch-protection,security,tests}.md`,
+`docs/glossary.md`, `docs/conventions.md`, `docs/guides/{index,onboarding,deploying,troubleshooting}.md`,
+`docs/product/{index,vision,domain,roadmap}.md`, `docs/decisions/` (ADRs, seeded
+with `0001-record-architecture-decisions.md` + `index.md`), and
 `docs/runbooks/` — **plural `runbooks/`** (matches harmon-infra; old repos use
 singular `runbook`). Also: `specs/` and `tests/` belong at **repo root**, not
 under `docs/` (old repos nest `docs/specs/`). Common misses: no `guides/`, no

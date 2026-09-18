@@ -1628,8 +1628,15 @@ has_repo_equivalent() {
                 ;;
             esac
         done
-        if [ -f "$target/docs/decisions/README.md" ] &&
+        local adr_index=""
+        if [ -f "$target/docs/decisions/index.md" ] &&
+            ! repo_parent_diverges "$target/docs/decisions/index.md"; then
+            adr_index="$target/docs/decisions/index.md"
+        elif [ -f "$target/docs/decisions/README.md" ] &&
             ! repo_parent_diverges "$target/docs/decisions/README.md"; then
+            adr_index="$target/docs/decisions/README.md"
+        fi
+        if [ -n "$adr_index" ]; then
             for adr in "$target"/docs/decisions/[0-9]*.md; do
                 [ -f "$adr" ] || continue
                 repo_parent_diverges "$adr" && continue
@@ -1700,7 +1707,7 @@ has_nested_terraform_root() {
 # falls through to a visible, gating uncurated DRIFT, which is the safe default:
 # a new template file nobody has classified should be seen, not silently
 # tolerated. Case globs are not path-aware — `*` matches `/` — which cuts both
-# ways: `docs/*` reaches `docs/architecture/README.md` at any depth as intended,
+# ways: `docs/*` reaches `docs/architecture/index.md` at any depth as intended,
 # but it also reached every NON-prose artifact under those trees, handing a
 # generated script or config the presence-only exemption purely for living in a
 # docs directory. The class is about PROSE the repo rewrites, so the two tree

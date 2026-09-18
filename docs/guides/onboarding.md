@@ -24,7 +24,7 @@ and Coder setup.
 
 ## Where things are
 
-See [the docs map](../README.md) for all documentation and the
+See [the docs map](../index.md) for all documentation and the
 [root README](../../README.md) for the project structure.
 
 TODO: add project-specific context a new contributor needs.

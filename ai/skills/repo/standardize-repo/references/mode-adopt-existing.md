@@ -446,7 +446,7 @@ after the copier run:
 
 2. **Align the docs layout** to the template's tree. Specs live at **root
    `specs/`** (move any `docs/specs/` → `specs/`); tests at **root `tests/`**.
-   Ensure these exist (the template seeds them): `docs/README.md`,
+   Ensure these exist (the template seeds them): `docs/index.md`,
    `docs/glossary.md`, `docs/conventions.md`, `docs/guides/` (incl.
    `onboarding.md`), `docs/architecture/` (incl. `tests.md`, `security.md`,
    `ci-cd.md`), `docs/product/` (incl. `roadmap.md`, `vision.md`),

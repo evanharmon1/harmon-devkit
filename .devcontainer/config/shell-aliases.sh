@@ -66,7 +66,7 @@ alias pf='pnpm --filter'
 
 # Nuclear cleanup
 alias rnm='rm -rf node_modules'
-alias fresh='rm -rf node_modules pnpm-lock.yaml && pnpm install'
+alias pnpm-relock='rm -rf node_modules pnpm-lock.yaml && pnpm install'
 
 # ── Git (beyond oh-my-zsh) ──────────────────────────────────
 # Soft undo: reset last commit, keep changes staged

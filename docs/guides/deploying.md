@@ -2,7 +2,7 @@
 
 How to deploy Harmon DevKit. For the shape of the CI/CD pipeline see
 [../architecture/ci-cd.md](../architecture/ci-cd.md); for production operational
-procedures and rollback runbooks see [../runbooks/](../runbooks/).
+procedures and rollback runbooks see [../runbooks/](../runbooks/index.md).
 
 > TODO: no deployment is configured yet — fill in the sections below.
 
@@ -19,7 +19,7 @@ TODO: the steps or command to ship a change. Prefer a `task deploy` (or
 ## Rollback
 
 TODO: how to roll back a bad deploy. Capture the production procedure as a
-runbook in [../runbooks/](../runbooks/).
+runbook in [../runbooks/](../runbooks/index.md).
 
 ## Configuration & secrets
 

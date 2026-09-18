@@ -21,6 +21,7 @@
   // `format`) would otherwise scan them. Matching nothing is a no-op.
   "ignores": [
     "CHANGELOG.md",
+    ".git/**",
     ".claude/**",
     ".agents/skills/**",
     "_bmad/**",

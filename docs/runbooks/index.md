@@ -1,7 +1,7 @@
 # Runbooks
 
 Named-incident, step-by-step procedures read *under pressure* when prod breaks
-(the calm counterpart is [guides/](../guides/)).
+(the calm counterpart is [guides/](../guides/index.md)).
 
 A runbook is one specific operational procedure — e.g. "rotate the API key",
 "restore from backup", "roll back a bad deploy" — written so someone can follow
