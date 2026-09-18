@@ -31,8 +31,9 @@ This is the **hub** — read it when you're unsure where something belongs. It
 | Product — vision, roadmap, domain | [product/](product/index.md) |
 | Architecture (subject hubs) | [architecture/](architecture/index.md) — ci-cd, security, branch-protection, tests |
 | Decisions (ADRs) | [decisions/](decisions/index.md) |
-| Guides (calm how-tos) | [guides/](guides/index.md) — onboarding, deploying, troubleshooting, devcontainers, skills-pin-policy |
+| Guides (calm how-tos) | [guides/](guides/index.md) — onboarding, deploying, troubleshooting, devcontainers, devflow, skills-pin-policy |
 | Runbooks (crisis procedures) | [runbooks/](runbooks/index.md) |
+| Project management (GitHub Projects) | [project-management.md](project-management.md) |
 | Post-generation setup | [CHECKLIST.md](CHECKLIST.md) |
 | Active change planning (OpenSpec) | [`../openspec/changes/`](../openspec/changes/) — proposals, designs, tasks, and capability delta specs |
 | Milestone-level anchor specs | [`../specs/`](../specs/) |

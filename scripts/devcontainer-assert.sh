@@ -168,6 +168,20 @@ assert_unit() {
     [ -x "$gh_browser" ] || fail "GitHub browser bridge is missing or not executable at ${gh_browser}"
     grep '^unset BROWSER$' "$shell_aliases" >/dev/null ||
         fail "shell-aliases.sh no longer removes generic BROWSER from interactive shells"
+    grep -E '^[[:space:]]*alias([[:space:]]+-[a-zA-Z0-9]+)*[[:space:]]+pnpm-relock(=|[[:space:]]|$)' "$shell_aliases" >/dev/null ||
+        fail "shell-aliases.sh does not define pnpm-relock alias"
+    ! grep -E '^[[:space:]]*alias([[:space:]]+-[a-zA-Z0-9]+)*[[:space:]]+fresh(=|[[:space:]]|$)' "$shell_aliases" >/dev/null ||
+        fail "shell-aliases.sh still defines fresh alias, shadowing Fresh editor"
+    ! grep -E '^[[:space:]]*alias([[:space:]]+-[a-zA-Z0-9]+)*[[:space:]]+(mc|nano|ttt)(=|[[:space:]]|$)' "$shell_aliases" >/dev/null ||
+        fail "shell-aliases.sh defines alias shadowing mc, nano, or ttt"
+
+    if command -v zsh >/dev/null 2>&1; then
+        for shadowed in fresh mc nano ttt; do
+            if zsh -c ". '$shell_aliases' 2>/dev/null && alias '$shadowed'" >/dev/null 2>&1; then
+                fail "shell-aliases.sh defines alias shadowing ${shadowed} in zsh"
+            fi
+        done
+    fi
 
     # `task` and the rest of the shared toolchain come from the pinned public
     # image, never a devcontainer Feature: the go-task Feature resolved
