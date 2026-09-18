@@ -18,7 +18,7 @@ ai/skills/
 │   ├── implement/SKILL.md   # /implement — claimed issue → ready-for-review PR via the dev loop
 │   ├── review/SKILL.md      # /review — challenge/review confidence stages
 │   ├── integrate/SKILL.md   # /integrate — draft integration to ready-for-review
-│   ├── orchestrator/SKILL.md # standing multi-lane operating mode
+│   ├── orchestrate/SKILL.md # standing multi-lane operating mode
 │   ├── retro/SKILL.md       # /retro — end-of-session retro: run evidence + status tables
 │   ├── wrap/SKILL.md        # /wrap — wrap up + rename done-<name>
 │   ├── triage/SKILL.md      # /triage — manifest-governed backlog classifier
@@ -49,7 +49,7 @@ command: `/claim` (the invocation still names and confirms the target issue
 before any write, exactly as it does when a human types it; its writes are
 idempotent and released by the ordinary lifecycle, not gated behind a
 standing human-only rule) and `/wrap` join `/kickoff`, `/implement`,
-`/review`, `/integrate`, and `/orchestrator` covering orienting at the start of a session
+`/review`, `/integrate`, and `/orchestrate` covering orienting at the start of a session
 through driving a claimed issue to a draft PR and on into the integration
 stage — the same session continues from `/implement` into `/integrate`
 without waiting for a separate human trigger, stopping only at

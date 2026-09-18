@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Durable reservation/reconciliation primitive for /orchestrator.  It keeps
+# Durable reservation/reconciliation primitive for /orchestrate.  It keeps
 # replayable external action intent outside run.json, whose schema deliberately
 # limits it to lifecycle state.  Callers supply an observed postcondition; this
 # helper refuses to infer one from a stale or malformed observation.

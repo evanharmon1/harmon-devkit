@@ -196,103 +196,103 @@ expect_ok "breakdown authors a dispatch-planning surface per issue" \
     "$repo/ai/skills/universal/breakdown/SKILL.md"
 expect_ok "orchestrator planning precedes lane briefs" \
     sh -c 'test "$(grep -n "^## Planning$" "$1" | cut -d: -f1)" -lt "$(grep -n "^## Lane briefs$" "$1" | cut -d: -f1)"' sh \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning emits the durable slate plan" \
     grep -qF '<git-common-dir>/dev-flow-v2/slates/<slate-id>/plan.json' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning consumes Foreman's graph" \
     grep -qF 'task foreman:plan -- --milestone <n>' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning documents the blocked-by fallback" \
     grep -qF 'native blocked-by edges and the fixed `Blocked by:` fallback lines' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "interactive planning uses the resolved policy cap directly" \
     grep -qF 'interactive orchestrator uses the resolved' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "only Foreman intersects its configured parallel cap" \
     grep -qF 'Only when Foreman is the dispatcher' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning validates the emitted plan" \
     grep -qF 'validate-result-schemas.mjs plan <plan.json>' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning rechecks target-head freshness before dispatch" \
     grep -qF 'compare the live target head with the' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning appends recomputations after external merges" \
     grep -qF '**Recompute after every external merge.**' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning keeps each revision reconstructable" \
     grep -qF 'earlier revisions remain' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning publishes recomputations through validated replacement" \
     grep -qF 'write the complete candidate beside' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning validates the canonical recomputation readback" \
     grep -qF 'validate the canonical readback' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning refuses a second plan writer" \
     grep -qF 'A second writer of the same `plan.json` is a blocker' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator planning publishes expansions as complete revisions" \
     grep -qF 'accepted expansion is a recomputation reason' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator PR-open confirmation sends the ready report as the last message, not the first" \
     grep -qF 'The maintainer-facing ready report is the last message about a promoted PR,' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator PR-open confirmation states the ready-report invariant, not a step-by-step procedure" \
     grep -qF 'only for a `POST-PROMOTION-CLOSED` event that names the promotion event id' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel states the same ready-report invariant" \
     grep -qF '`POST-PROMOTION-CLOSED` event that names the promotion event id the' \
-    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation invariant requires the same head and readiness fingerprint on re-read" \
     grep -qF 'the same head, the same' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel invariant requires the same head and readiness fingerprint on re-read" \
     grep -qF 'the same head, the same' \
-    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation invariant requires every check still green" \
     grep -qF 'readiness fingerprint, and every check still concluded green' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel invariant requires every check still green" \
     grep -qF 'readiness fingerprint, and every check still concluded green' \
-    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation invariant withdraws on any changed observation, not only silence" \
     grep -qF 'a different promotion id, any activity row, any changed' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel invariant withdraws on any changed observation, not only silence" \
     grep -qF 'a different promotion id, any activity row, any changed' \
-    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation delegates the mechanism to lane-watch.sh, states only the invariant" \
     grep -qF 'this section states only what must be true before' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel delegates the mechanism to lane-watch.sh, states only the invariant" \
     grep -qF 'this bullet states only what must be true' \
-    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation never reports promotion itself as readiness" \
     grep -qF 'promotion itself is never reported as' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator PR-open confirmation names the interim promoted/watch status line" \
     grep -qF 'post-promotion watch until T+15", never "ready"' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator PR-open confirmation announces a withdrawn promotion before anything else" \
     grep -qF '"#n is no longer ready: `<reason>`; back to draft on `<head>`"' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "orchestrator withdrawal announcement leads the next maintainer-facing message" \
     grep -qF 'ahead of any other status in that same message' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel is the orchestrator's own mark, never a lane's" \
     grep -qF "a lane never promotes its own PR and never writes this sentinel" \
-    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "lane-brief READY sentinel is never appended at the moment of promotion itself" \
     grep -qF 'never appended at the' \
-    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "orchestrator PR-open confirmation names the same post-promotion-activity source as the lane-brief READY sentinel" \
     grep -qF '`assets/lane-watch.sh`' \
-    "$repo/ai/skills/universal/orchestrator/SKILL.md"
+    "$repo/ai/skills/universal/orchestrate/SKILL.md"
 expect_ok "lane-brief READY sentinel names the same post-promotion-activity source as orchestrator PR-open confirmation" \
     grep -qF '`assets/lane-watch.sh`' \
-    "$repo/ai/skills/universal/orchestrator/assets/lane-brief.md"
+    "$repo/ai/skills/universal/orchestrate/assets/lane-brief.md"
 expect_ok "retro compares validated planned and actual lane execution" \
     grep -qF 'planned versus actual waves and interventions for each lane' \
     "$repo/ai/skills/universal/retro/SKILL.md"

@@ -58,7 +58,7 @@ make_brief() {
     sed -n '/^<!-- END SCHEMA-BOUND ENVELOPE FACTS -->$/,$p' "$brief_source" >>"$destination"
 }
 
-fence_check="$repo/ai/skills/universal/orchestrator/assets/fence-check.sh"
+fence_check="$repo/ai/skills/universal/orchestrate/assets/fence-check.sh"
 make_brief "$tmp/allowed.md" '[{"path":"allowed.txt"}]'
 printf '%s\n' changed >"$fixture/allowed.txt"
 git -C "$fixture" add allowed.txt
@@ -69,9 +69,9 @@ git -C "$fixture" commit -qm "test: change allowed path"
 ) >/dev/null || fail "an in-fence change was rejected"
 
 mkdir -p \
-    "$fixture/.agents/skills/orchestrator/assets" \
+    "$fixture/.agents/skills/orchestrate/assets" \
     "$tmp/nodebin"
-cp "$fence_check" "$fixture/.agents/skills/orchestrator/assets/fence-check.sh"
+cp "$fence_check" "$fixture/.agents/skills/orchestrate/assets/fence-check.sh"
 # fence-check.sh derives the validator path from `git rev-parse --show-toplevel`,
 # which always returns the resolved (symlink-free) repository root — so the
 # stub must expect that resolved path, not $fixture's own (possibly
@@ -81,7 +81,7 @@ printf '#!/bin/sh\n[ "$1" = "%s/scripts/validate-result-schemas.mjs" ]\n' "$fixt
 chmod +x "$tmp/nodebin/node"
 (
     cd "$fixture"
-    PATH="$tmp/nodebin:$PATH" .agents/skills/orchestrator/assets/fence-check.sh \
+    PATH="$tmp/nodebin:$PATH" .agents/skills/orchestrate/assets/fence-check.sh \
         --brief "$tmp/allowed.md"
 ) >/dev/null || fail "a vendored-layout fence check did not resolve the repository validator"
 
@@ -92,7 +92,7 @@ fixture_link="$tmp/repo-symlink"
 ln -s "$fixture" "$fixture_link"
 (
     cd "$fixture_link"
-    PATH="$tmp/nodebin:$PATH" .agents/skills/orchestrator/assets/fence-check.sh \
+    PATH="$tmp/nodebin:$PATH" .agents/skills/orchestrate/assets/fence-check.sh \
         --brief "$tmp/allowed.md"
 ) >/dev/null || fail "a vendored-layout fence check invoked through a symlinked fixture root did not resolve the repository validator"
 
@@ -536,7 +536,7 @@ case "$out" in
 *) fail "overlap refusal did not name both overlapping remote names: $out" ;;
 esac
 
-scanner="$repo/ai/skills/universal/orchestrator/assets/validator-dependency-scan.sh"
+scanner="$repo/ai/skills/universal/orchestrate/assets/validator-dependency-scan.sh"
 scan_fixture="$tmp/scan-repo"
 git init -q "$scan_fixture"
 mkdir -p \
@@ -660,20 +660,20 @@ case "$out" in
 *) fail "grep failure did not name its root and status: $out" ;;
 esac
 
-skill="ai/skills/universal/orchestrator/SKILL.md"
-template="ai/skills/universal/orchestrator/assets/lane-brief.md"
+skill="ai/skills/universal/orchestrate/SKILL.md"
+template="ai/skills/universal/orchestrate/assets/lane-brief.md"
 grep -Fq 'A file-scope fence is the closed list of paths and globs' "$skill" ||
-    fail "orchestrator skill does not define a lane fence"
+    fail "orchestrate skill does not define a lane fence"
 grep -Fq 'validator-dependency-scan.sh' "$skill" ||
-    fail "orchestrator skill does not require the validator-dependency scan"
+    fail "orchestrate skill does not require the validator-dependency scan"
 grep -Fq 'one writer per file' "$skill" ||
-    fail "orchestrator skill does not state cross-lane ownership"
+    fail "orchestrate skill does not state cross-lane ownership"
 grep -Fq 'run.json` intervention with `kind: asked' "$skill" ||
-    fail "orchestrator skill does not record self-expansion intervention"
+    fail "orchestrate skill does not record self-expansion intervention"
 grep -Fq 'fence-check.sh' "$skill" ||
-    fail "orchestrator skill does not require the pre-gate subset check"
+    fail "orchestrate skill does not require the pre-gate subset check"
 grep -Fq 'not a readiness-gate condition' "$skill" ||
-    fail "orchestrator skill incorrectly folds the subset check into readiness"
+    fail "orchestrate skill incorrectly folds the subset check into readiness"
 grep -Fq 'A validator or test that rejects your change and that no other live lane touches' "$template" &&
     grep -Fq 'may be added to this fence by you ONCE' "$template" ||
     fail "lane-brief template lost the bounded self-expansion clause"

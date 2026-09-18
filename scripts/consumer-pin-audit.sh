@@ -66,7 +66,7 @@ self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 #   git ls-tree --name-only v0.39.0 ai/skills/universal/
 #       -> gauntlet, shepherd, ... and NO review/integrate
 #   git ls-tree --name-only main ai/skills/universal/
-#       -> review, integrate, orchestrator, ...
+#       -> review, integrate, orchestrate, ...
 #
 # No tag through v0.39.0 ships `ai/skills/universal/review`; it exists only on
 # `main`, so the first release carrying it is the next one release-please
@@ -426,7 +426,7 @@ else
     # reason that is provable rather than heuristic: `cp -R` produces real
     # directories, so a symlink cannot be sync residue — and a source checkout
     # legitimately links to contract-carrying skills (this repository's
-    # `.claude/skills/{review,integrate,orchestrator}` do exactly that).
+    # `.claude/skills/{review,integrate,orchestrate}` do exactly that).
     unstamped=""
     if [ -d "$dest" ]; then
         for candidate in "$dest"/*; do

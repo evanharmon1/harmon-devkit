@@ -369,7 +369,7 @@ would need its own provenance rules.
 ### 12. Stage names, skill names, and write ownership are explicit
 
 Lifecycle stages use nouns; invocable skills use verbs (`/implement`,
-`/review`, `/integrate`). `/orchestrator` is a standing mode. Implementers own
+`/review`, `/integrate`). `/orchestrate` is a standing mode. Implementers own
 one conventional commit and brokered push per fix round. Integrators own only
 the reserve/trigger/attach/poll protocol and exact supplied thread replies. The
 session owns dispositions, publication, readiness, and promotion. `gauntlet`

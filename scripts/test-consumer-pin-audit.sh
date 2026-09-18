@@ -1003,7 +1003,7 @@ fi
 
 echo
 echo "== the successor stage skills declare the contract the audit reads =="
-for skill in review integrate orchestrator; do
+for skill in review integrate orchestrate; do
     contract="$repo/ai/skills/universal/$skill/assets/policy-contract.json"
     if [ -f "$contract" ] &&
         jq -e --arg s "$skill" '.policy_schema_version == 2 and .skill == $s' "$contract" >/dev/null 2>&1; then
@@ -1019,7 +1019,7 @@ echo "== the successor stage skills carry no legacy-shape branch =="
 # PATH in any successor skill. `shepherd` as a merge-base decoder field name
 # is allowed (it is what the older file literally calls that budget), so the
 # guard targets the resolution vocabulary itself.
-for skill in review integrate orchestrator implement retro; do
+for skill in review integrate orchestrate implement retro; do
     md="$repo/ai/skills/universal/$skill/SKILL.md"
     [ -f "$md" ] || continue
     if grep -nE 'default_tier|default_method|\[method\]|per-stage[, ]*(to the )?highest|highest cap present' "$md" >/dev/null 2>&1; then

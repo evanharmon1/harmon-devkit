@@ -1,6 +1,6 @@
 # Skills pin policy: keeping the vendored pin and `.devflow.toml` in step
 
-Dev flow v2's stage skills — `/review`, `/integrate`, `/orchestrator` — operate
+Dev flow v2's stage skills — `/review`, `/integrate`, `/orchestrate` — operate
 under a `schema_version = 2` `.devflow.toml` **and under nothing else**. They
 carry no interpreter for the pre-v1 legacy shape (round caps directly on
 `[rigor.<level>]`, plus `default_method` and `[method]`) or the v1 shape
@@ -127,7 +127,7 @@ cannot answer by inspection.
 Symlinked entries are skipped individually, never tree-wide: `cp -R` produces
 real directories, so a symlink cannot be sync residue, and a source checkout
 legitimately links to contract-carrying skills (this repository's
-`.claude/skills/{review,integrate,orchestrator}` do exactly that).
+`.claude/skills/{review,integrate,orchestrate}` do exactly that).
 
 *History, because the shape of this rule is the point.* An earlier version
 counted **every** real directory as residue and then added a tree-wide "this

@@ -1,13 +1,13 @@
 ---
-name: orchestrator
+name: orchestrate
 description: >-
   Standing mode for policy-resolved, worktree-isolated Dev flow runs. It
   dispatches scoped roles, owns run records and adjudication, monitors durable
   events, and schedules a merge queue without making product or safety choices.
-  Use when coordinating one or more Dev Loop lanes. Invoke as /orchestrator.
+  Use when coordinating one or more Dev Loop lanes. Invoke as /orchestrate.
 ---
 
-# Orchestrator
+# Orchestrate
 
 Resolve and announce policy with `scripts/devflow-policy.mjs`; record resolved
 rigor, rounds, breadth, roles, strategy, and disclosures in the run. That

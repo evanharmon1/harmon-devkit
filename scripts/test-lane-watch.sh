@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-watcher="$repo_root/ai/skills/universal/orchestrator/assets/lane-watch.sh"
+watcher="$repo_root/ai/skills/universal/orchestrate/assets/lane-watch.sh"
 test_tmp="$(mktemp -d -t lane-watch-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
@@ -1240,7 +1240,7 @@ assert_line "$rearm_restart_out" "POST-PROMOTION-ACTIVITY alpha: trusted-codex r
 # The same asset resolves the repository root and registry in the flattened
 # consumer layout when the lane spec supplies its required repository.
 flattened_root="$test_tmp/consumer"
-flattened_watcher="$flattened_root/.agents/skills/orchestrator/assets/lane-watch.sh"
+flattened_watcher="$flattened_root/.agents/skills/orchestrate/assets/lane-watch.sh"
 mkdir -p "$(dirname "$flattened_watcher")" "$flattened_root/.worktrees/alpha"
 cp "$watcher" "$flattened_watcher"
 cp "$registry" "$flattened_root/agent-registry.json"
@@ -1261,8 +1261,8 @@ mkdir -p "$linked_main"
 git -C "$linked_main" init -q -b main
 git -C "$linked_main" config user.name test
 git -C "$linked_main" config user.email test@example.invalid
-mkdir -p "$linked_main/ai/skills/universal/orchestrator/assets"
-cp "$watcher" "$linked_main/ai/skills/universal/orchestrator/assets/lane-watch.sh"
+mkdir -p "$linked_main/ai/skills/universal/orchestrate/assets"
+cp "$watcher" "$linked_main/ai/skills/universal/orchestrate/assets/lane-watch.sh"
 cp "$registry" "$linked_main/agent-registry.json"
 git -C "$linked_main" add .
 git -C "$linked_main" commit -qm initial
@@ -1270,7 +1270,7 @@ git -C "$linked_main" worktree add -q -b monitor "$linked_main/.worktrees/monito
 mkdir -p "$linked_main/.worktrees/alpha"
 cp "$workspace_root/harmon-devkit/.worktrees/alpha/.lane-report.md" \
     "$linked_main/.worktrees/alpha/.lane-report.md"
-linked_watcher="$linked_main/.worktrees/monitor/ai/skills/universal/orchestrator/assets/lane-watch.sh"
+linked_watcher="$linked_main/.worktrees/monitor/ai/skills/universal/orchestrate/assets/lane-watch.sh"
 linked_out="$test_tmp/linked.out"
 bash "$linked_watcher" --iterations 1 \
     --state-file "$test_tmp/linked.state" --interval-seconds 0 --timeout-seconds 1 \
@@ -1339,9 +1339,9 @@ assert_line "$canonical_monitor_err" \
     "lane-watch: refusing canonical run monitor as watcher state: $canonical_monitor"
 cmp -s "$canonical_monitor" "$test_tmp/monitor.before.json" ||
     fail 'watcher modified the canonical run monitor'
-assert_count "$repo_root/ai/skills/universal/orchestrator/SKILL.md" 1 \
+assert_count "$repo_root/ai/skills/universal/orchestrate/SKILL.md" 1 \
     'state-file <run-dir>/lane-watch.state'
-assert_count "$repo_root/ai/skills/universal/orchestrator/SKILL.md" 0 \
+assert_count "$repo_root/ai/skills/universal/orchestrate/SKILL.md" 0 \
     'state-file <run-state>'
 
 # The watcher state implementation stays compatible with macOS Bash 3.2.

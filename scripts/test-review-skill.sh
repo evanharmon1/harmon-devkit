@@ -70,8 +70,8 @@ grep -Fq 'display login is non-authoritative metadata' "$skill" ||
     fail "review skill treats mutable display login as evidence identity"
 grep -Fq 'Immediately before that remediation dispatch' "$skill" ||
     fail "review skill does not enforce breadth before remediation"
-grep -Fq 'Immediately before every implementer invocation' ai/skills/universal/orchestrator/SKILL.md ||
-    fail "orchestrator skill does not account for total agent-run breadth"
+grep -Fq 'Immediately before every implementer invocation' ai/skills/universal/orchestrate/SKILL.md ||
+    fail "orchestrate skill does not account for total agent-run breadth"
 grep -Fq 'never consume `[breadth].max_agent_runs`' "$skill" ||
     fail "review skill charges confidence finders to the implementer budget"
 for text in 'mandatory round-two scaffolding checkpoint' \
@@ -151,10 +151,10 @@ fresh_line=$(grep -nF 'Otherwise require the last transition to name' "$skill" |
 [ -n "$adopt_line" ] && [ -n "$fresh_line" ] && [ "$adopt_line" -lt "$fresh_line" ] ||
     fail "post-rename adoption is not ordered before the fresh-write precondition"
 
-grep -Fq 'wall_clock_min' ai/skills/universal/orchestrator/SKILL.md ||
-    fail "orchestrator skill does not enforce the whole-run wall-clock ceiling"
+grep -Fq 'wall_clock_min' ai/skills/universal/orchestrate/SKILL.md ||
+    fail "orchestrate skill does not enforce the whole-run wall-clock ceiling"
 grep -Fq 'validate-result-schemas.mjs brief "$brief_path"' \
-    ai/skills/universal/orchestrator/SKILL.md ||
+    ai/skills/universal/orchestrate/SKILL.md ||
     fail "orchestrator does not validate a rendered brief before dispatch"
 grep -Fq 'validated `brief.envelope.schema.json` envelope; never scrape' \
     ai/skills/universal/implement/SKILL.md ||
@@ -164,7 +164,7 @@ for text in 'Retry an unavailable primary' 'already active dev-flow-v2 run' \
     'assembly.canonical_head' 'adopt the existing entry without appending' \
     'sole external action still authorized'; do
     grep -Fq "$text" "$skill" ai/skills/universal/implement/SKILL.md \
-        ai/skills/universal/orchestrator/SKILL.md ||
+        ai/skills/universal/orchestrate/SKILL.md ||
         fail "review workflow documentation is missing $text"
 done
 entry_gate_line="$(grep -n '^## Entry gate$' "$skill" | cut -d: -f1)"
@@ -180,9 +180,9 @@ for role in challenger reviewer; do
     grep -Fq 'validated finding records' "$agent" ||
         fail "$role cannot compare finding provenance across rounds"
 done
-grep -Fq 'synthesis_of' ai/skills/universal/orchestrator/SKILL.md ||
-    fail "orchestrator skill does not preserve council synthesis provenance"
-for model_skill in "$skill" ai/skills/universal/orchestrator/SKILL.md \
+grep -Fq 'synthesis_of' ai/skills/universal/orchestrate/SKILL.md ||
+    fail "orchestrate skill does not preserve council synthesis provenance"
+for model_skill in "$skill" ai/skills/universal/orchestrate/SKILL.md \
     ai/skills/universal/breakdown/SKILL.md; do
     ! grep -Fq 'disable-model-invocation: true' "$model_skill" ||
         fail "$model_skill is not model-invocable"

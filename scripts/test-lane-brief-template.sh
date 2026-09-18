@@ -11,7 +11,7 @@ fail() {
     return 0
 }
 
-template="ai/skills/universal/orchestrator/assets/lane-brief.md"
+template="ai/skills/universal/orchestrate/assets/lane-brief.md"
 rendered="$(<"$template")"
 
 required_placeholders=(
@@ -78,7 +78,7 @@ for expected in "${required_placeholders[@]}"; do
 done
 
 for token in "${placeholders[@]}"; do
-    grep -Fq "| \`$token\` |" ai/skills/universal/orchestrator/SKILL.md ||
+    grep -Fq "| \`$token\` |" ai/skills/universal/orchestrate/SKILL.md ||
         fail "$token is absent from the external placeholder source catalog"
     key="${token#\{\{}"
     key="${key%\}\}}"
@@ -175,10 +175,10 @@ grep -Fq 'plain shell `&` backgrounding is not persistent evidence' \
     fail "ordinary shell backgrounding can masquerade as persistence"
 
 grep -Fq 'every end-to-end, PR-owning implementation lane' \
-    ai/skills/universal/orchestrator/SKILL.md ||
+    ai/skills/universal/orchestrate/SKILL.md ||
     fail "lane template is not scoped to PR-owning dispatches"
 grep -Fq 'bounded remediation implementers, use their schema-bound role briefs' \
-    ai/skills/universal/orchestrator/SKILL.md ||
+    ai/skills/universal/orchestrate/SKILL.md ||
     fail "non-PR implementer dispatches can receive the lane template"
 grep -Fq "step 1's session/agent ownership comparison" "$rendered_file" ||
     fail "orchestrator claim handoff does not override implement session matching"
@@ -188,7 +188,7 @@ grep -Fq 'delegated use of the existing claim, not a claim transfer' \
 grep -Fq "snapshot's recorded branch must equal" "$rendered_file" ||
     fail "claim handoff is not bound to the provisioned lane branch"
 grep -Fq 'transactionally refresh the existing' \
-    ai/skills/universal/orchestrator/SKILL.md ||
+    ai/skills/universal/orchestrate/SKILL.md ||
     fail "orchestrator does not refresh the claim after lane provisioning"
 grep -Fq 'fixture-issue-url' "$rendered_file" ||
     fail "canonical issue URL is not passed through the rendered brief"
