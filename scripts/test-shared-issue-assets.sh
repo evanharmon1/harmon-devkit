@@ -32,20 +32,30 @@ echo "==> checking existence and permissions of shared assets"
     fail "validate-plan-row.sh must exist and be executable"
 
 echo "==> checking triage-scan.sh and groom-scan.sh reuse issue-conformance.jq"
-grep -q 'include "issue-conformance";' "ai/skills/universal/triage/assets/triage-scan.sh" ||
-    fail "triage-scan.sh must include issue-conformance"
-grep -q 'include "issue-conformance";' "ai/skills/universal/groom/assets/groom-scan.sh" ||
-    fail "groom-scan.sh must include issue-conformance"
+# Reuse means loading that one file, whether by include or by inlining its
+# text; what must never appear is a second copy of the projection. jq 1.8
+# aborts on the two-level include chain (see the comment in either scan
+# script), so both inline the file instead.
+grep -q 'cat "$title_module_dir/issue-conformance.jq"' "ai/skills/universal/triage/assets/triage-scan.sh" ||
+    fail "triage-scan.sh must load the shared issue-conformance.jq"
+grep -q 'cat "$title_module_dir/issue-conformance.jq"' "ai/skills/universal/groom/assets/groom-scan.sh" ||
+    fail "groom-scan.sh must load the shared issue-conformance.jq"
+# Anchored to a statement, not prose: both scripts explain the chain in a
+# comment that names the include they no longer use.
+grep -qE '^[[:space:]]*include "issue-conformance";' "ai/skills/universal/triage/assets/triage-scan.sh" &&
+    fail "triage-scan.sh must not include issue-conformance — jq 1.8 aborts on that two-level chain"
+grep -qE '^[[:space:]]*include "issue-conformance";' "ai/skills/universal/groom/assets/groom-scan.sh" &&
+    fail "groom-scan.sh must not include issue-conformance — jq 1.8 aborts on that two-level chain"
 grep -q 'issue_conformance(' "ai/skills/universal/triage/assets/triage-scan.sh" ||
     fail "triage-scan.sh must invoke issue_conformance"
 grep -q 'issue_conformance(' "ai/skills/universal/groom/assets/groom-scan.sh" ||
     fail "groom-scan.sh must invoke issue_conformance"
 
 echo "==> checking shared title validation reuse"
-grep -q 'include "issue-title";' "ai/skills/universal/triage/assets/triage-scan.sh" ||
-    fail "triage-scan.sh must include issue-title"
-grep -q 'include "issue-title";' "ai/skills/universal/groom/assets/groom-scan.sh" ||
-    fail "groom-scan.sh must include issue-title"
+# Both scan scripts reach issue-title through the projection they inline, so
+# the include that matters is the projection's own.
+grep -q 'include "issue-title";' "ai/skills/universal/issue-title-support/assets/issue-conformance.jq" ||
+    fail "issue-conformance.jq must include issue-title"
 
 echo "==> checking groom-scan.sh reuses triage label discovery"
 grep -q 'triage-apply.sh' "ai/skills/universal/groom/assets/groom-scan.sh" ||
@@ -71,13 +81,14 @@ known_json='["area:core", "domain:backend", "layer:backend"]'
 wt_json='["bug", "feature", "task"]'
 title_module_dir="ai/skills/universal/issue-title-support/assets"
 
+conformance_jq="$(cat "$title_module_dir/issue-conformance.jq")" ||
+    fail "cannot read the shared conformance projection"
+
 res=$(jq -n -L "$title_module_dir" \
     --argjson issue "$fixture_issue" \
     --argjson axes "$axes_json" \
     --argjson known "$known_json" \
-    --argjson wt "$wt_json" '
-  include "issue-title";
-  include "issue-conformance";
+    --argjson wt "$wt_json" "$conformance_jq"'
   issue_conformance($issue; $axes; $known; $wt; "User"; "n/a"; 14; 30)
 ')
 
