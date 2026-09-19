@@ -26,7 +26,7 @@
     {
       "id": 9102,
       "commit_id": "0000000000000000000000000000000000000000",
-      "path": "scripts/round-push.sh",
+      "path": "ai/skills/universal/review/assets/round-push.sh",
       "line": 12,
       "user": {
         "id": 199175422,
@@ -39,7 +39,7 @@
     {
       "id": 9103,
       "commit_id": "0303030303030303030303030303030303030303",
-      "path": "scripts/round-push.sh",
+      "path": "ai/skills/universal/review/assets/round-push.sh",
       "line": 30,
       "user": {
         "id": 12345,

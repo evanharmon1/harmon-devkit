@@ -83,6 +83,14 @@ jobs:
       # silently skip CI again.
       - run: task test:dev-flow-stats
       - run: task test:result-schemas
+      # #974's three new suites. Same reason as the #796 note below: all three
+      # are wired into `task verify`, but this workflow runs a hand-maintained
+      # list rather than `task verify`, so omitting them would let cloud CI
+      # pass while skipping the schema-copy parity check and the guard that
+      # keeps a vendored skill off a repository-root scripts/ path.
+      - run: task test:result-schema-composition
+      - run: task test:schema-parity
+      - run: task test:skill-runtime-paths
 
       - run: task test:registry-drift
       - run: task test:registry-docs

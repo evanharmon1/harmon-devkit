@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fixture-driven + hermetic regression tests for render-dev-flow.mjs
-# (scripts/render-dev-flow.mjs, ai/schemas/fixtures/render/). Golden fixtures
+# Fixture-driven + hermetic regression tests for ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs
+# (ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs, ai/schemas/fixtures/render/). Golden fixtures
 # prove byte-stable projections from one shared record covering every
 # disposition (fix/restructure/delete/decline/defer/file); the publish
 # section fakes `gh` on PATH, the way scripts/test-shepherd-*.sh do, to
@@ -8,8 +8,14 @@
 
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-renderer="${repo_root}/scripts/render-dev-flow.mjs"
+# The renderer is this test's own sibling asset; the golden fixtures are an
+# authoring-tree corpus under ai/schemas/, which only harmon-devkit has. Each
+# is resolved from where it actually lives (harmon-devkit#974) rather than by
+# counting `..` from this file, whose depth below the repository root is not
+# the same here as in a consumer's flattened .claude/skills/ tree.
+asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd "$asset_dir" && git rev-parse --show-toplevel)"
+renderer="${asset_dir}/render-dev-flow.mjs"
 fixtures_dir="${repo_root}/ai/schemas/fixtures/render"
 golden_dir="${fixtures_dir}/golden"
 record_dir="${fixtures_dir}/record"
@@ -136,8 +142,8 @@ run readiness-input --record "$record_dir" --head "$render_head"
 [ "$out" = "$first" ] || fail "readiness-input is not deterministic across identical runs"
 
 echo "==> unsettled deferred findings stay unchecked; settled ones carry their disposition"
-assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [ ] `review-r2-codex-cli-3` scripts/render-dev-flow.mjs:320'
-assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [x] `review-r1-codex-cli-1` scripts/render-dev-flow.mjs:300'
+assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [ ] `review-r2-codex-cli-3` ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs:320'
+assert_contains "$(cat "${golden_dir}/deferred-findings.txt")" '- [x] `review-r1-codex-cli-1` ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs:300'
 
 echo "==> readiness-input separates settled from unsettled deferred findings"
 settled_count="$(node -e "console.log(JSON.parse(require('fs').readFileSync('${golden_dir}/readiness-input.json','utf8')).deferred_findings.settled.length)")"
@@ -329,7 +335,7 @@ const adversarialPass = {
     findings: [
       {
         id: 'review-r1-codex-cli-99',
-        path: 'scripts/render-dev-flow.mjs',
+        path: 'ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs',
         line: 210,
         class: 'correctness',
         provenance: 'original',
@@ -540,7 +546,7 @@ const p = '${unadjudicated_pass}/passes/challenge-r1-codex-cli.json';
 const envelope = JSON.parse(fs.readFileSync(p, 'utf8'));
 envelope.payload.findings.push({
     id: 'challenge-r1-codex-cli-99',
-    path: 'scripts/render-dev-flow.mjs',
+    path: 'ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs',
     line: 1,
     class: 'correctness',
     provenance: 'original',
@@ -1078,7 +1084,7 @@ run deferred-findings --record "${test_tmp}/bad-adjudication"
 assert_rc 1
 assert_contains "$err" "adjudication.schema.json"
 
-echo "render-dev-flow.mjs (projections + validation): PASS"
+echo "ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs (projections + validation): PASS"
 
 # ── publish: fake gh on PATH, no network ────────────────────────────────
 # One shim, one live pointer: $GH_FIXTURES/current-view.json is the whole
@@ -1480,4 +1486,4 @@ assert_contains "$err" "no matching pass supplied"
 [ ! -f "${pub_record}/.publish-lock" ] ||
     fail "a fail()-triggered process.exit mid-render must not leave the lock behind"
 
-echo "render-dev-flow.mjs publish (fake gh, no network): PASS"
+echo "ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs publish (fake gh, no network): PASS"

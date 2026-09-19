@@ -1,4 +1,4 @@
-// scripts/lib/toml-lite.mjs
+// lib/toml-lite.mjs
 //
 // A hand-rolled parser for the subset of TOML the Dev flow v2 `.devflow.toml`
 // v2 shape actually uses: nested `[a.b]` table headers, scalar key = value
@@ -7,7 +7,7 @@
 // e.g. `{ any = [\n  { predicate = "x" },\n] }` — legal TOML, since a
 // newline is disallowed only directly between an inline table's braces, not
 // inside a nested value spanning them). No dependency is pulled in for this
-// on purpose, matching scripts/lib/json-schema-subset.mjs (a hand-rolled
+// on purpose, matching lib/json-schema-subset.mjs (a hand-rolled
 // JSON-Schema-subset engine built for the identical reason: this repo ships
 // no root package.json / node_modules, so an `import` of a third-party
 // parser would not resolve).

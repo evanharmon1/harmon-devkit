@@ -14,7 +14,7 @@
     "findings": [
       {
         "id": "review-r2-codex-cli-1",
-        "path": "scripts/render-dev-flow.mjs",
+        "path": "ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs",
         "line": 210,
         "class": "correctness",
         "provenance": "round:1",
@@ -25,7 +25,7 @@
       },
       {
         "id": "review-r2-codex-cli-2",
-        "path": "scripts/render-dev-flow.mjs",
+        "path": "ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs",
         "line": 250,
         "class": "nit",
         "provenance": "original",
@@ -36,7 +36,7 @@
       },
       {
         "id": "review-r2-codex-cli-3",
-        "path": "scripts/render-dev-flow.mjs",
+        "path": "ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs",
         "line": 320,
         "class": "hardening",
         "provenance": "original",

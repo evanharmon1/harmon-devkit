@@ -150,7 +150,15 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createSchemaValidator } from './lib/json-schema-subset.mjs'
 
-const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'ai', 'schemas')
+// The package's OWN schema copy, resolved from this file's location — never a
+// repository-root `ai/schemas`. A vendored consumer has no `ai/` tree, and the
+// depth from an asset to a repository root differs between this source tree
+// (`dev-flow-support/assets`) and a flattened consumer one
+// (`.claude/skills/dev-flow-support/assets`), so a root-relative default is
+// wrong in at least one of them (harmon-devkit#974, ruling 2). `ai/schemas/`
+// stays the authoring source of truth; `assets/schemas/` is its byte-identical
+// copy, asserted by `task test:schema-parity`.
+const DEFAULT_SCHEMAS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'schemas')
 const KINDS = ['brief', 'envelope', 'implementer', 'challenger', 'reviewer', 'integrator', 'adjudication', 'run', 'plan']
 const FINDING_ID = /^(challenge|review|integration)-r([1-9][0-9]*)-(.+)-([1-9][0-9]*)$/
 const SHA_PATTERN = /^[0-9a-f]{40}$/
@@ -886,7 +894,7 @@ function checkFinderCyclesAcceptedScope(payload, errors) {
 // EXIT_CODE_VERDICT_CONSTRAINTS — what codex_cycle.exit_code implies about
 // payload.verdict, per the SAME exit-code contract
 // result.integrator.schema.json's codex_cycle.exit_code description
-// documents, which is itself ai/skills/universal/integrate/assets/
+// documents, which is itself integrate/assets/
 // check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
 // 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
 // indeterminate. checkIntegratorCleanVerdict separately requires exit_code
@@ -1969,7 +1977,7 @@ function checkRunPromotionOutcome(document, errors) {
 // content they claim to protect — shepherd round 5, Codex-confirmed (P1),
 // reproduced directly: corrupting `pr_bindings[0].digest` to 64 zeroes in
 // the valid further-along.json fixture still printed "run record OK" here,
-// while scripts/dev-flow-stats.mjs's own reconstructAsOf() correctly
+// while retro/assets/dev-flow-stats.mjs's own reconstructAsOf() correctly
 // rejected the identical document as a broken chain. Ports the same
 // digest verification into the shared validator so any writer relying on
 // it, not just the harvester, catches a corrupted chain before ever
@@ -2535,7 +2543,7 @@ function checkRunFlatProjections(document, verifiedChains, errors) {
 // a downstream reader taking the LAST entry as authoritative (run.schema.
 // json's own field description: "a derived projection: the last entry's
 // outcome") would then launder a real failure into a success.
-// scripts/dev-flow-stats.mjs's own harvester already rejects this (shepherd
+// retro/assets/dev-flow-stats.mjs's own harvester already rejects this (shepherd
 // round 2 of #663, Codex-confirmed P1); this ports the same bound to the
 // shared validator so any other writer or consumer catches the mistake
 // before ever posting a broken record, not after. Counting distinct `seq`
@@ -3087,7 +3095,7 @@ function checkSplitAdjudicationsRecordedBeforePromotion(document, adjudications,
 // adjudicated STAGE was visited, and checkEvidenceMarker* only constrain
 // markers that happen to exist. A run could adjudicate every round, settle
 // every deferral, promote, and carry an entirely empty evidence_comments[]
-// — leaving the harvester (scripts/dev-flow-stats.mjs) nothing to read back
+// — leaving the harvester (retro/assets/dev-flow-stats.mjs) nothing to read back
 // and authenticate for rounds that demonstrably happened.
 //
 // TWO rules, because they hold at different times. A run adjudicates a

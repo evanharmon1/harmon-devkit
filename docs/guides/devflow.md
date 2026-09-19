@@ -19,7 +19,14 @@ at an interpretation. The frozen `.devflow-conformance-v1.json` remains a v1
 compatibility artifact. `.devflow-conformance-v2.json` is the corpus for v2
 readers.
 
-The reference reader is `scripts/devflow-policy.mjs`. It parses TOML, accepts
+The reference reader is `ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs` —
+a **vendored skill asset**, not a repository-root script
+([#974](https://github.com/evanharmon1/harmon-devkit/issues/974)): `task sync:skills`
+ships `ai/skills/` and nothing from `scripts/`, so the whole dev-flow v2 runtime
+lives with the skills that call it — shared parts in the `dev-flow-support`
+package, single-owner parts in the owning skill's own `assets/`. In a consumer
+repository the same file is `.claude/skills/dev-flow-support/assets/devflow-policy.mjs`.
+It parses TOML, accepts
 an already-authorized rigor/strategy request, resolves the selected profile,
 and cross-validates registry and Taskfile references. It deliberately does not
 authenticate GitHub actors, read labels, reconcile label conflicts, or arm a
@@ -153,7 +160,7 @@ Agent results are wrapped in `ai/schemas/result.envelope.schema.json` and use
 the role payload schemas. `ai/schemas/result.schema.json` is the composed
 entry point. Orchestrator-owned adjudication batches and mutable run records
 use `adjudication.schema.json` and `run.schema.json`; they are not agent result
-envelopes. `scripts/validate-result-schemas.mjs` provides the receipt and
+envelopes. `ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs` provides the receipt and
 cross-document checks JSON Schema alone cannot express.
 
 ## Consumer checklist

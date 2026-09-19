@@ -14,7 +14,7 @@
     "findings": [
       {
         "id": "challenge-r1-codex-cli-1",
-        "path": "scripts/render-dev-flow.mjs",
+        "path": "ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs",
         "line": 210,
         "class": "correctness",
         "provenance": "original",
@@ -25,7 +25,7 @@
       },
       {
         "id": "challenge-r1-codex-cli-2",
-        "path": "scripts/render-dev-flow.mjs",
+        "path": "ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs",
         "line": 40,
         "class": "hardening",
         "provenance": "original",

@@ -92,7 +92,7 @@ arbitrary command-execution surface. Duplicating an allowlist in the skill and
 broker was rejected because they would drift.
 
 The round-push broker and the secret scanner live at stable repository-owned
-script paths (`scripts/round-push.sh`; `scripts/gitleaks-scan.sh` with its
+script paths (`ai/skills/universal/review/assets/round-push.sh`; `scripts/gitleaks-scan.sh` with its
 `.gitleaks.toml`, `.gitleaksignore` if the merge base has one, and the
 `scripts/summarize-gitleaks.mjs` helper it executes under
 `GITHUB_STEP_SUMMARY`; the extracted broker invokes that extracted
@@ -125,7 +125,7 @@ sweeping the round gate into the closure was rejected because it would
 contradict the branch-attested rule.
 
 One bootstrap exception is explicit and tested: the change that first creates
-`scripts/round-push.sh` (task 2.2) has no merge-base copy at that path, so
+`ai/skills/universal/review/assets/round-push.sh` (task 2.2) has no merge-base copy at that path, so
 for that relocation change only, the merge-base broker is the skill asset it
 relocates (`ai/skills/universal/gauntlet/assets/push-round.sh`), materialized
 the same way. Every later change extracts the stable path; a merge base that

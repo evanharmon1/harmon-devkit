@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// scripts/lib/run-exit-fixtures.mjs — drives the ai/schemas/fixtures/exit/
-// conformance corpus against scripts/dev-flow-exit.mjs and
-// scripts/devflow-policy.mjs, and checks each case's expected.json.
-// Invoked by scripts/test-dev-flow-exit.sh; see ai/schemas/README.md for the
+// lib/run-exit-fixtures.mjs — drives the ai/schemas/fixtures/exit/
+// conformance corpus against dev-flow-exit.mjs and
+// devflow-policy.mjs, and checks each case's expected.json.
+// Invoked by test-dev-flow-exit.sh; see ai/schemas/README.md for the
 // fixture directory layout this reads.
 
 import { readFileSync, existsSync, readdirSync, mkdtempSync, rmSync, mkdirSync, copyFileSync } from "node:fs";
@@ -12,8 +12,24 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+// The scripts this driver exercises are its own package siblings, one level up
+// in `assets/`. The fixture corpus is NOT: it is an authoring-tree directory
+// under `ai/schemas/`, which only harmon-devkit has. Counting `..` reached
+// both correctly while this file lived at `scripts/lib/`; after the move to a
+// vendored skill package (harmon-devkit#974) the same count lands inside the
+// package, so the repository root is found by walking up to the checkout that
+// owns this file instead of by a fixed depth.
 const SCRIPTS_DIR = path.dirname(HERE);
-const REPO_ROOT = path.dirname(SCRIPTS_DIR);
+function findRepoRoot(start) {
+  let dir = path.resolve(start);
+  for (;;) {
+    if (existsSync(path.join(dir, ".git"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return path.resolve(start);
+    dir = parent;
+  }
+}
+const REPO_ROOT = findRepoRoot(SCRIPTS_DIR);
 const FIXTURES_DIR = path.join(REPO_ROOT, "ai/schemas/fixtures/exit");
 const EXIT_SCRIPT = path.join(SCRIPTS_DIR, "dev-flow-exit.mjs");
 const POLICY_SCRIPT = path.join(SCRIPTS_DIR, "devflow-policy.mjs");
@@ -401,7 +417,7 @@ function checkExitCode(expected, actual, status) {
 }
 
 // Builds the TRUSTED closure a --closure fixture re-execs into, from
-// whatever scripts/devflow-policy.mjs + scripts/lib/toml-lite.mjs the
+// whatever devflow-policy.mjs + lib/toml-lite.mjs the
 // repository currently ships — never a copy committed under
 // ai/schemas/fixtures/, so a --closure fixture can never drift from the
 // real reader (see reader-self-modification-boundary/README.md).

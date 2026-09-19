@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/dev-flow-stats.mjs — Dev flow v2 evidence harvesting, the closed-
+// dev-flow-stats.mjs — Dev flow v2 evidence harvesting, the closed-
 // cohort unattended-success metric, per-run trajectory rendering, and
 // convergence-policy replay (specs/dev-flow-v2.md § Evidence / § Success
 // metric, openspec/changes/dev-flow-v2/specs/evidence/spec.md, issue #663).
@@ -27,7 +27,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const MAX_SYNC_BUFFER_BYTES = 64 * 1024 * 1024;
-const EXIT_VALIDATOR = path.join(path.dirname(fileURLToPath(import.meta.url)), "validate-result-schemas.mjs");
+// The schema validator and the exit engine are assets of the sibling
+// dev-flow-support PACKAGE, not of this skill (harmon-devkit#974). Resolved
+// two levels up from this file, which is the same hop in harmon-devkit's
+// source tree and in a consumer's flattened .claude/skills/ tree, because
+// categories are flattened on vendor.
+const SUPPORT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "dev-flow-support", "assets");
+const EXIT_VALIDATOR = path.join(SUPPORT_DIR, "validate-result-schemas.mjs");
 
 // ---------------------------------------------------------------------------
 // gh api wrapper
@@ -1277,7 +1283,7 @@ function entryDigest(contentFields, prevDigest) {
 // writer retry broke the whole chain. Two entries sharing a seq but
 // carrying DIFFERENT digests are the opposite case — a genuine FORK — and
 // must still fail closed rather than have either one silently picked
-// (scenario "fork" in scripts/test-dev-flow-stats.sh proves this).
+// (scenario "fork" in test-dev-flow-stats.sh proves this).
 function normalizeExactDuplicates(rawEntries, contentKeys) {
   const bySeq = new Map();
   for (const entry of rawEntries) {
@@ -1358,7 +1364,7 @@ const CHAIN_FIELDS = {
   // design question after challenge round 3. Unlike the three above, these
   // three ARE part of the shipped run.schema.json (not blocked on #738):
   // the flat fields stay in the schema for existing direct consumers
-  // (scripts/render-dev-flow.mjs reads record.run.pr.number/.url), but are
+  // (dev-flow-support/assets/render-dev-flow.mjs reads record.run.pr.number/.url), but are
   // now DERIVED and cross-checked against their chain rather than trusted
   // as bare mutable fields — see deriveProjections/verifyProjections below.
   evidence_registrations: ["id", "author_actor_id", "login", "payload_digest", "marker", "registered_at"],
@@ -1615,7 +1621,7 @@ function findOrphanEvidence(comments, { runId, runRecordAuthorId, listedIds, eff
 }
 
 // ---------------------------------------------------------------------------
-// Run directory reconstruction — the shape scripts/dev-flow-exit.mjs's
+// Run directory reconstruction — the shape dev-flow-support/assets/dev-flow-exit.mjs's
 // loadRunDir() reads (run.json + passes/*.json + adjudications/*.json).
 // receipts[] IS derived here from harvested evidence, entirely as an
 // implementation detail of this harvester: dev-flow-exit.mjs already
@@ -2464,7 +2470,7 @@ function loadLocalEvidenceRun(repo, recordRoot, runId, issueNumber, issueComment
           // through this branch at all. This branch is therefore unreachable
           // for a genuine re-entry, and stays correct with no change of its
           // own beyond this comment; the fixture proving it lives in
-          // scripts/test-dev-flow-stats.sh.
+          // test-dev-flow-stats.sh.
           if (stage === "review" && code === "stage-not-active") {
             engineRoundsByStage.set("review", []);
             continue;
@@ -3313,7 +3319,7 @@ function renderTrajectoryTable(trajectory) {
 // production always uses the sibling script at its stable relative path).
 // ---------------------------------------------------------------------------
 
-const DEFAULT_EXIT_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "dev-flow-exit.mjs");
+const DEFAULT_EXIT_SCRIPT = path.join(SUPPORT_DIR, "dev-flow-exit.mjs");
 
 function invokeExitScript(exitScriptPath, { runDir, stage, policyPath, currentHead, repoRoot }) {
   // --repo-root lets dev-flow-exit.mjs resolve real ancestry via

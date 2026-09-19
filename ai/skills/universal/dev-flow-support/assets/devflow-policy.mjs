@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/devflow-policy.mjs — the shared v2 `.devflow.toml` reader.
+// devflow-policy.mjs — the shared v2 `.devflow.toml` reader.
 //
 // Every Dev flow v2 consumer (the exit script, the round-push broker, the
 // integrator, the stage skills) resolves policy through this one module
@@ -11,12 +11,12 @@
 // repository's OWN live .devflow.toml still uses (never operated under by
 // this module — see "Shape detection" below).
 //
-// Usable as a CLI (`node scripts/devflow-policy.mjs resolve|detect ...`)
+// Usable as a CLI (`node devflow-policy.mjs resolve|detect ...`)
 // or as a library (`import { resolvePolicy, detectShape } from
-// "./devflow-policy.mjs"`), notably by scripts/dev-flow-exit.mjs and
-// scripts/consumer-pin-audit.sh.
+// "./devflow-policy.mjs"`), notably by dev-flow-exit.mjs and
+// orchestrate/assets/consumer-pin-audit.sh.
 //
-// CLI exit codes (stable; scripts/consumer-pin-audit.sh and the vendored
+// CLI exit codes (stable; orchestrate/assets/consumer-pin-audit.sh and the vendored
 // stage skills branch on them, so treat them as the contract):
 //
 //   detect --policy <file>
@@ -145,7 +145,7 @@ const BUILTIN_ROLE_TIER_DEFAULTS = Object.freeze({
   integrator: "economy",
 });
 // No legacy/v1 equivalent of [stage.*] exists. An empty finder set is the
-// built-in default; scripts/dev-flow-exit.mjs treats an empty resolved
+// built-in default; dev-flow-exit.mjs treats an empty resolved
 // finders[] as "no configured authority" and falls back to the observed
 // passes' own slots for logical-round assembly rather than trivially
 // treating every round as complete.
@@ -262,7 +262,7 @@ export function detectShape(doc) {
 // the harmon-init release that first ships a `.devflow.toml` template of that
 // shape (harmon-init#1081, delivered by harmon-init PRs #1159/#1167). Both are
 // stated once, here, so the reader's refusal message, the consumer-pin audit
-// (`scripts/consumer-pin-audit.sh`), the vendored skills' `policy-contract.json`
+// (`orchestrate/assets/consumer-pin-audit.sh`), the vendored skills' `policy-contract.json`
 // declarations, and docs/guides/skills-pin-policy.md cannot drift apart.
 export const POLICY_SCHEMA_VERSION = 2;
 export const V2_TEMPLATE_RELEASE = "harmon-init v4.43.0";
@@ -840,7 +840,7 @@ export function crossValidate(resolved, registryDoc, taskTargets) {
   //
   // Confidence finders (challenge, review) spend the independent rounds
   // envelope ([rounds.<policy>]) and never consume [breadth].max_agent_runs
-  // (specs/dev-flow-v2.md § breadth, ai/skills/universal/review/SKILL.md).
+  // (specs/dev-flow-v2.md § breadth, review/SKILL.md).
   // max_agent_runs is reserved for implementer lanes, synthesis, and
   // remediation. No breadth-sufficiency check is owed here.
   for (const stage of CONFIDENCE_STAGES) {
@@ -1555,7 +1555,7 @@ function cliDetect(args) {
   const isV2 = detection.shape === "v2";
   // The refusal message rides the detection result rather than being
   // rebuilt by each caller: `detect` is the shape oracle every non-Node
-  // consumer (scripts/consumer-pin-audit.sh, a vendored skill's shell
+  // consumer (orchestrate/assets/consumer-pin-audit.sh, a vendored skill's shell
   // recipe) reaches for, and a caller that has to compose its own migration
   // wording is a second place for the release name and the pin guidance to
   // drift from this file's own (harmon-devkit#604).
@@ -1770,12 +1770,38 @@ function cliResolve(args) {
 // merge-base rule already applies to .devflow.toml/agent-registry.json —
 // see AGENTS.md's "Self-modified policy is read from the merge base"). This
 // is the one thing running this SAME (possibly branch-modified) file cannot
-// prove about itself, so `--closure <dir>` re-execs the TRUSTED copy at
-// `<dir>/scripts/devflow-policy.mjs` — materialized outside the worktree by
-// the caller (e.g. `git show <merge-base>:scripts/devflow-policy.mjs`, the
-// same closure that supplies the merge-base .devflow.toml/agent-registry.json)
-// — before this file's own (possibly untrusted) code has done anything else
-// with the arguments. Checked first, ahead of every other line of main().
+// prove about itself, so `--closure <dir>` re-execs the TRUSTED copy inside
+// `<dir>` — materialized outside the worktree by the caller (e.g.
+// `git show <merge-base>:<reader path>`, the same closure that supplies the
+// merge-base .devflow.toml/agent-registry.json) — before this file's own
+// (possibly untrusted) code has done anything else with the arguments.
+// Checked first, ahead of every other line of main().
+//
+// The reader's path inside that closure is PROBED rather than fixed, because
+// it is not the same in every tree this runs against (harmon-devkit#974):
+// this reader is a vendored skill asset now, it was a repository-root
+// `scripts/` script before, and a consumer's flattened `.claude/skills/` tree
+// puts it somewhere else again. A merge base that predates the relocation
+// still carries it at `scripts/devflow-policy.mjs`, so that layout stays in
+// the list; dropping it would turn every in-flight branch's self-modification
+// check into a hard refusal. Order is fixed and first-existing wins, so the
+// resolution is deterministic. Every candidate lives inside the SAME
+// caller-materialized closure directory and is therefore equally trusted —
+// the probe widens where the trusted copy may sit, never whose copy counts.
+// Where the trusted reader may sit inside a `--closure` directory, most
+// specific first. `assets/` alone covers a closure materialized as just the
+// package's asset directory; the two skill layouts cover a whole-tree export
+// of harmon-devkit's source and of a consumer's vendored tree; `scripts/` is
+// the pre-#974 layout, retained for a merge base that predates the move.
+const CLOSURE_READER_PATHS = [
+  ["devflow-policy.mjs"],
+  ["assets", "devflow-policy.mjs"],
+  ["ai", "skills", "universal", "dev-flow-support", "assets", "devflow-policy.mjs"],
+  [".claude", "skills", "dev-flow-support", "assets", "devflow-policy.mjs"],
+  [".agents", "skills", "dev-flow-support", "assets", "devflow-policy.mjs"],
+  ["scripts", "devflow-policy.mjs"],
+];
+
 function tryDelegateToClosure(argv) {
   const idx = argv.indexOf("--closure");
   if (idx === -1) return null;
@@ -1784,15 +1810,18 @@ function tryDelegateToClosure(argv) {
     console.error("devflow-policy: --closure requires a directory argument");
     return 1;
   }
-  const trustedScript = path.join(closureDir, "scripts", "devflow-policy.mjs");
-  if (!existsSync(trustedScript)) {
+  const candidates = CLOSURE_READER_PATHS.map((rel) => path.join(closureDir, ...rel));
+  const trustedScript = candidates.find((candidate) => existsSync(candidate));
+  if (!trustedScript) {
     // A merge base that predates this reader's own existence (this change
     // may be the one introducing it) has no trusted copy to delegate to at
     // all — refuse outright rather than falling through to the untrusted
     // branch copy, which is exactly the gate a missing merge-base reader
-    // would otherwise let a self-modifying branch bypass.
+    // would otherwise let a self-modifying branch bypass. Name every path
+    // that was probed: "no reader here" is only actionable if the caller can
+    // see which layouts were looked for.
     console.error(
-      `devflow-policy: --closure directory has no scripts/devflow-policy.mjs (${closureDir}) — the reader must land on the merge base before a self-referential check can run; never falling back to the branch copy`,
+      `devflow-policy: --closure directory has no devflow-policy.mjs (${closureDir}) — probed ${CLOSURE_READER_PATHS.map((rel) => rel.join("/")).join(", ")}; the reader must land on the merge base before a self-referential check can run; never falling back to the branch copy`,
     );
     return 1;
   }

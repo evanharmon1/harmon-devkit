@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# test-dev-flow-exit.sh — behavioral test for scripts/devflow-policy.mjs and
-# scripts/dev-flow-exit.mjs against the conformance fixture corpus under
+# ai/skills/universal/dev-flow-support/assets/test-dev-flow-exit.sh — behavioral test for ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs and
+# ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs against the conformance fixture corpus under
 # ai/schemas/fixtures/exit/ (see ai/schemas/README.md).
 #
 # Deliberately never touches this repository's own live .devflow.toml —
@@ -30,14 +30,14 @@ trap 'rm -rf "${scratch}"' EXIT
 
 command -v node >/dev/null 2>&1 || fail "node is required"
 command -v task >/dev/null 2>&1 || fail "task is required"
-[ -f scripts/devflow-policy.mjs ] || fail "missing required asset: scripts/devflow-policy.mjs"
-[ -f scripts/dev-flow-exit.mjs ] || fail "missing required asset: scripts/dev-flow-exit.mjs"
-[ -x scripts/dev-flow-exit.sh ] || fail "scripts/dev-flow-exit.sh must exist and be executable"
-[ -f scripts/lib/toml-lite.mjs ] || fail "missing required asset: scripts/lib/toml-lite.mjs"
+[ -f ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs ] || fail "missing required asset: ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs"
+[ -f ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs ] || fail "missing required asset: ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs"
+[ -x ai/skills/universal/dev-flow-support/assets/dev-flow-exit.sh ] || fail "ai/skills/universal/dev-flow-support/assets/dev-flow-exit.sh must exist and be executable"
+[ -f ai/skills/universal/dev-flow-support/assets/lib/toml-lite.mjs ] || fail "missing required asset: ai/skills/universal/dev-flow-support/assets/lib/toml-lite.mjs"
 
 echo "== TOML parser smoke checks =="
 node --input-type=module -e '
-import { parseToml, TomlError } from "./scripts/lib/toml-lite.mjs";
+import { parseToml, TomlError } from "./ai/skills/universal/dev-flow-support/assets/lib/toml-lite.mjs";
 import assert from "node:assert/strict";
 
 // Round-trips the multi-line inline-table shape specs/dev-flow-v2.md ships
@@ -55,7 +55,7 @@ assert.equal(doc.convergence.diverging.any[1].min, 0.5);
 assert.deepEqual(doc.convergence.diverging.any[1].exclude_classes, ["design"]);
 
 // This repository'"'"'s own live .devflow.toml must still parse
-// structurally (shape REFUSAL is devflow-policy.mjs'"'"'s job, not the
+// structurally (shape REFUSAL is ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs'"'"'s job, not the
 // parser'"'"'s — the parser has no opinion on shape).
 import { readFileSync } from "node:fs";
 const live = parseToml(readFileSync(".devflow.toml", "utf8"));
@@ -85,9 +85,9 @@ assert.deepEqual(Object.keys(evil), ["__proto__"], "__proto__ must parse as an o
 console.log("TOML parser smoke checks OK");
 '
 
-echo "== dev-flow-exit.mjs: an unavailable ledger fails safe, distinct from a real-but-empty one =="
+echo "== ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs: an unavailable ledger fails safe, distinct from a real-but-empty one =="
 node --input-type=module -e '
-import { loadLedger, verifyProvenance } from "./scripts/dev-flow-exit.mjs";
+import { loadLedger, verifyProvenance } from "./ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,9 +122,9 @@ assert.equal(withUnavailableLedger.status, "unverified", "an UNAVAILABLE ledger 
 console.log("ledger-availability smoke check OK");
 '
 
-echo "== dev-flow-exit.mjs: split-candidate boundary cases (#747) =="
+echo "== ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs: split-candidate boundary cases (#747) =="
 node --input-type=module -e '
-import { computeSplitCandidate } from "./scripts/dev-flow-exit.mjs";
+import { computeSplitCandidate } from "./ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs";
 import assert from "node:assert/strict";
 
 // Findings arrive at computeSplitCandidate already carrying the adjudicated
@@ -229,8 +229,8 @@ assert.equal(originals.reason, "no_round_provenance");
 console.log("split-candidate boundary checks OK");
 '
 
-echo "== devflow-policy.mjs never operates under a legacy .devflow.toml =="
-if node scripts/devflow-policy.mjs resolve --policy ai/schemas/fixtures/exit/shape-refusal-legacy/policy.toml >"${scratch}/dfp-live-$$.out" 2>"${scratch}/dfp-live-$$.err"; then
+echo "== ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs never operates under a legacy .devflow.toml =="
+if node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy ai/schemas/fixtures/exit/shape-refusal-legacy/policy.toml >"${scratch}/dfp-live-$$.out" 2>"${scratch}/dfp-live-$$.err"; then
     rm -f "${scratch}/dfp-live-$$.out" "${scratch}/dfp-live-$$.err"
     fail "resolve against the legacy .devflow.toml unexpectedly succeeded — it must refuse the legacy shape"
 fi
@@ -245,7 +245,7 @@ echo "OK: legacy .devflow.toml is refused as the operating policy"
 echo "== --closure refuses a merge base with no reader (never falls back to the branch copy) =="
 empty_closure="$(mktemp -d)"
 mkdir -p "${empty_closure}/scripts"
-if node scripts/devflow-policy.mjs resolve --policy .devflow.toml --closure "${empty_closure}" \
+if node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy .devflow.toml --closure "${empty_closure}" \
     >/dev/null 2>"${scratch}/dfp-closure-$$.err"; then
     rm -rf "${empty_closure}" "${scratch}/dfp-closure-$$.err"
     fail "--closure with no reader in the closure directory unexpectedly succeeded"
@@ -258,8 +258,8 @@ grep -q "reader must land" "${scratch}/dfp-closure-$$.err" || {
 rm -rf "${empty_closure}" "${scratch}/dfp-closure-$$.err"
 echo "OK: a merge base predating the reader itself is refused, not silently satisfied by the branch copy"
 
-echo "== devflow-policy.mjs usage errors =="
-if node scripts/devflow-policy.mjs resolve >/dev/null 2>"${scratch}/dfp-usage-$$.err"; then
+echo "== ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs usage errors =="
+if node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve >/dev/null 2>"${scratch}/dfp-usage-$$.err"; then
     rm -f "${scratch}/dfp-usage-$$.err"
     fail "resolve with no --policy unexpectedly succeeded"
 fi
@@ -267,7 +267,7 @@ grep -q -- "--policy" "${scratch}/dfp-usage-$$.err" || fail "usage error did not
 rm -f "${scratch}/dfp-usage-$$.err"
 echo "OK: resolve without --policy is a usage error"
 
-if node scripts/devflow-policy.mjs detect >/dev/null 2>"${scratch}/dfp-detect-usage-$$.err"; then
+if node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs detect >/dev/null 2>"${scratch}/dfp-detect-usage-$$.err"; then
     rm -f "${scratch}/dfp-detect-usage-$$.err"
     fail "detect with no --policy unexpectedly succeeded"
 fi
@@ -275,7 +275,7 @@ grep -q -- "--policy" "${scratch}/dfp-detect-usage-$$.err" || fail "detect usage
 rm -f "${scratch}/dfp-detect-usage-$$.err"
 echo "OK: detect without --policy is a usage error, not an uncaught exception"
 
-if node scripts/devflow-policy.mjs detect --policy /nonexistent-devflow-policy.toml \
+if node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs detect --policy /nonexistent-devflow-policy.toml \
     >"${scratch}/dfp-detect-missing-$$.out" 2>"${scratch}/dfp-detect-missing-$$.err"; then
     rm -f "${scratch}/dfp-detect-missing-$$.out" "${scratch}/dfp-detect-missing-$$.err"
     fail "detect with a missing --policy file unexpectedly succeeded"
@@ -287,7 +287,7 @@ grep -q "at readFileSync\|at loadTomlFile" "${scratch}/dfp-detect-missing-$$.err
 rm -f "${scratch}/dfp-detect-missing-$$.out" "${scratch}/dfp-detect-missing-$$.err"
 echo "OK: detect on a missing --policy file fails closed, no uncaught stack trace"
 
-if node scripts/devflow-policy.mjs detect --policy /nonexistent-devflow-policy.toml --json \
+if node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs detect --policy /nonexistent-devflow-policy.toml --json \
     >"${scratch}/dfp-detect-json-$$.out" 2>"${scratch}/dfp-detect-json-$$.err"; then
     rm -f "${scratch}/dfp-detect-json-$$.out" "${scratch}/dfp-detect-json-$$.err"
     fail "detect --json with a missing --policy file unexpectedly succeeded"
@@ -302,8 +302,8 @@ if (parsed.shape !== null || !parsed.error) { console.error("detect --json body 
 rm -f "${scratch}/dfp-detect-json-$$.out" "${scratch}/dfp-detect-json-$$.err"
 echo "OK: detect --json emits a structured error body (not empty stdout) on a read/parse failure"
 
-echo "== dev-flow-exit.mjs usage errors =="
-if node scripts/dev-flow-exit.mjs --stage nonsense --run /nonexistent --policy /nonexistent >/dev/null 2>"${scratch}/dfe-usage-$$.err"; then
+echo "== ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs usage errors =="
+if node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --stage nonsense --run /nonexistent --policy /nonexistent >/dev/null 2>"${scratch}/dfe-usage-$$.err"; then
     rm -f "${scratch}/dfe-usage-$$.err"
     fail "dev-flow-exit with an invalid --stage unexpectedly succeeded"
 fi
@@ -311,11 +311,11 @@ grep -q -- "--stage" "${scratch}/dfe-usage-$$.err" || fail "usage error did not 
 rm -f "${scratch}/dfe-usage-$$.err"
 echo "OK: an invalid --stage is a usage error"
 
-echo "== dev-flow-exit.mjs refuses a policy cross-validation would reject, even standalone (no --registry/--task-targets) =="
+echo "== ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs refuses a policy cross-validation would reject, even standalone (no --registry/--task-targets) =="
 empty_run="$(mktemp -d)"
 mkdir -p "${empty_run}/passes" "${empty_run}/adjudications"
 printf '{"run_id":"run-crossval-check","initiated_by":"human","receipts":[]}' >"${empty_run}/run.json"
-if node scripts/dev-flow-exit.mjs --run "${empty_run}" --stage review \
+if node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${empty_run}" --stage review \
     --policy ai/schemas/fixtures/exit/breadth-insufficient-for-fallback-chain/policy.toml \
     --current-head deadbeef --json >/dev/null 2>"${scratch}/dfe-crossval-$$.err"; then
     rm -rf "${empty_run}" "${scratch}/dfe-crossval-$$.err"
@@ -396,12 +396,12 @@ echo "   ::group::<task>/::endgroup:: markers — a caller parsing --json throug
 echo "   'task ... --' must strip those two lines first, or call the bare script)"
 
 echo "== task devflow:exit works through the Taskfile wrapper, not just the bare script =="
-# dev-flow-exit.mjs's exit code IS its verdict (0 continue, 20 converged, 21
+# ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs's exit code IS its verdict (0 continue, 20 converged, 21
 # diverging, 22 capped) — this fixture converges, so a non-zero exit here is
 # expected. Task itself does not propagate that exact code (observed 201
 # regardless of the underlying script's real 20) — a caller wanting the
 # precise verdict code, not just its JSON, should call the bare script/
-# dev-flow-exit.sh directly, so this checks the JSON content instead of any
+# ai/skills/universal/dev-flow-support/assets/dev-flow-exit.sh directly, so this checks the JSON content instead of any
 # particular shell exit status.
 task devflow:exit -- --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
     --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
@@ -424,13 +424,13 @@ rm -f "${scratch}/dfe-task-$$.out" "${scratch}/dfe-task-$$.err"
 echo "OK: task devflow:exit produces the correct verdict JSON through the Taskfile wrapper"
 
 echo "== harmon-devkit#1001: --verification-only --json carries the additive rounds[] trajectory =="
-# The local-record harvester (scripts/dev-flow-stats.mjs) consumes this field
+# The local-record harvester (ai/skills/universal/retro/assets/dev-flow-stats.mjs) consumes this field
 # instead of calling loadRunDir/validateReceipts/assembleLogicalRounds/
 # applyVerification directly — this proves the field's shape end to end
 # against a real run directory, not just that predicates/verdicts are
 # unaffected (the 132 pre-existing conformance cases above already prove
 # that, since none of them reference `rounds` and all still pass unmodified).
-node scripts/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
     --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
     --current-head 0101010101010101010101010101010101010101 --verification-only --json \
     >"${scratch}/dfe-rounds-$$.out" 2>"${scratch}/dfe-rounds-$$.err" || true
@@ -477,7 +477,7 @@ node -e '
   run.receipts.push({ kind: "transition", stage: "challenge" });
   fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
 ' "${code_dir}/run/run.json"
-node scripts/dev-flow-exit.mjs --run "${code_dir}/run" --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${code_dir}/run" --stage review \
     --policy "${code_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 --json \
     >"${scratch}/dfe-code-$$.out" 2>/dev/null || true
 node -e '
@@ -512,7 +512,7 @@ node -e '
   run.receipts.push({ kind: "transition", stage: "challenge" });
   fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
 ' "${reentry_dir}/run/run.json"
-node scripts/dev-flow-exit.mjs --run "${reentry_dir}/run" --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${reentry_dir}/run" --stage review \
     --policy "${reentry_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
     --verification-only --json \
     >"${scratch}/dfe-reentry-$$.out" 2>"${scratch}/dfe-reentry-$$.err" || true
@@ -535,7 +535,7 @@ rm -rf "${reentry_dir}" "${scratch}/dfe-reentry-$$.out" "${scratch}/dfe-reentry-
 echo "OK: --verification-only --stage review returns the real trajectory after a challenge re-entry"
 
 echo "== harmon-devkit#1001 integration cycle 2: rounds[] belongs only to the verification-only projection, never the final verdict =="
-node scripts/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
     --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
     --current-head 0101010101010101010101010101010101010101 --json \
     >"${scratch}/dfe-final-norounds-$$.out" 2>"${scratch}/dfe-final-norounds-$$.err" || true
@@ -570,7 +570,7 @@ node -e '
   doc.reviewed_head = "9".repeat(40);
   fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
 ' "${adj_dir}/run/adjudications/review-r1.json"
-node scripts/dev-flow-exit.mjs --run "${adj_dir}/run" --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${adj_dir}/run" --stage review \
     --policy "${adj_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
     --verification-only --json \
     >"${scratch}/dfe-adj-reject-$$.out" 2>"${scratch}/dfe-adj-reject-$$.err" || true
@@ -608,7 +608,7 @@ node -e '
   run.receipts.push({ kind: "transition", stage: "challenge" });
   fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
 ' "${retro_dir}/run/run.json"
-node scripts/dev-flow-exit.mjs --run "${retro_dir}/run" --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${retro_dir}/run" --stage review \
     --policy "${retro_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
     --verification-only --json \
     >"${scratch}/dfe-retro-review-$$.out" 2>"${scratch}/dfe-retro-review-$$.err" || true
@@ -630,7 +630,7 @@ node -e '
 # Same run, queried for challenge: unchanged — the retrospective carve-out is
 # scoped to --stage review only, so challenge's own verification-only read
 # keeps its ordinary action (0 challenge rounds here: dispatch).
-node scripts/dev-flow-exit.mjs --run "${retro_dir}/run" --stage challenge \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${retro_dir}/run" --stage challenge \
     --policy "${retro_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
     --verification-only --json \
     >"${scratch}/dfe-retro-challenge-$$.out" 2>"${scratch}/dfe-retro-challenge-$$.err" || true
@@ -649,7 +649,7 @@ rm -rf "${retro_dir}" "${scratch}/dfe-retro-review-$$.out" "${scratch}/dfe-retro
 echo "OK: a retrospective review read is report-only; the same run's challenge query is unaffected"
 
 echo "== harmon-devkit#1001 integration cycle 5: --verification-only --json carries the additive resolved_rounds policy =="
-node scripts/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run ai/schemas/fixtures/exit/single-round-clean-converge/run --stage review \
     --policy ai/schemas/fixtures/exit/single-round-clean-converge/policy.toml \
     --current-head 0101010101010101010101010101010101010101 --verification-only --json \
     >"${scratch}/dfe-resolved-rounds-$$.out" 2>"${scratch}/dfe-resolved-rounds-$$.err" || true
@@ -666,7 +666,7 @@ node -e '
 rm -f "${scratch}/dfe-resolved-rounds-$$.out" "${scratch}/dfe-resolved-rounds-$$.err"
 echo "OK: --verification-only --json carries the additive resolved_rounds policy"
 
-# `|| true` on every dev-flow-exit.mjs invocation below: its exit code IS
+# `|| true` on every ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs invocation below: its exit code IS
 # its verdict (0 continue, 2 indeterminate, 20 converged, 21 diverging,
 # 22 capped), so under this file's `set -e` a converged control run would
 # abort the suite. Each assertion reads the JSON body instead, exactly as
@@ -688,7 +688,7 @@ span_head=0101010101010101010101010101010101010101
 
 # The unmodified copy is the control: it must still converge, so a failure
 # below is the timestamp under test and never the copy itself.
-node scripts/dev-flow-exit.mjs --run "${span_dir}/run" --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${span_dir}/run" --stage review \
     --policy "${span_dir}/policy.toml" --current-head "${span_head}" --json \
     >"${scratch}/dfe-span-control-$$.out" 2>/dev/null || true
 [ "$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).outcome)' "${scratch}/dfe-span-control-$$.out")" = converged ] || {
@@ -707,7 +707,7 @@ assert_span_rejection() {
       pass.produced_at = process.argv[2];
       fs.writeFileSync(file, JSON.stringify(pass, null, 2) + "\n");
     ' "${span_dir}/run/passes/review-r1-codex-cli.json" "$1"
-    node scripts/dev-flow-exit.mjs --run "${span_dir}/run" --stage review \
+    node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${span_dir}/run" --stage review \
         --policy "${span_dir}/policy.toml" --current-head "${span_head}" --json \
         >"${scratch}/dfe-span-$$.out" 2>/dev/null || true
     node -e '
@@ -747,7 +747,7 @@ assert_bound_refusal() {
     cp -r "${span_fixture}/." "${bound_dir}/"
     jq "$1" "${bound_dir}/run/run.json" >"${bound_dir}/run/run.json.tmp"
     mv "${bound_dir}/run/run.json.tmp" "${bound_dir}/run/run.json"
-    node scripts/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
+    node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
         --policy "${bound_dir}/policy.toml" --current-head "${span_head}" --json \
         >"${scratch}/dfe-bound-$$.out" 2>/dev/null || true
     node -e '
@@ -771,7 +771,7 @@ rm -rf "${bound_dir:?}/"*
 cp -r "${span_fixture}/." "${bound_dir}/"
 jq '.promotion = null' "${bound_dir}/run/run.json" >"${bound_dir}/run/run.json.tmp"
 mv "${bound_dir}/run/run.json.tmp" "${bound_dir}/run/run.json"
-node scripts/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${bound_dir}/run" --stage review \
     --policy "${bound_dir}/policy.toml" --current-head "${span_head}" --json \
     >"${scratch}/dfe-bound-null-$$.out" 2>/dev/null || true
 [ "$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).outcome)' "${scratch}/dfe-bound-null-$$.out")" = converged ] || {
@@ -794,7 +794,7 @@ assert_array_refusal() {
     cp -r "${span_fixture}/." "${array_dir}/"
     jq "$1" "${array_dir}/run/run.json" >"${array_dir}/run/run.json.tmp"
     mv "${array_dir}/run/run.json.tmp" "${array_dir}/run/run.json"
-    node scripts/dev-flow-exit.mjs --run "${array_dir}/run" --stage review \
+    node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${array_dir}/run" --stage review \
         --policy "${array_dir}/policy.toml" --current-head "${span_head}" --json \
         >"${scratch}/dfe-array-$$.out" 2>/dev/null || true
     node -e '
@@ -825,7 +825,7 @@ echo "== #685: a pass file holding JSON null is a structured indeterminate, not 
 null_pass_dir="$(mktemp -d)"
 cp -r "${span_fixture}/." "${null_pass_dir}/"
 printf 'null\n' >"${null_pass_dir}/run/passes/review-r1-codex-cli.json"
-node scripts/dev-flow-exit.mjs --run "${null_pass_dir}/run" --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${null_pass_dir}/run" --stage review \
     --policy "${null_pass_dir}/policy.toml" --current-head "${span_head}" --json \
     >"${scratch}/dfe-nullpass-$$.out" 2>/dev/null || true
 node -e '
@@ -873,7 +873,7 @@ node -e '
   fs.writeFileSync(file, JSON.stringify(run, null, 2) + "\n");
 ' "${skip_dir}/run/run.json"
 rm -f "${skip_dir}"/run/passes/*.json "${skip_dir}"/run/adjudications/*.json
-node scripts/dev-flow-exit.mjs --run "${skip_dir}/run" --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${skip_dir}/run" --stage review \
     --policy "${skip_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 --json \
     >"${scratch}/dfe-skip-sec-$$.out" 2>/dev/null || true
 node -e '
@@ -895,7 +895,7 @@ echo "== #810: persisted finder_selection + conflicting --add-finder flag is a b
 disagree_fixture="ai/schemas/fixtures/exit/finder-selection-persisted-readback"
 disagree_dir="$(mktemp -d)"
 cp -r "${disagree_fixture}/." "${disagree_dir}/"
-node scripts/dev-flow-exit.mjs --run "${disagree_dir}/run" --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "${disagree_dir}/run" --stage review \
     --policy "${disagree_dir}/policy.toml" --current-head 0101010101010101010101010101010101010101 \
     --heads "${disagree_dir}/heads.json" --add-finder review:copilot-cli --json \
     >"${scratch}/dfe-disagree-$$.out" 2>"${scratch}/dfe-disagree-$$.err" && {
@@ -912,6 +912,6 @@ echo "OK: persisted finder_selection + conflicting --add-finder is blocked"
 
 echo "== conformance fixture corpus (ai/schemas/fixtures/exit/) =="
 [ -d ai/schemas/fixtures/exit ] || fail "missing ai/schemas/fixtures/exit/"
-node scripts/lib/run-exit-fixtures.mjs
+node ai/skills/universal/dev-flow-support/assets/lib/run-exit-fixtures.mjs
 
 echo "dev-flow-exit conformance OK"

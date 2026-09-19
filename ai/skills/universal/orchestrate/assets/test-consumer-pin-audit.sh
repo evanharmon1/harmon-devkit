@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# test-consumer-pin-audit.sh — behavioral tests for the Dev flow v2 consumer
+# ai/skills/universal/orchestrate/assets/test-consumer-pin-audit.sh — behavioral tests for the Dev flow v2 consumer
 # pin contract (harmon-devkit#604, openspec/changes/dev-flow-v2 task 5.1):
 #
-#   * scripts/consumer-pin-audit.sh — does a repository's vendored-skill pin
+#   * ai/skills/universal/orchestrate/assets/consumer-pin-audit.sh — does a repository's vendored-skill pin
 #     agree with its .devflow.toml shape, and does it refuse both directions
 #     of skew with the right instruction?
-#   * scripts/devflow-policy.mjs — is a non-version-2 policy refused with ONE
+#   * ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs — is a non-version-2 policy refused with ONE
 #     actionable message naming `copier update` and the harmon-init release
 #     that ships the version-2 template, and does a version-2 policy resolve?
 #
@@ -16,8 +16,8 @@
 set -euo pipefail
 
 repo="$(git rev-parse --show-toplevel)"
-AUDIT="$repo/scripts/consumer-pin-audit.sh"
-READER="$repo/scripts/devflow-policy.mjs"
+AUDIT="$repo/ai/skills/universal/orchestrate/assets/consumer-pin-audit.sh"
+READER="$repo/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs"
 FIX="$repo/ai/schemas/fixtures/exit"
 
 LEGACY_POLICY="$FIX/shape-refusal-legacy/policy.toml"
@@ -1135,10 +1135,25 @@ echo "== the recipe invokes the materialized reader, not the branch task target 
 # the trusted resolution through it defeats the closure entirely; and a
 # Taskfile-only change never entered the closure path at all.
 # shellcheck disable=SC2016 # the literal recipe text is the assertion
-if grep -Fq 'node "$mb_dir/scripts/devflow-policy.mjs" resolve --closure' "$INTEGRATE_MD"; then
+if grep -Fq 'node "$mb_dir/${reader}" resolve --closure' "$INTEGRATE_MD"; then
     ok "the closure recipe invokes the materialized reader by path"
 else
     bad "the closure recipe does not invoke the materialized reader by path"
+fi
+# harmon-devkit#974: the reader's repository path differs between this source
+# tree, a consumer's flattened .claude/skills/ tree, and any merge base
+# predating the move, so the recipe must DISCOVER it at the merge base rather
+# than hardcode one layout — and must still refuse when the base has none,
+# never fall through to the branch's own copy.
+if grep -Fq 'git cat-file -e "${base}:${candidate}"' "$INTEGRATE_MD"; then
+    ok "the closure recipe probes the merge base for the reader's own layout"
+else
+    bad "the closure recipe hardcodes one reader layout instead of probing the merge base"
+fi
+if grep -Fq 'scripts/devflow-policy.mjs; do' "$INTEGRATE_MD"; then
+    ok "the closure recipe still accepts a pre-#974 merge base"
+else
+    bad "the closure recipe dropped the pre-#974 layout, so an in-flight branch cannot resolve its own merge base"
 fi
 if grep -Fq 'task devflow:policy -- resolve --closure' "$INTEGRATE_MD"; then
     bad "the closure recipe still routes through the branch task target"

@@ -10,7 +10,7 @@ description: >-
 
 Perform exactly one configured review finder pass. Return only one complete
 `result.reviewer` envelope. Before handoff, validate that full document with
-`scripts/validate-result-schemas.mjs envelope ... --receipt`; this composes
+`dev-flow-support/assets/validate-result-schemas.mjs envelope ... --receipt`; this composes
 `ai/schemas/result.envelope.schema.json` for the envelope with
 `ai/schemas/result.reviewer.schema.json` for its payload and enforces the
 supplied run context. Validating the full envelope directly as a reviewer

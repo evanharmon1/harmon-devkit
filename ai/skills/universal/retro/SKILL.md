@@ -15,6 +15,23 @@ allowed-tools: Read, Glob, Grep, Bash(git status:*), Bash(gh pr view:*), Bash(gh
 
 # Retro
 
+**Runtime assets travel with the skills.** Every executable this skill names is
+vendored by `task sync:skills`, never fetched from a repository-root `scripts/`
+path (harmon-devkit#974): a consumer that installed the skill has no such
+directory, so a root-relative dependency installs a skill that cannot run. Two
+shorthands are used below and resolve the same way in harmon-devkit's source
+tree and in a consumer's flattened `.claude/skills/` one:
+
+- `assets/<name>` — this skill's own asset, i.e. `${CLAUDE_SKILL_DIR}/assets/<name>`.
+- `<package>/assets/<name>` — a sibling package's asset, i.e.
+  `${CLAUDE_SKILL_DIR}/../<package>/assets/<name>`. The shared dev-flow v2
+  runtime (`devflow-policy.mjs`, `validate-result-schemas.mjs`,
+  `render-dev-flow.{sh,mjs}`, `dev-flow-exit.{sh,mjs}`) lives in
+  `dev-flow-support/assets/`; see that package's `SKILL.md`.
+
+A missing sibling package is a blocker, not a fallback: vendor the `universal`
+category as a unit rather than resolving a runtime path some other way.
+
 **Arguments:** $ARGUMENTS
 
 End-of-session retrospective. Review the whole conversation, not just the
@@ -37,7 +54,7 @@ is a reconstruction after the fact.
 
 - The **PR body's rendered sections** — `<!-- dev-flow:begin:policy-disclosure -->`,
   `deferred-findings`, `adjudication-record`, published by
-  `scripts/render-dev-flow.mjs` — say a v2 record exists and carry the
+  `dev-flow-support/assets/render-dev-flow.mjs` — say a v2 record exists and carry the
   **resolved rigor line**, which is where §2's caps come from. They do not
   carry the run id.
 - The **run id** lives in the evidence markers themselves,
@@ -75,7 +92,7 @@ the closing-reference set and these body-derived lookup inputs are mutable
 current state that `--as-of` cannot reconstruct.
 
 **Run the projection rather than reading the trajectory by hand.** It resolves
-the run id, calls the harvester (`scripts/dev-flow-stats.mjs --run <id> --json`,
+the run id, calls the harvester (`assets/dev-flow-stats.mjs --run <id> --json`,
 issue #663) and renders §2's fixed sections:
 
 ```sh
@@ -86,7 +103,7 @@ issue #663) and renders §2's fixed sections:
 Resolve `<retro-skill-dir>` from `.agents/skills/retro`, then
 `.claude/skills/retro`, then `ai/skills/universal/retro` in harmon-devkit
 itself. The helper is read-only — it shells out to `gh` reads and to the
-harvester (`scripts/dev-flow-stats.mjs`, which never writes) — but it is
+harvester (`assets/dev-flow-stats.mjs`, which never writes) — but it is
 deliberately **not** in `allowed-tools`, so expect a permission prompt, the
 same as the GraphQL query in §4.
 
@@ -106,7 +123,8 @@ capped before its PR existed has no PR to discover from — its record is on the
 issue, and note that an id supplied this way is *unverified*: nothing checks it
 against a marker); `--json` for the machine form; and `--stats-script <path>` to point at a
 harvester this checkout does not carry at the usual place — the case below,
-where the repository has not vendored `scripts/dev-flow-stats.*` at all.
+where the retro skill was vendored without its own `assets/dev-flow-stats.*`
+beside it.
 
 Pass `--record-dir <path>` when the run's retained local record is available.
 The helper forwards it unchanged, and the harvester reads
@@ -117,7 +135,7 @@ is reported as `record-missing`, while omitting the option leaves the marker as
 `evidence-only` rather than inventing the missing content.
 
 Once selected, the local record's rounds are read through the exit engine
-itself — the harvester spawns `scripts/dev-flow-exit.mjs --verification-only
+itself — the harvester spawns `dev-flow-support/assets/dev-flow-exit.mjs --verification-only
 --json` once per confidence stage with local evidence and consumes its
 `rounds[]` trajectory field, rather than re-implementing lifecycle/receipt/
 adjudication/contiguity validation on its own (harmon-devkit#1001). What stays
@@ -416,7 +434,8 @@ did not consent to. Draft it with the run id, the stderr reason, and the head
 it was observed on, and say plainly that it is waiting on a go-ahead.
 
 - **Exit 12** — "Retro of the session on `<date>`; a run record may exist but
-  this checkout has no `scripts/dev-flow-stats.*` to read it, so the run was
+  this checkout has no `assets/dev-flow-stats.*` beside the report generator
+  to read it, so the run was
   not measured." Never write "there was no run record" here: §1 exits 12
   precisely because that is unknown, and a tracked follow-up carrying the
   claim would make the unknown look settled.

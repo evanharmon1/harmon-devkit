@@ -9,7 +9,24 @@ description: >-
 
 # Orchestrate
 
-Resolve and announce policy with `scripts/devflow-policy.mjs`; record resolved
+**Runtime assets travel with the skills.** Every executable this skill names is
+vendored by `task sync:skills`, never fetched from a repository-root `scripts/`
+path (harmon-devkit#974): a consumer that installed the skill has no such
+directory, so a root-relative dependency installs a skill that cannot run. Two
+shorthands are used below and resolve the same way in harmon-devkit's source
+tree and in a consumer's flattened `.claude/skills/` one:
+
+- `assets/<name>` — this skill's own asset, i.e. `${CLAUDE_SKILL_DIR}/assets/<name>`.
+- `<package>/assets/<name>` — a sibling package's asset, i.e.
+  `${CLAUDE_SKILL_DIR}/../<package>/assets/<name>`. The shared dev-flow v2
+  runtime (`devflow-policy.mjs`, `validate-result-schemas.mjs`,
+  `render-dev-flow.{sh,mjs}`, `dev-flow-exit.{sh,mjs}`) lives in
+  `dev-flow-support/assets/`; see that package's `SKILL.md`.
+
+A missing sibling package is a blocker, not a fallback: vendor the `universal`
+category as a unit rather than resolving a runtime path some other way.
+
+Resolve and announce policy with `dev-flow-support/assets/devflow-policy.mjs`; record resolved
 rigor, rounds, breadth, roles, strategy, and disclosures in the run. That
 reader operates under `schema_version = 2` and under nothing else: a legacy,
 v1, mixed, or unknown `.devflow.toml` is refused with one actionable message
@@ -17,7 +34,7 @@ v1, mixed, or unknown `.devflow.toml` is refused with one actionable message
 template, and hold `.skills-sync.yaml` at the last pre-v2 skills release until
 it has migrated). Report that message as a blocker and start no run; never
 hand-decode an older shape, invent caps, or advance the pin to get past it
-(harmon-devkit#604). `scripts/consumer-pin-audit.sh` is the standing check
+(harmon-devkit#604). `assets/consumer-pin-audit.sh` is the standing check
 that a repository's vendored-skill pin and its policy shape agree. Runtime
 isolation is optional; its absence alone is not a dispatch blocker. Every role
 still stays within its declared scope. Use one worktree and branch per lane,
@@ -70,7 +87,7 @@ Build and publish the plan in this order:
    expanded path, publish a complete new revision through the candidate,
    validate, rename, and canonical-readback sequence in step 7.
 6. **Emit and validate.** Write the closed record and validate it with
-   `node scripts/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
+   `node dev-flow-support/assets/validate-result-schemas.mjs plan <plan.json>`. Refuse dispatch
    on a structural error, a broken revision digest, an incomplete overlap set,
    a graph/projection mismatch, an ownership error, or a cap violation.
    Immediately before each lane dispatch, compare the live target head with the
@@ -145,7 +162,7 @@ table before their intended sections.
 | `{{harness}}` | Selected implementer's registry harness |
 | `{{report-path}}` | Nonce-scoped path under the common Git directory, or a path whose worktree exclusion the orchestrator has installed and verified |
 | `{{generation}}` | Active pointer generation |
-| `{{active-state-path}}` | `scripts/dev-flow-monitor.sh active-path` |
+| `{{active-state-path}}` | `assets/dev-flow-monitor.sh active-path` |
 | `{{record-directory}}` | Active run record directory |
 | `{{policy-projection}}` | Resolved policy projection recorded at kickoff |
 | `{{file-scope-fence}}` | Orchestrator's lane ownership plan |
@@ -213,7 +230,7 @@ dispatch if any unreplaced `{{name}}` token remains. This is the renderer's
 check, not content validation of the opaque body; the `brief` validator checks
 double-brace tokens only inside the envelope block.
 Validate the rendered brief before dispatch and refuse dispatch on any failure:
-`node scripts/validate-result-schemas.mjs brief "$brief_path"`.
+`node dev-flow-support/assets/validate-result-schemas.mjs brief "$brief_path"`.
 Place the per-attempt report under the common Git directory, or install and
 verify its worktree exclusion before dispatch; an assertion that it is excluded
 is not evidence. Preserve its nonce-scoped sentinels. Prompts sent after dispatch
@@ -284,7 +301,7 @@ Reject a lane that requests feature-branch write authority.
 
 Immediately before every implementer invocation—initial lanes, council
 proposals and synthesis, and remediation—the feature owner calls
-`scripts/dev-flow-monitor.sh reserve-agent-run` with a deterministic dispatch
+`assets/dev-flow-monitor.sh reserve-agent-run` with a deterministic dispatch
 event and the resolved `[breadth].max_agent_runs`. Confidence finders and
 fallbacks spend the independent rounds envelope and never this implementer
 budget. The monitor pins the total implementer ceiling on the first reservation
@@ -352,7 +369,7 @@ context exhaustion so a fresh driver can re-arm the same monitor.
 
 Resolve the shared run directory with `git rev-parse --git-common-dir`, never by
 appending to a worktree's `.git` path (which is a file in linked worktrees).
-`scripts/dev-flow-monitor.sh state-path --run-id <run-id>` returns the canonical
+`assets/dev-flow-monitor.sh state-path --run-id <run-id>` returns the canonical
 `<git-common-dir>/dev-flow-v2/runs/<run-id>/monitor.json` path. Keep
 the schema-valid `run.json` beside it. Resolve the branch's shared active pointer
 with `active-path`, and activate a new run by compare-and-swap from the prior

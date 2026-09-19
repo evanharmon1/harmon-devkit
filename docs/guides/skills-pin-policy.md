@@ -5,7 +5,7 @@ under a `schema_version = 2` `.devflow.toml` **and under nothing else**. They
 carry no interpreter for the pre-v1 legacy shape (round caps directly on
 `[rigor.<level>]`, plus `default_method` and `[method]`) or the v1 shape
 (`rigor_order`, `[review.*]`, and the `[rigor.<level>].review` pointers), and
-they never resolve one by hand: the shared reader `scripts/devflow-policy.mjs`
+they never resolve one by hand: the shared reader `ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs`
 refuses an older shape with one actionable message
 (harmon-devkit#604, `openspec/changes/dev-flow-v2` task 5.1).
 
@@ -36,7 +36,7 @@ reader rejected. The refusal is the correct answer for a repository in state 1.
 
 ## The audit
 
-`scripts/consumer-pin-audit.sh` reports which state a repository is in and
+`ai/skills/universal/orchestrate/assets/consumer-pin-audit.sh` reports which state a repository is in and
 refuses both directions of skew:
 
 ```sh
@@ -99,7 +99,7 @@ dead vocabulary and need editing on every rename, and — as review round 4
 found — listing only the new names silently mis-reported the one pin that
 actually exists, since the last pre-v2 release shipped `gauntlet`/`shepherd`
 and neither new name. The boundary constant lives in
-`scripts/consumer-pin-audit.sh` with the `git ls-tree` evidence beside it, and
+`ai/skills/universal/orchestrate/assets/consumer-pin-audit.sh` with the `git ls-tree` evidence beside it, and
 the suite reads that constant rather than restating a version, so bumping it
 is a one-line change.
 
@@ -202,7 +202,7 @@ older shapes, and reporting on them is the audit's whole job. Neither is a
 policy declaring a positive version this reader cannot operate: that is a
 policy ahead of the toolchain, reported as such.
 
-`scripts/test-consumer-pin-audit.sh` tests this as a **property** over every
+`ai/skills/universal/orchestrate/assets/test-consumer-pin-audit.sh` tests this as a **property** over every
 incoherent input, so a newly discovered one is a new row in that table rather
 than a new branch in the script.
 
@@ -215,7 +215,7 @@ before the pin is considered at all: no pin is right for a policy that is two
 shapes at once. Conversely, testing the shape alone would let a version-2
 policy satisfy a skill declaring version 3.
 
-`scripts/devflow-policy.mjs` has its own documented exit codes (`detect`: 0
+`ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs` has its own documented exit codes (`detect`: 0
 version 2, 1 an older or mixed shape, 2 unreadable; `resolve`: 0 resolved, 1
 refused, 2 unreadable, 3 indeterminate cross-validation). `detect --json`
 carries the actionable refusal in its `migration` field, which is where every

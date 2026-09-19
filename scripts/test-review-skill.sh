@@ -20,13 +20,13 @@ sha256_stream() {
 skill="ai/skills/universal/review/SKILL.md"
 fixture="ai/schemas/fixtures/exit/single-round-clean-converge"
 render_record="ai/schemas/fixtures/render/record"
-monitor="scripts/dev-flow-monitor.sh"
+monitor="ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 echo "==> review skill names both role dispatches and record authority"
 for text in '[stage.challenge].finders' '[stage.review].finders' challenger reviewer \
-    'scripts/dev-flow-exit.sh' 'scripts/render-dev-flow.sh' 'scripts/round-push.sh' \
+    'dev-flow-support/assets/dev-flow-exit.sh' 'dev-flow-support/assets/render-dev-flow.sh' 'assets/round-push.sh' \
     'run.json.evidence_comments' 'fenced JSON' 'git remote get-url origin' \
     'gh repo view "$origin_url"' 'inline confidence-stage procedure' \
     'validated finding records' 'override it upward' 'run.json.interventions'; do
@@ -63,7 +63,7 @@ grep -Fq 'Splitting is not an integration move' "$integrate_skill" ||
 # does that (the readiness gate calls the renderer, which does not read
 # splits). The procedure must say so, and must say a split is confidence-stage
 # only.
-grep -Fq 'scripts/validate-result-schemas.mjs run <run.json> --adjudication' "$integrate_skill" ||
+grep -Fq 'dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --adjudication' "$integrate_skill" ||
     fail "integrate skill does not validate the split's cross-document state"
 
 grep -Fq 'display login is non-authoritative metadata' "$skill" ||
@@ -88,10 +88,10 @@ grep -Fq 'resolved cap is `0`' "$skill" ||
 
 echo "==> review stage advance writes and validates schema-shaped transitions"
 for text in 'Before replacing `run.json`, write the complete candidate beside it' \
-    'scripts/validate-result-schemas.mjs run <candidate> --receipts <candidate>' \
+    'dev-flow-support/assets/validate-result-schemas.mjs run <candidate> --receipts <candidate>' \
     'Rename the candidate over `run.json` only' \
     'after that validation passes' \
-    'scripts/validate-result-schemas.mjs run <run.json> --receipts <run.json>' \
+    'dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --receipts <run.json>' \
     'Operational `run.json` records validate under the schema with their trusted' \
     '`receipts` sequence intact' \
     'enforcing the binding here at write time rather than only later' \
@@ -113,7 +113,7 @@ for text in 'Before replacing `run.json`, write the complete candidate beside it
     grep -Fq "$text" "$skill" || fail "review stage-advance recipe is missing: $text"
 done
 advance_fixture="ai/schemas/fixtures/run.schema/valid/empty-round-challenge-to-review.json"
-node scripts/validate-result-schemas.mjs run "$advance_fixture" --receipt --no-adjudications ||
+node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs run "$advance_fixture" --receipt --no-adjudications ||
     fail "empty-round challenge-to-review transition fixture is invalid"
 jq -e '
     .stage_transitions[-2] == {
@@ -130,7 +130,7 @@ jq -e '
 
 reentry_fixture="ai/schemas/fixtures/run.schema/valid/reentered-challenge-to-review.json"
 echo "==> post-rename crash re-entry adopts the applied transition before fresh-write checks"
-node scripts/validate-result-schemas.mjs run "$reentry_fixture" --receipt --no-adjudications ||
+node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs run "$reentry_fixture" --receipt --no-adjudications ||
     fail "re-entered challenge-to-review transition fixture is invalid"
 jq -e '
     ([.stage_transitions[] | select(.stage == "challenge")] | length) == 1 and
@@ -175,7 +175,7 @@ for role in challenger reviewer; do
     agent="ai/agents/$role.md"
     grep -Fq "ai/schemas/result.$role.schema.json" "$agent" ||
         fail "$role does not name its result schema"
-    grep -Fq 'scripts/validate-result-schemas.mjs envelope ... --receipt' "$agent" ||
+    grep -Fq 'dev-flow-support/assets/validate-result-schemas.mjs envelope ... --receipt' "$agent" ||
         fail "$role does not validate its full result envelope before handoff"
     grep -Fq 'validated finding records' "$agent" ||
         fail "$role cannot compare finding provenance across rounds"
@@ -194,7 +194,7 @@ grep -Fq 'shasum -a 256' "$monitor" || fail "monitor has no stock-macOS SHA-256 
 
 echo "==> fixture-driven review-stage dry run converges"
 set +e
-out="$(node scripts/dev-flow-exit.mjs --run "$fixture/run" --stage review \
+out="$(node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "$fixture/run" --stage review \
     --policy "$fixture/policy.toml" --current-head \
     "$(jq -r '.head' "$fixture/run/passes/review-r1-codex-cli.json")" --json)"
 status=$?
@@ -222,7 +222,7 @@ policy_resolve() {
     # reader exits 3 (indeterminate — nothing to cross-validate finder slugs
     # against), and a per-run finder request that is never cross-validated is
     # exactly the hole these cases exist to close.
-    node scripts/devflow-policy.mjs resolve --policy "$1/policy.toml" \
+    node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$1/policy.toml" \
         --registry "$1/registry.json" --task-targets "$1/task-targets.json" \
         --json "${@:2}"
 }
@@ -234,7 +234,7 @@ policy_resolve() {
     fail "a two-finder round did not record one pass receipt per finder in run.json"
 
 set +e
-multi_out="$(node scripts/dev-flow-exit.mjs --run "$multi_fixture/run" --stage review \
+multi_out="$(node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "$multi_fixture/run" --stage review \
     --policy "$multi_fixture/policy.toml" --current-head "$multi_head" --json)"
 status=$?
 set -e
@@ -247,7 +247,7 @@ solo_head="$(jq -r '."current-head"' "$solo_fixture/invoke.json")"
 [ "$(jq -r '.stages.review.finders[0]' <<<"$(policy_resolve "$solo_fixture")")" = copilot-verification ] ||
     fail "the Copilot-only fixture does not configure copilot-verification"
 set +e
-solo_out="$(node scripts/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
+solo_out="$(node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
     --policy "$solo_fixture/policy.toml" --current-head "$solo_head" --json)"
 status=$?
 set -e
@@ -269,16 +269,16 @@ echo "==> a per-run addition is registry-checked"
 tight_policy="$tmp/tight-breadth.toml"
 sed 's/^max_agent_runs = 8$/max_agent_runs = 2/; s/^max_parallel_agents = 3$/max_parallel_agents = 2/' \
     "$solo_fixture/policy.toml" >"$tight_policy"
-node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$tight_policy" \
     --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
     --json >/dev/null ||
     fail "the tight-breadth policy is not valid on its own, so the case proves nothing"
-node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$tight_policy" \
     --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
     --add-finder review:codex-verification --json >/dev/null ||
     fail "adding a finder was charged against [breadth].max_agent_runs"
 set +e
-unknown_add="$(node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+unknown_add="$(node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$tight_policy" \
     --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
     --add-finder review:not-a-registered-finder 2>&1)"
 status=$?
@@ -288,12 +288,12 @@ grep -Fq 'per-run selection adds unknown finder' <<<"$unknown_add" ||
     fail "an added finder is no longer registry-checked: $unknown_add"
 
 echo "==> the resolver and the exit computation agree about a per-run addition"
-node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$tight_policy" \
     --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
     --add-finder review:codex-verification --json >/dev/null ||
     fail "the resolver rejected the tight policy, so the comparison proves nothing"
 set +e
-tight_exit_out="$(node scripts/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
+tight_exit_out="$(node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
     --policy "$tight_policy" --current-head "$solo_head" \
     --add-finder review:codex-verification --json)"
 status=$?
@@ -309,7 +309,7 @@ echo "==> a per-run finder selection reaches the exit computation, not just the 
 # identical union there, an added finder is not a slot: its pass and findings
 # are dropped and the round can report converged on the configured slots alone.
 set +e
-added_slot_out="$(node scripts/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
+added_slot_out="$(node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "$solo_fixture/run" --stage review \
     --policy "$solo_fixture/policy.toml" --current-head "$solo_head" \
     --add-finder review:codex-verification --json)"
 status=$?
@@ -329,14 +329,14 @@ echo "==> confidence finders never consume [breadth].max_agent_runs (#807)"
 tight_multi_policy="$tmp/tight-multi-breadth.toml"
 sed 's/^max_agent_runs = 8$/max_agent_runs = 2/; s/^max_parallel_agents = 3$/max_parallel_agents = 2/' \
     "$multi_fixture/policy.toml" >"$tight_multi_policy"
-configured_out="$(node scripts/devflow-policy.mjs resolve --policy "$tight_multi_policy" \
+configured_out="$(node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$tight_multi_policy" \
     --registry "$multi_fixture/registry.json" --task-targets "$multi_fixture/task-targets.json" \
     --json)" ||
     fail "a tight policy with two configured review finders was rejected on breadth (#807)"
 jq -e '.cross_validation.errors == []' <<<"$configured_out" >/dev/null ||
     fail "crossValidate raised errors for configured confidence finders: $(jq -r '.cross_validation.errors[]' <<<"$configured_out")"
 # The same effective set reached via --add-finder must resolve identically.
-added_out="$(node scripts/devflow-policy.mjs resolve --policy "$tight_policy" \
+added_out="$(node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy "$tight_policy" \
     --registry "$solo_fixture/registry.json" --task-targets "$solo_fixture/task-targets.json" \
     --add-finder review:codex-verification --json)" ||
     fail "a tight policy with a per-run-added review finder was rejected on breadth"
@@ -351,7 +351,7 @@ jq -n '{rigor:{level:"standard",source:"default_rigor"},
         disclosures:[{kind:"finders",
           detail:"review: codex-verification, copilot-verification (config: codex-verification; added this run: copilot-verification)"}]}' \
     >"$disclosure_record/policy.json"
-disclosure_out="$(scripts/render-dev-flow.sh policy-disclosure --record "$disclosure_record")"
+disclosure_out="$(ai/skills/universal/dev-flow-support/assets/render-dev-flow.sh policy-disclosure --record "$disclosure_record")"
 grep -Fq 'rigor: `standard`' <<<"$disclosure_out" ||
     fail "the rigor line did not render: $disclosure_out"
 grep -Fq -- '- finders: review: codex-verification, copilot-verification' <<<"$disclosure_out" ||
@@ -370,7 +370,7 @@ mkdir -p "$pre_record/passes"
 cp "$fixture/run/run.json" "$pre_record/run.json"
 cp "$fixture/run/passes/review-r1-codex-cli.json" "$pre_record/passes/"
 set +e
-pre_out="$(node scripts/dev-flow-exit.mjs --run "$pre_record" --stage review \
+pre_out="$(node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "$pre_record" --stage review \
     --policy "$fixture/policy.toml" --current-head \
     "$(jq -r '.head' "$fixture/run/passes/review-r1-codex-cli.json")" --verification-only --json)"
 status=$?
@@ -386,7 +386,7 @@ cp "$fixture/run/run.json" "$over_cap_record/run.json"
 jq '.payload.round = 99' "$fixture/run/passes/review-r1-codex-cli.json" \
     >"$over_cap_record/passes/review-r1-codex-cli.json"
 set +e
-over_cap_out="$(node scripts/dev-flow-exit.mjs --run "$over_cap_record" --stage review \
+over_cap_out="$(node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "$over_cap_record" --stage review \
     --policy "$fixture/policy.toml" --current-head \
     "$(jq -r '.head' "$fixture/run/passes/review-r1-codex-cli.json")" --verification-only --json)"
 status=$?
@@ -398,7 +398,7 @@ jq -e '.outcome == "indeterminate" and (.reason | contains("exceed"))' \
 echo "==> pre-adjudication verification terminalizes an incomplete finder round"
 incomplete_fixture="ai/schemas/fixtures/exit/finder-unavailable-one-of-two-slots"
 set +e
-incomplete_out="$(node scripts/dev-flow-exit.mjs --run "$incomplete_fixture/run" --stage review \
+incomplete_out="$(node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "$incomplete_fixture/run" --stage review \
     --policy "$incomplete_fixture/policy.toml" \
     --current-head 0101010101010101010101010101010101010101 \
     --verification-only --json)"
@@ -414,7 +414,7 @@ jq -e '.outcome == "capped" and .reason == "finder_unavailable" and
 echo "==> pre-adjudication verification refuses a stale non-current-head round"
 invalidated_fixture="ai/schemas/fixtures/exit/continue-invalidated"
 set +e
-invalidated_out="$(node scripts/dev-flow-exit.mjs --run "$invalidated_fixture/run" --stage review \
+invalidated_out="$(node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "$invalidated_fixture/run" --stage review \
     --policy "$invalidated_fixture/policy.toml" \
     --current-head 0202020202020202020202020202020202020202 \
     --heads "$invalidated_fixture/heads.json" --verification-only --json)"
@@ -443,7 +443,7 @@ jq '.head = "0101010101010101010101010101010101010101" |
     >"$tmp/review-r2-pass.json"
 mv "$tmp/review-r2-pass.json" "$newest_stale_record/passes/review-r2-codex-cli.json"
 set +e
-newest_stale_out="$(node scripts/dev-flow-exit.mjs --run "$newest_stale_record" \
+newest_stale_out="$(node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --run "$newest_stale_record" \
     --stage review --policy ai/schemas/fixtures/exit/two-round-converge/policy.toml \
     --current-head 0202020202020202020202020202020202020202 \
     --heads ai/schemas/fixtures/exit/two-round-converge/heads.json \
@@ -456,7 +456,7 @@ jq -e '.outcome == "continue" and .reason == "invalidated" and
     fail "older exact-head round authorized adjudication of newer stale evidence: $newest_stale_out"
 
 echo "==> renderer projects the review record"
-rendered="$(scripts/render-dev-flow.sh adjudication-record --record "$render_record")"
+rendered="$(ai/skills/universal/dev-flow-support/assets/render-dev-flow.sh adjudication-record --record "$render_record")"
 grep -Fq 'review-r1-codex-cli-1' <<<"$rendered" || fail "review finding was not rendered"
 
 echo "==> renderer publishes verified provenance rather than superseded pass provenance"
@@ -475,7 +475,7 @@ jq --argjson findings "$verified_findings" '.stage = "review" |
     (.verified_findings[] | select(.id == "review-r1-codex-cli-1") |
       .verified_provenance) = "round:2"' \
     "$render_record/verdict.json" >"$verified_record/verdict.json"
-verified_rendered="$(scripts/render-dev-flow.sh round-table --record "$verified_record" --stage review --round 1)"
+verified_rendered="$(ai/skills/universal/dev-flow-support/assets/render-dev-flow.sh round-table --record "$verified_record" --stage review --round 1)"
 grep -Fq 'round:2 (corrected)' <<<"$verified_rendered" ||
     fail "renderer published the pass's superseded provenance"
 grep -Fq 'original → round:2' <<<"$verified_rendered" ||
@@ -847,15 +847,15 @@ echo "==> a --closure reader predating per-run selection is refused, not silentl
 # disclose nothing — an explicitly requested review slot silently gone, which
 # is the one outcome per-run selection may never produce.
 closure_dir="$tmp/stale-closure"
-mkdir -p "$closure_dir/scripts"
-cat >"$closure_dir/scripts/devflow-policy.mjs" <<'STALE'
+mkdir -p "$closure_dir/ai/skills/universal/dev-flow-support/assets"
+cat >"$closure_dir/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs" <<'STALE'
 // A reader from before #796: it knows --policy and --registry and nothing
 // about per-run finder selection.
 console.log(JSON.stringify({ resolved: "by the stale merge-base reader" }))
 process.exitCode = 0
 STALE
 set +e
-node scripts/devflow-policy.mjs resolve --closure "$closure_dir" \
+node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --closure "$closure_dir" \
     --policy .devflow.toml --registry agent-registry.json \
     --add-finder review:copilot-verification --json >"$tmp/closure.out" 2>&1
 status=$?
@@ -868,15 +868,50 @@ grep -Fq 'by the stale merge-base reader' "$tmp/closure.out" &&
 
 echo "==> a --closure reader that does support selection is still delegated to"
 current_closure="$tmp/current-closure"
-mkdir -p "$current_closure/scripts"
-cp scripts/devflow-policy.mjs "$current_closure/scripts/devflow-policy.mjs"
+mkdir -p "$current_closure/ai/skills/universal/dev-flow-support/assets"
+cp ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs "$current_closure/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs"
 set +e
-node scripts/devflow-policy.mjs resolve --closure "$current_closure" \
+node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --closure "$current_closure" \
     --policy .devflow.toml --registry agent-registry.json \
     --add-finder review:copilot-verification --json >"$tmp/closure-ok.out" 2>&1
 set -e
 grep -Fq 'predates --add-finder/--select-finder' "$tmp/closure-ok.out" &&
     fail "a current closure reader was wrongly refused: $(cat "$tmp/closure-ok.out")"
+
+# harmon-devkit#974: a merge base predating the relocation carries the reader at
+# `scripts/devflow-policy.mjs`, and the --closure probe must still find it —
+# otherwise every in-flight branch's self-modification check turns into a hard
+# refusal the moment this change lands. Proved by delegating to a legacy-layout
+# closure and observing its OWN output, which the branch copy cannot produce.
+legacy_closure="$tmp/legacy-closure"
+mkdir -p "$legacy_closure/scripts"
+cat >"$legacy_closure/scripts/devflow-policy.mjs" <<'LEGACY'
+// A pre-#974 merge-base reader, at the layout that release still shipped.
+// It knows --add-finder/--select-finder, so the staleness guard passes and
+// delegation is allowed to proceed to this file.
+console.log(JSON.stringify({ resolved: "by the legacy-layout merge-base reader" }))
+process.exitCode = 0
+LEGACY
+set +e
+node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --closure "$legacy_closure" \
+    --policy .devflow.toml --registry agent-registry.json \
+    --add-finder review:copilot-verification --json >"$tmp/legacy-closure.out" 2>&1
+set -e
+grep -Fq 'by the legacy-layout merge-base reader' "$tmp/legacy-closure.out" ||
+    fail "a pre-#974 scripts/ closure layout was not found by the --closure probe: $(cat "$tmp/legacy-closure.out")"
+
+# ...and a closure carrying no reader at any probed layout is still refused
+# outright, never resolved from the branch's own copy.
+empty_closure="$tmp/empty-closure"
+mkdir -p "$empty_closure"
+set +e
+node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --closure "$empty_closure" \
+    --policy .devflow.toml --registry agent-registry.json --json >"$tmp/empty-closure.out" 2>&1
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail "a closure with no reader at any layout resolved anyway: $(cat "$tmp/empty-closure.out")"
+grep -Fq 'probed' "$tmp/empty-closure.out" ||
+    fail "the empty-closure refusal did not name the layouts it probed: $(cat "$tmp/empty-closure.out")"
 
 echo "==> the EXIT reader also refuses a closure reader predating finder selection"
 # The sibling of the devflow-policy.mjs guard above. Fixing only the policy
@@ -884,13 +919,13 @@ echo "==> the EXIT reader also refuses a closure reader predating finder selecti
 # merge-base exit reader that ignores the flags computes an exit over a
 # narrower set of slots and says nothing about it.
 stale_exit="$tmp/stale-exit-closure"
-mkdir -p "$stale_exit/scripts"
-cat >"$stale_exit/scripts/dev-flow-exit.mjs" <<'STALE'
+mkdir -p "$stale_exit/ai/skills/universal/dev-flow-support/assets"
+cat >"$stale_exit/ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs" <<'STALE'
 // An exit reader from before #796.
 process.exitCode = 0
 STALE
 set +e
-node scripts/dev-flow-exit.mjs --closure "$stale_exit" --run "$tmp" --stage review \
+node ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs --closure "$stale_exit" --run "$tmp" --stage review \
     --policy .devflow.toml --add-finder review:copilot-verification >"$tmp/exit-closure.out" 2>&1
 status=$?
 set -e
@@ -904,7 +939,7 @@ echo "==> the equals form of a finder flag is parsed, not silently dropped"
 # the run with the configured finders alone and no disclosure — while the
 # closure guard already treated the same spelling as a selection request.
 set +e
-node scripts/devflow-policy.mjs resolve --closure "$closure_dir" \
+node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --closure "$closure_dir" \
     --policy .devflow.toml --registry agent-registry.json \
     --add-finder=review:copilot-verification >"$tmp/eq-form.out" 2>&1
 set -e

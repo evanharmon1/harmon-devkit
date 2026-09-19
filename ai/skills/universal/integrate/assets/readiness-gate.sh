@@ -108,7 +108,7 @@
 # that legitimately re-runs another script's read path instead of reading a
 # file directly. Omitting the flag skips this one extra guard, exactly like
 # --integration-cap below, rather than assuming freshness of any particular
-# kind — but every real caller (ai/skills/universal/integrate/SKILL.md's own
+# kind — but every real caller (integrate/SKILL.md's own
 # §6) always supplies it.
 
 set -euo pipefail
@@ -194,25 +194,29 @@ need gh
 need jq
 need node
 
-# The record projector lives at a fixed repo-root path, not beside this asset
-# script (which the skills-sync vendoring can relocate on its own), so it is
-# resolved from the checkout's own toplevel rather than "$(dirname "$0")/..".
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" ||
-    die "not inside a git checkout — cannot locate scripts/render-dev-flow.sh"
-render_dev_flow="$repo_root/scripts/render-dev-flow.sh"
+# Every helper this script runs is now a VENDORED SKILL ASSET, so all of them
+# resolve from this script's own physical directory (harmon-devkit#974). The
+# record projector and the schema validator used to be resolved from the
+# checkout's git toplevel, on the reasoning that they lived at a fixed
+# repository-root `scripts/` path while this asset could be relocated by
+# skills-sync. That reasoning is now exactly backwards: they travel with the
+# skills, and a consumer that vendored them has no repository-root copy to
+# find. `pwd -P` because the dogfood tree reaches this file through a symlink,
+# and a logical path would resolve `../..` against the link instead of the
+# real package.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+support_dir="$script_dir/../../dev-flow-support/assets"
+render_dev_flow="$support_dir/render-dev-flow.sh"
 [ -x "$render_dev_flow" ] ||
-    die "$render_dev_flow is missing or not executable"
-validate_result_schemas="$repo_root/scripts/validate-result-schemas.mjs"
+    die "$render_dev_flow is missing or not executable — the dev-flow-support package must be vendored alongside this skill"
+validate_result_schemas="$support_dir/validate-result-schemas.mjs"
 [ -f "$validate_result_schemas" ] ||
-    die "$validate_result_schemas is missing"
+    die "$validate_result_schemas is missing — the dev-flow-support package must be vendored alongside this skill"
 
-# check-codex-cloud-review.sh is THIS script's own sibling asset (both move
-# together under skills-sync), unlike render_dev_flow/validate_result_schemas
-# above which live outside the vendored skill package — so it is resolved
-# relative to this script's own directory instead. Only checked for
-# executability where --codex-recheck actually needs it, in
-# recheck_codex_freshness below, since the flag is optional.
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# check-codex-cloud-review.sh is THIS script's own sibling asset, resolved from
+# the same $script_dir. Only checked for executability where --codex-recheck
+# actually needs it, in recheck_codex_freshness below, since the flag is
+# optional.
 codex_checker="$script_dir/check-codex-cloud-review.sh"
 # The current-head Codex actor is a fixed platform constant (AGENTS.md's
 # current-head Codex cycle contract), not a per-repo or per-call setting —

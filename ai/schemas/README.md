@@ -58,7 +58,7 @@ resolves which one applies:
 2. Read `role`.
 3. Validate `instance.payload` against `result.<role>.schema.json`'s own root.
 
-This is `scripts/validate-result-schemas.mjs`'s job (`<kind> <file>`, where
+This is `ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs`'s job (`<kind> <file>`, where
 `kind` is `brief | envelope | implementer | challenger | reviewer | integrator |
 adjudication | run | plan`). **`kind: envelope` is a convenience for "I don't already
 know the role," not a payload-blind mode** — it runs steps 2 and 3 (and every
@@ -73,7 +73,7 @@ dispatch under `kind: envelope`, silently accepting an envelope with an
 empty `payload` as long as its own shape was fine — the bug is now a
 regression fixture, not just a comment.
 
-It exists because [`scripts/lib/json-schema-subset.mjs`](../../scripts/lib/json-schema-subset.mjs) —
+It exists because [`ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs`](../../ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs) —
 the hand-rolled JSON-Schema-subset engine this family shares with
 `agent-registry.schema.json`'s validator, factored out so the ~350-line
 structural engine isn't duplicated — supports only same-document `#/...`
@@ -84,7 +84,7 @@ practice: no schema file needs to know another schema file exists.
 
 ### `result.schema.json`: the same dispatch, inlined for a native validator
 
-The five schemas above assume a caller that can run `scripts/validate-result-schemas.mjs`
+The five schemas above assume a caller that can run `ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs`
 — something with `node` and this repo checked out. A harness that only
 accepts **one schema document** for native JSON-Schema validation (for
 example a Workflow/Agent `schema` field) cannot call out to that script, and
@@ -136,7 +136,7 @@ counts tally that disagrees with the findings array, a blocked reviewer
 that still reports findings — none of it is visible to a validator holding
 only one document). Use `result.schema.json` where only structural,
 single-document validation is possible; use
-`scripts/validate-result-schemas.mjs` (which loads the same per-role
+`ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs` (which loads the same per-role
 bodies from the standalone `result.<role>.schema.json` files, not from
 this composed one) wherever a real `node` call is available, since it adds
 every receipt check on top for free.
@@ -148,7 +148,7 @@ standalone schema refs its own definitions as `#/$defs/finding` /
 `$defs.attackScenario` of *this* composed document (there isn't one) instead
 of that role's own — so the inlined copy rewrites the ref to
 `#/$defs/reviewer/$defs/finding`, or `#/$defs/challenger/$defs/finding` and
-`#/$defs/challenger/$defs/attackScenario`. `scripts/test-result-schemas.sh`
+`#/$defs/challenger/$defs/attackScenario`. `ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh`
 guards against the two ever drifting apart: it deep-equals each `$defs.<role>`
 against its standalone `result.<role>.schema.json` (undoing that one ref
 rewrite before comparing) and separately confirms `result.schema.json`
@@ -699,14 +699,14 @@ reach a sibling field outside it. Duplicating `status` into the payload just
 to make the condition local was considered and rejected — it would need its
 own "envelope.status must equal payload.status" semantic check to keep the
 copy honest, trading one semantic check for another plus a redundant field.
-`scripts/validate-result-schemas.mjs`'s `checkImplementerStatus` reads the
+`ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs`'s `checkImplementerStatus` reads the
 envelope and payload together instead.
 
 `result.integrator.schema.json`'s conditional (`applied_dispositions`
 required iff `verdict: clean`) **is** expressed as `if`/`then` in the schema
 file itself, because both `verdict` and `applied_dispositions` are sibling
 properties of the same `payload` instance — no cross-document reach needed.
-This is the shipped example of `scripts/lib/json-schema-subset.mjs`'s
+This is the shipped example of `ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs`'s
 `if`/`then`/`else` support (added for this family; `agent-registry.schema.json`
 never needed it).
 
@@ -767,7 +767,7 @@ decisions):
   `finder`/`findings[]`/`counts` are field-for-field identical to
   `result.reviewer.schema.json`'s — same finding shape (`id`, `path`, `line`,
   `class`, `provenance`, `fingerprint`, `priority`, `recommended_disposition`,
-  `evidence`), so `scripts/validate-result-schemas.mjs`'s `checkFindingIds`
+  `evidence`), so `ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs`'s `checkFindingIds`
   and `checkReviewerBlockedStatus` (and #636's exit script) compute over
   either role without a role-specific branch. A design-level finding is
   simply a finding with `class: design`; a de-scaffolding recommendation is
@@ -911,7 +911,7 @@ decisions):
   nullability above, since it is the same stage-conditional branch.
 - **`adjudications[]` and `settlements[]` are arrays of tagged objects, not
   a JSON object keyed by finding id**, even though the spec's prose says
-  "keyed by finding id." `scripts/lib/json-schema-subset.mjs` has no
+  "keyed by finding id." `ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs` has no
   `patternProperties` and no schema-valued `additionalProperties` (only
   `boolean`, matching `agent-registry.schema.json`'s existing convention), so
   a dynamically-keyed map cannot be validated at all in this subset. An array
@@ -939,7 +939,7 @@ decisions):
   — UTC only, literal trailing `Z`, no other offset accepted, matching the
   spec's own examples. **The pattern alone only proves the shape, never the
   calendar** — `2026-02-30T10:00:00Z` matches it and names a day that does
-  not exist. `scripts/validate-result-schemas.mjs`'s `checkTimestampRealness`
+  not exist. `ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs`'s `checkTimestampRealness`
   is one generic walk over the whole instance (any object key equal to `at`
   or ending in `_at`, whatever schema it belongs to) that round-trips each
   value through `Date` parsing and confirms it re-renders to the same
@@ -980,7 +980,7 @@ decisions):
   This is nested (inside a property's own schema, not at the payload root)
   precisely to prove `if`/`then` is not root-only in this engine — see the
   "nested if/then" unit tests beside the root-level ones in
-  `scripts/test-result-schemas.sh`. "Optional for non-terminal codes" is
+  `ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh`. "Optional for non-terminal codes" is
   the schema's own limit — `if`/`then` can express "required when", never
   "forbidden otherwise" — so `checkCodexCycleAcceptedScope` closes the gap
   in the validator: `accepted` present alongside any exit_code other than
@@ -1088,7 +1088,7 @@ decisions):
   say the same thing, and `checkAdjudicationEntries` silently skipped
   validating it either way. Covered by
   `adjudication.schema/invalid/reference-explicit-null.json`.
-- **The native-composition test in `scripts/test-result-schemas.sh` also
+- **The native-composition test in `ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh` also
   runs the standalone envelope-invalid fixtures against `result.schema.json`
   and compares the composed root's `required`/`properties` (minus
   `payload`) with `result.envelope.schema.json` (#686).** The pre-existing
@@ -1142,7 +1142,7 @@ decisions):
   `reference-decline-comment-id.json`, and
   `adjudication.schema/invalid/reference-on-restructure-disposition.json`,
   `reference-on-delete-disposition.json`.
-- **`scripts/test-result-schemas.sh`'s composed-root/envelope parity check
+- **`ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh`'s composed-root/envelope parity check
   compares full property definitions, not just property names (#686
   challenge round 2 P2).** The original check compared
   `Object.keys(composed.properties)` against
@@ -1199,19 +1199,19 @@ ai/schemas/fixtures/
 (#796) — the PR-side cloud reviews, and only those: that finder's raw review
 payload (`raw.json`), the arguments to decode it with (`args.json`), and the
 pass core it must decode to (`expected.json`). Raw vendor output is a document
-of no schema kind, so `scripts/test-finder-normalization.sh`
+of no schema kind, so `ai/skills/universal/review/assets/test-finder-normalization.sh`
 (`task test:finder-normalization`) owns this corpus rather than the generic
 driver. The coverage rule runs **both ways**, because `raw_shape` decides who
 decodes a finder at all: the suite requires a directory for every
 `github-review-json` slug in `agent-registry.json`'s `finders[]`, so a
 mechanically-decoded finder with no proven raw-output contract fails it — and
 it *rejects* a directory for a `labelled-text` slug, because
-`scripts/normalize-finder-findings.mjs` refuses that shape by design and a
+`ai/skills/universal/review/assets/normalize-finder-findings.mjs` refuses that shape by design and a
 fixture there would assert a decode path that does not exist. A local CLI
 finder's free text is decoded by the dispatched challenger/reviewer role
 instead, and its contract is proven by `scripts/test-finder-review.sh`. That
-same test asserts the point of normalizing at all: `scripts/dev-flow-exit.mjs`,
-`scripts/render-dev-flow.mjs` and `adjudication.schema.json` name no finder
+same test asserts the point of normalizing at all: `ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs`,
+`ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs` and `adjudication.schema.json` name no finder
 slug, so adjudication, the exit computation and the renderer never learn which
 product produced a finding.
 
@@ -1242,18 +1242,18 @@ exercised against its own `.pass.json` sidecar — an INTEGRATOR envelope,
 not a reviewer one, since that is what `--pass` validates against for this
 stage; and the run-mismatch case (`result.envelope.schema/invalid/run-mismatch.json`) is
 exercised with a hardcoded `--run-id`/`--initiated-by` pair in
-`scripts/test-result-schemas.sh` rather than a sidecar, since those are two
+`ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh` rather than a sidecar, since those are two
 plain strings, not a document. All sidecars, and every fixture whose
 invalid-ness depends entirely on a flag the generic loop never passes, are
 excluded from both the valid and invalid per-directory loops
-(`is_context_only_fixture` in `scripts/test-result-schemas.sh`) and
+(`is_context_only_fixture` in `ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh`) and
 exercised only by name.
 
 `ai/schemas/fixtures/registry-trust/<case>/scenario.json` is a different
 kind of corpus: not a document validated against a schema but a
 **declarative timeline** for the harvester's registry-trust binding
 ("Trust root: the registry allowlist, pinned per write" below, issue #741),
-run by `scripts/test-dev-flow-stats.sh` through the real resolver against
+run by `ai/skills/universal/retro/assets/test-dev-flow-stats.sh` through the real resolver against
 its fake `gh` shim. Each fixture names the registry revisions
 (`registry_revisions[]`, in default-branch listing order, newest first:
 a 40-hex `sha`, the default-branch `landed_at` — `null` for a revision
@@ -1277,7 +1277,7 @@ unlisted-comment classification).
 Adding a case is one directory; the runner discovers the corpus and asserts
 every fixture's own expectation, and fails if fewer cases than the shipped
 corpus are found (the floor is the `corpus_count` check in
-`scripts/test-dev-flow-stats.sh`, raised with every case added — the
+`ai/skills/universal/retro/assets/test-dev-flow-stats.sh`, raised with every case added — the
 directory listing, not this paragraph, is the count). The shipped cases
 cover the evidence delta spec's three named
 scenarios (missing/empty allowlist fails closed; an actor added after
@@ -1321,7 +1321,7 @@ commit; `finder` is `codex-cli` throughout, matching the ledger.
 ## Running the validator
 
 ```sh
-node scripts/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan> <file> \
+node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs <brief|envelope|implementer|challenger|reviewer|integrator|adjudication|run|plan> <file> \
   [--known-ids <ids.json>] [--run-id <id> --initiated-by <human|foreman>] \
   [--pass <envelope.json> ...] [--known-adjudicated <ids.json>] \
   [--adjudication <file.json> ... | --no-adjudications] \
@@ -1347,7 +1347,7 @@ were left unsupplied instead of silently running a narrower check. Exit 0
 and a one-line summary when valid; exit 1 and every violation (one per
 line) otherwise; exit 2 for a usage error (bad `kind`, missing file,
 `--run-id`/`--initiated-by` given alone, or a `--receipt`-required flag
-missing). `scripts/test-result-schemas.sh`
+missing). `ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh`
 (wired into `task test:result-schemas`, run from `task verify`) runs the
 whole fixture corpus through this validator, every run-context regression
 case above, and a coverage check that every `required` field and every
@@ -1754,7 +1754,7 @@ render-dev-flow.mjs` reads `record.run.pr.number`/`.url` directly, so
 dropping them was rejected in favor of keeping them but no longer trusting
 them blindly — the harvester verifies each flat field against its chain's
 derived value on every read (`verifyProjections` in
-`scripts/dev-flow-stats.mjs`) and rejects the whole record as
+`ai/skills/universal/retro/assets/dev-flow-stats.mjs`) and rejects the whole record as
 indeterminate on a mismatch, whether that mismatch comes from a broken
 chain (an edited or deleted registration — the chain's own digest no
 longer matches its content) or an internally-valid chain whose derived
@@ -1806,21 +1806,21 @@ reopened here.
 
 ## Dev flow v2 policy resolution and exit computation
 
-Two more scripts consume this schema family — `scripts/devflow-policy.mjs`
+Two more scripts consume this schema family — `ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs`
 (the shared v2 `.devflow.toml` reader, [#636](https://github.com/evanharmon1/harmon-devkit/issues/636),
-design.md decision 13) and `scripts/dev-flow-exit.mjs` (deterministic
+design.md decision 13) and `ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs` (deterministic
 confidence-stage exit computation, implementing
 `openspec/changes/dev-flow-v2/specs/exit-computation/spec.md` and
 `specs/dev-flow-v2.md` § "Convergence model v0") — with their own conformance
 corpus under `ai/schemas/fixtures/exit/<case>/`, run by
-`scripts/test-dev-flow-exit.sh` (`task test:dev-flow-exit`, wired into
+`ai/skills/universal/dev-flow-support/assets/test-dev-flow-exit.sh` (`task test:dev-flow-exit`, wired into
 `task verify`). Both are usable as a CLI or imported as a library (notably,
 `dev-flow-exit.mjs` imports `resolvePolicy`/`crossValidate`/`PolicyError`
 from `devflow-policy.mjs` directly rather than shelling out to it), and both
 have thin Taskfile passthroughs — `task devflow:policy -- resolve|detect
 ...` and `task devflow:exit -- ...` — for a human or another tool that
-would rather not spell out `node scripts/devflow-policy.mjs` /
-`scripts/dev-flow-exit.sh` directly. Two caveats for a caller parsing
+would rather not spell out `node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs` /
+`ai/skills/universal/dev-flow-support/assets/dev-flow-exit.sh` directly. Two caveats for a caller parsing
 `--json` output through either Task target rather than the bare
 script/`.sh` wrapper: `Taskfile.yml`'s repo-wide `output: group` setting
 wraps EVERY task's stdout in `::group::<task>/::endgroup::` marker lines
@@ -1838,7 +1838,7 @@ for legacy — never `[tier.*]`, which can occur in either older shape) and
 refuses to operate
 under anything but v2, naming the markers found. This repository's own live
 `.devflow.toml` is still legacy-shaped (pending the harmon-init v2 template
-migration, harmon-init#1081) — `scripts/test-dev-flow-exit.sh` asserts that
+migration, harmon-init#1081) — `ai/skills/universal/dev-flow-support/assets/test-dev-flow-exit.sh` asserts that
 `devflow-policy.mjs resolve --policy .devflow.toml` is refused, and every
 other fixture in this corpus resolves a policy under
 `ai/schemas/fixtures/exit/`, never the live file, so this test suite passes
@@ -1951,7 +1951,7 @@ empty `families`/`harnesses` (no registry-independent default family exists,
 so cross-validation reports the resulting unresolvable family honestly rather
 than inventing one), an empty finder set for every stage, the simplest
 single-agent/no-delegation strategy, and `tier_order` copied from the spec's
-own fixed ladder. `scripts/dev-flow-exit.mjs` treats an empty resolved
+own fixed ladder. `ai/skills/universal/dev-flow-support/assets/dev-flow-exit.mjs` treats an empty resolved
 `stages.<stage>.finders` the same way — as "no configured authority", not
 "this stage configures zero finders" — and falls back to the observed
 passes' own slots (unioned across every round of the stage) for logical-round
@@ -2002,13 +2002,13 @@ as editing `.devflow.toml`/`agent-registry.json` directly would — the
 identical concern AGENTS.md's merge-base rule already names for those two
 files, extended to the code that resolves them. `--closure <dir>`, checked
 before either script does anything else with its arguments, re-execs the
-**trusted** copy at `<dir>/scripts/devflow-policy.mjs` (or
+**trusted** copy at `<dir>/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs` (or
 `dev-flow-exit.mjs`), passing every other argument through unchanged; a
 caller materializes `<dir>` the same way it materializes a merge-base
-`.devflow.toml` (e.g. `git show <merge-base>:scripts/devflow-policy.mjs`).
+`.devflow.toml` (e.g. `git show <merge-base>:ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs`).
 `ai/schemas/fixtures/exit/reader-self-modification-boundary/` proves the
 mechanism: it ships a *poisoned* copy of `devflow-policy.mjs` (a mutated
-built-in breadth default) and `scripts/lib/run-exit-fixtures.mjs` invokes it
+built-in breadth default) and `ai/skills/universal/dev-flow-support/assets/lib/run-exit-fixtures.mjs` invokes it
 with `--closure` pointed at a trusted closure the runner builds **at test
 time** from whatever `devflow-policy.mjs` the repository currently ships —
 never a copy committed under `ai/schemas/fixtures/`, so this fixture can
@@ -2020,7 +2020,7 @@ never reached.
 `result.challenger.schema.json` shipped with lane
 [#635](https://github.com/evanharmon1/harmon-devkit/issues/635)'s registry
 roles (PR #713); `dev-flow-exit.mjs`'s `PASS_VALIDATION_KIND` is `"envelope"`
-— `scripts/validate-result-schemas.mjs`'s self-dispatching kind, which reads
+— `ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs`'s self-dispatching kind, which reads
 each pass's own `role` field and runs exactly the same payload + receipt
 checks as invoking that role's kind name directly. A challenge-stage pass
 authored `role: "challenger"` validates against
@@ -2047,7 +2047,7 @@ pass from a substitution and to know which primary slot a substitute fills,
 so this issue adds both as **optional** properties to both schemas (and
 their inlined `$defs.reviewer`/`$defs.challenger` twins in
 `result.schema.json`, kept byte-identical to their standalone originals —
-`scripts/test-result-schemas.sh`'s own drift check enforces this) —
+`ai/skills/universal/dev-flow-support/assets/test-result-schemas.sh`'s own drift check enforces this) —
 additive only, `required` is unchanged on either, so every existing fixture
 and producer stays valid without them. `dev-flow-exit.mjs` itself requires
 `slot` on every pass it consumes (falling back to `finder` when absent,
@@ -2558,12 +2558,12 @@ moved rather than dropped.
 | - | --------------------------------- | ----- | ------------ |
 | 1 | A round is complete only when every finder in `[stage.<stage>].finders[]` returned a `completed` pass at the same `reviewed_head`; a missing or `blocked` finder is `finder_unavailable` **on the evidence of a `slot_failures` record**, never synthesized, and never a round one finder short | `assembleLogicalRounds` (`dev-flow-exit.mjs`) | `exit/finder-blocked-without-failure-record-indeterminate` / `exit/finder-blocked-then-fallback-completes-round`; the disagreeing-head half is `exit/mismatched-head-round-rejected` |
 | 2 | Every retained pass has exactly one adjudication document **and vice versa** — an adjudication naming a round no pass or `slot_failures` record ever named is an error, not something to ignore | the orphan-adjudication check in `dev-flow-exit.mjs`'s `main()`, beside the `missingAdjudication` check that covers the other direction | `exit/adjudication-without-source-pass-rejected` / `exit/adjudication-for-rejected-pass-round-accepted`; cross-stage: `exit/orphan-adjudication-from-earlier-stage-rejected` / `exit/earlier-stage-adjudication-with-its-pass-accepted` |
-| 3 | `round` never exceeds the stage's resolved cap; a cap-0 stage has no rounds; **stage-skipping is legal only under the corresponding cap-0 policy** | the cap-integrity checks and the `SKIP_EDGE_GUARDS` check in `dev-flow-exit.mjs`'s `main()` | `exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected` / `exit/stage-skip-to-review-legal-under-cap-zero-challenge` and `exit/remediation-reentry-into-review-is-not-a-stage-skip`; the `verify -> security` edge is a named case in `scripts/test-dev-flow-exit.sh` |
+| 3 | `round` never exceeds the stage's resolved cap; a cap-0 stage has no rounds; **stage-skipping is legal only under the corresponding cap-0 policy** | the cap-integrity checks and the `SKIP_EDGE_GUARDS` check in `dev-flow-exit.mjs`'s `main()` | `exit/stage-skip-to-review-under-nonzero-challenge-cap-rejected` / `exit/stage-skip-to-review-legal-under-cap-zero-challenge` and `exit/remediation-reentry-into-review-is-not-a-stage-skip`; the `verify -> security` edge is a named case in `ai/skills/universal/dev-flow-support/assets/test-dev-flow-exit.sh` |
 | 4 | `integration -> implement -> integration` loops are counted against `[rounds.<policy>].remediation`; exceeding it escalates, and code-changing dispositions past the cap are rejected | `readiness-gate.sh` step 9d, under the required `--remediation-cap` | the `#685(4)` cases in `scripts/test-integrate-readiness.sh` |
 | 5 | `codex_cycle.cycle` ≤ `[rounds.<policy>].integration`; cap 0 ⇒ null cycle; a clean verdict with a null cycle under a positive cap is not clean | `readiness-gate.sh` step 9, under `--integration-cap` | the five `--integration-cap` cases plus the `#685(5)` `audit` case in `scripts/test-integrate-readiness.sh` |
 | 6 | `promotion.head` equals the final integrator result's head and its accepted-cycle reviewed commit; a stale integration pass cannot certify a newer promoted head | three bindings: the validator's own `accepted.reviewed_commit` receipt check, `readiness-gate.sh`'s envelope-head compare, and its `promotion-head-mismatch` condition | the `#685(6)` cases in `scripts/test-integrate-readiness.sh` |
 | 7 | Every adjudicated round has a matching **issue** evidence marker (same stage/round); a `pr`-destination rollup does not substitute | `checkAdjudicationEvidenceMarkers` (`validate-result-schemas.mjs`, with `--adjudication`) over a run record, and `readiness-gate.sh` step 9e as a promotion condition | `run.schema/invalid/adjudicated-round-without-issue-evidence-marker` and `…-only-pr-evidence-marker` / `run.schema/valid/ready-with-settled-deferral` and `…/settlement-of-deferred`, plus the `#685(7)` gate cases |
-| 8 | Source passes' `produced_at` falls between run start and promotion and not before their own stage entry; run↔pass `initiated_by` agree | `chronologyViolation` inside `validateReceipts` (`dev-flow-exit.mjs`), beside the pre-existing `run_id`/`initiated_by` binding | `exit/pass-produced-before-stage-entry-rejected` / `exit/pass-produced-within-run-span-accepted`, plus the two run-span bounds as named cases in `scripts/test-dev-flow-exit.sh` |
+| 8 | Source passes' `produced_at` falls between run start and promotion and not before their own stage entry; run↔pass `initiated_by` agree | `chronologyViolation` inside `validateReceipts` (`dev-flow-exit.mjs`), beside the pre-existing `run_id`/`initiated_by` binding | `exit/pass-produced-before-stage-entry-rejected` / `exit/pass-produced-within-run-span-accepted`, plus the two run-span bounds as named cases in `ai/skills/universal/dev-flow-support/assets/test-dev-flow-exit.sh` |
 | 9 | The moment an integrator pass applies `fix\|decline\|file` to a **deferred** finding, the matching append-only settlement exists — regardless of outcome | `readiness-gate.sh` step 9b (`deferred-unsettled` / `disposition-unsettled`) | the `#685(9)` cases in `scripts/test-integrate-readiness.sh` |
 | 10 | An integrator pass's `applied_dispositions` ids lie within the run's known finding universe | `checkAppliedDispositionsKnownFindingIds` (with `--known-ids`) and `checkAppliedDispositionsIntegrationRound` (unconditional) in `validate-result-schemas.mjs`, with `readiness-gate.sh` building the universe from the record and passing the flag | `result.integrator.schema/invalid/applied-dispositions-future-integration-round` / `…/valid/applied-dispositions-earlier-integration-round`, the existing `applied-dispositions-unknown-finding-id` pair, and the `#685(10)` gate case |
 
@@ -2832,7 +2832,7 @@ same pinned ref, without either implementation reading the other's source.
   terminal settlement (`run.schema.json`'s `settlements[]`), and neither
   document is edited to reflect the other.
 
-## Rendering: `scripts/render-dev-flow.mjs`
+## Rendering: `ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs`
 
 Deterministic projections from this family's documents — never a second
 source of truth: every rendered fact is read from an `adjudication.schema.json`
@@ -2840,7 +2840,7 @@ document, `run.schema.json`, or a result envelope, and disposition/priority
 always come from the adjudication record, never re-inferred from a raw
 reviewer/challenger finding ([#637](https://github.com/evanharmon1/harmon-devkit/issues/637),
 `openspec/changes/dev-flow-v2/specs/renderer/spec.md`). Invoke via
-`scripts/render-dev-flow.sh <projection> --record <dir> [options]` (a thin
+`ai/skills/universal/dev-flow-support/assets/render-dev-flow.sh <projection> --record <dir> [options]` (a thin
 wrapper; `render-dev-flow.mjs` is the implementation, same pairing as this
 family's other scripts). Requires `gitleaks` on `PATH` (every rendered
 projection and every `publish` section is secret-scanned before being

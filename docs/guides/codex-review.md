@@ -86,7 +86,7 @@ dropped: what is missing is the binding, not the finder. On the PR the head
 editing the config, and the resolver will not let a request take one away:
 
 ```bash
-node scripts/devflow-policy.mjs resolve --policy .devflow.toml \
+node ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs resolve --policy .devflow.toml \
   --registry agent-registry.json \
   --add-finder review:copilot-verification --json
 ```
@@ -140,12 +140,12 @@ code review states no severity at all, so every finding of its enters
 adjudication at P2. **Every one of those is a hypothesis**: the adjudicated
 priority is the verdict, whichever finder produced it.
 
-`scripts/normalize-finder-findings.mjs` applies the map to a **cloud** finder's
+`ai/skills/universal/review/assets/normalize-finder-findings.mjs` applies the map to a **cloud** finder's
 output — a GitHub review, its inline comments, and the top-level comments bound
 by their `Reviewed commit:` line — decoding it into the shared finding core so
 that adjudication, the exit computation and the record renderer never learn
 which product produced a finding.
-`scripts/test-finder-normalization.sh` holds a conformance fixture per
+`ai/skills/universal/review/assets/test-finder-normalization.sh` holds a conformance fixture per
 registered cloud finder, and asserts those three consumers name no finder slug.
 
 A **local-CLI** finder's free text is deliberately not decoded there. Reading
