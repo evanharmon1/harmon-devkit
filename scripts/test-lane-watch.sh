@@ -97,6 +97,13 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
         printf '%s\n' '[{"error":"partial response"}]'
         exit 0
     fi
+    if [ -f "$WATCH_FIXTURES/transient-pr-list" ]; then
+        remaining="$(<"$WATCH_FIXTURES/transient-pr-list")"
+        if [ "$remaining" -gt 0 ]; then
+            printf '%s\n' "$((remaining - 1))" >"$WATCH_FIXTURES/transient-pr-list"
+            exit 92
+        fi
+    fi
     branch=
     previous=
     for arg in "$@"; do
@@ -443,6 +450,45 @@ usage_recovery_out="$test_tmp/usage-recovery.out"
 bash "$watcher" --iterations 1 "${common_args[@]}" >"$usage_recovery_out"
 assert_count "$usage_recovery_out" 0 '^USAGE-PAUSED beta$'
 
+# #1041: a PR observation that fails once and heals on the very next retry
+# degrades exactly once (bounded backoff, not an immediate exit) and keeps
+# running -- the episode clears on the recovering success.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 1 >"$fixture_dir/transient-pr-list"
+transient_out="$test_tmp/transient.out"
+transient_state="$test_tmp/transient.state"
+bash "$watcher" --iterations 1 --state-file "$transient_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --degrade-window-seconds 60 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$transient_out"
+rm -f "$fixture_dir/transient-pr-list"
+assert_line "$transient_out" 'OBSERVATION-DEGRADED alpha: GitHub PR observation failed for lane alpha'
+assert_count "$transient_out" 1 '^OBSERVATION-DEGRADED '
+assert_line "$transient_out" 'PR alpha: #77 draft=true OPEN head=aaaaaaaa'
+assert_count "$transient_state" 0 '^DEGRADE[[:space:]]+alpha[[:space:]]+'
+
+# #1041 restart-dedup: a DEGRADE episode already announced (notified=1)
+# before a restart must not announce again, even though the underlying
+# failure is still ongoing -- only the eventual give-up is new.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+restart_dedup_state="$test_tmp/restart-dedup.state"
+printf 'DEGRADE\tdelta\t%s\t1\t\nWALLCLOCK\trun\t0\t\n' "$(($(date -u +%s) - 100))" \
+    >"$restart_dedup_state"
+touch "$fixture_dir/malformed-pr-list"
+restart_dedup_out="$test_tmp/restart-dedup.out"
+restart_dedup_err="$test_tmp/restart-dedup.err"
+if bash "$watcher" --iterations 1 --state-file "$restart_dedup_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --degrade-window-seconds 2 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
+    >"$restart_dedup_out" 2>"$restart_dedup_err"; then
+    fail 'watcher accepted a malformed GitHub PR observation after a restart'
+fi
+rm "$fixture_dir/malformed-pr-list"
+assert_line "$restart_dedup_err" 'lane-watch: GitHub PR observation failed for lane delta'
+assert_count "$restart_dedup_out" 0 '^OBSERVATION-DEGRADED '
+
 # A hanging external call times out without fabricating an absent transition.
 touch "$fixture_dir/hang-list"
 hang_out="$test_tmp/hang.out"
@@ -468,31 +514,41 @@ rm "$fixture_dir/malformed-list"
 
 # A syntactically valid but incomplete PR object is indeterminate, so
 # persistent supervision re-arms instead of persisting a #null transition.
+# #1041 persistent case: this failure never heals, so the watcher retries
+# with bounded backoff for the whole degrade-window-seconds episode -- one
+# OBSERVATION-DEGRADED marks the episode's start, never one per retry --
+# before finally giving up exactly as it always has.
 touch "$fixture_dir/malformed-pr-list"
+github_failure_out="$test_tmp/github-failure.out"
 github_failure_err="$test_tmp/github-failure.err"
 if bash "$watcher" --iterations 1 --registry "$registry" \
     --state-file "$test_tmp/github-failure.state" \
-    --workspace-root "$workspace_root" --interval-seconds 0 --timeout-seconds 1 \
+    --workspace-root "$workspace_root" --interval-seconds 0 --degrade-window-seconds 1 --timeout-seconds 1 \
     2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
-    >/dev/null 2>"$github_failure_err"; then
+    >"$github_failure_out" 2>"$github_failure_err"; then
     fail 'watcher accepted a malformed GitHub PR observation'
 fi
 assert_line "$github_failure_err" 'lane-watch: GitHub PR observation failed for lane delta'
+assert_line "$github_failure_out" 'OBSERVATION-DEGRADED delta: GitHub PR observation failed for lane delta'
+assert_count "$github_failure_out" 1 '^OBSERVATION-DEGRADED '
 assert_count "$test_tmp/github-failure.state" 1 '^AGENT[[:space:]]+delta[[:space:]]+absent'
 rm "$fixture_dir/malformed-pr-list"
 
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 touch "$fixture_dir/fail-api"
+activity_failure_out="$test_tmp/activity-failure.out"
 activity_failure_err="$test_tmp/activity-failure.err"
 if bash "$watcher" --iterations 1 --state-file "$test_tmp/activity-failure.state" \
     --registry "$registry" --workspace-root "$workspace_root" \
-    --interval-seconds 0 --timeout-seconds 1 \
+    --interval-seconds 0 --degrade-window-seconds 1 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
-    >/dev/null 2>"$activity_failure_err"; then
+    >"$activity_failure_out" 2>"$activity_failure_err"; then
     fail 'watcher accepted an indeterminate GitHub activity observation'
 fi
 assert_line "$activity_failure_err" 'lane-watch: GitHub activity observation failed for lane alpha'
+assert_line "$activity_failure_out" 'OBSERVATION-DEGRADED alpha: GitHub activity observation failed for lane alpha'
+assert_count "$activity_failure_out" 1 '^OBSERVATION-DEGRADED '
 assert_count "$test_tmp/activity-failure.state" 1 '^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+'
 rm "$fixture_dir/fail-api"
 
@@ -510,15 +566,17 @@ rm "$fixture_dir/fail-api"
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 touch "$fixture_dir/malformed-activity-entry"
+malformed_activity_out="$test_tmp/malformed-activity.out"
 malformed_activity_err="$test_tmp/malformed-activity.err"
 if bash "$watcher" --iterations 1 --state-file "$test_tmp/malformed-activity.state" \
     --registry "$registry" --workspace-root "$workspace_root" \
-    --interval-seconds 0 --timeout-seconds 1 \
+    --interval-seconds 0 --degrade-window-seconds 1 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
-    >/dev/null 2>"$malformed_activity_err"; then
+    >"$malformed_activity_out" 2>"$malformed_activity_err"; then
     fail 'watcher accepted an activity entry missing its timestamp'
 fi
 assert_line "$malformed_activity_err" 'lane-watch: GitHub activity observation failed for lane alpha'
+assert_count "$malformed_activity_out" 1 '^OBSERVATION-DEGRADED '
 rm "$fixture_dir/malformed-activity-entry"
 
 # A cold-start window whose provisional deadline has passed now always
@@ -543,7 +601,7 @@ expired_out="$test_tmp/activity-expired.out"
 expired_err="$test_tmp/activity-expired.err"
 if bash "$watcher" --iterations 1 --state-file "$test_tmp/expired.state" \
     --registry "$registry" --workspace-root "$workspace_root" \
-    --interval-seconds 0 --post-promotion-seconds 900 --timeout-seconds 1 \
+    --interval-seconds 0 --post-promotion-seconds 900 --degrade-window-seconds 1 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$expired_out" 2>"$expired_err"; then
     fail 'watcher accepted a hard API failure while resolving a cold-start expired window'
@@ -551,6 +609,7 @@ fi
 assert_line "$expired_err" 'lane-watch: GitHub activity observation failed for lane alpha'
 assert_count "$expired_out" 0 '^POST-PROMOTION-ACTIVITY '
 assert_count "$expired_out" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$expired_out" 1 '^OBSERVATION-DEGRADED '
 assert_count "$test_tmp/expired.state" 1 '^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+'
 rm "$fixture_dir/fail-api"
 
@@ -1440,15 +1499,21 @@ rm "$fixture_dir/rebind-events" "$fixture_dir/rebind-phase" "$fixture_dir/rebind
 assert_line "$rebind_out2" "POST-PROMOTION-ACTIVITY alpha: trusted-codex review 950 since=${rebind_since2}:402"
 assert_count "$rebind_out2" 1 '^POST-PROMOTION-ACTIVITY '
 
-# Integration-r4-codex-cloud finding #6: a ready_for_review event with a
-# missing/null id must be excluded from promotion_epoch()'s selection, never
-# accepted with its id interpolated as the literal text "null" -- which would
-# let two distinct malformed same-second promotions collapse to the same
+# #1041 P2 follow-up (was integration-r4-codex-cloud finding #6): a
+# ready_for_review event with a missing/null id must never be accepted with
+# its id interpolated as the literal text "null" -- that would let two
+# distinct malformed same-second promotions collapse to the same
 # "<epoch>:null" identity, reproducing the exact silent-loss defect the
-# event-id tie-break exists to prevent. The null-id event here carries a
-# LATER created_at than the valid one, so an unfiltered max-by-created_at
-# selection would pick it; the fix must filter it out before that selection,
-# not after, and resolve to the valid, earlier event instead.
+# event-id tie-break exists to prevent. The original fix for that simply
+# dropped the malformed row and armed from the valid row alone; the bounded
+# rule replaces that with: the malformed row's mere presence makes the
+# snapshot indeterminate for malformed_promo_poll_bound consecutive polls
+# before falling back to the valid row (see promotion_epoch()). This first,
+# single-iteration poll is a cold start whose provisional window has not
+# expired yet, so it stays exactly as silent as a plain "no event yet"
+# indeterminate always has -- no POST-PROMOTION-INDETERMINATE line, and
+# WINDOW stays at its provisional (not yet resolved) value rather than being
+# armed from the tainted resolution.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 mp_now="$(date -u +%s)"
@@ -1469,12 +1534,67 @@ bash "$watcher" --iterations 1 --state-file "$mp_state" \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$mp_out"
 assert_count "$mp_out" 0 '^POST-PROMOTION-INDETERMINATE '
-assert_count "$mp_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+$((mp_valid_at + 900))[[:space:]]+${mp_valid_at}:555\$"
+assert_count "$mp_out" 0 '^OBSERVATION-DEGRADED '
+assert_count "$mp_state" 0 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+$((mp_valid_at + 900))[[:space:]]+${mp_valid_at}:555\$"
+assert_count "$mp_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+[0-9]+[[:space:]]*\$"
+assert_count "$mp_state" 1 '^MALPROMO[[:space:]]+alpha[[:space:]]+1[[:space:]]+0[[:space:]]*$'
 assert_count "$mp_state" 0 'null'
+
+# The bound bites after malformed_promo_poll_bound consecutive polls: a warm
+# window already armed from the valid row, with the same malformed row still
+# present, stays indeterminate (silently trusting the already-armed window,
+# same as any other transient events-API gap) through the bound, then falls
+# back to the valid row and emits exactly one OBSERVATION-DEGRADED naming the
+# malformed row -- so one persistently malformed GitHub row cannot wedge a
+# lane's promotion tracking forever. MALPROMO is pre-seeded to 2 so the first
+# of these two invocations lands exactly on the bound (3) and the second
+# exceeds it (4).
+bounded_state="$test_tmp/malformed-promo-bounded.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s\nMALPROMO\talpha\t2\t0\t\nWALLCLOCK\trun\t0\t\n' \
+    "$((mp_valid_at + 900))" "${mp_valid_at}:555" >"$bounded_state"
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+bounded_out1="$test_tmp/malformed-promo-bounded-1.out"
+bash "$watcher" --iterations 1 --state-file "$bounded_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$bounded_out1"
+assert_count "$bounded_out1" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$bounded_out1" 0 '^OBSERVATION-DEGRADED '
+assert_count "$bounded_state" 1 '^MALPROMO[[:space:]]+alpha[[:space:]]+3[[:space:]]+0[[:space:]]*$'
+
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+bounded_out2="$test_tmp/malformed-promo-bounded-2.out"
+bash "$watcher" --iterations 1 --state-file "$bounded_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$bounded_out2"
+assert_line "$bounded_out2" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=null on #77'
+assert_count "$bounded_out2" 1 '^OBSERVATION-DEGRADED '
+assert_count "$bounded_out2" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$bounded_state" 1 '^MALPROMO[[:space:]]+alpha[[:space:]]+4[[:space:]]+1[[:space:]]*$'
+assert_count "$bounded_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+$((mp_valid_at + 900))[[:space:]]+${mp_valid_at}:555\$"
+
+# A third consecutive malformed poll, still past the bound, must not
+# re-announce the same episode.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+bounded_out3="$test_tmp/malformed-promo-bounded-3.out"
+bash "$watcher" --iterations 1 --state-file "$bounded_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$bounded_out3"
+assert_count "$bounded_out3" 0 '^OBSERVATION-DEGRADED '
 
 # When every ready_for_review event is malformed, resolution must fall
 # through to the existing "no resolvable event" indeterminate path -- never
-# accept the malformed one for lack of an alternative.
+# accept the malformed one for lack of an alternative. Unlike the mixed
+# case above there is no valid row to ever fall back to, so this stays
+# unbounded and unchanged by the #1041 P2 follow-up.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 touch "$fixture_dir/malformed-promo-all-bad"
@@ -1499,14 +1619,46 @@ assert_count "$mp_allbad_out" 0 '^POST-PROMOTION-ACTIVITY '
 assert_count "$mp_allbad_state" 0 '^WINDOW[[:space:]]+alpha[[:space:]]+'
 assert_count "$mp_allbad_state" 0 'null'
 
+# #1041 P2 follow-up: malformed-row detection does not depend on tie-break
+# ordering -- an older malformed row alongside a newer valid one is caught
+# exactly like the newer-malformed case above.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+mp2_null_at=$((mp_now - 500))
+mp2_valid_at=$((mp_now - 300))
+mp2_null_iso="$(date -u -d "@$mp2_null_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$mp2_null_iso" ] || mp2_null_iso="$(date -u -r "$mp2_null_at" +%Y-%m-%dT%H:%M:%SZ)"
+mp2_valid_iso="$(date -u -d "@$mp2_valid_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$mp2_valid_iso" ] || mp2_valid_iso="$(date -u -r "$mp2_valid_at" +%Y-%m-%dT%H:%M:%SZ)"
+touch "$fixture_dir/malformed-promo-events"
+printf '%s\n' "$mp2_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
+printf '%s\n' "$mp2_null_iso" >"$fixture_dir/malformed-promo-null-at"
+mp_order_out="$test_tmp/malformed-promo-order.out"
+mp_order_state="$test_tmp/malformed-promo-order.state"
+bash "$watcher" --iterations 1 --state-file "$mp_order_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$mp_order_out"
+rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at" \
+    "$fixture_dir/malformed-promo-null-at"
+assert_count "$mp_order_out" 0 '^POST-PROMOTION-INDETERMINATE '
+assert_count "$mp_order_out" 0 '^OBSERVATION-DEGRADED '
+assert_count "$mp_order_state" 0 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+[0-9]+[[:space:]]+${mp2_valid_at}:555\$"
+assert_count "$mp_order_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+[0-9]+[[:space:]]*\$"
+assert_count "$mp_order_state" 1 '^MALPROMO[[:space:]]+alpha[[:space:]]+1[[:space:]]+0[[:space:]]*$'
+
 # Every emitted line belongs to one of the stable event grammars.
-if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-CLOSED [^:]+: #[0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
+if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READY|BLOCKED)-[^ ]+( \(pane only\))?|PR [^:]+: #[0-9]+ draft=(true|false) (OPEN|CLOSED|MERGED) head=[0-9a-f]{8}|POST-PROMOTION-ACTIVITY [^:]+: [^ ]+ (review|comment|inline) [0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-CLOSED [^:]+: #[0-9]+ since=[0-9]+:[0-9]*|POST-PROMOTION-INDETERMINATE [^:]+: #[0-9]+|OBSERVATION-DEGRADED [^:]+: .+|USAGE-PAUSED [^ ]+|WALLCLOCK (run|[^:]+): .+)$' \
     "$primary_out" "$skipped_ready_out" "$legacy_draft_out" "$restart_out" "$usage_recovery_out" "$hang_out" "$expired_out" \
     "$tail_out" "$closed_quiet_out" "$closing_out" "$persistfail_out" "$cold_resolve_out" "$stillopen_out" "$realexpired_out" \
     "$samehead_rearm_out" "$cold_never_out" "$rearm_restart_out" "$created_edit_out" \
     "$dormant_out1" "$dormant_out2" "$dormant_out3" \
     "$samesecond_out1" "$samesecond_out2" \
-    "$rebind_out1" "$rebind_out2" "$mp_out" "$mp_allbad_out" \
+    "$rebind_out1" "$rebind_out2" "$mp_out" "$mp_allbad_out" "$mp_order_out" \
+    "$bounded_out1" "$bounded_out2" "$bounded_out3" \
+    "$transient_out" "$restart_dedup_out" \
+    "$github_failure_out" "$activity_failure_out" "$malformed_activity_out" \
     "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
 fi
