@@ -719,6 +719,59 @@ grep -q 'id="chart-age"' "$out_html" || fail "HTML must render Backlog age distr
 grep -q 'id="chart-evidence"' "$out_html" || fail "HTML must render Closes by evidence type chart"
 grep -q '<svg viewBox="0 0 380' "$out_html" || fail "SVG charts must use viewBox for scaling"
 
+# ── Issue #1096: bold report design — masthead, donut, colour-coded verdicts ──
+echo "==> report: HTML carries the masthead ribbon and the headline counts"
+grep -q '<header class="hero">' "$out_html" || fail "HTML must carry the masthead"
+grep -q 'class="ribbon"' "$out_html" || fail "masthead must carry the proportional backlog ribbon"
+grep -q 'class="ribbon-legend"' "$out_html" || fail "the ribbon must be labelled with a legend"
+
+echo "==> report: the verdict chart is a donut with a percentage legend"
+grep -q 'class="donut"' "$out_html" || fail "verdict breakdown must render as a donut"
+grep -q 'stroke-dasharray=' "$out_html" || fail "donut slices must be drawn as dasharray arcs"
+grep -q 'class="lg-pct"' "$out_html" || fail "the donut legend must carry per-verdict percentages"
+
+echo "==> report: the priority card carries the disposition split within each band"
+grep -q 'class="matrix"' "$out_html" || fail "priority mix must carry the per-band disposition matrix"
+grep -q 'class="minibar"' "$out_html" || fail "each priority band must render a proportional mini bar"
+
+echo "==> report: verdict badges are colour-coded by family, not all neutral"
+grep -q 'badge-v-close' "$out_html" || fail "CLOSE-* verdicts must carry the close badge class"
+grep -q 'badge-v-keep' "$out_html" || fail "KEEP verdicts must carry the keep badge class"
+grep -q 'badge-v-decision' "$out_html" || fail "NEEDS-DECISION verdicts must carry the decision badge class"
+
+echo "==> report: issue numbers link to the issue on GitHub"
+grep -q 'href="https://github.com/testowner/testrepo/issues/1"' "$out_html" ||
+    fail "an issue number must link to that issue in the audited repo"
+
+echo "==> report: the HTML stays self-contained — no external asset or library"
+grep -qE '<(script|link)[^>]+(src|href)="https?://' "$out_html" &&
+    fail "the report must not load any external script or stylesheet"
+grep -q '<img' "$out_html" && fail "the report must not reference an external image"
+
+echo "==> report: the headline numbers and next actions link to the sections they name"
+grep -q '<a class="stat-card" href="#close"' "$out_html" ||
+    fail "the close-candidate stat card must link to the Close now section"
+grep -q '<a class="stat-card" href="#decisions"' "$out_html" ||
+    fail "the decisions stat card must link to the Decisions section"
+grep -q '<a class="stat-card" href="#every-issue"' "$out_html" ||
+    fail "the open-issues stat card must link to the Every issue table"
+grep -q '<li><a href="#close">Review ' "$out_html" ||
+    fail "a What-to-do-next item must link to the section it names"
+grep -q '<a href="#close"><span class="swatch"' "$out_html" ||
+    fail "the masthead ribbon legend must link to its section"
+
+echo "==> report: sections from Close now down are collapsible and start collapsed"
+for sec in close milestones parents themes decisions completed findings conformance bots every-issue; do
+    grep -q "<details class=\"sect\" id=\"sec-$sec\"><summary>" "$out_html" ||
+        fail "section $sec must be a collapsible <details>"
+done
+grep -q '<details class="sect" id="sec-close" open' "$out_html" &&
+    fail "collapsible sections must start collapsed (no open attribute)"
+grep -q '<h2 id="milestones">Milestones <span class="pill">' "$out_html" ||
+    fail "a collapsed section must still show its count on the summary"
+grep -q 'function groomReveal' "$out_html" ||
+    fail "HTML must open a collapsed section when a link targets something inside it"
+
 echo "==> report: render is byte-identical for same input and GROOM_NOW (deterministic)"
 out_html2="$tmp/report2.html"
 out_md2="$tmp/report2.md"
