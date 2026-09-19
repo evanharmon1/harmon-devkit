@@ -111,6 +111,11 @@ if [ "${1:-} ${2:-}" = "pr list" ]; then
         previous=$arg
     done
     if [ -f "$WATCH_FIXTURES/fail-branch-alpha-pr-list" ] && [ "$branch" = branch-alpha ]; then
+        count_file="$WATCH_FIXTURES/alpha-pr-list-attempts"
+        count=0
+        [ ! -f "$count_file" ] || count="$(<"$count_file")"
+        count=$((count + 1))
+        printf '%s\n' "$count" >"$count_file"
         exit 92
     fi
     if [ "$branch" = branch-healthy ]; then
@@ -486,15 +491,19 @@ assert_count "$transient_state" 0 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+'
 
 # #1041 restart-dedup: a DEGRADE episode already announced (notified=1)
 # before a restart must not announce again, even though the underlying
-# failure is still ongoing -- only the eventual give-up is new. The
-# episode's detail field (attempt:next_retry_at) is deliberately left empty
-# here, adopting legacy-shaped state the same tolerant way WINDOW's own
-# detail field does elsewhere in this file -- an empty next_retry_at reads
-# as "ready to attempt now", so this restart's one and only poll makes a
-# real attempt rather than being skipped.
+# failure is still ongoing -- only the eventual give-up is new. Seeds the
+# real shape the watcher actually writes -- detail "<attempt>:<next_retry_at>"
+# with next_retry_at already in the past -- so this restart's one and only
+# poll makes a real attempt rather than being skipped (#1041 challenge r2
+# finding claude-5: an earlier version of this test seeded an empty detail
+# field, describing it as a legacy shape, but no shipped version of this
+# file ever wrote DEGRADE without one -- unlike WINDOW's genuine legacy
+# shape, that state could never actually occur).
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 restart_dedup_state="$test_tmp/restart-dedup.state"
-printf 'DEGRADE\tdelta:PR\t%s\t1\t\nWALLCLOCK\trun\t0\t\n' "$(($(date -u +%s) - 100))" \
+restart_dedup_first_failure=$(($(date -u +%s) - 100))
+printf 'DEGRADE\tdelta:PR\t%s\t1\t0:%s\nWALLCLOCK\trun\t0\t\n' \
+    "$restart_dedup_first_failure" "$((restart_dedup_first_failure + 5))" \
     >"$restart_dedup_state"
 touch "$fixture_dir/malformed-pr-list"
 restart_dedup_out="$test_tmp/restart-dedup.out"
@@ -540,7 +549,17 @@ assert_count "$midepisode_state" 1 \
 # polls exactly, proving it is never skipped or delayed by alpha's ongoing
 # backoff -- the empirical regression the challenger reproduced against
 # round 1's blocking (sleep-in-place) version of this mechanism.
-rm -f "$fixture_dir/pr-count" "$fixture_dir/phase" "$fixture_dir/healthy-pr-list-calls"
+# #1041 challenge r2 finding claude-2: the healthy-lane assertion alone
+# does not prove observation_ready() ever actually returns false -- a
+# mutation that always attempts every endpoint still passes it. So this
+# also counts ALPHA's own gh pr list attempts: with --interval-seconds 1
+# and the first backoff tier at 5s, alpha's degraded PR endpoint must be
+# attempted exactly once across all 3 polls (poll 1 fails and schedules a
+# retry ~5s out; polls 2 and 3, only 1-2s later, must be genuinely skipped,
+# not merely deduplicated in the output) and its persisted DEGRADE detail
+# must show exactly one recorded attempt.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase" "$fixture_dir/healthy-pr-list-calls" \
+    "$fixture_dir/alpha-pr-list-attempts"
 touch "$fixture_dir/fail-branch-alpha-pr-list"
 multilane_out="$test_tmp/multilane.out"
 multilane_state="$test_tmp/multilane.state"
@@ -557,6 +576,12 @@ healthy_calls="$(<"$fixture_dir/healthy-pr-list-calls")"
 [ "$healthy_calls" -eq 3 ] ||
     fail "healthy lane's gh pr list was not called on every poll (expected 3, got $healthy_calls)"
 rm -f "$fixture_dir/healthy-pr-list-calls"
+[ -f "$fixture_dir/alpha-pr-list-attempts" ] || fail "alpha's degraded gh pr list was never attempted"
+alpha_attempts="$(<"$fixture_dir/alpha-pr-list-attempts")"
+[ "$alpha_attempts" -eq 1 ] ||
+    fail "alpha's degraded gh pr list was not skipped on later polls (expected exactly 1 attempt, got $alpha_attempts)"
+rm -f "$fixture_dir/alpha-pr-list-attempts"
+assert_count "$multilane_state" 1 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+[0-9]+[[:space:]]+1[[:space:]]+1:[0-9]+$'
 
 # A hanging external call times out without fabricating an absent transition.
 touch "$fixture_dir/hang-list"
@@ -1744,7 +1769,7 @@ touch "$fixture_dir/malformed-promo-events"
 printf '%s\n' "$codex2_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
 printf '%s\n' "$codex2_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
 codex2_state="$test_tmp/codex2-stale-window.state"
-printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:11\nMALPROMO\talpha:77\t0\t0\t\nWALLCLOCK\trun\t0\t\n' \
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:11\nWALLCLOCK\trun\t0\t\n' \
     "$codex2_old_until" "$codex2_old_since" >"$codex2_state"
 codex2_out="$test_tmp/codex2-stale-window.out"
 bash "$watcher" --iterations 1 --state-file "$codex2_state" \

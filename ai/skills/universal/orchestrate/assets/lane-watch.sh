@@ -406,9 +406,20 @@ observation_ready() {
 # crossed DURING the call. A hard-hang test that expects the run deadline
 # (set only 1s out) to be recognized once its bounded discover_pr() timeout
 # expires is what caught this.
+#
+# Checks the run deadline BEFORE touching any DEGRADE state or announcing
+# anything (#1041 challenge r2 finding claude-4): a read failing only
+# because the RUN CLOCK ran out, not a real degradation, must not be
+# reported as one -- the caller's own observation_failed() already handles
+# the WALLCLOCK exit-0 correctly, and announcing/persisting first left a
+# spurious OBSERVATION-DEGRADED at the very moment of a normal run-end, plus
+# a stray episode that could suppress a real future one's announcement
+# after a restart (notified=1 with no failure having actually been
+# reported to a human).
 observation_record_failure() {
     local key=$1 lane=$2 detail=$3
     now="$(date -u +%s)"
+    [ "$now" -lt "$deadline" ] || return 1
     local first_failure notified detail_raw attempt discard delay cap
     first_failure="$(state_get DEGRADE "$key" || true)"
     notified="$(state_get DEGRADE "$key" extra || printf 0)"
@@ -424,7 +435,7 @@ observation_record_failure() {
         echo "OBSERVATION-DEGRADED $lane: $detail"
         notified=1
     fi
-    if [ $((now - first_failure)) -ge "$degrade_window_seconds" ] || [ "$now" -ge "$deadline" ]; then
+    if [ $((now - first_failure)) -ge "$degrade_window_seconds" ]; then
         state_set DEGRADE "$key" "$first_failure" "$notified" "$attempt:$now"
         persist_state
         return 1
@@ -605,7 +616,6 @@ poll_activity() {
         if [ "$persisted_expired" -eq 1 ] && [ "$(state_get CLOSING "$lane" || printf 0)" = 1 ]; then
             state_delete WINDOW "$lane"
             state_delete CLOSING "$lane"
-            state_delete MALPROMO "$lane:$pr_number"
             return 0
         fi
     fi
@@ -649,7 +659,6 @@ poll_activity() {
                 state_delete WINDOW "$lane"
                 state_delete CLOSING "$lane"
                 state_delete PR "$lane"
-                state_delete MALPROMO "$lane:$pr_number"
                 echo "POST-PROMOTION-INDETERMINATE $lane: #$pr_number"
             fi
             return 0
@@ -713,7 +722,6 @@ poll_activity() {
         if [ "$(state_get CLOSING "$lane" || printf 0)" = 1 ]; then
             state_delete WINDOW "$lane"
             state_delete CLOSING "$lane"
-            state_delete MALPROMO "$lane:$pr_number"
             return 0
         fi
     fi
@@ -797,7 +805,6 @@ poll_activity() {
         persist_state
         state_delete WINDOW "$lane"
         state_delete CLOSING "$lane"
-        state_delete MALPROMO "$lane:$pr_number"
     fi
 }
 
@@ -880,13 +887,20 @@ resolve_promotion() {
     repo=$2
     pr_number=$3
     # Keyed by "$lane:$pr_number", not just $lane: a lane's count must not
-    # survive to taint a DIFFERENT PR the lane later promotes. poll_activity()
-    # also clears this key at every WINDOW teardown point for the same reason
-    # -- a clean close is exactly when this PR's bookkeeping must not leak
-    # forward to whatever this lane promotes next (#1041 challenge r1 finding
-    # 2: a stale count from a since-closed PR let a brand-new PR's own,
-    # unrelated malformed row fall back after fewer than
-    # malformed_promo_poll_bound real polls of it).
+    # survive to taint a DIFFERENT PR the lane later promotes (#1041
+    # challenge r1 finding 2: a stale count from a since-closed PR let a
+    # brand-new PR's own, unrelated malformed row fall back after fewer than
+    # malformed_promo_poll_bound real polls of it). The key alone is the
+    # complete fix -- a different PR number is already a different key, so
+    # nothing needs clearing on a clean close. An earlier version of this
+    # fix ALSO cleared this key at every WINDOW teardown point, reasoning
+    # (wrongly) that a clean close should reset the count; but the SAME PR
+    # re-arming after a close is exactly the case where that clearing broke
+    # this function's own once-per-episode contract -- it let the identical
+    # still-malformed row re-withhold resolution for another full bound
+    # period and double-announce (#1041 challenge r2 finding claude-3, with
+    # a live repro). Deleted, not restructured: the clearing added nothing
+    # the per-PR key didn't already provide.
     malpromo_key="$lane:$pr_number"
     epoch_id_pair="$(promotion_epoch "$repo" "$pr_number")"
     promotion_status=$?
@@ -923,7 +937,15 @@ resolve_promotion() {
     if [ "$malpromo_notified" -eq 0 ]; then
         state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
         persist_state
-        echo "OBSERVATION-DEGRADED $lane: malformed ready_for_review event id=$malformed_id on #$pr_number"
+        # #1041 challenge r2 finding claude-6: $malformed_id is GitHub input
+        # that, by definition, already failed numeric validation -- never
+        # interpolate it into the one-line event grammar unsanitized. Strip
+        # to a safe token and bound its length so no value (a newline, a
+        # tab, or an implausibly long string) can break line-oriented
+        # parsing of this event.
+        malformed_id_safe="$(printf '%s' "$malformed_id" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
+        [ -n "$malformed_id_safe" ] || malformed_id_safe="<non-numeric>"
+        echo "OBSERVATION-DEGRADED $lane: malformed ready_for_review event id=$malformed_id_safe on #$pr_number"
     else
         state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
         persist_state
@@ -1141,6 +1163,25 @@ while true; do
                 observe_pr "$lane" "$pr" "$now"
 
                 active_pr="$(state_get WINDOW "$lane" || true)"
+                # #1041 challenge r2 finding claude-1: an endpoint's episode
+                # must never persist past the point where that endpoint
+                # stops being reachable for this lane -- REPROMO is only
+                # ever visited while no WINDOW exists, and ACTIVITY only
+                # while one does. Without this, a REPROMO episode already
+                # in progress when observe_pr() arms a WINDOW directly
+                # (independent of REPROMO, e.g. a withdraw-then-re-promote)
+                # sat parked: neither cleared nor retried, its wall-clock
+                # give-up ticking unseen until a later, ordinary transient
+                # failure at that now-unreachable-then-reachable-again site
+                # exited the watcher with no fresh announcement. Clearing
+                # here, every poll, the moment the OTHER site becomes
+                # unreachable, means a parked episode's clock never
+                # survives to matter.
+                if [ -n "$active_pr" ]; then
+                    observation_recover "$lane:REPROMO"
+                else
+                    observation_recover "$lane:ACTIVITY"
+                fi
                 if [ -z "$active_pr" ] && observation_ready "$lane:REPROMO"; then
                     now="$(date -u +%s)"
                     if check_repromotion_after_close "$lane" "$repo" "$pr" "$now"; then
