@@ -122,7 +122,7 @@ on harmon-devkit is not a signal.
 - New review-product integrations. Finders are declared for what exists.
 - Anything in harmon-dotfiles. The constitution (global `CLAUDE.md`) is cited
   where it constrains this design; nothing here references that repo.
-- Herdr. Transport for dispatch is an `/orchestrator` preference; the role
+- Herdr. Transport for dispatch is an `/orchestrate` preference; the role
   contract is identical over Herdr panes and plain subagents.
 
 ## The lifecycle
@@ -146,13 +146,13 @@ for the stage they run (`/implement`, `/challenge`, `/review`, `/integrate`);
 agents for roles (`implementer`, `challenger`, `reviewer`, `integrator`). A
 skill's verb need not match its stage's noun letter-for-letter — `/integrate`
 names the `integration` stage the same way `/review` names `review` — so
-this is the documented naming rule, never a drift between the two vocabularies. `/orchestrator` is the
+this is the documented naming rule, never a drift between the two vocabularies. `/orchestrate` is the
 session's standing operating mode, not a stage. Each stage skill owns its own
 procedure and ends by naming the next stage; there is no skill that restates
 the walk.
 
 This milestone **builds** implement, verify, challenge, review, security,
-integration, `/orchestrator`, and the retro integration
+integration, `/orchestrate`, and the retro integration
 ([#664](https://github.com/evanharmon1/harmon-devkit/issues/664)). It
 supports parallel implementers through the implement-stage pool, council's
 family-diversity constraint, and breadth ceilings. It
@@ -942,7 +942,7 @@ See [decision 0002](../docs/decisions/0002-round-evidence-lives-on-the-pr.md).
 1. This spec, through at least one challenge round ([#633](https://github.com/evanharmon1/harmon-devkit/issues/633)), with harmon-init decision record 0009.
 2. Schemas + fixtures [#634](https://github.com/evanharmon1/harmon-devkit/issues/634) → registry roles/finders [#635](https://github.com/evanharmon1/harmon-devkit/issues/635) → config [harmon-init#1081](https://github.com/evanharmon1/harmon-init/issues/1081).
 3. Exit script [#636](https://github.com/evanharmon1/harmon-devkit/issues/636) → renderer [#637](https://github.com/evanharmon1/harmon-devkit/issues/637) → diff-aware gate [#632](https://github.com/evanharmon1/harmon-devkit/issues/632).
-4. Implement dispatch draws from the stage pool under strategy and breadth constraints and obeys the single-writer invariant above; council judgment emits the selected or synthesized artifact described above. Then challenger agent + `/challenge`, reviewer agent + `/review` [#638](https://github.com/evanharmon1/harmon-devkit/issues/638) → integrator + `/integrate` [#639](https://github.com/evanharmon1/harmon-devkit/issues/639) → `/orchestrator`.
+4. Implement dispatch draws from the stage pool under strategy and breadth constraints and obeys the single-writer invariant above; council judgment emits the selected or synthesized artifact described above. Then challenger agent + `/challenge`, reviewer agent + `/review` [#638](https://github.com/evanharmon1/harmon-devkit/issues/638) → integrator + `/integrate` [#639](https://github.com/evanharmon1/harmon-devkit/issues/639) → `/orchestrate`.
 5. AGENTS.md shrink [harmon-init#1082](https://github.com/evanharmon1/harmon-init/issues/1082) + pre-PR gate [harmon-init#1080](https://github.com/evanharmon1/harmon-init/issues/1080) → drop legacy [#604](https://github.com/evanharmon1/harmon-devkit/issues/604).
 6. Foreman [#182](https://github.com/ponderousdev/foreman/issues/182)–[#185](https://github.com/ponderousdev/foreman/issues/185); stats [#663](https://github.com/evanharmon1/harmon-devkit/issues/663) → retro [#664](https://github.com/evanharmon1/harmon-devkit/issues/664).
 7. `copier update` sweep across the generated repos.

@@ -1,7 +1,7 @@
 # Lane brief — {{lane-name}} ({{run-id}})
 
 The supervising orchestrator must render every input from the source catalog in
-`orchestrator/SKILL.md` before dispatch. A rendered brief with any double-brace
+`orchestrate/SKILL.md` before dispatch. A rendered brief with any double-brace
 token left is invalid. The catalog stays outside this rendered artifact so a
 free-form value is substituted exactly at its intended use sites and cannot
 inject into a Markdown catalog cell.

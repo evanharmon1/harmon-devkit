@@ -22,7 +22,7 @@ assert_repo_link() {
 }
 
 assert_repo_link .agents/skills/review ../../ai/skills/universal/review
-assert_repo_link .agents/skills/orchestrator ../../ai/skills/universal/orchestrator
+assert_repo_link .agents/skills/orchestrate ../../ai/skills/universal/orchestrate
 assert_repo_link .claude/agents/challenger.md ../../ai/agents/challenger.md
 assert_repo_link .claude/agents/reviewer.md ../../ai/agents/reviewer.md
 if [ -e "$repo_root/.agents/skills/gauntlet" ] || [ -L "$repo_root/.agents/skills/gauntlet" ]; then

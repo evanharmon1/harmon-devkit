@@ -32,7 +32,7 @@ const ROLE_TIER_LABEL = /^tier:([a-z0-9-]+):([a-z0-9-]+)$/
 // component and cannot be answered by a `(label, registry) => result`
 // function with no session context to interrogate. `ok: true` here means
 // "this label names a real role and tier," never "this label is authorized
-// to act on." The provenance requirement belongs to `/orchestrator` (#638),
+// to act on." The provenance requirement belongs to `/orchestrate` (#638),
 // the actual session-runtime consumer of a resolved label.
 export function resolveRoleTierLabel(label, registry) {
   const match = ROLE_TIER_LABEL.exec(label)

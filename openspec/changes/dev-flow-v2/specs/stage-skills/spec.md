@@ -24,7 +24,7 @@ recorded attributable reason.
 
 Stage skills SHALL use verb names such as `/implement`, `/review`, and
 `/integrate` while the lifecycle uses implement, challenge, review, security,
-and integration stage nouns. `/orchestrator` SHALL be a standing operating mode,
+and integration stage nouns. `/orchestrate` SHALL be a standing operating mode,
 not a stage. No monolithic skill SHALL restate the entire walk, and `gauntlet`
 and `shepherd` SHALL be retired names.
 

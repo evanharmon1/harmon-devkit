@@ -145,7 +145,7 @@ Bias toward shipping: drive every change to a PR instead of stopping at a green
 local diff. Work in PR-sized units; a PR handed to a human is the deliverable.
 
 **The loop is the stage skills; this section is the policy they run under.**
-`/orchestrator` is the session's standing operating mode; it dispatches
+`/orchestrate` is the session's standing operating mode; it dispatches
 `/implement` (claimed issue → gates → draft PR), `/review` (both confidence
 stages), and `/integrate` (draft → ready for review). `/claim` comes first but
 is **user-invoked** — the user typing it authorizes its issue writes — and
@@ -226,7 +226,7 @@ Binding on every stage, skill, and harness, whatever rigor resolved:
   signals: every check concluded, and a terminal current-head Codex result.
 ### Who decides, and what is delegated
 
-`/orchestrator` owns the judgements and delegates the work: it decides every
+`/orchestrate` owns the judgements and delegates the work: it decides every
 finding's **disposition**, may override a computed stage exit **upward only**
 (more rounds, never fewer, and never a promotion the gate refused), owns the
 per-thread replies and the PR body, evaluates the readiness gate, promotes, and
@@ -243,7 +243,7 @@ with one sanctioned exception: a lane worker may add to its file fence, once
 per file, a validator or test that rejects its change and that no other live
 lane touches, by recording a dated one-line entry in its lane report; the
 orchestrator verifies that entry against every live fence and may reject it
-(the bounded self-expansion in the orchestrator skill's § Lane briefs).
+(the bounded self-expansion in the orchestrate skill's § Lane briefs).
 **The current-head Codex contract** is policy and outlives whatever polls it. A
 result is terminal for the head you captured only when it is a clean review or
 top-level comment by GitHub actor ID `199175422` (`chatgpt-codex-connector[bot]`,

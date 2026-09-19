@@ -30,7 +30,7 @@ human control over merge.
 - Render deferred findings, adjudication tables, budget disclosures, thread
   reply plans, and blocker reports deterministically from the validated record.
 - **BREAKING** Retire `gauntlet` and `shepherd` as workflow names. Stage skills
-  become `/review` and `/integrate`, with `/orchestrator` as a standing mode;
+  become `/review` and `/integrate`, with `/orchestrate` as a standing mode;
   challenger and reviewer are distinct roles, and parallel implementers are
   supported through stage pools, strategies, and breadth ceilings.
 - Persist reserve-first, secret-scanned, authenticated run and round evidence
