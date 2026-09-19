@@ -12,7 +12,6 @@ file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // ""')"
 
 # Substring patterns — matched anywhere in the path.
 protected=(
-    ".env"
     ".claude/settings.json"
     ".codex/config.toml"
     "/etc/claude-code/"
@@ -26,10 +25,10 @@ for pattern in "${protected[@]}"; do
     fi
 done
 
-# Suffix patterns — sensitive credentials.
+# Suffix and glob patterns — sensitive credentials.
 case "$file_path" in
-*.pem | *.key)
-    echo "protect-files: blocked write to '$file_path' (matches protected credential suffix)" >&2
+*.pem | *.key | *.env | *.env.*)
+    echo "protect-files: blocked write to '$file_path' (matches protected credential pattern)" >&2
     exit 2
     ;;
 esac
