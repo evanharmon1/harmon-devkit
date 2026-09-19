@@ -15,6 +15,13 @@
 # an extra schema the root has since deleted — which is the drift that lets a
 # vendored validator accept a shape the source of truth no longer describes.
 #
+# "Both directions" is enforced on the BYTES, not just on the name listings.
+# Agreeing sorted basename lists are the precondition, never the verdict: every
+# file in EACH tree must end up in a `cmp` pair, and the suite asserts that the
+# number of pairs compared equals the file count of each tree independently. A
+# listing that silently loses an entry therefore fails instead of reporting a
+# green on files nobody compared.
+#
 # Where the authoring tree is absent — a consumer repository that vendored this
 # package and has no `ai/schemas/` of its own — there is nothing to compare and
 # the check SKIPS (exit 0). It is a source-tree guard riding along with the
@@ -77,8 +84,48 @@ err() {
     fail=1
 }
 
+NL=$'\n'
+
+# count_schemas DIR — how many *.schema.json files the tree actually holds,
+# counted from a NUL-delimited walk so a name is one file however it is spelled.
+count_schemas() {
+    local n=0 _path
+    while IFS= read -r -d '' _path; do
+        n=$((n + 1))
+    done < <(find "$1" -maxdepth 1 -type f -name '*.schema.json' -print0)
+    printf '%s' "$n"
+    return 0
+}
+
+# assert_line_safe_names DIR LABEL — refuse a basename containing a newline.
+#
+# The listings above are line-oriented, so such a name splits into two phantom
+# entries — identically in BOTH trees. The lists then compare EQUAL, and the
+# per-file loop skips each fragment because no file by that fragment's name
+# exists, so two genuinely differing files are reported byte-identical. That is
+# a silent green on a gate wired into `task verify`, which is the one failure
+# mode this suite must not have. Bash reads NUL-delimited names portably;
+# `sort -z` would not be (GNU-only), so the name is rejected rather than sorted.
+assert_line_safe_names() {
+    local dir="$1" label="$2" _path _base
+    while IFS= read -r -d '' _path; do
+        _base="${_path##*/}"
+        case "$_base" in
+        *"$NL"*)
+            err "$label holds a schema whose filename contains a newline — rename it; this suite compares by line and cannot represent it"
+            ;;
+        esac
+    done < <(find "$dir" -maxdepth 1 -type f -name '*.schema.json' -print0)
+}
+
+assert_line_safe_names "$authoring_schemas" "ai/schemas/"
+assert_line_safe_names "$package_schemas" "assets/schemas/"
+
 authoring_list="$(list_schemas "$authoring_schemas")"
 package_list="$(list_schemas "$package_schemas")"
+
+authoring_count="$(count_schemas "$authoring_schemas")"
+package_count="$(count_schemas "$package_schemas")"
 
 [ -n "$authoring_list" ] || err "no *.schema.json found under $authoring_schemas"
 
@@ -95,18 +142,38 @@ if [ "$authoring_list" != "$package_list" ]; then
     done <<<"$package_list"
 fi
 
+# The byte comparison itself, and the proof that it covered both trees. Every
+# name that exists on both sides is `cmp`-ed; `compared` counts the pairs. A
+# name present on only one side was already reported by the membership loops
+# above, so the coverage assertion that follows is about SKIPS nobody reported:
+# if either tree holds a file that never entered a pair and no membership error
+# explains it, the run fails rather than printing a count of files it never
+# looked at.
+compared=0
 while IFS= read -r name; do
     [ -n "$name" ] || continue
-    [ -f "$package_schemas/$name" ] || continue
+    [ -f "$authoring_schemas/$name" ] && [ -f "$package_schemas/$name" ] || continue
+    compared=$((compared + 1))
     cmp -s "$authoring_schemas/$name" "$package_schemas/$name" ||
         err "$name differs between ai/schemas/ and the package copy — mirror the authoring edit into assets/schemas/"
 done <<<"$authoring_list"
 
+if [ "$fail" -eq 0 ]; then
+    [ "$compared" -eq "$authoring_count" ] ||
+        err "byte-compared $compared pair(s) but ai/schemas/ holds $authoring_count schema(s) — some file was never compared"
+    [ "$compared" -eq "$package_count" ] ||
+        err "byte-compared $compared pair(s) but assets/schemas/ holds $package_count schema(s) — some file was never compared"
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo "  ai/schemas/ is the authoring source of truth; assets/schemas/ is its byte-identical vendored copy." >&2
-    echo "  Re-mirror with: cp ai/schemas/*.schema.json schemas/" >&2
+    echo "  Authoring tree (source of truth): $authoring_schemas" >&2
+    echo "  Package copy (parity target):     $package_schemas" >&2
+    echo "  Re-mirror BOTH directions — a copy alone cannot clear a stale schema the" >&2
+    echo "  package still carries and the authoring tree has deleted:" >&2
+    echo "    rm -f \"$package_schemas\"/*.schema.json" >&2
+    echo "    cp \"$authoring_schemas\"/*.schema.json \"$package_schemas\"/" >&2
     exit 1
 fi
 
-count="$(wc -l <<<"$authoring_list" | tr -d ' ')"
-echo "  ✓ $count schema(s) byte-identical in both directions"
+echo "  ✓ $compared schema(s) byte-identical in both directions"

@@ -77,7 +77,6 @@ tasks:
       - task: test:review-skill
       - task: test:consumer-pin-audit
       - task: test:schema-parity
-      - task: test:skill-runtime-paths
       - task: test:result-schema-composition
       - task: test:registry-drift
       - task: test:registry-docs
@@ -199,7 +198,6 @@ tasks:
       - task: openspec:validate
       - task: validate:openspec-skills
       - task: validate:skills
-      - task: validate:skill-runtime-paths
       - task: validate:agents
       - task: validate:independence
 
@@ -217,11 +215,6 @@ tasks:
     desc: Guard shared agent skills (unique names across categories, valid SKILL.md frontmatter)
     cmds:
       - ./scripts/verify-skills.sh
-
-  validate:skill-runtime-paths:
-    desc: Guard vendored skills and agents against depending on a repository-root scripts/ path
-    cmds:
-      - ./scripts/check-skill-runtime-paths.sh
 
   validate:agents:
     desc: Guard shared subagents (flat layout, valid frontmatter, no skill-name collisions)
@@ -430,11 +423,6 @@ tasks:
     desc: Assert dev-flow-support's vendored assets/schemas/ copy is byte-identical to the authoring ai/schemas/
     cmds:
       - ./ai/skills/universal/dev-flow-support/assets/test-schema-parity.sh
-
-  test:skill-runtime-paths:
-    desc: Unit-test the guard that keeps vendored skills off repository-root scripts/ paths
-    cmds:
-      - ./scripts/test-skill-runtime-paths.sh
 
   test:dev-flow-stats:
     desc: Behavioral test for the Dev flow v2 evidence harvester, success metric, trajectory rendering, and policy replay

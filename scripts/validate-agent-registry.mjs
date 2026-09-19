@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url'
 // the repository root — it guards `agent-registry.json`, a root file, and is
 // not something a consumer runs — so it reaches INTO the skills tree for the
 // one implementation rather than keeping a second copy under scripts/lib/.
-// Root-to-skill is the allowed direction; the reverse is what
-// scripts/check-skill-runtime-paths.sh forbids.
+// Root-to-skill is the allowed direction; the reverse is what the behavioural
+// runtime-path check in scripts/test-skills.sh forbids.
 import { createSchemaValidator } from '../ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
 
 // REPO_ROOT — resolved from this script's own location, not the caller's cwd,

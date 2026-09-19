@@ -10531,12 +10531,22 @@ git_init "$AC5_SRC"
 cp -R "$repo/ai" "$AC5_SRC/ai"
 git_commit_all "$AC5_SRC" "vendor the real skills tree"
 git -C "$AC5_SRC" tag v0.0.0-ac5
+# `repo` and `frontend` ride along with `universal` on purpose. They are the
+# two categories whose skills legitimately DISCUSS another repository's
+# `scripts/` tree — `repo/standardize-repo` audits a consumer that owns
+# `scripts/verify-ci-results.sh`, and both were wholesale `dir` exemptions in
+# the deleted source-text lint for exactly that reason. Vendoring them here
+# makes "prose about another tree is not a violation" an assertion this suite
+# actually makes, rather than an exemption a lint had to be told about.
 cat >"$AC5_CON/.skills-sync.yaml" <<EOF
 source:
   repo: file://$AC5_SRC
   ref: v0.0.0-ac5
-categories: [universal]
+categories: [universal, repo, frontend]
 dest: .claude/skills
+agents:
+  names: ["*"]
+  dest: .claude/agents
 EOF
 expect_ok "AC5: a pristine consumer syncs the universal category" \
     sh -c "cd '$AC5_CON' && bash '$SCRIPTS/sync-skills.sh' sync"
@@ -10650,6 +10660,182 @@ expect_ok "AC5: the policy reader resolves a real v2 .devflow.toml in the consum
 expect_ok_contains "AC5: an orchestrate asset reaches its sibling package's reader" \
     "policy" \
     sh -c "cd '$AC5_CON' && bash .claude/skills/orchestrate/assets/consumer-pin-audit.sh --repo-root . 2>&1 | head -40"
+
+echo "==> no vendored asset depends on a repository-root scripts/ path (#974 AC 4)"
+
+# AC 4 asks that no asset under `ai/skills` depend at runtime on a
+# repository-root `scripts/` path, and that a check in `task verify` fail when
+# one is introduced — "this class of gap cannot return silently".
+#
+# That property used to be approximated by a source-text lint
+# (`scripts/check-skill-runtime-paths.sh`) which enumerated the spellings of
+# such an invocation in six regular expressions. Enumerating spellings cannot
+# be sound, and adversarial review demonstrated it: in one pass it found six
+# accepted spellings — `exec ./scripts/x.sh` among them, the plainest idiom
+# there is — and three false positives on PROSE about another repository's
+# `scripts/` tree, all against a gate reporting green. Worse, the only escape
+# from a false positive was a wholesale directory allowlist, which then blinded
+# the lint to real violations inside that directory. The lint, its allowlist,
+# and its 252-line unit suite were deleted; this section is what replaces them.
+#
+# The property is behavioural, so the check is too. The consumer built above is
+# pristine — no repository-root `scripts/`, no `ai/` tree, both asserted — so a
+# vendored asset that reaches for a root path simply cannot resolve it, in ANY
+# spelling, because nothing here reads the asset's source text. Three parts:
+#
+#   (1) COVERAGE. Every executable the sync vendored is executed, discovered by
+#       walking the vendored tree rather than read from a list that can fall
+#       behind it. A new asset is covered the day somebody adds it.
+#   (2) A NEGATIVE CASE. Synthetic assets invoking a root `scripts/` path in
+#       each shape the review found are planted, proven to FAIL the check, and
+#       removed. A guard nobody has watched fail is not evidence.
+#   (3) PROSE IS NOT A VIOLATION, and here that is a property rather than an
+#       exemption: `repo/standardize-repo` is vendored above and names the
+#       audited consumer's `scripts/verify-ci-results.sh` throughout, and the
+#       sweep is silent about it because a document never executes.
+
+AC4_STUB="$TMPROOT/ac4-stub"
+AC4_HOME="$TMPROOT/ac4-home"
+mkdir -p "$AC4_STUB" "$AC4_HOME"
+# Keep the suite's hermetic, offline promise: no probe may reach GitHub. The
+# stub is on PATH ahead of the real binary and refuses every call.
+cat >"$AC4_STUB/gh" <<'STUB'
+#!/bin/sh
+echo "gh: stubbed by test-skills.sh (#974 AC 4 probe is offline)" >&2
+exit 1
+STUB
+chmod +x "$AC4_STUB/gh"
+
+# ac4_names_missing_root_script OUTPUT — true when the output carries an
+# interpreter's OWN path-resolution failure on a line that names a `scripts/`
+# path. Both halves matter. The failure phrases are what bash and Node print
+# when a path does not resolve, so this reads the RUNTIME's verdict, not the
+# asset's source; and requiring `scripts/` on the same line keeps the check on
+# AC 4's subject — `frontend/implement-design` legitimately imports the
+# external `@playwright/test`, and an absent npm package is a different matter
+# from a root path the sync was supposed to ship.
+ac4_names_missing_root_script() {
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+        *scripts/*) ;;
+        *) continue ;;
+        esac
+        case "$line" in
+        *"No such file or directory"* | *"Cannot find module"* | *MODULE_NOT_FOUND*)
+            AC4_DIAGNOSTIC="$line"
+            return 0
+            ;;
+        esac
+    done <<<"$1"
+    AC4_DIAGNOSTIC=""
+    return 1
+}
+
+# ac4_probe REL — execute one vendored file from inside the consumer and set
+# AC4_DIAGNOSTIC when it failed to resolve a root `scripts/` path. Exit status
+# is deliberately not asserted: nearly every one of these exits non-zero with a
+# usage error when run without arguments, which is a program that loaded and
+# resolved its whole dependency closure. Silence is allowed too — a library
+# module (`lib/toml-lite.mjs`) and a sourced helper (`trusted-registry.sh`)
+# correctly print nothing when run directly. Only the resolution failure fails.
+ac4_probe() {
+    local rel="$1" interp out
+    case "$rel" in
+    *.mjs) interp=node ;;
+    *) interp=bash ;;
+    esac
+    out="$(
+        cd "$AC5_CON" &&
+            PATH="$AC4_STUB:$PATH" HOME="$AC4_HOME" \
+                timeout 120 "$interp" "$rel" </dev/null 2>&1
+    )" || true
+    ac4_names_missing_root_script "$out"
+}
+
+# `timeout` bounds every probe. Were it absent, each probe would fail with a
+# diagnostic that names no `scripts/` path, and the sweep would report a clean
+# green over programs it never actually ran. Its absence is an error, not a
+# silent fallback. (The negative plants below run through the same `ac4_probe`
+# and would also catch it — which is precisely why they are there.)
+expect_ok "AC4: the probe harness has timeout(1)" command -v timeout
+
+# (1) Coverage — the whole vendored tree, discovered, not enumerated.
+ac4_probed=0
+ac4_swept=""
+while IFS= read -r ac4_abs; do
+    [ -n "$ac4_abs" ] || continue
+    ac4_rel="${ac4_abs#"$AC5_CON"/}"
+    ac4_probed=$((ac4_probed + 1))
+    ac4_swept="$ac4_swept$ac4_rel
+"
+    if ac4_probe "$ac4_rel"; then
+        bad "AC4: $ac4_rel resolves a repository-root scripts/ path ($AC4_DIAGNOSTIC)"
+    else
+        ok "AC4: $ac4_rel resolves its runtime inside the vendored tree"
+    fi
+done < <(find "$AC5_SKILLS" "$AC5_CON/.claude/agents" -type f -perm -u+x 2>/dev/null | LC_ALL=C sort)
+
+# A `find` that matched nothing would report a clean sweep of zero files, which
+# is the one way this section could pass while checking nothing at all.
+expect_ok "AC4: the sweep actually executed the vendored tree" \
+    test "$ac4_probed" -ge 20
+# Not "the file exists" — that would pass with a `find` that never matched it.
+# This asserts the path came back OUT of the sweep, so the coverage claim above
+# is about files actually executed.
+expect_ok_contains "AC4: the sweep reached a known dev-flow runtime entrypoint" \
+    ".claude/skills/review/assets/round-push.sh" \
+    printf '%s' "$ac4_swept"
+
+# (3) Prose about ANOTHER repository's scripts/ tree is not a violation. This
+# is the class the deleted lint could only handle with a directory-wide
+# allowlist; here the sweep above was already silent about it, and this states
+# why so a reader does not have to infer it from an absence.
+expect_ok "AC4: standardize-repo is vendored and names the audited repo's scripts/" \
+    grep -q 'scripts/verify-ci-results.sh' "$AC5_SKILLS/standardize-repo/assets/verify-applied.sh"
+
+# (2) The negative case — the check must actually go red.
+AC4_PLANT="$AC5_SKILLS/dev-flow-support/assets/ac4-negative-plant.sh"
+ac4_plant_case() {
+    local desc="$1" body="$2"
+    printf '%s\n%s\n' '#!/usr/bin/env bash' "$body" >"$AC4_PLANT"
+    chmod +x "$AC4_PLANT"
+    if ac4_probe "${AC4_PLANT#"$AC5_CON"/}"; then
+        ok "AC4 negative: the check rejects $desc"
+    else
+        bad "AC4 negative: the check ACCEPTS $desc — a root scripts/ invocation would ship unnoticed"
+    fi
+    rm -f "$AC4_PLANT"
+}
+
+# Every shape the round-1 and round-2 adversarial passes found the deleted lint
+# accepting. They are ordinary idioms, not evasions: that is the point.
+ac4_plant_case "an interpreter-prefixed root path (node scripts/devflow-policy.mjs)" \
+    'node scripts/devflow-policy.mjs resolve'
+ac4_plant_case "an exec-prefixed dotted root path (exec ./scripts/dev-flow-exit.sh)" \
+    'exec ./scripts/dev-flow-exit.sh "$@"'
+ac4_plant_case "an interpreter with an option before the path (bash -e scripts/check.sh)" \
+    'bash -e scripts/check.sh'
+ac4_plant_case "a bare repo-relative path after a cd (cd \"\$repo\" && scripts/dev-flow-exit.sh)" \
+    'repo="$(pwd)"; cd "$repo" && scripts/dev-flow-exit.sh "$@"'
+ac4_plant_case "a command-substitution root (\"\$(git rev-parse --show-toplevel)/scripts/x.mjs\")" \
+    'root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; "$root/scripts/x.mjs"'
+
+# A control: the plants prove the check can go red, and this proves it does not
+# do so at random — an ordinary vendored-looking asset passes.
+ac4_plant_case_clean() {
+    printf '%s\n%s\n' '#!/usr/bin/env bash' 'echo "ac4-control: usage: control --thing" >&2; exit 2' >"$AC4_PLANT"
+    chmod +x "$AC4_PLANT"
+    if ac4_probe "${AC4_PLANT#"$AC5_CON"/}"; then
+        bad "AC4 control: the check rejects an asset with no root scripts/ path — false positive"
+    else
+        ok "AC4 control: the check accepts an asset with no root scripts/ path"
+    fi
+    rm -f "$AC4_PLANT"
+}
+ac4_plant_case_clean
+
+expect_ok "AC4: every plant was removed from the vendored tree" test ! -e "$AC4_PLANT"
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
