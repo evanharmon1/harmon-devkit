@@ -382,7 +382,11 @@ observation_recover() {
 observation_ready() {
     local key=$1 detail_raw next_retry_at
     detail_raw="$(state_get DEGRADE "$key" detail || true)"
-    IFS=: read -r _ next_retry_at <<<"$detail_raw"
+    # Gemini review (PR #1102): a pure parameter expansion avoids the
+    # here-string's extra process substitution on every poll of every
+    # lane, and is simpler than an IFS-scoped read for extracting just the
+    # trailing field.
+    next_retry_at="${detail_raw#*:}"
     [ -z "$next_retry_at" ] || [ "$now" -ge "$next_retry_at" ]
 }
 
@@ -420,18 +424,25 @@ observation_record_failure() {
     local key=$1 lane=$2 detail=$3
     now="$(date -u +%s)"
     [ "$now" -lt "$deadline" ] || return 1
-    local first_failure notified detail_raw attempt discard delay cap
+    local first_failure notified detail_raw attempt delay cap
     first_failure="$(state_get DEGRADE "$key" || true)"
-    notified="$(state_get DEGRADE "$key" extra || printf 0)"
+    # Gemini review (PR #1102): state_get can succeed with an empty string
+    # (an existing entry whose field itself is stored empty), which `||`
+    # never catches since that only fires on FAILURE -- an unguarded empty
+    # string then fails the `-eq` integer test below. Default explicitly.
+    notified="$(state_get DEGRADE "$key" extra || true)"
+    [ -n "$notified" ] || notified=0
     detail_raw="$(state_get DEGRADE "$key" detail || true)"
-    IFS=: read -r attempt discard <<<"$detail_raw"
+    # Gemini review: a pure parameter expansion avoids the here-string's
+    # extra process substitution for extracting just the leading field.
+    attempt="${detail_raw%%:*}"
     if [ -z "$first_failure" ]; then
         first_failure=$now
         notified=0
         attempt=0
     fi
     [ -n "$attempt" ] || attempt=0
-    if [ "$notified" -eq 0 ]; then
+    if [ "${notified:-0}" -eq 0 ]; then
         echo "OBSERVATION-DEGRADED $lane: $detail"
         notified=1
     fi
@@ -883,9 +894,14 @@ promotion_epoch() {
 # identity while this valid, newer promotion sat unused. A caller that can
 # close a window must special-case 11 to touch nothing at all this poll.
 resolve_promotion() {
-    lane=$1
-    repo=$2
-    pr_number=$3
+    local lane=$1
+    local repo=$2
+    local pr_number=$3
+    # Gemini review (PR #1102): every other internal here is local -- only
+    # promo_since/promo_since_event_id stay global, since poll_activity()
+    # and check_repromotion_after_close() call this function directly
+    # (never substituted) and read those two as its return value.
+    local malpromo_key epoch_id_pair promotion_status has_malformed malformed_id malpromo_count malpromo_notified malformed_id_safe
     # Keyed by "$lane:$pr_number", not just $lane: a lane's count must not
     # survive to taint a DIFFERENT PR the lane later promotes (#1041
     # challenge r1 finding 2: a stale count from a since-closed PR let a
@@ -913,8 +929,14 @@ resolve_promotion() {
         fi
         return 0
     fi
-    malpromo_count="$(state_get MALPROMO "$malpromo_key" || printf 0)"
-    malpromo_notified="$(state_get MALPROMO "$malpromo_key" extra || printf 0)"
+    # Gemini review (PR #1102): state_get can succeed with an empty string
+    # (an existing entry whose field itself is stored empty), which `||`
+    # never catches since that only fires on FAILURE -- an unguarded empty
+    # string then breaks the arithmetic and integer comparisons below.
+    malpromo_count="$(state_get MALPROMO "$malpromo_key" || true)"
+    [ -n "$malpromo_count" ] || malpromo_count=0
+    malpromo_notified="$(state_get MALPROMO "$malpromo_key" extra || true)"
+    [ -n "$malpromo_notified" ] || malpromo_notified=0
     malpromo_count=$((malpromo_count + 1))
     if [ "$malpromo_count" -le "$malformed_promo_poll_bound" ]; then
         state_set MALPROMO "$malpromo_key" "$malpromo_count" "$malpromo_notified"
@@ -934,7 +956,7 @@ resolve_promotion() {
         # reusing 10's "the old window is still the current truth" handling.
         return 11
     fi
-    if [ "$malpromo_notified" -eq 0 ]; then
+    if [ "${malpromo_notified:-0}" -eq 0 ]; then
         state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
         persist_state
         # #1041 challenge r2 finding claude-6: $malformed_id is GitHub input
@@ -987,12 +1009,12 @@ resolve_promotion() {
 # window for yet -- arm a fresh one from it, exactly as poll_activity()'s own
 # cold-start path would.
 check_repromotion_after_close() {
-    lane=$1
-    repo=$2
-    pr=$3
-    now=$4
+    # Gemini review (PR #1102): every internal here is local -- this
+    # function's own return value is its exit status alone (it never
+    # leaves promo_since/promo_since_event_id-style globals for a caller).
+    local lane=$1 repo=$2 pr=$3 now=$4
     [[ "$pr" =~ ^#([0-9]+)\ draft=false\ (OPEN|CLOSED|MERGED)\ head=[0-9A-Fa-f]{8,64}$ ]] || return 0
-    promoted_pr=${BASH_REMATCH[1]}
+    local promoted_pr=${BASH_REMATCH[1]} promotion_status since since_event_id armed_raw armed_since armed_event_id until
 
     resolve_promotion "$lane" "$repo" "$promoted_pr"
     promotion_status=$?

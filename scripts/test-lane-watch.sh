@@ -541,6 +541,76 @@ assert_count "$midepisode_out" 0 '^OBSERVATION-DEGRADED '
 assert_count "$midepisode_state" 1 \
     "^DEGRADE[[:space:]]+delta:PR[[:space:]]+$((midepisode_now - 2))[[:space:]]+1[[:space:]]+1:[0-9]+\$"
 
+# Gemini review (PR #1102): state_get can succeed with an EMPTY string (an
+# existing entry whose own field is stored empty) -- the `||` fallback
+# elsewhere never catches this since it only fires on state_get FAILURE.
+# Pre-seeds a DEGRADE row with an empty extra (notified) field alongside a
+# real, non-empty first_failure_at, so observation_record_failure() takes
+# the "existing episode" branch (first_failure non-empty) with an
+# unguarded-empty notified -- exactly the shape that broke `[ -eq 0 ]`
+# before the defensive default. Asserts both that the shell never prints
+# the bash integer-expression error AND that the fix actually restores the
+# correct behavior (still announces once), not merely avoids a crash.
+# The detail field must ALSO be empty here, not merely absent a colon:
+# `IFS=$'\t' read` collapses CONSECUTIVE tabs because tab is one of bash's
+# IFS-whitespace characters, so an empty field followed by a NON-empty
+# later field cannot round-trip through this file's tab-separated state
+# format at all (the later field's content shifts left into the empty
+# one's slot) -- a pre-existing property of every state kind here, not
+# something this fix touches. A trailing empty extra+detail (nothing
+# non-empty follows) has no such field to shift into it and round-trips
+# correctly, which is what actually exercises state_get returning success
+# with an empty string rather than accidentally exercising a corrupted parse.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+degrade_empty_extra_first_failure=$(($(date -u +%s) - 5))
+degrade_empty_extra_state="$test_tmp/degrade-empty-extra.state"
+printf 'DEGRADE\tdelta:PR\t%s\t\t\nWALLCLOCK\trun\t0\t\n' \
+    "$degrade_empty_extra_first_failure" \
+    >"$degrade_empty_extra_state"
+touch "$fixture_dir/malformed-pr-list"
+degrade_empty_extra_out="$test_tmp/degrade-empty-extra.out"
+degrade_empty_extra_err="$test_tmp/degrade-empty-extra.err"
+bash "$watcher" --iterations 1 --state-file "$degrade_empty_extra_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 0 --degrade-window-seconds 60 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z delta:branch-delta:n4:evanharmon1/harmon-devkit \
+    >"$degrade_empty_extra_out" 2>"$degrade_empty_extra_err"
+rm "$fixture_dir/malformed-pr-list"
+assert_count "$degrade_empty_extra_err" 0 'integer expression expected'
+assert_line "$degrade_empty_extra_out" 'OBSERVATION-DEGRADED delta: GitHub PR observation failed for lane delta'
+
+# Same defect, MALPROMO's notified field: pre-seeds a count already past
+# the bound with an empty extra, alongside a still-malformed row, so
+# resolve_promotion() takes the "notified" comparison with an
+# unguarded-empty value.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+malpromo_empty_extra_now="$(date -u +%s)"
+malpromo_empty_extra_valid_at=$((malpromo_empty_extra_now - 50))
+malpromo_empty_extra_malformed_at=$((malpromo_empty_extra_now - 40))
+malpromo_empty_extra_valid_iso="$(date -u -d "@$malpromo_empty_extra_valid_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$malpromo_empty_extra_valid_iso" ] || malpromo_empty_extra_valid_iso="$(date -u -r "$malpromo_empty_extra_valid_at" +%Y-%m-%dT%H:%M:%SZ)"
+malpromo_empty_extra_malformed_iso="$(date -u -d "@$malpromo_empty_extra_malformed_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$malpromo_empty_extra_malformed_iso" ] || malpromo_empty_extra_malformed_iso="$(date -u -r "$malpromo_empty_extra_malformed_at" +%Y-%m-%dT%H:%M:%SZ)"
+touch "$fixture_dir/malformed-promo-events"
+printf '%s\n' "$malpromo_empty_extra_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
+printf '%s\n' "$malpromo_empty_extra_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
+malpromo_empty_extra_state="$test_tmp/malpromo-empty-extra.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:11\nMALPROMO\talpha:77\t4\t\t\nWALLCLOCK\trun\t0\t\n' \
+    "$((malpromo_empty_extra_now + 900))" "$malpromo_empty_extra_valid_at" \
+    >"$malpromo_empty_extra_state"
+malpromo_empty_extra_out="$test_tmp/malpromo-empty-extra.out"
+malpromo_empty_extra_err="$test_tmp/malpromo-empty-extra.err"
+bash "$watcher" --iterations 1 --state-file "$malpromo_empty_extra_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$malpromo_empty_extra_out" 2>"$malpromo_empty_extra_err"
+rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at" \
+    "$fixture_dir/malformed-promo-null-at"
+assert_count "$malpromo_empty_extra_err" 0 'integer expression expected'
+assert_line "$malpromo_empty_extra_out" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=null on #77'
+
 # #1041 challenge r1 finding 1 (multi-lane): a degraded lane's backoff must
 # never delay a healthy lane sharing the same specs[] list. alpha fails
 # every poll here (never heals, --degrade-window-seconds is generous enough
@@ -1823,6 +1893,7 @@ if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READ
     "$codex2_out" "$codex3_out" \
     "$bounded_out1" "$bounded_out2" "$bounded_out3" \
     "$transient_out" "$restart_dedup_out" "$midepisode_out" "$multilane_out" \
+    "$degrade_empty_extra_out" "$malpromo_empty_extra_out" \
     "$github_failure_out" "$activity_failure_out" "$malformed_activity_out" \
     "$malformed_out" "$flattened_out" "$linked_out" "$wallclock_out" "$deadline_out"; then
     fail 'watcher emitted a line outside the documented event grammar'
