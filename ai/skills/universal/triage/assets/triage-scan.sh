@@ -529,6 +529,20 @@ printf '%s' "$closed_json" >"$scan_tmp/closed.json"
 # --out: the scan owns its output file so the caller needs no redirection.
 [ -z "$out" ] || exec >"$out"
 
+# The shared conformance projection is INLINED into the jq program rather than
+# pulled in with `include "issue-conformance";`. jq 1.8 aborts — an assertion
+# in expand_call_arglist ("Unknown function type", compile.c) that kills the
+# process with SIGABRT, not a compile error — whenever a function defined in
+# module A and calling another function in module A is reached through a
+# second module B. issue-conformance.jq includes issue-title.jq, so a program
+# that includes issue-conformance is exactly that two-level chain, and every
+# call into issue_conformance crashed. Inlining the file's text leaves its own
+# `include "issue-title";` as a top-level include of the program, so the chain
+# is one level deep and the names issue-title exports are in scope here too —
+# which is why no separate `include "issue-title";` line is needed. There is
+# still exactly one implementation of the projection, in that one file.
+conformance_jq="$(cat "$title_module_dir/issue-conformance.jq")" ||
+    die "cannot read the shared conformance projection: $title_module_dir/issue-conformance.jq"
 jq -n -L "$title_module_dir" \
     --arg repo "$repo" \
     --arg owner_type "$owner_type" \
@@ -546,9 +560,7 @@ jq -n -L "$title_module_dir" \
     --argjson axes "$axes_json" \
     --argjson known "$known_json" \
     --arg native_type_mode "$native_type_mode" \
-    --argjson wt "$wt_json" '
-  include "issue-title";
-  include "issue-conformance";
+    --argjson wt "$wt_json" "$conformance_jq"'
   ($open_arr[0]) as $open | ($closed_arr[0]) as $closed |
 
   {

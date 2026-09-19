@@ -198,6 +198,20 @@ needs_stale="${TRIAGE_NEEDS_STALE_DAYS:-30}"
 
 [ -z "$out" ] || exec >"$out"
 
+# The shared conformance projection is INLINED into the jq program rather than
+# pulled in with `include "issue-conformance";`. jq 1.8 aborts — an assertion
+# in expand_call_arglist ("Unknown function type", compile.c) that kills the
+# process with SIGABRT, not a compile error — whenever a function defined in
+# module A and calling another function in module A is reached through a
+# second module B. issue-conformance.jq includes issue-title.jq, so a program
+# that includes issue-conformance is exactly that two-level chain, and every
+# call into issue_conformance crashed. Inlining the file's text leaves its own
+# `include "issue-title";` as a top-level include of the program, so the chain
+# is one level deep and the names issue-title exports are in scope here too —
+# which is why no separate `include "issue-title";` line is needed. There is
+# still exactly one implementation of the projection, in that one file.
+conformance_jq="$(cat "$title_module_dir/issue-conformance.jq")" ||
+    die "cannot read the shared conformance projection: $title_module_dir/issue-conformance.jq"
 jq -n -L "$title_module_dir" \
     --arg repo "$repo" \
     --arg board_access "$board_access" \
@@ -209,9 +223,7 @@ jq -n -L "$title_module_dir" \
     --argjson claim_stale "$claim_stale" \
     --argjson needs_stale "$needs_stale" \
     --slurpfile open_arr "$scan_tmp/open.json" \
-    --slurpfile milestones_arr "$scan_tmp/milestones.pages" '
-  include "issue-title";
-  include "issue-conformance";
+    --slurpfile milestones_arr "$scan_tmp/milestones.pages" "$conformance_jq"'
   def rel_count:
     if type == "object" then (.totalCount // (.nodes // [] | length) // 0)
     elif type == "array" then length
