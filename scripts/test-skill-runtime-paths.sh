@@ -5,9 +5,12 @@
 #
 # Hermetic: every case builds a throwaway skill tree under a temp directory and
 # points the guard at it with its optional root argument, so nothing here reads
-# or writes the real `ai/skills/`. The last section additionally asserts the
-# guard passes on the real tree — a guard that only ever sees synthetic input
-# proves nothing about the repository it gates.
+# or writes the real `ai/skills/`. The default-root case goes one further and
+# builds a throwaway git checkout, because the default roots are resolved
+# against the repository top level and cannot be redirected by an argument. The
+# last section additionally asserts the guard passes on the real tree — a guard
+# that only ever sees synthetic input proves nothing about the repository it
+# gates.
 #
 # Run via `task test:skill-runtime-paths`.
 set -euo pipefail
@@ -21,13 +24,18 @@ trap 'rm -rf "$tmp"' EXIT
 
 pass=0
 fail=0
+# Both reporters end with an explicit `return 0`: their last statement is an
+# arithmetic assignment, whose status would otherwise become the reporter's own
+# and be read as the assertion's result by any caller that chained one.
 ok() {
     echo "  ✓ $*"
     pass=$((pass + 1))
+    return 0
 }
 bad() {
     echo "  ✗ $*" >&2
     fail=$((fail + 1))
+    return 0
 }
 
 # make_tree NAME — a fresh skill root, printed on stdout.
@@ -84,6 +92,18 @@ printf '#!/usr/bin/env bash\nr="$(git rev-parse --show-toplevel)"\nexec "$r"/scr
     >"$root/universal/demo/assets/run.sh"
 expect_reject "a variable-rooted \$root/scripts/<x> is rejected" "$root" "assets/run.sh"
 
+root="$(make_tree command-substitution-rooted)"
+printf '#!/usr/bin/env bash\nexec "$(git rev-parse --show-toplevel)/scripts/dev-flow-exit.sh" "$@"\n' \
+    >"$root/universal/demo/assets/run.sh"
+expect_reject "a command-substitution-rooted \$(git rev-parse ...)/scripts/<x> is rejected" \
+    "$root" "assets/run.sh"
+
+root="$(make_tree dot-segment-rooted)"
+printf '#!/usr/bin/env bash\nexec "$repo/./scripts/dev-flow-exit.sh" "$@"\n' \
+    >"$root/universal/demo/assets/run.sh"
+expect_reject "a variable root with an intervening ./ segment is rejected" \
+    "$root" "assets/run.sh"
+
 root="$(make_tree esm-import)"
 printf "import { x } from '../../scripts/lib-helper.mjs'\n" >"$root/universal/demo/assets/run.mjs"
 expect_reject "an ES-module import of a scripts/ path is rejected" "$root" "assets/run.mjs"
@@ -133,20 +153,24 @@ root="$(make_tree stale-allowlist)"
 printf '#!/usr/bin/env bash\nnode scripts/devflow-policy.mjs resolve\n' \
     >"$root/universal/demo/assets/run.sh"
 stale_entry="$(printf 'file\t%s/universal/demo/assets/run.sh\tscripts/not-referenced.sh\tdeliberately matches nothing' "$root")"
-(
-    export SKILL_RUNTIME_PATHS_ALLOWLIST="$stale_entry"
-    expect_reject "an allowlist entry that suppresses nothing is itself a failure" \
-        "$root" "suppressed nothing and is stale"
-)
+# Set and unset around the assertion rather than wrapping it in a `( ... )`
+# subshell: `bad()` increments `fail` and a subshell would discard that
+# increment, leaving a suite that prints its diagnostic and still exits 0. A
+# `VAR=value expect_reject ...` env prefix is not the fix either — bash keeps
+# the assignment in the shell after a FUNCTION call, so it would leak into the
+# real-tree cases below.
+export SKILL_RUNTIME_PATHS_ALLOWLIST="$stale_entry"
+expect_reject "an allowlist entry that suppresses nothing is itself a failure" \
+    "$root" "suppressed nothing and is stale"
+unset SKILL_RUNTIME_PATHS_ALLOWLIST
 
 # ...and an override that DOES suppress the only finding lets the tree pass,
 # which is what makes the previous case a test of staleness rather than of the
 # finding underneath it.
 live_entry="$(printf 'file\t%s/universal/demo/assets/run.sh\tscripts/devflow-policy.mjs\tcovers the seeded finding' "$root")"
-(
-    export SKILL_RUNTIME_PATHS_ALLOWLIST="$live_entry"
-    expect_accept "an allowlist entry that does suppress its finding is accepted" "$root"
-)
+export SKILL_RUNTIME_PATHS_ALLOWLIST="$live_entry"
+expect_accept "an allowlist entry that does suppress its finding is accepted" "$root"
+unset SKILL_RUNTIME_PATHS_ALLOWLIST
 
 # The override must be impossible to mistake for a clean gated run.
 root="$(make_tree override-warning)"
@@ -164,9 +188,50 @@ fi
 root="$(make_tree out-of-scope-entries)"
 expect_accept "shipped entries outside the scanned root are not reported stale" "$root"
 
+echo "==> vendored agents are scanned too"
+
+# `task sync:skills` ships ai/agents/ as well as ai/skills/, so an agent that
+# named a repository-root runtime would install into a consumer exactly as
+# unrunnably as a skill would. Two things are asserted: the shape rule fires on
+# an agent file, and ai/agents is in the DEFAULT root set — the second needs a
+# throwaway checkout, because the default roots resolve against the repository
+# top level and no argument can redirect them.
+agents_root="$tmp/agents-tree"
+mkdir -p "$agents_root"
+printf '%s\n' '---' 'name: demo' 'description: demo' '---' \
+    'Run `bash scripts/dev-flow-exit.sh --help` before reporting.' >"$agents_root/demo.md"
+expect_reject "an offending invocation in an agent .md is rejected" "$agents_root" "demo.md"
+
+default_root_repo="$tmp/default-roots"
+mkdir -p "$default_root_repo/ai/agents"
+git -C "$default_root_repo" init -q
+printf '%s\n' '---' 'name: demo' 'description: demo' '---' \
+    'Run `bash scripts/dev-flow-exit.sh --help` before reporting.' \
+    >"$default_root_repo/ai/agents/demo.md"
+default_rc=0
+default_out="$(cd "$default_root_repo" && "$GUARD" 2>&1)" || default_rc=$?
+if [ "$default_rc" -ne 0 ] && grep -qF 'ai/agents/demo.md' <<<"$default_out"; then
+    ok "ai/agents is scanned with no root argument (the default validate: target)"
+else
+    bad "ai/agents is not covered by the default scanned roots"
+    sed 's/^/      /' <<<"$default_out" >&2
+fi
+
 echo "==> the real tree"
 
 expect_accept "ai/skills passes the guard as committed" "ai/skills"
+expect_accept "ai/agents passes the guard as committed" "ai/agents"
+
+# No argument at all — exactly what `task validate:skill-runtime-paths` runs.
+real_default_rc=0
+real_default_out="$("$GUARD" 2>&1)" || real_default_rc=$?
+if [ "$real_default_rc" -eq 0 ] &&
+    grep -qF 'ai/skills ai/agents' <<<"$real_default_out"; then
+    ok "the default roots are ai/skills and ai/agents, and both pass as committed"
+else
+    bad "the default-root run did not scan both trees cleanly"
+    sed 's/^/      /' <<<"$real_default_out" >&2
+fi
 
 # The guard must be load-bearing on the real tree too: reintroduce the exact
 # dependency #974 removed, in the file that used to carry it, and require the

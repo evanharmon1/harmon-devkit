@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# check-skill-runtime-paths.sh — fail when anything under `ai/skills/` INVOKES
-# or LINKS a repository-root `scripts/<name>.(sh|mjs|py)`.
+# check-skill-runtime-paths.sh — fail when anything under `ai/skills/` or
+# `ai/agents/` INVOKES or LINKS a repository-root `scripts/<name>.(sh|mjs|py)`.
 #
 # Why (harmon-devkit#974): skills are vendored into consumer repositories by
-# `task sync:skills`, which ships `ai/skills/` and nothing from `scripts/`.
+# `task sync:skills`, which ships `ai/skills/` (and, per the sync manifest's
+# optional `agents:` block, `ai/agents/`) and nothing from `scripts/`.
 # A skill whose runtime lives at a repository-root path therefore installs
 # somewhere it cannot run, and the failure surfaces only when somebody tries to
 # use it. A script one skill uses belongs in that skill's own `assets/`; a
@@ -49,10 +50,10 @@
 #
 # An entry that matches nothing is itself a failure. An exemption nobody needs
 # any more is an exemption nobody re-reads, and it silently widens the guard.
-# That staleness check applies only to entries whose path lies UNDER the root
-# being scanned: the guard takes an optional root so its own unit test can
-# drive it against synthetic trees, and there every real entry would otherwise
-# read as stale and turn every synthetic case into a failure.
+# That staleness check applies only to entries whose path lies UNDER one of the
+# roots being scanned: the guard takes optional root arguments so its own unit
+# test can drive it against synthetic trees, and there every real entry would
+# otherwise read as stale and turn every synthetic case into a failure.
 #
 # SKILL_RUNTIME_PATHS_ALLOWLIST replaces the list wholesale. It exists so the
 # unit test can exercise the staleness path itself, is never set by any `task`
@@ -66,7 +67,17 @@ set -euo pipefail
 repo="$(git rev-parse --show-toplevel)"
 cd "$repo"
 
-SKILLS_ROOT="${1:-ai/skills}"
+# The scanned roots are everything `task sync:skills` vendors. The manifest
+# ships `ai/agents/` alongside `ai/skills/`, and a shared agent that named a
+# repository-root `scripts/` runtime would install into a consumer exactly as
+# unrunnably as a skill would — so both are scanned by default. Explicit root
+# arguments replace the default entirely, which is how the unit test drives the
+# guard against synthetic trees.
+if [ "$#" -gt 0 ]; then
+    SCAN_ROOTS=("$@")
+else
+    SCAN_ROOTS=(ai/skills ai/agents)
+fi
 
 # kind<TAB>path<TAB>[needle<TAB>]reason
 ALLOWLIST=$(
@@ -117,12 +128,22 @@ allowlisted() {
     return 1
 }
 
-if [ ! -d "$SKILLS_ROOT" ]; then
-    echo "no $SKILLS_ROOT directory — nothing to check"
+# A root that is absent is a no-op rather than a failure: a consumer may carry
+# one of the vendored trees and not the other, and the unit test points the
+# guard at a path that does not exist on purpose.
+PRESENT_ROOTS=()
+for scan_root in "${SCAN_ROOTS[@]}"; do
+    if [ -d "$scan_root" ]; then
+        PRESENT_ROOTS+=("$scan_root")
+    fi
+done
+
+if [ "${#PRESENT_ROOTS[@]}" -eq 0 ]; then
+    echo "no ${SCAN_ROOTS[*]} director(y|ies) — nothing to check"
     exit 0
 fi
 
-echo "==> skill runtime paths: no repository-root scripts/ invocation under $SKILLS_ROOT"
+echo "==> skill runtime paths: no repository-root scripts/ invocation under ${PRESENT_ROOTS[*]}"
 
 # One ERE per shape. A `scripts/` path may be reached through any number of
 # leading `./` or `../` segments — both still name the repository root's copy
@@ -133,6 +154,11 @@ echo "==> skill runtime paths: no repository-root scripts/ invocation under $SKI
 NAME='scripts/[A-Za-z0-9._-]+\.(sh|mjs|py)'
 DOTS='(\.{1,2}/)+'
 ROOT="(\.{1,2}/)*${NAME}"
+# VARROOT is anything that can stand in for the repository root ahead of a
+# `/scripts/` path: `$var`, `${var}`, or a command substitution `$(...)`. The
+# substitution body allows one level of nesting so the common
+# `$(cd "$(dirname "$0")" && pwd -P)` spelling is recognised as a root too.
+VARROOT='\$(\{?[A-Za-z_][A-Za-z0-9_]*\}?|\(([^()]|\([^()]*\))*\))'
 PATTERNS=(
     # command position: ./scripts/x.sh or ../../scripts/x.sh at a shell
     # command boundary (line start, pipe, &&, ||, ;, `$(`, backtick). The
@@ -141,8 +167,12 @@ PATTERNS=(
     "(^|[|;&(\`]|&&|\|\|)[[:space:]]*${DOTS}${NAME}"
     # an interpreter handed the path
     "\b(bash|sh|zsh|node|python3?|uv run)[[:space:]]+[\"']?${ROOT}"
-    # a variable-rooted path: $var/scripts/x.sh or "${var}"/scripts/x.sh
-    "\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?\"?/${NAME}"
+    # a variable-rooted path: $var/scripts/x.sh, "${var}"/scripts/x.sh, a
+    # command-substitution root "$(git rev-parse --show-toplevel)"/scripts/x.sh,
+    # and any dot segments sitting between the root and scripts/, as in
+    # "$repo/./scripts/x.sh" — every one of them names the repository root's
+    # own copy just as plainly as the bare `$var/scripts/` spelling does.
+    "${VARROOT}\"?/(${DOTS})?${NAME}"
     # an ES-module import or a require()
     "(from|import|require\()[[:space:]]*[\"']${ROOT}[\"']"
     # a Markdown link target
@@ -153,7 +183,7 @@ scan_tmp="$(mktemp)"
 trap 'rm -f "$scan_tmp"' EXIT
 : >"$scan_tmp"
 for pattern in "${PATTERNS[@]}"; do
-    grep -rInE --binary-files=without-match -- "$pattern" "$SKILLS_ROOT" >>"$scan_tmp" || true
+    grep -rInE --binary-files=without-match -- "$pattern" "${PRESENT_ROOTS[@]}" >>"$scan_tmp" || true
 done
 
 matched_entries=""
@@ -188,7 +218,15 @@ while IFS=$'\t' read -r kind path needle reason; do
     esac
     # Out of scope for this run: this entry covers a path the scan never
     # visited, so its silence says nothing about whether it is still needed.
-    case "$path" in "$SKILLS_ROOT"* | "${SKILLS_ROOT%/}/"*) ;; *) continue ;; esac
+    in_scope=0
+    for scan_root in "${PRESENT_ROOTS[@]}"; do
+        case "$path" in "$scan_root"* | "${scan_root%/}/"*)
+            in_scope=1
+            break
+            ;;
+        esac
+    done
+    [ "$in_scope" -eq 1 ] || continue
     if ! grep -qxF -- "$identity" <<<"$matched_entries"; then
         findings+="  ✗ allowlist entry suppressed nothing and is stale: [$kind] $path ${needle:+($needle) }— $reason"$'\n'
         fail=1
@@ -199,15 +237,16 @@ if [ "$fail" -ne 0 ]; then
     printf '%s' "$findings" >&2
     cat >&2 <<'EOF'
 
-  A skill may not depend on a repository-root scripts/ path: `task sync:skills`
-  vendors ai/skills/ and nothing from scripts/, so a consumer installs a skill
-  that cannot run. Move the script into the owning skill's assets/, or into the
-  shared dev-flow-support package if several skills use it, and reference it
-  relative to the calling asset's own physical directory
+  A skill or agent may not depend on a repository-root scripts/ path: `task
+  sync:skills` vendors ai/skills/ and ai/agents/ and nothing from scripts/, so
+  a consumer installs an asset that cannot run. Move the script into the owning
+  skill's assets/, or into the shared dev-flow-support package if several
+  skills use it, and reference it relative to the calling asset's own physical
+  directory
   ("$(cd "$(dirname "$0")" && pwd -P)/../../<package>/assets/<name>").
 EOF
     exit 1
 fi
 
 allowed_count="$(printf '%s' "$matched_entries" | sort -u | grep -c . || true)"
-echo "  ✓ no repository-root scripts/ invocation under $SKILLS_ROOT (${allowed_count} allowlist entr(y/ies) in use)"
+echo "  ✓ no repository-root scripts/ invocation under ${PRESENT_ROOTS[*]} (${allowed_count} allowlist entr(y/ies) in use)"

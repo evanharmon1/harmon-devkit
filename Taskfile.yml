@@ -219,7 +219,7 @@ tasks:
       - ./scripts/verify-skills.sh
 
   validate:skill-runtime-paths:
-    desc: Guard vendored skills against depending on a repository-root scripts/ path
+    desc: Guard vendored skills and agents against depending on a repository-root scripts/ path
     cmds:
       - ./scripts/check-skill-runtime-paths.sh
 

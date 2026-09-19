@@ -59,8 +59,16 @@ echo "==> schema parity: $authoring_schemas <-> $package_schemas"
 # `ls` over a fixed glob rather than a recursive walk: both trees are flat by
 # construction (the authoring tree's subdirectories are fixtures, which are a
 # conformance corpus and deliberately NOT vendored).
+#
+# `basename` in a read loop rather than `find -printf`: `-printf` is a GNU
+# extension that BSD/macOS `find` rejects, and these call sites are command
+# substitutions under `set -euo pipefail`, so on macOS the suite would abort
+# instead of comparing. Output is unchanged — sorted basenames, one per line.
 list_schemas() {
-    find "$1" -maxdepth 1 -type f -name '*.schema.json' -printf '%f\n' | LC_ALL=C sort
+    find "$1" -maxdepth 1 -type f -name '*.schema.json' |
+        while IFS= read -r schema_path; do
+            basename "$schema_path"
+        done | LC_ALL=C sort
 }
 
 fail=0
