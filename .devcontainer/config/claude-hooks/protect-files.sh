@@ -27,7 +27,7 @@ done
 
 # Suffix and glob patterns — sensitive credentials.
 case "$file_path" in
-*.pem | *.key | *.env | *.env.*)
+*.pem | *.key | *.env | .env.* | */.env.*)
     echo "protect-files: blocked write to '$file_path' (matches protected credential pattern)" >&2
     exit 2
     ;;

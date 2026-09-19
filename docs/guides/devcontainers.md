@@ -219,7 +219,7 @@ and via `/etc/codex/hooks/file-payload.sh` in Codex) to safeguard sensitive cred
 
 - **Protected set (credential-shaped paths only):**
   - Substring patterns: `.claude/settings.json`, `.codex/config.toml`, `/etc/claude-code/`, `/etc/codex/`
-  - Suffix/glob patterns: `*.pem`, `*.key`, `*.env`, `*.env.*`
+  - Suffix/glob patterns: `*.pem`, `*.key`, `*.env`, `.env.*` (dotfile forms only, at any depth)
 - **Permitted paths:** Repository files and workflow state — including `.git/` (such as dev-flow v2
   run records in `.git/dev-flow-v2/` and deferred findings in `.git/deferred-findings/`), package
   lockfiles (`package-lock.json`, `uv.lock`), build and dependency artifacts (`node_modules/`, `dist/`),
