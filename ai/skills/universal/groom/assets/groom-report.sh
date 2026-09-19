@@ -461,7 +461,12 @@ cmd_render() {
       # pre-#1096 rendering) made the one column a reader scans for carry no
       # signal at all.
       def vclass:
-        if startswith("CLOSE-") then "v-close"
+        # tostring first: the pre-#1096 rendering passed every verdict through
+        # `h` (which coerces), so a hand-made dataset carrying a null verdict
+        # rendered rather than aborting the run. `join` validates the
+        # vocabulary, but this file must not be the thing that crashes.
+        (. | tostring)
+        | if startswith("CLOSE-") then "v-close"
         elif . == "KEEP" then "v-keep"
         elif . == "NEEDS-DECISION" then "v-decision"
         else "v-info" end;
@@ -511,7 +516,15 @@ cmd_render() {
       | ($d.proposals.themes // []) as $themes
       | ($stats.unverified // []) as $unverified
       | ($d.conformance_defects // []) as $conf_defects
-      | ($rows | length) as $total
+      # $audited is what carries a verdict this run; $total is the backlog.
+      # Under `join --allow-missing` they differ, and every proportion — the
+      # ribbon, the donut, the stat meters — must be drawn against the backlog
+      # or an incomplete audit reads as complete coverage (Codex/Greptile on
+      # PR #1101). Sections that can only list verified rows still count
+      # $audited, because that is what they actually show.
+      | ($rows | length) as $audited
+      | ($unverified | length) as $unverified_n
+      | ($audited + $unverified_n) as $total
 
       # Ranking decisions: priority (P0 > P1 > P2 > P3), blocking count (descending), age (descending)
       | ($decisions | sort_by([ pscore, (- (.blocking_count // .blocked_by_count // 0)), (- (.age_days // 0)), .number ])) as $decisions_ranked
@@ -521,21 +534,28 @@ cmd_render() {
 
       # ── Masthead ribbon: the whole backlog as one proportional bar ──
       | [
-          { label: "Close", count: ($close_all|length), color: "#d1242f", href: "#close" },
-          { label: "Decide", count: ($decisions_all|length), color: "#0969da", href: "#decisions" },
+          # Each segment counts exactly what its link lands on: Close now and
+          # Decisions list PENDING rows only, so counting the whole family
+          # here rendered "Close 3" over a section reading "None this run"
+          # once outcomes were merged (Codex on PR #1101).
+          { label: "Close", count: ($close|length), color: "#d1242f", href: "#close" },
+          { label: "Decide", count: ($decisions|length), color: "#0969da", href: "#decisions" },
+          { label: "Settled", count: (($close_done|length) + ($decisions_done|length)), color: "#57606a", href: "#completed" },
           { label: "Needs info", count: ([$rows[] | select(.verdict == "NEEDS-INFO")] | length), color: "#8250df", href: "#every-issue" },
-          { label: "Keep", count: ([$rows[] | select(.verdict == "KEEP")] | length), color: "#1a7f37", href: "#every-issue" }
+          { label: "Keep", count: ([$rows[] | select(.verdict == "KEEP")] | length), color: "#1a7f37", href: "#every-issue" },
+          { label: "Unverified", count: $unverified_n, color: "#adb5bd", href: "#unverified" }
         ] as $ribbon
 
       # ── Inline SVG Chart 1: Verdict breakdown (donut) ──
       | [
           { label: "CLOSE-done", count: ([$rows[] | select(.verdict == "CLOSE-done")] | length), color: "#d1242f" },
           { label: "CLOSE-obsolete", count: ([$rows[] | select(.verdict == "CLOSE-obsolete")] | length), color: "#bc4c00" },
-          { label: "CLOSE-dup", count: ([$rows[] | select(.verdict | startswith("CLOSE-dup"))] | length), color: "#8250df" },
+          { label: "CLOSE-dup", count: ([$rows[] | select(.verdict | startswith("CLOSE-dup"))] | length), color: "#a40e26" },
           { label: "CLOSE-wrong-repo", count: ([$rows[] | select(.verdict | startswith("CLOSE-wrong-repo"))] | length), color: "#bf8700" },
           { label: "KEEP", count: ([$rows[] | select(.verdict == "KEEP")] | length), color: "#1a7f37" },
           { label: "NEEDS-DECISION", count: ([$rows[] | select(.verdict == "NEEDS-DECISION")] | length), color: "#0969da" },
-          { label: "NEEDS-INFO", count: ([$rows[] | select(.verdict == "NEEDS-INFO")] | length), color: "#57606a" }
+          { label: "NEEDS-INFO", count: ([$rows[] | select(.verdict == "NEEDS-INFO")] | length), color: "#57606a" },
+          { label: "Unverified", count: $unverified_n, color: "#adb5bd" }
         ] as $v_data
       | (([$v_data[].count] | max) // 1) as $v_max0
       | (if $v_max0 == 0 then 1 else $v_max0 end) as $v_max
@@ -724,7 +744,7 @@ cmd_render() {
         ".stat-meter i { display: block; height: 100%; background: var(--rail, var(--accent)); border-radius: 999px; }",
         ".stat-foot { font-size: 0.72rem; color: var(--muted); margin-top: 0.4rem; font-variant-numeric: tabular-nums; }",
         # Charts
-        ".charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 1rem; margin: 1rem 0; }",
+        ".charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 1rem; margin: 1rem 0; }",
         ".chart-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem 1.2rem 1.2rem; box-shadow: var(--shadow); }",
         ".chart-card h3 { margin: 0 0 0.9rem; font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }",
         ".chart-split { display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap; }",
@@ -829,6 +849,12 @@ cmd_render() {
         "@media (max-width: 900px) { .table-wrap { overflow-x: auto; } th { position: static; } }",
         "@media (max-width: 640px) { .hero { padding: 2rem 0 1.75rem; } .decision { grid-template-columns: 1fr; } }",
         "@media print { nav.nav { display: none; } .hero { background: #1e1b4b !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }",
+        # Collapsed by default means a printed or PDF-exported report
+        # would otherwise be summaries and nothing else. The beforeprint
+        # handler below opens every section and restores it afterwards;
+        # this rule is the fallback for print paths that fire no event.
+        "@media print { details.sect > summary > h2 > .chev { display: none; } details.sect::details-content { content-visibility: visible !important; } }",
+        "@media print { .table-wrap { overflow: visible; } th { position: static; } }",
         "</style>",
         "<nav class=\"nav\">",
         "<a href=\"#stats\">Stats</a>",
@@ -848,7 +874,7 @@ cmd_render() {
         "<header class=\"hero\"><div class=\"hero-inner\">",
         "<p class=\"eyebrow\">Backlog groom</p>",
         "<h1>Groom report — \($repo|h)</h1>",
-        "<p class=\"hero-meta\">Generated \($now|h)<span class=\"dot\">•</span>\($total) issue(s) audited<span class=\"dot\">•</span>\($close|length) to close<span class=\"dot\">•</span>\($decisions|length) awaiting a decision</p>",
+        "<p class=\"hero-meta\">Generated \($now|h)<span class=\"dot\">•</span>\(if $unverified_n > 0 then "\($audited) of \($total) issue(s) audited" else "\($total) issue(s) audited" end)<span class=\"dot\">•</span>\($close|length) to close<span class=\"dot\">•</span>\($decisions|length) awaiting a decision</p>",
         "<div class=\"ribbon\">",
         ([$ribbon[] | select(.count > 0) | "<span style=\"width:\(.count | pct($total))%;background:\(.color)\" title=\"\(.label|h): \(.count)\"></span>"] | join("")),
         "</div>",
@@ -1131,14 +1157,17 @@ cmd_render() {
         (if ($bots|length) == 0 then "<p class=\"empty\">None this run.</p>"
          else "<ul class=\"chip-list\">" + ([$bots[] | "<li>" + ilink_h($titles; $repo; .number) + "</li>"] | join("")) + "</ul>"
          end),
+        # Close Bot-owned before opening this one: emitted inside it, a
+        # partial audit hid its own Unverified list inside an unrelated
+        # collapsed section (Codex on PR #1101).
+        "</details>",
         (if ($unverified|length) == 0 then empty else
           "<details class=\"sect\" id=\"sec-unverified\"><summary><h2 id=\"unverified\">Unverified <span class=\"pill\">\($unverified|length)</span><span class=\"chev\"></span></h2></summary>",
           "<p>Open issues with no verdict row this run (join --allow-missing):</p>",
           "<ul class=\"chip-list\">" + ([$unverified[] | "<li>" + ilink_h($titles; $repo; .) + "</li>"] | join("")) + "</ul>",
           "</details>"
          end),
-        "</details>",
-        "<details class=\"sect\" id=\"sec-every-issue\"><summary><h2 id=\"every-issue\">Every issue <span class=\"pill\">\($total)</span><span class=\"chev\"></span></h2></summary>",
+        "<details class=\"sect\" id=\"sec-every-issue\"><summary><h2 id=\"every-issue\">Every issue <span class=\"pill\">\($audited)</span><span class=\"chev\"></span></h2></summary>",
         "<div class=\"searchbar\"><input type=\"search\" id=\"q\" placeholder=\"Filter by number, title, verdict, group…\" aria-label=\"Filter every issue\" onkeyup=\"groomFilter()\"></div>",
         "<div class=\"table-wrap\"><table id=\"t\"><thead><tr>",
         "<th class=\"sortable\" onclick=\"groomSortTable(&#39;t&#39;, 0)\">#</th>",
@@ -1182,6 +1211,18 @@ cmd_render() {
         "  el.scrollIntoView();",
         "}",
         "window.addEventListener(\"hashchange\", function () { groomReveal(location.hash); });",
+        "var groomPrintOpened = [];",
+        "window.addEventListener(\"beforeprint\", function () {",
+        "  groomPrintOpened = [];",
+        "  var d = document.querySelectorAll(\"details.sect\");",
+        "  for (var i = 0; i < d.length; i++) {",
+        "    if (!d[i].open) { groomPrintOpened.push(d[i]); d[i].open = true; }",
+        "  }",
+        "});",
+        "window.addEventListener(\"afterprint\", function () {",
+        "  for (var i = 0; i < groomPrintOpened.length; i++) { groomPrintOpened[i].open = false; }",
+        "  groomPrintOpened = [];",
+        "});",
         "document.addEventListener(\"DOMContentLoaded\", function () { groomReveal(location.hash); });",
         "document.addEventListener(\"click\", function (e) {",
         "  var t = e.target;",

@@ -772,6 +772,33 @@ grep -q '<h2 id="milestones">Milestones <span class="pill">' "$out_html" ||
 grep -q 'function groomReveal' "$out_html" ||
     fail "HTML must open a collapsed section when a link targets something inside it"
 
+# ── PR #1101 review findings (Codex, Greptile, Gemini) ──────────────────────
+echo "==> report: the chart grid never forces a track wider than the viewport"
+grep -q 'minmax(min(420px, 100%), 1fr)' "$out_html" ||
+    fail "the chart grid must cap its minimum track at 100% or it overflows phone widths"
+
+echo "==> report: printing carries the collapsed sections, not just their summaries"
+grep -q 'beforeprint' "$out_html" ||
+    fail "HTML must open collapsed sections for printing"
+grep -q 'afterprint' "$out_html" ||
+    fail "HTML must restore collapsed sections after printing"
+grep -q 'details.sect::details-content' "$out_html" ||
+    fail "HTML must carry the print fallback for paths that fire no print event"
+
+echo "==> report: a duplicate close keeps a close-family hue, not the needs-info hue"
+grep -q '"CLOSE-dup", count:.*color: "#a40e26"' "$report" ||
+    fail "CLOSE-dup must take a close-family colour"
+grep -q '"CLOSE-dup".*#8250df' "$report" &&
+    fail "CLOSE-dup must not reuse the needs-info purple"
+
+echo "==> report: ribbon segments count exactly what their link lands on"
+grep -q '{ label: "Close", count: ($close|length), color: "#d1242f", href: "#close" }' "$report" ||
+    fail "the Close ribbon segment must count PENDING closes, matching the section it links to"
+grep -q '{ label: "Decide", count: ($decisions|length)' "$report" ||
+    fail "the Decide ribbon segment must count PENDING decisions"
+grep -q '{ label: "Settled"' "$report" ||
+    fail "completed work must have its own ribbon segment linking to Completed this run"
+
 echo "==> report: render is byte-identical for same input and GROOM_NOW (deterministic)"
 out_html2="$tmp/report2.html"
 out_md2="$tmp/report2.md"
@@ -1109,6 +1136,26 @@ grep -q '| #1 |' <<<"$close_now_retitle_section" ||
 completed_retitle_section="$(sed -n '/^## Completed this run$/,/^## /p' "$retitle_only_md")"
 grep -q '#1 —' <<<"$completed_retitle_section" &&
     fail "a retitle outcome must never move #1 to Completed this run — that section is for the OP that matches the row's own verdict"
+
+echo "==> report: an incomplete audit is never drawn as whole-backlog coverage (Codex/Greptile on PR #1101)"
+partial_disp="$tmp/partial-disp.json"
+jq '.stats.unverified = [5] | .stats.open_total = 5' "$disp" >"$partial_disp"
+GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$partial_disp" \
+    --out-html "$tmp/partial.html" --out-md "$tmp/partial.md" >/dev/null
+grep -q 'of .* issue(s) audited' "$tmp/partial.html" ||
+    fail "a partial audit must say how many of the backlog it covered"
+grep -q 'Unverified' "$tmp/partial.html" ||
+    fail "the unverified remainder must be drawn, not omitted from the proportions"
+# The Unverified section is a sibling of Bot-owned, never nested inside it:
+# nested, a partial audit hid its own gap inside an unrelated collapsed section.
+python3 - "$tmp/partial.html" <<'PYEOF' || fail "Unverified must be a sibling section, not a child of Bot-owned"
+import sys
+h = open(sys.argv[1]).read()
+i, j = h.index('id="sec-bots"'), h.index('id="sec-unverified"')
+sys.exit(0 if h[i:j].count("</details>") >= 1 else 1)
+PYEOF
+[ "$(grep -c '<details class="sect"' "$tmp/partial.html")" = "$(grep -c '</details>' "$tmp/partial.html")" ] ||
+    fail "every collapsible section must be closed exactly once"
 
 echo "==> report: renders an Unverified section only when stats.unverified is nonempty"
 run "$report" render --dispositions "$missing_disp" --out-html "$tmp/unverified.html" \
