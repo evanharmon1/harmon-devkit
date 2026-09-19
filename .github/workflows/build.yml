@@ -86,9 +86,10 @@ jobs:
       # #974's two new suites. Same reason as the #796 note below: both are
       # wired into `task verify`, but this workflow runs a hand-maintained
       # list rather than `task verify`, so omitting them would let cloud CI
-      # pass while skipping the schema-copy parity check. #974's runtime-path
-      # guarantee is behavioural and rides `task test:skills` below, which
-      # this list already runs.
+      # pass while skipping the schema-copy parity check. #974's AC-5
+      # sync-and-execute coverage rides `task test:skills` below, which this
+      # list already runs; the mechanical root-`scripts/` guard (AC 4) was
+      # split out to #1099 and is not enforced anywhere yet.
       - run: task test:result-schema-composition
       - run: task test:schema-parity
 

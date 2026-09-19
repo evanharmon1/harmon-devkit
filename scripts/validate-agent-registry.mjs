@@ -9,8 +9,11 @@ import { fileURLToPath } from 'node:url'
 // the repository root — it guards `agent-registry.json`, a root file, and is
 // not something a consumer runs — so it reaches INTO the skills tree for the
 // one implementation rather than keeping a second copy under scripts/lib/.
-// Root-to-skill is the allowed direction; the reverse is what the behavioural
-// runtime-path check in scripts/test-skills.sh forbids.
+// Root-to-skill is the allowed direction; the reverse — a vendored asset
+// reaching a repository-root scripts/ path — is what #974 forbids. Nothing
+// enforces that mechanically yet: scripts/test-skills.sh covers AC 5 (a synced
+// consumer can execute the dev-flow runtime entrypoints), and the guard itself
+// is tracked as harmon-devkit#1099.
 import { createSchemaValidator } from '../ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
 
 // REPO_ROOT — resolved from this script's own location, not the caller's cwd,

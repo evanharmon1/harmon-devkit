@@ -85,15 +85,22 @@ somebody tries to use it. A script one skill uses lives in that skill's own
 `assets/`; a script several skills share lives in a support package like the
 three above.
 
-`task verify` enforces this **behaviourally**, not by linting source text:
+What `task verify` guarantees today is **coverage, not a guard**: a synced
+consumer can execute every runtime the dev-flow skills invoke (#974 AC 5).
 `scripts/test-skills.sh` (via `task test:skills`) publishes this checkout's real
 `ai/` tree, runs the real `sync-skills.sh` into a pristine consumer that has no
-repository-root `scripts/` and no `ai/` tree, and then *executes* every
-vendored executable from inside it. A synced consumer executes every vendored
-runtime; a root `scripts/` invocation fails the sync test — in any spelling,
-because nothing reads the source text. Prose about *another* repository's
-`scripts/` tree (what `repo/standardize-repo` legitimately documents) is not
-flagged, because prose never executes.
+repository-root `scripts/` and no `ai/` tree, and then *executes* each runtime
+entrypoint that `review`, `integrate`, `orchestrate`, and `retro` invoke from
+inside it — including the cross-package hop from an `orchestrate` asset to its
+sibling `dev-flow-support` reader. An entrypoint that reached for a root path
+could not resolve it there, so the suite would fail on it.
+
+That sweep names the entrypoints it executes and makes no claim about an asset
+it does not name. A *mechanical* check that fails whenever any vendored asset
+references a repository-root `scripts/` path is tracked separately in
+[#1099](https://github.com/evanharmon1/harmon-devkit/issues/1099) — three
+successive mechanisms for it were defeated in adversarial review, so it was
+split out of #974 rather than shipped unsound.
 
 **Consumers vendor the `universal` category as a unit.** A support package is
 reached from its callers as `$asset_dir/../../<package>/assets/<name>` —
