@@ -52,15 +52,22 @@
 #
 # A single failed herdr/gh read at any of the three observation call sites
 # (PR discovery, promotion-identity re-check, activity polling) no longer
-# exits the watcher immediately (#1041): it is retried with bounded backoff
-# (5s/15s/45s, never scheduled past the run deadline) for up to
+# exits the watcher immediately (#1041): that lane is retried with bounded
+# backoff (5s/15s/45s, never scheduled past the run deadline) for up to
 # --degrade-window-seconds (default 600s), measured from that lane's first
-# failure and reset by its next success. OBSERVATION-DEGRADED fires once per
+# failure and reset by its next success. The backoff never blocks: a
+# degraded lane is simply skipped -- no GitHub call attempted at all -- on
+# any poll before its persisted next-retry time, so a lane having a bad time
+# never delays a healthy lane sharing the same specs[] list (challenge round
+# 1 of #1041 found and fixed a first version of this mechanism that slept in
+# place instead, which did exactly that -- see observation_ready()). The
+# ordinary --interval-seconds sleep between polls is what paces every retry;
+# nothing here adds a wait of its own. OBSERVATION-DEGRADED fires once per
 # such episode -- deduplicated across a restart via the persisted DEGRADE
 # state -- and only once the episode's window is exceeded does the watcher
 # fall through to the original observation_failed() exit-1 behavior (or the
 # existing WALLCLOCK exit-0 short-circuit, if the run deadline arrives
-# first). promotion_epoch() applies the same OBSERVATION-DEGRADED event, on
+# first). resolve_promotion() applies the same OBSERVATION-DEGRADED event, on
 # its own bounded-poll-count basis, when a persistently malformed
 # ready_for_review row would otherwise leave a lane's promotion tracking
 # indeterminate forever -- see that function.
@@ -275,7 +282,8 @@ load_state() {
         AGENT | PR | USAGE | CLOSING | ARMED) state_set "$kind" "$lane" "$value" ;;
         SENTINEL) state_set SENTINEL "$lane:$value" 1 ;;
         WINDOW) state_set WINDOW "$lane" "$value" "$extra" "$detail" ;;
-        DEGRADE | MALPROMO) state_set "$kind" "$lane" "$value" "$extra" ;;
+        DEGRADE) state_set DEGRADE "$lane" "$value" "$extra" "$detail" ;;
+        MALPROMO) state_set MALPROMO "$lane" "$value" "$extra" ;;
         ACTIVITY) state_set ACTIVITY "$lane:$value:$extra" 1 ;;
         WALLCLOCK) warned=$value ;;
         esac
@@ -302,7 +310,8 @@ save_state() {
                 ;;
             SENTINEL) printf 'SENTINEL\t%s\t%s\t\n' "${key%%:*}" "${key#*:}" ;;
             WINDOW) printf 'WINDOW\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
-            DEGRADE | MALPROMO) printf '%s\t%s\t%s\t%s\t\n' "$kind" "$key" "$value" "$extra" ;;
+            DEGRADE) printf 'DEGRADE\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
+            MALPROMO) printf 'MALPROMO\t%s\t%s\t%s\t\n' "$key" "$value" "$extra" ;;
             ACTIVITY)
                 lane=${key%%:*}
                 rest=${key#*:}
@@ -335,54 +344,104 @@ observation_failed() {
     exit 1
 }
 
-# A lane's DEGRADE entry (value=first_failure_at, extra=notified 0/1) marks an
-# in-progress retry episode at any of the three observation call sites below.
-# Clearing it on any success -- regardless of which call site recovers -- is
-# what lets a flapping connection reset the episode instead of accumulating
-# failures across unrelated call sites toward the same window.
+# A lane's DEGRADE entry (value=first_failure_at, extra=notified 0/1,
+# detail="<attempt>:<next_retry_at>") marks an in-progress retry episode.
+# Keyed by "$lane:<endpoint>" (endpoint one of PR/REPROMO/ACTIVITY), not
+# just $lane: #1041 challenge r1 finding codex-3 found that a single
+# shared-per-lane episode let PR discovery's recovery on a restart silently
+# reset a still-genuinely-failing activity or promotion-identity episode,
+# repeatedly resetting the advertised degrade-window bound across restarts.
+# Each endpoint now tracks -- and clears -- its own episode independently.
 observation_recover() {
-    local lane=$1
-    if [ -n "$(state_get DEGRADE "$lane" || true)" ]; then
-        state_delete DEGRADE "$lane"
+    local key=$1
+    if [ -n "$(state_get DEGRADE "$key" || true)" ]; then
+        state_delete DEGRADE "$key"
         persist_state
     fi
 }
 
-# Called after a failed observation. Emits OBSERVATION-DEGRADED exactly once
-# per episode (deduplicated via the persisted `notified` flag, so a restart
-# mid-episode does not repeat it), then either sleeps a bounded backoff and
-# returns 0 (retry again) or returns 1 once the episode has run for
-# degrade_window_seconds -- the caller then falls through to the existing
-# observation_failed(), unchanged. The backoff is capped so a retry never
-# sleeps past the run deadline or past the end of this episode's own window.
-observation_retry_wait() {
-    local lane=$1 detail=$2 attempt=$3
-    local now_ts first_failure notified delay cap
-    now_ts="$(date -u +%s)"
-    first_failure="$(state_get DEGRADE "$lane" || true)"
-    notified="$(state_get DEGRADE "$lane" extra || printf 0)"
+# #1041 challenge r1 finding 1: an earlier version of this mechanism slept
+# in place inside the per-lane loop below, retrying the SAME lane
+# immediately -- which blocked the single-threaded main loop from ever
+# reaching a LATER, healthy lane in specs[] for the sleeping lane's entire
+# backoff/episode window (empirically reproduced: a healthy lane's first
+# observation delayed ~20s by an unrelated lane's transient failure; in the
+# persistent case, a healthy lane never observed at all before the process
+# exited at the window boundary). This function never sleeps. It only
+# decides, from persisted state alone, whether $lane's observation should be
+# attempted THIS poll at all.
+#
+# Returns 0 (attempt it) when there is no in-progress episode for this
+# endpoint, or its persisted next_retry_at has arrived; returns 1 (skip just
+# this endpoint this poll, no sleep) while still backing off. A later
+# endpoint for the same lane (or a later lane in specs[]) is unaffected --
+# each is gated independently. The next poll's own "$now" -- paced only by
+# the ordinary --interval-seconds sleep the main loop already does between
+# polls -- is what advances the retry schedule; this function adds no wait
+# of its own.
+observation_ready() {
+    local key=$1 detail_raw next_retry_at
+    detail_raw="$(state_get DEGRADE "$key" detail || true)"
+    IFS=: read -r _ next_retry_at <<<"$detail_raw"
+    [ -z "$next_retry_at" ] || [ "$now" -ge "$next_retry_at" ]
+}
+
+# Called after a failed observation, once observation_ready() has already
+# authorized this poll's attempt for this endpoint. Emits OBSERVATION-DEGRADED
+# exactly once per episode (deduplicated via the persisted `notified` flag,
+# so a restart mid-episode does not repeat it), then either schedules the
+# next bounded backoff (5s/15s/45s, capped by both the run deadline and this
+# episode's own degrade_window_seconds window) and returns 0 -- the caller
+# abandons the rest of this lane's work for this poll and moves on, nothing
+# sleeps -- or returns 1 once the episode has run for degrade_window_seconds,
+# at which point the caller falls through to the existing
+# observation_failed(), unchanged: still a process-wide exit 1 (or the
+# WALLCLOCK exit-0 short-circuit), only reached across many polls now instead
+# of one blocking wait.
+#
+# Refreshes the shared `now` itself, first thing: the caller's own `now` was
+# captured before invoking the (possibly slow, or -- via bounded()'s own
+# timeout -- multi-second) call that just failed, so deciding the deadline
+# and episode window against that stale value could miss a deadline that was
+# crossed DURING the call. A hard-hang test that expects the run deadline
+# (set only 1s out) to be recognized once its bounded discover_pr() timeout
+# expires is what caught this.
+observation_record_failure() {
+    local key=$1 lane=$2 detail=$3
+    now="$(date -u +%s)"
+    local first_failure notified detail_raw attempt discard delay cap
+    first_failure="$(state_get DEGRADE "$key" || true)"
+    notified="$(state_get DEGRADE "$key" extra || printf 0)"
+    detail_raw="$(state_get DEGRADE "$key" detail || true)"
+    IFS=: read -r attempt discard <<<"$detail_raw"
     if [ -z "$first_failure" ]; then
-        first_failure=$now_ts
+        first_failure=$now
         notified=0
+        attempt=0
     fi
+    [ -n "$attempt" ] || attempt=0
     if [ "$notified" -eq 0 ]; then
-        state_set DEGRADE "$lane" "$first_failure" 1
-        persist_state
         echo "OBSERVATION-DEGRADED $lane: $detail"
+        notified=1
     fi
-    [ $((now_ts - first_failure)) -lt "$degrade_window_seconds" ] || return 1
-    [ "$now_ts" -lt "$deadline" ] || return 1
+    if [ $((now - first_failure)) -ge "$degrade_window_seconds" ] || [ "$now" -ge "$deadline" ]; then
+        state_set DEGRADE "$key" "$first_failure" "$notified" "$attempt:$now"
+        persist_state
+        return 1
+    fi
     case "$attempt" in
     0) delay=5 ;;
     1) delay=15 ;;
     *) delay=45 ;;
     esac
-    cap=$((deadline - now_ts))
+    cap=$((deadline - now))
     [ "$delay" -le "$cap" ] || delay=$cap
-    cap=$((first_failure + degrade_window_seconds - now_ts))
+    cap=$((first_failure + degrade_window_seconds - now))
     [ "$delay" -le "$cap" ] || delay=$cap
-    [ "$delay" -gt 0 ] || return 1
-    sleep "$delay"
+    [ "$delay" -ge 0 ] || delay=0
+    attempt=$((attempt + 1))
+    state_set DEGRADE "$key" "$first_failure" "$notified" "$attempt:$((now + delay))"
+    persist_state
     return 0
 }
 
@@ -546,6 +605,7 @@ poll_activity() {
         if [ "$persisted_expired" -eq 1 ] && [ "$(state_get CLOSING "$lane" || printf 0)" = 1 ]; then
             state_delete WINDOW "$lane"
             state_delete CLOSING "$lane"
+            state_delete MALPROMO "$lane:$pr_number"
             return 0
         fi
     fi
@@ -573,12 +633,23 @@ poll_activity() {
     resolve_promotion "$lane" "$repo" "$pr_number"
     promotion_status=$?
     rearmed=0
+    if [ "$promotion_status" -eq 11 ]; then
+        # #1041 challenge r1 finding codex-2: a VALID resolution exists but
+        # is being withheld for the malformed-row bound (see
+        # resolve_promotion()) -- touch NOTHING this poll: no closing, no
+        # (re)arming. Falling through to status 10's "trust the old armed
+        # window" handling here was the bug: it could close a stale,
+        # already-expired window using its stale identity while this valid,
+        # newer promotion sat unused right here, silently dropping it.
+        return 0
+    fi
     if [ "$promotion_status" -eq 10 ]; then
         if [ "$cold_start" -eq 1 ]; then
             if [ "$provisional_expired" -eq 1 ]; then
                 state_delete WINDOW "$lane"
                 state_delete CLOSING "$lane"
                 state_delete PR "$lane"
+                state_delete MALPROMO "$lane:$pr_number"
                 echo "POST-PROMOTION-INDETERMINATE $lane: #$pr_number"
             fi
             return 0
@@ -642,6 +713,7 @@ poll_activity() {
         if [ "$(state_get CLOSING "$lane" || printf 0)" = 1 ]; then
             state_delete WINDOW "$lane"
             state_delete CLOSING "$lane"
+            state_delete MALPROMO "$lane:$pr_number"
             return 0
         fi
     fi
@@ -725,6 +797,7 @@ poll_activity() {
         persist_state
         state_delete WINDOW "$lane"
         state_delete CLOSING "$lane"
+        state_delete MALPROMO "$lane:$pr_number"
     fi
 }
 
@@ -790,39 +863,69 @@ promotion_epoch() {
 # persist_state() at the end of the poll. This wrapper is called directly
 # (never substituted) by poll_activity()/check_repromotion_after_close(), so
 # it is the one safe place to persist the bounded-malformed-row bookkeeping
-# (#1041, settling PR #1043's P2). It sets globals promo_since/
-# promo_since_event_id on a 0 return, exactly what the caller needs; a 10 or
-# 1 return carries no data, matching promotion_epoch()'s own contract so
-# callers need no other change than calling this instead.
+# (#1041, settling PR #1043's P2). Return contract: 0 sets globals
+# promo_since/promo_since_event_id -- a real resolution the caller should
+# use. 1 is a hard failure, unchanged from promotion_epoch()'s own contract.
+# 10 means promotion_epoch() itself found nothing resolvable at all --
+# ordinary GitHub eventual consistency, safe for a caller to trust whatever
+# it already has armed. 11 (#1041 challenge r1 finding codex-2) means a
+# valid resolution DOES exist but is being withheld for the malformed-row
+# bound -- callers must NOT treat this like 10: 10's "trust the old armed
+# window" is only safe when nothing has actually changed, and applying it
+# here let a stale, already-expired window get closed with its stale
+# identity while this valid, newer promotion sat unused. A caller that can
+# close a window must special-case 11 to touch nothing at all this poll.
 resolve_promotion() {
     lane=$1
     repo=$2
     pr_number=$3
+    # Keyed by "$lane:$pr_number", not just $lane: a lane's count must not
+    # survive to taint a DIFFERENT PR the lane later promotes. poll_activity()
+    # also clears this key at every WINDOW teardown point for the same reason
+    # -- a clean close is exactly when this PR's bookkeeping must not leak
+    # forward to whatever this lane promotes next (#1041 challenge r1 finding
+    # 2: a stale count from a since-closed PR let a brand-new PR's own,
+    # unrelated malformed row fall back after fewer than
+    # malformed_promo_poll_bound real polls of it).
+    malpromo_key="$lane:$pr_number"
     epoch_id_pair="$(promotion_epoch "$repo" "$pr_number")"
     promotion_status=$?
     [ "$promotion_status" -eq 0 ] || return "$promotion_status"
     IFS=$'\t' read -r promo_since promo_since_event_id has_malformed malformed_id <<<"$epoch_id_pair"
     if [ "$has_malformed" != "true" ]; then
-        if [ -n "$(state_get MALPROMO "$lane" || true)" ]; then
-            state_delete MALPROMO "$lane"
+        if [ -n "$(state_get MALPROMO "$malpromo_key" || true)" ]; then
+            state_delete MALPROMO "$malpromo_key"
             persist_state
         fi
         return 0
     fi
-    malpromo_count="$(state_get MALPROMO "$lane" || printf 0)"
-    malpromo_notified="$(state_get MALPROMO "$lane" extra || printf 0)"
+    malpromo_count="$(state_get MALPROMO "$malpromo_key" || printf 0)"
+    malpromo_notified="$(state_get MALPROMO "$malpromo_key" extra || printf 0)"
     malpromo_count=$((malpromo_count + 1))
     if [ "$malpromo_count" -le "$malformed_promo_poll_bound" ]; then
-        state_set MALPROMO "$lane" "$malpromo_count" "$malpromo_notified"
+        state_set MALPROMO "$malpromo_key" "$malpromo_count" "$malpromo_notified"
         persist_state
-        return 10
+        # #1041 challenge r1 finding codex-2: this is NOT status 10's original
+        # meaning ("no ready_for_review event resolvable at all" -- ordinary
+        # GitHub eventual consistency, safe to trust whichever window is
+        # already armed). A VALID resolution exists here (promotion_epoch()
+        # already required $valid non-empty to reach this branch at all) --
+        # it is only being withheld for the bound. Conflating the two under
+        # one status let a caller's "trust the old armed window" warm-path
+        # close a STALE, already-expired window using its stale identity
+        # while a genuinely newer valid promotion sat right here, unused --
+        # silently dropping it, exactly the class of loss the event-id
+        # tie-break exists to prevent. Status 11 tells the caller to touch
+        # NOTHING this poll -- no closing, no (re)arming -- rather than
+        # reusing 10's "the old window is still the current truth" handling.
+        return 11
     fi
     if [ "$malpromo_notified" -eq 0 ]; then
-        state_set MALPROMO "$lane" "$malpromo_count" 1
+        state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
         persist_state
         echo "OBSERVATION-DEGRADED $lane: malformed ready_for_review event id=$malformed_id on #$pr_number"
     else
-        state_set MALPROMO "$lane" "$malpromo_count" 1
+        state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
         persist_state
     fi
     return 0
@@ -871,11 +974,13 @@ check_repromotion_after_close() {
 
     resolve_promotion "$lane" "$repo" "$promoted_pr"
     promotion_status=$?
-    if [ "$promotion_status" -eq 10 ]; then
-        # No resolvable ready_for_review event this poll -- ordinary GitHub
-        # eventual consistency, not a hard failure. Nothing to compare
-        # against yet; stay dormant rather than arming from an unresolved
-        # epoch.
+    if [ "$promotion_status" -eq 10 ] || [ "$promotion_status" -eq 11 ]; then
+        # No resolvable ready_for_review event this poll (10), or one exists
+        # but is being withheld for the malformed-row bound (11) -- either
+        # way ordinary GitHub eventual consistency, not a hard failure, and
+        # this function never has an existing window to mishandle (called
+        # only when there is none). Nothing to compare against yet; stay
+        # dormant rather than arming from an unresolved or withheld epoch.
         return 0
     elif [ "$promotion_status" -ne 0 ]; then
         return 1
@@ -1019,43 +1124,46 @@ while true; do
             fi
         fi
 
-        attempt=0
-        while true; do
+        # #1041 challenge r1 finding 1: a degraded lane never blocks a later
+        # lane in specs[] -- observation_ready() is a pure state check (no
+        # sleep), and a skipped endpoint simply falls through with no GitHub
+        # call attempted at all this poll. #1041 challenge r1 finding
+        # codex-3: each of the three endpoints below is gated and tracked
+        # independently ("$lane:PR"/"$lane:REPROMO"/"$lane:ACTIVITY") rather
+        # than sharing one per-lane episode, so PR discovery recovering (e.g.
+        # on a restart) never silently resets a still-genuinely-failing
+        # activity or promotion-identity episode. See
+        # observation_ready()/observation_record_failure() above.
+        if observation_ready "$lane:PR"; then
+            now="$(date -u +%s)"
             if pr="$(discover_pr "$repo" "$branch")"; then
-                observation_recover "$lane"
-                break
-            fi
-            observation_retry_wait "$lane" "GitHub PR observation failed for lane $lane" "$attempt" ||
-                observation_failed "GitHub PR observation failed for lane $lane"
-            attempt=$((attempt + 1))
-        done
-        observe_pr "$lane" "$pr" "$now"
+                observation_recover "$lane:PR"
+                observe_pr "$lane" "$pr" "$now"
 
-        active_pr="$(state_get WINDOW "$lane" || true)"
-        if [ -z "$active_pr" ]; then
-            attempt=0
-            while true; do
-                if check_repromotion_after_close "$lane" "$repo" "$pr" "$now"; then
-                    observation_recover "$lane"
-                    break
+                active_pr="$(state_get WINDOW "$lane" || true)"
+                if [ -z "$active_pr" ] && observation_ready "$lane:REPROMO"; then
+                    now="$(date -u +%s)"
+                    if check_repromotion_after_close "$lane" "$repo" "$pr" "$now"; then
+                        observation_recover "$lane:REPROMO"
+                        active_pr="$(state_get WINDOW "$lane" || true)"
+                    else
+                        observation_record_failure "$lane:REPROMO" "$lane" "GitHub promotion-identity observation failed for lane $lane" ||
+                            observation_failed "GitHub promotion-identity observation failed for lane $lane"
+                    fi
                 fi
-                observation_retry_wait "$lane" "GitHub promotion-identity observation failed for lane $lane" "$attempt" ||
-                    observation_failed "GitHub promotion-identity observation failed for lane $lane"
-                attempt=$((attempt + 1))
-            done
-            active_pr="$(state_get WINDOW "$lane" || true)"
-        fi
-        if [ -n "$active_pr" ]; then
-            attempt=0
-            while true; do
-                if poll_activity "$lane" "$repo" "$active_pr" "$now"; then
-                    observation_recover "$lane"
-                    break
+                if [ -n "$active_pr" ] && observation_ready "$lane:ACTIVITY"; then
+                    now="$(date -u +%s)"
+                    if poll_activity "$lane" "$repo" "$active_pr" "$now"; then
+                        observation_recover "$lane:ACTIVITY"
+                    else
+                        observation_record_failure "$lane:ACTIVITY" "$lane" "GitHub activity observation failed for lane $lane" ||
+                            observation_failed "GitHub activity observation failed for lane $lane"
+                    fi
                 fi
-                observation_retry_wait "$lane" "GitHub activity observation failed for lane $lane" "$attempt" ||
-                    observation_failed "GitHub activity observation failed for lane $lane"
-                attempt=$((attempt + 1))
-            done
+            else
+                observation_record_failure "$lane:PR" "$lane" "GitHub PR observation failed for lane $lane" ||
+                    observation_failed "GitHub PR observation failed for lane $lane"
+            fi
         fi
     done
 
