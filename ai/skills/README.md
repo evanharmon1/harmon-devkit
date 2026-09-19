@@ -86,14 +86,13 @@ somebody tries to use it. A script one skill uses lives in that skill's own
 three above.
 
 What `task verify` guarantees today is **coverage, not a guard**: a synced
-consumer can execute every runtime the dev-flow skills invoke (#974 AC 5).
+consumer can execute the 15 runtime entrypoints that `review`, `integrate`,
+`orchestrate`, and `retro` invoke by name (#974 AC 5).
 `scripts/test-skills.sh` (via `task test:skills`) publishes this checkout's real
 `ai/` tree, runs the real `sync-skills.sh` into a pristine consumer that has no
-repository-root `scripts/` and no `ai/` tree, and then *executes* each runtime
-entrypoint that `review`, `integrate`, `orchestrate`, and `retro` invoke from
-inside it — including the cross-package hop from an `orchestrate` asset to its
-sibling `dev-flow-support` reader. An entrypoint that reached for a root path
-could not resolve it there, so the suite would fail on it.
+repository-root `scripts/` and no `ai/` tree, and then *executes* each of those
+entrypoints from inside it — including the cross-package hop from an
+`orchestrate` asset to its sibling `dev-flow-support` reader.
 
 That sweep names the entrypoints it executes and makes no claim about an asset
 it does not name. A *mechanical* check that fails whenever any vendored asset

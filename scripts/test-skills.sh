@@ -10531,18 +10531,13 @@ git_init "$AC5_SRC"
 cp -R "$repo/ai" "$AC5_SRC/ai"
 git_commit_all "$AC5_SRC" "vendor the real skills tree"
 git -C "$AC5_SRC" tag v0.0.0-ac5
-# `repo` and `frontend` ride along with `universal` on purpose. They are the
-# two categories whose skills legitimately DISCUSS another repository's
-# `scripts/` tree — `repo/standardize-repo` audits a consumer that owns
-# `scripts/verify-ci-results.sh`, and both were wholesale `dir` exemptions in
-# the deleted source-text lint for exactly that reason. Vendoring them here
-# makes "prose about another tree is not a violation" an assertion this suite
-# actually makes, rather than an exemption a lint had to be told about.
+# None of the 15 entrypoints run_vendored executes below lives in `repo` or
+# `frontend`, so the sweep only needs `universal`.
 cat >"$AC5_CON/.skills-sync.yaml" <<EOF
 source:
   repo: file://$AC5_SRC
   ref: v0.0.0-ac5
-categories: [universal, repo, frontend]
+categories: [universal]
 dest: .claude/skills
 agents:
   names: ["*"]
@@ -10593,7 +10588,8 @@ run_vendored() {
     ok "$desc"
 }
 
-# Every runtime entrypoint the review, integrate and orchestrate skills invoke.
+# The 15 runtime entrypoints the review, integrate, orchestrate and retro
+# skills invoke by name.
 run_vendored "AC5: devflow-policy.mjs runs" \
     "$AC5_SKILLS/dev-flow-support/assets/devflow-policy.mjs" node
 run_vendored "AC5: validate-result-schemas.mjs runs" \
@@ -10671,9 +10667,9 @@ expect_ok_contains "AC5: an orchestrate asset reaches its sibling package's read
 # constraints all three rounds established.
 #
 # What stays above is AC 5, and it is COVERAGE rather than a guard: it proves
-# that a pristine synced consumer can execute every runtime entrypoint the
-# review, integrate, orchestrate and retro skills invoke, and it makes no claim
-# about an asset it does not name.
+# that a pristine synced consumer can execute the 15 runtime entrypoints the
+# review, integrate, orchestrate and retro skills invoke by name, and it makes
+# no claim about an asset it does not name.
 
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
