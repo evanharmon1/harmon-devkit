@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Releases are cut manually with `task release:patch|minor|major` (never
 automatically on merge).
 
+## [0.46.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.45.0...v0.46.0) (2026-09-19)
+
+
+### Features
+
+* **groom:** preserve retitle wording and document frontier fanout model ([#1059](https://github.com/evanharmon1/harmon-devkit/issues/1059), [#1065](https://github.com/evanharmon1/harmon-devkit/issues/1065)) ([#1089](https://github.com/evanharmon1/harmon-devkit/issues/1089)) ([ce04391](https://github.com/evanharmon1/harmon-devkit/commit/ce043917e13b80780d7c4098f5087ef062646157))
+* **groom:** report redesign, ranking rules & spec proposals ([#1061](https://github.com/evanharmon1/harmon-devkit/issues/1061), [#1062](https://github.com/evanharmon1/harmon-devkit/issues/1062), [#1063](https://github.com/evanharmon1/harmon-devkit/issues/1063)) ([#1090](https://github.com/evanharmon1/harmon-devkit/issues/1090)) ([da66479](https://github.com/evanharmon1/harmon-devkit/commit/da664792e190e5bf5deffa136ee8aea39477b15c))
+* **groom:** run triage and track-work conformance in audit and share assets ([#1064](https://github.com/evanharmon1/harmon-devkit/issues/1064)) ([#1091](https://github.com/evanharmon1/harmon-devkit/issues/1091)) ([75df62b](https://github.com/evanharmon1/harmon-devkit/commit/75df62bc0eae4afa3d761f7e673f5e28fe0e55ca))
+* **orchestrator:** add a dispatch-time planning step that emits a schema-bound plan.json ([#1005](https://github.com/evanharmon1/harmon-devkit/issues/1005)) ([f8de702](https://github.com/evanharmon1/harmon-devkit/commit/f8de702826e7bc66b75dbdce423acb79d61836c9))
+* **orchestrator:** gate the ready report on a positive post-promotion watch close ([#1043](https://github.com/evanharmon1/harmon-devkit/issues/1043)) ([046aaaf](https://github.com/evanharmon1/harmon-devkit/commit/046aaafd13274d573dc51379fe62eb169d590676))
+* **skills:** add the groom skill for backlog audit, apply, and decisions ([#1032](https://github.com/evanharmon1/harmon-devkit/issues/1032)) ([c2863df](https://github.com/evanharmon1/harmon-devkit/commit/c2863dfcb122b6670599c1c023bc254a9029e50c))
+* **skills:** rename orchestrator skill to orchestrate ([#1094](https://github.com/evanharmon1/harmon-devkit/issues/1094)) ([1719114](https://github.com/evanharmon1/harmon-devkit/commit/17191141f55db4fb285e638aa6af808ed4455dc6))
+* **standardize-repo:** support index.md documentation landing pages ([#1092](https://github.com/evanharmon1/harmon-devkit/issues/1092)) ([ce66162](https://github.com/evanharmon1/harmon-devkit/commit/ce6616228428957de3c6730f178d1c681efe31fe))
+
+
+### Bug Fixes
+
+* **integrate:** anchor prior-trigger detection to server timestamps and harden result ordering ([#1027](https://github.com/evanharmon1/harmon-devkit/issues/1027)) ([0d79b4c](https://github.com/evanharmon1/harmon-devkit/commit/0d79b4cdba82a27a6b5af57fa5c6de1afb62905a))
+* **integrate:** bind Codex results to the attempt that requested them and report stale locks ([#988](https://github.com/evanharmon1/harmon-devkit/issues/988)) ([1f82f99](https://github.com/evanharmon1/harmon-devkit/commit/1f82f992b64e86a184163b06c3cc9dc1c789a42a))
+* **integrate:** detect prior same-head triggers on reconstruct and order top-level and empty-body results ([#1013](https://github.com/evanharmon1/harmon-devkit/issues/1013)) ([7bcc270](https://github.com/evanharmon1/harmon-devkit/commit/7bcc270d8a9558be1b372d61e1ffffbe7cc86492))
+* **orchestrator:** match literal fence paths, derive the base from the target remote, and accept quoted keys ([#1038](https://github.com/evanharmon1/harmon-devkit/issues/1038)) ([373d68c](https://github.com/evanharmon1/harmon-devkit/commit/373d68c9b5ca7e856762906bae60b50a5aae95a1))
+* **orchestrator:** reject backdated expansions, pin policy across plan revisions, and constrain run ids ([#1028](https://github.com/evanharmon1/harmon-devkit/issues/1028)) ([5ce8e48](https://github.com/evanharmon1/harmon-devkit/commit/5ce8e48933c225468c995582899613ac140ef8b7))
+* **retro:** read local run records through the exit engine's CLI instead of its helpers ([#1031](https://github.com/evanharmon1/harmon-devkit/issues/1031)) ([159977f](https://github.com/evanharmon1/harmon-devkit/commit/159977f59d39dd087cb3c7a602a242b6db33480d))
+* **retro:** reconstruct runs from the evidence-marker grammar and a local record directory ([#991](https://github.com/evanharmon1/harmon-devkit/issues/991)) ([f21d413](https://github.com/evanharmon1/harmon-devkit/commit/f21d4138cca443d03df9f4f02d4dc9d010f999d4))
+* **review:** validate stage-advance candidates with --receipts strict mode ([#1018](https://github.com/evanharmon1/harmon-devkit/issues/1018)) ([00579d7](https://github.com/evanharmon1/harmon-devkit/commit/00579d7cb3574f3111c66e074c2787eb39010084))
+* **review:** write schema-shaped stage transitions on stage advance ([#965](https://github.com/evanharmon1/harmon-devkit/issues/965)) ([94d7009](https://github.com/evanharmon1/harmon-devkit/commit/94d7009f17335175888da594a00e6ab67654767a))
+* **schemas:** define the receipts sequence in run.schema.json ([#1000](https://github.com/evanharmon1/harmon-devkit/issues/1000)) ([fee2fcb](https://github.com/evanharmon1/harmon-devkit/commit/fee2fcb643d55b5e73f97c0a2c6ce6972fb3a6ec))
+* **skills:** grant the headless triage and groom workers Edit(path) so scratch writes are honored ([#1084](https://github.com/evanharmon1/harmon-devkit/issues/1084)) ([07fbe6f](https://github.com/evanharmon1/harmon-devkit/commit/07fbe6f155c8828a2b974cbd7098f4acff438d0d))
+* **skills:** groom fan-out subagents default to the frontier model tier ([#1045](https://github.com/evanharmon1/harmon-devkit/issues/1045)) ([218ce03](https://github.com/evanharmon1/harmon-devkit/commit/218ce037e8a369d818f658f590cc368f993dfdee))
+* **tests:** make the consumer-pin-audit, groom-skill, and lane-fences suites pass on macOS ([#1083](https://github.com/evanharmon1/harmon-devkit/issues/1083)) ([b962281](https://github.com/evanharmon1/harmon-devkit/commit/b962281ade8285b24aed672b5cc496af48d03e6d))
+
 ## [0.45.0](https://github.com/evanharmon1/harmon-devkit/compare/v0.44.0...v0.45.0) (2026-09-14)
 
 
