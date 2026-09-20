@@ -1237,76 +1237,60 @@ is optional in addition, never a substitute for per-thread replies.
 
 ### Base reconciliation
 
-Three questions, one answer, because getting any of them wrong costs a full
-review cycle.
+The gate decides *whether* the head is behind and *against what*; this states
+the properties any reconciliation must satisfy. It deliberately does not
+restate the mechanism — `readiness-gate.sh` computes the base, the count and
+the condition, its failure message names all three, and a second hand-rolled
+recipe here would be one more thing to keep correct (an earlier draft of this
+section shipped a local `git rev-list` range that counted **ahead**, not
+behind).
 
-**Which direction is permitted.** Merging the PR's own **base branch into the
-feature branch** is allowed, and is sometimes required before the gate can
-pass. That is not the prohibition elsewhere in this skill: merging the
-**feature branch into the default branch** is the merge that is never done
-without per-merge human approval. The two are opposite operations and only the
-second is a merge to `main`. An implementer who refuses the permitted one and
-waits has misread the rule and will wait forever
-(observed on evanharmon1/harmon-init#1203). Pushed history is still never
-rebased or force-pushed: reconcile with a merge commit.
+**Direction.** Merging the PR's own base branch **into** the feature branch is
+permitted, and is sometimes required before the gate can pass. Merging the
+feature branch **into** the base is the operation that needs per-merge human
+approval. They are opposite operations and only the second is a merge to
+`main`; an implementer who reads the second rule as forbidding the first will
+wait forever for a reconciliation that cannot arrive
+(evanharmon1/harmon-init#1203). Pushed history is never rebased or
+force-pushed — reconcile with a merge commit.
 
-**When to do it — once, at the gate, not on sight.** Being behind is **not a
-mid-stage blocker.** Notice it, record it, and carry on; the gate is where it
-is resolved. Reacting to each observation is expensive because a base merge
-moves the head, and a moved head invalidates the CI results and the
-current-head review cycle that were about to be spent on it: merge, re-verify,
-push, re-review is 20–25 minutes each time. On evanharmon1/harmon-init#1311 the
-base moved five times during one session and the branch was merged **three**
-times; two of those were mid-stage reactions that re-reviewed source which had
-not changed and found nothing. So reconcile **once**, immediately before
-evaluating the readiness gate — and if the base moves again after that, the
-gate's own re-read catches it and you reconcile again, deliberately, rather than
-reflexively.
+**Base identity.** The base is the PR's own `baseRefName` in the **target**
+repository — never "the default branch" by habit, and never a local
+`origin/main`: a PR can target a release branch, and on a fork `origin` is the
+contributor's copy. Merging the wrong ref can leave the head level with
+something that is not its base. The gate reads `baseRefName`, and a retarget
+mid-gate stops the run (`base-retargeted`) rather than being re-measured
+against a moving target.
 
-**Which base.** The PR's own `baseRefName` in the **target** repository —
-never "the default branch" and never a local `origin/main` by habit. A PR can
-target a release branch, and on a fork `origin` is the contributor's copy, so
-`origin/main` may be neither this PR's base nor even the same repository.
-Merging the wrong ref can leave `behind_by` at 0 against the real base while
-importing unrelated commits. The gate reads `baseRefName` for exactly this
-reason, and re-reads it before the verdict so a mid-gate retarget is measured
-against the new base.
+**Timing — once, at the gate.** Being behind is **not a mid-stage blocker.**
+Notice it, record it, carry on; the gate is where it is resolved. Reacting on
+sight is expensive because a base merge moves the head, and a moved head
+invalidates the CI results and the review cycle about to be spent on it. On
+evanharmon1/harmon-init#1311 the base moved five times in one session and the
+branch was merged three times; two were mid-stage reactions that re-reviewed
+source which had not changed and found nothing.
 
-**What proves it.** `behind_by`, from the compare API
-(`repos/{repo}/compare/{base}...{head}`) or `git rev-list --count
-<target-remote>/<baseRefName>..<head>` in a worktree —
-**never `mergeStateStatus`**.
-That field is a lazily recomputed cache: on ponderousdev/omator#758 it read
-`CLEAN`/`MERGEABLE` for a head sixteen commits behind `main`. `readiness-gate.sh`
-checks both, and the `behind-base` condition is the one that is true;
-`merge-state-behind` remains as the cheap cache signal beside it.
+**Reconciliation is an ordinary remediation round.** It is not a special
+operation exempt from anything: it passes the round gate and the secret scan,
+it pushes the gated SHA, it spends remediation budget, and it counts against
+every cap that governs any other round. Two consequences follow rather than
+needing their own procedure:
 
-**The recipe.** When the gate reports `behind-base`, `merge-state-behind`, or
-`merge-state-dirty` — all three are the same situation and take the same path;
-the gate checks the graph before the cache, so a genuinely behind head reports
-`behind-base` and `merge-state-behind` means only that the cache disagrees:
+- With no remediation budget left, reconciliation is the **blocked stop** with
+  a report naming the unreconciled base — never a push anyway, and never a
+  promotion on a behind head.
+- The merge moves the head, so it owes a fresh current-head cycle exactly as
+  any head move does — **which means it must be reconciled BEFORE the last
+  permitted cycle is spent**, not after. A clean final cycle followed by the
+  discovery that the base moved is a cap-reached escalation, because the cycle
+  the new head is owed no longer exists. Where the resolved integration cap is
+  0 no cloud cycle is owed at all and the gate's Codex condition drops out, as
+  everywhere else.
 
-1. Merge the base into the branch — `git fetch <target-remote> && git merge
-   <target-remote>/<baseRefName>` — resolving conflicts in the merge commit.
-   Never rebase, and never substitute the default branch for the PR's base.
-2. Run the round gate and the secret scan on the merge commit, and push **that
-   SHA**, exactly as step 5 prescribes for any other push. A base merge is a
-   push like any other; it is not exempt from the gate chain because "nothing
-   of mine changed". **It is a remediation round and it spends remediation
-   budget.** With none left, this is the blocked stop with a report naming the
-   unreconciled base — not a licence to push anyway, and not a reason to
-   promote on a behind head.
-3. Run **one** fresh current-head cycle against the new head, then re-run the
-   gate on that head. The merge moved the head, so every result the gate had is
-   stale by construction — this is the same obligation any head move carries,
-   not an extra one. **Where the resolved integration cap is 0** there is no
-   cloud cycle to run and none is owed; the gate's Codex condition drops out
-   exactly as it does everywhere else, and you still re-run the gate and still
-   obtain a fresh cap-zero integrator result for the new head.
-
-A PR that is behind is never reported ready. If the base moves *again* while
-this is in flight, that is a new head move and the same three steps apply;
-it is not a reason to promote on the older head.
+**A PR that is behind is never reported ready** — under any cap, at any round,
+however clean everything else is. That is the property all of the above exists
+to preserve; if a reading of this section ever conflicts with it, that reading
+is wrong.
 
 ## 6. Stop conditions
 

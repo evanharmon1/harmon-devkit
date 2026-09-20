@@ -604,21 +604,25 @@ assert_skill() {
     esac
 }
 assert_skill "the permitted base-into-feature direction" \
-    "**base branch into the feature branch** is allowed"
-assert_skill "the base bound to the PR's own baseRefName, not the default branch" \
-    "own \`baseRefName\` in the **target** repository"
-assert_skill "reconciliation spending remediation budget" \
-    "spends remediation budget"
-assert_skill "the cap-0 integration carve-out" \
-    "integration cap is 0** there is no"
-assert_skill "the prohibited feature-into-default direction" \
-    "**feature branch into the default branch** is the merge that is never done"
+    "base branch **into** the feature branch is permitted"
+assert_skill "the prohibited feature-into-base direction" \
+    "feature branch **into** the base is the operation that needs per-merge human approval"
 assert_skill "the no-rebase rule for pushed history" \
     "never rebased or force-pushed"
 assert_skill "behind-ness deferred to the gate, not acted on mid-stage" \
     "not a mid-stage blocker"
-assert_skill "behind_by as the signal, not the mergeStateStatus cache" \
-    "never \`mergeStateStatus\`"
+assert_skill "the base bound to the PR's own baseRefName in the target repo" \
+    "own \`baseRefName\` in the **target** repository"
+assert_skill "reconciliation being an ordinary remediation round" \
+    "ordinary remediation round"
+assert_skill "the exhausted-remediation blocked stop" \
+    "no remediation budget left, reconciliation is the **blocked stop**"
+assert_skill "reconciling before the last cycle is spent" \
+    "BEFORE the last permitted cycle is spent"
+assert_skill "the cap-0 integration carve-out" \
+    "integration cap is 0 no cloud cycle is owed"
+assert_skill "the overriding never-ready-when-behind invariant" \
+    "behind is never reported ready"
 assert_skill "the Base reconciliation section heading" \
     "### Base reconciliation"
 
@@ -660,20 +664,31 @@ jq -cn '{behind_by:2,ahead_by:3,status:"diverged"}' >"${fixtures}/second-compare
 run_gate
 assert_gate 1 fail behind-base
 
-echo "==> a retarget DURING the gate is compared against the NEW base"
-# baseRefName is re-read with the rest of the pre-verdict scalars, so a PR
-# retargeted mid-gate is measured against where it now points, not where it did.
+echo "==> a retarget DURING the gate stops the run rather than re-measuring"
+# Every condition already evaluated used the OLD base, so re-deriving against
+# the new one mid-verdict would mix two baselines in one verdict.
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
       baseRefName:"release/2.0"}' \
     >"${fixtures}/pr-view-second.json"
-jq -cn '{behind_by:7,ahead_by:1,status:"diverged"}' >"${fixtures}/second-compare.json"
 run_gate
-assert_gate 1 fail behind-base
+assert_gate 1 fail base-retargeted
 grep -Fq 'release/2.0' <<<"$gate_out" ||
-    fail "retarget case did not name the NEW base ref: $gate_out"
+    fail "retarget case did not name the new base ref: $gate_out"
+
+echo "==> a cache-only BEHIND (graph says 0) is indeterminate, not a merge to do"
+# Merging a base the head is already level with creates no commit, so there is
+# nothing to push or re-review and the blocker would reproduce forever.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view.json"
+run_gate
+assert_gate 2 indeterminate merge-state-stale
 
 echo "==> an unreadable compare is indeterminate, never a pass"
 write_defaults
@@ -1258,8 +1273,13 @@ jq -cn --arg head "$head_sha" \
 run_gate
 assert_gate 1 fail changes-requested
 
-echo "==> DIRTY and BEHIND fail; UNKNOWN is indeterminate"
-for pair in "DIRTY 1 fail merge-state-dirty" "BEHIND 1 fail merge-state-behind" \
+# BEHIND is RECLASSIFIED, not relaxed: the graph check above already failed a
+# genuinely behind head as `behind-base`, so reaching the cache branch means
+# the cache disagrees with the graph. Both outcomes refuse promotion — exit 1
+# vs exit 2 — but `merge-state-stale` says "re-poll", where the old
+# `merge-state-behind` sent the caller to merge a base it is level with.
+echo "==> DIRTY fails; a cache-only BEHIND and UNKNOWN are indeterminate"
+for pair in "DIRTY 1 fail merge-state-dirty" "BEHIND 2 indeterminate merge-state-stale" \
     "UNKNOWN 2 indeterminate merge-state-unknown"; do
     # shellcheck disable=SC2086
     set -- $pair

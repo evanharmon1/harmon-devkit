@@ -849,7 +849,14 @@ establish_behind "$scalars" "before evaluating"
 merge_state="$(jq -r '.mergeStateStatus // ""' <<<"$scalars")"
 case "$merge_state" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts with the base branch" ;;
-BEHIND) fail_condition merge-state-behind "the head is behind the base branch" ;;
+BEHIND)
+    # The graph said 0 above, so this is the cache lagging, not work to do.
+    # Failing it as `merge-state-behind` would send the caller to merge a base
+    # it is already level with — which creates no commit, so there is nothing
+    # to push or re-review and the same blocker reproduces forever. It is
+    # unknown-for-now: re-poll, never promote on it.
+    indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref} — the cache is lagging; re-poll briefly"
+    ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is still computing mergeability — re-poll briefly"
     ;;
@@ -1444,12 +1451,20 @@ jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
 # was level when checked and is behind by the verdict — caught here only if the
 # cache happens to have caught up, which is the assumption this whole condition
 # exists to stop making.
+# A retarget mid-gate invalidates every condition already evaluated against
+# the old base, so stop rather than re-deriving against a moving target.
+recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")" ||
+    indeterminate malformed-data "PR payload carries no base branch name (immediately before the verdict)"
+[ "$recheck_base" = "$behind_base_ref" ] ||
+    fail_condition base-retargeted "the PR base changed from ${behind_base_ref} to ${recheck_base} while the gate was reading — re-run against the new base"
 establish_behind "$recheck" "immediately before the verdict"
 [ "$behind_by" -eq 0 ] ||
     fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — reconcile and re-run (SKILL.md, 'Base reconciliation')"
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
-BEHIND) fail_condition merge-state-behind "the base branch advanced while the gate was reading" ;;
+BEHIND)
+    indeterminate merge-state-stale "mergeStateStatus reads BEHIND while the commit graph reports 0 behind ${behind_base_ref} — the cache is lagging; re-poll briefly"
+    ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is recomputing mergeability — re-poll briefly"
     ;;
