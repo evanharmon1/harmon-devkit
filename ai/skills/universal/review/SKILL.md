@@ -377,7 +377,7 @@ condition); review begins only after challenge has legitimately exited (or
 where challenge's resolved cap is 0 and the stage never opened).
 
 **Hand-off to integration and the CI readiness condition:**
-When a terminal `review` exits and hands off towards integration (via `security`
+When a terminal `review` exits and hands off to integration (via `security`
 and draft PR publication), the draft-first invariant is unchanged: publish the
 draft PR first, and the CI readiness condition from `AGENTS.md` § Readiness gate
 is evaluated by the integration stage once the draft exists: every required check

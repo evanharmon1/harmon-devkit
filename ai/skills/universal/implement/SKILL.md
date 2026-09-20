@@ -350,7 +350,7 @@ gate. Follow the repo's own adjudication contract; the shape it is usually in:
      the cap, so it ends the stage cleanly. If P0/P1 findings persist at the cap,
      stop and escalate to the maintainer.
 - At stage exit, the specific **exit rule and per-stage round history** must be
-  recorded in the stage ledger and, for an active dev-flow-v2 run, the run record.
+  recorded in the stage ledger and, for an active dev-flow-v2 run, in the run record.
 - **Round-2 scaffolding checkpoint**: round 2 carries the mandatory checkpoint
   requiring classification of any finding whose subject exists only because an
   earlier round of that same stage added it (delete, restructure to invariant,

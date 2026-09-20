@@ -195,7 +195,7 @@ for target_skill in "$skill" ai/skills/universal/implement/SKILL.md; do
     grep -qiE 'capped final round' "$target_skill" ||
         fail "$target_skill does not state the capped-final-round exit rule"
 done
-grep -Fq 'for an active dev-flow-v2 run, the run record' ai/skills/universal/implement/SKILL.md ||
+grep -Fq 'for an active dev-flow-v2 run, in the run record' ai/skills/universal/implement/SKILL.md ||
     fail "implement skill does not condition the run-record requirement on an active v2 run"
 entry_gate_line="$(grep -n '^## Entry gate$' "$skill" | cut -d: -f1)"
 dispatch_line="$(grep -n '^## Dispatch and receipt$' "$skill" | cut -d: -f1)"
