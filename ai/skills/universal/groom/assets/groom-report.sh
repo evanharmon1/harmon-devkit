@@ -445,7 +445,7 @@ cmd_render() {
     # ─────────────────────────────────────────────────────────────────────────
     # 2. Render Self-Contained Styled HTML (--out-html)
     # ─────────────────────────────────────────────────────────────────────────
-    jq -r --arg now "$now" --argjson outcomes_map "$outcomes_map" '
+    jq -r --arg now "$now" --arg gh_host "${GH_HOST:-github.com}" --argjson outcomes_map "$outcomes_map" '
       def h: tostring
         | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")
         | gsub("\""; "&quot;");
@@ -455,7 +455,7 @@ cmd_render() {
       # ititle_h (issue #1015) — the link is presentation only, and the plain
       # ititle_h is still used wherever a link would be noise.
       def ilink_h(titles; repo; n):
-        "<a class=\"inum\" href=\"https://github.com/" + (repo|h) + "/issues/" + (n|tostring) + "\">#" + (n|tostring) + "</a> "
+        "<a class=\"inum\" href=\"https://" + ($gh_host|h) + "/" + (repo|h) + "/issues/" + (n|tostring) + "\">#" + (n|tostring) + "</a> "
         + "<span class=\"ititle\">" + (titles[(n|tostring)] // "(title unavailable)" | h) + "</span>";
       # The duplicate target is an issue reference like any other, so it links
       # like any other: the reader meeting "duplicate of #12" wants to open #12.
@@ -561,19 +561,19 @@ cmd_render() {
           { label: "Settled", count: (($close_done|length) + ($decisions_done|length)), color: "#57606a", href: "#completed" },
           { label: "Needs info", count: ([$rows[] | select(.verdict == "NEEDS-INFO")] | length), color: "#8250df", href: "#every-issue" },
           { label: "Keep", count: ([$rows[] | select(.verdict == "KEEP")] | length), color: "#1a7f37", href: "#every-issue" },
-          { label: "Unverified", count: $unverified_n, color: "#adb5bd", href: "#unverified" }
+          { label: "Unverified", count: $unverified_n, color: "var(--muted)", href: "#unverified" }
         ] as $ribbon
 
       # ── Inline SVG Chart 1: Verdict breakdown (donut) ──
       | [
-          { label: "CLOSE-done", count: ([$rows[] | select(.verdict == "CLOSE-done")] | length), color: "#d1242f" },
+          { label: "CLOSE-done", count: ([$rows[] | select(.verdict == "CLOSE-done")] | length), color: "#c1121f" },
           { label: "CLOSE-obsolete", count: ([$rows[] | select(.verdict == "CLOSE-obsolete")] | length), color: "#bc4c00" },
           { label: "CLOSE-dup", count: ([$rows[] | select(.verdict | startswith("CLOSE-dup"))] | length), color: "#a40e26" },
-          { label: "CLOSE-wrong-repo", count: ([$rows[] | select(.verdict | startswith("CLOSE-wrong-repo"))] | length), color: "#bf8700" },
+          { label: "CLOSE-wrong-repo", count: ([$rows[] | select(.verdict | startswith("CLOSE-wrong-repo"))] | length), color: "#7d1128" },
           { label: "KEEP", count: ([$rows[] | select(.verdict == "KEEP")] | length), color: "#1a7f37" },
           { label: "NEEDS-DECISION", count: ([$rows[] | select(.verdict == "NEEDS-DECISION")] | length), color: "#0969da" },
           { label: "NEEDS-INFO", count: ([$rows[] | select(.verdict == "NEEDS-INFO")] | length), color: "#8250df" },
-          { label: "Unverified", count: $unverified_n, color: "#adb5bd" }
+          { label: "Unverified", count: $unverified_n, color: "var(--muted)" }
         ] as $v_data
       | (([$v_data[].count] | max) // 1) as $v_max0
       | (if $v_max0 == 0 then 1 else $v_max0 end) as $v_max
@@ -781,9 +781,12 @@ cmd_render() {
         ".matrix { display: grid; gap: 0.5rem; margin-top: 1.1rem; }",
         ".matrix-cap { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); font-weight: 700; }",
         ".matrix-row { display: grid; grid-template-columns: 4.4rem 1fr 2.2rem; align-items: center; gap: 0.6rem; font-size: 0.76rem; }",
+        ".matrix { grid-template-columns: 1fr; }",
         ".matrix-row b { font-variant-numeric: tabular-nums; text-align: right; }",
         ".minibar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--track); }",
         ".minibar span { display: block; height: 100%; }",
+        ".matrix-text { grid-column: 1 / -1; margin: 0 0 0.35rem; font-size: 0.7rem; color: var(--muted); font-variant-numeric: tabular-nums; }",
+        ".minibar span + span { box-shadow: inset 1px 0 0 var(--surface); }",
         ".legend-row span { white-space: nowrap; }",
         "svg text { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif; font-size: 11px; fill: currentColor; }",
         "svg .axis { stroke: var(--border); stroke-width: 1; }",
@@ -827,8 +830,8 @@ cmd_render() {
         ".callout-title { font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; color: var(--callout-border); margin-bottom: 0.15rem; }",
         ".callout-body { margin: 0.2rem 0; }",
         ".callout-response { font-size: 0.79rem; color: var(--muted); margin: 0.45rem 0 0; }",
-        ".badge { display: inline-block; padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.01em; border-radius: 999px; background: var(--badge-bg); color: var(--badge-text); white-space: nowrap; }",
-        "td .badge { white-space: normal; overflow-wrap: anywhere; }",
+        ".badge { display: inline-block; padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.01em; border-radius: 999px; background: var(--badge-bg); color: var(--badge-text); white-space: normal; overflow-wrap: anywhere; }",
+        ".badge-priority-high, .badge-priority-p0, .badge-priority-p1, .badge-priority-P0, .badge-priority-P1, .badge-priority-urgent, .badge-priority-medium, .badge-priority-p2, .badge-priority-P2, .badge-priority-low, .badge-priority-p3, .badge-priority-P3 { white-space: nowrap; }",
         ".badge-v-close { background: #ffe9e6; color: #a40e26; }",
         ".badge-v-keep { background: #dcfce7; color: #15803d; }",
         ".badge-v-decision { background: #dbeafe; color: #1d4ed8; }",
@@ -953,9 +956,11 @@ cmd_render() {
         "<div class=\"matrix\">",
         "<div class=\"matrix-cap\">Disposition within each band</div>",
         ([$p_matrix[] | . as $band | ($band.total) as $bt |
-          "<div class=\"matrix-row\"><span>\($band.label|h)</span><div class=\"minibar\">"
-          + ([$band.parts[] | select(.count > 0) | "<span style=\"width:\(.count | pct($bt))%;background:\(.color)\" title=\"\(.label|h): \(.count)\"></span>"] | join(""))
-          + "</div><b>\($bt)</b></div>"] | join("")),
+          "<div class=\"matrix-row\"><span>\($band.label|h)</span><div class=\"minibar\" role=\"img\" aria-label=\"\($band.label|h): "
+          + ([$band.parts[] | "\(.label|h) \(.count)"] | join(", ")) + "\">"
+          + ([$band.parts[] | select(.count > 0) | "<span style=\"width:\(.count | pct($bt))%;background:\(.color)\"></span>"] | join(""))
+          + "</div><b>\($bt)</b></div>"
+          + "<p class=\"matrix-text\">" + ([$band.parts[] | select(.count > 0) | "\(.label|h) \(.count)"] | join(" · ")) + "</p>"] | join("")),
         "</div>",
         "</div>",
         # Chart 3: Backlog age distribution (column histogram)
@@ -1018,7 +1023,7 @@ cmd_render() {
            + "<th class=\"sortable\" onclick=\"groomSortTable(&#39;table-close&#39;, 6)\">Reason / Evidence</th>"
            + "</tr></thead><tbody>"
            + ([$close[] |
-               "<tr><td><a class=\"inum\" href=\"https://github.com/\($repo|h)/issues/\(.number)\">#\(.number)</a></td>"
+               "<tr><td><a class=\"inum\" href=\"https://\($gh_host|h)/\($repo|h)/issues/\(.number)\">#\(.number)</a></td>"
                + "<td class=\"ititle\">\(.title // "(title unavailable)"|h)</td>"
                + "<td>\(.verdict | vbadge($titles; $repo))</td>"
                + "<td>\(pbadge)</td>"
@@ -1070,7 +1075,7 @@ cmd_render() {
         "<details class=\"sect\" id=\"sec-parents\"><summary><h2 id=\"parents\">Parent issues <span class=\"pill\">\($parents|length)</span><span class=\"chev\"></span></h2></summary>",
         (if ($parents|length) == 0 then "<p class=\"empty\">No parent-tree proposals this run.</p>"
          else "<ul class=\"plain\">" + ([$parents[] |
-             "<li>\(if .parent then ("<a class=\"inum\" href=\"https://github.com/" + ($repo|h) + "/issues/" + (.parent|tostring) + "\">#" + (.parent|tostring) + "</a> <strong>" + ((if (.title // "") != "" then .title else $titles[(.parent|tostring)] end) // "(title unavailable)" | h) + "</strong>") else "<span class=\"badge\">new</span> <strong>\(.title|h)</strong>" end)"
+             "<li>\(if .parent then ("<a class=\"inum\" href=\"https://" + ($gh_host|h) + "/" + ($repo|h) + "/issues/" + (.parent|tostring) + "\">#" + (.parent|tostring) + "</a> <strong>" + ((if (.title // "") != "" then .title else $titles[(.parent|tostring)] end) // "(title unavailable)" | h) + "</strong>") else "<span class=\"badge\">new</span> <strong>\(.title|h)</strong>" end)"
              + (if (.children // [])|length > 0
                 then "<div class=\"meta-row\">" + ((.children // []) | map("<span class=\"chip\">" + ilink_h($titles; $repo; .) + "</span>") | join("")) + "</div>"
                 else "" end)
@@ -1174,7 +1179,7 @@ cmd_render() {
          else
            "<div class=\"table-wrap\"><table><thead><tr><th>#</th><th>Title</th><th>Kind</th><th>Defect</th><th>Proposed fix</th></tr></thead><tbody>"
            + ([$conf_defects[] |
-              "<tr><td><a class=\"inum\" href=\"https://github.com/\($repo|h)/issues/\(.number)\">#\(.number)</a></td><td class=\"ititle\">\(.title // ""|h)</td><td><span class=\"chip\">\(.kind // ""|h)</span></td><td>\(.defect // ""|h)</td><td><span class=\"badge badge-v-decision\">\(.fix // ""|h)</span></td></tr>"
+              "<tr><td><a class=\"inum\" href=\"https://\($gh_host|h)/\($repo|h)/issues/\(.number)\">#\(.number)</a></td><td class=\"ititle\">\(.title // ""|h)</td><td><span class=\"chip\">\(.kind // ""|h)</span></td><td>\(.defect // ""|h)</td><td><span class=\"badge badge-v-decision\">\(.fix // ""|h)</span></td></tr>"
              ] | join(""))
            + "</tbody></table></div>"
          end),
@@ -1204,7 +1209,7 @@ cmd_render() {
         "<th class=\"sortable\" onclick=\"groomSortTable(&#39;t&#39;, 5)\">Status</th>",
         "</tr></thead><tbody>",
         ([$rows[] |
-          "<tr><td><a class=\"inum\" href=\"https://github.com/\($repo|h)/issues/\(.number)\">#\(.number)</a></td>"
+          "<tr><td><a class=\"inum\" href=\"https://\($gh_host|h)/\($repo|h)/issues/\(.number)\">#\(.number)</a></td>"
           + "<td class=\"ititle\">\(.title // ""|h)</td>"
           + "<td><span class=\"badge badge-\(.verdict | vclass)\">\(.verdict|h)</span></td>"
           + "<td>\(pbadge)</td>"

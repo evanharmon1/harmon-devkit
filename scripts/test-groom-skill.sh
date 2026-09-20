@@ -864,6 +864,49 @@ grep -q 'oldest open issue' "$ms_html" ||
     fail "the milestone fixture must actually render a milestone-health line, or it proves nothing"
 assert_issue_refs_linked "$ms_html" "milestone-health render"
 
+echo "==> report: no close verdict is drawn in a priority band's colour, in any view"
+# Stated as a rule over both series. Two rounds fixed CLOSE-dup and then
+# CLOSE-wrong-repo one at a time; what has to hold is that no close verdict
+# ever wears a hue that means a priority band (Codex on 467e1af0).
+python3 - "$report" <<'PYEOF' || fail "a CLOSE-* verdict is drawn in a colour that means a priority band"
+import re, sys
+src = open(sys.argv[1]).read()
+closes = dict(re.findall(r'\{ label: "(CLOSE-[\w-]+)", count:.*?color: "(#[0-9a-f]{6})"', src, re.S))
+bands = dict(re.findall(r'\{ label: "(High|Medium|Low)", count:.*?color: "(#[0-9a-f]{6})"', src, re.S))
+clash = {v: c for v, c in closes.items() if c in set(bands.values())}
+if clash:
+    print("close verdicts wearing a priority hue:", clash, "bands:", bands, file=sys.stderr)
+sys.exit(1 if clash else 0)
+PYEOF
+
+echo "==> report: the disposition split is available without colour or a pointer"
+grep -q 'class="minibar" role="img" aria-label=' "$out_html" ||
+    fail "each priority band's split must carry an accessible name, not a hover-only title"
+grep -q '<p class="matrix-text">' "$out_html" ||
+    fail "the disposition split must also be stated in text, for readers who cannot separate the hues"
+
+echo "==> report: the unverified remainder cannot read as empty track"
+grep -q 'color: "var(--muted)"' "$report" ||
+    fail "the unverified slice must use a theme token that stays legible against the track in both themes"
+grep -q '#adb5bd' "$report" &&
+    fail "the low-contrast unverified grey must not come back"
+
+echo "==> report: a badge that can carry an issue title wraps, wherever it is rendered"
+grep -q 'white-space: normal; overflow-wrap: anywhere; }' "$out_html" ||
+    fail "badges must wrap by default — scoping the override to table cells left milestone health overflowing"
+grep -q 'badge-priority-P3 { white-space: nowrap; }' "$out_html" ||
+    fail "the short, bounded priority badges should still refuse to break"
+
+echo "==> report: issue links point at the host the audit ran against"
+GROOM_NOW="2026-01-01 00:00 UTC" GH_HOST=git.example.com run "$report" render \
+    --dispositions "$disp" --out-html "$tmp/ghe.html" --out-md "$tmp/ghe.md" >/dev/null
+grep -q 'href="https://git.example.com/' "$tmp/ghe.html" ||
+    fail "GH_HOST must decide the issue-link host, or an Enterprise audit links to a public repo"
+grep -q 'href="https://github.com/' "$tmp/ghe.html" &&
+    fail "no link may fall back to the public host once GH_HOST is set"
+grep -q 'href="https://github.com/' "$out_html" ||
+    fail "with GH_HOST unset the public host is still the default"
+
 echo "==> report: a priority band means the same colour in the card as in the chart"
 # Asserted against the rendered report, not the source: what matters is the
 # colour a reader sees on the card versus the one the chart gives that band.
