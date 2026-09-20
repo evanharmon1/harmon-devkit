@@ -611,6 +611,55 @@ rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at"
 assert_count "$malpromo_empty_extra_err" 0 'integer expression expected'
 assert_line "$malpromo_empty_extra_out" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=null on #77'
 
+# review-r2-codex-verification-1 / Greptile 4055301833: resolve_promotion()'s
+# malpromo_notified==0 branch must echo OBSERVATION-DEGRADED BEFORE
+# persisting notified=1, so an interruption between the two can only ever
+# risk one duplicate announcement on a later poll -- never lose the
+# episode's one and only warning. Pre-seeds MALPROMO already past the bound
+# with notified genuinely 0 and proves both halves: (a) the poll that
+# observes notified=0 emits the warning exactly once and, by the time it
+# returns, has durably persisted notified=1 (the ordering fix does not
+# trade "never lost" for "never persisted"); and (b) a second invocation
+# against that same now-persisted state -- simulating a restart -- does not
+# re-emit it.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+ordering_now="$(date -u +%s)"
+ordering_valid_at=$((ordering_now - 50))
+ordering_malformed_at=$((ordering_now - 40))
+ordering_valid_iso="$(date -u -d "@$ordering_valid_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$ordering_valid_iso" ] || ordering_valid_iso="$(date -u -r "$ordering_valid_at" +%Y-%m-%dT%H:%M:%SZ)"
+ordering_malformed_iso="$(date -u -d "@$ordering_malformed_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$ordering_malformed_iso" ] || ordering_malformed_iso="$(date -u -r "$ordering_malformed_at" +%Y-%m-%dT%H:%M:%SZ)"
+touch "$fixture_dir/malformed-promo-events"
+printf '%s\n' "$ordering_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
+printf '%s\n' "$ordering_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
+ordering_state="$test_tmp/malpromo-notify-ordering.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:11\nMALPROMO\talpha:77\t4\t0\t\nWALLCLOCK\trun\t0\t\n' \
+    "$((ordering_now + 900))" "$ordering_valid_at" \
+    >"$ordering_state"
+ordering_out1="$test_tmp/malpromo-notify-ordering-1.out"
+bash "$watcher" --iterations 1 --state-file "$ordering_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$ordering_out1"
+assert_line "$ordering_out1" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=null on #77'
+assert_count "$ordering_out1" 1 '^OBSERVATION-DEGRADED '
+assert_count "$ordering_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+5[[:space:]]+1[[:space:]]*$'
+
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+ordering_out2="$test_tmp/malpromo-notify-ordering-2.out"
+bash "$watcher" --iterations 1 --state-file "$ordering_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$ordering_out2"
+rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at" \
+    "$fixture_dir/malformed-promo-null-at"
+assert_count "$ordering_out2" 0 '^OBSERVATION-DEGRADED '
+
 # #1041 challenge r1 finding 1 (multi-lane): a degraded lane's backoff must
 # never delay a healthy lane sharing the same specs[] list. alpha fails
 # every poll here (never heals, --degrade-window-seconds is generous enough
@@ -1892,6 +1941,7 @@ if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READ
     "$rebind_out1" "$rebind_out2" "$mp_out" "$mp_allbad_out" "$mp_order_out" \
     "$codex2_out" "$codex3_out" \
     "$bounded_out1" "$bounded_out2" "$bounded_out3" \
+    "$ordering_out1" "$ordering_out2" \
     "$transient_out" "$restart_dedup_out" "$midepisode_out" "$multilane_out" \
     "$degrade_empty_extra_out" "$malpromo_empty_extra_out" \
     "$github_failure_out" "$activity_failure_out" "$malformed_activity_out" \

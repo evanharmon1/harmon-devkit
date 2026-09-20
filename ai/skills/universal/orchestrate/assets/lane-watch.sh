@@ -957,8 +957,6 @@ resolve_promotion() {
         return 11
     fi
     if [ "${malpromo_notified:-0}" -eq 0 ]; then
-        state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
-        persist_state
         # #1041 challenge r2 finding claude-6: $malformed_id is GitHub input
         # that, by definition, already failed numeric validation -- never
         # interpolate it into the one-line event grammar unsanitized. Strip
@@ -967,7 +965,22 @@ resolve_promotion() {
         # parsing of this event.
         malformed_id_safe="$(printf '%s' "$malformed_id" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
         [ -n "$malformed_id_safe" ] || malformed_id_safe="<non-numeric>"
+        # review-r2-codex-verification-1 / PR #1102 Greptile 4055301833:
+        # echo BEFORE persisting notified=1, mirroring
+        # observation_record_failure()'s own established ordering. The
+        # original order persisted first: a crash/interruption between the
+        # persist and the echo left notified durably 1 with the warning
+        # never having actually reached a human, and every later poll of
+        # the same still-malformed episode takes the notified==1 branch and
+        # never re-emits it -- permanently and silently losing the
+        # episode's one and only warning. A crash the OTHER way now (between
+        # this echo and the persist below) merely risks one duplicate
+        # OBSERVATION-DEGRADED on the next poll, which is the acceptable
+        # direction: this file's whole crash-safety convention is duplicate
+        # over lost, never the reverse.
         echo "OBSERVATION-DEGRADED $lane: malformed ready_for_review event id=$malformed_id_safe on #$pr_number"
+        state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
+        persist_state
     else
         state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
         persist_state
