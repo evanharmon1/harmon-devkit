@@ -167,6 +167,22 @@ for text in 'Retry an unavailable primary' 'already active dev-flow-v2 run' \
         ai/skills/universal/orchestrate/SKILL.md ||
         fail "review workflow documentation is missing $text"
 done
+
+echo "==> stage-exit, sequencing, and CI-concluded rules are stated at the point of use (#918)"
+for target_skill in "$skill" ai/skills/universal/implement/SKILL.md; do
+    grep -qiE 'two consecutive' "$target_skill" ||
+        fail "$target_skill does not state the two-consecutive exit rule"
+    grep -qiE 'concluded' "$target_skill" ||
+        fail "$target_skill does not state the CI-concluded readiness rule"
+    grep -qiE 'concurrent rounds are invalid for exit' "$target_skill" ||
+        fail "$target_skill does not state the sequencing rule forbidding concurrent exit rounds"
+    grep -Fq 'Loop cap and exit' "$target_skill" ||
+        fail "$target_skill does not cite AGENTS.md § Loop cap and exit"
+    grep -Fq 'Who decides, and what is delegated' "$target_skill" ||
+        fail "$target_skill does not cite AGENTS.md § Who decides, and what is delegated"
+    grep -Fq 'Readiness gate' "$target_skill" ||
+        fail "$target_skill does not cite AGENTS.md § Readiness gate"
+done
 entry_gate_line="$(grep -n '^## Entry gate$' "$skill" | cut -d: -f1)"
 dispatch_line="$(grep -n '^## Dispatch and receipt$' "$skill" | cut -d: -f1)"
 [ -n "$entry_gate_line" ] && [ -n "$dispatch_line" ] && [ "$entry_gate_line" -lt "$dispatch_line" ] ||

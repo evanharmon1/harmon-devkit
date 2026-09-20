@@ -342,6 +342,41 @@ reason and attribution to `run.json.interventions` as `kind: other`; refuse the
 override when no round remains. Never override an exit downward or reinterpret
 the script's outcome.
 
+### Stage exit rules and sequencing
+
+Stage exit is governed by `AGENTS.md` § "Loop cap and exit". A confidence stage
+ends on an adjudicated outcome, never on "findings fixed" alone. The three valid
+exit rules are:
+
+1. **Two consecutive clean rounds**: two CONSECUTIVE rounds each adjudicating to
+   zero P0 and zero P1 findings (a round with a confirmed P0/P1 is not clean
+   regardless of fixes; an all-P2 round counts as clean for this exit but is
+   NOT an empty-round exit). The second consecutive clean round is itself the
+   confirmation, so no further run is owed.
+2. **An empty round**: a round with NO findings at all (any severity), once the
+   stage has run at least `min_rounds` rounds (`0 <= min_rounds <= cap`, resolved
+   from the review policy in `.devflow.toml`; default fallback 1).
+3. **A capped final round**: a capped final round (including a cap of 1) that
+   adjudicates to zero P0/P1 findings ends the stage by itself, because the
+   confirmation run is forbidden by the cap. If P0/P1 findings persist at the cap,
+   stop and escalate to the maintainer.
+
+The exit rule and per-stage round history must be recorded at exit in `run.json`
+transitions, the adjudication ledger, and stage reports.
+
+**Stage sequencing:**
+Per `AGENTS.md` § "Who decides, and what is delegated", stage sequencing is
+strict: **challenge then review**, counted and capped separately (`.devflow.toml`
+sets distinct caps for each). Concurrent rounds are invalid for exit purposes
+(findings are still adjudicated, but concurrent rounds cannot satisfy an exit
+condition); review begins only after challenge has legitimately exited.
+
+**Hand-off to integration and the CI readiness condition:**
+When a terminal `review` exits and hands off towards integration (via `security`
+and draft PR publication), the CI readiness condition from `AGENTS.md` §
+Readiness gate applies: every required check CONCLUDED (pending or an empty
+check list is indeterminate, never a pass).
+
 ### Stage advance write
 
 Without that recorded upward override, an `action: advance` result is the sole

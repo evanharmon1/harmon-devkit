@@ -322,8 +322,34 @@ gate. Follow the repo's own adjudication contract; the shape it is usually in:
 - Treat every finding as a **hypothesis**. Verify it against the code, classify
   it confirmed / plausible-but-unproven / false positive, fix only what is
   confirmed, and state the evidence for anything rejected.
-- A stage exits on a **clean re-run**, never on "findings fixed" — commit each
-  round's fixes first, or the re-run scopes to the fix rather than the change.
+- **Stage sequencing is strict**: as established in
+  `AGENTS.md` § "Who decides, and what is delegated", challenge and review are
+  sequential, separately counted stages (`.devflow.toml`'s `[rounds]` sets
+  distinct caps for each).
+  Concurrent rounds are invalid for exit purposes (findings are still
+  adjudicated, but concurrent rounds cannot satisfy an exit condition); review
+  begins only after challenge has legitimately exited.
+- **Stage exit rules**: per `AGENTS.md` § "Loop cap and exit", a confidence stage
+  ends on an adjudicated outcome, never on "findings fixed" alone. There are three
+  valid exit rules:
+  1. **Two consecutive clean rounds**: two CONSECUTIVE rounds each adjudicating
+     to zero P0 and zero P1 findings (a round with a confirmed P0/P1 is not clean
+     regardless of fixes; an all-P2 round counts as clean for this exit but is
+     NOT an empty-round exit). The second consecutive clean round is itself the
+     confirmation, so no further run is owed.
+  2. **An empty round**: a round with NO findings at all (any severity), once the
+     stage has run at least `min_rounds` rounds (`0 <= min_rounds <= cap`, resolved
+     from the review policy in `.devflow.toml`; default fallback 1).
+  3. **A capped final round**: a capped final round (including a cap of 1) that
+     adjudicates to zero P0/P1 findings. The confirmation run is forbidden by
+     the cap, so it ends the stage cleanly. If P0/P1 findings persist at the cap,
+     stop and escalate to the maintainer.
+- At stage exit, the specific **exit rule and per-stage round history** must be
+  recorded in the stage ledger and run record.
+- **Round-2 scaffolding checkpoint**: round 2 carries the mandatory checkpoint
+  requiring classification of any finding whose subject exists only because an
+  earlier round of that same stage added it (delete, restructure to invariant,
+  split out, or keep with reason).
 - Respect the round cap and escalate rather than iterate past it.
 - These runs are **long** (5–15 minutes is ordinary, past most agent tool-call
   timeouts). Background them and poll; growing output means running, not hung,
@@ -437,6 +463,13 @@ its own stage with its own procedure (watching CI, adjudicating reviews,
 running the readiness gate, promoting), and once you enter it you are
 governed by its rules, not this file's. What changes here is only that
 nothing stops the session at the draft PR waiting for a separate invocation.
+
+When handing off to or executing integration, enforce the CI readiness condition
+from `AGENTS.md` § Readiness gate: every required check CONCLUDED (pending or an
+empty check list is indeterminate, never a pass). Checks green is a
+non-terminal state (`AGENTS.md` § Policy invariants); bot and human reviews land
+after checks settle, so wait for both signals: every check concluded, and a
+terminal current-head Codex result.
 
 Stop where `/integrate` itself stops: ready-for-review, or one of its own
 blocker conditions (a cap reached, no progress, something only the
