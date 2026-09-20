@@ -76,8 +76,6 @@ tasks:
       - task: test:agent-registry
       - task: test:review-skill
       - task: test:consumer-pin-audit
-      - task: test:schema-parity
-      - task: test:result-schema-composition
       - task: test:registry-drift
       - task: test:registry-docs
       - task: test:label-registry
@@ -392,6 +390,8 @@ tasks:
       - test:confirm-answers
       - test:migrate-label-family
       - test:result-schemas
+      - test:result-schema-composition
+      - test:schema-parity
       - test:dev-flow-stats
       - test:dev-flow-exit
       - test:dev-flow-monitor

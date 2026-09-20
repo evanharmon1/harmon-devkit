@@ -10563,65 +10563,79 @@ expect_ok "AC5: dev-flow-support stays out of the slash-command menu" \
 expect_ok "AC5: the package carries its own schemas copy" \
     test -f "$AC5_SKILLS/dev-flow-support/assets/schemas/result.envelope.schema.json"
 
-# run_vendored DESC PATH ARG... — execute a vendored entrypoint from INSIDE
-# the consumer and require it to produce its OWN diagnostic. Exit status is
-# deliberately not asserted: most of these are argument-less invocations that
-# correctly exit non-zero with a usage error. What matters is WHICH failure:
-# a usage message means the program loaded and resolved its whole dependency
-# closure; ERR_MODULE_NOT_FOUND, "No such file", or "not found" is exactly the
-# #974 defect, and each is rejected by name below — as are Node's parse and
-# runtime errors, which mean the asset never ran at all.
+# run_vendored DESC EXPECT PATH INTERP — execute a vendored entrypoint from
+# INSIDE the consumer and require it to emit ITS OWN diagnostic, matched against
+# EXPECT.
+#
+# This is a contract, not a denylist (Codex 4057006883, Greptile 4056946160).
+# The previous shape asked "does the output avoid a list of failure
+# substrings?", which any output could satisfy: a stack trace, a syntax error,
+# a non-zero exit from any cause, all scored a pass, and the suite proved only
+# that 15 files emitted bytes. Worse, the denylist misfired in the other
+# direction too — `consumer-pin-audit.sh`'s own legitimate diagnostic contains
+# the words "not found", so a correct run was scored a failure.
+#
+# Asking instead "did it print the specific thing only IT prints?" fixes both
+# directions at once. An entrypoint can only produce its own usage or
+# argument-validation message after loading and resolving its whole dependency
+# closure, which is precisely the property AC 5 is about; anything else — an
+# unresolved import, a parse error, an empty capture, a different program's
+# output — fails to match and fails the case.
+#
+# Exit status is deliberately still not asserted: every one of these exits
+# non-zero when run with no arguments, by design.
 run_vendored() {
-    local desc="$1" script="$2"
-    shift 2
+    local desc="$1" expect="$2" script="$3" interp="$4"
     local out
-    out="$(cd "$AC5_CON" && "$@" "$script" 2>&1)" || true
+    out="$(cd "$AC5_CON" && "$interp" "$script" 2>&1)" || true
     case "$out" in
-    *ERR_MODULE_NOT_FOUND* | *"Cannot find module"* | *"No such file"* | *"not found"* | *"is missing"*)
-        bad "$desc (unresolved dependency: $(printf '%s' "$out" | head -1))"
-        return
+    *"$expect"*)
+        ok "$desc"
         ;;
-    # Node parse and runtime errors (Gemini review thread 4056904247): an asset
-    # that throws SyntaxError, TypeError or ReferenceError did not run, but its
-    # message names none of the dependency substrings above, so without these
-    # it scored a pass. That is the hole challenge-r4-codex-adversarial-4
-    # reproduced with an `.mjs` containing only `const = ;`.
-    *SyntaxError* | *TypeError* | *ReferenceError*)
-        bad "$desc (did not run: $(printf '%s' "$out" | head -1))"
-        return
+    *)
+        bad "$desc (expected its own diagnostic \"$expect\"; got: $(printf '%s' "$out" | head -1))"
         ;;
     esac
-    if [ -z "$out" ]; then
-        bad "$desc (no output at all — cannot tell whether it ran)"
-        return
-    fi
-    ok "$desc"
 }
 
 # The 15 runtime entrypoints the review, integrate, orchestrate and retro
 # skills invoke by name.
-run_vendored "AC5: devflow-policy.mjs runs" \
+run_vendored "AC5: devflow-policy.mjs runs" "usage: devflow-policy.mjs" \
     "$AC5_SKILLS/dev-flow-support/assets/devflow-policy.mjs" node
-run_vendored "AC5: validate-result-schemas.mjs runs" \
+run_vendored "AC5: validate-result-schemas.mjs runs" "usage: validate-result-schemas.mjs" \
     "$AC5_SKILLS/dev-flow-support/assets/validate-result-schemas.mjs" node
-run_vendored "AC5: render-dev-flow.mjs runs" \
+run_vendored "AC5: render-dev-flow.mjs runs" "render-dev-flow: missing projection or subcommand" \
     "$AC5_SKILLS/dev-flow-support/assets/render-dev-flow.mjs" node
-run_vendored "AC5: dev-flow-exit.mjs runs" \
+run_vendored "AC5: dev-flow-exit.mjs runs" "usage: dev-flow-exit.mjs" \
     "$AC5_SKILLS/dev-flow-support/assets/dev-flow-exit.mjs" node
-run_vendored "AC5: normalize-finder-findings.mjs runs" \
+run_vendored "AC5: normalize-finder-findings.mjs runs" "normalize-finder-findings: --finder is required" \
     "$AC5_SKILLS/review/assets/normalize-finder-findings.mjs" node
-run_vendored "AC5: dev-flow-stats.mjs runs" \
+run_vendored "AC5: dev-flow-stats.mjs runs" "usage: dev-flow-stats.mjs" \
     "$AC5_SKILLS/retro/assets/dev-flow-stats.mjs" node
-run_vendored "AC5: retro-run-report.mjs runs" \
+run_vendored "AC5: retro-run-report.mjs runs" "retro-run-report: --repo <owner/repo> is required" \
     "$AC5_SKILLS/retro/assets/retro-run-report.mjs" node
-run_vendored "AC5: render-dev-flow.sh runs" "$AC5_SKILLS/dev-flow-support/assets/render-dev-flow.sh" bash
-run_vendored "AC5: dev-flow-exit.sh runs" "$AC5_SKILLS/dev-flow-support/assets/dev-flow-exit.sh" bash
-run_vendored "AC5: round-push.sh runs" "$AC5_SKILLS/review/assets/round-push.sh" bash
-run_vendored "AC5: dev-flow-monitor.sh runs" "$AC5_SKILLS/orchestrate/assets/dev-flow-monitor.sh" bash
-run_vendored "AC5: consumer-pin-audit.sh runs" "$AC5_SKILLS/orchestrate/assets/consumer-pin-audit.sh" bash
-run_vendored "AC5: fence-check.sh runs" "$AC5_SKILLS/orchestrate/assets/fence-check.sh" bash
-run_vendored "AC5: readiness-gate.sh runs" "$AC5_SKILLS/integrate/assets/readiness-gate.sh" bash
-run_vendored "AC5: check-codex-cloud-review.sh runs" \
+# The two .sh wrappers exec their sibling .mjs, so matching the .mjs's own
+# diagnostic is what proves the wrapper resolved that sibling from its new home.
+run_vendored "AC5: render-dev-flow.sh runs" "render-dev-flow: missing projection or subcommand" \
+    "$AC5_SKILLS/dev-flow-support/assets/render-dev-flow.sh" bash
+run_vendored "AC5: dev-flow-exit.sh runs" "usage: dev-flow-exit.mjs" \
+    "$AC5_SKILLS/dev-flow-support/assets/dev-flow-exit.sh" bash
+run_vendored "AC5: round-push.sh runs" "round-push: a mode is required" \
+    "$AC5_SKILLS/review/assets/round-push.sh" bash
+run_vendored "AC5: dev-flow-monitor.sh runs" "dev-flow-monitor.sh state-path --run-id" \
+    "$AC5_SKILLS/orchestrate/assets/dev-flow-monitor.sh" bash
+# consumer-pin-audit does REAL work here rather than printing usage: the
+# consumer above was synced, so it has a manifest and a provenance stamp to
+# audit. Its pin line is therefore the diagnostic that proves it ran — and it
+# proves more than a usage string would, since producing it requires resolving
+# the sibling dev-flow-support reader.
+run_vendored "AC5: consumer-pin-audit.sh runs" "(from provenance; manifest declares" \
+    "$AC5_SKILLS/orchestrate/assets/consumer-pin-audit.sh" bash
+run_vendored "AC5: fence-check.sh runs" "usage: fence-check.sh --brief" \
+    "$AC5_SKILLS/orchestrate/assets/fence-check.sh" bash
+run_vendored "AC5: readiness-gate.sh runs" "readiness-gate.sh check --repo OWNER/REPO" \
+    "$AC5_SKILLS/integrate/assets/readiness-gate.sh" bash
+run_vendored "AC5: check-codex-cloud-review.sh runs" "check-codex-cloud-review.sh reserve --state" \
     "$AC5_SKILLS/integrate/assets/check-codex-cloud-review.sh" bash
 
 # Loading is necessary but not sufficient: two entrypoints do REAL work here,

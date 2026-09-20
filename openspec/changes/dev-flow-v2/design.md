@@ -91,19 +91,38 @@ This lets repositories select their own gates without making config an
 arbitrary command-execution surface. Duplicating an allowlist in the skill and
 broker was rejected because they would drift.
 
-The round-push broker and the secret scanner live at stable repository-owned
-script paths (`ai/skills/universal/review/assets/round-push.sh`; `scripts/gitleaks-scan.sh` with its
+The round-push broker is a **vendored skill asset**
+(`ai/skills/universal/review/assets/round-push.sh`), and the secret scanner and
+its configuration stay repository-owned (`scripts/gitleaks-scan.sh` with its
 `.gitleaks.toml`, `.gitleaksignore` if the merge base has one, and the
 `scripts/summarize-gitleaks.mjs` helper it executes under
-`GITHUB_STEP_SUMMARY`; the extracted broker invokes that extracted
-script by explicit path, never through the worktree's `security:secrets`
-Taskfile recipe, which exists for humans and CI) rather than inside a
-skill's assets: the merge-base rule materializes them with
-`git show <merge-base>:<path>`, which needs a path that survives skill renames,
-and stage skills reference the broker by path instead of vendoring a copy that
-would drift. Keeping the broker as a skill asset was rejected because #638
-renames the skill that carried it and the merge-base extraction would then
-point at a path that no longer exists.
+`GITHUB_STEP_SUMMARY`; the extracted broker invokes that extracted script by
+explicit path, never through the worktree's `security:secrets` Taskfile recipe,
+which exists for humans and CI).
+
+**This reverses an earlier decision, and the reason it was reversed matters
+more than the placement.** The original rationale put the broker at a
+repository-root `scripts/` path because the merge-base rule materializes it
+with `git show <merge-base>:<path>`, which wants a path that survives skill
+renames — keeping it as a skill asset was rejected on the grounds that #638
+renames the skill carrying it. That reasoning optimised for one consumer of the
+path (the merge-base extraction) and ignored the other: **a repository-root
+path is shipped by no distribution channel.** `task sync:skills` vendors
+`ai/skills/`, harmon-init's template ships nothing here, so a stage skill that
+invoked a root path installed into a consumer that could not run it — the
+defect [#974](https://github.com/evanharmon1/harmon-devkit/issues/974) was filed
+for.
+
+The rename objection turned out to be answerable without moving the file.
+Rather than requiring one immortal path, the broker resolves each closure
+member's **canonical path against `--closure-base` itself**
+(`resolve_closure_canonical`), probing the known layouts in a fixed order and
+deriving `lib/toml-lite.mjs` from whichever matched. A rename therefore costs a
+candidate entry, not a broken gate, and a merge base predating the relocation
+still resolves because the legacy `scripts/` layout stays last in that order.
+The stage skills still reference the broker by path rather than vendoring a
+second copy, so the anti-drift property the original rationale wanted is
+unchanged.
 
 The trusted unit is the broker's closure, not its entrypoint. Because the
 broker consumes the policy reader and the secret scan consumes the

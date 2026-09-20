@@ -85,10 +85,18 @@ import process from 'node:process'
 // it instead, and fall back to the working directory itself when there is no
 // `.git` above it (a tarball export, a test fixture). `--registry` remains the
 // explicit override and keeps precedence over this default.
+// Secondary anchors (Gemini review 4056955657 / 4056955667): `.git` alone is
+// not always present at the root a caller means — a `git archive` export, a
+// vendored copy inside another project, or a CI checkout with the metadata
+// stripped all have none. Recognising the files that mark THIS repository's
+// root as well means the walk stops in the right place there instead of
+// walking to `/` and falling back to the start directory.
+const ROOT_ANCHORS = ['.git', 'Taskfile.yml', 'agent-registry.json', '.devflow.toml']
+
 function findRepoRoot(start) {
   let dir = path.resolve(start)
   for (;;) {
-    if (fs.existsSync(path.join(dir, '.git'))) return dir
+    if (ROOT_ANCHORS.some((anchor) => fs.existsSync(path.join(dir, anchor)))) return dir
     const parent = path.dirname(dir)
     if (parent === dir) return path.resolve(start)
     dir = parent

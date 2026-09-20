@@ -43,19 +43,45 @@ asset paths.
 
 Resolve this package relative to the calling asset's own **physical**
 directory, never from a repository root — the same shape
-`track-work/assets/check-issue-metadata.sh` uses for `issue-title-support`:
+`track-work/assets/check-issue-metadata.sh` uses for `issue-title-support`.
+A **skill file** does the same thing one level up, resolving
+`${CLAUDE_SKILL_DIR}` physically before appending the sibling hop:
+
+```sh
+skill_dir="$(cd "${CLAUDE_SKILL_DIR}" && pwd -P)"
+support_dir="$skill_dir/../dev-flow-support/assets"
+```
+
+Either way the physical resolution comes first:
 
 ```sh
 asset_dir="$(cd "$(dirname "$0")" && pwd -P)"
 support_dir="$asset_dir/../../dev-flow-support/assets"
 ```
 
-`pwd -P` matters. Categories are flattened on vendor, so the sibling package is
-two levels up in a consumer's `.claude/skills/` tree; in harmon-devkit's own
-source tree it is two levels up from `ai/skills/universal/<skill>/assets` as
-well, and the `.agents/skills/<name>` dogfood entries are symlinks whose
-physical target is that same source path. A logical `pwd` would resolve
-`../../` against the symlink and miss.
+`pwd -P` matters, and the failure it prevents is subtle enough to be worth
+spelling out. Categories are flattened on vendor, so the sibling package is two
+levels up in a consumer's `.claude/skills/` tree; in harmon-devkit's own source
+tree it is two levels up from `ai/skills/universal/<skill>/assets` as well, and
+the `.agents/skills/<name>` dogfood entries are symlinks whose physical target
+is that same source path.
+
+A **logical** `..` there splits by resolver rather than failing cleanly:
+
+```sh
+# ls follows the link, then applies `..` — succeeds.
+ls .agents/skills/review/../dev-flow-support/assets/validate-result-schemas.mjs
+# node collapses `..` first, looks beside the LINK's parent — MODULE_NOT_FOUND.
+node .agents/skills/review/../dev-flow-support/assets/validate-result-schemas.mjs
+```
+
+The kernel follows the symlink and then applies `..`; Node collapses `..` with
+`path.resolve()` *before* touching the filesystem, so it looks beside the link's
+parent instead of beside its target. Resolving physically first — `cd` then
+`pwd -P` — makes every resolver agree. Consumers are unaffected either way,
+because their `.claude/skills/<name>` entries are real directories; this is a
+hazard of the source tree's own dogfood links, which is exactly where it would
+go unnoticed.
 
 A `.mjs` asset uses a path relative to its own file for the same reason.
 

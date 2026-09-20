@@ -22,11 +22,26 @@ shorthands are used below and resolve the same way in harmon-devkit's source
 tree and in a consumer's flattened `.claude/skills/` one:
 
 - `assets/<name>` — this skill's own asset, i.e. `${CLAUDE_SKILL_DIR}/assets/<name>`.
-- `<package>/assets/<name>` — a sibling package's asset, i.e.
-  `${CLAUDE_SKILL_DIR}/../<package>/assets/<name>`. The shared dev-flow v2
-  runtime (`devflow-policy.mjs`, `validate-result-schemas.mjs`,
-  `render-dev-flow.{sh,mjs}`, `dev-flow-exit.{sh,mjs}`) lives in
-  `dev-flow-support/assets/`; see that package's `SKILL.md`.
+- `<package>/assets/<name>` — a sibling package's asset. **Resolve
+  `${CLAUDE_SKILL_DIR}` physically first**, then append:
+
+  ```sh
+  skill_dir="$(cd "${CLAUDE_SKILL_DIR}" && pwd -P)"
+  support_dir="$skill_dir/../dev-flow-support/assets"
+  ```
+
+  The `cd`/`pwd -P` is load-bearing, not ceremony: where the skills directory
+  is reached through a symlink — harmon-devkit's own `.agents/skills/<name>`
+  entries are symlinks into `ai/skills/<category>/` — a **logical**
+  `${CLAUDE_SKILL_DIR}/../` splits by resolver. `ls` follows the link and
+  succeeds; Node collapses `..` with `path.resolve()` before touching the
+  filesystem and fails with `MODULE_NOT_FOUND`. Resolving physically first
+  makes both agree. This is the same rule `dev-flow-support`'s own `SKILL.md`
+  states for asset-to-asset calls; see it for the canonical wording.
+
+  The shared dev-flow v2 runtime (`devflow-policy.mjs`,
+  `validate-result-schemas.mjs`, `render-dev-flow.{sh,mjs}`,
+  `dev-flow-exit.{sh,mjs}`) lives in `dev-flow-support/assets/`.
 
 A missing sibling package is a blocker, not a fallback: vendor the `universal`
 category as a unit rather than resolving a runtime path some other way.
