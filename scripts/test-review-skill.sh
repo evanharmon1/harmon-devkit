@@ -186,6 +186,12 @@ for target_skill in "$skill" ai/skills/universal/implement/SKILL.md; do
         fail "$target_skill does not state the zero-cap confidence-stage rule"
     grep -Fq 'resolved integration cap is 0' "$target_skill" ||
         fail "$target_skill does not state the cap-0 integration exception"
+    grep -qiE 'empty round' "$target_skill" ||
+        fail "$target_skill does not state the empty-round exit rule"
+    grep -Fq 'min_rounds' "$target_skill" ||
+        fail "$target_skill does not state the min_rounds requirement for empty rounds"
+    grep -qiE 'capped final round' "$target_skill" ||
+        fail "$target_skill does not state the capped-final-round exit rule"
 done
 grep -Fq 'for an active dev-flow-v2 run, the run record' ai/skills/universal/implement/SKILL.md ||
     fail "implement skill does not condition the run-record requirement on an active v2 run"
