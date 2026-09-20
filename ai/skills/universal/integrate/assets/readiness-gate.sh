@@ -483,7 +483,7 @@ fi
 # 1. PR scalars. `gh pr view` is a single-object read (pagination does not
 # apply); the list surfaces below all go through --paginate --slurp.
 scalars="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,headRefName,baseRefName)" ||
     indeterminate fetch-failed "cannot fetch the PR state"
 
 # This PR's own branch name — an extra signal `evaluate_checks` uses below to
@@ -817,6 +817,26 @@ UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is still computing mergeability — re-poll briefly"
     ;;
 esac
+
+# 5b. Behind-by — the TRUTH check beside the cache check above, and the one
+# that actually gates. `mergeStateStatus` is lazily recomputed: on
+# ponderousdev/omator#758 (2026-09-06 17:40Z) it read CLEAN/MERGEABLE for a head
+# SIXTEEN commits behind main, minutes after two sibling PRs merged. The gate
+# passed, the PR was reported ready, and the maintainer found "Update branch"
+# instead of a merge button — and his click moved the head, invalidating the
+# terminal Codex result the gate had just relied on. "Behind" is a property of
+# the commit graph, so ask the graph: the compare API answers `behind_by`
+# directly. BEHIND above stays as the cheap cache signal; this is the one that
+# is true. A failed or malformed read is indeterminate, never a pass — "I could
+# not establish this" must not read as "this is fine".
+base_ref_name="$(jq -er '.baseRefName | select(type == "string")' <<<"$scalars")" ||
+    indeterminate malformed-data "PR payload carries no base branch name"
+compare_json="$(run_gh api "repos/${repo}/compare/${base_ref_name}...${head}")" ||
+    indeterminate behind-base-unknown "cannot compare ${base_ref_name}...${head} to establish how far behind the head is"
+behind_by="$(jq -er '.behind_by | select(type == "number")' <<<"$compare_json")" ||
+    indeterminate behind-base-unknown "compare payload carries no numeric behind_by"
+[ "$behind_by" -eq 0 ] ||
+    fail_condition behind-base "the head is ${behind_by} commit(s) behind ${base_ref_name} — merge the base into the branch, re-verify, push once, and run one fresh current-head cycle (SKILL.md, 'Base reconciliation')"
 
 # 6. Deferred findings — projected from the record, never parsed from the
 # PR body. The rendered "## Deferred findings" section is a VIEW of

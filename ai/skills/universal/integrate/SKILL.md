@@ -516,6 +516,11 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   procedure would deadlock — the guard has already spent the undo and cannot
   reconcile an unverified head. That one comment only; every other write
   still routes.
+- **Being behind the base is not a mid-stage blocker.** A base that moved
+  mid-round is noted and carried, never acted on where it is noticed: a base
+  merge moves the head and throws away the CI and review results the round was
+  about to spend. The readiness gate resolves it, once, and the recipe is
+  "Base reconciliation" at the end of step 5.
 - **Unexplained promotion — `isDraft` flips to false with no `gh pr ready`
   issued by this session.** Read the `isDraft` from the round-start fetch every
   poll, not only at the gate: a flip caught late looks exactly like a PR that
@@ -1230,15 +1235,71 @@ is optional in addition, never a substitute for per-thread replies.
   declaring victory after a push is the classic failure mode this skill exists
   to prevent.
 
+### Base reconciliation
+
+Three questions, one answer, because getting any of them wrong costs a full
+review cycle.
+
+**Which direction is permitted.** Merging the current remote **default branch
+into the feature branch** is allowed, and is sometimes required before the gate
+can pass. That is not the prohibition elsewhere in this skill: merging the
+**feature branch into the default branch** is the merge that is never done
+without per-merge human approval. The two are opposite operations and only the
+second is a merge to `main`. An implementer who refuses the permitted one and
+waits has misread the rule and will wait forever
+(observed on evanharmon1/harmon-init#1203). Pushed history is still never
+rebased or force-pushed: reconcile with a merge commit.
+
+**When to do it — once, at the gate, not on sight.** Being behind is **not a
+mid-stage blocker.** Notice it, record it, and carry on; the gate is where it
+is resolved. Reacting to each observation is expensive because a base merge
+moves the head, and a moved head invalidates the CI results and the
+current-head review cycle that were about to be spent on it: merge, re-verify,
+push, re-review is 20–25 minutes each time. On evanharmon1/harmon-init#1311 the
+base moved five times during one session and the branch was merged **three**
+times; two of those were mid-stage reactions that re-reviewed source which had
+not changed and found nothing. So reconcile **once**, immediately before
+evaluating the readiness gate — and if the base moves again after that, the
+gate's own re-read catches it and you reconcile again, deliberately, rather than
+reflexively.
+
+**What proves it.** `behind_by`, from the compare API
+(`repos/{repo}/compare/{base}...{head}`) or `git rev-list --count
+origin/<base>..origin/<head>` in a worktree — **never `mergeStateStatus`**.
+That field is a lazily recomputed cache: on ponderousdev/omator#758 it read
+`CLEAN`/`MERGEABLE` for a head sixteen commits behind `main`. `readiness-gate.sh`
+checks both, and the `behind-base` condition is the one that is true;
+`merge-state-behind` remains as the cheap cache signal beside it.
+
+**The recipe.** When the gate reports `behind-base` (or `merge-state-dirty`):
+
+1. Merge the base into the branch — `git fetch <remote> && git merge
+   <remote>/<base>` — resolving conflicts in the merge commit. Never rebase.
+2. Run the round gate and the secret scan on the merge commit, and push **that
+   SHA**, exactly as step 5 prescribes for any other push. A base merge is a
+   push like any other; it is not exempt from the gate chain because "nothing
+   of mine changed".
+3. Run **one** fresh current-head cycle against the new head, then re-run the
+   gate on that head. The merge moved the head, so every result the gate had is
+   stale by construction — this is the same obligation any head move carries,
+   not an extra one.
+
+A PR that is behind is never reported ready. If the base moves *again* while
+this is in flight, that is a new head move and the same three steps apply;
+it is not a reason to promote on the older head.
+
 ## 6. Stop conditions
 
 Every integration session ends at exactly one of these — there is no path
 that loops indefinitely:
 
 1. **Ready for human review** — all workflows pass, `reviewDecision` is not
-   `CHANGES_REQUESTED`, `mergeStateStatus` is not `DIRTY` or `BEHIND`
-   (conflicts and an out-of-date head are yours to resolve — a merge/update
-   with the base plus re-verification is a round), and no findings remain
+   `CHANGES_REQUESTED`, the head is **0 commits behind its base** (`behind_by`,
+   not `mergeStateStatus`, which is a cache that has read `CLEAN` for a head
+   sixteen commits behind) and `mergeStateStatus` is not `DIRTY`
+   (conflicts and an out-of-date head are yours to resolve — see "Base
+   reconciliation" at the end of step 5; a merge with the base plus
+   re-verification is a round), and no findings remain
    unresolved — including the low-priority ones deferred into this stage,
    which count as resolved once their box is ticked with the outcome. A
    finding carried in the PR body has no inline thread to answer, so its

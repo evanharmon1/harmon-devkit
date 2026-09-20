@@ -118,6 +118,7 @@ repos/*/issues/*/comments*) file=top.pages.json ;;
 repos/*/commits/*/check-runs*) file=check-runs.pages.json ;;
 repos/*/commits/*/statuses*) file=statuses.pages.json ;;
 repos/*/actions/runs*) file=workflow-runs.pages.json ;;
+repos/*/compare/*) file=compare.json ;;
 repos/*/pulls/*) file=pr.json ;;
 *) exit 93 ;;
 esac
@@ -416,7 +417,7 @@ write_defaults() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch"}' \
+          headRefName:"feature-branch",baseRefName:"main"}' \
         >"${fixtures}/pr-view.json"
     jq -cn --arg head "$head_sha" --arg body "$(default_body)" \
         '{number:493,title:"feat: change",body:$body,
@@ -436,6 +437,9 @@ write_defaults() {
     # with no matching check_suite_id fall back to their app id (harmon-devkit#714).
     printf '%s\n' '[{"total_count":0,"workflow_runs":[]}]' \
         >"${fixtures}/workflow-runs.pages.json"
+    # Head level with its base by default. `behind_by` is the TRUTH check the
+    # gate uses; mergeStateStatus above is only the cache.
+    jq -cn '{behind_by:0,ahead_by:1,status:"ahead"}' >"${fixtures}/compare.json"
     jq -cn '{login:"pr-author"}' >"${fixtures}/user.json"
     printf '%s\n' '[[]]' >"${fixtures}/inline.pages.json"
     printf '%s\n' '[[]]' >"${fixtures}/reviews.pages.json"
@@ -579,12 +583,85 @@ write_defaults
 run_gate
 assert_gate 0 pass ready
 
+# ---- SKILL.md base-reconciliation contract (harmon-devkit#873, #836) -------
+# Prose, not behaviour — but the prose is the whole fix for #873, and a
+# directional distinction that quietly disappears from a document fails
+# silently and forever. An implementer who reads "never merge to main" and
+# concludes it forbids merging main INTO the branch waits for a reconciliation
+# that will never come (observed on evanharmon1/harmon-init#1203).
+echo "==> SKILL.md keeps the base-reconciliation contract"
+skill_md="${repo_root}/ai/skills/universal/integrate/SKILL.md"
+[ -f "$skill_md" ] || fail "integrate SKILL.md not found at $skill_md"
+# Match against a WHITESPACE-NORMALIZED copy: the assertions are about prose
+# that markdown wraps, and one keyed to today's line breaks would fail the next
+# time someone re-wraps a paragraph — which invites "fixing" it by loosening
+# the pattern until it no longer asserts anything.
+skill_flat="$(tr '\n' ' ' <"$skill_md" | tr -s ' ')"
+assert_skill() {
+    case "$skill_flat" in
+    *"$2"*) ;;
+    *) fail "SKILL.md lost: $1" ;;
+    esac
+}
+assert_skill "the permitted base-into-feature direction" \
+    "**default branch into the feature branch** is allowed"
+assert_skill "the prohibited feature-into-default direction" \
+    "**feature branch into the default branch** is the merge that is never done"
+assert_skill "the no-rebase rule for pushed history" \
+    "never rebased or force-pushed"
+assert_skill "behind-ness deferred to the gate, not acted on mid-stage" \
+    "not a mid-stage blocker"
+assert_skill "behind_by as the signal, not the mergeStateStatus cache" \
+    "never \`mergeStateStatus\`"
+assert_skill "the Base reconciliation section heading" \
+    "### Base reconciliation"
+
+echo "==> a head behind its base fails behind-base even when the cache says CLEAN"
+# The omator#758 shape (harmon-devkit#836): GitHub returned CLEAN/MERGEABLE for
+# a head 16 commits behind main. mergeStateStatus is a lazily recomputed cache;
+# behind_by is the commit graph. If this ever passes, the gate is reporting
+# ready for a PR the maintainer will have to "Update branch" — which moves the
+# head and invalidates the Codex result the gate just relied on.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"CLEAN",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:16,ahead_by:3,status:"diverged"}' >"${fixtures}/compare.json"
+run_gate
+assert_gate 1 fail behind-base
+
+echo "==> a head level with its base passes with the same CLEAN cache"
+# The negative control for the case above: same mergeStateStatus, behind_by 0.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"CLEAN",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:0,ahead_by:3,status:"ahead"}' >"${fixtures}/compare.json"
+run_gate
+assert_gate 0 pass ready
+
+echo "==> an unreadable compare is indeterminate, never a pass"
+write_defaults
+printf '%s\n' 'compare' >"${fixtures}/fail-endpoint"
+run_gate
+assert_gate 2 indeterminate behind-base-unknown
+
+echo "==> a compare payload without a numeric behind_by is indeterminate"
+write_defaults
+jq -cn '{status:"ahead"}' >"${fixtures}/compare.json"
+run_gate
+assert_gate 2 indeterminate behind-base-unknown
+
 echo "==> a closed PR fails as pr-not-open"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"MERGED",isDraft:false,headRefOid:$head,
       reviewDecision:"",mergeStateStatus:"UNKNOWN",
-      headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
+      headRefName:"feature-branch",baseRefName:"main"}' >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail pr-not-open
 
@@ -593,7 +670,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch"}' \
+      headRefName:"feature-branch",baseRefName:"main"}' \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail pr-not-draft
@@ -603,7 +680,7 @@ write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch"}' \
+      headRefName:"feature-branch",baseRefName:"main"}' \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail head-mismatch
@@ -1145,7 +1222,7 @@ write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch"}' \
+      headRefName:"feature-branch",baseRefName:"main"}' \
     >"${fixtures}/pr-view.json"
 run_gate
 assert_gate 1 fail changes-requested
@@ -1159,7 +1236,7 @@ for pair in "DIRTY 1 fail merge-state-dirty" "BEHIND 1 fail merge-state-behind" 
     jq -cn --arg head "$head_sha" --arg ms "$1" \
         '{state:"OPEN",isDraft:true,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:$ms,
-          headRefName:"feature-branch"}' \
+          headRefName:"feature-branch",baseRefName:"main"}' \
         >"${fixtures}/pr-view.json"
     run_gate
     assert_gate "$2" "$3" "$4"
@@ -1984,7 +2061,7 @@ write_promoted_pr_view() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:false,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
+          headRefName:"feature-branch",baseRefName:"main"}' >"${fixtures}/pr-view.json"
 }
 
 echo "==> #685(6): audit passes when run.json's promotion.head IS the gated head"
@@ -2138,7 +2215,7 @@ write_default_record
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      headRefName:"feature-branch"}' >"${fixtures}/pr-view.json"
+      headRefName:"feature-branch",baseRefName:"main"}' >"${fixtures}/pr-view.json"
 run_audit --integration-cap 3
 assert_gate 2 indeterminate codex-cap-mismatch
 
@@ -2264,7 +2341,7 @@ nondraft_pr_view() {
     jq -cn --arg head "$head_sha" \
         '{state:"OPEN",isDraft:false,headRefOid:$head,
           reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-          headRefName:"feature-branch"}' \
+          headRefName:"feature-branch",baseRefName:"main"}' \
         >"${fixtures}/pr-view.json"
 }
 
