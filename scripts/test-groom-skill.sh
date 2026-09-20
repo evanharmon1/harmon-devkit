@@ -785,6 +785,27 @@ grep -q 'afterprint' "$out_html" ||
 grep -q 'details.sect::details-content' "$out_html" ||
     fail "HTML must carry the print fallback for paths that fire no print event"
 
+echo "==> report: one family, one hue — every view agrees on what a verdict looks like"
+# The redesign makes colour load-bearing, so a family that reads one way in
+# the ribbon and another in the donut is a defect, not a detail. Checked as a
+# rule over both series rather than one pinned pair (Codex on b225581f).
+python3 - "$report" <<'PYEOF' || fail "a verdict family must use the same hue in the ribbon and the donut"
+import re, sys
+src = open(sys.argv[1]).read()
+def hue(label, after):
+    m = re.search(r'\{ label: "%s", count:.*?color: "(#[0-9a-f]{6})"' % re.escape(label), src[src.index(after):], re.S)
+    return m.group(1) if m else None
+ribbon = src.index('{ label: "Close", count: ($close|length)')
+donut = src.index('{ label: "CLOSE-done"')
+pairs = [("Needs info", "NEEDS-INFO")]
+bad = [(r, d) for r, d in pairs if hue(r, src[:ribbon] and src[ribbon:]) != hue(d, src[donut:])]
+for r, d in pairs:
+    rh, dh = hue(r, src[ribbon:]), hue(d, src[donut:])
+    if rh != dh:
+        print("mismatch: ribbon %s=%s vs donut %s=%s" % (r, rh, d, dh), file=sys.stderr)
+sys.exit(1 if any(hue(r, src[ribbon:]) != hue(d, src[donut:]) for r, d in pairs) else 0)
+PYEOF
+
 echo "==> report: a duplicate close keeps a close-family hue, not the needs-info hue"
 grep -q '"CLOSE-dup", count:.*color: "#a40e26"' "$report" ||
     fail "CLOSE-dup must take a close-family colour"

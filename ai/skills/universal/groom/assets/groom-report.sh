@@ -570,7 +570,7 @@ cmd_render() {
           { label: "CLOSE-wrong-repo", count: ([$rows[] | select(.verdict | startswith("CLOSE-wrong-repo"))] | length), color: "#bf8700" },
           { label: "KEEP", count: ([$rows[] | select(.verdict == "KEEP")] | length), color: "#1a7f37" },
           { label: "NEEDS-DECISION", count: ([$rows[] | select(.verdict == "NEEDS-DECISION")] | length), color: "#0969da" },
-          { label: "NEEDS-INFO", count: ([$rows[] | select(.verdict == "NEEDS-INFO")] | length), color: "#57606a" },
+          { label: "NEEDS-INFO", count: ([$rows[] | select(.verdict == "NEEDS-INFO")] | length), color: "#8250df" },
           { label: "Unverified", count: $unverified_n, color: "#adb5bd" }
         ] as $v_data
       | (([$v_data[].count] | max) // 1) as $v_max0
