@@ -266,7 +266,14 @@ if [ "${1:-}" = api ]; then
                 # later created_at, so an unfiltered max-by-created_at
                 # selection would pick it (and interpolate its null id into
                 # the identity string) unless it is excluded first.
-                printf '%s\n' "[{\"id\":555,\"event\":\"ready_for_review\",\"created_at\":\"$mp_valid_at\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}},{\"id\":null,\"event\":\"ready_for_review\",\"created_at\":\"$mp_null_at\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
+                # #1041 remediation round 4 (Codex 4055549763): a present
+                # malformed-promo-alt-id fixture swaps the malformed row's id
+                # for a caller-chosen value (already JSON-quoted in the
+                # fixture file), simulating a withdraw-then-re-promote onto a
+                # DIFFERENT malformed row without changing anything else.
+                mp_malformed_id=null
+                [ ! -f "$WATCH_FIXTURES/malformed-promo-alt-id" ] || mp_malformed_id="$(<"$WATCH_FIXTURES/malformed-promo-alt-id")"
+                printf '%s\n' "[{\"id\":555,\"event\":\"ready_for_review\",\"created_at\":\"$mp_valid_at\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}},{\"id\":$mp_malformed_id,\"event\":\"ready_for_review\",\"created_at\":\"$mp_null_at\",\"actor\":{\"id\":111,\"login\":\"maintainer\",\"type\":\"User\"}}]"
             fi
             ;;
         *) printf '%s\n' '[]' ;;
@@ -580,9 +587,16 @@ assert_count "$degrade_empty_extra_err" 0 'integer expression expected'
 assert_line "$degrade_empty_extra_out" 'OBSERVATION-DEGRADED delta: GitHub PR observation failed for lane delta'
 
 # Same defect, MALPROMO's notified field: pre-seeds a count already past
-# the bound with an empty extra, alongside a still-malformed row, so
-# resolve_promotion() takes the "notified" comparison with an
-# unguarded-empty value.
+# the bound with an empty extra AND no detail (the pre-round-4 format,
+# before this episode was keyed by row id), alongside a still-malformed
+# row, so resolve_promotion() takes the "notified" comparison with an
+# unguarded-empty value. #1041 remediation round 4 (Codex 4055549763): an
+# entry with no row id recorded is indistinguishable from one tracking a
+# genuinely different row, so this now ALSO exercises the row-id-mismatch
+# reset path -- the inherited count is discarded and this poll starts a
+# fresh episode rather than reading the unguarded-empty notified value at
+# all. Both outcomes matter: no crash, and no incorrect immediate
+# announce off legacy state.
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 malpromo_empty_extra_now="$(date -u +%s)"
@@ -596,7 +610,7 @@ touch "$fixture_dir/malformed-promo-events"
 printf '%s\n' "$malpromo_empty_extra_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
 printf '%s\n' "$malpromo_empty_extra_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
 malpromo_empty_extra_state="$test_tmp/malpromo-empty-extra.state"
-printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:11\nMALPROMO\talpha:77\t4\t\t\nWALLCLOCK\trun\t0\t\n' \
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:555\nMALPROMO\talpha:77\t4\t\t\nWALLCLOCK\trun\t0\t\n' \
     "$((malpromo_empty_extra_now + 900))" "$malpromo_empty_extra_valid_at" \
     >"$malpromo_empty_extra_state"
 malpromo_empty_extra_out="$test_tmp/malpromo-empty-extra.out"
@@ -609,7 +623,8 @@ bash "$watcher" --iterations 1 --state-file "$malpromo_empty_extra_state" \
 rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at" \
     "$fixture_dir/malformed-promo-null-at"
 assert_count "$malpromo_empty_extra_err" 0 'integer expression expected'
-assert_line "$malpromo_empty_extra_out" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=null on #77'
+assert_count "$malpromo_empty_extra_out" 0 '^OBSERVATION-DEGRADED '
+assert_count "$malpromo_empty_extra_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+null[[:space:]]*$'
 
 # review-r2-codex-verification-1 / Greptile 4055301833: resolve_promotion()'s
 # malpromo_notified==0 branch must echo OBSERVATION-DEGRADED BEFORE
@@ -635,7 +650,7 @@ touch "$fixture_dir/malformed-promo-events"
 printf '%s\n' "$ordering_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
 printf '%s\n' "$ordering_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
 ordering_state="$test_tmp/malpromo-notify-ordering.state"
-printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:11\nMALPROMO\talpha:77\t4\t0\t\nWALLCLOCK\trun\t0\t\n' \
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:555\nMALPROMO\talpha:77\t4\t0\tnull\nWALLCLOCK\trun\t0\t\n' \
     "$((ordering_now + 900))" "$ordering_valid_at" \
     >"$ordering_state"
 ordering_out1="$test_tmp/malpromo-notify-ordering-1.out"
@@ -646,7 +661,7 @@ bash "$watcher" --iterations 1 --state-file "$ordering_state" \
     >"$ordering_out1"
 assert_line "$ordering_out1" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=null on #77'
 assert_count "$ordering_out1" 1 '^OBSERVATION-DEGRADED '
-assert_count "$ordering_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+5[[:space:]]+1[[:space:]]*$'
+assert_count "$ordering_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+5[[:space:]]+1[[:space:]]+null[[:space:]]*$'
 
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
@@ -659,6 +674,72 @@ bash "$watcher" --iterations 1 --state-file "$ordering_state" \
 rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at" \
     "$fixture_dir/malformed-promo-null-at"
 assert_count "$ordering_out2" 0 '^OBSERVATION-DEGRADED '
+
+# #1041 remediation round 4 (Codex 4055549763): MALPROMO's episode used to
+# be keyed by lane+PR only, so a withdraw-then-re-promote onto a
+# DIFFERENT malformed row inherited the exhausted count and notified flag
+# from whichever row came before it -- the new row got neither its own
+# three indeterminate polls nor its own degradation event. Pre-seeds an
+# already-exhausted episode for malformed row "null" (past the bound,
+# already notified), then switches the mock's malformed row to a
+# distinct id ("xyz789") and polls four times: the first poll after the
+# switch must NOT immediately re-announce off the inherited state
+# (isolation from the old row), and the new row must still reach its own
+# full bound and announce on its own fourth poll (the new episode is not
+# left in limbo either).
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+reprom_now="$(date -u +%s)"
+reprom_valid_at=$((reprom_now - 50))
+reprom_malformed_at=$((reprom_now - 40))
+reprom_valid_iso="$(date -u -d "@$reprom_valid_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$reprom_valid_iso" ] || reprom_valid_iso="$(date -u -r "$reprom_valid_at" +%Y-%m-%dT%H:%M:%SZ)"
+reprom_malformed_iso="$(date -u -d "@$reprom_malformed_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$reprom_malformed_iso" ] || reprom_malformed_iso="$(date -u -r "$reprom_malformed_at" +%Y-%m-%dT%H:%M:%SZ)"
+touch "$fixture_dir/malformed-promo-events"
+printf '%s\n' "$reprom_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
+printf '%s\n' "$reprom_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
+reprom_state="$test_tmp/malpromo-reprom.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:555\nMALPROMO\talpha:77\t4\t1\tnull\nWALLCLOCK\trun\t0\t\n' \
+    "$((reprom_now + 900))" "$reprom_valid_at" \
+    >"$reprom_state"
+printf '%s\n' '"xyz789"' >"$fixture_dir/malformed-promo-alt-id"
+reprom_out1="$test_tmp/malpromo-reprom-1.out"
+bash "$watcher" --iterations 1 --state-file "$reprom_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$reprom_out1"
+assert_count "$reprom_out1" 0 '^OBSERVATION-DEGRADED '
+assert_count "$reprom_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+xyz789[[:space:]]*$'
+
+reprom_out2="$test_tmp/malpromo-reprom-2.out"
+bash "$watcher" --iterations 1 --state-file "$reprom_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$reprom_out2"
+assert_count "$reprom_out2" 0 '^OBSERVATION-DEGRADED '
+
+reprom_out3="$test_tmp/malpromo-reprom-3.out"
+bash "$watcher" --iterations 1 --state-file "$reprom_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$reprom_out3"
+assert_count "$reprom_out3" 0 '^OBSERVATION-DEGRADED '
+
+reprom_out4="$test_tmp/malpromo-reprom-4.out"
+bash "$watcher" --iterations 1 --state-file "$reprom_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$reprom_out4"
+rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at" \
+    "$fixture_dir/malformed-promo-null-at" "$fixture_dir/malformed-promo-alt-id"
+assert_line "$reprom_out4" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=xyz789 on #77'
+assert_count "$reprom_out4" 1 '^OBSERVATION-DEGRADED '
+assert_count "$reprom_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+4[[:space:]]+1[[:space:]]+xyz789[[:space:]]*$'
 
 # #1041 challenge r1 finding 1 (multi-lane): a degraded lane's backoff must
 # never delay a healthy lane sharing the same specs[] list. alpha fails
@@ -1753,8 +1834,13 @@ assert_count "$mp_out" 0 '^POST-PROMOTION-INDETERMINATE '
 assert_count "$mp_out" 0 '^OBSERVATION-DEGRADED '
 assert_count "$mp_state" 0 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+$((mp_valid_at + 900))[[:space:]]+${mp_valid_at}:555\$"
 assert_count "$mp_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+[0-9]+[[:space:]]*\$"
-assert_count "$mp_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]*$'
-assert_count "$mp_state" 0 'null'
+# #1041 remediation round 4 (Codex 4055549763): MALPROMO's detail field
+# now carries the sanitized malformed row id this episode is tracking, so
+# "null" legitimately appears there -- the original guard against "null"
+# leaking anywhere in state is narrowed to WINDOW specifically, which is
+# what it was actually protecting against (see the comment above).
+assert_count "$mp_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+null[[:space:]]*$'
+assert_count "$mp_state" 0 '^WINDOW.*null'
 
 # The bound bites after malformed_promo_poll_bound consecutive polls: a warm
 # window already armed from the valid row, with the same malformed row still
@@ -1762,11 +1848,12 @@ assert_count "$mp_state" 0 'null'
 # same as any other transient events-API gap) through the bound, then falls
 # back to the valid row and emits exactly one OBSERVATION-DEGRADED naming the
 # malformed row -- so one persistently malformed GitHub row cannot wedge a
-# lane's promotion tracking forever. MALPROMO is pre-seeded to 2 so the first
-# of these two invocations lands exactly on the bound (3) and the second
-# exceeds it (4).
+# lane's promotion tracking forever. MALPROMO is pre-seeded to 2, with its
+# detail matching the mock's malformed row id ("null", #1041 remediation
+# round 4), so the first of these two invocations lands exactly on the
+# bound (3) and the second exceeds it (4).
 bounded_state="$test_tmp/malformed-promo-bounded.state"
-printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s\nMALPROMO\talpha:77\t2\t0\t\nWALLCLOCK\trun\t0\t\n' \
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s\nMALPROMO\talpha:77\t2\t0\tnull\nWALLCLOCK\trun\t0\t\n' \
     "$((mp_valid_at + 900))" "${mp_valid_at}:555" >"$bounded_state"
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
@@ -1778,7 +1865,7 @@ bash "$watcher" --iterations 1 --state-file "$bounded_state" \
     >"$bounded_out1"
 assert_count "$bounded_out1" 0 '^POST-PROMOTION-INDETERMINATE '
 assert_count "$bounded_out1" 0 '^OBSERVATION-DEGRADED '
-assert_count "$bounded_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+3[[:space:]]+0[[:space:]]*$'
+assert_count "$bounded_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+3[[:space:]]+0[[:space:]]+null[[:space:]]*$'
 
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
@@ -1791,7 +1878,7 @@ bash "$watcher" --iterations 1 --state-file "$bounded_state" \
 assert_line "$bounded_out2" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=null on #77'
 assert_count "$bounded_out2" 1 '^OBSERVATION-DEGRADED '
 assert_count "$bounded_out2" 0 '^POST-PROMOTION-INDETERMINATE '
-assert_count "$bounded_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+4[[:space:]]+1[[:space:]]*$'
+assert_count "$bounded_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+4[[:space:]]+1[[:space:]]+null[[:space:]]*$'
 assert_count "$bounded_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+$((mp_valid_at + 900))[[:space:]]+${mp_valid_at}:555\$"
 
 # A third consecutive malformed poll, still past the bound, must not
@@ -1862,7 +1949,7 @@ assert_count "$mp_order_out" 0 '^POST-PROMOTION-INDETERMINATE '
 assert_count "$mp_order_out" 0 '^OBSERVATION-DEGRADED '
 assert_count "$mp_order_state" 0 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+[0-9]+[[:space:]]+${mp2_valid_at}:555\$"
 assert_count "$mp_order_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+[0-9]+[[:space:]]*\$"
-assert_count "$mp_order_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]*$'
+assert_count "$mp_order_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+null[[:space:]]*$'
 
 # #1041 challenge r1 finding codex-2 (adapted from Codex's own extracted-
 # function repro): a VALID, NEWER promotion must never be silently dropped
@@ -1942,6 +2029,7 @@ if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READ
     "$codex2_out" "$codex3_out" \
     "$bounded_out1" "$bounded_out2" "$bounded_out3" \
     "$ordering_out1" "$ordering_out2" \
+    "$reprom_out1" "$reprom_out2" "$reprom_out3" "$reprom_out4" \
     "$transient_out" "$restart_dedup_out" "$midepisode_out" "$multilane_out" \
     "$degrade_empty_extra_out" "$malpromo_empty_extra_out" \
     "$github_failure_out" "$activity_failure_out" "$malformed_activity_out" \

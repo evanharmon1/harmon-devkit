@@ -283,7 +283,7 @@ load_state() {
         SENTINEL) state_set SENTINEL "$lane:$value" 1 ;;
         WINDOW) state_set WINDOW "$lane" "$value" "$extra" "$detail" ;;
         DEGRADE) state_set DEGRADE "$lane" "$value" "$extra" "$detail" ;;
-        MALPROMO) state_set MALPROMO "$lane" "$value" "$extra" ;;
+        MALPROMO) state_set MALPROMO "$lane" "$value" "$extra" "$detail" ;;
         ACTIVITY) state_set ACTIVITY "$lane:$value:$extra" 1 ;;
         WALLCLOCK) warned=$value ;;
         esac
@@ -311,7 +311,7 @@ save_state() {
             SENTINEL) printf 'SENTINEL\t%s\t%s\t\n' "${key%%:*}" "${key#*:}" ;;
             WINDOW) printf 'WINDOW\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
             DEGRADE) printf 'DEGRADE\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
-            MALPROMO) printf 'MALPROMO\t%s\t%s\t%s\t\n' "$key" "$value" "$extra" ;;
+            MALPROMO) printf 'MALPROMO\t%s\t%s\t%s\t%s\n' "$key" "$value" "$extra" "$detail" ;;
             ACTIVITY)
                 lane=${key%%:*}
                 rest=${key#*:}
@@ -354,7 +354,7 @@ observation_failed() {
 # Each endpoint now tracks -- and clears -- its own episode independently.
 observation_recover() {
     local key=$1
-    if [ -n "$(state_get DEGRADE "$key" || true)" ]; then
+    if state_get DEGRADE "$key" >/dev/null; then
         state_delete DEGRADE "$key"
         persist_state
     fi
@@ -901,7 +901,7 @@ resolve_promotion() {
     # promo_since/promo_since_event_id stay global, since poll_activity()
     # and check_repromotion_after_close() call this function directly
     # (never substituted) and read those two as its return value.
-    local malpromo_key epoch_id_pair promotion_status has_malformed malformed_id malpromo_count malpromo_notified malformed_id_safe
+    local malpromo_key epoch_id_pair promotion_status has_malformed malformed_id malpromo_count malpromo_notified malformed_id_safe malpromo_row_id
     # Keyed by "$lane:$pr_number", not just $lane: a lane's count must not
     # survive to taint a DIFFERENT PR the lane later promotes (#1041
     # challenge r1 finding 2: a stale count from a since-closed PR let a
@@ -923,12 +923,23 @@ resolve_promotion() {
     [ "$promotion_status" -eq 0 ] || return "$promotion_status"
     IFS=$'\t' read -r promo_since promo_since_event_id has_malformed malformed_id <<<"$epoch_id_pair"
     if [ "$has_malformed" != "true" ]; then
-        if [ -n "$(state_get MALPROMO "$malpromo_key" || true)" ]; then
+        if state_get MALPROMO "$malpromo_key" >/dev/null; then
             state_delete MALPROMO "$malpromo_key"
             persist_state
         fi
         return 0
     fi
+    # #1041 challenge r2 finding claude-6: $malformed_id is GitHub input
+    # that, by definition, already failed numeric validation -- never
+    # interpolate it into the one-line event grammar unsanitized. Strip
+    # to a safe token and bound its length so no value (a newline, a
+    # tab, or an implausibly long string) can break line-oriented
+    # parsing of this event. Computed here, before the bound check (not
+    # only at announce time below), because it now also identifies which
+    # malformed row this episode is tracking -- see the row-id comparison
+    # immediately below.
+    malformed_id_safe="$(printf '%s' "$malformed_id" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
+    [ -n "$malformed_id_safe" ] || malformed_id_safe="<non-numeric>"
     # Gemini review (PR #1102): state_get can succeed with an empty string
     # (an existing entry whose field itself is stored empty), which `||`
     # never catches since that only fires on FAILURE -- an unguarded empty
@@ -937,9 +948,24 @@ resolve_promotion() {
     [ -n "$malpromo_count" ] || malpromo_count=0
     malpromo_notified="$(state_get MALPROMO "$malpromo_key" extra || true)"
     [ -n "$malpromo_notified" ] || malpromo_notified=0
+    # Codex 4055549763 (PR #1102): this episode used to be keyed by
+    # lane+PR only, so a withdraw-then-re-promote onto a DIFFERENT
+    # malformed row (a new, unrelated ready_for_review event that also
+    # happens to be malformed) inherited the prior row's already-exhausted
+    # count and notified flag -- the new row got neither its own three
+    # indeterminate polls nor its own degradation announcement. The
+    # persisted detail field now carries the sanitized row id this episode
+    # is tracking; a mismatch -- including the legacy-adoption case of an
+    # existing entry with no row id recorded yet -- starts a fresh episode
+    # for the new row rather than continuing the old one's count.
+    malpromo_row_id="$(state_get MALPROMO "$malpromo_key" detail || true)"
+    if [ "$malpromo_row_id" != "$malformed_id_safe" ]; then
+        malpromo_count=0
+        malpromo_notified=0
+    fi
     malpromo_count=$((malpromo_count + 1))
     if [ "$malpromo_count" -le "$malformed_promo_poll_bound" ]; then
-        state_set MALPROMO "$malpromo_key" "$malpromo_count" "$malpromo_notified"
+        state_set MALPROMO "$malpromo_key" "$malpromo_count" "$malpromo_notified" "$malformed_id_safe"
         persist_state
         # #1041 challenge r1 finding codex-2: this is NOT status 10's original
         # meaning ("no ready_for_review event resolvable at all" -- ordinary
@@ -957,14 +983,6 @@ resolve_promotion() {
         return 11
     fi
     if [ "${malpromo_notified:-0}" -eq 0 ]; then
-        # #1041 challenge r2 finding claude-6: $malformed_id is GitHub input
-        # that, by definition, already failed numeric validation -- never
-        # interpolate it into the one-line event grammar unsanitized. Strip
-        # to a safe token and bound its length so no value (a newline, a
-        # tab, or an implausibly long string) can break line-oriented
-        # parsing of this event.
-        malformed_id_safe="$(printf '%s' "$malformed_id" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
-        [ -n "$malformed_id_safe" ] || malformed_id_safe="<non-numeric>"
         # review-r2-codex-verification-1 / PR #1102 Greptile 4055301833:
         # echo BEFORE the state_set/persist_state pair below, mirroring
         # observation_record_failure()'s own established ordering. The
@@ -986,7 +1004,7 @@ resolve_promotion() {
     # since notified is set to 1 here regardless of which branch ran; only
     # the echo is conditional. No behavior change: the echo above still runs
     # (and completes) before this persist either way.
-    state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
+    state_set MALPROMO "$malpromo_key" "$malpromo_count" 1 "$malformed_id_safe"
     persist_state
     return 0
 }
