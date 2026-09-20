@@ -211,6 +211,24 @@ under `/etc/claude-code/hooks/` is **not** the one that runs. Inspect or replace
 the staged copy, and check `managed-settings.json` for the path actually
 registered rather than assuming it.
 
+### Managed PreToolUse hooks (`protect-files.sh`)
+
+The container registers mandatory PreToolUse hooks under `/etc/claude-code/hooks/`.
+Among them, `protect-files.sh` intercepts file edits (`Edit|Write|MultiEdit` in Claude Code,
+and via `/etc/codex/hooks/file-payload.sh` in Codex) to safeguard sensitive credentials and configuration:
+
+- **Protected set (credential-shaped paths only):**
+  - Substring patterns: `.claude/settings.json`, `.codex/config.toml`, `/etc/claude-code/`, `/etc/codex/`
+  - Suffix/glob patterns: `*.pem`, `*.key`, and the `.env` family where the basename starts with `.env` (such as `.env`, `.env.local`, `.envrc`) or ends with `.env` (such as `prod.env`).
+- **Permitted paths:** Repository files and workflow state — including `.git/` (such as dev-flow v2
+  run records in `.git/dev-flow-v2/` and deferred findings in `.git/deferred-findings/`), package
+  lockfiles (`package-lock.json`, `uv.lock`), build and dependency artifacts (`node_modules/`, `dist/`),
+  IaC state (`.terraform/`, `.tfstate`), and media/PDF files — are intentionally not blocked by this hook.
+
+The hook script lives at `.devcontainer/config/claude-hooks/protect-files.sh` in the repository.
+Because `/etc/claude-code/hooks/protect-files.sh` is baked into the container image at build time,
+changes to the hook source take effect inside a container on devcontainer rebuild.
+
 The last row is the one exception, and deliberately so: `~/.claude/settings.json`
 is volume-backed because Claude Code writes your in-app changes there. Every
 `post-create` **seed-merges** the image copy into it — existing values win, so

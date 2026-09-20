@@ -258,3 +258,83 @@ if ! run_hook "$claude_bnv" "echo hello"; then
 fi
 
 echo "==> block-no-verify SIGPIPE regression tests OK"
+
+# ---------------------------------------------------------------------------
+# protect-files: credential-shaped protection regression (#1019)
+# ---------------------------------------------------------------------------
+# The hook keeps only credential-shaped protections (.env, .pem, .key,
+# .claude/settings.json, .codex/config.toml, /etc/claude-code/, /etc/codex/)
+# and drops .git/, lockfiles, node_modules/, dist/, terraform state, and
+# media/PDF suffixes.
+
+devc_protect=".devcontainer/config/claude-hooks/protect-files.sh"
+
+protect_payload() {
+    jq -n --arg file "$1" '{"tool_input":{"file_path":$file}}'
+}
+
+assert_protect_blocks() {
+    local hook="$1" file="$2"
+    local stderr_out
+    local status=0
+    stderr_out="$(protect_payload "$file" | bash "$repo/$hook" 2>&1 >/dev/null)" || status=$?
+    if [ "$status" -ne 2 ]; then
+        fail "$hook allowed '$file' (exit $status, expected 2)"
+    fi
+    if [[ "$stderr_out" != *"protect-files: blocked write to '$file'"* ]]; then
+        fail "$hook blocked '$file' with unexpected stderr: $stderr_out"
+    fi
+}
+
+assert_protect_allows() {
+    local hook="$1" file="$2"
+    local stderr_out
+    local status=0
+    stderr_out="$(protect_payload "$file" | bash "$repo/$hook" 2>&1 >/dev/null)" || status=$?
+    if [ "$status" -ne 0 ]; then
+        fail "$hook unexpectedly blocked '$file' (exit $status): $stderr_out"
+    fi
+}
+
+echo "==> protect-files blocks credential-shaped paths"
+assert_protect_blocks "$devc_protect" ".env"
+assert_protect_blocks "$devc_protect" "/repo/.env"
+assert_protect_blocks "$devc_protect" "/repo/.env.local"
+assert_protect_blocks "$devc_protect" "/repo/prod.env"
+assert_protect_blocks "$devc_protect" "/repo/subdir/.env.local"
+assert_protect_blocks "$devc_protect" "/repo/sub/.env.production"
+assert_protect_blocks "$devc_protect" "/repo/.envrc"
+assert_protect_blocks "$devc_protect" "secrets.pem"
+assert_protect_blocks "$devc_protect" "/repo/certs/server.pem"
+assert_protect_blocks "$devc_protect" "server.key"
+assert_protect_blocks "$devc_protect" "/repo/keys/id_rsa.key"
+assert_protect_blocks "$devc_protect" ".claude/settings.json"
+assert_protect_blocks "$devc_protect" "/repo/.claude/settings.json"
+assert_protect_blocks "$devc_protect" ".codex/config.toml"
+assert_protect_blocks "$devc_protect" "/repo/.codex/config.toml"
+assert_protect_blocks "$devc_protect" "/etc/claude-code/x"
+assert_protect_blocks "$devc_protect" "/etc/claude-code/config.json"
+assert_protect_blocks "$devc_protect" "/etc/codex/x"
+
+echo "==> protect-files allows dropped patterns (.git, lockfiles, dist, media, etc.)"
+assert_protect_allows "$devc_protect" "/repo/.git/dev-flow-v2/runs/r/run.json"
+assert_protect_allows "$devc_protect" "/repo/.git/deferred-findings/branch"
+assert_protect_allows "$devc_protect" "/repo/.git/config"
+assert_protect_allows "$devc_protect" "/repo/package-lock.json"
+assert_protect_allows "$devc_protect" "/repo/uv.lock"
+assert_protect_allows "$devc_protect" "/repo/node_modules/foo/index.js"
+assert_protect_allows "$devc_protect" "/repo/dist/x.js"
+assert_protect_allows "$devc_protect" "/repo/img.png"
+assert_protect_allows "$devc_protect" "/repo/photo.jpg"
+assert_protect_allows "$devc_protect" "/repo/doc.pdf"
+assert_protect_allows "$devc_protect" "/repo/.terraform/main.tf"
+assert_protect_allows "$devc_protect" "/repo/terraform.tfstate"
+assert_protect_allows "$devc_protect" "/repo/ai/schemas/result.envelope.schema.json"
+assert_protect_allows "$devc_protect" "/repo/config.environment.json"
+assert_protect_allows "$devc_protect" "/repo/config.env.js"
+assert_protect_allows "$devc_protect" "/repo/src/env.ts"
+assert_protect_allows "$devc_protect" "/repo/env.config.json"
+assert_protect_allows "$devc_protect" "/repo/prod.env.local"
+assert_protect_allows "$devc_protect" ""
+
+echo "==> protect-files regression tests OK"
