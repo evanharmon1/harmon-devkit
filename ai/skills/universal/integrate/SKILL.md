@@ -1280,12 +1280,17 @@ needing their own procedure:
   a report naming the unreconciled base — never a push anyway, and never a
   promotion on a behind head.
 - The merge moves the head, so it owes a fresh current-head cycle exactly as
-  any head move does — **which means it must be reconciled BEFORE the last
-  permitted cycle is spent**, not after. A clean final cycle followed by the
-  discovery that the base moved is a cap-reached escalation, because the cycle
-  the new head is owed no longer exists. Where the resolved integration cap is
-  0 no cloud cycle is owed at all and the gate's Codex condition drops out, as
-  everywhere else.
+  any head move does. **The last permitted cycle is therefore reserved for the
+  reconciled head**: before dispatching it, establish `behind_by` yourself —
+  one compare call, the same one the gate makes — and if it is nonzero,
+  reconcile first and spend that cycle on the merged head. Waiting for the gate
+  to report `behind-base` is too late by construction: the cycle is dispatched
+  *before* the gate runs, so a base that moved beforehand would consume the
+  last cycle on a head about to be superseded, and turn a recoverable branch
+  into a deterministic cap-reached blocker. Discovering it after the final
+  cycle is spent remains an escalation — the point of the reservation is that
+  it should not happen. Where the resolved integration cap is 0 no cloud cycle
+  is owed at all and the gate's Codex condition drops out, as everywhere else.
 
 **A PR that is behind is never reported ready** — under any cap, at any round,
 however clean everything else is. That is the property all of the above exists

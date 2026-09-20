@@ -47,7 +47,8 @@
 # `check` emits one JSON line naming the decisive condition:
 #   pr-not-open, pr-not-draft, head-mismatch, head-moved   (fail)
 #   checks-failing, checks-pending                          (fail)
-#   changes-requested, merge-state-dirty, merge-state-behind (fail)
+#   changes-requested, merge-state-dirty                    (fail)
+#   behind-base, base-retargeted                            (fail)
 #   threads-unanswered, threads-new-follow-up,
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled                                       (fail)
@@ -56,6 +57,13 @@
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
 #   codex-stale, usage                                      (indeterminate)
+#   behind-base-unknown, merge-state-stale                  (indeterminate)
+#
+# `merge-state-behind` is RETIRED: the graph check (`behind-base`) runs first,
+# so a genuinely behind head never reaches the cache branch, and a cache that
+# still says BEHIND while the graph says 0 is lag — `merge-state-stale`,
+# re-poll. Callers keyed to the old token should treat `behind-base` as its
+# fail replacement and `merge-state-stale` as a retry.
 #
 # Two readiness conditions are deliberately NOT verified here, because no
 # API answers them — the caller must hold them as prose prerequisites:
@@ -377,7 +385,17 @@ establish_behind() {
     establish_phase="$2"
     behind_base_ref="$(jq -er '.baseRefName | select(type == "string")' <<<"$establish_scalars")" ||
         indeterminate malformed-data "PR payload carries no base branch name (${establish_phase})"
-    establish_compare="$(run_gh api "repos/${repo}/compare/${behind_base_ref}...${head}")" ||
+    # Encode the ref before it becomes a URL path segment. Branch names may
+    # contain `#`, `?` or a literal `%`, any of which silently truncate or
+    # reinterpret the endpoint — `release#1` would query `repos/.../compare/release`
+    # and answer about the wrong thing. `/` is restored afterwards because it
+    # is a legitimate, unambiguous separator inside a ref and GitHub expects it
+    # literally. Comparing against a base OID instead would answer a different
+    # question: how far behind a SNAPSHOT of the base, not its current tip.
+    # Done entirely in jq: the "loudly unbounded" path runs on a curated PATH
+    # that has no `sed`, and reaching for one made the gate exit 127 there.
+    establish_encoded="$(jq -rn --arg s "$behind_base_ref" '$s | @uri | gsub("%2F"; "/")')"
+    establish_compare="$(run_gh api "repos/${repo}/compare/${establish_encoded}...${head}")" ||
         indeterminate behind-base-unknown "cannot compare ${behind_base_ref}...${head} to establish how far behind the head is (${establish_phase})"
     behind_by="$(jq -er '.behind_by | select(type == "number")' <<<"$establish_compare")" ||
         indeterminate behind-base-unknown "compare payload carries no numeric behind_by (${establish_phase})"

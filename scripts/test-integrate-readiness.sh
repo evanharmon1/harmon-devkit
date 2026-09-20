@@ -617,8 +617,10 @@ assert_skill "reconciliation being an ordinary remediation round" \
     "ordinary remediation round"
 assert_skill "the exhausted-remediation blocked stop" \
     "no remediation budget left, reconciliation is the **blocked stop**"
-assert_skill "reconciling before the last cycle is spent" \
-    "BEFORE the last permitted cycle is spent"
+assert_skill "the last cycle reserved for the reconciled head" \
+    "last permitted cycle is therefore reserved for the reconciled head"
+assert_skill "establishing behind_by before dispatching that cycle" \
+    "before dispatching it, establish \`behind_by\` yourself"
 assert_skill "the cap-0 integration carve-out" \
     "integration cap is 0 no cloud cycle is owed"
 assert_skill "the overriding never-ready-when-behind invariant" \
@@ -677,6 +679,22 @@ run_gate
 assert_gate 1 fail base-retargeted
 grep -Fq 'release/2.0' <<<"$gate_out" ||
     fail "retarget case did not name the new base ref: $gate_out"
+
+echo "==> a URL-significant base ref is encoded, and a slash is left literal"
+# `release#1` interpolated raw would truncate the endpoint at the fragment and
+# silently compare against `release` — the wrong branch, answered confidently.
+# `/` must survive, because GitHub expects it literally inside a ref.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"release#1/rc"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead"}' >"${fixtures}/compare.json"
+run_gate
+assert_gate 0 pass ready
+grep -Fq 'compare/release%231/rc...' "$log" ||
+    fail "compare endpoint did not encode the base ref: $(grep -F compare/ "$log" | head -1)"
 
 echo "==> a cache-only BEHIND (graph says 0) is indeterminate, not a merge to do"
 # Merging a base the head is already level with creates no commit, so there is
