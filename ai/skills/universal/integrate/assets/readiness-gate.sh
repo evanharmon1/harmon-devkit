@@ -21,6 +21,7 @@
 #       --record DIR --integrator-result FILE --integration-cap N
 #       [--codex-recheck STATE_FILE] [--allow-edited-root ID]...
 #   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
+#   readiness-gate.sh behind --repo OWNER/REPO --pr N
 #
 # `check` evaluates the gate for the adjudicated 40-hex head SHA and, on full
 # pass only, prints `{"status":"pass",...,"fingerprint":...}` — where the
@@ -133,6 +134,7 @@ Usage:
       --remediation-cap N [--codex-recheck STATE_FILE]
       [--allow-edited-root ID]...
   readiness-gate.sh fingerprint --repo OWNER/REPO --pr N
+  readiness-gate.sh behind --repo OWNER/REPO --pr N
 
 check evaluates every step-6 readiness condition for the adjudicated head;
 audit is the same evaluation with the draft requirement inverted (the PR
@@ -339,7 +341,7 @@ check | audit)
     # skipped remediation check promotes an over-cap run.
     [ -n "$remediation_cap" ] || usage
     ;;
-fingerprint) ;;
+fingerprint | behind) ;;
 *) usage ;;
 esac
 
@@ -516,6 +518,28 @@ recheck_codex_freshness() {
     [ "$codex_recheck_exit" -eq 0 ] ||
         indeterminate codex-stale "recheck of the cached clean Codex cycle no longer confirms it (check-codex-cloud-review.sh exited $codex_recheck_exit) — evidence went stale between the integrator pass and this gate; dispatch a fresh integrator pass rather than trusting the cached result: $codex_recheck_output"
 }
+
+# `behind` is the read-only preflight the reserved-cycle rule needs. Before
+# dispatching the last permitted review cycle an integrator must know whether
+# the head is behind — and telling it to work that out itself would mean
+# re-deriving ref encoding and fail-closed handling outside the one place they
+# are tested, which is exactly the hand-rolling this skill forbids everywhere
+# else. Same code path as the gate, same exit vocabulary: 0 level, 1 behind,
+# 2 could not establish. It writes nothing and judges nothing else.
+if [ "$command_name" = behind ]; then
+    behind_scalars="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
+        indeterminate fetch-failed "cannot fetch the PR state"
+    head="$(jq -er '.headRefOid | select(type == "string")' <<<"$behind_scalars")" ||
+        indeterminate malformed-data "PR payload carries no head commit"
+    establish_behind "$behind_scalars" "preflight"
+    if [ "$behind_by" -eq 0 ]; then
+        jq -cn --arg base "$behind_base_ref" --arg head "$head" \
+            '{status:"level",behind_by:0,base:$base,head:$head}'
+        exit 0
+    fi
+    emit fail behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — reconcile before spending the reserved cycle"
+    exit 1
+fi
 
 if [ "$command_name" = fingerprint ]; then
     fetch_fingerprint_surfaces

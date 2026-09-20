@@ -1281,9 +1281,13 @@ needing their own procedure:
   promotion on a behind head.
 - The merge moves the head, so it owes a fresh current-head cycle exactly as
   any head move does. **The last permitted cycle is therefore reserved for the
-  reconciled head**: before dispatching it, establish `behind_by` yourself —
-  one compare call, the same one the gate makes — and if it is nonzero,
-  reconcile first and spend that cycle on the merged head. Waiting for the gate
+  reconciled head**: before dispatching it, run
+  `"$skill_dir"/assets/readiness-gate.sh behind --repo <repo> --pr <n>`
+  (read-only; 0 level, 1 behind, 2 could not establish) and, if it reports
+  behind, reconcile first and spend that cycle on the merged head. Use the
+  subcommand rather than a compare call of your own: ref encoding and the
+  fail-closed handling of an unreadable comparison live there and are tested
+  there, and an indeterminate answer must not be read as "level". Waiting for the gate
   to report `behind-base` is too late by construction: the cycle is dispatched
   *before* the gate runs, so a base that moved beforehand would consume the
   last cycle on a head about to be superseded, and turn a recoverable branch
@@ -1292,10 +1296,20 @@ needing their own procedure:
   it should not happen. Where the resolved integration cap is 0 no cloud cycle
   is owed at all and the gate's Codex condition drops out, as everywhere else.
 
-**A PR that is behind is never reported ready** — under any cap, at any round,
-however clean everything else is. That is the property all of the above exists
-to preserve; if a reading of this section ever conflicts with it, that reading
-is wrong.
+**A PR the gate can establish is behind is never reported ready** — under any
+cap, at any round, however clean everything else is. That is the property all
+of the above exists to preserve; if a reading of this section ever conflicts
+with it, that reading is wrong.
+
+The qualifier is exact, not a hedge. The base is not under this repository's
+control, so a PR can fall behind a second after a correct promotion; that is
+ordinary, and resolving it is what the maintainer's "Update branch" is for.
+What the gate owes is that it never promotes a head it could see was behind —
+which is why the check runs again immediately before the verdict rather than
+once at the start. Undoing a promotion because the base moved afterwards is
+**not** the remedy: promotion is a one-way door (`gh pr ready --undo` cannot
+unsend the notifications), and § "Unexplained promotion" already refuses
+reflexive undos.
 
 ## 6. Stop conditions
 

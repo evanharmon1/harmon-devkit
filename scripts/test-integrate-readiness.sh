@@ -619,12 +619,14 @@ assert_skill "the exhausted-remediation blocked stop" \
     "no remediation budget left, reconciliation is the **blocked stop**"
 assert_skill "the last cycle reserved for the reconciled head" \
     "last permitted cycle is therefore reserved for the reconciled head"
-assert_skill "establishing behind_by before dispatching that cycle" \
-    "before dispatching it, establish \`behind_by\` yourself"
+assert_skill "the executable preflight for the reserved cycle" \
+    "readiness-gate.sh behind --repo <repo> --pr <n>"
+assert_skill "promotion staying a one-way door when the base moves after it" \
+    "Undoing a promotion because the base moved afterwards is **not** the remedy"
 assert_skill "the cap-0 integration carve-out" \
     "integration cap is 0 no cloud cycle is owed"
 assert_skill "the overriding never-ready-when-behind invariant" \
-    "behind is never reported ready"
+    "gate can establish is behind is never reported ready"
 assert_skill "the Base reconciliation section heading" \
     "### Base reconciliation"
 
@@ -679,6 +681,58 @@ run_gate
 assert_gate 1 fail base-retargeted
 grep -Fq 'release/2.0' <<<"$gate_out" ||
     fail "retarget case did not name the new base ref: $gate_out"
+
+echo "==> the gate emits no stray output before its own argument parsing"
+# A header-comment edit once dropped its leading `#`, leaving an executable
+# line at top level. `set -euo pipefail` is BELOW the header, so it failed with
+# 127, execution continued, and every test still passed while stderr carried
+# "command not found" on every single run. Assert the shape, not that one line.
+stray_out="$("$gate" 2>&1 || true)"
+case "$stray_out" in
+*"command not found"* | *"No such file or directory"*)
+    fail "the gate emits stray shell output before parsing arguments: $stray_out"
+    ;;
+esac
+grep -q '^Usage:' <<<"$stray_out" ||
+    fail "a bare invocation did not print usage first: $stray_out"
+
+echo "==> the behind preflight reports level, behind, and indeterminate"
+# The reserved-cycle rule sends integrators here instead of re-deriving the
+# comparison, so it must carry the same fail-closed behaviour as the gate.
+write_defaults
+jq -cn '{behind_by:0,ahead_by:2,status:"ahead"}' >"${fixtures}/compare.json"
+set +e
+preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
+    --repo example/repo --pr 493 2>&1)"
+preflight_rc=$?
+set -e
+[ "$preflight_rc" -eq 0 ] || fail "behind preflight on a level head exited $preflight_rc: $preflight_out"
+grep -Fq '"status":"level"' <<<"$preflight_out" ||
+    fail "behind preflight did not report level: $preflight_out"
+
+jq -cn '{behind_by:4,ahead_by:2,status:"diverged"}' >"${fixtures}/compare.json"
+set +e
+preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
+    --repo example/repo --pr 493 2>&1)"
+preflight_rc=$?
+set -e
+[ "$preflight_rc" -eq 1 ] || fail "behind preflight on a behind head exited $preflight_rc: $preflight_out"
+grep -Fq 'behind-base' <<<"$preflight_out" ||
+    fail "behind preflight did not name behind-base: $preflight_out"
+
+# Indeterminate must NOT read as level: spending the reserved cycle on an
+# unverified head is the failure this preflight exists to prevent.
+write_defaults
+printf '%s\n' 'compare' >"${fixtures}/fail-endpoint"
+set +e
+preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
+    --repo example/repo --pr 493 2>&1)"
+preflight_rc=$?
+set -e
+[ "$preflight_rc" -eq 2 ] || fail "behind preflight on an unreadable compare exited $preflight_rc: $preflight_out"
+grep -Fq 'behind-base-unknown' <<<"$preflight_out" ||
+    fail "behind preflight did not report behind-base-unknown: $preflight_out"
+write_defaults
 
 echo "==> a URL-significant base ref is encoded, and a slash is left literal"
 # `release#1` interpolated raw would truncate the endpoint at the fragment and
