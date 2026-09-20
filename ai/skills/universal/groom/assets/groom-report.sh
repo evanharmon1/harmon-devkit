@@ -457,10 +457,12 @@ cmd_render() {
       def ilink_h(titles; repo; n):
         "<a class=\"inum\" href=\"https://github.com/" + (repo|h) + "/issues/" + (n|tostring) + "\">#" + (n|tostring) + "</a> "
         + "<span class=\"ititle\">" + (titles[(n|tostring)] // "(title unavailable)" | h) + "</span>";
-      def format_verdict_h(titles):
+      # The duplicate target is an issue reference like any other, so it links
+      # like any other: the reader meeting "duplicate of #12" wants to open #12.
+      def format_verdict_h(titles; repo):
         if test("^CLOSE-dup-of-#[0-9]+$") then
           capture("^CLOSE-dup-of-#(?<t>[0-9]+)$").t as $t |
-          "CLOSE-dup-of-#" + $t + " — " + (titles[$t] // "(title unavailable)" | h)
+          "CLOSE-dup-of-" + ilink_h(titles; repo; ($t | tonumber))
         else
           (. | h)
         end;
@@ -478,7 +480,7 @@ cmd_render() {
         elif . == "KEEP" then "v-keep"
         elif . == "NEEDS-DECISION" then "v-decision"
         else "v-info" end;
-      def vbadge(titles): "<span class=\"badge badge-" + (. | vclass) + "\">" + (. | format_verdict_h(titles)) + "</span>";
+      def vbadge(titles; repo): "<span class=\"badge badge-" + (. | vclass) + "\">" + (. | format_verdict_h(titles; repo)) + "</span>";
       def pscore:
         if ((.priority // "") | test("(?i)^p0$|urgent")) then 0
         elif ((.priority // "") | test("(?i)^p1$|high")) then 1
@@ -815,6 +817,9 @@ cmd_render() {
         "input[type=search]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }",
         ".inum { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8em; font-weight: 700; text-decoration: none; color: var(--link); background: var(--badge-bg); border-radius: 6px; padding: 0.08rem 0.35rem; white-space: nowrap; }",
         ".inum:hover { background: var(--accent); color: #fff; }",
+        ".badge .inum { background: transparent; color: inherit; padding: 0; text-decoration: underline; text-underline-offset: 2px; }",
+        ".badge .inum:hover { background: transparent; color: inherit; }",
+        ".badge .ititle { font-weight: inherit; }",
         ".ititle { font-weight: 600; }",
         "td.ititle { min-width: 15rem; }",
         # Callouts + badges
@@ -908,7 +913,7 @@ cmd_render() {
          end),
         "<a class=\"stat-card\" href=\"#close\" style=\"--rail: var(--danger)\"><div class=\"stat-num\">\($close|length)</div><div class=\"stat-label\">Close candidates</div><div class=\"stat-meter\"><i style=\"width:\(($close|length) | pct($audited))%\"></i></div><div class=\"stat-foot\">\(($close|length) | pct($audited))% of the \(if $unverified_n > 0 then "audited issues" else "backlog" end) <span class=\"go\">Close now →</span></div></a>",
         "<a class=\"stat-card\" href=\"#decisions\" style=\"--rail: var(--info)\"><div class=\"stat-num\">\($decisions|length)</div><div class=\"stat-label\">Decisions needed</div><div class=\"stat-meter\"><i style=\"width:\(($decisions|length) | pct($audited))%\"></i></div><div class=\"stat-foot\">\(($decisions|length) | pct($audited))% of the \(if $unverified_n > 0 then "audited issues" else "backlog" end) <span class=\"go\">Decisions →</span></div></a>",
-        "<a class=\"stat-card\" href=\"#chart-priority\" style=\"--rail: var(--warn)\"><div class=\"stat-num\">\($stats.high_priority // 0)</div><div class=\"stat-label\">High priority</div><div class=\"stat-meter\"><i style=\"width:\(($stats.high_priority // 0) | pct($audited))%\"></i></div><div class=\"stat-foot\">\(($stats.high_priority // 0) | pct($audited))% of the \(if $unverified_n > 0 then "audited issues" else "backlog" end) <span class=\"go\">Priority mix →</span></div></a>",
+        "<a class=\"stat-card\" href=\"#chart-priority\" style=\"--rail: var(--danger)\"><div class=\"stat-num\">\($stats.high_priority // 0)</div><div class=\"stat-label\">High priority</div><div class=\"stat-meter\"><i style=\"width:\(($stats.high_priority // 0) | pct($audited))%\"></i></div><div class=\"stat-foot\">\(($stats.high_priority // 0) | pct($audited))% of the \(if $unverified_n > 0 then "audited issues" else "backlog" end) <span class=\"go\">Priority mix →</span></div></a>",
         "<a class=\"stat-card\" href=\"#conformance\" style=\"--rail: var(--ok)\"><div class=\"stat-num is-text\">\($stats.pre_audit_triage // "not run"|h)</div><div class=\"stat-label\">Pre-audit triage</div><div class=\"stat-foot\">label coverage before the audit <span class=\"go\">Conformance →</span></div></a>",
         "</div>",
         "<h2 id=\"visualizations\">Visualizations</h2>",
@@ -1014,7 +1019,7 @@ cmd_render() {
            + ([$close[] |
                "<tr><td><a class=\"inum\" href=\"https://github.com/\($repo|h)/issues/\(.number)\">#\(.number)</a></td>"
                + "<td class=\"ititle\">\(.title // "(title unavailable)"|h)</td>"
-               + "<td>\(.verdict | vbadge($titles))</td>"
+               + "<td>\(.verdict | vbadge($titles; $repo))</td>"
                + "<td>\(pbadge)</td>"
                + "<td><span class=\"chip\">\(.group|h)</span></td>"
                + "<td><span class=\"status\(if (.status // "PENDING") == "PENDING" then "" else " status-done" end)\">\(.status // "PENDING"|h)</span></td>"
@@ -1032,7 +1037,7 @@ cmd_render() {
              ((($m.open_issues // 0) - $closed_here) | if . < 0 then 0 else . end) as $m_open |
              (($m.closed_issues // 0) + $closed_here) as $m_closed |
              (if $m then
-                "open: \($m_open), closed: \($m_closed)" + (if $oldest then ", oldest open issue: " + ititle_h($titles; $oldest.number) + " (\($oldest.age_days // 0) days old)" else ", no open issues" end)
+                "open: \($m_open), closed: \($m_closed)" + (if $oldest then ", oldest open issue: " + ilink_h($titles; $repo; $oldest.number) + " (\($oldest.age_days // 0) days old)" else ", no open issues" end)
               else
                 "new milestone proposal"
               end) as $health |
@@ -1043,7 +1048,7 @@ cmd_render() {
                   "<div class=\"stat-meter\" style=\"--rail: var(--ok)\"><i style=\"width:\($m_closed | pct($m_open + $m_closed))%\"></i></div>"
                 else "" end)
              + (if (($p.issues // [])|length > 0)
-                then "<div class=\"meta-row\">" + (($p.issues // []) | map("<span class=\"chip\">" + ititle_h($titles; .) + "</span>") | join("")) + "</div>"
+                then "<div class=\"meta-row\">" + (($p.issues // []) | map("<span class=\"chip\">" + ilink_h($titles; $repo; .) + "</span>") | join("")) + "</div>"
                 else "" end)
              + (if $p.reason then " — \($p.reason|h)" else "" end)
              + "</li>"] | join("")) + "</ul>"
@@ -1057,7 +1062,7 @@ cmd_render() {
              (($m.closed_issues // 0) + $closed_here) as $m_closed |
              "<li>#\($m.number) <strong>\($m.title|h)</strong> <span class=\"badge\">\($m.state|h)</span> — \($m_open) open, \($m_closed) closed"
              + "<div class=\"stat-meter\" style=\"--rail: var(--ok)\"><i style=\"width:\($m_closed | pct($m_open + $m_closed))%\"></i></div>"
-             + (if $oldest then "<div class=\"meta-row\"><span class=\"chip\">health: open: \($m_open), closed: \($m_closed), oldest open issue: " + ititle_h($titles; $oldest.number) + " (\($oldest.age_days // 0) days old)</span></div>" else "<div class=\"meta-row\"><span class=\"chip\">health: open: \($m_open), closed: \($m_closed), no open issues</span></div>" end)
+             + (if $oldest then "<div class=\"meta-row\"><span class=\"chip\">health: open: \($m_open), closed: \($m_closed), oldest open issue: " + ilink_h($titles; $repo; $oldest.number) + " (\($oldest.age_days // 0) days old)</span></div>" else "<div class=\"meta-row\"><span class=\"chip\">health: open: \($m_open), closed: \($m_closed), no open issues</span></div>" end)
              + "</li>"] | join("")) + "</ul>"
          end),
         "</details>",
@@ -1066,7 +1071,7 @@ cmd_render() {
          else "<ul class=\"plain\">" + ([$parents[] |
              "<li>\(if .parent then ("<a class=\"inum\" href=\"https://github.com/" + ($repo|h) + "/issues/" + (.parent|tostring) + "\">#" + (.parent|tostring) + "</a> <strong>" + ((if (.title // "") != "" then .title else $titles[(.parent|tostring)] end) // "(title unavailable)" | h) + "</strong>") else "<span class=\"badge\">new</span> <strong>\(.title|h)</strong>" end)"
              + (if (.children // [])|length > 0
-                then "<div class=\"meta-row\">" + ((.children // []) | map("<span class=\"chip\">" + ititle_h($titles; .) + "</span>") | join("")) + "</div>"
+                then "<div class=\"meta-row\">" + ((.children // []) | map("<span class=\"chip\">" + ilink_h($titles; $repo; .) + "</span>") | join("")) + "</div>"
                 else "" end)
              + "</li>"] | join("")) + "</ul>"
          end),

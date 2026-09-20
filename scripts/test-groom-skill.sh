@@ -830,6 +830,42 @@ GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$null_disp
 grep -q 'startswith() requires string' "$tmp/err" &&
     fail "the render must not reach startswith with a non-string verdict"
 
+echo "==> report: every issue reference in the HTML is a link, wherever it appears"
+proposals_html="$tmp/proposals-links.html"
+run "$report" render --dispositions "$proposals_disp" --out-html "$proposals_html" \
+    --out-md "$tmp/proposals-links.md" >/dev/null
+# Codex found the parent-proposal children unlinked; the milestone chips, the
+# oldest-open-issue lines and the duplicate-close targets were the same defect
+# in four other sections. The rule, not the instance, is what is asserted here.
+python3 - "$proposals_html" <<'PYEOF' || fail "found an issue reference rendered as plain text instead of a link"
+import re, sys
+h = open(sys.argv[1]).read()
+plain = re.findall(r'(?<!>)#(\d+) — ', h)
+if plain:
+    print("unlinked issue references:", plain[:5], file=sys.stderr)
+sys.exit(1 if plain else 0)
+PYEOF
+
+echo "==> report: a priority band means the same colour in the card as in the chart"
+# Asserted against the rendered report, not the source: what matters is the
+# colour a reader sees on the card versus the one the chart gives that band.
+python3 - "$out_html" <<'PYEOF' || fail "the High priority card must use the High hue, not Medium's"
+import re, sys
+h = open(sys.argv[1]).read()
+rail = re.search(r'--rail: var\(--(\w+)\)[^>]*><div class="stat-num">[^<]*</div><div class="stat-label">High priority', h)
+danger = re.search(r'--danger:\s*(#[0-9a-f]{6})', h)
+warn = re.search(r'--warn:\s*(#[0-9a-f]{6})', h)
+chart_high = re.search(r'background:(#[0-9a-f]{6})" title="High:', h)
+if not (rail and danger and warn and chart_high):
+    print("could not locate:", bool(rail), bool(danger), bool(warn), bool(chart_high), file=sys.stderr)
+    sys.exit(1)
+token = {"danger": danger.group(1), "warn": warn.group(1)}.get(rail.group(1))
+ok = token is not None and token.lower() == chart_high.group(1).lower()
+if not ok:
+    print("card rail", rail.group(1), token, "vs chart High", chart_high.group(1), file=sys.stderr)
+sys.exit(0 if ok else 1)
+PYEOF
+
 echo "==> report: every link lands on a section that was rendered"
 python3 - "$out_html" <<'PYEOF' || fail "found an in-page link with no destination"
 import re, sys
