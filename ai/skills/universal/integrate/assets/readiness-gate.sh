@@ -1538,7 +1538,10 @@ if [ "$require_draft" = 1 ]; then
     [ "$behind_by" -eq 0 ] ||
         fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — reconcile and re-run (SKILL.md, 'Base reconciliation')"
 else
-    [ "$behind_by" -eq 0 ] || audit_behind="$behind_by"
+    # Assign, never merely set: a retarget to a level base (or a rewritten
+    # base) between the two comparisons would otherwise leave the earlier
+    # nonzero count standing and report drift that no longer exists.
+    audit_behind="$behind_by"
 fi
 
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
@@ -1578,8 +1581,19 @@ jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/nu
     fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"
 [ "$(jq -r '.reviewDecision // ""' <<<"$final")" != "CHANGES_REQUESTED" ] ||
     fail_condition changes-requested "a reviewer requested changes while the gate was comparing against the base"
+# Same three-way handling as the recheck above — writing only the DIRTY arm
+# here let UNKNOWN or a cache-BEHIND arriving during the comparison window
+# fall straight through to `ready`, which is precisely the set of states the
+# readiness rule excludes.
 case "$(jq -r '.mergeStateStatus // ""' <<<"$final")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was comparing against the base" ;;
+BEHIND)
+    [ "$require_draft" = 0 ] ||
+        indeterminate merge-state-stale "mergeStateStatus turned BEHIND while the gate was comparing, with the graph reporting 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    ;;
+UNKNOWN | "")
+    indeterminate merge-state-unknown "GitHub stopped reporting mergeability while the gate was comparing — re-poll briefly"
+    ;;
 esac
 
 if [ "$require_draft" = 1 ]; then

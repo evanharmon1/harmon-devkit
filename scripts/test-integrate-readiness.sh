@@ -789,6 +789,44 @@ run_gate_audit
 grep -Fq '"condition":"audit-behind"' <<<"$gate_out" ||
     fail "audit missed drift that appeared during the run: $gate_out"
 
+echo "==> UNKNOWN arriving DURING the final compare is indeterminate, not ready"
+# Writing only the DIRTY arm on the final read let the other two prohibited
+# merge states fall straight through to `ready` (review round 4).
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"UNKNOWN",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 2 indeterminate merge-state-unknown
+
+echo "==> a cache turning BEHIND DURING the final compare is indeterminate"
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 2 indeterminate merge-state-stale
+
+echo "==> audit drift that RESOLVES before the verdict is not reported"
+# behind at the first comparison, level at the recheck: only ever SETTING
+# audit_behind left the stale count standing and reported drift that was gone.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:6,ahead_by:1,status:"diverged"}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead"}' >"${fixtures}/second-compare.json"
+run_gate_audit
+[ "$gate_rc" -eq 0 ] || fail "audit failed after drift resolved (rc $gate_rc): $gate_out"
+grep -Fq '"condition":"audit"' <<<"$gate_out" ||
+    fail "audit reported stale drift after a level recheck: $gate_out"
+
 echo "==> the behind preflight refuses a head that moved while comparing"
 # The preflight makes exactly two PR reads: the first captures the identity,
 # the second re-binds it after comparing. Only the second moves here.
