@@ -101,6 +101,13 @@ jobs:
       # point-fixes: #726 is the general fix for a hand-maintained list that
       # silently omits task verify's suites.
       - run: task test:review-skill
+      # The groom skill's contract suite — the report renderer's only
+      # regression coverage. Same point-fix as the three above it and for
+      # the same reason: it is wired into `task verify`, this workflow does
+      # not run `task verify`, so without this line cloud CI passes while
+      # every assertion about the rendered report goes unexecuted. #726 is
+      # the general fix for this hand-maintained list.
+      - run: task test:groom-skill
       - run: task test:meta-install
       - run: task test:integrate-codex
       - run: task test:ci-results
