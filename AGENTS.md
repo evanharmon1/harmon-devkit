@@ -572,7 +572,8 @@ required implementation — never hand-roll the polling: `reserve` the cycle
 against the captured head *before* posting the trigger (the durable state must
 exist before the GitHub write), then post `@codex review`, `attach` the comment
 ID it returned, and `check`, acting on its exit code (0 clean, 10 findings,
-11 pending, 12 retry, 13 escalate, 2 indeterminate). It never writes to GitHub,
+11 pending, 12 retry, 13 escalate, 14 PR no longer open, 15 quota exhausted,
+16 transient read, 2 indeterminate). It never writes to GitHub,
 so posting the trigger stays yours, and its `settle` subcommand records the
 disposition of a badged finding stated outside an inline thread.
 **Where it is not vendored**, the same contract is satisfied by hand: post the

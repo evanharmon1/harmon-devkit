@@ -417,13 +417,18 @@ On **15 (quota exhausted)** the reviewer answered that its code-review usage
 limit is spent (harmon-devkit#573). Do **not** re-trigger: `reserve
 --attempt 2` refuses that state by design, because the one bounded retry
 exists for a reviewer that did not answer, and this one did. Carry the exit
-code and the checker's `detail` — which names the reset time where the reply
-carried one — straight into your result as `verdict: "escalate"`. You do not
+code straight into your result as `verdict: "escalate"`, and put the checker's
+`detail` — which names the reset time where the reply carried one, and the
+recovery route — in your REPORT, never in `codex_cycle`. Challenge round 3,
+finding `challenge-r3-codex-adversarial-12`: `codex_cycle` is
+`additionalProperties: false` and has no `detail` field, so an agent
+complying literally with the older wording produced a schema-invalid result,
+and one complying loosely dropped the datum four documents ask for. You do not
 wait out the reset yourself, and you cannot re-open the cycle: a fresh
 `--attempt 1` on the same head is refused by the single same-head reservation
 guard, so the commit stays un-reviewable through this helper until a push
-moves the head. Report it; the recovery route is carried in
-harmon-devkit#1115.
+moves the head or an operator clears the checker state. Report that route;
+it is carried in harmon-devkit#1115.
 
 On **16 (transient read)** an evidence READ failed (harmon-devkit#508). This
 is emphatically **not** a statement about the reviewer, so it is neither a

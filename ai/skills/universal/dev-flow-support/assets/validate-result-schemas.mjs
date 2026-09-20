@@ -869,7 +869,8 @@ function checkIntegratorBlockedStatus(envelope, errors) {
 // OTHER exit code, since "required when" is the only shape if/then can
 // express. `accepted` is evidence of a terminal result, so its presence
 // alongside a non-terminal exit_code (11 pending, 12 retry, 13 escalate,
-// 14 PR no longer open, 2 indeterminate) is contradictory and forbidden
+// 14 PR no longer open, 15 quota exhausted, 16 transient read,
+// 2 indeterminate) is contradictory and forbidden
 // here, in the validator, the same way "required when" and "forbidden
 // otherwise" are two separate assertions throughout this family.
 function checkCodexCycleAcceptedScope(payload, errors) {
@@ -921,6 +922,16 @@ function checkFinderCyclesAcceptedScope(payload, errors) {
 // "couldn't tell, so escalate" for what the orchestrator does next. Each
 // entry is either `equals` (verdict must be exactly this value) or
 // `excludes` (a set verdict must not be any member of).
+// 15 (quota exhausted, harmon-devkit#573) joins 13 and 2 on `escalate`: the
+// finder answered that it will not review this head, so the orchestrator's
+// next move is to stop and report the blocker — the same thing it does for a
+// timed-out or unreadable cycle, and never a re-dispatch. 16 (transient read,
+// harmon-devkit#508) joins 11 and 12 on `pending`: the read failed, which says
+// nothing about the reviewer, so the remedy is to repeat the READ — a bounded
+// wait and a fresh pass, exactly like a pending window. Pairing 16 with
+// `escalate` would spend a human on a flaky GitHub call, and pairing it with
+// `clean` or `findings` would assert a verdict over evidence nobody managed
+// to read.
 const EXIT_CODE_VERDICT_CONSTRAINTS = {
   0: { excludes: new Set(['pending', 'escalate']) },
   10: { equals: 'findings' },
@@ -939,17 +950,6 @@ const EXIT_CODE_VERDICT_CONSTRAINTS = {
 // exactly this value" for a specific exit_code (a fixed value a JSON
 // Schema const could express) or "must not be ANY of these values" (a
 // small enum-exclusion set) — and which exit_code selects which rule is
-//
-// 15 (quota exhausted, harmon-devkit#573) joins 13 and 2 on `escalate`: the
-// finder answered that it will not review this head, so the orchestrator's
-// next move is to stop and report the blocker with its reset time — the same
-// thing it does for a timed-out or unreadable cycle, and never a re-dispatch.
-// 16 (transient read, harmon-devkit#508) joins 11 and 12 on `pending`: the
-// read failed, which says nothing about the reviewer, so the remedy is to
-// repeat the READ — a bounded wait and a fresh pass, exactly like a pending
-// window. Pairing 16 with `escalate` would spend a human on a flaky GitHub
-// call, and pairing it with `clean` or `findings` would assert a verdict over
-// evidence nobody managed to read.
 // itself data-dependent, which if/then's single conditional-per-node
 // shape cannot encode as one schema-level rule the way
 // checkIntegratorCleanVerdict's fixed verdict:clean condition can.

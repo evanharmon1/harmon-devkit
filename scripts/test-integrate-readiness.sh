@@ -506,8 +506,29 @@ ln -s "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
     "${recheck_root}/dev-flow-support/assets"
 cp "$gate" "${recheck_dir}/readiness-gate.sh"
 chmod +x "${recheck_dir}/readiness-gate.sh"
+# Challenge round 3, finding `challenge-r3-codex-adversarial-13` (confirmed
+# P2): a constant-exit stub cannot express a SEQUENCE, so the #508 recheck
+# retry — read, and on 16 read once more — had no way to be exercised, and
+# deleting the retry outright left every case passing. `RECHECK_FAKE_EXITS` is
+# a space-separated list consumed one entry per invocation (the last entry
+# repeats once exhausted), which is the minimum needed to tell "16 then clean"
+# from "16 twice". `RECHECK_FAKE_EXIT` keeps working unchanged for the many
+# cases that only need one fixed answer.
 cat >"${recheck_dir}/check-codex-cloud-review.sh" <<'STUB'
 #!/bin/sh
+if [ -n "${RECHECK_FAKE_EXITS:-}" ]; then
+    counter="${RECHECK_CALL_COUNTER:-/dev/null}"
+    n=0
+    [ ! -f "$counter" ] || n=$(cat "$counter")
+    n=$((n + 1))
+    [ "$counter" = /dev/null ] || printf '%s' "$n" >"$counter"
+    i=0
+    for code in $RECHECK_FAKE_EXITS; do
+        i=$((i + 1))
+        [ "$i" -lt "$n" ] || exit "$code"
+    done
+    exit "$code"
+fi
 exit "${RECHECK_FAKE_EXIT:-0}"
 STUB
 chmod +x "${recheck_dir}/check-codex-cloud-review.sh"
@@ -1607,6 +1628,39 @@ gate="$saved_gate"
 assert_gate 2 indeterminate codex-transient-read
 printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("one retry")' >/dev/null ||
     fail "the recheck must report that it retried the read once: $gate_out"
+
+echo "==> challenge-r3-codex-adversarial-13: a transient recheck read that succeeds on the RETRY passes"
+# The case the constant-exit stub could not express: 16 first, clean second.
+# Deleting the retry from readiness-gate.sh makes exactly this case fail.
+write_defaults
+clean_retry="$(write_integrator_result clean "$(codex_cycle_json 0)")"
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXITS="16 0"
+export RECHECK_CALL_COUNTER="${test_tmp}/recheck-calls"
+rm -f "$RECHECK_CALL_COUNTER"
+run_gate --codex-recheck "$recheck_state" \
+    --integrator-result "$clean_retry" --integration-cap 1
+unset RECHECK_FAKE_EXITS RECHECK_CALL_COUNTER
+gate="$saved_gate"
+assert_gate 0 pass ready
+[ "$(cat "${test_tmp}/recheck-calls")" = "2" ] ||
+    fail "the recheck must have been retried exactly once, saw $(cat "${test_tmp}/recheck-calls") call(s)"
+
+echo "==> challenge-r3-codex-adversarial-13: the retry is bounded at ONE — a third read is never made"
+write_defaults
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXITS="16 16 0"
+export RECHECK_CALL_COUNTER="${test_tmp}/recheck-calls"
+rm -f "$RECHECK_CALL_COUNTER"
+run_gate --codex-recheck "$recheck_state" \
+    --integrator-result "$clean_retry" --integration-cap 1
+unset RECHECK_FAKE_EXITS RECHECK_CALL_COUNTER
+gate="$saved_gate"
+assert_gate 2 indeterminate codex-transient-read
+[ "$(cat "${test_tmp}/recheck-calls")" = "2" ] ||
+    fail "the retry must be bounded at one, saw $(cat "${test_tmp}/recheck-calls") call(s)"
 
 echo "==> harmon-devkit#508: a recheck that genuinely no longer confirms the clean result is still codex-stale"
 # The inverse guard: the retry above must not swallow a real staleness signal.

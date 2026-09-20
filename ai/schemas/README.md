@@ -997,7 +997,12 @@ decisions):
   stage escalates when both Codex-cycle attempts are incomplete, which is
   exactly what an indeterminate result IS; `11` (pending) and `12` (retry)
   require `verdict: "pending"` exactly; `14` (PR no longer open) forbids
-  `clean` and `pending`. `checkIntegratorCleanVerdict` separately requires
+  `clean` and `pending`; `15` (quota exhausted) joins `13`/`2` on
+  `escalate`, since the finder answered that it will not review this head
+  and the next move is to stop and report a blocker rather than
+  re-dispatch; and `16` (transient read) joins `11`/`12` on `pending`,
+  since a failed READ says nothing about the reviewer and the remedy is to
+  repeat the read. `checkIntegratorCleanVerdict` separately requires
   exit_code 0 (with `accepted` present) when verdict IS clean — that is the
   OTHER direction of the same equivalence the `0` entry here closes the
   other way, the same two-direction shape every other exit code in the

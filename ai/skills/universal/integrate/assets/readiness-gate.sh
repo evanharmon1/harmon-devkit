@@ -63,8 +63,11 @@
 # is not clean. Reporting it as `codex-not-clean` sent the operator hunting a
 # review problem that did not exist, and their only remedy was blind re-runs.
 # `codex-quota-exhausted` is exit 15 (harmon-devkit#573): the reviewer
-# answered that it will not review, which IS definitive — a blocker to report
-# with its reset time, not an unknown to re-poll.
+# answered that it will not review, which IS definitive — a blocker to report,
+# not an unknown to re-poll. The reset time the reply may carry is context for
+# the human, NOT an action: the head accepts no further reservation of either
+# attempt, so waiting for the reset changes nothing. Recovery is a new commit
+# or an operator removing the cycle state file; the route is carried in #1115.
 #
 # Two readiness conditions are deliberately NOT verified here, because no
 # API answers them — the caller must hold them as prose prerequisites:
@@ -931,14 +934,24 @@ threads_needing_attention="$(jq -c --arg me "$me" \
             (test("committed .*on `[^`]+` as `[0-9a-f]{7,40}`") or
              test("a pull request could not be created") or
              test("reviewed commit `[0-9a-f]{7,40}` and found no additional")))) and
-         (((.body // "") | ascii_downcase | split("\n") |
+         # Challenge round 3, finding `challenge-r3-codex-adversarial-6`
+         # (confirmed P2): this predicate is documented as kept identical to
+         # the checker`s `is_self_report`, and it was not — it skipped the
+         # About-block removal and rejected Codex`s own whole-line
+         # `**Reviewed commit:**` metadata, so the two disagreed on real
+         # bodies. Same About-block anchor and same permitted line shapes as
+         # the checker now.
+         (((.body // "") | ascii_downcase |
+            gsub("<details[^<]*<summary>[^<]*about codex[^<]*</summary>.*?</details>"; ""; "im") |
+            split("\n") |
             map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
             map(select(. != "")) |
             all(.[];
               test("^#{1,6}[[:space:]]") or
               test("^\\*\\*[^*]+\\*\\*[[:space:][:punct:]]*$") or
               test("^[*+-][[:space:]]") or
-              test("^[0-9]+\\.[[:space:]]")))) and
+              test("^[0-9]+\\.[[:space:]]") or
+              test("^\\*\\*reviewed commit:\\*\\*[[:space:]]*`[0-9a-f]{7,40}`[[:space:]]*$")))) and
          (((.body // "") | ascii_downcase |
             test("useful\\? react with")) | not));
       group_by(.in_reply_to_id // .id)
@@ -1149,7 +1162,7 @@ if [ "$codex_cycle" != null ]; then
         # this head. Definitive, so a fail rather than an indeterminate — but
         # its own condition, because the remedy is to report the blocker and
         # wait for the quota, never to re-trigger or re-dispatch.
-        fail_condition codex-quota-exhausted "the current-head Codex cycle exited 15: the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time rather than re-triggering"
+        fail_condition codex-quota-exhausted "the current-head Codex cycle exited 15: the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time; this head accepts no further reservation, so recovery is a new commit or an operator clearing the checker state (route carried in #1115)"
         ;;
     16)
         # harmon-devkit#508: an evidence READ failed. This must never render
