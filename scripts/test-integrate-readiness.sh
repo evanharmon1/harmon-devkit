@@ -1379,6 +1379,64 @@ self_fix_thread "### Summary
 run_gate
 assert_gate 0 pass ready
 
+echo "==> challenge-r1-codex-adversarial-1: an unbadged bot follow-up with the heading but NO self-work marker blocks"
+# The reproduced hole: the first predicate accepted a bare `### Summary`
+# heading, so an unbadged concern the bot wrote under it passed as
+# informational. A self-report now needs positive evidence that the bot is
+# describing its own work.
+write_defaults
+self_fix_thread "### Summary
+
+The authorization check on the trigger broker is missing; any caller can post."
+run_gate
+assert_gate 1 fail threads-new-follow-up
+
+echo "==> challenge-r1-codex-adversarial-1: a finding footer defeats the self-report shape"
+write_defaults
+self_fix_thread "### Summary
+
+* Committed the change on \`codex/name-review-trigger-broker\` as \`77379cf\`.
+
+The rollback path still drops the lock.
+
+Useful? React with 👍 / 👎."
+run_gate
+assert_gate 1 fail threads-new-follow-up
+
+echo "==> challenge-r1-codex-adversarial-1: each observed self-work marker still reads as informational"
+for marker in \
+    "Committed the change on \`codex/name-review-trigger-broker\` as \`77379cf\`." \
+    "A pull request could not be created because the required tool is unavailable." \
+    "Reviewed commit \`dfc3648\` and found no additional code changes necessary."; do
+    write_defaults
+    self_fix_thread "### Summary
+
+* $marker"
+    run_gate
+    assert_gate 0 pass ready
+done
+
+echo "==> item C: a finder_cycles quota exit uses the finder-prefixed condition token"
+write_defaults
+fc_quota="$(write_integrator_result fc-quota "$(codex_cycle_json 0)")"
+# A clean verdict requires every finder cycle to be terminal-clean, so the
+# fixture carries `findings` instead — exit_code 0 permits it, and condition 8b
+# (finder cycles) is evaluated before 9a (the pass's own findings[]), so the
+# finder arm is what this case reaches.
+jq '.payload.verdict = "findings"
+    | .payload.findings = [{id:"integration-r1-coderabbit-cloud-1",
+                            body:"a finder finding",source_id:"1"}]
+    | del(.payload.applied_dispositions)
+    | .payload.finder_cycles = [{finder:"coderabbit-cloud",head:.head,
+                                 cycle:1,attempt:1,exit_code:15}]' \
+    "$fc_quota" >"${fixtures}/integrator-result-fc-quota-15.json"
+node "$validator" envelope "${fixtures}/integrator-result-fc-quota-15.json" >/dev/null ||
+    fail "the finder-quota fixture must itself be schema-valid"
+run_gate_recheck_clean \
+    --integrator-result "${fixtures}/integrator-result-fc-quota-15.json" \
+    --integration-cap 1
+assert_gate 1 fail finder-quota-exhausted
+
 echo "==> harmon-devkit#675: a BADGED bot follow-up still blocks"
 write_defaults
 self_fix_thread "### Summary

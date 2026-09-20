@@ -418,7 +418,11 @@ limit is spent (harmon-devkit#573). Do **not** re-trigger: `reserve
 --attempt 2` refuses that state by design, because the one bounded retry
 exists for a reviewer that did not answer, and this one did. Carry the exit
 code and the checker's `detail` — which names the reset time where the reply
-carried one — straight into your result as `verdict: "escalate"`.
+carried one — straight into your result as `verdict: "escalate"`. You do not
+wait out the reset yourself: re-reviewing that head once the quota returns is
+a fresh cycle the orchestrator dispatches (the checker permits a new
+`--attempt 1` only after the recorded reset time has passed), never something
+this pass loops on.
 
 On **16 (transient read)** an evidence READ failed (harmon-devkit#508). This
 is emphatically **not** a statement about the reviewer, so it is neither a

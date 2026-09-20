@@ -205,6 +205,28 @@ valid_time() {
     grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' <<<"$1"
 }
 
+# Challenge round 1, item A (2026-09-20, confirmed P1): `--now` is validated
+# HERE, once, before any command runs — not inside the functions that consume
+# it. Those validations happen only after the first GitHub read, and one of
+# them (`clock_epoch`, for the harmon-devkit#737 fetch budget) is called from
+# inside a command substitution, where `die` kills the subshell rather than the
+# script: `current_epoch=$(clock_epoch) || return 1` then made `run_gh` fail,
+# `provider_head` fail, and the caller report **exit 16** (a transient read).
+# A permanent usage error therefore rendered as the one exit class with no
+# escalation path — the gate repeats the read and the integrator poll loop
+# treats it like `11`, so a malformed flag would be retried forever instead of
+# being reported.
+#
+# `injected_now_epoch` is resolved once here too, so no consumer needs to shell
+# out per call and no arithmetic path can fail mid-read. A parse failure at
+# this point is a startup `die` (exit 2), which is what a bad argument deserves.
+injected_now_epoch=
+if [ -n "$now" ]; then
+    valid_time "$now" || die "--now must be an ISO-8601 UTC second"
+    injected_now_epoch=$(jq -nr --arg value "$now" '$value | fromdateiso8601') ||
+        die "--now is not a resolvable instant: $now"
+fi
+
 # harmon-devkit#223: the timeout governing an attempt cycle used to live only
 # in whatever `--timeout-min` a caller happened to pass, so `check
 # --timeout-min 10` could return `retry` after ten minutes while the
@@ -318,11 +340,12 @@ now_utc() {
 # and `require_latest_window_elapsed`, so an injected clock makes the budget
 # reproducible instead of decaying in real time. Without `--now` this is the
 # unchanged `date -u '+%s'`.
+# Called from inside a command substitution, so it must never `die`: item A
+# above resolved and validated the injected clock at startup precisely so this
+# function is a pure echo with no failure mode of its own.
 clock_epoch() {
-    if [ -n "$now" ]; then
-        valid_time "$now" || die "--now must be an ISO-8601 UTC second"
-        jq -nr --arg value "$now" '$value | fromdateiso8601' ||
-            die "cannot parse --now"
+    if [ -n "$injected_now_epoch" ]; then
+        printf '%s' "$injected_now_epoch"
     else
         date -u '+%s'
     fi
@@ -891,16 +914,50 @@ codex_verdict_defs=$(
           def has_summary_heading:
             (trimmed_lines |
               any(.[]; test("^#{1,6}[[:space:]]*summary[[:space:]]*$")));
-          # The verbatim shape of harmon-devkit#665's follow-up 3886149775:
-          # "Committed the change on `codex/name-review-trigger-broker` as
-          # `77379cf`". `.` never crosses a newline in Oniguruma without the
-          # `s` flag, so this can only match inside one line.
-          def claims_own_commit:
+          # Challenge round 1, finding `challenge-r1-codex-adversarial-1`
+          # (2026-09-20, confirmed P1): a `Summary` HEADING IS NOT EVIDENCE OF
+          # ANYTHING. The first version of this predicate was
+          # `(no badge) and (has_summary_heading or claims_own_commit)`, so the
+          # heading alone sufficed — and because `informational` is excluded
+          # from all three blocking scans, an unbadged prose concern written
+          # under that heading became invisible where it had previously been
+          # `findings`/exit 10. AGENTS.md § Severity gating is explicit that a
+          # finding "not badged at all, is adjudicated as at least a P2", so an
+          # unbadged concern IS a finding; the original safety note here
+          # ("nothing badged can reach this class") only ever covered the
+          # badged half of the problem.
+          #
+          # Two conditions now, and both are POSITIVE evidence that the bot is
+          # describing its own work rather than reporting on the code:
+          #
+          #   1. a recognized self-work marker — the bot naming a commit it
+          #      made, a PR it could not open, or a review it performed that
+          #      needed no change. These are the verbatim shapes observed on
+          #      harmon-devkit#665 (follow-up 3886149775) and harmon-devkit#710
+          #      (top-level 5504087486).
+          #   2. no finding footer. "Useful? React with 👍 / 👎." is the
+          #      machine-emitted line Codex appends to a finding, and it is the
+          #      same class of stable signal as the badge — not prose whose
+          #      meaning has to be read.
+          #
+          # This is an allowlist of observed phrasings, which the long comment
+          # above `verdict_class` warns against for the CLEAN path — and the
+          # distinction is the failure direction. There, a non-match deadlocked
+          # genuinely clean PRs. Here a non-match is `findings`: the body
+          # blocks and a human adjudicates it. Drift costs a false block, never
+          # a false green, which is the trade this file takes everywhere.
+          def self_work_marker:
             (body_text | ascii_downcase |
-              test("committed .*on `[^`]+` as `[0-9a-f]{7,40}`"));
+              (test("committed .*on `[^`]+` as `[0-9a-f]{7,40}`") or
+               test("a pull request could not be created") or
+               test("reviewed commit `[0-9a-f]{7,40}` and found no additional")));
+          def has_finding_footer:
+            (body_text | ascii_downcase | test("useful\\? react with"));
           def is_self_report:
             (has_severity_marker | not) and
-            (has_summary_heading or claims_own_commit);
+            (has_finding_footer | not) and
+            has_summary_heading and
+            self_work_marker;
           # harmon-devkit#718: the connector also maintains a rolling
           # "Codex Review Summary" comment whose per-head table row flips from
           # Running to Completed, and on some runs that row is the ONLY clean
@@ -922,33 +979,74 @@ codex_verdict_defs=$(
               test("<!--[[:space:]]*codex-pull-request-review-summary[[:space:]]*-->")) or
              (trimmed_lines |
                any(.[]; test("^#{1,6}[[:space:]]*codex review summary[[:space:]]*$"))));
-          # Cells, not the whole row: "Completed" has to be in the row's STATUS
-          # cell rather than anywhere on the line, or a "Review trigger" cell
-          # mentioning the word would satisfy a Running row. Splitting on the
-          # pipe and dropping the empties either side of the leading/trailing
-          # delimiters gives exactly the cells.
+          # Only the leading and trailing empties — the ones the row's own
+          # delimiting pipes produce — are dropped. Challenge round 1, finding
+          # `challenge-r1-codex-adversarial-3`: dropping EVERY empty cell (the
+          # first version) shifts every column index right of an empty cell, so
+          # a row with a blank trigger cell would have its commit read out of
+          # the wrong column. Interior empties are kept so an index means the
+          # same thing on every row.
           def table_cells:
             (split("|") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
-              map(select(. != "")));
-          # Every commit named by a COMPLETED row. A Running row contributes
-          # nothing (so its head stays pending), and a Completed row for
-          # another commit contributes that commit — which then fails the
-          # caller's head-prefix test and is stale, exactly as ruling 3 asks.
+              (if (length > 0) and (.[0] == "") then .[1:] else . end) |
+              (if (length > 0) and (.[-1] == "") then .[:-1] else . end));
+          def summary_cell_rows:
+            (body_text | split("\n") | map(select(test("\\|"))) |
+              map(ascii_downcase | table_cells) |
+              map(select(length > 0)));
+          # Challenge round 1, finding `challenge-r1-codex-adversarial-3`
+          # (2026-09-20, confirmed P2): the first version tested EVERY cell for
+          # "completed" — `any(.[]; test("\\bcompleted\\b"))` — while its own
+          # comment claimed the point was to test the STATUS cell only. A
+          # Running row whose trigger cell read "Completed manual request"
+          # therefore matched, and so did a status of "Not completed".
           #
-          # A row is only usable when exactly ONE of its cells is a bare
-          # backticked hex token: that is the Commit cell, and a row with two
-          # of them names nothing unambiguously.
-          def summary_completed_prefixes:
-            if (summary_marker | not) then []
-            else
-              (body_text | split("\n") |
-                map(select(test("\\|"))) |
-                map(ascii_downcase | table_cells) |
-                map(select(any(.[]; test("\\bcompleted\\b")))) |
-                map([.[] | select(test("^`[0-9a-f]{7,40}`$")) |
-                     ltrimstr("`") | rtrimstr("`")]) |
-                map(select(length == 1)) | map(.[0]) | unique)
-            end;
+          # The columns are now identified from the table's own header row (the
+          # one naming both `status` and `commit`), so a cell index means what
+          # the table says it means. No header, no columns, no prefixes: a
+          # table this code cannot read the shape of yields nothing rather than
+          # guessing, which leaves the head pending.
+          def summary_columns:
+            (summary_cell_rows as $rows |
+             ($rows | to_entries |
+               map(select(((.value | index("status")) != null) and
+                          ((.value | index("commit")) != null))) |
+               first) as $header |
+             if $header == null then null
+             else {row: $header.key,
+                   status: ($header.value | index("status")),
+                   commit: ($header.value | index("commit"))}
+             end);
+          # Every commit the table names, optionally narrowed to the rows whose
+          # STATUS cell reports completion. `$completed_only false` is what the
+          # badged-finding scan uses (finding
+          # `challenge-r1-codex-adversarial-2`): a badge in this comment is a
+          # finding about whatever head the table names, whether or not that
+          # row has finished.
+          #
+          # The separator row (`| --- | --- |`) is skipped structurally, and
+          # `not completed` is rejected explicitly rather than being caught by
+          # a word-boundary test that reads a negation as a match.
+          def summary_prefixes($completed_only):
+            (summary_columns as $columns |
+             if ($columns == null) or (summary_marker | not) then []
+             else
+               [ (summary_cell_rows | .[($columns.row + 1):][]) |
+                 select(all(.[]; test("^:?-+:?$") | not)) |
+                 select((length > $columns.status) and
+                        (length > $columns.commit)) |
+                 . as $row |
+                 select(($completed_only | not) or
+                        (($row[$columns.status] |
+                           test("\\bcompleted\\b")) and
+                         ($row[$columns.status] |
+                           test("\\bnot[[:space:]]+completed\\b") | not))) |
+                 ($row[$columns.commit] | gsub("`"; "")) |
+                 select(test("^[0-9a-f]{7,40}$"))
+               ] | unique
+             end);
+          def summary_completed_prefixes: summary_prefixes(true);
+          def summary_row_prefixes: summary_prefixes(false);
           # Restructured, not re-decided: a body that DOES open with the clean
           # sentence classifies exactly as before (badge -> findings, trailing
           # prose -> unrecognized, otherwise clean), and a body that does not
@@ -997,7 +1095,47 @@ reserve)
             die "state belongs to a different PR"
         [ "$old_phase" != "reserved" ] ||
             die "an unresolved reservation must be reconciled before replacing its head"
-        if [ "$old_head" = "$head" ]; then
+        # Challenge round 1, item B (2026-09-20, confirmed P2): exit 15 left
+        # the head permanently un-reviewable. `reserve --attempt 2` is refused
+        # on the quota marker (below, by design — the one bounded retry must
+        # not be spent on a reviewer that already said no), and `reserve
+        # --attempt 1` on the same head died as an uncontrolled duplicate
+        # trigger, while the readiness gate maps 15 to a hard failure. So the
+        # reset time exit 15 reports had no action behind it: nothing could
+        # re-review that commit until a new push moved the head.
+        #
+        # Once the recorded reset time has actually passed, a fresh attempt-1
+        # reservation is a NEW cycle rather than a duplicate trigger — the
+        # previous cycle ended in a definitive non-result, not in an
+        # unanswered trigger — so it is allowed, and the payload below starts
+        # clean (the quota fields are simply absent from a fresh attempt-1
+        # shape, which is what clears the marker).
+        #
+        # Deliberately gated on the reset time being KNOWN and PAST: the
+        # observed usage-limit reply carries no reset time at all, and
+        # inventing one would turn a definitive answer back into a guess.
+        # Residual, stated rather than papered over: where the reply named no
+        # reset time, this carve-out does not open and the head still needs a
+        # push (or an operator removing the state) to become reviewable again.
+        quota_cycle_reset=0
+        if [ "$old_head" = "$head" ] && [ "$attempt" = "1" ]; then
+            old_quota_at=$(jq -r '.quota_exhausted_at // empty' "$state_file")
+            old_quota_reset=$(jq -r '.quota_reset_at // empty' "$state_file")
+            if [ -n "$old_quota_at" ] && valid_time "$old_quota_reset"; then
+                old_reset_epoch=$(jq -nr \
+                    --arg value "$old_quota_reset" '$value | fromdateiso8601') ||
+                    die "state has an unresolvable quota reset time: $old_quota_reset"
+                [ "$(clock_epoch)" -lt "$old_reset_epoch" ] ||
+                    quota_cycle_reset=1
+            fi
+        fi
+        if [ "$old_head" = "$head" ] && [ "$quota_cycle_reset" = "1" ]; then
+            # A fresh cycle after the reviewer's own quota reset. The trigger
+            # the refused cycle carried is still real same-head history, so it
+            # is carried forward for the same reason harmon-devkit#1014
+            # ruling 2 carries it across an attempt-2 replacement.
+            replaced_trigger_comment_id=$(jq -r '.trigger_comment_id // empty' "$state_file")
+        elif [ "$old_head" = "$head" ]; then
             [ "$old_attempt" = "1" ] && [ "$attempt" = "2" ] &&
                 [ "$old_phase" = "attached" ] ||
                 die "refusing an uncontrolled duplicate trigger for this head"
@@ -2312,7 +2450,14 @@ check)
             # arm below instead, off its `updated_at` — the row flips by EDIT,
             # so `created_at` is the wrong clock for it and two candidates for
             # one comment would not be orderable against each other.
-            select(summary_marker | not) |
+            #
+            # Challenge round 1, finding `challenge-r1-codex-adversarial-2`
+            # (2026-09-20, confirmed, adjudicated P2): only an UNBADGED summary
+            # is excluded here. Excluding every summary sent badged ones to an
+            # arm gated on a Completed row, so a badged summary with a Running
+            # or malformed row fell out of every scan — the exact opposite of
+            # the badge dominance this file asserts everywhere else.
+            select((summary_marker and (has_severity_marker | not)) | not) |
             ((.body // "") |
               try match(
                 "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
@@ -2334,7 +2479,13 @@ check)
             $comments[0][] | select(.user.id? == $id) |
             . as $summary |
             select(summary_marker) |
-            select(any(summary_completed_prefixes[];
+            # A badged summary is candidate evidence for any head its table
+            # names, completed or not (finding
+            # `challenge-r1-codex-adversarial-2`); an unbadged one only for a
+            # head whose row actually reports completion.
+            (if has_severity_marker then summary_row_prefixes
+             else summary_completed_prefixes end) as $prefixes |
+            select(any($prefixes[];
               . as $prefix | ($head | ascii_downcase) | startswith($prefix))) |
             (($summary.updated_at // $summary.created_at) // "") as $stamp |
             select($stamp > $requested) |
@@ -2518,7 +2669,7 @@ check)
                (($head | ascii_downcase) | startswith($prefix | ascii_downcase)))
               or
               (summary_marker and
-               (any(summary_completed_prefixes[];
+               (any(summary_row_prefixes[];
                  . as $prefix | ($head | ascii_downcase) | startswith($prefix))))
             ) |
             select((.id? | is_positive_integer) | not)
@@ -2812,7 +2963,10 @@ check)
               # rather than a finding, and the summary comment is classified by
               # the arm below instead of by its first line.
               select(verdict_class != "informational") |
-              select(summary_marker | not) |
+              # Finding `challenge-r1-codex-adversarial-2`: unbadged summaries
+              # only. A badged one keeps the ordinary verdict path, so its
+              # badge still reaches the findings exit.
+              select((summary_marker and (has_severity_marker | not)) | not) |
               ((.body // "") |
                 try match(
                   "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
@@ -2838,7 +2992,14 @@ check)
               # one way to break that.
               select(summary_marker) |
               select(.id? | is_positive_integer) |
-              summary_completed_prefixes[] as $prefix |
+              # A BADGED summary is a finding about every head its table names,
+              # regardless of completion status (finding
+              # `challenge-r1-codex-adversarial-2`) — the Completed-row gate
+              # governs only the CLEAN direction, which is what ruling 3
+              # actually constrains. An unbadged summary still needs a row
+              # reporting completion before it can vouch for a head.
+              (if has_severity_marker then summary_row_prefixes
+               else summary_completed_prefixes end)[] as $prefix |
               [
                 $prefix,
                 (if has_severity_marker then "findings" else "clean" end),
@@ -3173,13 +3334,28 @@ check)
                {id: ($r.id | tostring), time: ($r.submitted_at // "")}] |
               sort_by(.time, (.id | tonumber)) | last // null | .id // ""
             ' "$workdir/reviews.json")
+        # The EFFECTIVE stamp, not `created_at` outright. A summary comment
+        # (harmon-devkit#718) is maintained in place, so its row-for-this-head
+        # is dated by `updated_at` — which is how `newest_result_record` and
+        # `comment_candidates` already order it. This block still read
+        # `created_at`, so a settled summary finding was filtered out for
+        # predating the trigger and this exit reported
+        # `settled findings have no accepted result after the latest trigger`
+        # forever: exactly the stuck cycle finding
+        # `challenge-r1-codex-adversarial-4` set out to end, one step further
+        # along. Found by that finding's own fixture. Every other comment keeps
+        # `created_at`, so nothing else re-orders.
         disposed_comment_latest=$(jq -r \
             --argjson disposed "$disposed_comments" \
-            --arg requested "$state_requested" '
+            --arg requested "$state_requested" \
+            "$codex_verdict_defs"'
               [.[] | select((.id? | type) == "number") |
-               . as $r | select($disposed | index($r.id)) |
-               select((.created_at // "") > $requested) |
-               {id: ($r.id | tostring), time: ($r.created_at // "")}] |
+               . as $r |
+               (if summary_marker then ($r.updated_at // $r.created_at // "")
+                else ($r.created_at // "") end) as $stamp |
+               select($disposed | index($r.id)) |
+               select($stamp > $requested) |
+               {id: ($r.id | tostring), time: $stamp}] |
               sort_by(.time, (.id | tonumber)) | last // null | .id // ""
             ' "$workdir/comments.json")
         if [ -n "$disposed_review_latest" ]; then
@@ -3188,8 +3364,11 @@ check)
         fi
         if [ -n "$disposed_comment_latest" ]; then
             disposed_comment_time=$(jq -r \
-                --argjson id "$disposed_comment_latest" '
-                  [.[] | select(.id? == $id)] | first | .created_at? // ""
+                --argjson id "$disposed_comment_latest" \
+                "$codex_verdict_defs"'
+                  [.[] | select(.id? == $id)] | first |
+                  if summary_marker then (.updated_at // .created_at // "")
+                  else (.created_at // "") end
                 ' "$workdir/comments.json")
             disposed_review_time=""
             if [ -n "$disposed_review_latest" ]; then
@@ -3280,12 +3459,39 @@ settle)
         # Same discipline `check` applies to a top-level result: the comment
         # must name a commit prefix that GitHub resolves to this head. A
         # disposition recorded against some other head answers nothing.
-        settle_prefix=$(printf '%s' "$target" | jq -r '
-              (.body // "") |
-              try match(
-                "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
-                "i"
-              ).captures[0].string catch ""
+        # Challenge round 1, finding `challenge-r1-codex-adversarial-4`
+        # (2026-09-20, confirmed P2): the summary comment identifies its head
+        # in a TABLE CELL, not in a `Reviewed commit` sentence, so a badged
+        # summary — which `check` now reports as `findings` — could be neither
+        # declined nor filed, and the cycle reported findings for that head
+        # forever. `settle` is the documented sole route for a badged finding
+        # outside an inline thread, so it has to accept the same binding
+        # `check` accepts. Either identification is enough; the prefix then
+        # goes through the identical GitHub resolve below, so the head
+        # discipline is unchanged.
+        settle_prefix=$(printf '%s' "$target" |
+            jq -r --arg head "$state_head" "$codex_verdict_defs"'
+              # `[match(...)] | first` rather than `try match(...) catch ""`:
+              # a non-matching `match` emits an EMPTY STREAM, not an error, so
+              # `try`/`catch` never fires and `X as $sentence | …` would emit
+              # nothing at all — the whole program would print nothing and the
+              # caller would read that as "no commit identified" even when the
+              # table names one. Collecting into an array turns "no match" into
+              # a value that `//` can default.
+              ((((.body // "") | [match(
+                  "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
+                  "i"
+                ).captures[0].string] | first) // "")) as $sentence |
+              if $sentence != "" then $sentence
+              elif summary_marker then
+                # The row naming THIS head, not whichever row comes first: a
+                # rolling summary lists several commits, and any other row
+                # would fail the resolve below for the wrong reason.
+                ([summary_row_prefixes[] |
+                  select(. as $prefix |
+                    ($head | ascii_downcase) | startswith($prefix))] |
+                 first // "")
+              else "" end
             ')
         grep -Eq '^[0-9a-fA-F]{7,40}$' <<<"$settle_prefix" ||
             die "comment $target_id does not identify a reviewed commit"

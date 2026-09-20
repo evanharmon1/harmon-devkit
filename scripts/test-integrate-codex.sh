@@ -4168,5 +4168,255 @@ injected_budget="$(grep 'reviews?per_page=100' "$timeout_args_log" | awk '{print
 [ "$injected_budget" = "30" ] ||
     fail "the injected clock must govern the fetch budget (expected 30, got '$injected_budget')"
 
+# --------------------------------------------------------------------------
+# harmon-devkit#1050 challenge round 1/5 — adjudicated findings and the two
+# challenger-observed items. Each case is the attack the finder (or the
+# challenger) actually reproduced, so a regression re-opens the exact hole.
+# --------------------------------------------------------------------------
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+
+echo "==> challenge-r1-codex-adversarial-1: an unbadged concern under a bare Summary heading is a finding, not informational"
+# The reproduced fail-open: an older clean verdict plus a NEWER unbadged
+# top-level comment stating a real concern under `### Summary`. The first
+# version of `is_self_report` accepted the heading alone, classified this
+# `informational`, dropped it from all three blocking scans, and accepted the
+# older clean result — exit 0 over an unanswered defect.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:5505183082,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      },
+      {
+        id:5504087486,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",
+        body:("### Summary\n\nThe authorization check on the trigger broker is missing; any caller can post it.\n\nReviewed commit `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+[ "$check_rc" -ne 0 ] ||
+    fail "an unbadged concern must never be dropped as informational: $check_out"
+
+echo "==> challenge-r1-codex-adversarial-1: a genuine self-fix report still needs a self-work marker, not just the heading"
+# Both observed self-report bodies carry one: harmon-devkit#710 says "Reviewed
+# commit ... and found no additional code changes necessary", harmon-devkit#665
+# says "Committed the change on `<branch>` as `<sha>`" and "A pull request
+# could not be created". Each must still classify informational.
+for marker in \
+    'Reviewed commit `SHA` and found no additional code changes necessary.' \
+    'Committed the change on `codex/name-review-trigger-broker` as `77379cf`.' \
+    'A pull request could not be created because the required tool is unavailable.'; do
+    new_cycle
+    jq -cn \
+        --argjson id "$actor_id" \
+        --arg login "$actor_login" \
+        --arg prefix "${head_sha:0:10}" \
+        --arg marker "${marker//SHA/${head_sha:0:7}}" \
+        '[[
+          {
+            id:5505183082,user:{id:$id,login:$login},
+            created_at:"2026-07-31T08:00:02Z",
+            body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+          },
+          {
+            id:5504087486,user:{id:$id,login:$login},
+            created_at:"2026-07-31T08:00:30Z",
+            body:("### Summary\n\n* " + $marker + "\n\nReviewed commit `" + $prefix + "`")
+          }
+        ]]' >"${fixtures}/comments.pages.json"
+    run_check '2026-07-31T08:01:00Z'
+    assert_status 0 clean
+    assert_accepted comment 5505183082
+done
+
+echo "==> challenge-r1-codex-adversarial-1: a finding footer defeats the self-report shape"
+# "Useful? React with 👍 / 👎." is the machine-emitted line Codex appends to a
+# finding — the same class of signal as the badge, and it wins over the shape.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:5504087486,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:30Z",
+        body:("### Summary\n\n* Committed the change on `codex/x` as `77379cf`.\n\nThe rollback path still drops the lock.\n\nReviewed commit `" + $prefix + "`\n\nUseful? React with 👍 / 👎.")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+
+echo "==> challenge-r1-codex-adversarial-2: a BADGED summary with a Running row is still a finding"
+# The reproduced fail-open: routing every summary comment to the Completed-row
+# arm made a badged summary with an unfinished row vanish from every scan, so
+# an older clean comment was accepted over it.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    --arg short "${head_sha:0:7}" \
+    '[[
+      {
+        id:5505183082,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      },
+      {
+        id:5503087620,user:{id:$id,login:$login},
+        created_at:"2026-07-31T07:40:00Z",
+        updated_at:"2026-07-31T08:00:30Z",
+        body:("<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | 🔄 **Running** | `" + $short + "` | Manual request |\n\n**P1** the rollback path drops the lock.")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+[ "$check_rc" -ne 0 ] ||
+    fail "a badge in a summary comment must dominate whatever its row says: $check_out"
+
+echo "==> challenge-r1-codex-adversarial-2: a badged summary naming only ANOTHER head does not block this one"
+# Head binding is preserved: the badge is a finding about the commits its table
+# names, not about every head forever.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:5505183082,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      },
+      {
+        id:5503087620,user:{id:$id,login:$login},
+        created_at:"2026-07-31T07:40:00Z",
+        updated_at:"2026-07-31T08:00:30Z",
+        body:"<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | 🔄 **Running** | `deadbee` | Manual request |\n\n**P1** a finding about another commit."
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted comment 5505183082
+
+echo "==> challenge-r1-codex-adversarial-3: Completed must be in the STATUS column, not any cell"
+new_cycle
+write_summary_comment '🔄 **Running**' "${head_sha:0:7}" '2026-07-31T08:00:05Z'
+# Put the word in the Review trigger cell, exactly the case the comment
+# promised to exclude and the first implementation accepted.
+jq --arg short "${head_sha:0:7}" \
+    '(.[0][0].body) |= sub("\\| Manual request \\|"; "| Completed manual request |")' \
+    "${fixtures}/comments.pages.json" >"${fixtures}/comments.next.json"
+mv "${fixtures}/comments.next.json" "${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> challenge-r1-codex-adversarial-3: a negated status is not completion"
+new_cycle
+write_summary_comment '❌ **Not completed**' "${head_sha:0:7}" '2026-07-31T08:00:05Z'
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> challenge-r1-codex-adversarial-3: a table with no identifiable header yields nothing"
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg short "${head_sha:0:7}" \
+    '[[
+      {
+        id:5503087620,user:{id:$id,login:$login},
+        created_at:"2026-07-31T07:40:00Z",
+        updated_at:"2026-07-31T08:00:30Z",
+        body:("<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n| Thing | Other |\n| --- | --- |\n| ✅ **Completed** | `" + $short + "` |")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 11 pending
+
+echo "==> challenge-r1-codex-adversarial-4: settle binds the head from the summary table"
+# The stuck cycle: a badged Completed summary exits 10, but settle could not
+# bind the head without a `Reviewed commit` sentence, so the finding could
+# neither be declined nor filed.
+new_cycle
+write_summary_comment '✅ **Completed** P1 the rollback path drops the lock' \
+    "${head_sha:0:7}" '2026-07-31T08:00:05Z'
+# `settle` fetches the comment by id and checks it belongs to this PR, so the
+# per-id fixture needs the `issue_url` the pages listing does not carry.
+jq -c '.[0][0] + {issue_url:"https://api.github.com/repos/example/repo/issues/493"}' \
+    "${fixtures}/comments.pages.json" >"${fixtures}/comment-5503087620.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+run_settle --surface comment --id 5503087620 --disposition declined \
+    --note "adjudicated P2: the lock is released by the trap"
+[ "$settle_rc" -eq 0 ] ||
+    fail "settle must bind the head from the summary table: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+
+echo "==> item A: an invalid --now is a usage error, never a transient read"
+# `clock_epoch` used to `die` inside a command substitution, so a malformed
+# flag surfaced as exit 16 — the one class the gate repeats and the integrator
+# poll loop never escalates.
+new_cycle
+set +e
+bad_now_out="$("$helper" check --state "$state" --actor-id "$actor_id" \
+    --actor-login "$actor_login" --now 'not-a-timestamp' 2>&1)"
+bad_now_rc=$?
+set -e
+[ "$bad_now_rc" -eq 2 ] ||
+    fail "an invalid --now must be a usage error (exit 2), got $bad_now_rc: $bad_now_out"
+grep -Fq 'ISO-8601' <<<"$bad_now_out" ||
+    fail "the usage error must name what is wrong with --now: $bad_now_out"
+grep -Fq 'transient-read' <<<"$bad_now_out" &&
+    fail "a usage error must never render as a transient read: $bad_now_out"
+
+echo "==> item B: a fresh attempt-1 cycle is allowed once the recorded quota reset has passed"
+new_cycle
+write_quota_reply '2026-07-31T08:00:03Z' \
+    'You have reached your Codex usage limits for code reviews. Limits reset at 2026-07-31T09:00:00Z.'
+run_check '2026-07-31T08:01:00Z'
+assert_status 15 quota-exhausted
+# Before the reset: still refused, so the bounded retry is not spent early.
+set +e
+early_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --now '2026-07-31T08:30:00Z' 2>&1)"
+early_rc=$?
+set -e
+[ "$early_rc" -eq 2 ] ||
+    fail "a fresh cycle before the reset must be refused: $early_out"
+# After the reset: a new cycle, and the refused trigger is carried forward as
+# same-head history (harmon-devkit#1014 ruling 2).
+"$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --now '2026-07-31T09:00:01Z' >/dev/null ||
+    fail "a fresh cycle after the reset must be allowed"
+[ "$(jq -r '.attempt' "$state")" = "1" ] ||
+    fail "the fresh cycle must be attempt 1: $(jq -c . "$state")"
+[ -z "$(jq -r '.quota_exhausted_at // empty' "$state")" ] ||
+    fail "the fresh cycle must clear the quota marker: $(jq -c . "$state")"
+[ "$(jq -r '.previous_trigger_comment_id' "$state")" = "$trigger_id" ] ||
+    fail "the refused cycle's trigger is same-head history: $(jq -c . "$state")"
+
+echo "==> item B: a quota reply with no reset time still refuses a fresh cycle"
+new_cycle
+write_quota_reply '2026-07-31T08:00:03Z'
+run_check '2026-07-31T08:01:00Z'
+assert_status 15 quota-exhausted
+set +e
+no_reset_out="$("$helper" reserve --state "$state" --repo example/repo --pr 493 \
+    --head "$head_sha" --attempt 1 --now '2026-08-31T09:00:01Z' 2>&1)"
+no_reset_rc=$?
+set -e
+[ "$no_reset_rc" -eq 2 ] ||
+    fail "with no known reset time the carve-out must stay closed: $no_reset_out"
+
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"

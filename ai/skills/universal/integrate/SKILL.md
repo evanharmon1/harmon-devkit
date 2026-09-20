@@ -882,7 +882,13 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     reset time where the reply carried one, and do **not** re-trigger — the
     checker refuses `reserve --attempt 2` against that state for exactly this
     reason, so the one bounded re-trigger is not spent on a reviewer that has
-    already said no.
+    already said no. Once that **recorded reset time has actually passed**, a
+    fresh `reserve --attempt 1` on the same head is permitted and starts a new
+    cycle with the marker cleared (challenge round 1, item B) — without it,
+    exit 15 left the commit un-reviewable until a new push moved the head.
+    Where the reply named no reset time there is nothing to wait out, so that
+    recovery does not open: the blocker stands until a push or an operator
+    clears the state.
   - `codex_cycle.exit_code: 16` (a transient evidence-read failure,
     harmon-devkit#508) — this says nothing about the reviewer, only that
     GitHub would not answer a read. It arrives as `verdict: "pending"` and is

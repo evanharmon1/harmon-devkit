@@ -52,7 +52,7 @@
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled                                       (fail)
 #   codex-not-clean, disposition-unsettled,
-#   codex-quota-exhausted,                                  (fail)
+#   codex-quota-exhausted, finder-quota-exhausted,          (fail)
 #   unresolved-integrator-findings                          (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
@@ -914,11 +914,22 @@ threads_needing_attention="$(jq -c --arg me "$me" \
     | def is_bot_self_report:
         ((.user.id? == $bot) and
          (((.body // "") | ascii_downcase | test("\\bp[0-9]+\\b")) | not) and
+         # Challenge round 1, finding `challenge-r1-codex-adversarial-1`: the
+         # heading is not evidence. This predicate mirrors the checker
+         # predicate `is_self_report`, kept deliberately identical — a `summary` heading
+         # AND a recognized self-work marker AND no finding footer. The first
+         # version accepted the heading on its own, which let an unbadged prose
+         # concern from the bot pass as informational. Any non-match here still
+         # raises `threads-new-follow-up`, so drift costs a false block.
          (((.body // "") | ascii_downcase | split("\n") |
             map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
-            any(.[]; test("^#{1,6}[[:space:]]*summary[[:space:]]*$"))) or
-          ((.body // "") | ascii_downcase |
-            test("committed .*on `[^`]+` as `[0-9a-f]{7,40}`"))));
+            any(.[]; test("^#{1,6}[[:space:]]*summary[[:space:]]*$")))) and
+         (((.body // "") | ascii_downcase |
+            (test("committed .*on `[^`]+` as `[0-9a-f]{7,40}`") or
+             test("a pull request could not be created") or
+             test("reviewed commit `[0-9a-f]{7,40}` and found no additional")))) and
+         (((.body // "") | ascii_downcase |
+            test("useful\\? react with")) | not));
       group_by(.in_reply_to_id // .id)
     | map( . as $t
       | ([$t[] | select(.user.login == $me and .in_reply_to_id != null)
@@ -1176,7 +1187,7 @@ if [ "$finder_cycles_len" -gt 0 ]; then
             fail_condition finder-not-clean "finder_cycles[$fc_idx] ($fc_slug) exited $fc_exit, not terminal-clean"
             ;;
         15)
-            fail_condition codex-quota-exhausted "finder_cycles[$fc_idx] ($fc_slug) exited 15: the finder reported its review usage limit is exhausted — report the blocker rather than re-triggering"
+            fail_condition finder-quota-exhausted "finder_cycles[$fc_idx] ($fc_slug) exited 15: the finder reported its review usage limit is exhausted — report the blocker rather than re-triggering"
             ;;
         16)
             indeterminate codex-transient-read "finder_cycles[$fc_idx] ($fc_slug) exited 16: an evidence read failed transiently — repeat the read rather than treating the finder as absent"

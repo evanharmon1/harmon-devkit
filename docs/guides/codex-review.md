@@ -661,7 +661,7 @@ are the contract:
 | `12` | `retry` | Attempt 1's window elapsed. One re-trigger with `--attempt 2`. |
 | `13` | `escalate` | Both windows elapsed. Stop; escalate. |
 | `14` | `pr-not-open` | GitHub answered MERGED/CLOSED. Terminal for the whole stage — never wait, re-run, or re-trigger. |
-| `15` | `quota-exhausted` | The reviewer *answered* that its code-review usage limit is spent. Terminal; never clean, never findings. Report the blocker with the reset time where the reply carried one. `reserve --attempt 2` is refused, so the one bounded retry is not spent on a reviewer that already said no. |
+| `15` | `quota-exhausted` | The reviewer *answered* that its code-review usage limit is spent. Terminal; never clean, never findings. Report the blocker with the reset time where the reply carried one. `reserve --attempt 2` is refused, so the one bounded retry is not spent on a reviewer that already said no — and once a recorded reset time has passed, a fresh `--attempt 1` on the same head is allowed, so the head does not stay un-reviewable. |
 | `16` | `transient-read` | An evidence **read** failed. This says nothing about the reviewer: repeat the *read*, never the reviewer cycle. The readiness gate reports it as `codex-transient-read` (indeterminate with the reason), never `codex-not-clean`. |
 | `2` | `indeterminate` | Malformed, changed head, usage error, or an unclassifiable verdict. |
 
@@ -695,6 +695,9 @@ symmetric:
   ordinary reply path with everything else.
 - A badged finding stated **outside** an inline thread has no reply linkage,
   and `settle` currently refuses a badge it does not recognize as `p[0-2]`.
+  It does now accept the two head bindings `check` accepts — a `Reviewed
+  commit` sentence or the commit cell of a summary table — so a badged summary
+  comment can be declined or filed rather than reporting findings forever.
   So an unfixed, non-inline cloud P3 has no way to be recorded as settled
   *by that checker*: fix it and push (which starts a fresh-head cycle and
   resolves it), or if it genuinely needs no change, report the blocker and
