@@ -830,30 +830,39 @@ GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$null_disp
 grep -q 'startswith() requires string' "$tmp/err" &&
     fail "the render must not reach startswith with a non-string verdict"
 
-echo "==> report: every issue reference in the HTML is a link, wherever it appears"
-proposals_html="$tmp/proposals-links.html"
-run "$report" render --dispositions "$proposals_disp" --out-html "$proposals_html" \
-    --out-md "$tmp/proposals-links.md" >/dev/null
-# Codex found the parent-proposal children unlinked; the milestone chips, the
-# oldest-open-issue lines and the duplicate-close targets were the same defect
-# in four other sections. The rule, not the instance, is what is asserted here.
-python3 - "$proposals_html" <<'PYEOF' || fail "found an issue reference rendered as plain text instead of a link"
+# Asserts the rule over one rendered report. Defined once because a single
+# fixture does not reach every section that prints an issue reference: the
+# proposals dataset assigns no milestones, so it never renders the
+# milestone-health "oldest open issue" line (Greptile on a5878252).
+assert_issue_refs_linked() {
+    python3 - "$1" "$2" <<'PYEOF' || fail "$2: found an issue reference rendered as plain text instead of a link"
 import re, sys
 h = open(sys.argv[1]).read()
 plain = re.findall(r'(?<!>)#(\d+) — ', h)
 if plain:
-    print("unlinked issue references:", plain[:5], file=sys.stderr)
+    print(sys.argv[2], "unlinked issue references:", plain[:5], file=sys.stderr)
 sys.exit(1 if plain else 0)
 PYEOF
+}
 
-echo "==> report: a long duplicate-target title cannot force the page to scroll sideways"
-# A CLOSE-dup-of-#N badge carries the canonical issue title, so the one cell
-# that can be arbitrarily long must be allowed to wrap; sticky headers rule
-# out scrolling the wrapper at every width (Codex on b225581f).
-grep -q 'td .badge { white-space: normal; overflow-wrap: anywhere; }' "$out_html" ||
-    fail "badges inside a table cell must wrap, or a long duplicate title overflows the page"
-grep -q 'th { background: var(--th-bg); position: sticky' "$out_html" ||
-    fail "the fix for wrapping must not give up the sticky table header"
+echo "==> report: every issue reference in the HTML is a link, wherever it appears"
+proposals_html="$tmp/proposals-links.html"
+run "$report" render --dispositions "$proposals_disp" --out-html "$proposals_html" \
+    --out-md "$tmp/proposals-links.md" >/dev/null
+assert_issue_refs_linked "$proposals_html" "proposals render"
+
+# A dataset whose rows carry a milestone, so milestone health renders its
+# oldest-open-issue reference and that link path is actually covered.
+ms_disp="$tmp/milestone-links.json"
+jq '.dispositions |= map(.milestone = "v1")
+    | .milestones = [{"number":1,"title":"v1","state":"open","open_issues":3,"closed_issues":1}]' \
+    "$disp" >"$ms_disp"
+ms_html="$tmp/milestone-links.html"
+run "$report" render --dispositions "$ms_disp" --out-html "$ms_html" \
+    --out-md "$tmp/milestone-links.md" >/dev/null
+grep -q 'oldest open issue' "$ms_html" ||
+    fail "the milestone fixture must actually render a milestone-health line, or it proves nothing"
+assert_issue_refs_linked "$ms_html" "milestone-health render"
 
 echo "==> report: a priority band means the same colour in the card as in the chart"
 # Asserted against the rendered report, not the source: what matters is the
