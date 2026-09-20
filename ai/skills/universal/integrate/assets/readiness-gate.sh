@@ -899,12 +899,18 @@ merge_state="$(jq -r '.mergeStateStatus // ""' <<<"$scalars")"
 case "$merge_state" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts with the base branch" ;;
 BEHIND)
-    # The graph said 0 above, so this is the cache lagging, not work to do.
-    # Failing it as `merge-state-behind` would send the caller to merge a base
-    # it is already level with — which creates no commit, so there is nothing
-    # to push or re-review and the same blocker reproduces forever. It is
-    # unknown-for-now: re-poll, never promote on it.
-    indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    # CHECK only, for the same reason the graph check above is. In check mode
+    # the graph already reported 0, so a cache still reading BEHIND is lag:
+    # failing it would send the caller to merge a base it is level with, which
+    # creates no commit and reproduces the blocker forever. Unknown-for-now.
+    #
+    # In AUDIT mode the graph check never ran, so this branch has no such
+    # premise — and ANY non-pass routes §2's unexplained-promotion flow to its
+    # undo path, reversing a valid handoff because the base drifted after it.
+    # Scoping only the graph check left that half-done (review round 1; the
+    # audit case had used BLOCKED and so missed it).
+    [ "$require_draft" = 0 ] ||
+        indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is still computing mergeability — re-poll briefly"
@@ -1514,7 +1520,9 @@ fi
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
 BEHIND)
-    indeterminate merge-state-stale "mergeStateStatus reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
+    # CHECK only — same reasoning as the pre-evaluation branch above.
+    [ "$require_draft" = 0 ] ||
+        indeterminate merge-state-stale "mergeStateStatus reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is recomputing mergeability — re-poll briefly"

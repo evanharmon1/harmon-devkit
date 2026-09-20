@@ -711,6 +711,20 @@ run_gate_audit
 [ "$gate_rc" -eq 0 ] ||
     fail "audit failed on a behind head (rc $gate_rc) — this routes a valid promotion to an undo: $gate_out"
 
+# ...and with the CACHE also reporting BEHIND. The case above used BLOCKED and
+# so missed it: scoping only the graph check left the shared cache branch still
+# returning merge-state-stale (exit 2) in audit mode, where the graph check has
+# not run and the "graph said 0" premise does not hold. Any non-pass routes the
+# unexplained-promotion flow to its undo path (review round 1).
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BEHIND",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view.json"
+run_gate_audit
+[ "$gate_rc" -eq 0 ] ||
+    fail "audit failed on a cached-BEHIND promoted PR (rc $gate_rc) — post-promotion drift must not reverse a valid handoff: $gate_out"
+
 echo "==> the gate emits no stray output before its own argument parsing"
 # A header-comment edit once dropped its leading `#`, leaving an executable
 # line at top level. `set -euo pipefail` is BELOW the header, so it failed with
