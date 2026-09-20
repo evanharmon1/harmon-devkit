@@ -719,6 +719,229 @@ grep -q 'id="chart-age"' "$out_html" || fail "HTML must render Backlog age distr
 grep -q 'id="chart-evidence"' "$out_html" || fail "HTML must render Closes by evidence type chart"
 grep -q '<svg viewBox="0 0 380' "$out_html" || fail "SVG charts must use viewBox for scaling"
 
+# ── Issue #1096: bold report design — masthead, donut, colour-coded verdicts ──
+echo "==> report: HTML carries the masthead ribbon and the headline counts"
+grep -q '<header class="hero">' "$out_html" || fail "HTML must carry the masthead"
+grep -q 'class="ribbon"' "$out_html" || fail "masthead must carry the proportional backlog ribbon"
+grep -q 'class="ribbon-legend"' "$out_html" || fail "the ribbon must be labelled with a legend"
+
+echo "==> report: the verdict chart is a donut with a percentage legend"
+grep -q 'class="donut"' "$out_html" || fail "verdict breakdown must render as a donut"
+grep -q 'stroke-dasharray=' "$out_html" || fail "donut slices must be drawn as dasharray arcs"
+grep -q 'class="lg-pct"' "$out_html" || fail "the donut legend must carry per-verdict percentages"
+
+echo "==> report: the priority card carries the disposition split within each band"
+grep -q 'class="matrix"' "$out_html" || fail "priority mix must carry the per-band disposition matrix"
+grep -q 'class="minibar"' "$out_html" || fail "each priority band must render a proportional mini bar"
+
+echo "==> report: verdict badges are colour-coded by family, not all neutral"
+grep -q 'badge-v-close' "$out_html" || fail "CLOSE-* verdicts must carry the close badge class"
+grep -q 'badge-v-keep' "$out_html" || fail "KEEP verdicts must carry the keep badge class"
+grep -q 'badge-v-decision' "$out_html" || fail "NEEDS-DECISION verdicts must carry the decision badge class"
+
+echo "==> report: issue numbers link to the issue on GitHub"
+grep -q 'href="https://github.com/testowner/testrepo/issues/1"' "$out_html" ||
+    fail "an issue number must link to that issue in the audited repo"
+
+echo "==> report: the HTML stays self-contained — no external asset or library"
+grep -qE '<(script|link)[^>]+(src|href)="https?://' "$out_html" &&
+    fail "the report must not load any external script or stylesheet"
+grep -q '<img' "$out_html" && fail "the report must not reference an external image"
+
+echo "==> report: the headline numbers and next actions link to the sections they name"
+grep -q '<a class="stat-card" href="#close"' "$out_html" ||
+    fail "the close-candidate stat card must link to the Close now section"
+grep -q '<a class="stat-card" href="#decisions"' "$out_html" ||
+    fail "the decisions stat card must link to the Decisions section"
+grep -q '<a class="stat-card" href="#every-issue"' "$out_html" ||
+    fail "the open-issues stat card must link to the Every issue table"
+grep -q '<li><a href="#close">Review ' "$out_html" ||
+    fail "a What-to-do-next item must link to the section it names"
+grep -q '<a href="#close"><span class="swatch"' "$out_html" ||
+    fail "the masthead ribbon legend must link to its section"
+
+echo "==> report: sections from Close now down are collapsible and start collapsed"
+for sec in close milestones parents themes decisions completed findings conformance bots every-issue; do
+    grep -q "<details class=\"sect\" id=\"sec-$sec\"><summary>" "$out_html" ||
+        fail "section $sec must be a collapsible <details>"
+done
+grep -q '<details class="sect" id="sec-close" open' "$out_html" &&
+    fail "collapsible sections must start collapsed (no open attribute)"
+grep -q '<h2 id="milestones">Milestones <span class="pill">' "$out_html" ||
+    fail "a collapsed section must still show its count on the summary"
+grep -q 'function groomReveal' "$out_html" ||
+    fail "HTML must open a collapsed section when a link targets something inside it"
+
+# ── PR #1101 review findings (Codex, Greptile, Gemini) ──────────────────────
+echo "==> report: the chart grid never forces a track wider than the viewport"
+grep -q 'minmax(min(420px, 100%), 1fr)' "$out_html" ||
+    fail "the chart grid must cap its minimum track at 100% or it overflows phone widths"
+
+echo "==> report: printing carries the collapsed sections, not just their summaries"
+grep -q 'beforeprint' "$out_html" ||
+    fail "HTML must open collapsed sections for printing"
+grep -q 'afterprint' "$out_html" ||
+    fail "HTML must restore collapsed sections after printing"
+grep -q 'details.sect::details-content' "$out_html" ||
+    fail "HTML must carry the print fallback for paths that fire no print event"
+
+echo "==> report: one family, one hue — every view agrees on what a verdict looks like"
+# The redesign makes colour load-bearing, so a family that reads one way in
+# the ribbon and another in the donut is a defect, not a detail. Checked as a
+# rule over both series rather than one pinned pair (Codex on b225581f).
+python3 - "$report" <<'PYEOF' || fail "a verdict family must use the same hue in the ribbon and the donut"
+import re, sys
+src = open(sys.argv[1]).read()
+def hue(label, after):
+    m = re.search(r'\{ label: "%s", count:.*?color: "(#[0-9a-f]{6})"' % re.escape(label), src[src.index(after):], re.S)
+    return m.group(1) if m else None
+ribbon = src.index('{ label: "Close", count: ($close|length)')
+donut = src.index('{ label: "CLOSE-done"')
+pairs = [("Needs info", "NEEDS-INFO")]
+bad = [(r, d) for r, d in pairs if hue(r, src[:ribbon] and src[ribbon:]) != hue(d, src[donut:])]
+for r, d in pairs:
+    rh, dh = hue(r, src[ribbon:]), hue(d, src[donut:])
+    if rh != dh:
+        print("mismatch: ribbon %s=%s vs donut %s=%s" % (r, rh, d, dh), file=sys.stderr)
+sys.exit(1 if any(hue(r, src[ribbon:]) != hue(d, src[donut:]) for r, d in pairs) else 0)
+PYEOF
+
+echo "==> report: a duplicate close keeps a close-family hue, not the needs-info hue"
+grep -q '"CLOSE-dup", count:.*color: "#a40e26"' "$report" ||
+    fail "CLOSE-dup must take a close-family colour"
+grep -q '"CLOSE-dup".*#8250df' "$report" &&
+    fail "CLOSE-dup must not reuse the needs-info purple"
+
+echo "==> report: ribbon segments count exactly what their link lands on"
+grep -q '{ label: "Close", count: ($close|length), color: "#d1242f", href: "#close" }' "$report" ||
+    fail "the Close ribbon segment must count PENDING closes, matching the section it links to"
+grep -q '{ label: "Decide", count: ($decisions|length)' "$report" ||
+    fail "the Decide ribbon segment must count PENDING decisions"
+grep -q '{ label: "Settled"' "$report" ||
+    fail "completed work must have its own ribbon segment linking to Completed this run"
+
+echo "==> report: a null verdict renders rather than aborting the run (Greptile on 512358e)"
+null_disp="$tmp/null-verdict.json"
+jq '.dispositions[0].verdict = null | .dispositions[0].priority = null' "$disp" >"$null_disp"
+GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$null_disp" \
+    --out-html "$tmp/null.html" --out-md "$tmp/null.md" >/dev/null
+[ -s "$tmp/null.html" ] && [ -s "$tmp/null.md" ] ||
+    fail "a null verdict must not abort the render — normalize at the row boundary, not at each use"
+grep -q 'startswith() requires string' "$tmp/err" &&
+    fail "the render must not reach startswith with a non-string verdict"
+
+# Asserts the rule over one rendered report. Defined once because a single
+# fixture does not reach every section that prints an issue reference: the
+# proposals dataset assigns no milestones, so it never renders the
+# milestone-health "oldest open issue" line (Greptile on a5878252).
+assert_issue_refs_linked() {
+    python3 - "$1" "$2" <<'PYEOF' || fail "$2: found an issue reference rendered as plain text instead of a link"
+import re, sys
+h = open(sys.argv[1]).read()
+plain = re.findall(r'(?<!>)#(\d+) — ', h)
+if plain:
+    print(sys.argv[2], "unlinked issue references:", plain[:5], file=sys.stderr)
+sys.exit(1 if plain else 0)
+PYEOF
+}
+
+echo "==> report: every issue reference in the HTML is a link, wherever it appears"
+proposals_html="$tmp/proposals-links.html"
+run "$report" render --dispositions "$proposals_disp" --out-html "$proposals_html" \
+    --out-md "$tmp/proposals-links.md" >/dev/null
+assert_issue_refs_linked "$proposals_html" "proposals render"
+
+# A dataset whose rows carry a milestone, so milestone health renders its
+# oldest-open-issue reference and that link path is actually covered.
+ms_disp="$tmp/milestone-links.json"
+jq '.dispositions |= map(.milestone = "v1")
+    | .milestones = [{"number":1,"title":"v1","state":"open","open_issues":3,"closed_issues":1}]' \
+    "$disp" >"$ms_disp"
+ms_html="$tmp/milestone-links.html"
+run "$report" render --dispositions "$ms_disp" --out-html "$ms_html" \
+    --out-md "$tmp/milestone-links.md" >/dev/null
+grep -q 'oldest open issue' "$ms_html" ||
+    fail "the milestone fixture must actually render a milestone-health line, or it proves nothing"
+assert_issue_refs_linked "$ms_html" "milestone-health render"
+
+echo "==> report: no close verdict is drawn in a priority band's colour, in any view"
+# Stated as a rule over both series. Two rounds fixed CLOSE-dup and then
+# CLOSE-wrong-repo one at a time; what has to hold is that no close verdict
+# ever wears a hue that means a priority band (Codex on 467e1af0).
+python3 - "$report" <<'PYEOF' || fail "a CLOSE-* verdict is drawn in a colour that means a priority band"
+import re, sys
+src = open(sys.argv[1]).read()
+closes = dict(re.findall(r'\{ label: "(CLOSE-[\w-]+)", count:.*?color: "(#[0-9a-f]{6})"', src, re.S))
+bands = dict(re.findall(r'\{ label: "(High|Medium|Low)", count:.*?color: "(#[0-9a-f]{6})"', src, re.S))
+clash = {v: c for v, c in closes.items() if c in set(bands.values())}
+if clash:
+    print("close verdicts wearing a priority hue:", clash, "bands:", bands, file=sys.stderr)
+sys.exit(1 if clash else 0)
+PYEOF
+
+echo "==> report: the disposition split is available without colour or a pointer"
+grep -q 'class="minibar" role="img" aria-label=' "$out_html" ||
+    fail "each priority band's split must carry an accessible name, not a hover-only title"
+grep -q '<p class="matrix-text">' "$out_html" ||
+    fail "the disposition split must also be stated in text, for readers who cannot separate the hues"
+
+echo "==> report: the unverified remainder cannot read as empty track"
+grep -q 'color: "var(--muted)"' "$report" ||
+    fail "the unverified slice must use a theme token that stays legible against the track in both themes"
+grep -q '#adb5bd' "$report" &&
+    fail "the low-contrast unverified grey must not come back"
+
+echo "==> report: a badge that can carry an issue title wraps, wherever it is rendered"
+grep -q 'white-space: normal; overflow-wrap: anywhere; }' "$out_html" ||
+    fail "badges must wrap by default — scoping the override to table cells left milestone health overflowing"
+grep -q 'badge-priority-P3 { white-space: nowrap; }' "$out_html" ||
+    fail "the short, bounded priority badges should still refuse to break"
+
+echo "==> report: issue links point at the host the audit ran against"
+GROOM_NOW="2026-01-01 00:00 UTC" GH_HOST=git.example.com run "$report" render \
+    --dispositions "$disp" --out-html "$tmp/ghe.html" --out-md "$tmp/ghe.md" >/dev/null
+grep -q 'href="https://git.example.com/' "$tmp/ghe.html" ||
+    fail "GH_HOST must decide the issue-link host, or an Enterprise audit links to a public repo"
+grep -q 'href="https://github.com/' "$tmp/ghe.html" &&
+    fail "no link may fall back to the public host once GH_HOST is set"
+grep -q 'href="https://github.com/' "$out_html" ||
+    fail "with GH_HOST unset the public host is still the default"
+
+echo "==> report: a priority band means the same colour in the card as in the chart"
+# Asserted against the rendered report, not the source: what matters is the
+# colour a reader sees on the card versus the one the chart gives that band.
+python3 - "$out_html" <<'PYEOF' || fail "the High priority card must use the High hue, not Medium's"
+import re, sys
+h = open(sys.argv[1]).read()
+rail = re.search(r'--rail: var\(--(\w+)\)[^>]*><div class="stat-num">[^<]*</div><div class="stat-label">High priority', h)
+danger = re.search(r'--danger:\s*(#[0-9a-f]{6})', h)
+warn = re.search(r'--warn:\s*(#[0-9a-f]{6})', h)
+chart_high = re.search(r'background:(#[0-9a-f]{6})" title="High:', h)
+if not (rail and danger and warn and chart_high):
+    print("could not locate:", bool(rail), bool(danger), bool(warn), bool(chart_high), file=sys.stderr)
+    sys.exit(1)
+token = {"danger": danger.group(1), "warn": warn.group(1)}.get(rail.group(1))
+ok = token is not None and token.lower() == chart_high.group(1).lower()
+if not ok:
+    print("card rail", rail.group(1), token, "vs chart High", chart_high.group(1), file=sys.stderr)
+sys.exit(0 if ok else 1)
+PYEOF
+
+echo "==> report: every link lands on a section that was rendered"
+python3 - "$out_html" <<'PYEOF' || fail "found an in-page link with no destination"
+import re, sys
+h = open(sys.argv[1]).read()
+ids = set(re.findall(r'id="([^"]+)"', h))
+dead = sorted({t for t in re.findall(r'href="#([^"]+)"', h) if t not in ids})
+if dead:
+    print("dead anchors:", dead, file=sys.stderr)
+sys.exit(1 if dead else 0)
+PYEOF
+
+echo "==> report: a link and its destination are scoped to the same population"
+grep -q 'of the \\(if $unverified_n > 0 then "audited issues" else "backlog" end)' "$report" ||
+    fail "row-derived stat cards must measure against the audited rows they can see"
+
 echo "==> report: render is byte-identical for same input and GROOM_NOW (deterministic)"
 out_html2="$tmp/report2.html"
 out_md2="$tmp/report2.md"
@@ -1056,6 +1279,26 @@ grep -q '| #1 |' <<<"$close_now_retitle_section" ||
 completed_retitle_section="$(sed -n '/^## Completed this run$/,/^## /p' "$retitle_only_md")"
 grep -q '#1 —' <<<"$completed_retitle_section" &&
     fail "a retitle outcome must never move #1 to Completed this run — that section is for the OP that matches the row's own verdict"
+
+echo "==> report: an incomplete audit is never drawn as whole-backlog coverage (Codex/Greptile on PR #1101)"
+partial_disp="$tmp/partial-disp.json"
+jq '.stats.unverified = [5] | .stats.open_total = 5' "$disp" >"$partial_disp"
+GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$partial_disp" \
+    --out-html "$tmp/partial.html" --out-md "$tmp/partial.md" >/dev/null
+grep -q 'of .* issue(s) audited' "$tmp/partial.html" ||
+    fail "a partial audit must say how many of the backlog it covered"
+grep -q 'Unverified' "$tmp/partial.html" ||
+    fail "the unverified remainder must be drawn, not omitted from the proportions"
+# The Unverified section is a sibling of Bot-owned, never nested inside it:
+# nested, a partial audit hid its own gap inside an unrelated collapsed section.
+python3 - "$tmp/partial.html" <<'PYEOF' || fail "Unverified must be a sibling section, not a child of Bot-owned"
+import sys
+h = open(sys.argv[1]).read()
+i, j = h.index('id="sec-bots"'), h.index('id="sec-unverified"')
+sys.exit(0 if h[i:j].count("</details>") >= 1 else 1)
+PYEOF
+[ "$(grep -c '<details class="sect"' "$tmp/partial.html")" = "$(grep -c '</details>' "$tmp/partial.html")" ] ||
+    fail "every collapsible section must be closed exactly once"
 
 echo "==> report: renders an Unverified section only when stats.unverified is nonempty"
 run "$report" render --dispositions "$missing_disp" --out-html "$tmp/unverified.html" \
