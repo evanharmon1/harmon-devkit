@@ -328,7 +328,8 @@ gate. Follow the repo's own adjudication contract; the shape it is usually in:
   distinct caps for each).
   Concurrent rounds are invalid for exit purposes (findings are still
   adjudicated, but concurrent rounds cannot satisfy an exit condition); review
-  begins only after challenge has legitimately exited.
+  begins only after challenge has legitimately exited (or where challenge's
+  resolved cap is 0 and the stage never opened).
 - **Stage exit rules**: per `AGENTS.md` § "Loop cap and exit", a stage whose
   resolved cap is **0 never opens**: zero rounds run, there is nothing of its
   own to adjudicate, and none of the three exits below is what closed it — it was
@@ -469,8 +470,8 @@ governed by its rules, not this file's. What changes here is only that
 nothing stops the session at the draft PR waiting for a separate invocation.
 
 When handing off to or executing integration, enforce the CI readiness condition
-from `AGENTS.md` § Readiness gate: every required check CONCLUDED (pending or an
-empty check list is indeterminate, never a pass). Checks green is a
+from `AGENTS.md` § Readiness gate: every required check CONCLUDED successfully
+(pending or an empty check list is indeterminate, never a pass). Checks green is a
 non-terminal state (`AGENTS.md` § Policy invariants); bot and human reviews land
 after checks settle, so wait for both signals: every check concluded, and a
 terminal current-head Codex result (or where the resolved integration cap is 0 —

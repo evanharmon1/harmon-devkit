@@ -373,15 +373,16 @@ Per `AGENTS.md` § "Who decides, and what is delegated", stage sequencing is
 strict: **challenge then review**, counted and capped separately (`.devflow.toml`
 sets distinct caps for each). Concurrent rounds are invalid for exit purposes
 (findings are still adjudicated, but concurrent rounds cannot satisfy an exit
-condition); review begins only after challenge has legitimately exited.
+condition); review begins only after challenge has legitimately exited (or
+where challenge's resolved cap is 0 and the stage never opened).
 
 **Hand-off to integration and the CI readiness condition:**
 When a terminal `review` exits and hands off towards integration (via `security`
 and draft PR publication), the draft-first invariant is unchanged: publish the
 draft PR first, and the CI readiness condition from `AGENTS.md` § Readiness gate
 is evaluated by the integration stage once the draft exists: every required check
-CONCLUDED (pending or an empty check list is indeterminate, never a pass). A
-terminal current-head Codex result is required (or where the
+CONCLUDED successfully (pending or an empty check list is indeterminate, never
+a pass). A terminal current-head Codex result is required (or where the
 resolved integration cap is 0 — a cap of 0 leaves no cloud-review cycle to
 trigger a fresh `@codex review` from, so this one condition drops out; every
 other readiness condition still applies unchanged).
