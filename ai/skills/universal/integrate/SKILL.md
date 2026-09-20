@@ -661,6 +661,11 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
   check suites register on the new head before concluding anything; and
   if the repo genuinely has no applicable CI, say so explicitly and judge
   on reviews alone rather than treating the absence as pass or fail.
+  **CI has settled only when every required check has CONCLUDED; a pending
+  check, or an empty check list, is indeterminate and never a pass**
+  (`AGENTS.md` § Readiness gate — GitHub populates that list
+  asynchronously, so a read taken moments after a push reports nothing
+  *having run*, not nothing *to run*).
 - **Findings deferred into this stage — read the record, never the rendered
   Markdown.** Project the current settlement state:
   `render-dev-flow.sh readiness-input --record <dir> --head <headRefOid>`.
@@ -838,7 +843,23 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     `codex_cycle.exit_code` `0`/`10` — terminal for this pass. A `10` (or
     any human finding the agent also surfaced) feeds `findings[]` into §3;
     a clean `0` with no other open finding and an empty
-    `unanswered_thread_roots` proceeds toward §6. When `finder_cycles` is
+    `unanswered_thread_roots` proceeds toward §6.
+    A `10` raised by inline threads carries `unanswered[]` on the checker's
+    own output — one `{comment_id, review_id, path}` per unadjudicated bot
+    thread on the head, **from every review that posted one**. Work that list,
+    not the single `accepted.id`: the bot can post two reviews on one head
+    minutes apart, and one accepted review id cannot name findings that came
+    from both (harmon-devkit#737, observed on harmon-devkit#720, where the
+    second review's fourteen inline findings went unanswered until the
+    readiness gate caught them after every integration round was spent). A
+    later bot review on the same head returns the cycle to `findings` even
+    after a clean one, so the last read before accepting a result is the one
+    that counts.
+    A clean `0` may also be certified by the **Completed row** in the
+    connector's rolling "Codex Review Summary" comment, for the exact head,
+    posted or edited after the trigger, with nothing badged anywhere
+    (harmon-devkit#718; `AGENTS.md` § Second-Model Review carries the proposed
+    contract sentence). When `finder_cycles` is
     present, every entry must also be terminal (exit_code 0 or 10) for the
     pass to be terminal-clean — a non-codex finder with exit_code 11 or 13
     has the same effect as the codex_cycle equivalent below.
@@ -850,11 +871,25 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     should never see `12` at this level.
   - `codex_cycle.exit_code: 13` (both attempts timed out), `14` (the PR
     closed or merged — stop the **whole stage** immediately, matching §1's
-    never-integrate-a-closed-PR rule), or `2` (indeterminate) — stop and
-    reconcile per §6 rather than re-dispatching to try again. A `13` or `2`
-    always arrives as `verdict: "escalate"` (the validator pairs those exit
-    codes with that verdict) — that is this stop, not the remediation one
+    never-integrate-a-closed-PR rule), `15` (the reviewer's code-review
+    usage limit is exhausted), or `2` (indeterminate) — stop and
+    reconcile per §6 rather than re-dispatching to try again. A `13`, `15`
+    or `2` always arrives as `verdict: "escalate"` (the validator pairs those
+    exit codes with that verdict) — that is this stop, not the remediation one
     below, and says nothing about the remediation cap.
+    On **`15`** (harmon-devkit#573) the reviewer *answered*: it will not
+    review this head until its quota resets. Report the blocker naming the
+    reset time where the reply carried one, and do **not** re-trigger — the
+    checker refuses `reserve --attempt 2` against that state for exactly this
+    reason, so the one bounded re-trigger is not spent on a reviewer that has
+    already said no.
+  - `codex_cycle.exit_code: 16` (a transient evidence-read failure,
+    harmon-devkit#508) — this says nothing about the reviewer, only that
+    GitHub would not answer a read. It arrives as `verdict: "pending"` and is
+    handled like `11`: bounded wait, then re-dispatch so the **read** is
+    repeated. Never treat it as a non-clean cycle; §6's gate reports it as
+    `codex-transient-read` (indeterminate with the reason), never
+    `codex-not-clean`.
   - `verdict: "escalate"` with a terminal or null `codex_cycle` — the
     resolved **remediation** cap is spent and a finding still needs a code
     fix (see "A resolved remediation cap of 0..." above, which is the
@@ -906,6 +941,20 @@ fill in the current `round n/cap`; use the matching status glyph (`✅`, `🔴`,
   cap is 0, give other reviewers a bounded ~10–15-minute window after checks
   conclude; when it is not, the dispatched integrator agent's own two-attempt
   window (above) is that wait.
+- **The attempt window bounds a reviewer that is not working, never the clock
+  on its own.** While the finder's 👀 is still on the current attempt's
+  trigger comment, the attempt is in progress: the checker extends the window
+  to a hard ceiling of **30 minutes from the trigger** rather than returning
+  `12`, because elapsing it only forces a re-trigger that the two-attempt
+  contract then counts against the head — turning a slow-but-live review into
+  an escalation for a reviewer that was never absent (harmon-devkit#655,
+  observed on ponderousdev/omator#447: exit `12` at ~21:20Z with the 👀 still
+  on the trigger, and the findings arriving on the second cycle at ~21:32Z,
+  about when the first would have needed). A 👀 that has **vanished** with no
+  terminal result, or one still present past the ceiling, ends the attempt
+  exactly as before, so a stalled reviewer cannot hold a PR open
+  indefinitely. The ceiling never *shortens* a window a caller deliberately
+  configured longer.
 - A round begins when a check fails or a review lands findings. All workflows
   green and no unresolved findings means the candidate head may proceed to
   step 6's readiness gate; **do not stop or report a handoff here**. Never
@@ -1017,7 +1066,23 @@ by root ID: work its output, don't re-derive which threads are owed a reply.
 Skip a thread only when nothing new arrived since your
 last answer; a reviewer follow-up posted after your reply is a fresh
 finding to adjudicate and answer (through the same root ID), while
-re-answering an unchanged thread just spams it. And post "fixed in `<sha>`" replies only **after** the verified
+re-answering an unchanged thread just spams it.
+
+**Write the fix reply as a statement, not as an instruction to the bot.**
+"Fixed in `<sha>`" sometimes reads to the Codex connector as a request to act:
+it runs a fix task of its own and posts a report on what *it* did — a
+follow-up summarising a commit it made on a branch it cannot push
+(harmon-devkit#675, observed on harmon-devkit#665 thread 3886138416 and again
+as a top-level comment on #710). Phrasing that describes the change already on
+the head, and addresses the human reading the thread rather than the reviewer,
+avoids provoking it: *"Adjudicated P2 — fixed in `dfc3648`: the helper's
+reserve → post → attach sequence is now named as the broker"* rather than
+*"Fixed in dfc3648, please re-check"*. Anything imperative — "address this",
+"re-review", "look again" — is the shape to avoid. When it happens anyway,
+that self-report is **informational**: an unbadged report of the bot's own
+work is neither a finding to adjudicate nor a follow-up owed a second reply,
+and the gate no longer raises `threads-new-follow-up` for it. A **badged**
+follow-up is a real finding and still blocks. And post "fixed in `<sha>`" replies only **after** the verified
 commit has actually been pushed (rejection-only replies can go out
 immediately) — a fix reply pointing at a commit that later gets amended or
 never pushed is a false claim.

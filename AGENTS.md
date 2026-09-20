@@ -519,11 +519,51 @@ the current-head cycle above: stale activity is not evidence for the current
 commit, and a lone 👀 that disappears or never resolves is an incomplete
 attempt.
 
+**Proposed, for the maintainer to reconcile: a fourth terminal-clean form.**
+The § "Who decides, and what is delegated" contract names three — a clean
+review or top-level comment whose `Reviewed commit:` names the head, a fresh
+👍 on the exact trigger, and adjudicated findings naming the head. The
+connector now also maintains a rolling **"Codex Review Summary"** comment
+whose per-head table row flips from Running to **Completed**, and on some runs
+that row is the *only* clean signal it emits: harmon-devkit#710 at head
+`fa06c6e` got no 👍, no review and no verdict comment, so attempt 1 burned its
+whole window as pending and attempt 2 spent a second trigger on a review that
+had already finished clean. The proposed sentence: *a Completed row in that
+summary comment, for the exact current head, posted or edited by actor
+`199175422` after the trigger, with no findings on any surface, is terminal-clean.*
+Every qualifier is load-bearing — a Running row is pending, a Completed row
+for another head is stale, a row edited before the trigger belongs to an
+earlier cycle, and a badge anywhere in that comment makes it findings. The
+vendored checker (harmon-devkit#1050, child #718) implements exactly that, and
+its regression suite pins the row body verbatim from #710; until the maintainer
+folds the sentence into the three-form contract above, treat this paragraph as
+the proposal and the contract as authoritative.
+
+Two further reply shapes the same change taught the checker, both of which
+alter what "no terminal evidence" means rather than adding a clean form:
+
+- A **usage-limit reply** ("You have reached your Codex usage limits for code
+  reviews…") is the reviewer *answering that it will not review* — terminal,
+  never pending, and never clean or findings. Stop and report the blocker with
+  its reset time where the reply carried one; the one bounded re-trigger is
+  not spent on it (harmon-devkit#573).
+- A **self-fix summary** — an unbadged report from that bot describing a fix
+  *it* made, in a thread or as a top-level comment — is informational. It is
+  neither a finding to adjudicate nor a reviewer follow-up owed a second reply
+  (harmon-devkit#675). A badged follow-up still blocks, unconditionally.
+
 **Both procedures for that cycle live here**, because a repo can answer
 `use_codex_review` yes and `use_skills_sync` no. Post `@codex review` on entry and after every fix push, keep the
 comment ID returned for that trigger, and give each attempt a full 10–15 minute
-window, re-triggering once after an incomplete first attempt. If both attempts
-are incomplete, stop and escalate without reporting green.
+window, re-triggering once after an incomplete first attempt. **While that
+bot's 👀 is still on the current attempt's trigger, the attempt is not
+incomplete** — the window extends to a hard ceiling of 30 minutes from the
+trigger, because the window is meant to bound a reviewer that is *not*
+working, and re-triggering a live one costs a trigger and then escalates for a
+reviewer that was never absent (harmon-devkit#655). A 👀 that has vanished with
+no result, or one still sitting there past the ceiling, ends the attempt
+exactly as before. If both attempts are incomplete, stop and escalate without
+reporting green.
 **Where the pinned checker is vendored**
 (`.claude/skills/integrate/assets/check-codex-cloud-review.sh`, with
 `.claude/skills/shepherd/assets/check-codex-cloud-review.sh` as legacy

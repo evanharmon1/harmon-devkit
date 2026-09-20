@@ -52,10 +52,19 @@
 #   threads-edited-since-reply                              (fail)
 #   deferred-unsettled                                       (fail)
 #   codex-not-clean, disposition-unsettled,
+#   codex-quota-exhausted,                                  (fail)
 #   unresolved-integrator-findings                          (fail)
 #   checks-indeterminate, merge-state-unknown, fetch-failed,
 #   malformed-data, codex-indeterminate, codex-cap-mismatch,
-#   codex-stale, usage                                      (indeterminate)
+#   codex-stale, codex-transient-read, usage                 (indeterminate)
+#
+# `codex-transient-read` exists because of harmon-devkit#508: the checker's
+# exit 16 says an evidence READ failed, which is not evidence that the cycle
+# is not clean. Reporting it as `codex-not-clean` sent the operator hunting a
+# review problem that did not exist, and their only remedy was blind re-runs.
+# `codex-quota-exhausted` is exit 15 (harmon-devkit#573): the reviewer
+# answered that it will not review, which IS definitive — a blocker to report
+# with its reset time, not an unknown to re-poll.
 #
 # Two readiness conditions are deliberately NOT verified here, because no
 # API answers them — the caller must hold them as prose prerequisites:
@@ -470,6 +479,22 @@ recheck_codex_freshness() {
     codex_recheck_exit=0
     codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" 2>&1)" ||
         codex_recheck_exit=$?
+    # harmon-devkit#508: exit 16 means the checker could not READ the evidence,
+    # not that the cached clean result went stale. This is the exact shape the
+    # issue observed — a gate re-checking a long-settled clean cycle, one
+    # GitHub read hiccuping — so retry the READ once here rather than making
+    # the operator re-run the whole gate blindly. Only the read is repeated:
+    # nothing about the reviewer cycle is re-triggered, and a second failure
+    # is reported as indeterminate WITH THE REASON rather than as staleness,
+    # so a caller can tell "GitHub would not answer" from "the clean result no
+    # longer holds".
+    if [ "$codex_recheck_exit" -eq 16 ]; then
+        codex_recheck_exit=0
+        codex_recheck_output="$("$codex_checker" check --state "$codex_recheck_state" --actor-id "$codex_actor_id" 2>&1)" ||
+            codex_recheck_exit=$?
+        [ "$codex_recheck_exit" -ne 16 ] ||
+            indeterminate codex-transient-read "recheck of the cached clean Codex cycle could not read its evidence twice (check-codex-cloud-review.sh exited 16 on both the read and its one retry) — GitHub would not answer; repeat the read rather than treating the cached clean result as stale: $codex_recheck_output"
+    fi
     [ "$codex_recheck_exit" -eq 0 ] ||
         indeterminate codex-stale "recheck of the cached clean Codex cycle no longer confirms it (check-codex-cloud-review.sh exited $codex_recheck_exit) — evidence went stale between the integrator pass and this gate; dispatch a fresh integrator pass rather than trusting the cached result: $codex_recheck_output"
 }
@@ -861,12 +886,45 @@ me="$(run_gh api user | jq -er '.login | select(type == "string" and . != "")')"
     indeterminate fetch-failed "identity lookup failed — thread answers are unknown, NOT answered"
 fp_inline="$(run_gh api --paginate --slurp repos/"$repo"/pulls/"$pr"/comments)" ||
     indeterminate fetch-failed "inline-comment fetch failed — threads are unknown, NOT answered"
-threads_needing_attention="$(jq -c --arg me "$me" 'add // []
-    | group_by(.in_reply_to_id // .id)
+# harmon-devkit#675: a reply of "Fixed in <sha>" sometimes reads to the
+# connector as an instruction, so it runs a fix task of its own and posts a
+# report on what IT did — observed on harmon-devkit#665 thread 3886138416,
+# where the follow-up at 09:25:52Z said "### Summary … Committed the change on
+# `codex/name-review-trigger-broker` … A pull request could not be created".
+# That is the bot describing work already on the head, not a reviewer
+# follow-up, and treating it as one blocked the gate until a human replied a
+# second time to a machine.
+#
+# So an unbadged self-report from the pinned actor is INFORMATIONAL and does
+# not raise `threads-new-follow-up`. Two deliberate limits:
+#
+#   - it is scoped to the FOLLOW-UP computation only. A thread with no reply
+#     from you at all is still `unanswered`, and an edit after your reply is
+#     still `edited-since-reply`, whoever wrote either — this narrows exactly
+#     the one state the issue reported and nothing else.
+#   - a BADGED follow-up still blocks, unconditionally. The test for a badge
+#     is the same whole-body `p<digit>` scan the checker uses, and it is
+#     content-negative: a real finding restated in a self-report-shaped body
+#     is still a finding.
+#
+# An unrecognised self-report shape keeps today's behaviour (it blocks), which
+# is a false block rather than a false pass.
+threads_needing_attention="$(jq -c --arg me "$me" \
+    --argjson bot "$codex_actor_id" 'add // []
+    | def is_bot_self_report:
+        ((.user.id? == $bot) and
+         (((.body // "") | ascii_downcase | test("\\bp[0-9]+\\b")) | not) and
+         (((.body // "") | ascii_downcase | split("\n") |
+            map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+            any(.[]; test("^#{1,6}[[:space:]]*summary[[:space:]]*$"))) or
+          ((.body // "") | ascii_downcase |
+            test("committed .*on `[^`]+` as `[0-9a-f]{7,40}`"))));
+      group_by(.in_reply_to_id // .id)
     | map( . as $t
       | ([$t[] | select(.user.login == $me and .in_reply_to_id != null)
                | .created_at] | max) as $mine
       | ([$t[] | select(.user.login != $me
+                        and (is_bot_self_report | not)
                         and ($mine == null or .created_at >= $mine))
                | .created_at] | max) as $new
       | ([$t[] | select(.user.login != $me and $mine != null
@@ -1064,6 +1122,21 @@ if [ "$codex_cycle" != null ]; then
     10 | 11 | 12 | 13)
         fail_condition codex-not-clean "the current-head Codex cycle exited $codex_exit, not terminal-clean"
         ;;
+    15)
+        # harmon-devkit#573: the reviewer answered that it will not review
+        # this head. Definitive, so a fail rather than an indeterminate — but
+        # its own condition, because the remedy is to report the blocker and
+        # wait for the quota, never to re-trigger or re-dispatch.
+        fail_condition codex-quota-exhausted "the current-head Codex cycle exited 15: the reviewer reported its code-review usage limit is exhausted — report the blocker with the reset time rather than re-triggering"
+        ;;
+    16)
+        # harmon-devkit#508: an evidence READ failed. This must never render
+        # as `codex-not-clean` — that was the original defect, where one flaky
+        # GitHub read turned an already-adjudicated-clean cycle into a hard
+        # gate failure with no remedy but blind re-runs. It is unknown, with
+        # the reason named, and the caller repeats the READ.
+        indeterminate codex-transient-read "the current-head Codex cycle exited 16: an evidence read failed transiently, which is not evidence the cycle is not clean — repeat the read (a fresh integrator pass) rather than treating the reviewer as absent"
+        ;;
     *)
         indeterminate codex-indeterminate "codex_cycle exit_code $codex_exit is not a recognized terminal or pending value"
         ;;
@@ -1101,6 +1174,12 @@ if [ "$finder_cycles_len" -gt 0 ]; then
         0) ;; # terminal-clean — condition passes
         10 | 11 | 12 | 13)
             fail_condition finder-not-clean "finder_cycles[$fc_idx] ($fc_slug) exited $fc_exit, not terminal-clean"
+            ;;
+        15)
+            fail_condition codex-quota-exhausted "finder_cycles[$fc_idx] ($fc_slug) exited 15: the finder reported its review usage limit is exhausted — report the blocker rather than re-triggering"
+            ;;
+        16)
+            indeterminate codex-transient-read "finder_cycles[$fc_idx] ($fc_slug) exited 16: an evidence read failed transiently — repeat the read rather than treating the finder as absent"
             ;;
         *)
             indeterminate codex-indeterminate "finder_cycles[$fc_idx] ($fc_slug) exit_code $fc_exit is not a recognized value"

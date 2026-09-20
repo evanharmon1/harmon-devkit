@@ -900,7 +900,8 @@ function checkFinderCyclesAcceptedScope(payload, errors) {
 // documents, which is itself integrate/assets/
 // check-codex-cloud-review.sh's `check` subcommand: 0 clean, 10 findings,
 // 11 pending, 12 retry, 13 escalate, 14 PR no longer open, 2
-// indeterminate. checkIntegratorCleanVerdict separately requires exit_code
+// indeterminate, plus 15 quota exhausted and 16 transient read.
+// checkIntegratorCleanVerdict separately requires exit_code
 // 0 (with accepted present) when verdict IS clean — clean implies 0 — but
 // 0 does NOT imply clean: ai/agents/integrator.md §7's own verdict rule
 // says a substantive human finding or CI failure surfacing in the SAME
@@ -927,6 +928,8 @@ const EXIT_CODE_VERDICT_CONSTRAINTS = {
   12: { equals: 'pending' },
   13: { equals: 'escalate' },
   14: { excludes: new Set(['clean', 'pending']) },
+  15: { equals: 'escalate' },
+  16: { equals: 'pending' },
   2: { equals: 'escalate' }
 }
 
@@ -936,6 +939,17 @@ const EXIT_CODE_VERDICT_CONSTRAINTS = {
 // exactly this value" for a specific exit_code (a fixed value a JSON
 // Schema const could express) or "must not be ANY of these values" (a
 // small enum-exclusion set) — and which exit_code selects which rule is
+//
+// 15 (quota exhausted, harmon-devkit#573) joins 13 and 2 on `escalate`: the
+// finder answered that it will not review this head, so the orchestrator's
+// next move is to stop and report the blocker with its reset time — the same
+// thing it does for a timed-out or unreadable cycle, and never a re-dispatch.
+// 16 (transient read, harmon-devkit#508) joins 11 and 12 on `pending`: the
+// read failed, which says nothing about the reviewer, so the remedy is to
+// repeat the READ — a bounded wait and a fresh pass, exactly like a pending
+// window. Pairing 16 with `escalate` would spend a human on a flaky GitHub
+// call, and pairing it with `clean` or `findings` would assert a verdict over
+// evidence nobody managed to read.
 // itself data-dependent, which if/then's single conditional-per-node
 // shape cannot encode as one schema-level rule the way
 // checkIntegratorCleanVerdict's fixed verdict:clean condition can.

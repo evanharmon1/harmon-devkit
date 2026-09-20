@@ -651,7 +651,43 @@ checkout; nothing below overrides it.
 
 **Where the pinned checker is vendored**
 (`.claude/skills/integrate/assets/check-codex-cloud-review.sh`), its exit codes
-are the contract. Two things about it are worth knowing because they are not
+are the contract:
+
+| Exit | Status | What it means, and what the caller does |
+|---|---|---|
+| `0` | `clean` | Terminal-clean for the exact head. Proceed. |
+| `10` | `findings` | Adjudicate. Inline-raised findings carry `unanswered[]` — every unanswered bot thread on the head, across **every** review that posted one. |
+| `11` | `pending` | No terminal evidence yet, inside the window. Keep polling. |
+| `12` | `retry` | Attempt 1's window elapsed. One re-trigger with `--attempt 2`. |
+| `13` | `escalate` | Both windows elapsed. Stop; escalate. |
+| `14` | `pr-not-open` | GitHub answered MERGED/CLOSED. Terminal for the whole stage — never wait, re-run, or re-trigger. |
+| `15` | `quota-exhausted` | The reviewer *answered* that its code-review usage limit is spent. Terminal; never clean, never findings. Report the blocker with the reset time where the reply carried one. `reserve --attempt 2` is refused, so the one bounded retry is not spent on a reviewer that already said no. |
+| `16` | `transient-read` | An evidence **read** failed. This says nothing about the reviewer: repeat the *read*, never the reviewer cycle. The readiness gate reports it as `codex-transient-read` (indeterminate with the reason), never `codex-not-clean`. |
+| `2` | `indeterminate` | Malformed, changed head, usage error, or an unclassifiable verdict. |
+
+`15` and `16` are additions (harmon-devkit#1050, children #573 and #508);
+every older code keeps its exact meaning, so a caller pinned to the earlier
+contract still reads every code it knew.
+
+**Terminal-clean forms.** `AGENTS.md` § "Who decides, and what is delegated"
+names three, and § "Second-Model Review" carries the proposed fourth: a
+**Completed row** in the connector's rolling "Codex Review Summary" comment,
+for the exact head, posted or edited by the pinned actor after the trigger,
+with nothing badged anywhere in it (harmon-devkit#718 — some heads emit no 👍,
+no review and no verdict comment at all, and that row is the only clean signal
+there is). A `Running` row is pending; a Completed row naming another commit
+is stale.
+
+**Two shapes that are neither clean nor findings.** A **self-fix summary** —
+an unbadged report from the bot describing a fix *it* made, in a thread or as
+a top-level comment — is informational (harmon-devkit#675); a badged follow-up
+still blocks. And while the bot's 👀 is still on the current attempt's trigger,
+the attempt window **extends** to a hard ceiling of 30 minutes from the
+trigger rather than returning `12`, because the window exists to bound a
+reviewer that is not working (harmon-devkit#655). A 👀 that vanished with no
+result, or one still there past the ceiling, ends the attempt as before.
+
+Two further things about the checker are worth knowing because they are not
 symmetric:
 
 - An **inline** finding is classified independently of its badge and is

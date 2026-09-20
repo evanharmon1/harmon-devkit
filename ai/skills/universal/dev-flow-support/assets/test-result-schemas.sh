@@ -599,6 +599,15 @@ const SEMANTIC_ONLY = new Set([
   'result.integrator.schema/invalid/exit-code-14-with-clean.json',
   'result.integrator.schema/invalid/exit-code-10-with-pending.json',
   'result.integrator.schema/invalid/exit-code-2-with-pending.json',
+  // harmon-devkit#573/#508: the two new exit codes pair with a verdict the
+  // same way 13/2 and 11/12 already do, and that pairing lives in
+  // EXIT_CODE_VERDICT_CONSTRAINTS rather than in the schema — a JSON Schema
+  // if/then cannot express "which rule applies depends on this sibling
+  // value". `accepted` on a non-terminal exit is likewise the validator's
+  // checkCodexCycleAcceptedScope, exactly as for its 11 counterpart above.
+  'result.integrator.schema/invalid/exit-code-15-with-pending.json',
+  'result.integrator.schema/invalid/exit-code-15-with-accepted.json',
+  'result.integrator.schema/invalid/exit-code-16-with-escalate.json',
   'result.integrator.schema/invalid/settled-at-produced-at-mismatch.json',
   'result.integrator.schema/invalid/applied-dispositions-future-integration-round.json'
 ])

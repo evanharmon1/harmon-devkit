@@ -12,8 +12,23 @@
 #   13 escalate (attempt 2 timed out)
 #   14 PR no longer open — GitHub answered and the PR is MERGED or CLOSED;
 #      terminal for the whole shepherd stage, never a wait-and-retry
+#   15 quota exhausted — the reviewer answered that it will NOT review this
+#      head: the finder replied to the trigger that its code-review usage
+#      limit is spent (harmon-devkit#573). Terminal non-result, never clean
+#      and never findings. Stop and report the reset time where the reply
+#      carried one; `reserve --attempt 2` is refused, because the one
+#      bounded re-trigger must not be spent on a reviewer that already said
+#      no.
+#   16 transient read — an evidence READ failed (harmon-devkit#508). Distinct
+#      from 12/13, which mean the reviewer's window elapsed with no verdict:
+#      nothing here says anything about the reviewer, so the caller retries
+#      the READ rather than the reviewer cycle, and a gate maps it to
+#      indeterminate-with-reason rather than to a not-clean failure.
 #   2  indeterminate — malformed, changed head, usage error, or a
 #      current-head verdict whose shape cannot be classified
+#
+# 15 and 16 are ADDITIONS: 0/10/11/12/13/14/2 keep their exact meanings, so a
+# caller pinned to the older contract still reads every code it knew.
 #
 # `settle` records the disposition of a badged finding that lives OUTSIDE an
 # inline thread — a top-level conversation comment or a review body — because
@@ -45,11 +60,14 @@ When --finder is given on reserve, actor identity and verdict classification
 are driven by the finder's profile in the trusted registry (C1-C3).
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
-14 PR no longer open, 2 indeterminate. Exit 14 means GitHub answered and
+14 PR no longer open, 15 quota exhausted, 16 transient read,
+2 indeterminate. Exit 14 means GitHub answered and
 the PR is MERGED or CLOSED: terminal for the whole shepherd stage — stop,
-never wait, re-run, or re-trigger. A PR fetch that FAILS is still the
-transient bounded-wait path (pending/retry/escalate); only a non-open
-answer is 14. `reserve` and `attach` refuse a non-open PR outright,
+never wait, re-run, or re-trigger. A PR fetch that FAILS is exit 16, a
+transient READ failure — retry the read, not the reviewer cycle; only a
+non-open answer is 14. Exit 15 means the finder answered that its review
+quota is spent: terminal, and `reserve --attempt 2` is then refused.
+`reserve` and `attach` refuse a non-open PR outright,
 exit 2 with a reason naming the reported state.
 
 State locks are never reclaimed automatically. On lock-held, inspect the
@@ -109,6 +127,20 @@ reap_budget_sec=60
 reap_deadline_epoch=
 finder_slug=
 requested_at_arg=
+# harmon-devkit#573: the finder's usage-limit reply, once `check` has seen it.
+# Empty until the comment surface has actually been fetched and scanned, which
+# is what keeps the pre-evidence failure paths behaving exactly as before.
+quota_comment_id=
+quota_detected_at=
+quota_reset_at=
+# harmon-devkit#655: whether the current attempt's trigger still carries the
+# finder's pending reaction (👀). Empty/0 until the reaction surface has been
+# fetched, for the same reason.
+pending_reaction_live=0
+# harmon-devkit#655: the hard ceiling a live pending reaction may extend the
+# attempt window to, measured from the trigger. A reviewer that is visibly
+# working is not absent, but it cannot hold a PR open forever either.
+eyes_ceiling_min=30
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -271,6 +303,31 @@ now_utc() {
     fi
 }
 
+# harmon-devkit#737 defect 2: the per-call fetch budget is computed against
+# the cycle's reservation, and it used the real wall clock for "now" while
+# every other time comparison in this helper honours `--now`. After a long
+# adjudication between `attach` and `check`, wall clock had already passed
+# the window, so `run_gh` clamped every request to one second and a review
+# that was unchanged and fully answered read as absent — `retry`/`pending`
+# for evidence that was sitting right there. The lane's workaround was to
+# reserve attempt 2 purely to buy a fresh budget, which posted a redundant
+# trigger.
+#
+# One clock for the whole invocation is the fix: when `--now` is supplied it
+# is authoritative for the budget exactly as it already is for `bounded_wait`
+# and `require_latest_window_elapsed`, so an injected clock makes the budget
+# reproducible instead of decaying in real time. Without `--now` this is the
+# unchanged `date -u '+%s'`.
+clock_epoch() {
+    if [ -n "$now" ]; then
+        valid_time "$now" || die "--now must be an ISO-8601 UTC second"
+        jq -nr --arg value "$now" '$value | fromdateiso8601' ||
+            die "cannot parse --now"
+    else
+        date -u '+%s'
+    fi
+}
+
 # A disposition is recorded against the exact text it answered, so an edited
 # finding stops being settled. The body is hashed in its JSON-ENCODED form:
 # command substitution strips trailing newlines, and the encoded string keeps
@@ -297,8 +354,10 @@ content_fingerprint() {
 #   0 — the PR is OPEN; its headRefOid is on stdout.
 #   3 — GitHub answered and the PR is NOT open; the reported state
 #       (MERGED/CLOSED) is on stdout. Terminal, never a wait-and-retry.
-#   1 — the fetch failed or returned an unusable payload. Transient;
-#       callers route this to their bounded wait exactly as before.
+#   1 — the fetch failed or returned an unusable payload. Transient; `check`
+#       routes this to `transient_read_failure` (exit 16, harmon-devkit#508),
+#       `reserve`/`attach` still `die`. What it must never become is a
+#       window-elapsed retry: the read said nothing about the reviewer.
 # Always called via command substitution, so stdout carries the head (rc 0)
 # or the non-open state (rc 3) and nothing leaks into the caller's scope.
 provider_head() {
@@ -323,7 +382,7 @@ run_gh() {
         anchor_epoch=$(jq -nr \
             --arg value "$window_anchor" '$value | fromdateiso8601') ||
             return 1
-        current_epoch=$(date -u '+%s')
+        current_epoch=$(clock_epoch) || return 1
         remaining=$((anchor_epoch + timeout_min * 60 - current_epoch))
         if [ "$remaining" -le 0 ]; then
             # A post-window check still owes one terminal evidence sweep. Give
@@ -409,6 +468,10 @@ read_state() {
       (.previous_trigger_comment_id == null or
         (.previous_trigger_comment_id | type == "number" and . > 0)) and
       (.timeout_min == null or (.timeout_min | type == "number")) and
+      (.quota_exhausted_at == null or (.quota_exhausted_at | type == "string")) and
+      (.quota_reset_at == null or (.quota_reset_at | type == "string")) and
+      (.quota_comment_id == null or
+        (.quota_comment_id | type == "number" and . > 0)) and
       (.boundary_source == null or
         (.boundary_source == "check-suite" or .boundary_source == "commit-date")) and
       (.commit_date_boundary == null or (.commit_date_boundary | type == "string")) and
@@ -468,11 +531,17 @@ reap_record() {
         }' >>"$reap_entries"
 }
 
+# `$5`, when given, is a JSON OBJECT of extra fields merged into the result —
+# additive only, so every existing key keeps its shape and a caller pinned to
+# the older output reads exactly what it did before. harmon-devkit#737 uses it
+# to enumerate every unanswered inline thread alongside the `findings` verdict,
+# because one accepted review id cannot name findings that came from two.
 emit() {
     result=$1
     detail=$2
     surface=${3:-}
     accepted_id=${4:-}
+    extra=${5:-}
     jq -cn \
         --arg status "$result" \
         --arg detail "$detail" \
@@ -480,10 +549,44 @@ emit() {
         --argjson attempt "${state_attempt:-0}" \
         --arg surface "$surface" \
         --arg accepted_id "$accepted_id" \
+        --argjson extra "${extra:-null}" \
         '{status:$status,detail:$detail,head:$head,attempt:$attempt}
          + (if $surface != "" and $accepted_id != "" then
               {accepted:{surface:$surface,id:$accepted_id,reviewed_commit:$head}}
-            else {} end)'
+            else {} end)
+         + (if ($extra | type) == "object" then $extra else {} end)'
+}
+
+# harmon-devkit#508: an evidence READ that failed says nothing about the
+# reviewer. Routing it through `bounded_wait` conflated the two, and because
+# `bounded_wait` compares against `requested_at` — always long past for a gate
+# re-checking a settled cycle — one flaky GitHub read turned an
+# adjudicated-clean cycle into a hard retry. This is its own terminal-shaped
+# answer with its own exit code, and the caller's remedy is to repeat the
+# READ, not to re-trigger a reviewer that was never absent.
+#
+# Deliberately NOT bounded by the attempt window: the window measures how long
+# the reviewer has had, and this result is not about the reviewer at all.
+transient_read_failure() {
+    emit transient-read "$1"
+    exit 16
+}
+
+# Records the usage-limit answer on the cycle's own state before reporting it,
+# so `reserve --attempt 2` can refuse the one bounded re-trigger rather than
+# spending it on a reviewer that has already said no. Runs under the caller's
+# existing state lock, like `persist_adopted_timeout`.
+persist_quota_evidence() {
+    payload=$(jq \
+        --argjson comment_id "$quota_comment_id" \
+        --arg detected "$quota_detected_at" \
+        --arg reset "$quota_reset_at" \
+        '.version = 2 |
+         .quota_comment_id = $comment_id |
+         .quota_exhausted_at = $detected |
+         .quota_reset_at = (if $reset == "" then null else $reset end)' \
+        "$state_file") || die "cannot record the usage-limit answer"
+    write_state "$state_file" "$payload"
 }
 
 bounded_wait() {
@@ -492,6 +595,30 @@ bounded_wait() {
         now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     fi
     valid_time "$now" || die "--now must be an ISO-8601 UTC second"
+    # harmon-devkit#573: the finder answering "I will not review this" is an
+    # ANSWER, not silence, so it must never be reported as waiting. Every path
+    # that would otherwise wait runs through here, which is exactly why the
+    # check lives here rather than at one call site: the quota reply is
+    # invisible to every classifier above (it carries no `Reviewed commit`
+    # line, no verdict sentence and no badge), so absence of other evidence is
+    # the only state it can ever be observed in. It is checked FIRST because
+    # it is terminal — a live 👀 alongside an exhausted quota is still a
+    # reviewer that is not going to answer.
+    #
+    # `$quota_comment_id` is empty on every pre-evidence failure path, so those
+    # keep their previous behaviour (and #508 has already moved read failures
+    # off this function entirely).
+    if [ -n "$quota_comment_id" ]; then
+        persist_quota_evidence
+        quota_detail="$detail; the finder replied that its code-review usage limit is exhausted (comment $quota_comment_id)"
+        if [ -n "$quota_reset_at" ]; then
+            quota_detail="$quota_detail; limit resets at $quota_reset_at"
+        else
+            quota_detail="$quota_detail; the reply named no reset time"
+        fi
+        emit quota-exhausted "$quota_detail"
+        exit 15
+    fi
     requested_epoch=$(jq -nr \
         --arg value "$state_requested" '$value | fromdateiso8601') ||
         die "cannot parse request time"
@@ -504,6 +631,33 @@ bounded_wait() {
     if [ "$elapsed" -lt "$timeout_seconds" ]; then
         emit pending "$detail"
         exit 11
+    fi
+    # harmon-devkit#655: the window must be bounded by evidence that the
+    # reviewer is NOT working, never by wall clock alone. The finder signals
+    # acceptance of a trigger with its pending reaction and replaces it with a
+    # terminal result, so while that reaction is still on THIS attempt's
+    # trigger the review is in progress and elapsing the window only forces a
+    # redundant re-trigger — which the two-attempt contract then counts against
+    # the head, turning a slow-but-live review into an escalation for a
+    # reviewer that was never absent (observed on ponderousdev/omator#447).
+    #
+    # The extension is bounded by a hard ceiling from the trigger, because a
+    # reaction that never resolves must not hold a PR open indefinitely: past
+    # the ceiling this falls through to the unchanged retry/escalate below,
+    # and so does a reaction that has VANISHED without a result (the caller
+    # never set `pending_reaction_live`, so nothing extends).
+    #
+    # `max(ceiling, timeout)` so a caller that deliberately configured a
+    # LONGER window than the ceiling is never cut short by it: the extension
+    # may only ever add time.
+    if [ "$pending_reaction_live" = "1" ]; then
+        ceiling_seconds=$((eyes_ceiling_min * 60))
+        [ "$ceiling_seconds" -ge "$timeout_seconds" ] ||
+            ceiling_seconds=$timeout_seconds
+        if [ "$elapsed" -lt "$ceiling_seconds" ]; then
+            emit pending "$detail; the finder's pending reaction is still live on this attempt's trigger, so the window is extended to ${eyes_ceiling_min} minutes from the trigger"
+            exit 11
+        fi
     fi
     if [ "$state_attempt" = "1" ]; then
         emit retry "$detail; attempt 1 window elapsed"
@@ -560,7 +714,7 @@ fetch_evidence() {
     fetch_pages "$endpoint" "$destination" || fetch_status=$?
     case "$fetch_status" in
     0) return ;;
-    1) bounded_wait "cannot fetch paginated $label" ;;
+    1) transient_read_failure "cannot fetch paginated $label" ;;
     *)
         emit indeterminate "paginated $label data is malformed"
         exit 2
@@ -702,11 +856,112 @@ codex_verdict_defs=$(
               map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
               map(select(. != "")) |
               all(is_reviewed_commit_line or (. == carrier_sentence)));
+          # harmon-devkit#675: when a session replies "Fixed in <sha>" to an
+          # inline finding, the connector sometimes reads the thread as an
+          # instruction, runs a fix task of its own, and posts a report on what
+          # IT did — as a thread follow-up, and (observed on harmon-devkit#710,
+          # comment 5504087486) as a top-level comment that opens
+          # "### Summary" and happens to contain "Reviewed commit `<sha>`".
+          #
+          # That top-level shape is the damaging one here: the Reviewed-commit
+          # phrase makes it candidate verdict evidence, `verdict_class` calls it
+          # `findings` because it does not open with the clean sentence, and
+          # `settle` then refuses it precisely because it carries no badge — so
+          # the cycle could never report clean for that head through this
+          # checker whatever the real review said. It is neither: the bot is
+          # describing work, not reporting a finding, so it is INFORMATIONAL
+          # and contributes to no aggregate.
+          #
+          # The test is deliberately content-NEGATIVE on the part that decides
+          # severity — no badge anywhere in the body, the same whole-body scan
+          # everything else here uses — and structural on the part that
+          # identifies the shape: a `Summary` heading, or the bot naming a
+          # commit it made on a branch of its own. It reads no prose for
+          # intent, so it does not reopen the failure family documented above
+          # `verdict_class`.
+          #
+          # Both failure directions are safe. An unrecognised self-report shape
+          # keeps today's behaviour exactly (`findings`, blocking) — that is a
+          # false block, which is the direction this file always chooses. And
+          # nothing badged can reach this class at all, so a real finding
+          # stated in a self-report-shaped body still blocks.
+          def trimmed_lines:
+            (body_text | ascii_downcase | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")));
+          def has_summary_heading:
+            (trimmed_lines |
+              any(.[]; test("^#{1,6}[[:space:]]*summary[[:space:]]*$")));
+          # The verbatim shape of harmon-devkit#665's follow-up 3886149775:
+          # "Committed the change on `codex/name-review-trigger-broker` as
+          # `77379cf`". `.` never crosses a newline in Oniguruma without the
+          # `s` flag, so this can only match inside one line.
+          def claims_own_commit:
+            (body_text | ascii_downcase |
+              test("committed .*on `[^`]+` as `[0-9a-f]{7,40}`"));
+          def is_self_report:
+            (has_severity_marker | not) and
+            (has_summary_heading or claims_own_commit);
+          # harmon-devkit#718: the connector also maintains a rolling
+          # "Codex Review Summary" comment whose per-head table row flips from
+          # Running to Completed, and on some runs that row is the ONLY clean
+          # signal it emits — no 👍, no review, no verdict comment (observed on
+          # harmon-devkit#710, comment 5503087620: row for `fa06c6e` went
+          # Completed at 05:45:32Z, the 👀 was removed, and nothing else
+          # arrived, so attempt 1 burned its whole window as pending and
+          # attempt 2 spent a second trigger on a review that had already
+          # finished clean).
+          #
+          # Identified by the connector's own HTML marker or its heading, never
+          # by the table alone — an ordinary comment that happens to contain a
+          # pipe table is not a summary.
+          # Both halves are evaluated against the COMMENT, never against an
+          # already-piped body string: `trimmed_lines` reads `.body` itself, so
+          # nesting it inside a `body_text | …` pipeline would index a string.
+          def summary_marker:
+            ((body_text | ascii_downcase |
+              test("<!--[[:space:]]*codex-pull-request-review-summary[[:space:]]*-->")) or
+             (trimmed_lines |
+               any(.[]; test("^#{1,6}[[:space:]]*codex review summary[[:space:]]*$"))));
+          # Cells, not the whole row: "Completed" has to be in the row's STATUS
+          # cell rather than anywhere on the line, or a "Review trigger" cell
+          # mentioning the word would satisfy a Running row. Splitting on the
+          # pipe and dropping the empties either side of the leading/trailing
+          # delimiters gives exactly the cells.
+          def table_cells:
+            (split("|") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              map(select(. != "")));
+          # Every commit named by a COMPLETED row. A Running row contributes
+          # nothing (so its head stays pending), and a Completed row for
+          # another commit contributes that commit — which then fails the
+          # caller's head-prefix test and is stale, exactly as ruling 3 asks.
+          #
+          # A row is only usable when exactly ONE of its cells is a bare
+          # backticked hex token: that is the Commit cell, and a row with two
+          # of them names nothing unambiguously.
+          def summary_completed_prefixes:
+            if (summary_marker | not) then []
+            else
+              (body_text | split("\n") |
+                map(select(test("\\|"))) |
+                map(ascii_downcase | table_cells) |
+                map(select(any(.[]; test("\\bcompleted\\b")))) |
+                map([.[] | select(test("^`[0-9a-f]{7,40}`$")) |
+                     ltrimstr("`") | rtrimstr("`")]) |
+                map(select(length == 1)) | map(.[0]) | unique)
+            end;
+          # Restructured, not re-decided: a body that DOES open with the clean
+          # sentence classifies exactly as before (badge -> findings, trailing
+          # prose -> unrecognized, otherwise clean), and a body that does not
+          # is still `findings` unless it is the unbadged self-report shape
+          # above. The clean-template branch is checked first so a self-report
+          # heading can never reclassify a genuine clean verdict.
           def verdict_class:
-            if (first_line | startswith(clean_sentence) | not) then "findings"
-            elif has_severity_marker then "findings"
-            elif (rest_is_boilerplate | not) then "unrecognized"
-            else "clean" end;
+            if (first_line | startswith(clean_sentence)) then
+              (if has_severity_marker then "findings"
+               elif (rest_is_boilerplate | not) then "unrecognized"
+               else "clean" end)
+            elif is_self_report then "informational"
+            else "findings" end;
 JQDEFS
 )
 
@@ -773,6 +1028,23 @@ reserve)
         carried_settled=$(jq -c '.settled // []' "$state_file")
     fi
     if [ "$attempt" = "2" ]; then
+        # harmon-devkit#573: the one bounded re-trigger exists for a reviewer
+        # that did not answer. A reviewer that answered "my code-review usage
+        # limit is exhausted" DID answer, so spending attempt 2 on it buys a
+        # second window on a known-blocked reviewer and then escalates for the
+        # wrong reason — the ~30 minutes the original issue measured. `check`
+        # recorded that answer on this state when it reported exit 15; refuse
+        # here rather than re-deriving it from GitHub, so the refusal is as
+        # deterministic as the reservation it guards.
+        recorded_quota_at=$(jq -r '.quota_exhausted_at // empty' "$state_file")
+        if [ -n "$recorded_quota_at" ]; then
+            recorded_quota_reset=$(jq -r '.quota_reset_at // empty' "$state_file")
+            quota_refusal="attempt 1 ended with the finder reporting an exhausted code-review usage limit at $recorded_quota_at"
+            if [ -n "$recorded_quota_reset" ]; then
+                quota_refusal="$quota_refusal (resets at $recorded_quota_reset)"
+            fi
+            die "$quota_refusal — re-triggering cannot produce a review; report the blocker instead"
+        fi
         previous_requested_at=$(jq -r '.requested_at' "$state_file")
         valid_time "$previous_requested_at" ||
             die "attempt 1 state has an invalid request time"
@@ -1434,7 +1706,7 @@ check)
             "PR is ${first_head:-no longer open} — the stage is over; stop, do not re-trigger or keep polling"
         exit 14
     elif [ "$provider_status" -ne 0 ]; then
-        bounded_wait "cannot fetch the current open PR head"
+        transient_read_failure "cannot fetch the current open PR head"
     fi
     [ "$first_head" = "$state_head" ] || {
         emit head-changed "recorded evidence belongs to an older PR head"
@@ -1445,7 +1717,7 @@ check)
     trap 'rm -rf "$workdir"; rm -f "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
     actor=$(run_gh api "users/$actor_login") || {
-        bounded_wait "cannot authenticate the configured finder actor"
+        transient_read_failure "cannot authenticate the configured finder actor"
     }
     printf '%s' "$actor" | jq -e \
         --argjson id "$actor_id" \
@@ -1462,7 +1734,7 @@ check)
     if [ "$finder_trigger_mechanism" = "review-comment" ] && [ -n "$state_trigger" ]; then
         expected_trigger_body=$(jq -r '.finder.trigger_body // "@codex review"' "$state_file")
         trigger=$(run_gh api "repos/$state_repo/issues/comments/$state_trigger") || {
-            bounded_wait "cannot re-fetch the exact trigger comment"
+            transient_read_failure "cannot re-fetch the exact trigger comment"
         }
         printf '%s' "$trigger" | jq -e \
             --argjson id "$state_trigger" \
@@ -1512,7 +1784,7 @@ check)
             "PR was closed or merged (${second_head:-state unknown}) while evidence was being fetched — the stage is over"
         exit 14
     elif [ "$provider_status" -ne 0 ]; then
-        bounded_wait "cannot re-fetch the PR head before verdict"
+        transient_read_failure "cannot re-fetch the PR head before verdict"
     fi
     [ "$second_head" = "$state_head" ] || {
         emit head-changed "PR head changed while evidence was being fetched"
@@ -1553,6 +1825,86 @@ check)
           .[] | select(.user.id? == $id and .commit_id? == $head) |
           [(.id? // "" | tostring), (.submitted_at? // "")] | @tsv
         ' "$workdir/reviews.json")
+
+    # harmon-devkit#573: the usage-limit reply. When the connector's
+    # code-review quota is spent it answers the trigger with a top-level
+    # comment — observed verbatim on evanharmon1/harmon-init#1020, comment
+    # 5380551548: "You have reached your Codex usage limits for code reviews.
+    # You can see your limits in the [Codex usage dashboard](…)". It carries no
+    # verdict sentence, no `Reviewed commit` line and no badge, so every
+    # classifier below is blind to it and the cycle sat `pending` for the whole
+    # window, then spent attempt 2 on the same answer before escalating: ~30
+    # minutes to learn something the bot said in five seconds, and a blocker
+    # report that could not name the reset time.
+    #
+    # Matched on the one phrase the message is built around, case-insensitively,
+    # and only from the pinned actor after this attempt's own trigger. The match
+    # is deliberately narrow: a reworded message simply is not recognised, which
+    # restores exactly today's behaviour (wait out the window) rather than
+    # inventing a terminal answer — the same fail-closed direction the rest of
+    # this file takes.
+    #
+    # `bounded_wait` acts on this, not the code here, because absence of other
+    # evidence is the only state a quota reply can ever be observed in, and
+    # every waiting path funnels through there.
+    if finder_has_surface comment; then
+        quota_record=$(jq -r \
+            --argjson id "$actor_id" \
+            --arg requested "$state_requested" '
+              [.[] | select(
+                .user.id? == $id and
+                ((.created_at? // "") > $requested) and
+                ((.body // "") | ascii_downcase |
+                  test("reached your codex usage limit"))
+              ) | select((.id? | type) == "number" and .id > 0)] |
+              sort_by(.created_at, .id) | last // null |
+              if . == null then ""
+              else
+                [(.id | tostring), (.created_at // ""),
+                 # A reset time where the reply carries one. No observed
+                 # instance does, so this stays empty rather than guessing;
+                 # the detail then says so explicitly instead of implying a
+                 # time nobody was told.
+                 ((((.body // "") | [match(
+                      "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?Z";
+                      "i"
+                    ).string] | first) // ""))] | join(",")
+              end
+            ' "$workdir/comments.json") || {
+            emit indeterminate "conversation comments could not be scanned for a usage-limit reply"
+            exit 2
+        }
+        if [ -n "$quota_record" ]; then
+            IFS=, read -r quota_comment_id quota_detected_at quota_reset_at \
+                <<<"$quota_record"
+            valid_time "$quota_detected_at" || {
+                emit indeterminate "the finder's usage-limit reply carries a malformed creation time"
+                exit 2
+            }
+        fi
+    fi
+
+    # harmon-devkit#655: is the finder's pending reaction still on THIS
+    # attempt's trigger? `reactions.json` is fetched for the exact trigger
+    # comment and nothing else, so presence here is exactly the "current
+    # attempt's trigger" the issue asks about — and a reaction that has since
+    # been removed is simply absent from the fetch, which is how the
+    # vanished-without-result case keeps its existing retry behaviour.
+    #
+    # Read here rather than in `bounded_wait` so the extension can never be
+    # decided from an unfetched surface: a finder with no reaction surface, or
+    # a read that failed earlier (now exit 16), leaves this at 0.
+    if finder_has_surface reaction; then
+        pending_reaction_live=$(jq -r \
+            --argjson id "$actor_id" \
+            --arg pending "$finder_pending_reaction" '
+              if any(.[]; .user.id? == $id and .content? == $pending)
+              then "1" else "0" end
+            ' "$workdir/reactions.json") || {
+            emit indeterminate "exact-trigger reactions could not be scanned for the pending signal"
+            exit 2
+        }
+    fi
 
     # Success reactions must carry usable evidence metadata just like review
     # and comment results. Only the exact latest trigger is consulted.
@@ -1720,7 +2072,7 @@ check)
         # caller re-reads the four surfaces immediately before accepting a
         # result.
         pr_payload=$(run_gh api "repos/$state_repo/pulls/$state_pr") || {
-            bounded_wait "cannot fetch the pull request author identity"
+            transient_read_failure "cannot fetch the pull request author identity"
         }
         pr_author_id=$(printf '%s' "$pr_payload" |
             jq -er 'select(.user.id | type == "number") | .user.id') || {
@@ -1775,6 +2127,14 @@ check)
                   (ts(.created_at) > $posted)
                 ) | ts(.created_at)] as $replies |
                 {
+                  comment: (
+                    if ($comment.id? | type) == "number"
+                    then $comment.id else null end
+                  ),
+                  path: (
+                    if ($comment.path? | type) == "string"
+                    then $comment.path else null end
+                  ),
                   review: (
                     if ($comment.pull_request_review_id? | type) == "number"
                     then $comment.pull_request_review_id else null end
@@ -1788,6 +2148,19 @@ check)
               {
                 unadjudicated:
                   ([$classified[] | select(.adjudicated | not)] | length),
+                # harmon-devkit#737 defect 1: every unanswered bot thread on
+                # this head, from EVERY review that posted one. The partition
+                # was already head-scoped rather than review-scoped, so the
+                # count was right; what a caller got back was one accepted
+                # review id, which cannot name findings that came from two
+                # reviews 18 minutes apart (observed on harmon-devkit#720, where
+                # the 14 inline findings of the second review went unanswered
+                # until the readiness gate caught them after every integration
+                # round was spent). Enumerating them is what lets the caller
+                # answer all of them in the round that surfaced them.
+                unanswered:
+                  ([$classified[] | select(.adjudicated | not) |
+                    {comment_id: .comment, review_id: .review, path: .path}]),
                 unattributed:
                   ([$classified[] | select(.review == null)] | length),
                 attributed:
@@ -1841,8 +2214,13 @@ check)
                       ) | .id | tostring] | last // ""
                     ' "$workdir/reviews.json")
             fi
+            inline_unanswered_extra=$(printf '%s' "$inline_partition" |
+                jq -c '{unanswered: (.unanswered // [])}') || {
+                emit indeterminate "unanswered current-head inline threads could not be enumerated"
+                exit 2
+            }
             emit findings "current-head inline review findings are unanswered by a trusted in-thread reply" \
-                review "$inline_findings_review_id"
+                review "$inline_findings_review_id" "$inline_unanswered_extra"
             exit 10
         fi
         adjudicated_findings=1
@@ -1926,6 +2304,15 @@ check)
                  disposed: ((.id as $rid | $disposed_reviews | index($rid)) != null)}
           ] + [
             $comments[0][] | select(.user.id? == $id) |
+            # harmon-devkit#675: an unbadged self-report body is not evidence
+            # about the review at all, so it must not be able to win "newest
+            # result" and hold a genuinely clean cycle at pending.
+            select(verdict_class != "informational") |
+            # harmon-devkit#718: the rolling summary comment is ordered by the
+            # arm below instead, off its `updated_at` — the row flips by EDIT,
+            # so `created_at` is the wrong clock for it and two candidates for
+            # one comment would not be orderable against each other.
+            select(summary_marker | not) |
             ((.body // "") |
               try match(
                 "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
@@ -1936,6 +2323,23 @@ check)
             select((.created_at? // "") > $requested) |
             select(.id? | is_positive_integer) |
             {time: .created_at, id: .id, surface: "comment",
+             actionable: has_severity_marker,
+             disposed: ((.id as $cid | $disposed_comments | index($cid)) != null)}
+          ] + [
+            # harmon-devkit#718: the Completed row in the summary comment, for this
+            # exact head, ordered off `updated_at // created_at` because the
+            # row is maintained in place. `actionable` still reflects the
+            # badge on the body, so a badged summary is preferred over declaring an
+            # unresolvable cross-surface tie exactly like any other finding.
+            $comments[0][] | select(.user.id? == $id) |
+            . as $summary |
+            select(summary_marker) |
+            select(any(summary_completed_prefixes[];
+              . as $prefix | ($head | ascii_downcase) | startswith($prefix))) |
+            (($summary.updated_at // $summary.created_at) // "") as $stamp |
+            select($stamp > $requested) |
+            select(.id? | is_positive_integer) |
+            {time: $stamp, id: .id, surface: "comment",
              actionable: has_severity_marker,
              disposed: ((.id as $cid | $disposed_comments | index($cid)) != null)}
           ] + [
@@ -2092,18 +2496,31 @@ check)
     # candidacy elsewhere — an older, unrelated clean result could then be
     # accepted instead of failing closed on the newer, unclassifiable
     # comment. Matching the predicate here closes that gap.
+    # Informational self-reports (harmon-devkit#675) are deliberately NOT in
+    # this scan: the whole point of that class is that such a body is not
+    # evidence about the review, so an unusable id on one loses nothing there
+    # is to lose. A summary comment carrying a Completed row for this head IS
+    # evidence (harmon-devkit#718), so it fails closed here exactly like a
+    # Reviewed-commit verdict comment.
     malformed_top_level=$(jq -r \
         --argjson id "$actor_id" \
         --arg head "$state_head" \
         "$codex_verdict_defs"'
           [.[] | select(.user.id? == $id) |
-            ((.body // "") |
-              try match(
-                "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
-                "i"
-              ).captures[0].string catch "") as $prefix |
-            select($prefix != "") |
-            select(($head | ascii_downcase) | startswith($prefix | ascii_downcase)) |
+            select(verdict_class != "informational") |
+            select(
+              (((.body // "") |
+                try match(
+                  "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
+                  "i"
+                ).captures[0].string catch "") as $prefix |
+               ($prefix != "") and
+               (($head | ascii_downcase) | startswith($prefix | ascii_downcase)))
+              or
+              (summary_marker and
+               (any(summary_completed_prefixes[];
+                 . as $prefix | ($head | ascii_downcase) | startswith($prefix))))
+            ) |
             select((.id? | is_positive_integer) | not)
           ] | length
         ' "$workdir/comments.json") || {
@@ -2387,19 +2804,49 @@ check)
         --argjson id "$actor_id" \
         "$codex_verdict_defs"'
           .[] | select(.user.id? == $id) |
-          ((.body // "") |
-            try match(
-              "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
-              "i"
-            ).captures[0].string catch "") as $prefix |
-          select($prefix != "") |
-          select(.id? | is_positive_integer) |
-          [
-            $prefix,
-            verdict_class,
-            (.id | tostring),
-            (.created_at // "")
-          ] | @tsv
+          . as $comment |
+          (
+            (
+              # Reviewed-commit verdict comments — unchanged, except that an
+              # unbadged self-report body (harmon-devkit#675) is informational
+              # rather than a finding, and the summary comment is classified by
+              # the arm below instead of by its first line.
+              select(verdict_class != "informational") |
+              select(summary_marker | not) |
+              ((.body // "") |
+                try match(
+                  "Reviewed commit[^0-9a-fA-F]+([0-9a-fA-F]{7,40})";
+                  "i"
+                ).captures[0].string catch "") as $prefix |
+              select($prefix != "") |
+              select(.id? | is_positive_integer) |
+              [
+                $prefix,
+                verdict_class,
+                (.id | tostring),
+                (.created_at // "")
+              ]
+            ),
+            (
+              # harmon-devkit#718: one row per commit a Completed row names.
+              # The stamp is `updated_at` because the row is edited in place,
+              # which is also what makes it comparable against the trigger
+              # time the caller checks. A BADGED summary body is a finding on
+              # a surface, so it is classified `findings` rather than dropped
+              # — ruling 3 makes terminal-clean conditional on no findings
+              # existing anywhere, and silently ignoring a badge would be the
+              # one way to break that.
+              select(summary_marker) |
+              select(.id? | is_positive_integer) |
+              summary_completed_prefixes[] as $prefix |
+              [
+                $prefix,
+                (if has_severity_marker then "findings" else "clean" end),
+                ($comment.id | tostring),
+                (($comment.updated_at // $comment.created_at) // "")
+              ]
+            )
+          ) | @tsv
         ' "$workdir/comments.json" >"$comment_candidates"
 
     comment_result=none
@@ -2438,7 +2885,7 @@ check)
             continue
         fi
         resolved_payload=$(run_gh api "repos/$state_repo/commits/$prefix") ||
-            bounded_wait "cannot resolve a reviewed commit prefix through GitHub"
+            transient_read_failure "cannot resolve a reviewed commit prefix through GitHub"
         resolved=$(printf '%s' "$resolved_payload" | jq -er '.sha') || {
             emit indeterminate "GitHub returned malformed commit-prefix data"
             exit 2

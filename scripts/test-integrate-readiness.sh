@@ -374,8 +374,8 @@ write_integrator_result() {
         verdict=findings
         findings='[{"id":"integration-r1-codex-cloud-1","body":"a finding","source_id":"1"}]'
         ;;
-    11 | 12) verdict=pending ;;
-    13 | 2) verdict=escalate ;;
+    11 | 12 | 16) verdict=pending ;;
+    13 | 15 | 2) verdict=escalate ;;
     *) verdict=pending ;;
     esac
     jq -cn --arg head "$head" --argjson codex_cycle "$codex_cycle" \
@@ -1343,6 +1343,89 @@ jq -cn '[[
 run_gate
 assert_gate 1 fail threads-new-follow-up
 
+# --------------------------------------------------------------------------
+# harmon-devkit#675: the #665 thread, verbatim. Root 3886138416 is a badged P1
+# from the connector; the owner replied "Fixed in dfc3648…" at 09:23:57Z; the
+# connector then ran a fix task of its own and posted its report at 09:25:52Z
+# ("### Summary … Committed the change on `codex/name-review-trigger-broker`
+# as `77379cf` … A pull request could not be created"). The gate raised
+# `threads-new-follow-up` and blocked until a human replied to a machine a
+# second time.
+# --------------------------------------------------------------------------
+self_fix_thread() {
+    jq -cn --arg followup "$1" '[[
+        {id:3886138416,user:{login:"chatgpt-codex-connector[bot]",id:199175422},
+         path:"AGENTS.md",in_reply_to_id:null,
+         created_at:"2026-08-29T09:20:04Z",updated_at:"2026-08-29T09:20:05Z",
+         body:"**![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat) Authorize a writer for the Codex trigger**\n\nprose"},
+        {id:3886146197,user:{login:"pr-author",id:37220977},
+         path:"AGENTS.md",in_reply_to_id:3886138416,
+         author_association:"OWNER",
+         created_at:"2026-08-29T09:23:57Z",updated_at:"2026-08-29T09:23:57Z",
+         body:"Adjudicated P2. Fixed in dfc3648."},
+        {id:3886149775,user:{login:"chatgpt-codex-connector[bot]",id:199175422},
+         path:"AGENTS.md",in_reply_to_id:3886138416,
+         created_at:"2026-08-29T09:25:52Z",updated_at:"2026-08-29T09:25:52Z",
+         body:$followup}]]' >"${fixtures}/inline.pages.json"
+}
+
+echo "==> harmon-devkit#675: an unbadged bot self-fix summary is informational, not a follow-up"
+write_defaults
+self_fix_thread "### Summary
+
+* Named the Codex-cycle helper broker.
+* Committed the change on \`codex/name-review-trigger-broker\` as \`77379cf\`.
+* A pull request could not be created because the required tool is unavailable."
+run_gate
+assert_gate 0 pass ready
+
+echo "==> harmon-devkit#675: a BADGED bot follow-up still blocks"
+write_defaults
+self_fix_thread "### Summary
+
+**P1** the write boundary still has no executable path.
+
+* Committed the change on \`codex/name-review-trigger-broker\` as \`77379cf\`."
+run_gate
+assert_gate 1 fail threads-new-follow-up
+
+echo "==> harmon-devkit#675: an ordinary unbadged bot follow-up with no self-report shape still blocks"
+write_defaults
+self_fix_thread "Have you considered handling the empty case here as well?"
+run_gate
+assert_gate 1 fail threads-new-follow-up
+
+echo "==> harmon-devkit#675: a self-report from a NON-bot actor still blocks"
+# The exemption is pinned to the trusted actor id, not to the body shape
+# alone: anyone can write "### Summary" in a review comment.
+write_defaults
+jq -cn '[[
+    {id:900,user:{login:"reviewer-bot",id:4242},path:"f.sh",in_reply_to_id:null,
+     created_at:"2026-08-01T00:00:00Z",updated_at:"2026-08-01T00:00:00Z",
+     body:"finding"},
+    {id:901,user:{login:"pr-author"},path:"f.sh",in_reply_to_id:900,
+     created_at:"2026-08-01T01:00:00Z",updated_at:"2026-08-01T01:00:00Z",
+     body:"fixed in abc"},
+    {id:902,user:{login:"human-reviewer",id:7777},path:"f.sh",in_reply_to_id:900,
+     created_at:"2026-08-01T02:00:00Z",updated_at:"2026-08-01T02:00:00Z",
+     body:"### Summary\n\nCommitted the change on `wip` as `abcdef1`."}]]' \
+    >"${fixtures}/inline.pages.json"
+run_gate
+assert_gate 1 fail threads-new-follow-up
+
+echo "==> harmon-devkit#675: an unanswered thread whose ONLY comment is a bot self-report still blocks"
+# The exemption is scoped to the follow-up state; a thread with no reply from
+# you at all is still unanswered, whoever wrote it.
+write_defaults
+jq -cn '[[
+    {id:905,user:{login:"chatgpt-codex-connector[bot]",id:199175422},
+     path:"f.sh",in_reply_to_id:null,
+     created_at:"2026-08-01T00:00:00Z",updated_at:"2026-08-01T00:00:00Z",
+     body:"### Summary\n\nCommitted the change on `wip` as `abcdef1`."}]]' \
+    >"${fixtures}/inline.pages.json"
+run_gate
+assert_gate 1 fail threads-unanswered
+
 edited_thread() {
     jq -cn '[[
         {id:900,user:{login:"reviewer-bot"},path:"f.sh",in_reply_to_id:null,
@@ -1428,6 +1511,56 @@ write_defaults
 result="$(write_integrator_result exit-2 "$(codex_cycle_json 2)")"
 run_gate --integrator-result "$result" --integration-cap 1
 assert_gate 2 indeterminate codex-indeterminate
+
+echo "==> harmon-devkit#508: exit 16 is codex-transient-read, never codex-not-clean"
+# The original defect: the helper mapped a transient evidence-read failure to
+# exit 12, which the gate rendered as `codex-not-clean` — a hard fail asserting
+# a review problem that did not exist, with blind re-runs as the only remedy.
+# A failed read is unknown WITH THE REASON, so the caller repeats the read.
+write_defaults
+result="$(write_integrator_result exit-16 "$(codex_cycle_json 16)")"
+run_gate --integrator-result "$result" --integration-cap 1
+assert_gate 2 indeterminate codex-transient-read
+printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("evidence read failed")' >/dev/null ||
+    fail "the transient-read condition must name the failed read: $gate_out"
+
+echo "==> harmon-devkit#573: exit 15 is codex-quota-exhausted, a named blocker rather than an unknown"
+write_defaults
+result="$(write_integrator_result exit-15 "$(codex_cycle_json 15)")"
+run_gate --integrator-result "$result" --integration-cap 1
+assert_gate 1 fail codex-quota-exhausted
+printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("usage limit is exhausted")' >/dev/null ||
+    fail "the quota condition must name the exhausted limit: $gate_out"
+
+echo "==> harmon-devkit#508: a cached clean cycle whose recheck cannot read twice is codex-transient-read"
+# The gate re-invokes the checker to reconfirm a cached clean result. A read
+# failure there is retried ONCE; only a second failure is reported, and it is
+# reported as a read problem rather than as staleness — those are different
+# things to the operator, and only one of them means the clean result is gone.
+write_defaults
+clean_recheck="$(write_integrator_result clean "$(codex_cycle_json 0)")"
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXIT=16
+run_gate --codex-recheck "$recheck_state" \
+    --integrator-result "$clean_recheck" --integration-cap 1
+unset RECHECK_FAKE_EXIT
+gate="$saved_gate"
+assert_gate 2 indeterminate codex-transient-read
+printf '%s\n' "$gate_out" | tail -n 1 | jq -e '.detail | test("one retry")' >/dev/null ||
+    fail "the recheck must report that it retried the read once: $gate_out"
+
+echo "==> harmon-devkit#508: a recheck that genuinely no longer confirms the clean result is still codex-stale"
+# The inverse guard: the retry above must not swallow a real staleness signal.
+write_defaults
+saved_gate="$gate"
+gate="$recheck_gate"
+export RECHECK_FAKE_EXIT=10
+run_gate --codex-recheck "$recheck_state" \
+    --integrator-result "$clean_recheck" --integration-cap 1
+unset RECHECK_FAKE_EXIT
+gate="$saved_gate"
+assert_gate 2 indeterminate codex-stale
 
 echo "==> a missing --integrator-result file is refused as a usage error, never a pass"
 write_defaults

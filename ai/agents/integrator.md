@@ -404,12 +404,31 @@ Resetting to `0` first means every invocation starts from a known baseline
 and only moves off it when *this* call actually fails.
 
 `check` returns 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate, 14
-PR no longer open, 2 indeterminate. On **12 (retry)**, repeat the
+PR no longer open, 15 quota exhausted, 16 transient read, 2 indeterminate. On
+**12 (retry)**, repeat the
 reserve/trigger/attach/check sequence once more with `--attempt 2` against
 the **same** state and head — this is the one bounded retry your brief
-expects; do not retry a second time. On **13 (escalate)**, **14**, or **2**,
+expects; do not retry a second time. On **13 (escalate)**, **14**, **15**, or
+**2**,
 stop driving the cycle and carry that exit code straight into `codex_cycle`
 (§7) — these are terminal for this pass, not something you work around.
+
+On **15 (quota exhausted)** the reviewer answered that its code-review usage
+limit is spent (harmon-devkit#573). Do **not** re-trigger: `reserve
+--attempt 2` refuses that state by design, because the one bounded retry
+exists for a reviewer that did not answer, and this one did. Carry the exit
+code and the checker's `detail` — which names the reset time where the reply
+carried one — straight into your result as `verdict: "escalate"`.
+
+On **16 (transient read)** an evidence READ failed (harmon-devkit#508). This
+is emphatically **not** a statement about the reviewer, so it is neither a
+retry of the cycle nor an escalation: repeat the **read**. Inside this
+dispatch, treat it exactly like `11` — the same bounded poll loop below picks
+it up on its next iteration — and if the window runs out still on 16, report
+`codex_cycle` with `exit_code: 16` and `verdict: "pending"`, no `accepted`.
+Never re-trigger and never reserve a fresh attempt to "get past" a 16: the
+reviewer was never absent, and the orchestrator's gate reads 16 as
+indeterminate-with-reason rather than as a non-clean cycle.
 On **11 (pending)**, do not end the pass on the first pending read — that
 would spend the orchestrator's whole dispatch budget re-invoking you for
 every single poll, exactly the long-poll cost this role exists to absorb
@@ -422,10 +441,23 @@ window_end=$((SECONDS + 900))  # 15 minutes; use your brief's own window if diff
 while [ "$SECONDS" -lt "$window_end" ]; do
     check_exit=0
     check_out="$("$helper" check --state "$state" --actor-id 199175422)" || check_exit=$?
-    [ "$check_exit" != "11" ] && break
+    # 16 (transient read) keeps polling for the same reason 11 does: the
+    # remedy for a read that failed is to repeat the read. Only a terminal
+    # code breaks the loop.
+    [ "$check_exit" != "11" ] && [ "$check_exit" != "16" ] && break
     sleep 90
 done
 ```
+
+Two things the loop's own window will not shorten. The checker extends an
+attempt while the bot's 👀 is still on that attempt's trigger, up to a hard
+ceiling of 30 minutes from the trigger (harmon-devkit#655), so a `11` that
+persists past your 15-minute poll is a review still running rather than an
+absent one — report it as `11` and let the orchestrator re-dispatch; do not
+re-trigger inside this dispatch. And the checker treats the Completed row in
+the connector's rolling "Codex Review Summary" comment as clean evidence for
+the exact head (harmon-devkit#718), so some heads go terminal-clean with no
+👍, no review and no verdict comment at all.
 
 Only once that loop exits — either a terminal `check_exit` broke it, or the
 window ran out still on 11 — do you stop driving the cycle for this pass.
@@ -442,6 +474,14 @@ reviewed_commit: (check_out | .accepted.reviewed_commit)}`. All three are
 always present together on these two exit codes; their absence is a
 malformed `check_out` your brief did not anticipate — stop and report it
 rather than fabricating a value.
+
+A `10` raised by inline threads also carries `unanswered[]` — one
+`{comment_id, review_id, path}` entry per unadjudicated bot thread on the
+head, **across every review that posted one** (harmon-devkit#737). Feed every
+entry into `unanswered_thread_roots` and `findings[]`; the single
+`accepted.id` names one review, and the bot can post two on one head minutes
+apart, so trusting it alone is how the second review's findings reach the
+readiness gate unanswered.
 
 You never call `settle`. A badged finding sitting outside an inline thread
 (a top-level comment or a review body) is a **finding** you report like any
@@ -698,7 +738,12 @@ way the orchestrator's next move is to stop and reconcile rather than
 re-dispatch, so a timed-out cycle reported under any other verdict fails
 validation instead of returning the escalation evidence §4 promises. Exit
 `14` (the PR is no longer open) forbids `clean` and `pending` — report
-`findings` (the closed PR is the finding) or `escalate`. `codex_cycle`
+`findings` (the closed PR is the finding) or `escalate`. Exit `15` (the
+reviewer reported an exhausted usage limit) pairs with `escalate` for the
+same reason `13` does: the orchestrator's next move is to stop and report a
+blocker, never to re-dispatch. Exit `16` (a transient evidence read) pairs
+with `pending`, like `11` and `12` — the read is repeated, nothing is
+escalated over a GitHub call that would not answer. `codex_cycle`
 carries `accepted` only when its `exit_code` is 0 or 10 (omit the key
 otherwise, never null).
 
