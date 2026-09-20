@@ -661,7 +661,7 @@ are the contract:
 | `12` | `retry` | Attempt 1's window elapsed. One re-trigger with `--attempt 2`. |
 | `13` | `escalate` | Both windows elapsed. Stop; escalate. |
 | `14` | `pr-not-open` | GitHub answered MERGED/CLOSED. Terminal for the whole stage — never wait, re-run, or re-trigger. |
-| `15` | `quota-exhausted` | The reviewer *answered* that its code-review usage limit is spent. Terminal; never clean, never findings. Report the blocker with the reset time where the reply carried one. `reserve --attempt 2` is refused, so the one bounded retry is not spent on a reviewer that already said no — and once a recorded reset time has passed, a fresh `--attempt 1` on the same head is allowed, so the head does not stay un-reviewable. |
+| `15` | `quota-exhausted` | The reviewer *answered* that its code-review usage limit is spent. Terminal; never clean, never findings. Report the blocker with the reset time where the reply carried one. `reserve --attempt 2` is refused, so the one bounded retry is not spent on a reviewer that already said no, and so is a fresh `--attempt 1` on the same head — the commit stays un-reviewable through this checker until a push moves the head or an operator clears the state (recovery route carried in harmon-devkit#1115). |
 | `16` | `transient-read` | An evidence **read** failed. This says nothing about the reviewer: repeat the *read*, never the reviewer cycle. The readiness gate reports it as `codex-transient-read` (indeterminate with the reason), never `codex-not-clean`. |
 | `2` | `indeterminate` | Malformed, changed head, usage error, or an unclassifiable verdict. |
 
@@ -681,7 +681,14 @@ is stale.
 **Two shapes that are neither clean nor findings.** A **self-fix summary** —
 an unbadged report from the bot describing a fix *it* made, in a thread or as
 a top-level comment — is informational (harmon-devkit#675); a badged follow-up
-still blocks. And while the bot's 👀 is still on the current attempt's trigger,
+still blocks. Informational means the body states **nothing but** the bot's own
+work: every non-blank line a heading, a bold-only label, or a list item, plus a
+recognized self-work marker. Anything else is `findings`, which is safe
+precisely because `settle`'s domain is *what `check` blocks on* rather than
+*what carries a badge* — so a body misread as a finding costs one recorded
+disposition instead of stranding the head. And a badged summary comment whose
+table names no commit the parser can read is **indeterminate**: parsing may
+fail, but a badge is never silently dropped. And while the bot's 👀 is still on the current attempt's trigger,
 the attempt window **extends** to a hard ceiling of 30 minutes from the
 trigger rather than returning `12`, because the window exists to bound a
 reviewer that is not working (harmon-devkit#655). A 👀 that vanished with no

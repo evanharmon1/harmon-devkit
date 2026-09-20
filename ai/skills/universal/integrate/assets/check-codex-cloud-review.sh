@@ -953,11 +953,55 @@ codex_verdict_defs=$(
                test("reviewed commit `[0-9a-f]{7,40}` and found no additional")));
           def has_finding_footer:
             (body_text | ascii_downcase | test("useful\\? react with"));
+          # Challenge round 2, findings `challenge-r2-codex-adversarial-1` and
+          # `-3` (confirmed P1, disposition RESTRUCTURE). Round 1 asked only
+          # whether a self-work marker appeared ANYWHERE, so a body could
+          # describe the bot's own work in one line and state an unanswered
+          # concern in the next and still classify `informational` — the
+          # concern then vanished from every blocking scan. The marker list
+          # was simultaneously too tight: a self-report phrased outside the
+          # three observed strings exited 10 with no way to answer it.
+          #
+          # The invariant, not the phrasing: **informational means the body
+          # states nothing but the bot's own work.** So the test is now
+          # whole-body and structural — every non-blank line outside the
+          # About block must be a heading, a bold-only label (`**Testing**`,
+          # which both observed reports use), or a list item. A free-standing
+          # prose paragraph is exactly what a concern looks like and exactly
+          # what a work report does not contain.
+          #
+          # The marker is kept as the positive half, because structure alone
+          # would admit any bulleted list. Both halves are required.
+          #
+          # Residual, stated rather than papered over: a concern written AS a
+          # bullet inside an otherwise-genuine report still classifies
+          # informational. That is why this predicate is only half the
+          # restructure — `settle` now accepts everything `check` blocks on,
+          # so misreading in the other direction costs one recorded
+          # disposition instead of a stranded head, and the classifier is free
+          # to fail closed.
+          # `is_reviewed_commit_line` rides along because it is Codex's OWN
+          # whole-line metadata — the same line `rest_is_boilerplate` accepts
+          # in a clean verdict — not prose a concern could hide in. Every other
+          # shape here is structural: a heading, a bold-only label, a list
+          # item.
+          def self_report_line:
+            (test("^#{1,6}[[:space:]]") or
+             test("^\\*\\*[^*]+\\*\\*[[:space:][:punct:]]*$") or
+             test("^[*+-][[:space:]]") or
+             test("^[0-9]+\\.[[:space:]]") or
+             is_reviewed_commit_line);
+          def states_only_own_work:
+            (body_text | ascii_downcase | strip_about_block | split("\n") |
+              map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+              map(select(. != "")) |
+              all(self_report_line));
           def is_self_report:
             (has_severity_marker | not) and
             (has_finding_footer | not) and
             has_summary_heading and
-            self_work_marker;
+            self_work_marker and
+            states_only_own_work;
           # harmon-devkit#718: the connector also maintains a rolling
           # "Codex Review Summary" comment whose per-head table row flips from
           # Running to Completed, and on some runs that row is the ONLY clean
@@ -1017,36 +1061,55 @@ codex_verdict_defs=$(
                    status: ($header.value | index("status")),
                    commit: ($header.value | index("commit"))}
              end);
-          # Every commit the table names, optionally narrowed to the rows whose
-          # STATUS cell reports completion. `$completed_only false` is what the
-          # badged-finding scan uses (finding
-          # `challenge-r1-codex-adversarial-2`): a badge in this comment is a
-          # finding about whatever head the table names, whether or not that
-          # row has finished.
+          # The table is a LOG: the connector appends a row per review, so one
+          # commit can appear more than once. Challenge round 2, finding
+          # `challenge-r2-codex-adversarial-4` (confirmed P2, provenance
+          # ORIGINAL — this predates round 1, in the first #718 work): taking
+          # every Completed row let an OLDER completion vouch for a head whose
+          # newest row says Running. The last row naming a commit is that
+          # commit's current status, so it is the only one that counts.
           #
-          # The separator row (`| --- | --- |`) is skipped structurally, and
-          # `not completed` is rejected explicitly rather than being caught by
-          # a word-boundary test that reads a negation as a match.
-          def summary_prefixes($completed_only):
+          # `reduce` into an object keyed by commit rather than `group_by`,
+          # which sorts and would make "last" mean last-by-key instead of
+          # last-in-the-table.
+          def summary_row_status:
             (summary_columns as $columns |
-             if ($columns == null) or (summary_marker | not) then []
+             if ($columns == null) or (summary_marker | not) then {}
              else
-               [ (summary_cell_rows | .[($columns.row + 1):][]) |
+               reduce (summary_cell_rows | .[($columns.row + 1):][] |
                  select(all(.[]; test("^:?-+:?$") | not)) |
                  select((length > $columns.status) and
                         (length > $columns.commit)) |
                  . as $row |
-                 select(($completed_only | not) or
-                        (($row[$columns.status] |
-                           test("\\bcompleted\\b")) and
-                         ($row[$columns.status] |
-                           test("\\bnot[[:space:]]+completed\\b") | not))) |
-                 ($row[$columns.commit] | gsub("`"; "")) |
-                 select(test("^[0-9a-f]{7,40}$"))
-               ] | unique
+                 {commit: ($row[$columns.commit] | gsub("`"; "")),
+                  status: $row[$columns.status]} |
+                 select(.commit | test("^[0-9a-f]{7,40}$"))
+               ) as $entry ({}; .[$entry.commit] = $entry.status)
              end);
+          # `not completed` is rejected explicitly rather than being caught by
+          # a word-boundary test that reads a negation as a match.
+          def summary_prefixes($completed_only):
+            ([summary_row_status | to_entries[] |
+              select(($completed_only | not) or
+                     (((.value | test("\\bcompleted\\b")) and
+                       ((.value |
+                          test("\\bnot[[:space:]]+completed\\b")) | not)))) |
+              .key] | unique);
           def summary_completed_prefixes: summary_prefixes(true);
           def summary_row_prefixes: summary_prefixes(false);
+          # Challenge round 2, finding `challenge-r2-codex-adversarial-2`
+          # (confirmed P1, repeat-of r1-2, disposition RESTRUCTURE): round 1
+          # made head-binding depend on PARSING a header row, so anything the
+          # parser could not read — bolded header cells, a renamed column —
+          # made a badged summary invisible to every scan again, silently.
+          # Parsing may fail; a badge may never be silently dropped. This
+          # predicate names the case the caller must turn into
+          # `indeterminate`: the comment IS a summary and IS badged, but its
+          # table yields no commit at all, so nothing can say which head the
+          # badge is about.
+          def is_unbindable_badged_summary:
+            summary_marker and has_severity_marker and
+            ((summary_row_prefixes | length) == 0);
           # Restructured, not re-decided: a body that DOES open with the clean
           # sentence classifies exactly as before (badge -> findings, trailing
           # prose -> unrecognized, otherwise clean), and a body that does not
@@ -1095,47 +1158,25 @@ reserve)
             die "state belongs to a different PR"
         [ "$old_phase" != "reserved" ] ||
             die "an unresolved reservation must be reconciled before replacing its head"
-        # Challenge round 1, item B (2026-09-20, confirmed P2): exit 15 left
-        # the head permanently un-reviewable. `reserve --attempt 2` is refused
-        # on the quota marker (below, by design — the one bounded retry must
-        # not be spent on a reviewer that already said no), and `reserve
-        # --attempt 1` on the same head died as an uncontrolled duplicate
-        # trigger, while the readiness gate maps 15 to a hard failure. So the
-        # reset time exit 15 reports had no action behind it: nothing could
-        # re-review that commit until a new push moved the head.
+        # Challenge round 2, findings `challenge-r2-codex-adversarial-5`
+        # and `-6` (2026-09-20, both confirmed P2, disposition DELETE):
+        # round 1's item-B carve-out — a fresh attempt-1 reservation once a
+        # recorded reset time had passed — is gone, and its round-1
+        # disposition is reversed by the orchestrator on the round-2 record.
+        # It opened on any past timestamp scraped from the body (so a reply
+        # naming an old date re-triggered a reviewer that had just refused,
+        # the exact waste harmon-devkit#573 measured), it could never open in
+        # the observed case (no observed reply carries a reset time), and it
+        # could not open even when one did, because the extractor accepted
+        # minute resolution while `valid_time` requires seconds. It also gave
+        # a guard whose whole value is having exactly one same-head
+        # reservation route a second one.
         #
-        # Once the recorded reset time has actually passed, a fresh attempt-1
-        # reservation is a NEW cycle rather than a duplicate trigger — the
-        # previous cycle ended in a definitive non-result, not in an
-        # unanswered trigger — so it is allowed, and the payload below starts
-        # clean (the quota fields are simply absent from a fresh attempt-1
-        # shape, which is what clears the marker).
-        #
-        # Deliberately gated on the reset time being KNOWN and PAST: the
-        # observed usage-limit reply carries no reset time at all, and
-        # inventing one would turn a definitive answer back into a guess.
-        # Residual, stated rather than papered over: where the reply named no
-        # reset time, this carve-out does not open and the head still needs a
-        # push (or an operator removing the state) to become reviewable again.
-        quota_cycle_reset=0
-        if [ "$old_head" = "$head" ] && [ "$attempt" = "1" ]; then
-            old_quota_at=$(jq -r '.quota_exhausted_at // empty' "$state_file")
-            old_quota_reset=$(jq -r '.quota_reset_at // empty' "$state_file")
-            if [ -n "$old_quota_at" ] && valid_time "$old_quota_reset"; then
-                old_reset_epoch=$(jq -nr \
-                    --arg value "$old_quota_reset" '$value | fromdateiso8601') ||
-                    die "state has an unresolvable quota reset time: $old_quota_reset"
-                [ "$(clock_epoch)" -lt "$old_reset_epoch" ] ||
-                    quota_cycle_reset=1
-            fi
-        fi
-        if [ "$old_head" = "$head" ] && [ "$quota_cycle_reset" = "1" ]; then
-            # A fresh cycle after the reviewer's own quota reset. The trigger
-            # the refused cycle carried is still real same-head history, so it
-            # is carried forward for the same reason harmon-devkit#1014
-            # ruling 2 carries it across an attempt-2 replacement.
-            replaced_trigger_comment_id=$(jq -r '.trigger_comment_id // empty' "$state_file")
-        elif [ "$old_head" = "$head" ]; then
+        # The underlying concern is real and is NOT dropped: giving a
+        # quota-exhausted head a safe recovery route is carried in #1115. Until
+        # then the documented behaviour stands — report the blocker, and let a
+        # push or an operator clear the state.
+        if [ "$old_head" = "$head" ]; then
             [ "$old_attempt" = "1" ] && [ "$attempt" = "2" ] &&
                 [ "$old_phase" = "attached" ] ||
                 die "refusing an uncontrolled duplicate trigger for this head"
@@ -2683,6 +2724,40 @@ check)
         exit 2
     fi
 
+    # Challenge round 2, finding `challenge-r2-codex-adversarial-2`
+    # (confirmed P1, repeat-of r1-2, disposition RESTRUCTURE): PARSING MAY
+    # FAIL; A BADGE MAY NOT BE SILENTLY DROPPED.
+    #
+    # Round 1 bound a badged summary to a head by parsing the comment's table,
+    # which made the parser the safety boundary: bolded header cells, a
+    # renamed column, any shape `summary_columns` cannot read, and the badged
+    # comment simply vanished from every scan — the same invisibility r1-2 was
+    # raised to fix, reopened by r1-3's own remedy. The two fixes cancelled.
+    #
+    # The boundary belongs here instead, as a property rather than a parse: a
+    # badged comment from the pinned actor, posted or edited after the trigger,
+    # whose table names no commit at all, is evidence this check cannot place.
+    # That is `indeterminate` — the same three-way discipline `verdict_class`
+    # uses — and never a silent omission that lets an older clean result
+    # stand. A table the parser CAN read is unaffected: a badge about another
+    # head binds to that head and is stale, exactly as before.
+    unbindable_badged=$(jq -r \
+        --argjson id "$actor_id" \
+        --arg requested "$state_requested" \
+        "$codex_verdict_defs"'
+          [.[] | select(.user.id? == $id) |
+            select(((.updated_at // .created_at) // "") > $requested) |
+            select(is_unbindable_badged_summary)
+          ] | length
+        ' "$workdir/comments.json") || {
+        emit indeterminate "conversation comments could not be scanned for unbindable badged summaries"
+        exit 2
+    }
+    if [ "$unbindable_badged" -gt 0 ]; then
+        emit indeterminate "a badged summary comment from the finder names no commit this check can read, so the head its finding is about cannot be determined"
+        exit 2
+    fi
+
     # Classifying a current-head result is three-way, not binary, because
     # "I cannot tell" is a real answer and reporting it as `findings` is a lie
     # that costs a clean PR its gate.
@@ -3534,13 +3609,28 @@ settle)
     esac
     valid_time "$target_result_time" ||
         die "target $target_id has no usable result timestamp"
-    # The badge is the only machine-emitted signal that this is a finding at
-    # all. Requiring it keeps settlement off every other shape the surfaces
-    # carry — a clean verdict, a carrier body, an unrecognized one — none of
-    # which a disposition would mean anything about.
+    # Challenge round 2, findings `challenge-r2-codex-adversarial-1` and `-3`
+    # (confirmed P1, disposition RESTRUCTURE): settle's domain is WHAT `check`
+    # BLOCKS ON, not "what carries a badge".
+    #
+    # The badge-only rule was the second half of round 1's mistake. A bot
+    # comment that `check` classifies `findings` but that carries no badge —
+    # a self-report whose wording the `informational` test does not recognize,
+    # say — exits 10 with no way to be answered: `settle` refused it for
+    # having no badge, and there is no thread to reply in. The head was then
+    # un-reviewable through this helper, which is strictly worse than the
+    # "false block, recoverable by a human" the round-1 comment promised.
+    #
+    # Tying the domain to `verdict_class == "findings"` makes every blocking
+    # shape answerable, which is what lets the classifier above fail CLOSED
+    # safely: a body wrongly read as a finding now costs one recorded
+    # disposition instead of stranding the commit. It still keeps settlement
+    # off everything `check` does NOT block on — a clean verdict, a carrier
+    # body, an unrecognized one, an informational self-report — because none
+    # of those reaches `findings`.
     printf '%s' "$target" |
-        jq -e "$codex_verdict_defs"' has_severity_marker' >/dev/null ||
-        die "target $target_id carries no severity badge, so it is not a finding to settle"
+        jq -e "$codex_verdict_defs"' verdict_class == "findings"' >/dev/null ||
+        die "target $target_id is not a finding this checker blocks on, so there is nothing to settle"
 
     # A disposition settles the TARGET, and a target can hold more than one
     # finding: Codex sometimes states several in one body. Since the entry is
@@ -3563,8 +3653,13 @@ settle)
     # breaking the documented invocation. Matching the alt-text form counts
     # each badge once. A body that states findings as plain prose renders no
     # badge at all, so that shape falls back to the token scan, which is
-    # correct for it; `has_severity_marker` above has already established that
-    # at least one finding is present either way.
+    # correct for it.
+    #
+    # Since round 2 widened the domain above from "carries a badge" to "is
+    # what `check` blocks on", a target can legitimately count ZERO: an
+    # unbadged body that classifies `findings`. That needs no `--covers` —
+    # there are no separately-badged findings to under-answer — and the
+    # `> 1` guard below already says so without a special case.
     badge_count=$(printf '%s' "$target" |
         jq -r '((.body // "") | ascii_downcase) as $body |
                ([$body | scan("!\\[p[0-9]+ badge\\]")] | length) as $rendered |

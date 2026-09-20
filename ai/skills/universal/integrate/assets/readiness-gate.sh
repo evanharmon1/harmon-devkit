@@ -914,13 +914,16 @@ threads_needing_attention="$(jq -c --arg me "$me" \
     | def is_bot_self_report:
         ((.user.id? == $bot) and
          (((.body // "") | ascii_downcase | test("\\bp[0-9]+\\b")) | not) and
-         # Challenge round 1, finding `challenge-r1-codex-adversarial-1`: the
-         # heading is not evidence. This predicate mirrors the checker
-         # predicate `is_self_report`, kept deliberately identical — a `summary` heading
-         # AND a recognized self-work marker AND no finding footer. The first
-         # version accepted the heading on its own, which let an unbadged prose
-         # concern from the bot pass as informational. Any non-match here still
-         # raises `threads-new-follow-up`, so drift costs a false block.
+         # Mirrors the checker predicate `is_self_report`, kept deliberately
+         # identical. Challenge round 2, finding
+         # `challenge-r2-codex-adversarial-1`: the round-1 version asked only
+         # whether a self-work marker appeared ANYWHERE, so a body could
+         # describe its own work in one line and raise a concern in the
+         # next and still pass as informational. The invariant is that the
+         # body states NOTHING BUT work the bot itself did, so every non-blank line
+         # must be a heading, a bold-only label, or a list item — a
+         # free-standing prose paragraph is what a concern looks like.
+         # Any non-match still raises `threads-new-follow-up`.
          (((.body // "") | ascii_downcase | split("\n") |
             map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
             any(.[]; test("^#{1,6}[[:space:]]*summary[[:space:]]*$")))) and
@@ -928,6 +931,14 @@ threads_needing_attention="$(jq -c --arg me "$me" \
             (test("committed .*on `[^`]+` as `[0-9a-f]{7,40}`") or
              test("a pull request could not be created") or
              test("reviewed commit `[0-9a-f]{7,40}` and found no additional")))) and
+         (((.body // "") | ascii_downcase | split("\n") |
+            map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) |
+            map(select(. != "")) |
+            all(.[];
+              test("^#{1,6}[[:space:]]") or
+              test("^\\*\\*[^*]+\\*\\*[[:space:][:punct:]]*$") or
+              test("^[*+-][[:space:]]") or
+              test("^[0-9]+\\.[[:space:]]")))) and
          (((.body // "") | ascii_downcase |
             test("useful\\? react with")) | not));
       group_by(.in_reply_to_id // .id)

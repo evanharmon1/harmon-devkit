@@ -419,10 +419,11 @@ limit is spent (harmon-devkit#573). Do **not** re-trigger: `reserve
 exists for a reviewer that did not answer, and this one did. Carry the exit
 code and the checker's `detail` — which names the reset time where the reply
 carried one — straight into your result as `verdict: "escalate"`. You do not
-wait out the reset yourself: re-reviewing that head once the quota returns is
-a fresh cycle the orchestrator dispatches (the checker permits a new
-`--attempt 1` only after the recorded reset time has passed), never something
-this pass loops on.
+wait out the reset yourself, and you cannot re-open the cycle: a fresh
+`--attempt 1` on the same head is refused by the single same-head reservation
+guard, so the commit stays un-reviewable through this helper until a push
+moves the head. Report it; the recovery route is carried in
+harmon-devkit#1115.
 
 On **16 (transient read)** an evidence READ failed (harmon-devkit#508). This
 is emphatically **not** a statement about the reviewer, so it is neither a
