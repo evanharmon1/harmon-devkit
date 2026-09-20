@@ -21,5 +21,14 @@ all earlier rounds of this same stage before asserting each finding's
 provenance and fingerprint. Batch incremental prose P2s in one pass rather
 than manufacturing a pass per wording tweak.
 
+Resolve `dev-flow-support/assets/validate-result-schemas.mjs` from the
+vendored skills directory before running it — this file is an agent, not a
+skill, so the shorthand above does not resolve from any cwd on its own. It is
+an asset of the `dev-flow-support` skill package, a sibling of the stage
+skills (`.claude/skills/dev-flow-support/assets/` in a repository that ran
+`task sync:skills`, `ai/skills/universal/dev-flow-support/assets/` in
+harmon-devkit itself), never a repository-root `scripts/` path
+(harmon-devkit#974).
+
 Do not write outside the returned result. Do not modify code, commit, push,
 post, adjudicate a finding, or decide whether review exits.

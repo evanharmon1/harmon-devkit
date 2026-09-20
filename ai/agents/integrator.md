@@ -708,7 +708,9 @@ Validate before reporting it — as the full envelope, the same `envelope` kind
 the readiness gate itself validates, not the bare `integrator` payload kind:
 
 ```sh
-node dev-flow-support/assets/validate-result-schemas.mjs envelope "$out_file"
+# ai/skills/universal/dev-flow-support/assets/ in harmon-devkit itself;
+# .claude/skills/dev-flow-support/assets/ in a repo that ran task sync:skills
+node ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs envelope "$out_file"
 ```
 
 A nonzero exit means fix the document and re-validate — never report an
