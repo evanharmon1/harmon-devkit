@@ -209,15 +209,14 @@ base="$(git merge-base HEAD "$base_ref")"           # $base_ref from §1
 mb_dir="$(mktemp -d)"
 
 # ASK THE MERGE BASE which layout it has, rather than hardcoding one. The
-# reader is a vendored skill asset in harmon-devkit's own tree, sits under
-# `.claude/skills/` in a consumer that ran `task sync:skills`, and sits at
-# `scripts/devflow-policy.mjs` at any merge base predating harmon-devkit#974.
-# A subset of the reader's own `--closure` probe list (devflow-policy.mjs's
-# CLOSURE_READER_PATHS), narrowed to repo-root-relative layouts — the probe's
-# other two entries (`devflow-policy.mjs` and `assets/devflow-policy.mjs`)
-# only apply when the supplied closure directory already points at the skill
-# or asset directory itself, which this repo-root checkout never does. First
-# match wins here too.
+# loop below probes the reader's own `--closure` probe order — devflow-
+# policy.mjs's CLOSURE_READER_PATHS — narrowed to the repo-root-relative
+# candidates (the probe's other two entries, `devflow-policy.mjs` and
+# `assets/devflow-policy.mjs`, only apply when the supplied closure directory
+# already points at the skill or asset directory itself, which this
+# repo-root checkout never does), plus the legacy `scripts/devflow-policy.mjs`
+# path for any merge base predating harmon-devkit#974. First match wins here
+# too.
 reader=""
 for candidate in \
     ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs \

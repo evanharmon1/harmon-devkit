@@ -184,6 +184,11 @@ for role in challenger reviewer; do
     grep -Fq 'validated finding records' "$agent" ||
         fail "$role cannot compare finding provenance across rounds"
 done
+dev_flow_support_skill="ai/skills/universal/dev-flow-support/SKILL.md"
+grep -Fq 'Resolving the assets from an agent file' "$dev_flow_support_skill" ||
+    fail "dev-flow-support skill is missing the agent-file asset resolution section"
+grep -Fq 'DEV_FLOW_SUPPORT=' "$dev_flow_support_skill" ||
+    fail "dev-flow-support skill is missing the DEV_FLOW_SUPPORT resolution snippet"
 grep -Fq 'synthesis_of' ai/skills/universal/orchestrate/SKILL.md ||
     fail "orchestrate skill does not preserve council synthesis provenance"
 for model_skill in "$skill" ai/skills/universal/orchestrate/SKILL.md \

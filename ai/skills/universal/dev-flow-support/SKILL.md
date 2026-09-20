@@ -70,20 +70,24 @@ its own — so it must resolve this package's `assets/` the same way
 vendored skill layouts that `CLOSURE_READER_PATHS`
 (`assets/devflow-policy.mjs`) carries — `ai/skills/universal/`, then
 `.claude/skills/`, then `.agents/skills/` — and use the first one that exists.
-An agent file that needs this package's `assets/` directory names this rule by
-section title and file instead of re-enumerating the layouts, and sets it
-once:
+This resolution assumes the current directory is the repository root — the
+anchor a dispatched agent runs from — which is precisely why an agent file
+cannot use the `${CLAUDE_SKILL_DIR}`-relative resolution the rest of this file
+uses: it has no skill directory of its own to be relative to. An agent file
+that needs this package's `assets/` directory names this rule by section title
+and file instead of re-enumerating the layouts, and sets it once:
 
 ```sh
 for c in ai/skills/universal/dev-flow-support/assets .claude/skills/dev-flow-support/assets .agents/skills/dev-flow-support/assets; do
     [ -d "$c" ] && { DEV_FLOW_SUPPORT="$c"; break; }
 done
+[ -n "${DEV_FLOW_SUPPORT:-}" ] || { echo "dev-flow-support assets not found (looked in: ai/skills/universal/dev-flow-support/assets, .claude/skills/dev-flow-support/assets, .agents/skills/dev-flow-support/assets)" >&2; exit 2; }
 ```
 
 Keep this candidate list in the same order as `CLOSURE_READER_PATHS` in
-`assets/devflow-policy.mjs` — that array is the one place the vendored layouts
-are actually enumerated; this snippet is a derived copy, not a second source
-of truth, and must be updated if that array's order or membership changes.
+`assets/devflow-policy.mjs` — that array is the reference order the reader
+uses; this snippet is a derived copy, not a second source of truth, and must
+be updated if that array's order or membership changes.
 
 ## Schemas
 
