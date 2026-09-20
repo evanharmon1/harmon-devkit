@@ -609,6 +609,10 @@ malpromo_empty_extra_malformed_iso="$(date -u -d "@$malpromo_empty_extra_malform
 touch "$fixture_dir/malformed-promo-events"
 printf '%s\n' "$malpromo_empty_extra_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
 printf '%s\n' "$malpromo_empty_extra_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
+# #1041 remediation round 5 (Codex 4055770460): an id-less malformed row's
+# identity is now its own sanitized created_at, not the literal "null" --
+# mirror the production sanitizer here to compute the expected value.
+malpromo_empty_extra_id_safe="$(printf '%s' "$malpromo_empty_extra_malformed_iso" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
 malpromo_empty_extra_state="$test_tmp/malpromo-empty-extra.state"
 printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:555\nMALPROMO\talpha:77\t4\t\t\nWALLCLOCK\trun\t0\t\n' \
     "$((malpromo_empty_extra_now + 900))" "$malpromo_empty_extra_valid_at" \
@@ -624,7 +628,7 @@ rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at"
     "$fixture_dir/malformed-promo-null-at"
 assert_count "$malpromo_empty_extra_err" 0 'integer expression expected'
 assert_count "$malpromo_empty_extra_out" 0 '^OBSERVATION-DEGRADED '
-assert_count "$malpromo_empty_extra_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+null[[:space:]]*$'
+assert_count "$malpromo_empty_extra_state" 1 "^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+${malpromo_empty_extra_id_safe}[[:space:]]*\$"
 
 # review-r2-codex-verification-1 / Greptile 4055301833: resolve_promotion()'s
 # malpromo_notified==0 branch must echo OBSERVATION-DEGRADED BEFORE
@@ -649,9 +653,15 @@ ordering_malformed_iso="$(date -u -d "@$ordering_malformed_at" +%Y-%m-%dT%H:%M:%
 touch "$fixture_dir/malformed-promo-events"
 printf '%s\n' "$ordering_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
 printf '%s\n' "$ordering_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
+# #1041 remediation round 5 (Codex 4055770460): an id-less malformed row's
+# identity is now its own sanitized created_at, not the literal "null" --
+# mirror the production sanitizer here so the pre-seeded detail matches
+# the row this poll will actually observe (no accidental row-id-mismatch
+# reset), and to compute the expected post-poll value.
+ordering_id_safe="$(printf '%s' "$ordering_malformed_iso" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
 ordering_state="$test_tmp/malpromo-notify-ordering.state"
-printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:555\nMALPROMO\talpha:77\t4\t0\tnull\nWALLCLOCK\trun\t0\t\n' \
-    "$((ordering_now + 900))" "$ordering_valid_at" \
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:555\nMALPROMO\talpha:77\t4\t0\t%s\nWALLCLOCK\trun\t0\t\n' \
+    "$((ordering_now + 900))" "$ordering_valid_at" "$ordering_id_safe" \
     >"$ordering_state"
 ordering_out1="$test_tmp/malpromo-notify-ordering-1.out"
 bash "$watcher" --iterations 1 --state-file "$ordering_state" \
@@ -659,9 +669,9 @@ bash "$watcher" --iterations 1 --state-file "$ordering_state" \
     --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$ordering_out1"
-assert_line "$ordering_out1" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=null on #77'
+assert_line "$ordering_out1" "OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=${ordering_id_safe} on #77"
 assert_count "$ordering_out1" 1 '^OBSERVATION-DEGRADED '
-assert_count "$ordering_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+5[[:space:]]+1[[:space:]]+null[[:space:]]*$'
+assert_count "$ordering_state" 1 "^MALPROMO[[:space:]]+alpha:77[[:space:]]+5[[:space:]]+1[[:space:]]+${ordering_id_safe}[[:space:]]*\$"
 
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
@@ -740,6 +750,53 @@ rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at"
 assert_line "$reprom_out4" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=xyz789 on #77'
 assert_count "$reprom_out4" 1 '^OBSERVATION-DEGRADED '
 assert_count "$reprom_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+4[[:space:]]+1[[:space:]]+xyz789[[:space:]]*$'
+
+# #1041 remediation round 5 (Codex 4055770460): extends the withdraw ->
+# re-promote scenario above with id-less rows specifically -- round 4's
+# fix keyed the episode by row id, but every id-less row resolved the
+# SAME literal "null" identity, so a withdraw onto ANOTHER id-less
+# malformed row was still indistinguishable from the row before it. Two
+# DIFFERENT id-less rows (both id:null, different created_at) must now be
+# treated as two different episodes, since an id-less row's identity is
+# its own created_at. Continues directly from the "xyz789" episode above
+# (still exhausted/notified) to prove the switch away from an EXPLICIT id
+# also resets correctly, then switches again to a THIRD id-less row to
+# prove two id-less rows in a row don't collapse into each other either.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+reprom2_malformed_at=$((reprom_now - 20))
+reprom2_malformed_iso="$(date -u -d "@$reprom2_malformed_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$reprom2_malformed_iso" ] || reprom2_malformed_iso="$(date -u -r "$reprom2_malformed_at" +%Y-%m-%dT%H:%M:%SZ)"
+reprom2_id_safe="$(printf '%s' "$reprom2_malformed_iso" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
+touch "$fixture_dir/malformed-promo-events"
+printf '%s\n' "$reprom_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
+printf '%s\n' "$reprom2_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
+reprom_out5="$test_tmp/malpromo-reprom-5.out"
+bash "$watcher" --iterations 1 --state-file "$reprom_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$reprom_out5"
+assert_count "$reprom_out5" 0 '^OBSERVATION-DEGRADED '
+assert_count "$reprom_state" 1 "^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+${reprom2_id_safe}[[:space:]]*\$"
+
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+reprom3_malformed_at=$((reprom_now - 10))
+reprom3_malformed_iso="$(date -u -d "@$reprom3_malformed_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$reprom3_malformed_iso" ] || reprom3_malformed_iso="$(date -u -r "$reprom3_malformed_at" +%Y-%m-%dT%H:%M:%SZ)"
+reprom3_id_safe="$(printf '%s' "$reprom3_malformed_iso" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
+printf '%s\n' "$reprom3_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
+reprom_out6="$test_tmp/malpromo-reprom-6.out"
+bash "$watcher" --iterations 1 --state-file "$reprom_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$reprom_out6"
+rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at" \
+    "$fixture_dir/malformed-promo-null-at"
+assert_count "$reprom_out6" 0 '^OBSERVATION-DEGRADED '
+assert_count "$reprom_state" 1 "^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+${reprom3_id_safe}[[:space:]]*\$"
 
 # #1041 challenge r1 finding 1 (multi-lane): a degraded lane's backoff must
 # never delay a healthy lane sharing the same specs[] list. alpha fails
@@ -1823,6 +1880,10 @@ mp_null_iso="$(date -u -d "@$mp_null_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true
 touch "$fixture_dir/malformed-promo-events"
 printf '%s\n' "$mp_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
 printf '%s\n' "$mp_null_iso" >"$fixture_dir/malformed-promo-null-at"
+# #1041 remediation round 5 (Codex 4055770460): an id-less malformed row's
+# identity is now its own sanitized created_at, not the literal "null" --
+# mirror the production sanitizer here to compute the expected value.
+mp_null_id_safe="$(printf '%s' "$mp_null_iso" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
 mp_out="$test_tmp/malformed-promo.out"
 mp_state="$test_tmp/malformed-promo.state"
 bash "$watcher" --iterations 1 --state-file "$mp_state" \
@@ -1836,10 +1897,11 @@ assert_count "$mp_state" 0 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+$(
 assert_count "$mp_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+[0-9]+[[:space:]]*\$"
 # #1041 remediation round 4 (Codex 4055549763): MALPROMO's detail field
 # now carries the sanitized malformed row id this episode is tracking, so
-# "null" legitimately appears there -- the original guard against "null"
-# leaking anywhere in state is narrowed to WINDOW specifically, which is
-# what it was actually protecting against (see the comment above).
-assert_count "$mp_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+null[[:space:]]*$'
+# that identity legitimately appears there -- the original guard against
+# "null" leaking anywhere in state is narrowed to WINDOW specifically,
+# which is what it was actually protecting against (see the comment
+# above).
+assert_count "$mp_state" 1 "^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+${mp_null_id_safe}[[:space:]]*\$"
 assert_count "$mp_state" 0 '^WINDOW.*null'
 
 # The bound bites after malformed_promo_poll_bound consecutive polls: a warm
@@ -1849,12 +1911,12 @@ assert_count "$mp_state" 0 '^WINDOW.*null'
 # back to the valid row and emits exactly one OBSERVATION-DEGRADED naming the
 # malformed row -- so one persistently malformed GitHub row cannot wedge a
 # lane's promotion tracking forever. MALPROMO is pre-seeded to 2, with its
-# detail matching the mock's malformed row id ("null", #1041 remediation
+# detail matching the mock's malformed row identity (#1041 remediation
 # round 4), so the first of these two invocations lands exactly on the
 # bound (3) and the second exceeds it (4).
 bounded_state="$test_tmp/malformed-promo-bounded.state"
-printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s\nMALPROMO\talpha:77\t2\t0\tnull\nWALLCLOCK\trun\t0\t\n' \
-    "$((mp_valid_at + 900))" "${mp_valid_at}:555" >"$bounded_state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s\nMALPROMO\talpha:77\t2\t0\t%s\nWALLCLOCK\trun\t0\t\n' \
+    "$((mp_valid_at + 900))" "${mp_valid_at}:555" "$mp_null_id_safe" >"$bounded_state"
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
 bounded_out1="$test_tmp/malformed-promo-bounded-1.out"
@@ -1865,7 +1927,7 @@ bash "$watcher" --iterations 1 --state-file "$bounded_state" \
     >"$bounded_out1"
 assert_count "$bounded_out1" 0 '^POST-PROMOTION-INDETERMINATE '
 assert_count "$bounded_out1" 0 '^OBSERVATION-DEGRADED '
-assert_count "$bounded_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+3[[:space:]]+0[[:space:]]+null[[:space:]]*$'
+assert_count "$bounded_state" 1 "^MALPROMO[[:space:]]+alpha:77[[:space:]]+3[[:space:]]+0[[:space:]]+${mp_null_id_safe}[[:space:]]*\$"
 
 rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
 printf '%s\n' 2 >"$fixture_dir/pr-count"
@@ -1875,10 +1937,10 @@ bash "$watcher" --iterations 1 --state-file "$bounded_state" \
     --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
     2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
     >"$bounded_out2"
-assert_line "$bounded_out2" 'OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=null on #77'
+assert_line "$bounded_out2" "OBSERVATION-DEGRADED alpha: malformed ready_for_review event id=${mp_null_id_safe} on #77"
 assert_count "$bounded_out2" 1 '^OBSERVATION-DEGRADED '
 assert_count "$bounded_out2" 0 '^POST-PROMOTION-INDETERMINATE '
-assert_count "$bounded_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+4[[:space:]]+1[[:space:]]+null[[:space:]]*$'
+assert_count "$bounded_state" 1 "^MALPROMO[[:space:]]+alpha:77[[:space:]]+4[[:space:]]+1[[:space:]]+${mp_null_id_safe}[[:space:]]*\$"
 assert_count "$bounded_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+$((mp_valid_at + 900))[[:space:]]+${mp_valid_at}:555\$"
 
 # A third consecutive malformed poll, still past the bound, must not
@@ -1936,6 +1998,10 @@ mp2_valid_iso="$(date -u -d "@$mp2_valid_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || 
 touch "$fixture_dir/malformed-promo-events"
 printf '%s\n' "$mp2_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
 printf '%s\n' "$mp2_null_iso" >"$fixture_dir/malformed-promo-null-at"
+# #1041 remediation round 5 (Codex 4055770460): an id-less malformed row's
+# identity is now its own sanitized created_at, not the literal "null" --
+# mirror the production sanitizer here to compute the expected value.
+mp2_null_id_safe="$(printf '%s' "$mp2_null_iso" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
 mp_order_out="$test_tmp/malformed-promo-order.out"
 mp_order_state="$test_tmp/malformed-promo-order.state"
 bash "$watcher" --iterations 1 --state-file "$mp_order_state" \
@@ -1949,7 +2015,159 @@ assert_count "$mp_order_out" 0 '^POST-PROMOTION-INDETERMINATE '
 assert_count "$mp_order_out" 0 '^OBSERVATION-DEGRADED '
 assert_count "$mp_order_state" 0 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+[0-9]+[[:space:]]+${mp2_valid_at}:555\$"
 assert_count "$mp_order_state" 1 "^WINDOW[[:space:]]+alpha[[:space:]]+77[[:space:]]+[0-9]+[[:space:]]*\$"
-assert_count "$mp_order_state" 1 '^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+null[[:space:]]*$'
+assert_count "$mp_order_state" 1 "^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+${mp2_null_id_safe}[[:space:]]*\$"
+
+# Codex 4055770466 (PR #1102, #1041 remediation round 5): poll_activity()
+# must not clear (or record a failure against) an in-progress ACTIVITY
+# DEGRADE episode when resolve_promotion() returns 11 (malformed-row
+# bound, "touch nothing this poll") -- the caller used to treat
+# poll_activity()'s old `return 0` there as an ordinary recovery,
+# resetting a still-genuinely-failing ACTIVITY episode's give-up clock on
+# every unrelated malformed-row hold. Pre-seeds an in-progress, already-due
+# ACTIVITY DEGRADE episode alongside an active window and a malformed row
+# still within its own bound (status 11), and proves the DEGRADE entry
+# survives this poll completely untouched.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+s11_now="$(date -u +%s)"
+s11_valid_at=$((s11_now - 50))
+s11_malformed_at=$((s11_now - 40))
+s11_valid_iso="$(date -u -d "@$s11_valid_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$s11_valid_iso" ] || s11_valid_iso="$(date -u -r "$s11_valid_at" +%Y-%m-%dT%H:%M:%SZ)"
+s11_malformed_iso="$(date -u -d "@$s11_malformed_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$s11_malformed_iso" ] || s11_malformed_iso="$(date -u -r "$s11_malformed_at" +%Y-%m-%dT%H:%M:%SZ)"
+touch "$fixture_dir/malformed-promo-events"
+printf '%s\n' "$s11_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
+printf '%s\n' "$s11_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
+s11_state="$test_tmp/status11-activity.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:555\nDEGRADE\talpha:ACTIVITY\t%s\t1\t1:%s\nWALLCLOCK\trun\t0\t\n' \
+    "$((s11_now + 900))" "$s11_valid_at" "$((s11_now - 100))" "$((s11_now - 10))" \
+    >"$s11_state"
+s11_out="$test_tmp/status11-activity.out"
+bash "$watcher" --iterations 1 --state-file "$s11_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$s11_out"
+rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at" \
+    "$fixture_dir/malformed-promo-null-at"
+assert_count "$s11_out" 0 '^OBSERVATION-DEGRADED '
+assert_count "$s11_out" 0 'GitHub activity observation failed'
+assert_count "$s11_state" 1 "^DEGRADE[[:space:]]+alpha:ACTIVITY[[:space:]]+$((s11_now - 100))[[:space:]]+1[[:space:]]+1:$((s11_now - 10))\$"
+
+# Codex 4055770472 (PR #1102, #1041 remediation round 5): observation_ready()
+# compares its persisted next-retry time against `now`, so refreshing `now`
+# only AFTER already deciding an endpoint was "ready" left that decision
+# itself evaluated against a stale, pre-refresh `now` whenever an earlier
+# bounded call in the same poll had already consumed real wall-clock time.
+# Stubs PR discovery's own `gh pr list` call to take ~3 real seconds (the
+# existing hang-pr-list fixture) while an ACTIVITY retry is due only 1
+# second into the poll -- not yet due at the very start, but comfortably
+# due by the time PR discovery's own slow call returns. Proves the retry
+# is still recognized and acted on THIS SAME poll (the ACTIVITY DEGRADE
+# episode is recovered) rather than silently deferred a full
+# --interval-seconds because it was judged against a stale `now`.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+slow_now="$(date -u +%s)"
+slow_state="$test_tmp/slow-observation-ready.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:555\nDEGRADE\talpha:ACTIVITY\t%s\t1\t1:%s\nWALLCLOCK\trun\t0\t\n' \
+    "$((slow_now + 900))" "$((slow_now - 50))" "$((slow_now - 100))" "$((slow_now + 1))" \
+    >"$slow_state"
+touch "$fixture_dir/hang-pr-list"
+slow_out="$test_tmp/slow-observation-ready.out"
+bash "$watcher" --iterations 1 --state-file "$slow_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 5 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$slow_out"
+rm "$fixture_dir/hang-pr-list"
+assert_count "$slow_state" 0 '^DEGRADE[[:space:]]+alpha:ACTIVITY'
+
+# Gemini 4055704932 / 4055704941 (PR #1102, #1041 remediation round 5): a
+# corrupted or hand-edited state file can carry non-digit garbage in a
+# numeric field, not merely an empty one -- proves this no longer breaks
+# arithmetic/`-eq` and instead sanitizes safely. A valid, in-window
+# first_failure paired with garbage notified/attempt fields folds the
+# garbage fields to their safe default (0) without touching the valid
+# first_failure.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+touch "$fixture_dir/fail-branch-alpha-pr-list"
+sanitize_now="$(date -u +%s)"
+sanitize_degrade_state="$test_tmp/sanitize-degrade.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nDEGRADE\talpha:PR\t%s\tabc\txyz:%s\nWALLCLOCK\trun\t0\t\n' \
+    "$((sanitize_now - 100))" "$((sanitize_now - 10))" \
+    >"$sanitize_degrade_state"
+sanitize_degrade_out="$test_tmp/sanitize-degrade.out"
+sanitize_degrade_err="$test_tmp/sanitize-degrade.err"
+bash "$watcher" --iterations 1 --state-file "$sanitize_degrade_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --degrade-window-seconds 600 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$sanitize_degrade_out" 2>"$sanitize_degrade_err"
+rm "$fixture_dir/fail-branch-alpha-pr-list"
+assert_count "$sanitize_degrade_err" 0 'integer expression expected'
+assert_count "$sanitize_degrade_err" 0 'syntax error'
+assert_line "$sanitize_degrade_out" 'OBSERVATION-DEGRADED alpha: GitHub PR observation failed for lane alpha'
+assert_count "$sanitize_degrade_state" 1 "^DEGRADE[[:space:]]+alpha:PR[[:space:]]+$((sanitize_now - 100))[[:space:]]+1[[:space:]]+1:[0-9]+\$"
+
+# Same finding: a corrupted (non-numeric) first_failure specifically --
+# unlike notified/attempt, 0 is not its safe default (see the comment in
+# observation_record_failure()), so it must fold into the SAME cold-start
+# path an absent entry already takes, restarting a fresh episode from
+# `now` rather than crashing or computing a nonsensical window age.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+touch "$fixture_dir/fail-branch-alpha-pr-list"
+sanitize2_state="$test_tmp/sanitize-degrade-firstfailure.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nDEGRADE\talpha:PR\tnotanumber\t1\t3:%s\nWALLCLOCK\trun\t0\t\n' \
+    "$((sanitize_now - 10))" \
+    >"$sanitize2_state"
+sanitize2_out="$test_tmp/sanitize-degrade-firstfailure.out"
+sanitize2_err="$test_tmp/sanitize-degrade-firstfailure.err"
+bash "$watcher" --iterations 1 --state-file "$sanitize2_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --degrade-window-seconds 600 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$sanitize2_out" 2>"$sanitize2_err"
+rm "$fixture_dir/fail-branch-alpha-pr-list"
+assert_count "$sanitize2_err" 0 'integer expression expected'
+assert_count "$sanitize2_err" 0 'syntax error'
+assert_line "$sanitize2_out" 'OBSERVATION-DEGRADED alpha: GitHub PR observation failed for lane alpha'
+assert_count "$sanitize2_state" 1 "^DEGRADE[[:space:]]+alpha:PR[[:space:]]+[0-9]+[[:space:]]+1[[:space:]]+1:[0-9]+\$"
+assert_count "$sanitize2_state" 0 '^DEGRADE[[:space:]]+alpha:PR[[:space:]]+notanumber'
+
+# Same finding, MALPROMO's count/notified fields: garbage in both, with a
+# detail already matching this poll's malformed row (so the row-id check
+# does not itself force a reset), must not break the bound arithmetic.
+rm -f "$fixture_dir/pr-count" "$fixture_dir/phase"
+printf '%s\n' 2 >"$fixture_dir/pr-count"
+sanitize_malpromo_now="$(date -u +%s)"
+sanitize_malpromo_valid_at=$((sanitize_malpromo_now - 50))
+sanitize_malpromo_malformed_at=$((sanitize_malpromo_now - 40))
+sanitize_malpromo_valid_iso="$(date -u -d "@$sanitize_malpromo_valid_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$sanitize_malpromo_valid_iso" ] || sanitize_malpromo_valid_iso="$(date -u -r "$sanitize_malpromo_valid_at" +%Y-%m-%dT%H:%M:%SZ)"
+sanitize_malpromo_malformed_iso="$(date -u -d "@$sanitize_malpromo_malformed_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+[ -n "$sanitize_malpromo_malformed_iso" ] || sanitize_malpromo_malformed_iso="$(date -u -r "$sanitize_malpromo_malformed_at" +%Y-%m-%dT%H:%M:%SZ)"
+sanitize_malpromo_id_safe="$(printf '%s' "$sanitize_malpromo_malformed_iso" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
+touch "$fixture_dir/malformed-promo-events"
+printf '%s\n' "$sanitize_malpromo_valid_iso" >"$fixture_dir/malformed-promo-valid-at"
+printf '%s\n' "$sanitize_malpromo_malformed_iso" >"$fixture_dir/malformed-promo-null-at"
+sanitize_malpromo_state="$test_tmp/sanitize-malpromo.state"
+printf 'PR\talpha\t#77 draft=false OPEN head=aaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t\nWINDOW\talpha\t77\t%s\t%s:555\nMALPROMO\talpha:77\tgarbage\tgarbage\t%s\nWALLCLOCK\trun\t0\t\n' \
+    "$((sanitize_malpromo_now + 900))" "$sanitize_malpromo_valid_at" "$sanitize_malpromo_id_safe" \
+    >"$sanitize_malpromo_state"
+sanitize_malpromo_out="$test_tmp/sanitize-malpromo.out"
+sanitize_malpromo_err="$test_tmp/sanitize-malpromo.err"
+bash "$watcher" --iterations 1 --state-file "$sanitize_malpromo_state" \
+    --registry "$registry" --workspace-root "$workspace_root" \
+    --interval-seconds 1 --post-promotion-seconds 900 --timeout-seconds 1 \
+    2099-01-01T00:00:00Z alpha:branch-alpha:n1:evanharmon1/harmon-devkit \
+    >"$sanitize_malpromo_out" 2>"$sanitize_malpromo_err"
+rm "$fixture_dir/malformed-promo-events" "$fixture_dir/malformed-promo-valid-at" \
+    "$fixture_dir/malformed-promo-null-at"
+assert_count "$sanitize_malpromo_err" 0 'integer expression expected'
+assert_count "$sanitize_malpromo_out" 0 '^OBSERVATION-DEGRADED '
+assert_count "$sanitize_malpromo_state" 1 "^MALPROMO[[:space:]]+alpha:77[[:space:]]+1[[:space:]]+0[[:space:]]+${sanitize_malpromo_id_safe}[[:space:]]*\$"
 
 # #1041 challenge r1 finding codex-2 (adapted from Codex's own extracted-
 # function repro): a VALID, NEWER promotion must never be silently dropped
@@ -2029,7 +2247,9 @@ if grep -Ev '^(AGENT [^:]+: [^ ]+ -> [^ ]+|SENTINEL [^:]+: LANE-[A-Z0-9-]+-(READ
     "$codex2_out" "$codex3_out" \
     "$bounded_out1" "$bounded_out2" "$bounded_out3" \
     "$ordering_out1" "$ordering_out2" \
-    "$reprom_out1" "$reprom_out2" "$reprom_out3" "$reprom_out4" \
+    "$reprom_out1" "$reprom_out2" "$reprom_out3" "$reprom_out4" "$reprom_out5" "$reprom_out6" \
+    "$s11_out" "$slow_out" \
+    "$sanitize_degrade_out" "$sanitize2_out" "$sanitize_malpromo_out" \
     "$transient_out" "$restart_dedup_out" "$midepisode_out" "$multilane_out" \
     "$degrade_empty_extra_out" "$malpromo_empty_extra_out" \
     "$github_failure_out" "$activity_failure_out" "$malformed_activity_out" \

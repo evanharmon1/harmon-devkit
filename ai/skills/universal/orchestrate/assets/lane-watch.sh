@@ -426,12 +426,26 @@ observation_record_failure() {
     [ "$now" -lt "$deadline" ] || return 1
     local first_failure notified detail_raw attempt delay cap
     first_failure="$(state_get DEGRADE "$key" || true)"
+    # Gemini 4055704932 / 4055704941 (PR #1102, #1041 remediation round 5):
+    # a numeric field read back from a corrupted or hand-edited state file
+    # can carry non-digit garbage, which the arithmetic and `-eq` tests
+    # below would reject with a hard error rather than the "absent" case
+    # the existing empty-string guards already handle safely. A corrupted
+    # (non-empty, non-numeric) first_failure is folded into the SAME
+    # empty-string branch just below, not reset to 0 -- unlike the other
+    # numeric fields in this function (and in resolve_promotion()'s
+    # MALPROMO fields), 0 is not first_failure's safe default: it is a
+    # real epoch, and forcing every corrupted read to it would make the
+    # episode look decades old and immediately exceed the give-up window.
+    # Treating corruption as "no prior episode" instead restarts a fresh
+    # backoff cleanly, exactly as an absent entry already does.
+    case "$first_failure" in *[!0-9]*) first_failure= ;; esac
     # Gemini review (PR #1102): state_get can succeed with an empty string
     # (an existing entry whose field itself is stored empty), which `||`
     # never catches since that only fires on FAILURE -- an unguarded empty
     # string then fails the `-eq` integer test below. Default explicitly.
     notified="$(state_get DEGRADE "$key" extra || true)"
-    [ -n "$notified" ] || notified=0
+    case "$notified" in '' | *[!0-9]*) notified=0 ;; esac
     detail_raw="$(state_get DEGRADE "$key" detail || true)"
     # Gemini review: a pure parameter expansion avoids the here-string's
     # extra process substitution for extracting just the leading field.
@@ -441,7 +455,7 @@ observation_record_failure() {
         notified=0
         attempt=0
     fi
-    [ -n "$attempt" ] || attempt=0
+    case "$attempt" in '' | *[!0-9]*) attempt=0 ;; esac
     if [ "${notified:-0}" -eq 0 ]; then
         echo "OBSERVATION-DEGRADED $lane: $detail"
         notified=1
@@ -662,7 +676,17 @@ poll_activity() {
         # window" handling here was the bug: it could close a stale,
         # already-expired window using its stale identity while this valid,
         # newer promotion sat unused right here, silently dropping it.
-        return 0
+        #
+        # Codex 4055770466 (PR #1102, #1041 remediation round 5): "touch
+        # nothing" must also cover the ACTIVITY episode this function was
+        # called under -- returning 0 (ordinary success) here made the
+        # caller call observation_recover("$lane:ACTIVITY"), clearing a
+        # still-genuinely-failing ACTIVITY episode's give-up clock even
+        # though this poll never attempted (or resolved) any ACTIVITY read
+        # at all. Propagating 11 outward, mirroring resolve_promotion()'s
+        # own vocabulary, lets the caller distinguish "touch nothing" from
+        # a real recovery.
+        return 11
     fi
     if [ "$promotion_status" -eq 10 ]; then
         if [ "$cold_start" -eq 1 ]; then
@@ -855,6 +879,20 @@ promotion_epoch() {
     # ready_for_review row malformed, or none present) still falls through
     # to the plain indeterminate result below -- there is no valid fallback
     # to bound towards, so that case is unaffected and unbounded, as before.
+    # Codex 4055770460 (PR #1102, #1041 remediation round 5): round 4 keyed
+    # each MALPROMO episode by the malformed row's id, but two gaps left
+    # that fix incomplete. First, $malformed[0] is just the first malformed
+    # row in array order, not the newest -- a withdraw-then-re-promote that
+    # appends a new malformed row while an older one is still present in
+    # the same payload could keep selecting the stale row instead of the
+    # one that actually matters now. Second, every id-less row resolves the
+    # SAME literal identity ("null"), so a withdraw-then-re-promote onto
+    # ANOTHER id-less malformed row was still indistinguishable from the
+    # one before it. Selecting the malformed row with the latest created_at
+    # (mirroring the $valid tie-break just above) fixes the first; falling
+    # back to that row's own created_at as the identity substitute when its
+    # id is null fixes the second, since two id-less rows created at
+    # different times now carry different identities.
     resolution="$(jq -r '
       (if (.[0]? | type) == "array" then add else . end) as $all
       | ($all | map(select(.event == "ready_for_review"))) as $promotions
@@ -866,7 +904,8 @@ promotion_epoch() {
           ($valid | map(.created_at | fromdateiso8601) | max) as $max_epoch
           | ($valid | map(select((.created_at | fromdateiso8601) == $max_epoch)) | max_by(.id)) as $latest
           | (($malformed | length) > 0) as $has_malformed
-          | (if $has_malformed then $malformed[0].id else "" end) as $malformed_id
+          | (if $has_malformed then ($malformed | max_by(.created_at | fromdateiso8601)) else null end) as $newest_malformed
+          | (if $has_malformed then (if $newest_malformed.id != null then $newest_malformed.id else $newest_malformed.created_at end) else "" end) as $malformed_id
           | "\($max_epoch)\t\($latest.id)\t\($has_malformed)\t\($malformed_id)"
         end
     ' <<<"$payload" 2>/dev/null)" || return 1
@@ -944,10 +983,16 @@ resolve_promotion() {
     # (an existing entry whose field itself is stored empty), which `||`
     # never catches since that only fires on FAILURE -- an unguarded empty
     # string then breaks the arithmetic and integer comparisons below.
+    # Gemini 4055704932 / 4055704941 (#1041 remediation round 5): a
+    # corrupted or hand-edited state file can also carry non-digit
+    # garbage rather than merely empty fields -- 0 is already the correct
+    # default for both of these (an absent/corrupted count means "no
+    # polls yet", an absent/corrupted notified means "not yet notified"),
+    # so a non-numeric value is folded into the same default.
     malpromo_count="$(state_get MALPROMO "$malpromo_key" || true)"
-    [ -n "$malpromo_count" ] || malpromo_count=0
+    case "$malpromo_count" in '' | *[!0-9]*) malpromo_count=0 ;; esac
     malpromo_notified="$(state_get MALPROMO "$malpromo_key" extra || true)"
-    [ -n "$malpromo_notified" ] || malpromo_notified=0
+    case "$malpromo_notified" in '' | *[!0-9]*) malpromo_notified=0 ;; esac
     # Codex 4055549763 (PR #1102): this episode used to be keyed by
     # lane+PR only, so a withdraw-then-re-promote onto a DIFFERENT
     # malformed row (a new, unrelated ready_for_review event that also
@@ -1225,8 +1270,19 @@ while true; do
         # resolve_promotion()'s poll bound) must be computed against the
         # time at its own read, not a poll-start time that has already
         # drifted behind it.
+        #
+        # Codex 4055770472 (PR #1102, #1041 remediation round 5): that
+        # refresh must land BEFORE each observation_ready() call below, not
+        # after -- observation_ready() itself compares its persisted
+        # next-retry time against `now`, so refreshing only once a call was
+        # already judged "ready" left the READINESS DECISION ITSELF
+        # evaluated against a stale, earlier `now`. A retry due right at
+        # that boundary could read as not-yet-due for this whole poll
+        # iteration, silently delaying it by a full --interval-seconds. The
+        # one refresh immediately before each observation_ready() call now
+        # serves both that gate and the endpoint's own bounded call.
+        now="$(date -u +%s)"
         if observation_ready "$lane:PR"; then
-            now="$(date -u +%s)"
             if pr="$(discover_pr "$repo" "$branch")"; then
                 observation_recover "$lane:PR"
                 observe_pr "$lane" "$pr" "$now"
@@ -1251,11 +1307,11 @@ while true; do
                 else
                     observation_recover "$lane:ACTIVITY"
                 fi
+                # Fresh read for this endpoint's own observation_ready()
+                # gate and bounded call -- see the Codex 4055770472 comment
+                # above the PR-endpoint refresh.
+                now="$(date -u +%s)"
                 if [ -z "$active_pr" ] && observation_ready "$lane:REPROMO"; then
-                    # Fresh read for this endpoint's own bounded call -- see
-                    # the review-r1-codex-verification-4 comment above the
-                    # PR-endpoint refresh.
-                    now="$(date -u +%s)"
                     if check_repromotion_after_close "$lane" "$repo" "$pr" "$now"; then
                         observation_recover "$lane:REPROMO"
                         active_pr="$(state_get WINDOW "$lane" || true)"
@@ -1264,14 +1320,22 @@ while true; do
                             observation_failed "GitHub promotion-identity observation failed for lane $lane"
                     fi
                 fi
+                # Fresh read for this endpoint's own observation_ready()
+                # gate and bounded call -- see the Codex 4055770472 comment
+                # above the PR-endpoint refresh.
+                now="$(date -u +%s)"
                 if [ -n "$active_pr" ] && observation_ready "$lane:ACTIVITY"; then
-                    # Fresh read for this endpoint's own bounded call -- see
-                    # the review-r1-codex-verification-4 comment above the
-                    # PR-endpoint refresh.
-                    now="$(date -u +%s)"
-                    if poll_activity "$lane" "$repo" "$active_pr" "$now"; then
+                    poll_activity "$lane" "$repo" "$active_pr" "$now"
+                    poll_activity_status=$?
+                    if [ "$poll_activity_status" -eq 0 ]; then
                         observation_recover "$lane:ACTIVITY"
-                    else
+                    elif [ "$poll_activity_status" -ne 11 ]; then
+                        # Codex 4055770466: status 11 means poll_activity()
+                        # itself touched nothing this poll (see its own
+                        # comment) -- neither recovering nor recording a
+                        # failure here preserves that, so an ongoing
+                        # ACTIVITY DEGRADE episode's give-up clock is never
+                        # reset by an unrelated malformed-row hold.
                         observation_record_failure "$lane:ACTIVITY" "$lane" "GitHub activity observation failed for lane $lane" ||
                             observation_failed "GitHub activity observation failed for lane $lane"
                     fi
