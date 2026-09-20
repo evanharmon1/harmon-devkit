@@ -884,9 +884,16 @@ review_decision="$(jq -r '.reviewDecision // ""' <<<"$scalars")"
 # `behind-base` and follows one recipe. `merge-state-behind` stays after it as
 # the cache backstop; reaching it now means the cache says BEHIND while the
 # graph says 0, which is cache lag in the other direction.
-establish_behind "$scalars" "before evaluating"
-[ "$behind_by" -eq 0 ] ||
-    fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — merge the base into the branch, re-verify, push once, and run one fresh current-head cycle (SKILL.md, 'Base reconciliation')"
+# CHECK only. `audit` judges a promotion that already happened, and the base is
+# not this repository's to hold still — a PR drifting behind after a correct
+# promotion is ordinary, and the remedy is the maintainer's "Update branch".
+# Failing audit on it would route a valid human handoff into §2's undo branch
+# and reverse it, which is exactly what this skill's one-way-door rule forbids.
+if [ "$require_draft" = 1 ]; then
+    establish_behind "$scalars" "before evaluating"
+    [ "$behind_by" -eq 0 ] ||
+        fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — merge the base into the branch, re-verify, push once, and run one fresh current-head cycle (SKILL.md, 'Base reconciliation')"
+fi
 
 merge_state="$(jq -r '.mergeStateStatus // ""' <<<"$scalars")"
 case "$merge_state" in
@@ -897,7 +904,7 @@ BEHIND)
     # it is already level with — which creates no commit, so there is nothing
     # to push or re-review and the same blocker reproduces forever. It is
     # unknown-for-now: re-poll, never promote on it.
-    indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref} — the cache is lagging; re-poll briefly"
+    indeterminate merge-state-stale "mergeStateStatus still reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is still computing mergeability — re-poll briefly"
@@ -1495,17 +1502,19 @@ jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
 # exists to stop making.
 # A retarget mid-gate invalidates every condition already evaluated against
 # the old base, so stop rather than re-deriving against a moving target.
-recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")" ||
-    indeterminate malformed-data "PR payload carries no base branch name (immediately before the verdict)"
-[ "$recheck_base" = "$behind_base_ref" ] ||
-    fail_condition base-retargeted "the PR base changed from ${behind_base_ref} to ${recheck_base} while the gate was reading — re-run against the new base"
-establish_behind "$recheck" "immediately before the verdict"
-[ "$behind_by" -eq 0 ] ||
-    fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — reconcile and re-run (SKILL.md, 'Base reconciliation')"
+if [ "$require_draft" = 1 ]; then
+    recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")" ||
+        indeterminate malformed-data "PR payload carries no base branch name (immediately before the verdict)"
+    [ "$recheck_base" = "$behind_base_ref" ] ||
+        fail_condition base-retargeted "the PR base changed from ${behind_base_ref} to ${recheck_base} while the gate was reading — re-run against the new base"
+    establish_behind "$recheck" "immediately before the verdict"
+    [ "$behind_by" -eq 0 ] ||
+        fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — reconcile and re-run (SKILL.md, 'Base reconciliation')"
+fi
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
 BEHIND)
-    indeterminate merge-state-stale "mergeStateStatus reads BEHIND while the commit graph reports 0 behind ${behind_base_ref} — the cache is lagging; re-poll briefly"
+    indeterminate merge-state-stale "mergeStateStatus reads BEHIND while the commit graph reports 0 behind ${behind_base_ref:-the base} — the cache is lagging; re-poll briefly"
     ;;
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is recomputing mergeability — re-poll briefly"

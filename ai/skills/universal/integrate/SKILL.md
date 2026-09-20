@@ -1278,7 +1278,13 @@ needing their own procedure:
 
 - With no remediation budget left, reconciliation is the **blocked stop** with
   a report naming the unreconciled base — never a push anyway, and never a
-  promotion on a behind head.
+  promotion on a behind head. **The last remediation push is reserved the same
+  way the last cycle is**: before making a push that may be the final one,
+  preflight `behind` and fold the base merge into that same push. Deferring it
+  spends the last round on the fix alone and then needs a round that no longer
+  exists — with `remediation = 1`, a behind head and one confirmed finding,
+  merging and fixing together costs one round while doing them in sequence
+  costs two and ends blocked.
 - The merge moves the head, so it owes a fresh current-head cycle exactly as
   any head move does. **The last permitted cycle is therefore reserved for the
   reconciled head**: before dispatching it, run
@@ -1310,6 +1316,13 @@ once at the start. Undoing a promotion because the base moved afterwards is
 **not** the remedy: promotion is a one-way door (`gh pr ready --undo` cannot
 unsend the notifications), and § "Unexplained promotion" already refuses
 reflexive undos.
+
+This is enforced rather than merely stated: the behind checks run in `check`
+mode only. `audit` judges a promotion that already happened, so a behind head
+there is ordinary drift — and had audit failed on it, § "Unexplained
+promotion"'s *Otherwise* branch would have routed a perfectly valid human
+handoff into an undo. A promoted PR that has fallen behind is reported to the
+maintainer, never reversed by this session.
 
 ## 6. Stop conditions
 

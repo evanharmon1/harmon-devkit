@@ -623,6 +623,10 @@ assert_skill "the executable preflight for the reserved cycle" \
     "readiness-gate.sh behind --repo <repo> --pr <n>"
 assert_skill "promotion staying a one-way door when the base moves after it" \
     "Undoing a promotion because the base moved afterwards is **not** the remedy"
+assert_skill "the behind checks being check-mode only, so audit cannot trigger an undo" \
+    "behind checks run in \`check\` mode only"
+assert_skill "the last remediation push reserved like the last cycle" \
+    "last remediation push is reserved the same way the last cycle is"
 assert_skill "the cap-0 integration carve-out" \
     "integration cap is 0 no cloud cycle is owed"
 assert_skill "the overriding never-ready-when-behind invariant" \
@@ -681,6 +685,31 @@ run_gate
 assert_gate 1 fail base-retargeted
 grep -Fq 'release/2.0' <<<"$gate_out" ||
     fail "retarget case did not name the new base ref: $gate_out"
+
+echo "==> audit does NOT fail a behind head (post-promotion drift is not an undo)"
+# Had audit failed here, SKILL.md's unexplained-promotion "Otherwise" branch
+# would route a perfectly valid human handoff into `gh pr ready --undo`,
+# reversing it because the base moved afterwards. Ordinary drift, not a defect.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:9,ahead_by:1,status:"diverged"}' >"${fixtures}/compare.json"
+run_gate_audit() {
+    set +e
+    gate_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" audit \
+        --repo example/repo --pr 493 --head "$head_sha" \
+        --record "$record_dir" \
+        --integrator-result "${fixtures}/integrator-result-disabled.json" \
+        --integration-cap 0 --remediation-cap 4 "$@" 2>&1)"
+    gate_rc=$?
+    set -e
+}
+run_gate_audit
+[ "$gate_rc" -eq 0 ] ||
+    fail "audit failed on a behind head (rc $gate_rc) — this routes a valid promotion to an undo: $gate_out"
 
 echo "==> the gate emits no stray output before its own argument parsing"
 # A header-comment edit once dropped its leading `#`, leaving an executable
