@@ -182,7 +182,13 @@ for target_skill in "$skill" ai/skills/universal/implement/SKILL.md; do
         fail "$target_skill does not cite AGENTS.md § Who decides, and what is delegated"
     grep -Fq 'Readiness gate' "$target_skill" ||
         fail "$target_skill does not cite AGENTS.md § Readiness gate"
+    grep -Fq '0 never opens' "$target_skill" ||
+        fail "$target_skill does not state the zero-cap confidence-stage rule"
+    grep -Fq 'resolved integration cap is 0' "$target_skill" ||
+        fail "$target_skill does not state the cap-0 integration exception"
 done
+grep -Fq 'for an active dev-flow-v2 run, the run record' ai/skills/universal/implement/SKILL.md ||
+    fail "implement skill does not condition the run-record requirement on an active v2 run"
 entry_gate_line="$(grep -n '^## Entry gate$' "$skill" | cut -d: -f1)"
 dispatch_line="$(grep -n '^## Dispatch and receipt$' "$skill" | cut -d: -f1)"
 [ -n "$entry_gate_line" ] && [ -n "$dispatch_line" ] && [ "$entry_gate_line" -lt "$dispatch_line" ] ||

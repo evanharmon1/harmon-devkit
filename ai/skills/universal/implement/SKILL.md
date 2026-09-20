@@ -329,9 +329,13 @@ gate. Follow the repo's own adjudication contract; the shape it is usually in:
   Concurrent rounds are invalid for exit purposes (findings are still
   adjudicated, but concurrent rounds cannot satisfy an exit condition); review
   begins only after challenge has legitimately exited.
-- **Stage exit rules**: per `AGENTS.md` § "Loop cap and exit", a confidence stage
-  ends on an adjudicated outcome, never on "findings fixed" alone. There are three
-  valid exit rules:
+- **Stage exit rules**: per `AGENTS.md` § "Loop cap and exit", a stage whose
+  resolved cap is **0 never opens**: zero rounds run, there is nothing of its
+  own to adjudicate, and none of the three exits below is what closed it — it was
+  never open, and every deterministic gate and adjudication obligation elsewhere
+  is unaffected. For a stage whose cap is 1 or more, the stage ends on an
+  adjudicated outcome, never on "findings fixed" alone. There are three valid exit
+  rules:
   1. **Two consecutive clean rounds**: two CONSECUTIVE rounds each adjudicating
      to zero P0 and zero P1 findings (a round with a confirmed P0/P1 is not clean
      regardless of fixes; an all-P2 round counts as clean for this exit but is
@@ -345,7 +349,7 @@ gate. Follow the repo's own adjudication contract; the shape it is usually in:
      the cap, so it ends the stage cleanly. If P0/P1 findings persist at the cap,
      stop and escalate to the maintainer.
 - At stage exit, the specific **exit rule and per-stage round history** must be
-  recorded in the stage ledger and run record.
+  recorded in the stage ledger and, for an active dev-flow-v2 run, the run record.
 - **Round-2 scaffolding checkpoint**: round 2 carries the mandatory checkpoint
   requiring classification of any finding whose subject exists only because an
   earlier round of that same stage added it (delete, restructure to invariant,
@@ -469,7 +473,10 @@ from `AGENTS.md` § Readiness gate: every required check CONCLUDED (pending or a
 empty check list is indeterminate, never a pass). Checks green is a
 non-terminal state (`AGENTS.md` § Policy invariants); bot and human reviews land
 after checks settle, so wait for both signals: every check concluded, and a
-terminal current-head Codex result.
+terminal current-head Codex result (or where the resolved integration cap is 0 —
+a cap of 0 leaves no cloud-review cycle to trigger a fresh `@codex review` from,
+so this one condition drops out; every other condition on the list still applies
+unchanged, per `AGENTS.md` § Readiness gate).
 
 Stop where `/integrate` itself stops: ready-for-review, or one of its own
 blocker conditions (a cap reached, no progress, something only the

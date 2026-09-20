@@ -344,9 +344,13 @@ the script's outcome.
 
 ### Stage exit rules and sequencing
 
-Stage exit is governed by `AGENTS.md` § "Loop cap and exit". A confidence stage
-ends on an adjudicated outcome, never on "findings fixed" alone. The three valid
-exit rules are:
+Stage exit is governed by `AGENTS.md` § "Loop cap and exit". A stage whose
+resolved cap is **0 never opens**: zero rounds run, there is nothing of its
+own to adjudicate, and none of the three exits below is what closed it — it was
+never open, and every deterministic gate and adjudication obligation elsewhere
+is unaffected. For a stage whose cap is 1 or more, the stage ends on an
+adjudicated outcome, never on "findings fixed" alone. The three valid exit rules
+are:
 
 1. **Two consecutive clean rounds**: two CONSECUTIVE rounds each adjudicating to
    zero P0 and zero P1 findings (a round with a confirmed P0/P1 is not clean
@@ -375,7 +379,11 @@ condition); review begins only after challenge has legitimately exited.
 When a terminal `review` exits and hands off towards integration (via `security`
 and draft PR publication), the CI readiness condition from `AGENTS.md` §
 Readiness gate applies: every required check CONCLUDED (pending or an empty
-check list is indeterminate, never a pass).
+check list is indeterminate, never a pass). A terminal current-head Codex
+result is required (or where the resolved integration cap is 0 — a cap of 0
+leaves no cloud-review cycle to trigger a fresh `@codex review` from, so this
+one condition drops out; every other readiness condition still applies
+unchanged).
 
 ### Stage advance write
 
