@@ -354,6 +354,35 @@ indeterminate() {
     exit 2
 }
 
+# Establish how far the head is behind its base FROM THE COMMIT GRAPH, setting
+# $behind_base_ref and $behind_by. `mergeStateStatus` is a lazily recomputed
+# cache: on ponderousdev/omator#758 (2026-09-06 17:40Z) it read CLEAN/MERGEABLE
+# for a head SIXTEEN commits behind main, minutes after two sibling PRs merged.
+# The gate passed, the PR was reported ready, and the maintainer found "Update
+# branch" instead of a merge button — and his click moved the head, invalidating
+# the terminal Codex result the gate had just relied on.
+#
+# The base ref comes from the PR payload passed in, never from a local remote:
+# it must follow a retarget, and a fork's `origin/main` is not this PR's base.
+# A failed or malformed read is INDETERMINATE, never a pass — "I could not
+# establish this" must not read as "this is fine".
+#
+# Sets globals rather than echoing, and must NOT be called through `$(...)`:
+# `indeterminate` exits, and inside a command substitution that would end only
+# the subshell and let the gate carry on with an unset behind_by.
+behind_base_ref=
+behind_by=
+establish_behind() {
+    establish_scalars="$1"
+    establish_phase="$2"
+    behind_base_ref="$(jq -er '.baseRefName | select(type == "string")' <<<"$establish_scalars")" ||
+        indeterminate malformed-data "PR payload carries no base branch name (${establish_phase})"
+    establish_compare="$(run_gh api "repos/${repo}/compare/${behind_base_ref}...${head}")" ||
+        indeterminate behind-base-unknown "cannot compare ${behind_base_ref}...${head} to establish how far behind the head is (${establish_phase})"
+    behind_by="$(jq -er '.behind_by | select(type == "number")' <<<"$establish_compare")" ||
+        indeterminate behind-base-unknown "compare payload carries no numeric behind_by (${establish_phase})"
+}
+
 run_gh() {
     if [ -n "$timeout_bin" ]; then
         "$timeout_bin" -k 1 60 gh "$@"
@@ -809,6 +838,14 @@ review_decision="$(jq -r '.reviewDecision // ""' <<<"$scalars")"
 # deadlocks precisely the repos that comply (evanharmon1/harmon-init#714).
 # Only DIRTY and BEHIND are the caller's to resolve; UNKNOWN means GitHub is
 # still computing mergeability.
+# The TRUTH check runs FIRST, so a head that is genuinely behind always reports
+# `behind-base` and follows one recipe. `merge-state-behind` stays after it as
+# the cache backstop; reaching it now means the cache says BEHIND while the
+# graph says 0, which is cache lag in the other direction.
+establish_behind "$scalars" "before evaluating"
+[ "$behind_by" -eq 0 ] ||
+    fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — merge the base into the branch, re-verify, push once, and run one fresh current-head cycle (SKILL.md, 'Base reconciliation')"
+
 merge_state="$(jq -r '.mergeStateStatus // ""' <<<"$scalars")"
 case "$merge_state" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts with the base branch" ;;
@@ -817,26 +854,6 @@ UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is still computing mergeability — re-poll briefly"
     ;;
 esac
-
-# 5b. Behind-by — the TRUTH check beside the cache check above, and the one
-# that actually gates. `mergeStateStatus` is lazily recomputed: on
-# ponderousdev/omator#758 (2026-09-06 17:40Z) it read CLEAN/MERGEABLE for a head
-# SIXTEEN commits behind main, minutes after two sibling PRs merged. The gate
-# passed, the PR was reported ready, and the maintainer found "Update branch"
-# instead of a merge button — and his click moved the head, invalidating the
-# terminal Codex result the gate had just relied on. "Behind" is a property of
-# the commit graph, so ask the graph: the compare API answers `behind_by`
-# directly. BEHIND above stays as the cheap cache signal; this is the one that
-# is true. A failed or malformed read is indeterminate, never a pass — "I could
-# not establish this" must not read as "this is fine".
-base_ref_name="$(jq -er '.baseRefName | select(type == "string")' <<<"$scalars")" ||
-    indeterminate malformed-data "PR payload carries no base branch name"
-compare_json="$(run_gh api "repos/${repo}/compare/${base_ref_name}...${head}")" ||
-    indeterminate behind-base-unknown "cannot compare ${base_ref_name}...${head} to establish how far behind the head is"
-behind_by="$(jq -er '.behind_by | select(type == "number")' <<<"$compare_json")" ||
-    indeterminate behind-base-unknown "compare payload carries no numeric behind_by"
-[ "$behind_by" -eq 0 ] ||
-    fail_condition behind-base "the head is ${behind_by} commit(s) behind ${base_ref_name} — merge the base into the branch, re-verify, push once, and run one fresh current-head cycle (SKILL.md, 'Base reconciliation')"
 
 # 6. Deferred findings — projected from the record, never parsed from the
 # PR body. The rendered "## Deferred findings" section is a VIEW of
@@ -1407,7 +1424,7 @@ evaluate_checks
 # and mergeability is excluded from the fingerprint by design — this re-read
 # is the only thing that can catch either.
 recheck="$(run_gh pr view "$pr" --repo "$repo" \
-    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus)" ||
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName)" ||
     indeterminate fetch-failed "cannot re-read the PR immediately before the verdict"
 jq -e '.state == "OPEN"' <<<"$recheck" >/dev/null ||
     fail_condition pr-not-open "the PR left the OPEN state while the gate was reading it"
@@ -1422,6 +1439,14 @@ jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
     fail_condition head-moved "PR head changed while the gate was reading it"
 [ "$(jq -r '.reviewDecision // ""' <<<"$recheck")" != "CHANGES_REQUESTED" ] ||
     fail_condition changes-requested "a reviewer requested changes while the gate was reading"
+# Re-establish behind-by from the GRAPH, not just the cache. Gate evaluation is
+# long, and a base that advances (or a retarget) during it leaves a head that
+# was level when checked and is behind by the verdict — caught here only if the
+# cache happens to have caught up, which is the assumption this whole condition
+# exists to stop making.
+establish_behind "$recheck" "immediately before the verdict"
+[ "$behind_by" -eq 0 ] ||
+    fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — reconcile and re-run (SKILL.md, 'Base reconciliation')"
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
 BEHIND) fail_condition merge-state-behind "the base branch advanced while the gate was reading" ;;

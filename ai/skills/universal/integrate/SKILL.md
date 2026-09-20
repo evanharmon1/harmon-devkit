@@ -1240,9 +1240,9 @@ is optional in addition, never a substitute for per-thread replies.
 Three questions, one answer, because getting any of them wrong costs a full
 review cycle.
 
-**Which direction is permitted.** Merging the current remote **default branch
-into the feature branch** is allowed, and is sometimes required before the gate
-can pass. That is not the prohibition elsewhere in this skill: merging the
+**Which direction is permitted.** Merging the PR's own **base branch into the
+feature branch** is allowed, and is sometimes required before the gate can
+pass. That is not the prohibition elsewhere in this skill: merging the
 **feature branch into the default branch** is the merge that is never done
 without per-merge human approval. The two are opposite operations and only the
 second is a merge to `main`. An implementer who refuses the permitted one and
@@ -1263,26 +1263,46 @@ evaluating the readiness gate — and if the base moves again after that, the
 gate's own re-read catches it and you reconcile again, deliberately, rather than
 reflexively.
 
+**Which base.** The PR's own `baseRefName` in the **target** repository —
+never "the default branch" and never a local `origin/main` by habit. A PR can
+target a release branch, and on a fork `origin` is the contributor's copy, so
+`origin/main` may be neither this PR's base nor even the same repository.
+Merging the wrong ref can leave `behind_by` at 0 against the real base while
+importing unrelated commits. The gate reads `baseRefName` for exactly this
+reason, and re-reads it before the verdict so a mid-gate retarget is measured
+against the new base.
+
 **What proves it.** `behind_by`, from the compare API
 (`repos/{repo}/compare/{base}...{head}`) or `git rev-list --count
-origin/<base>..origin/<head>` in a worktree — **never `mergeStateStatus`**.
+<target-remote>/<baseRefName>..<head>` in a worktree —
+**never `mergeStateStatus`**.
 That field is a lazily recomputed cache: on ponderousdev/omator#758 it read
 `CLEAN`/`MERGEABLE` for a head sixteen commits behind `main`. `readiness-gate.sh`
 checks both, and the `behind-base` condition is the one that is true;
 `merge-state-behind` remains as the cheap cache signal beside it.
 
-**The recipe.** When the gate reports `behind-base` (or `merge-state-dirty`):
+**The recipe.** When the gate reports `behind-base`, `merge-state-behind`, or
+`merge-state-dirty` — all three are the same situation and take the same path;
+the gate checks the graph before the cache, so a genuinely behind head reports
+`behind-base` and `merge-state-behind` means only that the cache disagrees:
 
-1. Merge the base into the branch — `git fetch <remote> && git merge
-   <remote>/<base>` — resolving conflicts in the merge commit. Never rebase.
+1. Merge the base into the branch — `git fetch <target-remote> && git merge
+   <target-remote>/<baseRefName>` — resolving conflicts in the merge commit.
+   Never rebase, and never substitute the default branch for the PR's base.
 2. Run the round gate and the secret scan on the merge commit, and push **that
    SHA**, exactly as step 5 prescribes for any other push. A base merge is a
    push like any other; it is not exempt from the gate chain because "nothing
-   of mine changed".
+   of mine changed". **It is a remediation round and it spends remediation
+   budget.** With none left, this is the blocked stop with a report naming the
+   unreconciled base — not a licence to push anyway, and not a reason to
+   promote on a behind head.
 3. Run **one** fresh current-head cycle against the new head, then re-run the
    gate on that head. The merge moved the head, so every result the gate had is
    stale by construction — this is the same obligation any head move carries,
-   not an extra one.
+   not an extra one. **Where the resolved integration cap is 0** there is no
+   cloud cycle to run and none is owed; the gate's Codex condition drops out
+   exactly as it does everywhere else, and you still re-run the gate and still
+   obtain a fresh cap-zero integrator result for the new head.
 
 A PR that is behind is never reported ready. If the base moves *again* while
 this is in flight, that is a new head move and the same three steps apply;

@@ -604,7 +604,13 @@ assert_skill() {
     esac
 }
 assert_skill "the permitted base-into-feature direction" \
-    "**default branch into the feature branch** is allowed"
+    "**base branch into the feature branch** is allowed"
+assert_skill "the base bound to the PR's own baseRefName, not the default branch" \
+    "own \`baseRefName\` in the **target** repository"
+assert_skill "reconciliation spending remediation budget" \
+    "spends remediation budget"
+assert_skill "the cap-0 integration carve-out" \
+    "integration cap is 0** there is no"
 assert_skill "the prohibited feature-into-default direction" \
     "**feature branch into the default branch** is the merge that is never done"
 assert_skill "the no-rebase rule for pushed history" \
@@ -643,6 +649,31 @@ jq -cn --arg head "$head_sha" \
 jq -cn '{behind_by:0,ahead_by:3,status:"ahead"}' >"${fixtures}/compare.json"
 run_gate
 assert_gate 0 pass ready
+
+echo "==> a base that advances DURING the gate fails on the final re-read"
+# The race the single up-front comparison cannot see: level when checked, behind
+# by the verdict. Gate evaluation is long, and the pre-verdict re-read used to
+# consult only mergeStateStatus — the cache this condition exists to distrust —
+# so a lagging cache let the gate pass for a head that had fallen behind.
+write_defaults
+jq -cn '{behind_by:2,ahead_by:3,status:"diverged"}' >"${fixtures}/second-compare.json"
+run_gate
+assert_gate 1 fail behind-base
+
+echo "==> a retarget DURING the gate is compared against the NEW base"
+# baseRefName is re-read with the rest of the pre-verdict scalars, so a PR
+# retargeted mid-gate is measured against where it now points, not where it did.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      baseRefName:"release/2.0"}' \
+    >"${fixtures}/pr-view-second.json"
+jq -cn '{behind_by:7,ahead_by:1,status:"diverged"}' >"${fixtures}/second-compare.json"
+run_gate
+assert_gate 1 fail behind-base
+grep -Fq 'release/2.0' <<<"$gate_out" ||
+    fail "retarget case did not name the NEW base ref: $gate_out"
 
 echo "==> an unreadable compare is indeterminate, never a pass"
 write_defaults
@@ -1468,7 +1499,7 @@ echo "==> a head that moves mid-gate fails as head-moved on the final re-read"
 write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",baseRefName:"main"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail head-moved
@@ -1477,7 +1508,7 @@ echo "==> a promotion mid-gate fails as pr-not-draft on the final re-read"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:false,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",baseRefName:"main"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail pr-not-draft
@@ -2223,7 +2254,7 @@ echo "==> a CHANGES_REQUESTED review landing mid-gate fails on the final re-read
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED"}' \
+      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",baseRefName:"main"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail changes-requested
@@ -2232,7 +2263,7 @@ echo "==> a DIRTY merge state arising mid-gate fails on the final re-read"
 write_defaults
 jq -cn --arg head "$head_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
-      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"DIRTY"}' \
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"DIRTY",baseRefName:"main"}' \
     >"${fixtures}/pr-view-second.json"
 run_gate
 assert_gate 1 fail merge-state-dirty
