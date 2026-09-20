@@ -799,6 +799,31 @@ grep -q '{ label: "Decide", count: ($decisions|length)' "$report" ||
 grep -q '{ label: "Settled"' "$report" ||
     fail "completed work must have its own ribbon segment linking to Completed this run"
 
+echo "==> report: a null verdict renders rather than aborting the run (Greptile on 512358e)"
+null_disp="$tmp/null-verdict.json"
+jq '.dispositions[0].verdict = null | .dispositions[0].priority = null' "$disp" >"$null_disp"
+GROOM_NOW="2026-01-01 00:00 UTC" run "$report" render --dispositions "$null_disp" \
+    --out-html "$tmp/null.html" --out-md "$tmp/null.md" >/dev/null
+[ -s "$tmp/null.html" ] && [ -s "$tmp/null.md" ] ||
+    fail "a null verdict must not abort the render — normalize at the row boundary, not at each use"
+grep -q 'startswith() requires string' "$tmp/err" &&
+    fail "the render must not reach startswith with a non-string verdict"
+
+echo "==> report: every link lands on a section that was rendered"
+python3 - "$out_html" <<'PYEOF' || fail "found an in-page link with no destination"
+import re, sys
+h = open(sys.argv[1]).read()
+ids = set(re.findall(r'id="([^"]+)"', h))
+dead = sorted({t for t in re.findall(r'href="#([^"]+)"', h) if t not in ids})
+if dead:
+    print("dead anchors:", dead, file=sys.stderr)
+sys.exit(1 if dead else 0)
+PYEOF
+
+echo "==> report: a link and its destination are scoped to the same population"
+grep -q 'of the \\(if $unverified_n > 0 then "audited issues" else "backlog" end)' "$report" ||
+    fail "row-derived stat cards must measure against the audited rows they can see"
+
 echo "==> report: render is byte-identical for same input and GROOM_NOW (deterministic)"
 out_html2="$tmp/report2.html"
 out_md2="$tmp/report2.md"

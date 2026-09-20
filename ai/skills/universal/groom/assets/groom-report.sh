@@ -208,7 +208,15 @@ cmd_render() {
       . as $d
       | ($d.dispositions // []
          | map(
-             ($outcomes_map[(.number|tostring)] // {}) as $ops
+             # Normalize the string-typed fields at the boundary rather than at
+             # each use. `join` validates the vocabulary, but a hand-made
+             # dataset with a null verdict otherwise aborts the whole render on
+             # the first `startswith` — and a report renderer must not be the
+             # thing that crashes on its own input.
+             . + {verdict: (.verdict // "" | tostring),
+                  priority: (.priority // "" | tostring),
+                  group: (.group // "" | tostring)}
+             | ($outcomes_map[(.number|tostring)] // {}) as $ops
              | . + {status: (
                  if (.verdict | startswith("CLOSE-")) then ($ops["close"] // .status // "PENDING")
                  elif (.verdict == "NEEDS-DECISION") then ($ops["decision"] // .status // "PENDING")
@@ -489,7 +497,15 @@ cmd_render() {
       . as $d
       | ($d.dispositions // []
          | map(
-             ($outcomes_map[(.number|tostring)] // {}) as $ops
+             # Normalize the string-typed fields at the boundary rather than at
+             # each use. `join` validates the vocabulary, but a hand-made
+             # dataset with a null verdict otherwise aborts the whole render on
+             # the first `startswith` — and a report renderer must not be the
+             # thing that crashes on its own input.
+             . + {verdict: (.verdict // "" | tostring),
+                  priority: (.priority // "" | tostring),
+                  group: (.group // "" | tostring)}
+             | ($outcomes_map[(.number|tostring)] // {}) as $ops
              | . + {status: (
                  if (.verdict | startswith("CLOSE-")) then ($ops["close"] // .status // "PENDING")
                  elif (.verdict == "NEEDS-DECISION") then ($ops["decision"] // .status // "PENDING")
@@ -879,16 +895,20 @@ cmd_render() {
         ([$ribbon[] | select(.count > 0) | "<span style=\"width:\(.count | pct($total))%;background:\(.color)\" title=\"\(.label|h): \(.count)\"></span>"] | join("")),
         "</div>",
         "<div class=\"ribbon-legend\">",
-        ([$ribbon[] | "<a href=\"\(.href)\"><span class=\"swatch\" style=\"background:\(.color)\"></span>\(.label|h) <b>\(.count)</b></a>"] | join("")),
+        ([$ribbon[] | select(.count > 0 or .href != "#unverified") | "<a href=\"\(.href)\"><span class=\"swatch\" style=\"background:\(.color)\"></span>\(.label|h) <b>\(.count)</b></a>"] | join("")),
         "</div>",
         "</div></header>",
         "<main>",
         "<h2 id=\"stats\">Stats</h2>",
         "<div class=\"stats-strip\">",
-        "<a class=\"stat-card\" href=\"#every-issue\" style=\"--rail: var(--accent)\"><div class=\"stat-num\">\($stats.open_total // 0)</div><div class=\"stat-label\">Open issues</div><div class=\"stat-meter\"><i style=\"width:100%\"></i></div><div class=\"stat-foot\">audited this run <span class=\"go\">Every issue →</span></div></a>",
-        "<a class=\"stat-card\" href=\"#close\" style=\"--rail: var(--danger)\"><div class=\"stat-num\">\($close|length)</div><div class=\"stat-label\">Close candidates</div><div class=\"stat-meter\"><i style=\"width:\(($close|length) | pct($total))%\"></i></div><div class=\"stat-foot\">\(($close|length) | pct($total))% of the backlog <span class=\"go\">Close now →</span></div></a>",
-        "<a class=\"stat-card\" href=\"#decisions\" style=\"--rail: var(--info)\"><div class=\"stat-num\">\($decisions|length)</div><div class=\"stat-label\">Decisions needed</div><div class=\"stat-meter\"><i style=\"width:\(($decisions|length) | pct($total))%\"></i></div><div class=\"stat-foot\">\(($decisions|length) | pct($total))% of the backlog <span class=\"go\">Decisions →</span></div></a>",
-        "<a class=\"stat-card\" href=\"#chart-priority\" style=\"--rail: var(--warn)\"><div class=\"stat-num\">\($stats.high_priority // 0)</div><div class=\"stat-label\">High priority</div><div class=\"stat-meter\"><i style=\"width:\(($stats.high_priority // 0) | pct($total))%\"></i></div><div class=\"stat-foot\">\(($stats.high_priority // 0) | pct($total))% of the backlog <span class=\"go\">Priority mix →</span></div></a>",
+        (if $unverified_n > 0 then
+           "<a class=\"stat-card\" href=\"#unverified\" style=\"--rail: var(--accent)\"><div class=\"stat-num\">\($total)</div><div class=\"stat-label\">Open issues</div><div class=\"stat-meter\"><i style=\"width:\($audited | pct($total))%\"></i></div><div class=\"stat-foot\">\($audited) audited · \($unverified_n) unverified <span class=\"go\">Unverified →</span></div></a>"
+         else
+           "<a class=\"stat-card\" href=\"#every-issue\" style=\"--rail: var(--accent)\"><div class=\"stat-num\">\($total)</div><div class=\"stat-label\">Open issues</div><div class=\"stat-meter\"><i style=\"width:100%\"></i></div><div class=\"stat-foot\">audited this run <span class=\"go\">Every issue →</span></div></a>"
+         end),
+        "<a class=\"stat-card\" href=\"#close\" style=\"--rail: var(--danger)\"><div class=\"stat-num\">\($close|length)</div><div class=\"stat-label\">Close candidates</div><div class=\"stat-meter\"><i style=\"width:\(($close|length) | pct($audited))%\"></i></div><div class=\"stat-foot\">\(($close|length) | pct($audited))% of the \(if $unverified_n > 0 then "audited issues" else "backlog" end) <span class=\"go\">Close now →</span></div></a>",
+        "<a class=\"stat-card\" href=\"#decisions\" style=\"--rail: var(--info)\"><div class=\"stat-num\">\($decisions|length)</div><div class=\"stat-label\">Decisions needed</div><div class=\"stat-meter\"><i style=\"width:\(($decisions|length) | pct($audited))%\"></i></div><div class=\"stat-foot\">\(($decisions|length) | pct($audited))% of the \(if $unverified_n > 0 then "audited issues" else "backlog" end) <span class=\"go\">Decisions →</span></div></a>",
+        "<a class=\"stat-card\" href=\"#chart-priority\" style=\"--rail: var(--warn)\"><div class=\"stat-num\">\($stats.high_priority // 0)</div><div class=\"stat-label\">High priority</div><div class=\"stat-meter\"><i style=\"width:\(($stats.high_priority // 0) | pct($audited))%\"></i></div><div class=\"stat-foot\">\(($stats.high_priority // 0) | pct($audited))% of the \(if $unverified_n > 0 then "audited issues" else "backlog" end) <span class=\"go\">Priority mix →</span></div></a>",
         "<a class=\"stat-card\" href=\"#conformance\" style=\"--rail: var(--ok)\"><div class=\"stat-num is-text\">\($stats.pre_audit_triage // "not run"|h)</div><div class=\"stat-label\">Pre-audit triage</div><div class=\"stat-foot\">label coverage before the audit <span class=\"go\">Conformance →</span></div></a>",
         "</div>",
         "<h2 id=\"visualizations\">Visualizations</h2>",
