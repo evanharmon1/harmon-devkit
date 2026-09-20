@@ -1336,9 +1336,14 @@ given together. `--no-adjudications` (run only) asserts a confirmed-empty
 adjudication history in place of real `--adjudication` files — see
 "`--receipt`: a reduced check is visible, never silent" above; mutually
 exclusive with `--adjudication` (a usage error together). The
-schemas directory defaults to `ai/schemas` resolved **relative to the
-script's own location**, not the caller's working directory, so the
-validator can be invoked from anywhere; override it with the
+schemas directory defaults to the `schemas/` directory **beside the script
+itself** — the `dev-flow-support` package's own vendored copy, which is what
+lets a consumer validate without a separate schema sync
+([#974](https://github.com/evanharmon1/harmon-devkit/issues/974)); this
+authoring tree is its byte-identical source, asserted by
+`task test:schema-parity`. It resolves relative to the script's own location
+rather than the caller's working directory, so the validator can be invoked
+from anywhere; override it with the
 `RESULT_SCHEMAS_DIR` environment variable or, taking precedence over both,
 `--schemas-dir <dir>`. `--receipt` requires every context flag applicable
 to `<kind>` — see "`--receipt`: a reduced check is visible, never silent"

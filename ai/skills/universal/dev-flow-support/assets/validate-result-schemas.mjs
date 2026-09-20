@@ -94,11 +94,14 @@
 //                                 with --adjudication (a usage error).
 //   --schemas-dir <dir>          Directory holding the *.schema.json family.
 //                                 Overrides RESULT_SCHEMAS_DIR, which
-//                                 overrides the default of `ai/schemas`
-//                                 resolved relative to THIS SCRIPT's own
-//                                 location (not the current working
-//                                 directory) — so the validator finds its
-//                                 schemas the same way regardless of the
+//                                 overrides the default of `schemas/`
+//                                 BESIDE THIS SCRIPT — the package's own
+//                                 vendored copy, not a repository-root
+//                                 `ai/schemas` (harmon-devkit#974; see
+//                                 DEFAULT_SCHEMAS_DIR below). Resolved from
+//                                 this script's own location, not the current
+//                                 working directory — so the validator finds
+//                                 its schemas the same way regardless of the
 //                                 caller's cwd.
 //   --receipt                    Require every context flag applicable to
 //                                 this invocation's <kind> (envelope kinds:
