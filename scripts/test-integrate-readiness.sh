@@ -710,6 +710,13 @@ run_gate_audit() {
 run_gate_audit
 [ "$gate_rc" -eq 0 ] ||
     fail "audit failed on a behind head (rc $gate_rc) — this routes a valid promotion to an undo: $gate_out"
+# ...and it must not pass SILENTLY either: a bare `audit` verdict would let §2
+# complete the ready stop for a PR that is in fact behind (review round 2).
+# The third answer: pass, so no undo, but say so, so the caller reports it.
+grep -Fq '"condition":"audit-behind"' <<<"$gate_out" ||
+    fail "audit passed a behind head without flagging the drift: $gate_out"
+grep -Fq '9 commit(s) behind' <<<"$gate_out" ||
+    fail "audit-behind did not report the distance: $gate_out"
 
 # ...and with the CACHE also reporting BEHIND. The case above used BLOCKED and
 # so missed it: scoping only the graph check left the shared cache branch still
@@ -724,6 +731,35 @@ jq -cn --arg head "$head_sha" \
 run_gate_audit
 [ "$gate_rc" -eq 0 ] ||
     fail "audit failed on a cached-BEHIND promoted PR (rc $gate_rc) — post-promotion drift must not reverse a valid handoff: $gate_out"
+
+echo "==> a head that moves DURING the final compare fails as head-moved"
+# The compare is a network call after the pre-verdict scalar read, so without
+# re-binding afterwards the verdict would rest on an identity nothing checked.
+write_defaults
+printf '%s\n' '3' >"${fixtures}/pr-view-count"
+jq -cn --arg head "$moved_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      baseRefName:"main"}' \
+    >"${fixtures}/pr-view-second.json"
+run_gate
+[ "$gate_rc" -ne 0 ] ||
+    fail "a head moving during the final compare was certified: $gate_out"
+
+echo "==> the behind preflight refuses a head that moved while comparing"
+write_defaults
+jq -cn --arg head "$moved_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view-second.json"
+set +e
+preflight_out="$("$watchdog_bin" -k 5 "$watchdog_sec" "$gate" behind \
+    --repo example/repo --pr 493 2>&1)"
+preflight_rc=$?
+set -e
+[ "$preflight_rc" -eq 2 ] ||
+    fail "behind preflight certified a moved head (rc $preflight_rc): $preflight_out"
 
 echo "==> the gate emits no stray output before its own argument parsing"
 # A header-comment edit once dropped its leading `#`, leaving an executable

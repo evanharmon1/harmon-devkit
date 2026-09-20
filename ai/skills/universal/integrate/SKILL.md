@@ -1332,7 +1332,9 @@ that loops indefinitely:
 1. **Ready for human review** — all workflows pass, `reviewDecision` is not
    `CHANGES_REQUESTED`, the head is **0 commits behind its base** (`behind_by`,
    not `mergeStateStatus`, which is a cache that has read `CLEAN` for a head
-   sixteen commits behind) and `mergeStateStatus` is not `DIRTY`
+   sixteen commits behind), `mergeStateStatus` is not `DIRTY`, and it is
+   neither `UNKNOWN` nor — with the graph reporting 0 — still `BEHIND`, both
+   of which are *unknown-for-now* and re-polled rather than promoted on
    (conflicts and an out-of-date head are yours to resolve — see "Base
    reconciliation" at the end of step 5; a merge with the base plus
    re-verification is a round), and no findings remain

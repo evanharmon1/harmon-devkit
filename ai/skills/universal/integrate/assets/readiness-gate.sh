@@ -532,6 +532,14 @@ if [ "$command_name" = behind ]; then
     head="$(jq -er '.headRefOid | select(type == "string")' <<<"$behind_scalars")" ||
         indeterminate malformed-data "PR payload carries no head commit"
     establish_behind "$behind_scalars" "preflight"
+    # Same binding the gate does: a push or retarget during the comparison
+    # would otherwise let this report `level` for a head that no longer
+    # exists, and the caller spends its reserved cycle on the wrong one.
+    behind_after="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
+        indeterminate fetch-failed "cannot confirm PR identity after the comparison"
+    jq -e --arg h "$head" --arg b "$behind_base_ref" \
+        '.headRefOid == $h and .baseRefName == $b' <<<"$behind_after" >/dev/null ||
+        indeterminate behind-base-unknown "the PR head or base moved while comparing — re-run the preflight"
     if [ "$behind_by" -eq 0 ]; then
         jq -cn --arg base "$behind_base_ref" --arg head "$head" \
             '{status:"level",behind_by:0,base:$base,head:$head}'
@@ -889,11 +897,19 @@ review_decision="$(jq -r '.reviewDecision // ""' <<<"$scalars")"
 # promotion is ordinary, and the remedy is the maintainer's "Update branch".
 # Failing audit on it would route a valid human handoff into §2's undo branch
 # and reverse it, which is exactly what this skill's one-way-door rule forbids.
+establish_behind "$scalars" "before evaluating"
 if [ "$require_draft" = 1 ]; then
-    establish_behind "$scalars" "before evaluating"
     [ "$behind_by" -eq 0 ] ||
         fail_condition behind-base "the head is ${behind_by} commit(s) behind ${behind_base_ref} — merge the base into the branch, re-verify, push once, and run one fresh current-head cycle (SKILL.md, 'Base reconciliation')"
 fi
+# AUDIT needs a THIRD answer, because the two obvious ones are both wrong.
+# Failing routes §2's unexplained-promotion flow to its undo path and reverses
+# a valid handoff over ordinary drift (review round 1). Passing silently lets
+# that flow complete the ready stop for a PR that IS behind (review round 2).
+# So audit passes — no undo — but says so in the verdict, and the caller
+# reports the drift to the maintainer instead of acting on it.
+audit_behind=0
+[ "$require_draft" = 1 ] || [ "$behind_by" -eq 0 ] || audit_behind="$behind_by"
 
 merge_state="$(jq -r '.mergeStateStatus // ""' <<<"$scalars")"
 case "$merge_state" in
@@ -1516,6 +1532,17 @@ if [ "$require_draft" = 1 ]; then
     establish_behind "$recheck" "immediately before the verdict"
     [ "$behind_by" -eq 0 ] ||
         fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — reconcile and re-run (SKILL.md, 'Base reconciliation')"
+    # The compare above is a network call, so make the gate's LAST call a
+    # scalar read again: a push or retarget during it would otherwise leave the
+    # verdict resting on an identity nothing re-checked. This is bounded, not
+    # an infinite regress — the residual window belongs to the caller, which
+    # re-reads headRefOid immediately before `gh pr ready` by contract.
+    final="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
+        indeterminate fetch-failed "cannot confirm PR identity after the final comparison"
+    jq -e --arg head "$head" '.headRefOid == $head' <<<"$final" >/dev/null ||
+        fail_condition head-moved "PR head changed while the gate was comparing against the base"
+    jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/null ||
+        fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"
 fi
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
@@ -1532,6 +1559,9 @@ esac
 if [ "$require_draft" = 1 ]; then
     verdict_condition=ready
     verdict_detail="every mechanically checkable readiness condition holds"
+elif [ "$audit_behind" -ne 0 ]; then
+    verdict_condition=audit-behind
+    verdict_detail="every mechanically checkable condition except the draft requirement holds, but the head is ${audit_behind} commit(s) behind ${behind_base_ref} — ordinary post-promotion drift: REPORT it to the maintainer, never undo the promotion over it"
 else
     verdict_condition=audit
     verdict_detail="every mechanically checkable condition except the draft requirement holds; this audits an existing promotion and never authorizes gh pr ready"
