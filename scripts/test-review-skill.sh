@@ -172,10 +172,12 @@ echo "==> stage-exit, sequencing, and CI-concluded rules are stated at the point
 for target_skill in "$skill" ai/skills/universal/implement/SKILL.md; do
     grep -qiE 'two consecutive' "$target_skill" ||
         fail "$target_skill does not state the two-consecutive exit rule"
-    grep -qiE 'concluded' "$target_skill" ||
-        fail "$target_skill does not state the CI-concluded readiness rule"
+    grep -qiE 'concluded successfully' "$target_skill" ||
+        fail "$target_skill does not state the CI-concluded successfully readiness rule"
     grep -qiE 'concurrent rounds are invalid for exit' "$target_skill" ||
         fail "$target_skill does not state the sequencing rule forbidding concurrent exit rounds"
+    grep -Fq 'resolved cap is 0 and the stage never opened' "$target_skill" ||
+        fail "$target_skill does not state the cap-0 challenge sequencing exception"
     grep -Fq 'Loop cap and exit' "$target_skill" ||
         fail "$target_skill does not cite AGENTS.md § Loop cap and exit"
     grep -Fq 'Who decides, and what is delegated' "$target_skill" ||
