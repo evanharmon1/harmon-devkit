@@ -10569,15 +10569,25 @@ expect_ok "AC5: the package carries its own schemas copy" \
 # correctly exit non-zero with a usage error. What matters is WHICH failure:
 # a usage message means the program loaded and resolved its whole dependency
 # closure; ERR_MODULE_NOT_FOUND, "No such file", or "not found" is exactly the
-# #974 defect, and each is rejected by name below.
+# #974 defect, and each is rejected by name below — as are Node's parse and
+# runtime errors, which mean the asset never ran at all.
 run_vendored() {
     local desc="$1" script="$2"
     shift 2
     local out
-    out="$( (cd "$AC5_CON" && "$@" "$script" 2>&1))" || true
+    out="$(cd "$AC5_CON" && "$@" "$script" 2>&1)" || true
     case "$out" in
     *ERR_MODULE_NOT_FOUND* | *"Cannot find module"* | *"No such file"* | *"not found"* | *"is missing"*)
         bad "$desc (unresolved dependency: $(printf '%s' "$out" | head -1))"
+        return
+        ;;
+    # Node parse and runtime errors (Gemini review thread 4056904247): an asset
+    # that throws SyntaxError, TypeError or ReferenceError did not run, but its
+    # message names none of the dependency substrings above, so without these
+    # it scored a pass. That is the hole challenge-r4-codex-adversarial-4
+    # reproduced with an `.mjs` containing only `const = ;`.
+    *SyntaxError* | *TypeError* | *ReferenceError*)
+        bad "$desc (did not run: $(printf '%s' "$out" | head -1))"
         return
         ;;
     esac
