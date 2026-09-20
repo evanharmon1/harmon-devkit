@@ -9,14 +9,16 @@
 # decisive condition, and the full-pass fixture asserts the fingerprint is
 # printed and stable. gh is stubbed on PATH; nothing talks to the network.
 #
-# The gate is NOT fully hermetic any more: it resolves scripts/render-dev-
-# flow.sh and scripts/validate-result-schemas.mjs from the checkout's own
-# `git rev-parse --show-toplevel`, so those two run for REAL against the
-# record/integrator-result fixtures this file builds, rather than being
-# stubbed. That is deliberate — it proves the integration, not just that the
-# gate calls the right command name — and it is why `gate` below is called
-# directly from its real path rather than a copied sibling: there is no more
-# sibling-helper resolution left to control by copying.
+# The gate is NOT fully hermetic any more: it resolves render-dev-flow.sh and
+# validate-result-schemas.mjs from the sibling `dev-flow-support` skill package
+# (`$script_dir/../../dev-flow-support/assets`, harmon-devkit#974 — it used to
+# reach for the checkout's `git rev-parse --show-toplevel`), so those two run
+# for REAL against the record/integrator-result fixtures this file builds,
+# rather than being stubbed. That is deliberate — it proves the integration,
+# not just that the gate calls the right command name — and it is why `gate`
+# below is called directly from its real path: a copy of the gate resolves its
+# helpers relative to WHERE IT WAS COPIED, so any copied-gate fixture has to
+# reproduce the package layout around it (see recheck_dir below, which does).
 
 set -euo pipefail
 
@@ -25,7 +27,7 @@ assets="${repo_root}/ai/skills/universal/integrate/assets"
 gate="${assets}/readiness-gate.sh"
 ghro="${assets}/gh-ro.sh"
 ghwb="${assets}/gh-write-broker.sh"
-validator="${repo_root}/scripts/validate-result-schemas.mjs"
+validator="${repo_root}/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
 test_tmp="$(mktemp -d -t integrate-readiness-test-XXXXXX)"
 trap 'rm -rf "$test_tmp"' EXIT
 
@@ -492,8 +494,16 @@ run_audit() {
 # (scripts/test-integrate-codex.sh owns that coverage; this file only proves
 # the wiring). The stub is #!/bin/sh with no external calls, so it execs
 # correctly even under the restricted-PATH fixture further down.
-recheck_dir="${test_tmp}/recheck-gate"
-mkdir -p "$recheck_dir"
+# The copy must sit in a real skills layout, not a bare directory: since
+# harmon-devkit#974 the gate resolves its shared helpers as
+# `$script_dir/../../dev-flow-support/assets/...`, so a copy dropped anywhere
+# else cannot find them. Reproducing the vendored shape here is the point —
+# it is the same two-levels-up hop a consumer's `.claude/skills/` tree has.
+recheck_root="${test_tmp}/recheck-gate"
+recheck_dir="${recheck_root}/integrate/assets"
+mkdir -p "$recheck_dir" "${recheck_root}/dev-flow-support"
+ln -s "${repo_root}/ai/skills/universal/dev-flow-support/assets" \
+    "${recheck_root}/dev-flow-support/assets"
 cp "$gate" "${recheck_dir}/readiness-gate.sh"
 chmod +x "${recheck_dir}/readiness-gate.sh"
 cat >"${recheck_dir}/check-codex-cloud-review.sh" <<'STUB'
@@ -2205,8 +2215,8 @@ clean_result="$(write_integrator_result timeout-fallback "$(codex_cycle_json 0)"
 restricted_bin="${test_tmp}/restricted-bin"
 mkdir -p "$restricted_bin"
 # node, git, and gitleaks are required now (node for schema validation, git
-# to locate scripts/render-dev-flow.sh from the checkout's own toplevel,
-# gitleaks because render-dev-flow.mjs secret-scans every projection it
+# because the record projections are derived from the checkout, gitleaks
+# because render-dev-flow.mjs secret-scans every projection it
 # renders, unconditionally, before printing it), on top of the original
 # minimal toolset this fixture restricts PATH to. `rm` joined them with
 # harmon-devkit#685, when the gate started materializing the run's

@@ -4,14 +4,15 @@
 # Taskfile target slugs" / "Gate authority separates policy from branch
 # implementation"; openspec/changes/dev-flow-v2/specs/config/spec.md).
 #
-# This is the SUCCESSOR to ai/skills/universal/gauntlet/assets/push-round.sh
+# This is the SUCCESSOR to gauntlet/assets/push-round.sh
 # for repositories that have migrated `.devflow.toml` to schema_version = 2.
 # That older helper is untouched and stays legacy-only (its own gauntlet
 # procedure never resolves policy at all); this script instead:
 #
 #   1. re-derives the merge-base diff class (docs-only vs. code) from the
 #      diff itself, never from a caller's assertion;
-#   2. resolves `[gates]` and `docs_only_paths` via scripts/devflow-policy.mjs
+#   2. resolves `[gates]` and `docs_only_paths` via dev-flow-support's
+#      devflow-policy.mjs
 #      against a CLOSURE the caller has already materialized outside the
 #      feature worktree (git show/git archive <merge-base>:<path>) — this
 #      script never resolves a worktree-resident policy, registry, or
@@ -164,10 +165,11 @@ push additionally requires:
     always run with replace refs disabled — see GIT_NO_REPLACE_OBJECTS
     near the top of this file) before any of them is read for any other
     purpose; devflow-policy.mjs's
-    own transitive dependency scripts/lib/toml-lite.mjs (resolved the same
+    own transitive dependency lib/toml-lite.mjs (resolved the same
     way Node resolves it, relative to --devflow-policy-script's own
-    directory) is verified the same way, before policy resolution ever
-    runs;
+    directory, and checked against the matching directory at
+    --closure-base) is verified the same way, before policy resolution
+    ever runs;
   - the required Taskfile target for the recomputed diff class (round_code
     or round_docs) to exit 0 when this script runs it itself, from the
     feature worktree, inheriting this script's own stdout/stderr — there
@@ -634,7 +636,7 @@ required_target_for() {
 # directly, needing no materialized closure directory of its own.
 #
 # Residual, documented limitation: this verifies only the files this
-# script is directly handed a path for. scripts/lib/toml-lite.mjs (an
+# script is directly handed a path for. lib/toml-lite.mjs (an
 # ES-module-relative import of devflow-policy.mjs) and scripts/
 # summarize-gitleaks.mjs (a script-relative import of gitleaks-scan.sh) are
 # not independently checked — tampering with those specifically is not
@@ -666,6 +668,34 @@ verify_closure_member() {
         refuse "could not read ${canonical_path} from --closure-base (${closure_base})"
     cmp -s "$closure_verify_tmp" "$caller_path" ||
         refuse "${caller_path} does not match ${canonical_path} at --closure-base (${closure_base}) — the closure's provenance could not be verified"
+}
+
+# resolve_closure_canonical CANDIDATE... — the repository path a closure member
+# lives at is not the same in every tree this broker runs against
+# (harmon-devkit#974): the dev-flow v2 reader is a vendored skill asset now, a
+# consumer's flattened `.claude/skills/` tree puts it somewhere else again, and
+# a --closure-base that predates the relocation still has it under `scripts/`.
+# So the CANONICAL path is resolved against --closure-base itself — the first
+# candidate that commit actually carries wins, in the fixed order given, and
+# the resolution is therefore deterministic.
+#
+# This widens WHERE the trusted blob may sit; it never widens WHOSE blob
+# counts. Every candidate is read out of --closure-base with the same
+# `git show`, so a feature branch cannot introduce one: adding a candidate
+# path to the branch changes nothing here, because the branch's tree is never
+# consulted. The caller-supplied path is still compared byte for byte against
+# whichever candidate resolved. Prints the resolved canonical path; returns
+# non-zero (printing nothing) when the closure base carries none of them, so
+# the caller refuses rather than silently checking against an absent blob.
+resolve_closure_canonical() {
+    local candidate
+    for candidate in "$@"; do
+        if git_with_args show "${closure_base}:${candidate}" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
 }
 
 # Verifies the closure's own .gitleaksignore — the file gitleaks-scan.sh
@@ -1036,7 +1066,7 @@ esac
 # verified against --closure-base's own git object BEFORE any of it is
 # read for real (Codex review, confirmed — see verify_closure_member's own
 # comment). This now includes devflow-policy.mjs's own transitive
-# dependency scripts/lib/toml-lite.mjs, resolved the same way Node itself
+# dependency lib/toml-lite.mjs, resolved the same way Node itself
 # resolves it (relative to --devflow-policy-script's own directory):
 # disclosing it as an unverified residual limitation was not the same as
 # closing it — it is imported by a fixed relative path, so a caller could
@@ -1052,8 +1082,19 @@ esac
 closure_verify_tmp="$(mktemp)"
 trap 'rm -f "$closure_verify_tmp"' EXIT
 verify_closure_member "$policy" ".devflow.toml"
-verify_closure_member "$devflow_policy_script" "scripts/devflow-policy.mjs"
-verify_closure_member "$(dirname "$devflow_policy_script")/lib/toml-lite.mjs" "scripts/lib/toml-lite.mjs"
+devflow_policy_canonical="$(resolve_closure_canonical \
+    "ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs" \
+    ".claude/skills/dev-flow-support/assets/devflow-policy.mjs" \
+    ".agents/skills/dev-flow-support/assets/devflow-policy.mjs" \
+    "scripts/devflow-policy.mjs")" ||
+    refuse "--closure-base (${closure_base}) carries devflow-policy.mjs at none of the known canonical paths (ai/skills/universal/dev-flow-support/assets/, .claude/skills/dev-flow-support/assets/, .agents/skills/dev-flow-support/assets/, scripts/) — its provenance cannot be verified"
+verify_closure_member "$devflow_policy_script" "$devflow_policy_canonical"
+# toml-lite.mjs is derived from whichever canonical path resolved, on BOTH
+# sides: Node resolves the import relative to the entrypoint's own directory,
+# so the closure blob it is checked against must come from the matching
+# directory at --closure-base rather than a fixed `scripts/lib/` guess.
+verify_closure_member "$(dirname "$devflow_policy_script")/lib/toml-lite.mjs" \
+    "$(dirname "$devflow_policy_canonical")/lib/toml-lite.mjs"
 [ -z "$registry" ] || verify_closure_member "$registry" "agent-registry.json"
 rm -f "$closure_verify_tmp"
 

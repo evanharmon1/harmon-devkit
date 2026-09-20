@@ -10,7 +10,7 @@ description: >-
 
 Perform exactly one configured review finder pass. Return only one complete
 `result.reviewer` envelope. Before handoff, validate that full document with
-`scripts/validate-result-schemas.mjs envelope ... --receipt`; this composes
+`dev-flow-support/assets/validate-result-schemas.mjs envelope ... --receipt`; this composes
 `ai/schemas/result.envelope.schema.json` for the envelope with
 `ai/schemas/result.reviewer.schema.json` for its payload and enforces the
 supplied run context. Validating the full envelope directly as a reviewer
@@ -20,6 +20,11 @@ against the supplied design record and complete validated finding records from
 all earlier rounds of this same stage before asserting each finding's
 provenance and fingerprint. Batch incremental prose P2s in one pass rather
 than manufacturing a pass per wording tweak.
+
+This file is an agent, not a skill, so the shorthand above does not resolve
+from any cwd on its own: resolve `$DEV_FLOW_SUPPORT` per "Resolving the assets
+from an agent file" in `dev-flow-support`'s `SKILL.md` (harmon-devkit#974), then
+run `"$DEV_FLOW_SUPPORT/validate-result-schemas.mjs" envelope ... --receipt`.
 
 Do not write outside the returned result. Do not modify code, commit, push,
 post, adjudicate a finding, or decide whether review exits.

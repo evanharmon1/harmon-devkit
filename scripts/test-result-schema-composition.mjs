@@ -5,7 +5,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { createSchemaValidator } from './lib/json-schema-subset.mjs'
+// The subset validator moved into the dev-flow-support skill package with the
+// rest of the v2 runtime (harmon-devkit#974); this root-side composition test
+// still validates the authoring schemas, so it imports the one implementation
+// from its new home rather than keeping a second copy under scripts/lib/.
+import { createSchemaValidator } from '../ai/skills/universal/dev-flow-support/assets/lib/json-schema-subset.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const schemaDir = path.join(repo, 'ai', 'schemas')

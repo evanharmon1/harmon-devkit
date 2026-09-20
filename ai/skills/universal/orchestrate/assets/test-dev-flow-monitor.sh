@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-dev-flow-monitor.sh — regression tests for dev-flow-monitor.sh trust
+# ai/skills/universal/orchestrate/assets/test-dev-flow-monitor.sh — regression tests for ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh trust
 # contract alignment: integer actor ID comparison, per-reservation governing
 # revision resolution, and fail-closed behavior on absent/malformed inputs.
 # Refs #780, #741.
@@ -103,7 +103,7 @@ update_origin_registry() {
     git -C "$repo" fetch -q origin
 }
 
-echo "=== dev-flow-monitor.sh trust contract tests ==="
+echo "=== ai/skills/universal/orchestrate/assets/dev-flow-monitor.sh trust contract tests ==="
 
 # ── Test 1: Integer allowlist acceptance ──────────────────────────
 echo ""

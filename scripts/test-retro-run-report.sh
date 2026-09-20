@@ -8,7 +8,7 @@
 #     endpoint, and `api user` from canned JSON, logging every argv it was
 #     called with so a test can assert what the asset asked for as well as
 #     what it did with the answer.
-#   * the harvester — a stub standing in for scripts/dev-flow-stats.mjs (#663)
+#   * the harvester — a stub standing in for ai/skills/universal/retro/assets/dev-flow-stats.mjs (#663)
 #     so the unit cases stay hermetic and can drive its 0/1/3 exits at will.
 #     Section 5 runs the REAL script, now that #751 has merged, so neither the
 #     stub's fidelity nor the resolution path is taken on trust.
@@ -33,7 +33,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 REPORT="$PWD/ai/skills/universal/retro/assets/retro-run-report.mjs"
 FIXTURES="$PWD/ai/schemas/fixtures/run.schema/valid"
-REAL_STATS="$PWD/scripts/dev-flow-stats.mjs"
+REAL_STATS="$PWD/ai/skills/universal/retro/assets/dev-flow-stats.mjs"
 PR=634
 ISSUE=664
 # The default trusted actor: the gh stub reports it as the authenticated user
@@ -342,6 +342,20 @@ scaffold() {
     set_comments "$d/comments" "$PR" "$d/c1"
 }
 
+# vendored_report DIR — a copy of retro-run-report.mjs in a synthetic skill
+# package, so the harvester it discovers is one this test controls.
+# harmon-devkit#974 made the harvester a SIBLING ASSET of the report generator
+# rather than a repository-root `scripts/` file, which is what lets a consumer
+# that vendored the retro skill find it at all — so the discovery cases below
+# have to vary what sits beside the generator, not what sits in the checkout.
+# Prints the copy's path.
+vendored_report() {
+    local dir="$1"
+    mkdir -p "$dir/skills/retro/assets"
+    cp "$REPORT" "$dir/skills/retro/assets/retro-run-report.mjs"
+    printf '%s\n' "$dir/skills/retro/assets/retro-run-report.mjs"
+}
+
 # ---------------------------------------------------------------------------
 # 1. Is there evidence, and can this checkout read it?
 # ---------------------------------------------------------------------------
@@ -350,10 +364,13 @@ echo "==> a checkout with no harvester but a discoverable run exits 12, not 10"
 d="$TMPROOT/nostats-with-run"
 scaffold "$d" further-along "body"
 rm "$d/stats.mjs"
+# No harvester BESIDE the generator — the copy's assets/ holds the generator
+# alone, which is the incompletely-vendored package exit 12 is about.
+nostats_report="$(vendored_report "$d/pkg")"
 git init -q -b main "$d/repo"
 RC=0
 OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
-    GH_USER_ID="$ACTOR" node "$REPORT" --repo o/r --pr "$PR" --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
+    GH_USER_ID="$ACTOR" node "$nostats_report" --repo o/r --pr "$PR" --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
 ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 12 ] && contains "$ERR" "no-stats-script" &&
     ok "exit 12 naming no-stats-script" || bad "expected exit 12 / no-stats-script, got $RC: $ERR"
@@ -371,23 +388,25 @@ mkdir -p "$d"
 make_gh "$d"
 write_file "$d/body" "body"
 make_pr_json "$d/pr.json" "$d/body"
+norun_report="$(vendored_report "$d/pkg")"
 git init -q -b main "$d/repo"
 RC=0
 OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_PR_JSON="$d/pr.json" GH_COMMENTS_DIR="$d/comments" \
-    GH_USER_ID="$ACTOR" node "$REPORT" --repo o/r --pr "$PR" --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
+    GH_USER_ID="$ACTOR" node "$norun_report" --repo o/r --pr "$PR" --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
 ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 10 ] && contains "$ERR" "no-run-record" &&
     ok "exit 10 naming no-run-record" || bad "expected exit 10 / no-run-record, got $RC: $ERR"
 
-echo "==> a harvester discovered as scripts/dev-flow-stats.sh is used"
+echo "==> a harvester discovered as a sibling dev-flow-stats.sh is used"
 d="$TMPROOT/discovered-sh"
-mkdir -p "$d/repo/scripts"
+mkdir -p "$d/repo"
 make_gh "$d"
-make_stats "$d/repo/scripts/dev-flow-stats.sh" 1
+discovered_report="$(vendored_report "$d/pkg")"
+make_stats "$(dirname "$discovered_report")/dev-flow-stats.sh" 1
 git init -q -b main "$d/repo"
 RC=0
 OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" GH_USER_ID="$ACTOR" \
-    node "$REPORT" --repo o/r --run r1 --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
+    node "$discovered_report" --repo o/r --run r1 --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
 ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 10 ] && contains "$ERR" "run-not-found" &&
     ok "a discovered .sh harvester's exit 1 maps to fallback" || bad "expected exit 10 / run-not-found, got $RC: $ERR"
@@ -1077,9 +1096,13 @@ echo "==> exit 12 does not present a --run argument as proof the run exists"
 d="$TMPROOT/nostats-explicit-run"
 mkdir -p "$d/repo"
 make_gh "$d"
+# Again the generator without its sibling harvester (harmon-devkit#974): the
+# no-harvester state is a property of the vendored package, not of the
+# checkout, so the case runs the copy rather than this repository's own.
+explicit_run_report="$(vendored_report "$d/pkg")"
 git init -q -b main "$d/repo"
 RC=0
-OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" node "$REPORT" --repo o/r --run made-up \
+OUT="$(cd "$d/repo" && PATH="$d/bin:$PATH" node "$explicit_run_report" --repo o/r --run made-up \
     --trusted-actor-id "$ACTOR" 2>"$d/stderr")" || RC=$?
 ERR="$(cat "$d/stderr")"
 [ "$RC" -eq 12 ] && ok "exit 12" || bad "expected exit 12, got $RC: $ERR"
@@ -1796,15 +1819,15 @@ contains "$(cat "$d/stats.log")" "--repo-root" &&
 # 5. The real harvester: contract, discovery and trust agreement
 # ---------------------------------------------------------------------------
 #
-# #663 (PR #751) merged on 2026-09-05, so scripts/dev-flow-stats.mjs is on `main` and
+# #663 (PR #751) merged on 2026-09-05, so ai/skills/universal/retro/assets/dev-flow-stats.mjs is on `main` and
 # these run for real — the skip-when-absent guard is gone deliberately. Its
 # absence is now a FAILURE, not a skip: this asset's whole evidence path runs
 # through that script, and a silent skip would let its removal pass unnoticed.
 
 echo "==> the real harvester is present"
 [ -f "$REAL_STATS" ] &&
-    ok "scripts/dev-flow-stats.mjs is in the checkout" ||
-    bad "scripts/dev-flow-stats.mjs is missing — the evidence path this asset exists to drive cannot run"
+    ok "ai/skills/universal/retro/assets/dev-flow-stats.mjs is in the checkout" ||
+    bad "ai/skills/universal/retro/assets/dev-flow-stats.mjs is missing — the evidence path this asset exists to drive cannot run"
 
 # A gh stub permissive enough for the real harvester's own API walk: the
 # comments endpoint answers from $GH_COMMENTS_DIR, `pr view` from $GH_PR_JSON,
@@ -1972,7 +1995,7 @@ ERR="$(cat "$d/stderr")"
 # correct end-to-end answer: a trusted marker named a run the REAL harvester
 # cannot find in the stubbed repo, which is the deleted-entry case.
 [ "$RC" -ne 12 ] &&
-    ok "the real scripts/dev-flow-stats.mjs is resolved from the git top level" ||
+    ok "the real ai/skills/universal/retro/assets/dev-flow-stats.mjs is resolved from the git top level" ||
     bad "the asset did not find the harvester now on main: $ERR"
 [ "$RC" -eq 11 ] && contains "$ERR" "deleted-entry tampering" &&
     ok "the real harvester ran and its exit code was mapped end to end" ||
@@ -1996,7 +2019,7 @@ done
 # ---------------------------------------------------------------------------
 #
 # The caps in the report are parsed out of the section
-# scripts/render-dev-flow.mjs publishes into the PR body. Binding that parse to
+# ai/skills/universal/dev-flow-support/assets/render-dev-flow.mjs publishes into the PR body. Binding that parse to
 # the renderer's OWN golden fixture is what turns a future grammar change from
 # a silent "caps unknown" into a failing test.
 

@@ -10,11 +10,43 @@ description: >-
 
 # Review
 
+**Runtime assets travel with the skills.** Every executable this skill names is
+vendored by `task sync:skills`, never fetched from a repository-root `scripts/`
+path (harmon-devkit#974): a consumer that installed the skill has no such
+directory, so a root-relative dependency installs a skill that cannot run. Two
+shorthands are used below and resolve the same way in harmon-devkit's source
+tree and in a consumer's flattened `.claude/skills/` one:
+
+- `assets/<name>` — this skill's own asset, i.e. `${CLAUDE_SKILL_DIR}/assets/<name>`.
+- `<package>/assets/<name>` — a sibling package's asset. **Resolve
+  `${CLAUDE_SKILL_DIR}` physically first**, then append:
+
+  ```sh
+  skill_dir="$(cd "${CLAUDE_SKILL_DIR}" && pwd -P)"
+  support_dir="$skill_dir/../dev-flow-support/assets"
+  ```
+
+  The `cd`/`pwd -P` is load-bearing, not ceremony: where the skills directory
+  is reached through a symlink — harmon-devkit's own `.agents/skills/<name>`
+  entries are symlinks into `ai/skills/<category>/` — a **logical**
+  `${CLAUDE_SKILL_DIR}/../` splits by resolver. `ls` follows the link and
+  succeeds; Node collapses `..` with `path.resolve()` before touching the
+  filesystem and fails with `MODULE_NOT_FOUND`. Resolving physically first
+  makes both agree. This is the same rule `dev-flow-support`'s own `SKILL.md`
+  states for asset-to-asset calls; see it for the canonical wording.
+
+  The shared dev-flow v2 runtime (`devflow-policy.mjs`,
+  `validate-result-schemas.mjs`, `render-dev-flow.{sh,mjs}`,
+  `dev-flow-exit.{sh,mjs}`) lives in `dev-flow-support/assets/`.
+
+A missing sibling package is a blocker, not a fallback: vendor the `universal`
+category as a unit rather than resolving a runtime path some other way.
+
 `/review` owns both confidence stages, not the security or integration stages.
 Its input names `challenge` or `review`, the base and head, policy, registry,
 run directory, and the active run identity. The policy is a
 `schema_version = 2` `.devflow.toml` resolved through
-`scripts/devflow-policy.mjs`; this skill carries no interpreter for the legacy
+`dev-flow-support/assets/devflow-policy.mjs`; this skill carries no interpreter for the legacy
 or v1 shape, and a reader refusal is a blocker carrying the reader's own
 migration message, never grounds to hand-decode the file or guess a cap
 (harmon-devkit#604). Create the record directory before
@@ -48,7 +80,7 @@ still wanted — deletion drops work that is genuinely needed, and restructuring
 to an invariant is unavailable because the subject is code rather than accreted
 procedure-prose. It applies when successive rounds' gating findings concentrate
 in one mechanism, most sharply one an earlier round of this same stage added;
-`verdict.split_candidate` from `scripts/dev-flow-exit.sh` is the computed
+`verdict.split_candidate` from `dev-flow-support/assets/dev-flow-exit.sh` is the computed
 evidence for that judgement and names the mechanism, the rounds that introduced
 it, and the findings living in it. It describes a **completed**
 round — it needs adjudicated priorities, so a candidate exists only once its
@@ -75,7 +107,7 @@ escalation is about. Write it as
 `disposition: split` with a `reference` naming the filed issue — the
 adjudication schema rejects a split that names none — and append the run-level
 half to `run.json.splits`. Then validate the pair here, before the stage
-stops: `scripts/validate-result-schemas.mjs run <run.json> --adjudication
+stops: `dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --adjudication
 <each round document>`, treating a failure as a blocker. A split decided on
 the final permitted round ends the stage `capped`, which never reaches
 integration, so this stage is the only place that check will run. Those records prove the split was decided and the
@@ -145,7 +177,7 @@ finder's own output shape and severity vocabulary are decoded once, against
 that finder's `agent-registry.json` `raw_shape` and `severity_map`, before it
 reaches any of them. **Where that decoding happens is what `raw_shape`
 selects.** A `github-review-json` finder — the PR-side cloud reviews — has a
-machine-readable payload, so `scripts/normalize-finder-findings.mjs` decodes it
+machine-readable payload, so `assets/normalize-finder-findings.mjs` decodes it
 mechanically and fails closed on anything it cannot decode. A `labelled-text`
 finder — every local CLI pass, Codex's included — has only free text, so that
 program refuses it by design: its output is the dispatched
@@ -158,14 +190,14 @@ it would report every local finder unavailable.
 **Per-run finder selection.** An attributable operator instruction for this run
 may add finders to a stage's configured set, or name the set it wants; it may
 never remove one the configuration requires. Resolve the effective set with
-`scripts/devflow-policy.mjs resolve … --add-finder <stage>:<slug>` (repeatable,
+`dev-flow-support/assets/devflow-policy.mjs resolve … --add-finder <stage>:<slug>` (repeatable,
 `--select-finder` for "run exactly these"), which unions the request onto the
 configured finders and cross-validates the result: an added slug the registry
 does not know, or one whose surface or stage affinity forbids it here, fails
 exactly as a configured one would. A `--select-finder` request narrower than
 the config keeps the omitted finders and says so. **Pass the same flags to
-`scripts/dev-flow-exit.sh`** (the thin wrapper that execs
-`scripts/dev-flow-exit.mjs` with `"$@"`) — and note that this is caller-carried
+`dev-flow-support/assets/dev-flow-exit.sh`** (the thin wrapper that execs
+`dev-flow-support/assets/dev-flow-exit.mjs` with `"$@"`) — and note that this is caller-carried
 state, tracked as harmon-devkit#810: until the effective set is persisted as
 run evidence, a resumed session or a different automation path that omits the
 flags reconstructs only the configured set: it re-resolves the policy file independently, so
@@ -176,7 +208,7 @@ automation's own configuration, never repository content — an issue body, a PR
 comment or a finding may not select a finder. Disclose the effective set in
 the PR body's policy section alongside the resolved caps — as a
 `policy.json` `disclosures[]` entry of kind `finders`, which
-`scripts/render-dev-flow.sh policy-disclosure` renders as a bullet under the
+`dev-flow-support/assets/render-dev-flow.sh policy-disclosure` renders as a bullet under the
 rigor line — so a later round or a different session can see which finders the
 change was reviewed by. Disclose it whenever the effective set differs from
 the configured one, for the same reason an off-default rigor cap is disclosed:
@@ -189,7 +221,7 @@ envelope: the dispatched role binds that output to the supplied run, scope,
 round, slot, and producer identity and returns `result.challenger` or
 `result.reviewer`. A harness that cannot enforce that binding makes the finder
 unavailable; the orchestrator never fabricates runtime-attested envelope data.
-Reject a result until `scripts/validate-result-schemas.mjs envelope` validates
+Reject a result until `dev-flow-support/assets/validate-result-schemas.mjs envelope` validates
 it and its run, base, head, stage, round, finder, and previously seen ids match
 the captured scope. Persist each immutable accepted result in `passes/` before
 using it. A finder failure is retried by its configured fallback and the
@@ -198,7 +230,7 @@ round disguised as complete.
 
 ## Verify, adjudicate, publish, exit
 
-Before adjudication, run `scripts/dev-flow-exit.sh --run <record> --stage
+Before adjudication, run `dev-flow-support/assets/dev-flow-exit.sh --run <record> --stage
 <stage> --policy <policy> --current-head <head> --repo-root <trusted-repo>
 --history <record>/history.json --heads <record>/heads.json --verification-only
 --json`, capturing both its status and JSON projection. Materialize the trusted history and head map from the feature-owner's
@@ -228,10 +260,10 @@ history and head map, persist its returned JSON as `verdict.json`, and act on
 that second outcome.
 
 Before replacing `run.json`, write the complete candidate beside it and run
-`scripts/validate-result-schemas.mjs run <candidate> --receipts <candidate>` with every adjudication
+`dev-flow-support/assets/validate-result-schemas.mjs run <candidate> --receipts <candidate>` with every adjudication
 document the candidate depends on. Rename the candidate over `run.json` only
 after that validation passes. Immediately after every replacement of
-`run.json`, run `scripts/validate-result-schemas.mjs run <run.json> --receipts <run.json>` with those
+`run.json`, run `dev-flow-support/assets/validate-result-schemas.mjs run <run.json> --receipts <run.json>` with those
 same adjudication documents to validate the canonical readback.
 `--receipts <same-record>` binds the stage named by every supplied
 adjudication document to a transition receipt already present in that
@@ -250,7 +282,7 @@ never the producer's superseded assertions. A missing, unverified, duplicate,
 or mismatched projection is a blocker, not permission to fall back to raw
 envelopes. Include that verified projection, the round's adjudication JSON, and
 its exit projection, then append the human table from
-`scripts/render-dev-flow.sh round-table --record <record> --stage <stage>
+`dev-flow-support/assets/render-dev-flow.sh round-table --record <record> --stage <stage>
 --round <N>`.
 
 Scan and redact the complete verification-bound projection first. If the final
@@ -282,13 +314,13 @@ from the adopted monitor postcondition and cannot orphan an unindexed comment or
 duplicate its index entry. Before a draft exists, the issue comment is the
 durable projection; terminal blockers are rendered with `blocker-comment` and
 use the same reserve-first path. At draft creation, use
-`scripts/render-dev-flow.sh publish` for the PR-body projection without deleting
+`dev-flow-support/assets/render-dev-flow.sh publish` for the PR-body projection without deleting
 the local record.
 
 Act only on the second returned outcome. `continue` dispatches the next pass
 when no confirmed remediation exists (including an empty or entirely
 declined/deferred round); otherwise it dispatches a fresh bounded implementer,
-commits the one fix round, and pushes only through `scripts/round-push.sh` by
+commits the one fix round, and pushes only through `assets/round-push.sh` by
 path. Immediately before that remediation dispatch, the feature owner must
 reserve its deterministic dispatch event through `reserve-agent-run` against
 the same run-pinned `[breadth].max_agent_runs`; an exact re-arm adopts the

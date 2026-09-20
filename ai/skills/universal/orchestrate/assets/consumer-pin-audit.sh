@@ -34,7 +34,7 @@
 #
 # Defaults: --repo-root `.`, --manifest <root>/.skills-sync.yaml,
 # --policy <root>/.devflow.toml, --reader this repository's
-# scripts/devflow-policy.mjs (the shape oracle; the audit never parses TOML
+# ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs (the shape oracle; the audit never parses TOML
 # itself, so there is one implementation of shape detection).
 #
 # Exit codes:
@@ -52,7 +52,7 @@
 #      Advance `source.ref` in the manifest and re-run `task sync:skills`.
 set -euo pipefail
 
-self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 
 # The first harmon-devkit release whose `ai/skills/universal/` ships the Dev
 # flow v2 stage skills. This is the pin-lag boundary, and it is deliberately a
@@ -72,7 +72,7 @@ self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 # `main`, so the first release carrying it is the next one release-please
 # cuts, and the pending release PR is 0.40.0. If release-please cuts a
 # different version, THIS LINE is the only thing to correct:
-# scripts/test-consumer-pin-audit.sh asserts the boundary behaviour relative
+# ai/skills/universal/orchestrate/assets/test-consumer-pin-audit.sh asserts the boundary behaviour relative
 # to this constant, never a hard-coded number.
 #
 # Review round 4, confirmed by reproduction and by git: the previous form was
@@ -165,7 +165,7 @@ assert_sane_name() {
 # case-by-case alternative demonstrably regresses: `mixed` was closed while
 # `unknown` stayed open, a missing managed directory was closed while a
 # missing `SKILL.md` payload stayed open, each fix drawing the next round's
-# finding. `scripts/test-consumer-pin-audit.sh` tests it as a PROPERTY over
+# finding. `ai/skills/universal/orchestrate/assets/test-consumer-pin-audit.sh` tests it as a PROPERTY over
 # every incoherent input rather than as one assertion per case, so a newly
 # discovered incoherent input is a new row in that table, not a new branch here.
 #
@@ -196,7 +196,14 @@ COHERENT_POLICY_SHAPES="v2 v1 legacy absent"
 repo_root="."
 manifest=""
 policy=""
-reader="$self_dir/devflow-policy.mjs"
+# The shape oracle is a sibling PACKAGE's asset, not this skill's own
+# (harmon-devkit#974): `$self_dir/../../dev-flow-support/assets` is the same
+# two-levels-up form track-work/assets/check-issue-metadata.sh uses for
+# issue-title-support, and it lands correctly in harmon-devkit's source tree
+# and in a consumer's flattened .claude/skills/ tree alike. $self_dir is a
+# physical path (pwd -P) so the dogfood symlink tree resolves to the real
+# package rather than `../..` of the link.
+reader="$self_dir/../../dev-flow-support/assets/devflow-policy.mjs"
 as_json=no
 
 while [ "$#" -gt 0 ]; do

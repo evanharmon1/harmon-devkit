@@ -3,9 +3,9 @@
 // the fixed measurement sections of a `/retro` report.
 //
 // A projection, never a second source of truth: every number below is read
-// from the run trajectory `scripts/dev-flow-stats.mjs --run <id> --json`
+// from the run trajectory `dev-flow-stats.mjs --run <id> --json`
 // harvests (issue #663) or from the resolved-policy line the renderer already
-// published into the PR body (`scripts/render-dev-flow.mjs`, issue #637).
+// published into the PR body (`dev-flow-support/assets/render-dev-flow.mjs`, issue #637).
 // Nothing here re-derives a disposition, a cap, or an exit.
 //
 // Usage:
@@ -45,6 +45,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 
 const TOOL = 'retro-run-report'
 const MAX_SYNC_BUFFER_BYTES = 64 * 1024 * 1024
@@ -141,7 +142,7 @@ function parseArgs(argv) {
   return args
 }
 
-// The same grammar scripts/dev-flow-stats.mjs enforces on its own --as-of:
+// The same grammar dev-flow-stats.mjs enforces on its own --as-of:
 // UTC "Z" form only (a timezone-less stamp would parse as LOCAL time, making
 // a "reproducible" cutoff environment-dependent), and calendar-valid, since
 // Date.parse silently NORMALIZES an impossible date like 2026-02-30 into a
@@ -229,7 +230,7 @@ function ghJson(argv) {
 // `gh pr view --json comments`, which returns only the first page: a stage
 // rollup on a busy PR sits well past comment 100, and a discovery that reads
 // only the first page would report "no run record" for a run that plainly has
-// one. Same call shape scripts/dev-flow-stats.mjs uses for the same reason.
+// one. Same call shape dev-flow-stats.mjs uses for the same reason.
 function fetchComments(repo, number, asOf) {
   const pages = ghJson(['api', '--paginate', '--slurp', `repos/${repo}/issues/${number}/comments`])
   const comments = Array.isArray(pages) ? pages.flat() : []
@@ -262,21 +263,27 @@ function repoRoot() {
   }
 }
 
-// The harvester lives in the repository under review, not beside this asset:
-// skills are vendored into consumer repos (flattened, under .agents/skills/),
-// while scripts/dev-flow-stats.mjs is `scripts/`-shipped and may simply not be
-// there. Resolving from the git top level rather than import.meta.url is what
-// makes "the retro skill is vendored but the harvester is not" the ordinary,
-// well-handled case instead of a crash.
+// The harvester is this asset's own SIBLING now (harmon-devkit#974): both ship
+// in the retro skill's `assets/`, so `task sync:skills` vendors them together
+// and the pair cannot arrive half-installed the way a skill-here /
+// repository-root-`scripts/`-there split could. It is therefore resolved from
+// this file's own location rather than from the git top level, which is what
+// makes the harvester findable in a consumer repo at all — a consumer has no
+// `ai/` tree, and the depth from an asset to a repository root differs between
+// harmon-devkit's source layout and a flattened `.claude/skills/` one.
+//
+// The "harvester missing" branch is kept even so: --stats-command still
+// overrides, and a partially-vendored package should say what is absent rather
+// than throw.
+const ASSET_DIR = path.dirname(fileURLToPath(import.meta.url))
+
 function resolveStatsCommand(explicit) {
   if (explicit) return statsCommandFor(explicit)
-  const root = repoRoot()
-  if (!root) return { missingReason: 'this directory is not inside a git repository, so the harvester could not be located' }
-  for (const candidate of ['scripts/dev-flow-stats.sh', 'scripts/dev-flow-stats.mjs']) {
-    const full = path.join(root, candidate)
+  for (const candidate of ['dev-flow-stats.sh', 'dev-flow-stats.mjs']) {
+    const full = path.join(ASSET_DIR, candidate)
     if (existsSync(full)) return statsCommandFor(full)
   }
-  return { missingReason: `${root} has no scripts/dev-flow-stats.sh or scripts/dev-flow-stats.mjs` }
+  return { missingReason: `${ASSET_DIR} has no dev-flow-stats.sh or dev-flow-stats.mjs beside this report generator — the retro skill's assets are incompletely vendored` }
 }
 
 function statsCommandFor(file) {
@@ -711,7 +718,7 @@ function discoverRun(args, trustedActorIds) {
 // authenticate their own retrospective — the evidence spec requires authority
 // to "derive solely from configured trusted orchestrator actor IDs", and
 // "whoever is logged in" is not configured (challenge round 2, confirmed P1).
-// scripts/dev-flow-stats.mjs already requires the ids explicitly; matching it
+// dev-flow-stats.mjs already requires the ids explicitly; matching it
 // removes the divergence rather than papering over it. agent-registry.json
 // will carry the allowlist under harmon-devkit#741; until then the caller
 // supplies it, from a committed --trusted-actors-file or the flag.

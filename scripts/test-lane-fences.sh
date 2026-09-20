@@ -17,8 +17,8 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 fixture="$tmp/repo"
 brief_source="$repo/ai/schemas/fixtures/brief.envelope/valid/codex.md"
 git init -q "$fixture"
-mkdir -p "$fixture/scripts"
-ln -s "$repo/scripts/validate-result-schemas.mjs" "$fixture/scripts/validate-result-schemas.mjs"
+mkdir -p "$fixture/ai/skills/universal/dev-flow-support/assets"
+ln -s "$repo/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs" "$fixture/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
 git -C "$fixture" config user.name "Lane Fence Test"
 git -C "$fixture" config user.email "lane-fence@example.invalid"
 printf '%s\n' base >"$fixture/allowed.txt"
@@ -70,20 +70,28 @@ git -C "$fixture" commit -qm "test: change allowed path"
 
 mkdir -p \
     "$fixture/.agents/skills/orchestrate/assets" \
+    "$fixture/.agents/skills/dev-flow-support/assets" \
     "$tmp/nodebin"
 cp "$fence_check" "$fixture/.agents/skills/orchestrate/assets/fence-check.sh"
-# fence-check.sh derives the validator path from `git rev-parse --show-toplevel`,
-# which always returns the resolved (symlink-free) repository root — so the
-# stub must expect that resolved path, not $fixture's own (possibly
-# symlinked, e.g. macOS's TMPDIR under /var -> /private/var) spelling.
+# harmon-devkit#974: fence-check.sh resolves the brief validator from its OWN
+# asset directory (`$asset_dir/../../dev-flow-support/assets`), not from
+# `git rev-parse --show-toplevel` — the validator is a vendored sibling package
+# now, and a consumer has no repository-root copy of it at all. So the stub
+# expects the VENDORED path, and the fixture deliberately supplies the
+# validator only there: if this resolution ever went back to the repository
+# root, there would be nothing at the root to find and the case would fail.
+# `pwd -P` still matters — the asset dir is resolved physically, so an
+# invocation through a symlinked root (below) must reach the same real path.
+ln -s "$repo/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs" \
+    "$fixture/.agents/skills/dev-flow-support/assets/validate-result-schemas.mjs"
 fixture_resolved="$(cd "$fixture" && pwd -P)"
-printf '#!/bin/sh\n[ "$1" = "%s/scripts/validate-result-schemas.mjs" ]\n' "$fixture_resolved" >"$tmp/nodebin/node"
+printf '#!/bin/sh\n[ "$1" = "%s/.agents/skills/orchestrate/assets/../../dev-flow-support/assets/validate-result-schemas.mjs" ]\n' "$fixture_resolved" >"$tmp/nodebin/node"
 chmod +x "$tmp/nodebin/node"
 (
     cd "$fixture"
     PATH="$tmp/nodebin:$PATH" .agents/skills/orchestrate/assets/fence-check.sh \
         --brief "$tmp/allowed.md"
-) >/dev/null || fail "a vendored-layout fence check did not resolve the repository validator"
+) >/dev/null || fail "a vendored-layout fence check did not resolve its sibling dev-flow-support validator"
 
 # #1080: exercise the same resolution through a DELIBERATE symlink alias to
 # the fixture root, so the case fails on every platform (not only where
@@ -94,7 +102,7 @@ ln -s "$fixture" "$fixture_link"
     cd "$fixture_link"
     PATH="$tmp/nodebin:$PATH" .agents/skills/orchestrate/assets/fence-check.sh \
         --brief "$tmp/allowed.md"
-) >/dev/null || fail "a vendored-layout fence check invoked through a symlinked fixture root did not resolve the repository validator"
+) >/dev/null || fail "a vendored-layout fence check invoked through a symlinked fixture root did not resolve its sibling dev-flow-support validator"
 
 printf '%s\n' changed >"$fixture/outside.txt"
 git -C "$fixture" add outside.txt
@@ -283,8 +291,8 @@ make_remote_fixture() {
     # Callers create the upstream/main ref explicitly (or don't) afterward.
     local dir="$1" origin_url="$2" upstream_url="$3"
     git init -q "$dir"
-    mkdir -p "$dir/scripts"
-    ln -s "$repo/scripts/validate-result-schemas.mjs" "$dir/scripts/validate-result-schemas.mjs"
+    mkdir -p "$dir/ai/skills/universal/dev-flow-support/assets"
+    ln -s "$repo/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs" "$dir/ai/skills/universal/dev-flow-support/assets/validate-result-schemas.mjs"
     git -C "$dir" config user.name "Lane Fence Test"
     git -C "$dir" config user.email "lane-fence@example.invalid"
     printf '%s\n' base >"$dir/allowed.txt"

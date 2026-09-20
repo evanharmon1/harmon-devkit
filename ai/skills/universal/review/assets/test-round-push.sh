@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
-# Hermetic tests for round-push.sh — the diff-aware, closure-consuming
+# Hermetic tests for ai/skills/universal/review/assets/round-push.sh — the diff-aware, closure-consuming
 # successor to gauntlet/assets/push-round.sh (see that script's own test,
 # scripts/test-gauntlet-push.sh, which stays green against the untouched
 # legacy asset and is not touched by this file).
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-helper="${repo_root}/scripts/round-push.sh"
-devflow_policy_src="${repo_root}/scripts/devflow-policy.mjs"
-toml_lite_src="${repo_root}/scripts/lib/toml-lite.mjs"
+# Sources resolve from this test's OWN directory, not from a repository root
+# reached by counting `..` (harmon-devkit#974): the broker and the shared
+# dev-flow-support reader are vendored skill assets, so their location relative
+# to a repository root differs between this source tree and a consumer's
+# flattened `.claude/skills/` one. `pwd -P` because the dogfood tree reaches
+# these files through a symlink. Only the scanner inputs, which are genuinely
+# repository-root files, are resolved from the checkout root.
+asset_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+support_dir="${asset_dir}/../../dev-flow-support/assets"
+repo_root="$(cd "$asset_dir" && git rev-parse --show-toplevel)"
+helper="${asset_dir}/round-push.sh"
+devflow_policy_src="${support_dir}/devflow-policy.mjs"
+toml_lite_src="${support_dir}/lib/toml-lite.mjs"
 gitleaks_scan_src="${repo_root}/scripts/gitleaks-scan.sh"
 summarize_gitleaks_src="${repo_root}/scripts/summarize-gitleaks.mjs"
 gitleaks_config_src="${repo_root}/.gitleaks.toml"
@@ -61,22 +70,22 @@ fail() {
 }
 
 # ---------------------------------------------------------------------------
-# Closure template: devflow-policy.mjs + its lib, the gitleaks scanner +
+# Closure template: ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs + its lib, the gitleaks scanner +
 # config + summarizer, a minimal valid v2 fixture policy, and a matching
 # minimal fixture registry. Every fixture repo commits a COPY of these into
-# its own history (see new_fixture below) rather than pointing round-push.sh
-# at a standalone directory: round-push.sh now verifies every closure input
+# its own history (see new_fixture below) rather than pointing ai/skills/universal/review/assets/round-push.sh
+# at a standalone directory: ai/skills/universal/review/assets/round-push.sh now verifies every closure input
 # against `git show <closure-base>:<canonical-path>`, so --closure-base must
 # name a real commit that actually contains them (Codex review, confirmed —
-# see round-push.sh's verify_closure_member). --task-targets is the one
-# exception: it is never one of the verified inputs (devflow-policy.mjs's
+# see ai/skills/universal/review/assets/round-push.sh's verify_closure_member). --task-targets is the one
+# exception: it is never one of the verified inputs (ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs's
 # own --task-targets is a local aid, not a closure member), so it stays a
 # single shared, untracked file.
 # ---------------------------------------------------------------------------
 closure_template="${test_tmp}/closure-template"
-mkdir -p "${closure_template}/scripts/lib"
-cp "$devflow_policy_src" "${closure_template}/scripts/devflow-policy.mjs"
-cp "$toml_lite_src" "${closure_template}/scripts/lib/toml-lite.mjs"
+mkdir -p "${closure_template}/scripts" "${closure_template}/ai/skills/universal/dev-flow-support/assets/lib"
+cp "$devflow_policy_src" "${closure_template}/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs"
+cp "$toml_lite_src" "${closure_template}/ai/skills/universal/dev-flow-support/assets/lib/toml-lite.mjs"
 cp "$gitleaks_scan_src" "${closure_template}/scripts/gitleaks-scan.sh"
 chmod +x "${closure_template}/scripts/gitleaks-scan.sh"
 cp "$summarize_gitleaks_src" "${closure_template}/scripts/summarize-gitleaks.mjs"
@@ -161,8 +170,8 @@ task_targets_file="${test_tmp}/task-targets.json"
 echo '["fixture-verify","fixture-check","fixture-secrets","fixture-pre-pr"]' \
     >"$task_targets_file"
 
-CLOSURE_FILES=(.devflow.toml agent-registry.json scripts/devflow-policy.mjs
-    scripts/lib/toml-lite.mjs scripts/gitleaks-scan.sh
+CLOSURE_FILES=(.devflow.toml agent-registry.json ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs
+    ai/skills/universal/dev-flow-support/assets/lib/toml-lite.mjs scripts/gitleaks-scan.sh
     scripts/summarize-gitleaks.mjs .gitleaks.toml)
 
 # A fresh bare remote plus a work repository with one commit on main (the
@@ -229,7 +238,7 @@ commit_on() {
 # Extracts the closure files from REPO at SHA into a fresh directory via
 # `git archive`, mirroring a real merge-base extraction, and returns the
 # directory's path. .gitleaksignore is optional per the closure's own
-# declared shape (round-push.sh's verify_closure_gitleaksignore treats "the
+# declared shape (ai/skills/universal/review/assets/round-push.sh's verify_closure_gitleaksignore treats "the
 # merge base has none" as a valid state, not a missing-file error) — `git
 # archive` hard-errors on ANY explicit pathspec absent from the tree, so
 # unlike every other entry in CLOSURE_FILES this one is only added when it
@@ -251,7 +260,7 @@ closure_args_from() {
     local dir=$1
     policy_args=(
         --policy "${dir}/.devflow.toml"
-        --devflow-policy-script "${dir}/scripts/devflow-policy.mjs"
+        --devflow-policy-script "${dir}/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs"
         --registry "${dir}/agent-registry.json"
         --task-targets "$task_targets_file"
     )
@@ -261,7 +270,7 @@ closure_args_from() {
     )
 }
 
-# round-push.sh's --against refuses a bare commit ID or a revision
+# ai/skills/universal/review/assets/round-push.sh's --against refuses a bare commit ID or a revision
 # expression (Codex challenge round 2 / review round 1, confirmed: either
 # is equally capable of asserting an arbitrary, deliberately-too-close
 # ancestor with no binding to any actual branch). Every fixture below
@@ -269,7 +278,7 @@ closure_args_from() {
 # "main" branch name, which keeps moving as later commits land on it in
 # these single-branch fixtures — and passes the TAG NAME to --against.
 #
-# round-push.sh also requires --closure-base, the exact SHA --against must
+# ai/skills/universal/review/assets/round-push.sh also requires --closure-base, the exact SHA --against must
 # resolve to, and now verifies every closure-resident input against that
 # commit's own git objects (Codex review rounds 2 and current-head cloud
 # review, confirmed). mark_base tags AT (default HEAD, so an earlier commit
@@ -283,7 +292,7 @@ closure_args_from() {
 # those global-variable side effects the instant the subshell exits,
 # leaving policy_args/scan_args/mark_base_tag/mark_base_sha stuck at
 # whichever earlier fixture's mark_base call last set them directly (a
-# latent bug in this suite itself, not in round-push.sh: caught only
+# latent bug in this suite itself, not in ai/skills/universal/review/assets/round-push.sh: caught only
 # because two fixtures happen to give DIFFERENT, mutually exclusive
 # docs_only_paths results, so a stale policy from an unrelated earlier
 # fixture would misclassify rather than coincidentally agree — every
@@ -397,7 +406,7 @@ grep -F -- 'git update-ref "refs/remotes/${remote}/${branch}"' "$helper" >/dev/n
 # Structural, not behavioral, for the same reason as the two checks above:
 # driving this race hermetically would need a config mutation landing in
 # the exact window between the two resolve_push_url calls INSIDE one
-# single-process run of round-push.sh, which this test harness has no way
+# single-process run of ai/skills/universal/review/assets/round-push.sh, which this test harness has no way
 # to inject without instrumenting the script under test.
 echo "  -> the push destination is re-validated immediately before the write, not only once"
 grep -F -- 'gated_push_url="$push_url"' "$helper" >/dev/null ||
@@ -653,7 +662,7 @@ printf '%s' "$err" | grep -Fi "does not match .devflow.toml" >/dev/null ||
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
     fail "a content-mismatched closure file must not push"
 
-echo "  -> a tampered scripts/lib/toml-lite.mjs is refused even when devflow-policy.mjs itself verifies clean"
+echo "  -> a tampered ai/skills/universal/dev-flow-support/assets/lib/toml-lite.mjs is refused even when ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs itself verifies clean"
 root="$(new_fixture toml-lite-mismatch)"
 cd "${root}/work"
 mark_base "${root}/work"
@@ -672,8 +681,8 @@ run push --remote origin --branch main --host github.com --repo owner/repo \
     --against "$merge_base" --closure-base "$merge_base_sha" \
     "${tampered_policy_args[@]}" "${scan_args[@]}"
 assert_rc 3
-printf '%s' "$err" | grep -Fi "does not match scripts/lib/toml-lite.mjs" >/dev/null ||
-    fail "devflow-policy.mjs's own transitive dependency toml-lite.mjs must be verified even when devflow-policy.mjs itself is byte-identical to the genuine closure member (Codex cloud review, confirmed: disclosing it as unverified was not the same as closing it): $err"
+printf '%s' "$err" | grep -Fi "does not match ai/skills/universal/dev-flow-support/assets/lib/toml-lite.mjs" >/dev/null ||
+    fail "ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs's own transitive dependency toml-lite.mjs must be verified even when ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs itself is byte-identical to the genuine closure member (Codex cloud review, confirmed: disclosing it as unverified was not the same as closing it): $err"
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
     fail "a tampered toml-lite.mjs must not push"
 
@@ -791,7 +800,7 @@ run push --remote origin --branch main --host github.com --repo owner/repo \
     "${policy_args[@]}" "${tampered_scan_args[@]}"
 assert_rc 3
 printf '%s' "$err" | grep -Fi "closure's .gitleaksignore does not match" >/dev/null ||
-    fail "a closure .gitleaksignore matching the worktree's (but not --closure-base's real object) should still be refused by round-push.sh's own check rather than relying on gitleaks-scan.sh's worktree-vs-closure comparison alone (Codex cloud review, confirmed the earlier closure-verification list omitted .gitleaksignore even after it became a declared closure member): $err"
+    fail "a closure .gitleaksignore matching the worktree's (but not --closure-base's real object) should still be refused by ai/skills/universal/review/assets/round-push.sh's own check rather than relying on gitleaks-scan.sh's worktree-vs-closure comparison alone (Codex cloud review, confirmed the earlier closure-verification list omitted .gitleaksignore even after it became a declared closure member): $err"
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
     fail "a closure with a mismatched .gitleaksignore must not push"
 
@@ -953,15 +962,15 @@ mark_base "${root}/work"
 merge_base=$mark_base_tag
 merge_base_sha=$mark_base_sha
 materialized="$(extract_closure "${root}/work" "$merge_base_sha")"
-cp "$helper" "${materialized}/scripts/round-push.sh"
-chmod +x "${materialized}/scripts/round-push.sh"
+cp "$helper" "${materialized}/round-push.sh"
+chmod +x "${materialized}/round-push.sh"
 
 # Mutate the WORKTREE's own copies of every closure-resident file to
 # something that would behave differently (or simply break) if it were
 # read instead of the extracted copy — proving the broker never resolves
 # a worktree-resident path (config spec "Gate authority separates policy
 # from branch implementation").
-printf '#!/usr/bin/env node\nprocess.exit(1)\n' >"${root}/work/scripts/devflow-policy.mjs"
+printf '#!/usr/bin/env node\nprocess.exit(1)\n' >"${root}/work/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs"
 printf '#!/usr/bin/env bash\nexit 1\n' >"${root}/work/scripts/gitleaks-scan.sh"
 chmod +x "${root}/work/scripts/gitleaks-scan.sh"
 printf 'process.exit(1)\n' >"${root}/work/scripts/summarize-gitleaks.mjs"
@@ -979,12 +988,12 @@ docs_sha="$(commit_on "${root}/work" "test: docs" g.md "docs change")"
 
 set +e
 ROUND_PUSH_TEST_BARE="$(git config --get roundpush.testBare)" \
-    "${materialized}/scripts/round-push.sh" push \
+    "${materialized}/round-push.sh" push \
     --remote origin --branch main --host github.com --repo owner/repo \
     --sha "$docs_sha" --expect absent \
     --against "$merge_base" --closure-base "$merge_base_sha" \
     --policy "${materialized}/.devflow.toml" \
-    --devflow-policy-script "${materialized}/scripts/devflow-policy.mjs" \
+    --devflow-policy-script "${materialized}/ai/skills/universal/dev-flow-support/assets/devflow-policy.mjs" \
     --gitleaks-script "${materialized}/scripts/gitleaks-scan.sh" \
     --gitleaks-config "${materialized}/.gitleaks.toml" \
     --registry "${materialized}/agent-registry.json" \
@@ -1016,9 +1025,9 @@ assert_rc 3
 printf '%s' "$err" | grep -Fi "secret scan" >/dev/null ||
     fail "the refusal should still name the secret scan even with a tampered Taskfile recipe: $err"
 [ "$(git -C "${root}/origin.git" show-ref --heads | wc -l)" -eq 0 ] ||
-    fail "a real secret must not push even when the worktree's own security:secrets recipe would report clean; round-push.sh never invokes task for the scan"
+    fail "a real secret must not push even when the worktree's own security:secrets recipe would report clean; ai/skills/universal/review/assets/round-push.sh never invokes task for the scan"
 
-echo "  -> round-push.sh helper invocation is shell-independent"
+echo "  -> ai/skills/universal/review/assets/round-push.sh helper invocation is shell-independent"
 if command -v zsh >/dev/null 2>&1; then
     root="$(new_fixture zsh-call)"
     cd "${root}/work"

@@ -10509,6 +10509,192 @@ printf '%s\n' guarded >"$WT_TARGET/.copier-guarded-update/original-answers.yml"
 expect_ok "guarded recovery state remains untracked in a linked worktree" \
     test -z "$(git -C "$WT_TARGET" status --porcelain)"
 
+echo "==> a pristine synced consumer can run the vendored dev-flow v2 runtime (#974 AC 5)"
+
+# This is AC 5 of harmon-devkit#974, and it is the whole point of that issue:
+# `/review`, `/integrate` and `/orchestrate` used to invoke runtime scripts
+# that lived at this repository's ROOT `scripts/`, which `task sync:skills`
+# does not ship and harmon-init's template does not render — so a consumer
+# installed skills it could not run, and found out only when somebody tried.
+#
+# The proof has to be end to end against the REAL tree, not a synthetic one:
+# a hand-built fixture would prove only that the fixture is self-consistent.
+# So this section publishes this checkout's actual `ai/skills/` into a local
+# source repo, tags it, runs the REAL sync-skills.sh from a pristine consumer
+# over file://, and then EXECUTES each runtime entrypoint from inside that
+# consumer — which has no `ai/` tree, no repository-root `scripts/`, and no
+# harmon-init render anywhere in its history.
+AC5_SRC="$TMPROOT/ac5-devkit"
+AC5_CON="$TMPROOT/ac5-consumer"
+mkdir -p "$AC5_SRC" "$AC5_CON"
+git_init "$AC5_SRC"
+cp -R "$repo/ai" "$AC5_SRC/ai"
+git_commit_all "$AC5_SRC" "vendor the real skills tree"
+git -C "$AC5_SRC" tag v0.0.0-ac5
+# None of the 15 entrypoints run_vendored executes below lives in `repo` or
+# `frontend`, so the sweep only needs `universal`.
+cat >"$AC5_CON/.skills-sync.yaml" <<EOF
+source:
+  repo: file://$AC5_SRC
+  ref: v0.0.0-ac5
+categories: [universal]
+dest: .claude/skills
+agents:
+  names: ["*"]
+  dest: .claude/agents
+EOF
+expect_ok "AC5: a pristine consumer syncs the universal category" \
+    sh -c "cd '$AC5_CON' && bash '$SCRIPTS/sync-skills.sh' sync"
+
+AC5_SKILLS="$AC5_CON/.claude/skills"
+
+# The consumer is genuinely pristine: nothing that could satisfy a runtime
+# dependency by accident. If either of these ever became true, every
+# execution below would stop proving anything.
+expect_ok "AC5: the consumer has no repository-root scripts/ directory" \
+    test ! -e "$AC5_CON/scripts"
+expect_ok "AC5: the consumer has no ai/ tree" test ! -e "$AC5_CON/ai"
+
+# The shared support package rode along with the stage skills, flattened.
+expect_ok "AC5: the shared dev-flow-support package is vendored" \
+    test -f "$AC5_SKILLS/dev-flow-support/SKILL.md"
+expect_ok "AC5: dev-flow-support stays out of the slash-command menu" \
+    grep -q '^user-invocable: false$' "$AC5_SKILLS/dev-flow-support/SKILL.md"
+expect_ok "AC5: the package carries its own schemas copy" \
+    test -f "$AC5_SKILLS/dev-flow-support/assets/schemas/result.envelope.schema.json"
+
+# run_vendored DESC EXPECT PATH INTERP — execute a vendored entrypoint from
+# INSIDE the consumer and require it to emit ITS OWN diagnostic, matched against
+# EXPECT.
+#
+# This is a contract, not a denylist (Codex 4057006883, Greptile 4056946160).
+# The previous shape asked "does the output avoid a list of failure
+# substrings?", which any output could satisfy: a stack trace, a syntax error,
+# a non-zero exit from any cause, all scored a pass, and the suite proved only
+# that 15 files emitted bytes. Worse, the denylist misfired in the other
+# direction too — `consumer-pin-audit.sh`'s own legitimate diagnostic contains
+# the words "not found", so a correct run was scored a failure.
+#
+# Asking instead "did it print the specific thing only IT prints?" fixes both
+# directions at once. An entrypoint can only produce its own usage or
+# argument-validation message after loading and resolving its whole dependency
+# closure, which is precisely the property AC 5 is about; anything else — an
+# unresolved import, a parse error, an empty capture, a different program's
+# output — fails to match and fails the case.
+#
+# Exit status is deliberately still not asserted: every one of these exits
+# non-zero when run with no arguments, by design.
+run_vendored() {
+    local desc="$1" expect="$2" script="$3" interp="$4"
+    local out
+    out="$(cd "$AC5_CON" && "$interp" "$script" 2>&1)" || true
+    case "$out" in
+    *"$expect"*)
+        ok "$desc"
+        ;;
+    *)
+        bad "$desc (expected its own diagnostic \"$expect\"; got: $(printf '%s' "$out" | head -1))"
+        ;;
+    esac
+}
+
+# The 15 runtime entrypoints the review, integrate, orchestrate and retro
+# skills invoke by name.
+run_vendored "AC5: devflow-policy.mjs runs" "usage: devflow-policy.mjs" \
+    "$AC5_SKILLS/dev-flow-support/assets/devflow-policy.mjs" node
+run_vendored "AC5: validate-result-schemas.mjs runs" "usage: validate-result-schemas.mjs" \
+    "$AC5_SKILLS/dev-flow-support/assets/validate-result-schemas.mjs" node
+run_vendored "AC5: render-dev-flow.mjs runs" "render-dev-flow: missing projection or subcommand" \
+    "$AC5_SKILLS/dev-flow-support/assets/render-dev-flow.mjs" node
+run_vendored "AC5: dev-flow-exit.mjs runs" "usage: dev-flow-exit.mjs" \
+    "$AC5_SKILLS/dev-flow-support/assets/dev-flow-exit.mjs" node
+run_vendored "AC5: normalize-finder-findings.mjs runs" "normalize-finder-findings: --finder is required" \
+    "$AC5_SKILLS/review/assets/normalize-finder-findings.mjs" node
+run_vendored "AC5: dev-flow-stats.mjs runs" "usage: dev-flow-stats.mjs" \
+    "$AC5_SKILLS/retro/assets/dev-flow-stats.mjs" node
+run_vendored "AC5: retro-run-report.mjs runs" "retro-run-report: --repo <owner/repo> is required" \
+    "$AC5_SKILLS/retro/assets/retro-run-report.mjs" node
+# The two .sh wrappers exec their sibling .mjs, so matching the .mjs's own
+# diagnostic is what proves the wrapper resolved that sibling from its new home.
+run_vendored "AC5: render-dev-flow.sh runs" "render-dev-flow: missing projection or subcommand" \
+    "$AC5_SKILLS/dev-flow-support/assets/render-dev-flow.sh" bash
+run_vendored "AC5: dev-flow-exit.sh runs" "usage: dev-flow-exit.mjs" \
+    "$AC5_SKILLS/dev-flow-support/assets/dev-flow-exit.sh" bash
+run_vendored "AC5: round-push.sh runs" "round-push: a mode is required" \
+    "$AC5_SKILLS/review/assets/round-push.sh" bash
+run_vendored "AC5: dev-flow-monitor.sh runs" "dev-flow-monitor.sh state-path --run-id" \
+    "$AC5_SKILLS/orchestrate/assets/dev-flow-monitor.sh" bash
+# consumer-pin-audit does REAL work here rather than printing usage: the
+# consumer above was synced, so it has a manifest and a provenance stamp to
+# audit. Its pin line is therefore the diagnostic that proves it ran — and it
+# proves more than a usage string would, since producing it requires resolving
+# the sibling dev-flow-support reader.
+run_vendored "AC5: consumer-pin-audit.sh runs" "(from provenance; manifest declares" \
+    "$AC5_SKILLS/orchestrate/assets/consumer-pin-audit.sh" bash
+run_vendored "AC5: fence-check.sh runs" "usage: fence-check.sh --brief" \
+    "$AC5_SKILLS/orchestrate/assets/fence-check.sh" bash
+run_vendored "AC5: readiness-gate.sh runs" "readiness-gate.sh check --repo OWNER/REPO" \
+    "$AC5_SKILLS/integrate/assets/readiness-gate.sh" bash
+run_vendored "AC5: check-codex-cloud-review.sh runs" "check-codex-cloud-review.sh reserve --state" \
+    "$AC5_SKILLS/integrate/assets/check-codex-cloud-review.sh" bash
+
+# Loading is necessary but not sufficient: two entrypoints do REAL work here,
+# offline, against files the consumer itself has.
+#
+# (1) The schema validator must find its schemas. The consumer has no
+# `ai/schemas/`, and neither --schemas-dir nor RESULT_SCHEMAS_DIR is set, so a
+# successful validation can only have come from the package's own vendored
+# `assets/schemas/` copy — which is exactly what maintainer ruling 2 put there
+# and what `task test:schema-parity` keeps byte-identical to the authoring
+# tree. The document is copied in because a *document* may come from anywhere;
+# it is the SCHEMA that has to travel with the skill.
+cp "$repo/ai/schemas/fixtures/result.envelope.schema/valid/implementer-completed.json" \
+    "$AC5_CON/envelope.json"
+expect_ok_contains "AC5: the validator resolves its schemas from the vendored package" \
+    "envelope result OK" \
+    sh -c "cd '$AC5_CON' && unset RESULT_SCHEMAS_DIR; node .claude/skills/dev-flow-support/assets/validate-result-schemas.mjs envelope envelope.json"
+
+# (2) The policy reader must resolve a real v2 policy — which exercises its
+# cross-package-free import of lib/toml-lite.mjs and the reader's own
+# resolution end to end, not just its argument parser.
+cp "$repo/.devflow.toml" "$AC5_CON/.devflow.toml"
+cp "$repo/agent-registry.json" "$AC5_CON/agent-registry.json"
+# Exit 3 is expected and is NOT a failure here: it is the reader's documented
+# "resolved, but cross-validation was indeterminate" code, and this consumer
+# supplies no --taskfile-dir, so gate slugs cannot be checked. That is
+# orthogonal to #974 — what this asserts is that the reader loaded its
+# lib/toml-lite.mjs, parsed a real v2 policy, and produced a resolved profile,
+# from a checkout with no repository-root scripts/ anywhere. A module that
+# failed to resolve its import would exit 1 with ERR_MODULE_NOT_FOUND and
+# print no profile at all, which is the regression this case exists to catch.
+# The profile is written to a file and grepped from the file rather than piped:
+# `producer | grep -q` makes grep's exit-on-match SIGPIPE the producer, which
+# under `pipefail` turns a MATCH into a failure (scripts/lint-shell-robustness.sh).
+expect_ok "AC5: the policy reader resolves a real v2 .devflow.toml in the consumer" \
+    sh -c "cd '$AC5_CON' && node .claude/skills/dev-flow-support/assets/devflow-policy.mjs resolve --policy .devflow.toml --registry agent-registry.json --json >resolved.json 2>/dev/null; rc=\$?; { [ \$rc -eq 0 ] || [ \$rc -eq 3 ]; } && grep -q '\"rigor\"' resolved.json"
+
+# (3) The cross-package hop itself: consumer-pin-audit.sh (an orchestrate
+# asset) reaches its shape oracle in the sibling dev-flow-support package. It
+# is the one runtime path that would still break if only the packages, and not
+# the reference between them, had been vendored correctly.
+expect_ok_contains "AC5: an orchestrate asset reaches its sibling package's reader" \
+    "policy" \
+    sh -c "cd '$AC5_CON' && bash .claude/skills/orchestrate/assets/consumer-pin-audit.sh --repo-root . 2>&1 | head -40"
+
+# AC 4 of #974 — a mechanical `task verify` check that fails when a vendored
+# asset invokes a repository-root `scripts/` path — is deliberately NOT
+# enforced here. Three adversarial rounds defeated three successive mechanisms
+# (a source-text lint enumerating spellings, then an execute-and-match probe
+# that only ever reached each asset's zero-argument path), and the maintainer
+# split the guard out of this change: it is tracked as harmon-devkit#1099
+# <https://github.com/evanharmon1/harmon-devkit/issues/1099> with the
+# constraints all three rounds established.
+#
+# What stays above is AC 5, and it is COVERAGE rather than a guard: it proves
+# that a pristine synced consumer can execute the 15 runtime entrypoints the
+# review, integrate, orchestrate and retro skills invoke by name, and it makes
+# no claim about an asset it does not name.
+
 echo ""
 echo "skills tooling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
