@@ -6,7 +6,7 @@
 #   POST-PROMOTION-ACTIVITY <lane>: <actor> <review|comment|inline> <id> since=<epoch>:<event_id>
 #   POST-PROMOTION-CLOSED <lane>: #<pr_number> since=<epoch>:<event_id>
 #   POST-PROMOTION-INDETERMINATE <lane>: #<pr_number>
-#   OBSERVATION-DEGRADED <lane|run>: <detail>
+#   OBSERVATION-DEGRADED <lane>: <detail>
 #
 # Both POST-PROMOTION-ACTIVITY's and POST-PROMOTION-CLOSED's trailing
 # "since=<epoch>:<event_id>" is the identity of the promotion window the row
@@ -966,7 +966,7 @@ resolve_promotion() {
         malformed_id_safe="$(printf '%s' "$malformed_id" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)"
         [ -n "$malformed_id_safe" ] || malformed_id_safe="<non-numeric>"
         # review-r2-codex-verification-1 / PR #1102 Greptile 4055301833:
-        # echo BEFORE persisting notified=1, mirroring
+        # echo BEFORE the state_set/persist_state pair below, mirroring
         # observation_record_failure()'s own established ordering. The
         # original order persisted first: a crash/interruption between the
         # persist and the echo left notified durably 1 with the warning
@@ -979,12 +979,15 @@ resolve_promotion() {
         # direction: this file's whole crash-safety convention is duplicate
         # over lost, never the reverse.
         echo "OBSERVATION-DEGRADED $lane: malformed ready_for_review event id=$malformed_id_safe on #$pr_number"
-        state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
-        persist_state
-    else
-        state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
-        persist_state
     fi
+    # Gemini review 2 / PR #1102 4055321302: both arms of the former if/else
+    # persisted this identical state_set/persist_state pair, differing only
+    # by the interposed echo above -- collapsed to one unconditional copy,
+    # since notified is set to 1 here regardless of which branch ran; only
+    # the echo is conditional. No behavior change: the echo above still runs
+    # (and completes) before this persist either way.
+    state_set MALPROMO "$malpromo_key" "$malpromo_count" 1
+    persist_state
     return 0
 }
 
@@ -1191,6 +1194,19 @@ while true; do
         # on a restart) never silently resets a still-genuinely-failing
         # activity or promotion-identity episode. See
         # observation_ready()/observation_record_failure() above.
+        #
+        # review-r1-codex-verification-4 / PR #1102 4055321310: each of the
+        # three call sites below refreshes `now` right before its own
+        # `bounded` GitHub call, rather than reusing the single timestamp the
+        # top of this loop reads at line ~1117. That loop-level `now` is
+        # taken once per poll iteration and can be stale by the time a
+        # LATER endpoint in this same iteration is reached, since an earlier
+        # endpoint's own bounded call (up to --timeout-seconds) may have
+        # taken real wall-clock time; each endpoint's deadline/backoff
+        # arithmetic (observation_record_failure()'s window bound,
+        # resolve_promotion()'s poll bound) must be computed against the
+        # time at its own read, not a poll-start time that has already
+        # drifted behind it.
         if observation_ready "$lane:PR"; then
             now="$(date -u +%s)"
             if pr="$(discover_pr "$repo" "$branch")"; then
@@ -1218,6 +1234,9 @@ while true; do
                     observation_recover "$lane:ACTIVITY"
                 fi
                 if [ -z "$active_pr" ] && observation_ready "$lane:REPROMO"; then
+                    # Fresh read for this endpoint's own bounded call -- see
+                    # the review-r1-codex-verification-4 comment above the
+                    # PR-endpoint refresh.
                     now="$(date -u +%s)"
                     if check_repromotion_after_close "$lane" "$repo" "$pr" "$now"; then
                         observation_recover "$lane:REPROMO"
@@ -1228,6 +1247,9 @@ while true; do
                     fi
                 fi
                 if [ -n "$active_pr" ] && observation_ready "$lane:ACTIVITY"; then
+                    # Fresh read for this endpoint's own bounded call -- see
+                    # the review-r1-codex-verification-4 comment above the
+                    # PR-endpoint refresh.
                     now="$(date -u +%s)"
                     if poll_activity "$lane" "$repo" "$active_pr" "$now"; then
                         observation_recover "$lane:ACTIVITY"
