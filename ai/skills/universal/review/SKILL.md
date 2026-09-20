@@ -358,15 +358,16 @@ are:
    NOT an empty-round exit). The second consecutive clean round is itself the
    confirmation, so no further run is owed.
 2. **An empty round**: a round with NO findings at all (any severity), once the
-   stage has run at least `min_rounds` rounds (`0 <= min_rounds <= cap`, resolved
-   from the review policy in `.devflow.toml`; default fallback 1).
+   stage has run at least the effective floor of `min(min_rounds, cap)` rounds
+   (resolved from the review policy in `.devflow.toml`; default fallback 1).
 3. **A capped final round**: a capped final round (including a cap of 1) that
    adjudicates to zero P0/P1 findings ends the stage by itself, because the
    confirmation run is forbidden by the cap. If P0/P1 findings persist at the cap,
    stop and escalate to the maintainer.
 
-The exit rule and per-stage round history must be recorded at exit in `run.json`
-transitions, the adjudication ledger, and stage reports.
+At stage exit, record the exit reason and qualifying round in the `run.json`
+stage transition string, the stage ledger, and stage reports; round history is
+preserved in the pass and adjudication receipts.
 
 **Stage sequencing:**
 Per `AGENTS.md` § "Who decides, and what is delegated", stage sequencing is
@@ -381,8 +382,8 @@ When a terminal `review` exits and hands off to integration (via `security`
 and draft PR publication), the draft-first invariant is unchanged: publish the
 draft PR first, and the CI readiness condition from `AGENTS.md` § Readiness gate
 is evaluated by the integration stage once the draft exists: every required check
-CONCLUDED successfully (pending or an empty check list is indeterminate, never
-a pass). A terminal current-head Codex result is required (or where the
+CONCLUDED successfully (pending or an empty check list is indeterminate, never a pass).
+A terminal and clean current-head Codex result is required (or where the
 resolved integration cap is 0 — a cap of 0 leaves no cloud-review cycle to
 trigger a fresh `@codex review` from, so this one condition drops out; every
 other readiness condition still applies unchanged).

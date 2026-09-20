@@ -343,18 +343,19 @@ gate. Follow the repo's own adjudication contract; the shape it is usually in:
      NOT an empty-round exit). The second consecutive clean round is itself the
      confirmation, so no further run is owed.
   2. **An empty round**: a round with NO findings at all (any severity), once the
-     stage has run at least `min_rounds` rounds (`0 <= min_rounds <= cap`, resolved
-     from the review policy in `.devflow.toml`; default fallback 1).
+     stage has run at least the effective floor of `min(min_rounds, cap)` rounds
+     (resolved from the review policy in `.devflow.toml`; default fallback 1).
   3. **A capped final round**: a capped final round (including a cap of 1) that
      adjudicates to zero P0/P1 findings. The confirmation run is forbidden by
      the cap, so it ends the stage cleanly. If P0/P1 findings persist at the cap,
      stop and escalate to the maintainer.
-- At stage exit, the specific **exit rule and per-stage round history** must be
-  recorded in the stage ledger and, for an active dev-flow-v2 run, in the run record.
+- At stage exit, record the specific **exit reason and qualifying round** in the
+  stage ledger and, for an active dev-flow-v2 run, in the run record's stage
+  transition string; round history is preserved in the pass and adjudication receipts.
 - **Round-2 scaffolding checkpoint**: round 2 carries the mandatory checkpoint
   requiring classification of any finding whose subject exists only because an
   earlier round of that same stage added it (delete, restructure to invariant,
-  split out, or keep with reason).
+  or keep with reason).
 - Respect the round cap and escalate rather than iterate past it.
 - These runs are **long** (5–15 minutes is ordinary, past most agent tool-call
   timeouts). Background them and poll; growing output means running, not hung,
@@ -474,7 +475,7 @@ from `AGENTS.md` § Readiness gate: every required check CONCLUDED successfully
 (pending or an empty check list is indeterminate, never a pass). Checks green is a
 non-terminal state (`AGENTS.md` § Policy invariants); bot and human reviews land
 after checks settle, so wait for both signals: every check concluded, and a
-terminal current-head Codex result (or where the resolved integration cap is 0 —
+terminal and clean current-head Codex result (or where the resolved integration cap is 0 —
 a cap of 0 leaves no cloud-review cycle to trigger a fresh `@codex review` from,
 so this one condition drops out; every other condition on the list still applies
 unchanged, per `AGENTS.md` § Readiness gate).
