@@ -828,6 +828,7 @@ cmd_render() {
         ".callout-body { margin: 0.2rem 0; }",
         ".callout-response { font-size: 0.79rem; color: var(--muted); margin: 0.45rem 0 0; }",
         ".badge { display: inline-block; padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.01em; border-radius: 999px; background: var(--badge-bg); color: var(--badge-text); white-space: nowrap; }",
+        "td .badge { white-space: normal; overflow-wrap: anywhere; }",
         ".badge-v-close { background: #ffe9e6; color: #a40e26; }",
         ".badge-v-keep { background: #dcfce7; color: #15803d; }",
         ".badge-v-decision { background: #dbeafe; color: #1d4ed8; }",

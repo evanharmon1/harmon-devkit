@@ -846,6 +846,15 @@ if plain:
 sys.exit(1 if plain else 0)
 PYEOF
 
+echo "==> report: a long duplicate-target title cannot force the page to scroll sideways"
+# A CLOSE-dup-of-#N badge carries the canonical issue title, so the one cell
+# that can be arbitrarily long must be allowed to wrap; sticky headers rule
+# out scrolling the wrapper at every width (Codex on b225581f).
+grep -q 'td .badge { white-space: normal; overflow-wrap: anywhere; }' "$out_html" ||
+    fail "badges inside a table cell must wrap, or a long duplicate title overflows the page"
+grep -q 'th { background: var(--th-bg); position: sticky' "$out_html" ||
+    fail "the fix for wrapping must not give up the sticky table header"
+
 echo "==> report: a priority band means the same colour in the card as in the chart"
 # Asserted against the rendered report, not the source: what matters is the
 # colour a reader sees on the card versus the one the chart gives that band.
