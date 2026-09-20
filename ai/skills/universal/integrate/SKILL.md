@@ -318,9 +318,10 @@ check that failed. If the reader grows another dependency, it belongs in this
 recipe too.
 
 `--closure <dir>` re-execs the trusted merge-base reader inside `<dir>` —
-probing `devflow-policy.mjs`, `assets/devflow-policy.mjs`, the two vendored
-skill layouts, and finally `scripts/devflow-policy.mjs`, in that fixed order
-before this checkout's own (possibly branch-modified) copy runs any of its
+probing `CLOSURE_READER_PATHS` (`devflow-policy.mjs`,
+`assets/devflow-policy.mjs`, the vendored skill layouts, then
+`scripts/devflow-policy.mjs`) in that fixed order before this checkout's own
+(possibly branch-modified) copy runs any of its
 own code — the reader's self-modification boundary protects the reader
 itself, not only the data it reads, since a branch could otherwise lower its
 own gate by editing the resolution code instead of the config. A merge base

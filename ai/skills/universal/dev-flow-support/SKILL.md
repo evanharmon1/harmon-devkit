@@ -59,6 +59,32 @@ physical target is that same source path. A logical `pwd` would resolve
 
 A `.mjs` asset uses a path relative to its own file for the same reason.
 
+## Resolving the assets from an agent file
+
+The section above is for another skill's *script* resolving this package via
+`$0` / `import.meta.url`. An **agent file** (`ai/agents/reviewer.md`,
+`ai/agents/challenger.md`, `ai/agents/integrator.md`) has no such anchor — it
+is prose run by an LLM in a shell, not a script with a physical location of
+its own — so it must resolve this package's `assets/` the same way
+`devflow-policy.mjs` resolves its own vendored copy: probe, in order, the
+vendored skill layouts that `CLOSURE_READER_PATHS`
+(`assets/devflow-policy.mjs`) carries — `ai/skills/universal/`, then
+`.claude/skills/`, then `.agents/skills/` — and use the first one that exists.
+An agent file that needs this package's `assets/` directory names this rule by
+section title and file instead of re-enumerating the layouts, and sets it
+once:
+
+```sh
+for c in ai/skills/universal/dev-flow-support/assets .claude/skills/dev-flow-support/assets .agents/skills/dev-flow-support/assets; do
+    [ -d "$c" ] && { DEV_FLOW_SUPPORT="$c"; break; }
+done
+```
+
+Keep this candidate list in the same order as `CLOSURE_READER_PATHS` in
+`assets/devflow-policy.mjs` — that array is the one place the vendored layouts
+are actually enumerated; this snippet is a derived copy, not a second source
+of truth, and must be updated if that array's order or membership changes.
+
 ## Schemas
 
 `ai/schemas/` in harmon-devkit remains the authoring source of truth: its

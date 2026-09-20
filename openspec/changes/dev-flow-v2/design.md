@@ -125,12 +125,14 @@ sweeping the round gate into the closure was rejected because it would
 contradict the branch-attested rule.
 
 One bootstrap exception is explicit and tested: the change that first creates
-`ai/skills/universal/review/assets/round-push.sh` (task 2.2) has no merge-base copy at that path, so
-for that relocation change only, the merge-base broker is the skill asset it
-relocates (`ai/skills/universal/gauntlet/assets/push-round.sh`), materialized
-the same way. Every later change extracts the stable path; a merge base that
-has neither copy refuses the push rather than trusting the branch broker,
-mirroring the reader-before-policy rule in decision 13.
+`ai/skills/universal/review/assets/round-push.sh` (task 2.2) has no merge-base
+copy at that path, so for that relocation change only, the merge-base broker
+is the script it relocates (`scripts/round-push.sh`), materialized the same
+way. (The `gauntlet/assets/push-round.sh` name belongs to an earlier,
+retired layout and is not part of this relocation.) Every later change
+extracts the stable path; a merge base that has neither copy refuses the push
+rather than trusting the branch broker, mirroring the reader-before-policy
+rule in decision 13.
 
 The two brokers coexist until the policy migrates. The new broker reads v2
 policy through the shared reader, and this repository's live policy stays

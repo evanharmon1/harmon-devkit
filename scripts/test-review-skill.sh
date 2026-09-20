@@ -175,7 +175,11 @@ for role in challenger reviewer; do
     agent="ai/agents/$role.md"
     grep -Fq "ai/schemas/result.$role.schema.json" "$agent" ||
         fail "$role does not name its result schema"
-    grep -Fq 'dev-flow-support/assets/validate-result-schemas.mjs envelope ... --receipt' "$agent" ||
+    grep -Fq 'Resolving the assets' "$agent" ||
+        fail "$role does not reference the named dev-flow-support asset resolution rule"
+    grep -Fq 'DEV_FLOW_SUPPORT' "$agent" ||
+        fail "$role does not resolve \$DEV_FLOW_SUPPORT before validating"
+    grep -Fq 'validate-result-schemas.mjs" envelope ... --receipt' "$agent" ||
         fail "$role does not validate its full result envelope before handoff"
     grep -Fq 'validated finding records' "$agent" ||
         fail "$role cannot compare finding provenance across rounds"
