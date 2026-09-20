@@ -1524,26 +1524,23 @@ jq -e --arg head "$head" '.headRefOid == $head' <<<"$recheck" >/dev/null ||
 # exists to stop making.
 # A retarget mid-gate invalidates every condition already evaluated against
 # the old base, so stop rather than re-deriving against a moving target.
+# Both modes re-establish the relation; only check mode FAILS on it. Audit
+# that skipped this went on to emit a plain clean `audit` for a PR that drifted
+# behind during the run, which is the silent pass review round 2 rejected.
+recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")" ||
+    indeterminate malformed-data "PR payload carries no base branch name (immediately before the verdict)"
 if [ "$require_draft" = 1 ]; then
-    recheck_base="$(jq -er '.baseRefName | select(type == "string")' <<<"$recheck")" ||
-        indeterminate malformed-data "PR payload carries no base branch name (immediately before the verdict)"
     [ "$recheck_base" = "$behind_base_ref" ] ||
         fail_condition base-retargeted "the PR base changed from ${behind_base_ref} to ${recheck_base} while the gate was reading — re-run against the new base"
-    establish_behind "$recheck" "immediately before the verdict"
+fi
+establish_behind "$recheck" "immediately before the verdict"
+if [ "$require_draft" = 1 ]; then
     [ "$behind_by" -eq 0 ] ||
         fail_condition behind-base "the head fell ${behind_by} commit(s) behind ${behind_base_ref} while the gate was reading — reconcile and re-run (SKILL.md, 'Base reconciliation')"
-    # The compare above is a network call, so make the gate's LAST call a
-    # scalar read again: a push or retarget during it would otherwise leave the
-    # verdict resting on an identity nothing re-checked. This is bounded, not
-    # an infinite regress — the residual window belongs to the caller, which
-    # re-reads headRefOid immediately before `gh pr ready` by contract.
-    final="$(run_gh pr view "$pr" --repo "$repo" --json headRefOid,baseRefName)" ||
-        indeterminate fetch-failed "cannot confirm PR identity after the final comparison"
-    jq -e --arg head "$head" '.headRefOid == $head' <<<"$final" >/dev/null ||
-        fail_condition head-moved "PR head changed while the gate was comparing against the base"
-    jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/null ||
-        fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"
+else
+    [ "$behind_by" -eq 0 ] || audit_behind="$behind_by"
 fi
+
 case "$(jq -r '.mergeStateStatus // ""' <<<"$recheck")" in
 DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was reading" ;;
 BEHIND)
@@ -1554,6 +1551,35 @@ BEHIND)
 UNKNOWN | "")
     indeterminate merge-state-unknown "GitHub is recomputing mergeability — re-poll briefly"
     ;;
+esac
+
+# The compare is a network call, so the gate's LAST read is a scalar one — and
+# it reapplies EVERY scalar gate, not just identity. Checking only head/base
+# would let a close, a promotion, a CHANGES_REQUESTED review or a DIRTY merge
+# state land during the comparison and still emit `ready`, and draft state and
+# mergeability are excluded from the fingerprint so nothing downstream catches
+# them. Bounded, not regressive: no further network call follows, and the
+# residual window is the caller's contractual pre-promotion re-read.
+final="$(run_gh pr view "$pr" --repo "$repo" \
+    --json state,isDraft,headRefOid,reviewDecision,mergeStateStatus,baseRefName)" ||
+    indeterminate fetch-failed "cannot re-read the PR after the final comparison"
+jq -e '.state == "OPEN"' <<<"$final" >/dev/null ||
+    fail_condition pr-not-open "the PR left the OPEN state while the gate was comparing against the base"
+if [ "$require_draft" = 1 ]; then
+    jq -e '.isDraft == true' <<<"$final" >/dev/null ||
+        fail_condition pr-not-draft "the PR was promoted while the gate was comparing against the base"
+else
+    jq -e '.isDraft == false' <<<"$final" >/dev/null ||
+        fail_condition pr-draft "the PR returned to draft while the gate was comparing against the base"
+fi
+jq -e --arg head "$head" '.headRefOid == $head' <<<"$final" >/dev/null ||
+    fail_condition head-moved "PR head changed while the gate was comparing against the base"
+jq -e --arg base "$behind_base_ref" '.baseRefName == $base' <<<"$final" >/dev/null ||
+    fail_condition base-retargeted "the PR base changed while the gate was comparing against it — re-run against the new base"
+[ "$(jq -r '.reviewDecision // ""' <<<"$final")" != "CHANGES_REQUESTED" ] ||
+    fail_condition changes-requested "a reviewer requested changes while the gate was comparing against the base"
+case "$(jq -r '.mergeStateStatus // ""' <<<"$final")" in
+DIRTY) fail_condition merge-state-dirty "merge conflicts appeared while the gate was comparing against the base" ;;
 esac
 
 if [ "$require_draft" = 1 ]; then

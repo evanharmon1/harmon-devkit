@@ -79,7 +79,9 @@ if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
     [ ! -f "$count_file" ] || count="$(cat "$count_file")"
     count=$((count + 1))
     printf '%s\n' "$count" >"$count_file"
-    if [ "$count" -ge 2 ] && [ -f "$GH_FIXTURES/pr-view-second.json" ]; then
+    if [ "$count" -ge 3 ] && [ -f "$GH_FIXTURES/pr-view-third.json" ]; then
+        cat "$GH_FIXTURES/pr-view-third.json"
+    elif [ "$count" -ge 2 ] && [ -f "$GH_FIXTURES/pr-view-second.json" ]; then
         cat "$GH_FIXTURES/pr-view-second.json"
     else
         cat "$GH_FIXTURES/pr-view.json"
@@ -448,7 +450,7 @@ write_defaults() {
         '[{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"T1","isResolved":false}]}}}}}]' \
         >"${fixtures}/threads.pages.json"
     rm -f "${fixtures}/fail-endpoint"
-    rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json"
+    rm -f "${fixtures}/pr-view-count" "${fixtures}/pr-view-second.json" "${fixtures}/pr-view-third.json"
     rm -f "${fixtures}"/count-* "${fixtures}"/second-*
     rm -f "${fixtures}/ro-exit"
     : >"$log"
@@ -735,18 +737,61 @@ run_gate_audit
 echo "==> a head that moves DURING the final compare fails as head-moved"
 # The compare is a network call after the pre-verdict scalar read, so without
 # re-binding afterwards the verdict would rest on an identity nothing checked.
+# Only the THIRD read moves. Seeding the counter instead made the FIRST read
+# return the moved SHA, so the gate exited early on `head-mismatch` and the
+# case passed with the new guard deleted — a vacuous assertion (review r3).
 write_defaults
-printf '%s\n' '3' >"${fixtures}/pr-view-count"
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
       reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
-      baseRefName:"main"}' \
-    >"${fixtures}/pr-view-second.json"
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view-third.json"
 run_gate
-[ "$gate_rc" -ne 0 ] ||
-    fail "a head moving during the final compare was certified: $gate_out"
+assert_gate 1 fail head-moved
+
+echo "==> a promotion DURING the final compare fails, not just a head move"
+# The post-compare read reapplies every scalar gate, not only identity:
+# checking head/base alone would let a close, a promotion, a CHANGES_REQUESTED
+# review or a DIRTY merge state land during the comparison and still say ready.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 1 fail pr-not-draft
+
+echo "==> a CHANGES_REQUESTED review DURING the final compare fails"
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:true,headRefOid:$head,
+      reviewDecision:"CHANGES_REQUESTED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view-third.json"
+run_gate
+assert_gate 1 fail changes-requested
+
+echo "==> audit re-establishes drift that appears DURING the run"
+# Level at the start, behind by the verdict: audit must still say audit-behind
+# rather than emitting a plain clean verdict the caller reports as ready.
+write_defaults
+jq -cn --arg head "$head_sha" \
+    '{state:"OPEN",isDraft:false,headRefOid:$head,
+      reviewDecision:"REVIEW_REQUIRED",mergeStateStatus:"BLOCKED",
+      headRefName:"feature-branch",baseRefName:"main"}' \
+    >"${fixtures}/pr-view.json"
+jq -cn '{behind_by:0,ahead_by:1,status:"ahead"}' >"${fixtures}/compare.json"
+jq -cn '{behind_by:5,ahead_by:1,status:"diverged"}' >"${fixtures}/second-compare.json"
+run_gate_audit
+[ "$gate_rc" -eq 0 ] ||
+    fail "audit failed on mid-run drift (rc $gate_rc): $gate_out"
+grep -Fq '"condition":"audit-behind"' <<<"$gate_out" ||
+    fail "audit missed drift that appeared during the run: $gate_out"
 
 echo "==> the behind preflight refuses a head that moved while comparing"
+# The preflight makes exactly two PR reads: the first captures the identity,
+# the second re-binds it after comparing. Only the second moves here.
 write_defaults
 jq -cn --arg head "$moved_sha" \
     '{state:"OPEN",isDraft:true,headRefOid:$head,
@@ -760,6 +805,8 @@ preflight_rc=$?
 set -e
 [ "$preflight_rc" -eq 2 ] ||
     fail "behind preflight certified a moved head (rc $preflight_rc): $preflight_out"
+grep -Fq 'behind-base-unknown' <<<"$preflight_out" ||
+    fail "behind preflight did not name the identity drift: $preflight_out"
 
 echo "==> the gate emits no stray output before its own argument parsing"
 # A header-comment edit once dropped its leading `#`, leaving an executable
