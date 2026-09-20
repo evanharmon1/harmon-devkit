@@ -855,11 +855,13 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     later bot review on the same head returns the cycle to `findings` even
     after a clean one, so the last read before accepting a result is the one
     that counts.
-    A clean `0` may also be certified by the **Completed row** in the
-    connector's rolling "Codex Review Summary" comment, for the exact head,
-    posted or edited after the trigger, with nothing badged anywhere
-    (harmon-devkit#718; `AGENTS.md` § Second-Model Review carries the proposed
-    contract sentence). When `finder_cycles` is
+    A badged comment from the finder carrying no `Reviewed commit` line of
+    its own does **not** vanish: every undisposed one blocks as `findings`
+    (exit 10, oldest cited) until settled by comment id, since the cycle is
+    pinned to its reserved head and nothing is parsed out of the body. The
+    summary comment's Completed row is **not** a clean form — that was
+    proposed, implemented, and split back out in harmon-devkit#1050, and is
+    carried in harmon-devkit#1117. When `finder_cycles` is
     present, every entry must also be terminal (exit_code 0 or 10) for the
     pass to be terminal-clean — a non-codex finder with exit_code 11 or 13
     has the same effect as the codex_cycle equivalent below.

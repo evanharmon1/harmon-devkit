@@ -464,10 +464,13 @@ attempt while the bot's 👀 is still on that attempt's trigger, up to a hard
 ceiling of 30 minutes from the trigger (harmon-devkit#655), so a `11` that
 persists past your 15-minute poll is a review still running rather than an
 absent one — report it as `11` and let the orchestrator re-dispatch; do not
-re-trigger inside this dispatch. And the checker treats the Completed row in
-the connector's rolling "Codex Review Summary" comment as clean evidence for
-the exact head (harmon-devkit#718), so some heads go terminal-clean with no
-👍, no review and no verdict comment at all.
+re-trigger inside this dispatch. And a badged comment from the finder that
+carries no `Reviewed commit` line of its own does not disappear: it comes back
+as `findings` (exit 10) and is cleared by the orchestrator settling it by
+comment id, never by you. Reading a clean verdict out of the connector's
+rolling "Codex Review Summary" table was proposed and split back out
+(harmon-devkit#718, carried in harmon-devkit#1117) — do not expect a head to
+go terminal-clean from that row.
 
 Only once that loop exits — either a terminal `check_exit` broke it, or the
 window ran out still on 11 — do you stop driving the cycle for this pass.

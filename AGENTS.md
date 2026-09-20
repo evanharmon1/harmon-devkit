@@ -533,11 +533,17 @@ summary comment, for the exact current head, posted or edited by actor
 `199175422` after the trigger, with no findings on any surface, is terminal-clean.*
 Every qualifier is load-bearing — a Running row is pending, a Completed row
 for another head is stale, a row edited before the trigger belongs to an
-earlier cycle, and a badge anywhere in that comment makes it findings. The
-vendored checker (harmon-devkit#1050, child #718) implements exactly that, and
-its regression suite pins the row body verbatim from #710; until the maintainer
-folds the sentence into the three-form contract above, treat this paragraph as
-the proposal and the contract as authoritative.
+earlier cycle, and a badge anywhere in that comment makes it findings.
+
+**This remains a proposal, and it is NOT implemented.** An implementation was
+attempted in harmon-devkit#1050 and **split back out** in that change's
+challenge round 3: reading a verdict out of the table meant deriving a head by
+parsing markdown, and three consecutive review rounds each reproduced a
+false-clean or a stuck-head path through it. The work is carried in
+harmon-devkit#1117 and must land under head-binding invariants rather than a
+parser. Until it does, the three-form contract above is the whole of it — and
+a badged comment the checker cannot bind to a head blocks until it is settled
+by comment id, rather than being read out of a table.
 
 Two further reply shapes the same change taught the checker, both of which
 alter what "no terminal evidence" means rather than adding a clean form:

@@ -670,13 +670,14 @@ every older code keeps its exact meaning, so a caller pinned to the earlier
 contract still reads every code it knew.
 
 **Terminal-clean forms.** `AGENTS.md` § "Who decides, and what is delegated"
-names three, and § "Second-Model Review" carries the proposed fourth: a
-**Completed row** in the connector's rolling "Codex Review Summary" comment,
-for the exact head, posted or edited by the pinned actor after the trigger,
-with nothing badged anywhere in it (harmon-devkit#718 — some heads emit no 👍,
-no review and no verdict comment at all, and that row is the only clean signal
-there is). A `Running` row is pending; a Completed row naming another commit
-is stale.
+names three, and there are three: a clean review or top-level comment whose
+`Reviewed commit:` names the head, a fresh 👍 on the exact trigger, or
+adjudicated findings naming the head. § "Second-Model Review" carries a
+**proposed** fourth — the Completed row in the connector's rolling "Codex
+Review Summary" comment (harmon-devkit#718) — which is **not implemented**: an
+implementation was split back out for deriving a head by parsing markdown, and
+is carried in harmon-devkit#1117. Do not expect a head to go clean from that
+row.
 
 **Two shapes that are neither clean nor findings.** A **self-fix summary** —
 an unbadged report from the bot describing a fix *it* made, in a thread or as
@@ -686,9 +687,12 @@ work: every non-blank line a heading, a bold-only label, or a list item, plus a
 recognized self-work marker. Anything else is `findings`, which is safe
 precisely because `settle`'s domain is *what `check` blocks on* rather than
 *what carries a badge* — so a body misread as a finding costs one recorded
-disposition instead of stranding the head. And a badged summary comment whose
-table names no commit the parser can read is **indeterminate**: parsing may
-fail, but a badge is never silently dropped. And while the bot's 👀 is still on the current attempt's trigger,
+disposition instead of stranding the head. And a badged comment carrying no
+`Reviewed commit` line of its own **blocks** (`findings`, exit 10) until it is
+settled by comment id — every undisposed one blocks, oldest cited first, and
+"newer than the trigger" counts an edit as well as a post, so a badge added by
+a later edit cannot slip past. Nothing is parsed out of the body: the cycle is
+pinned to its reserved head. And while the bot's 👀 is still on the current attempt's trigger,
 the attempt window **extends** to a hard ceiling of 30 minutes from the
 trigger rather than returning `12`, because the window exists to bound a
 reviewer that is not working (harmon-devkit#655). A 👀 that vanished with no
@@ -702,9 +706,10 @@ symmetric:
   ordinary reply path with everything else.
 - A badged finding stated **outside** an inline thread has no reply linkage,
   and `settle` currently refuses a badge it does not recognize as `p[0-2]`.
-  It does now accept the two head bindings `check` accepts — a `Reviewed
-  commit` sentence or the commit cell of a summary table — so a badged summary
-  comment can be declined or filed rather than reporting findings forever.
+  Its domain is now *what `check` blocks on* rather than *what carries a
+  badge*, and a target with no `Reviewed commit` line binds to the cycle's own
+  reserved head — so a badged comment the checker cannot bind can be declined
+  or filed rather than reporting findings forever.
   So an unfixed, non-inline cloud P3 has no way to be recorded as settled
   *by that checker*: fix it and push (which starts a fresh-head cycle and
   resolves it), or if it genuinely needs no change, report the blocker and

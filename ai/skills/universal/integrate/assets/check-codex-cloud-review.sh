@@ -2719,27 +2719,72 @@ check)
     # commit also blocks here. That is one recorded disposition, which is the
     # cheap side of this trade — the expensive side is the false clean this
     # whole family of bugs produced.
-    unbound_badged=$(jq -r \
+    # Challenge round 4, findings `challenge-r4-codex-adversarial-1` and `-2`
+    # (both confirmed P1). Two independent ways this scan dropped a live badge:
+    #
+    #   -1  It ended `sort_by(...) | last`, so only the NEWEST unbound badge
+    #       was ever considered and the disposed check tested only that one.
+    #       Settling the newest made every OLDER undisposed badge invisible —
+    #       reproduced as exit 0 with a live unsettled P0. Every undisposed
+    #       badge blocks now, and the OLDEST is cited so repeated settling
+    #       walks the list instead of clearing it in one go.
+    #
+    #   -2  The rejection form narrowed the stamp to `.created_at`, while the
+    #       guard it replaced used `(.updated_at // .created_at)`. A badge
+    #       ADDED BY AN EDIT after the trigger then vanished. One stamp policy
+    #       had been applied to three sites whose safety directions are
+    #       opposite: the CLEAN path wants the conservative `created_at` (that
+    #       is round 3's own `-4`), and this BLOCKING path wants the generous
+    #       one. Generous here, conservative there — they are different
+    #       questions, not one setting.
+    #
+    # Disposed ids are filtered inside the query so "is anything still
+    # unanswered" is one decision rather than a check against a single id.
+    unbound_badged_ids=$(jq -c \
         --argjson id "$actor_id" \
         --arg requested "$state_requested" \
+        --argjson disposed "$disposed_comments" \
         "$codex_verdict_defs"'
           [.[] | select(.user.id? == $id) |
-            select(((.created_at // "") > $requested)) |
+            select(((((.updated_at // .created_at) // "")) > $requested)) |
             select(has_severity_marker) |
             select(((.body // "") |
               test("Reviewed commit[^0-9a-fA-F]+[0-9a-fA-F]{7,40}"; "i")) | not) |
-            select(.id? | is_positive_integer)
-          ] | sort_by(.created_at, .id) | last // null |
-          if . == null then "" else (.id | tostring) end
+            select(.id? | is_positive_integer) |
+            # `. as $comment` first: jq evaluates `index(f)` with `.` bound to
+            # the ARRAY being searched, so a bare `index(.id)` resolves `.id`
+            # against `$disposed` and dies "Cannot index array with string id"
+            # the moment anything IS disposed. Found by the round-4 fixture
+            # `challenge-r4-codex-adversarial-1` at its settle step.
+            . as $comment |
+            select(($disposed | index($comment.id)) == null) |
+            {id: $comment.id,
+             time: (((.updated_at // .created_at) // ""))}
+          ] | sort_by(.time, .id) | map(.id)
         ' "$workdir/comments.json") || {
         emit indeterminate "conversation comments could not be scanned for unbound badged findings"
         exit 2
     }
-    if [ -n "$unbound_badged" ] &&
-        ! printf '%s' "$disposed_comments" |
-        jq -e --argjson id "$unbound_badged" 'index($id) != null' >/dev/null; then
-        emit findings "a badged finding from the finder names no reviewed commit, so it cannot be bound to a head; settle it by comment id" \
-            comment "$unbound_badged"
+    unbound_badged_count=$(printf '%s' "$unbound_badged_ids" |
+        jq -er 'length') || {
+        emit indeterminate "unbound badged findings could not be counted"
+        exit 2
+    }
+    if [ "$unbound_badged_count" -gt 0 ]; then
+        unbound_badged_oldest=$(printf '%s' "$unbound_badged_ids" |
+            jq -er 'first | tostring')
+        unbound_badged_extra=$(jq -cn \
+            --argjson ids "$unbound_badged_ids" '{unbound_badged: $ids}')
+        # Challenge round 4, finding `challenge-r4-codex-adversarial-8` (P3):
+        # the earlier wording said the comment "cannot be bound to a head"
+        # while `accepted.reviewed_commit` sat beside it carrying this cycle's
+        # head. Both are true of different things and the phrasing hid that:
+        # the COMMENT names no commit, and the CYCLE is pinned to this head by
+        # its reservation — which is exactly why settling by comment id is
+        # sound. The schema requires `accepted`, so the field stays; the
+        # sentence now says which one is which.
+        emit findings "$unbound_badged_count badged finding(s) from the finder name no reviewed commit of their own; this cycle is pinned to its reserved head, so settle each by comment id" \
+            comment "$unbound_badged_oldest" "$unbound_badged_extra"
         exit 10
     fi
 

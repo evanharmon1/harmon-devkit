@@ -4524,5 +4524,113 @@ assert_accepted comment 955
 printf '%s' "$check_out" | jq -e '.accepted.reviewed_commit != null' >/dev/null ||
     fail "exit 10 must always carry complete accepted evidence: $check_out"
 
+# --------------------------------------------------------------------------
+# harmon-devkit#1050 challenge round 4/5 — the deletion round's two P1s, both
+# in the unbound-badged blocking scan that replaced the split-out parser.
+# --------------------------------------------------------------------------
+trigger_id=123
+request_time='2026-07-31T08:00:00Z'
+
+echo "==> challenge-r4-codex-adversarial-1: settling the NEWEST unbound badge does not clear an older one"
+# The scan used to keep only `last`, so the disposed check tested a single id:
+# settle the newest and every older undisposed badge became invisible. Both
+# must block, and the OLDEST is cited so repeated settling walks the list.
+new_cycle
+# A genuine clean verdict rides along so the cycle has terminal evidence of
+# its own once the badges are answered. Settling an unbound badge REMOVES a
+# block; it is not itself positive evidence (see the lane report's round-4
+# decision request — that gap is with the orchestrator, not assumed here).
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:6001,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:10Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** the rollback path drops the lock."
+      },
+      {
+        id:6002,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:20Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P1** a second, newer unbound finding."
+      },
+      {
+        id:6009,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:40Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -c '.[0][0]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-6001.json"
+jq -c '.[0][1]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-6002.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+# The OLDEST is cited, not the newest.
+assert_accepted comment 6001
+printf '%s' "$check_out" | jq -e '[.unbound_badged[]] == [6001, 6002]' >/dev/null ||
+    fail "every undisposed unbound badge must be enumerated, oldest first: $check_out"
+# Settle the NEWEST: the older one must still block.
+run_settle --surface comment --id 6002 --disposition declined --note "adjudicated: not a defect"
+[ "$settle_rc" -eq 0 ] || fail "settling the newer badge should succeed: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+assert_accepted comment 6001
+[ "$check_rc" -ne 0 ] ||
+    fail "an older undisposed badge must still block after the newest is settled: $check_out"
+# Settle the older one too: now the cycle can proceed.
+run_settle --surface comment --id 6001 --disposition declined --note "adjudicated: released by the trap"
+[ "$settle_rc" -eq 0 ] || fail "settling the older badge should succeed: $settle_out"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted comment 6009
+
+echo "==> challenge-r4-codex-adversarial-2: a badge EDITED IN after the trigger still blocks"
+# The rejection form narrowed the stamp to `created_at`, so a comment created
+# before the trigger and edited afterwards to add a badge vanished. The
+# BLOCKING scan takes the generous stamp; the clean path keeps `created_at`.
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    '[[
+      {
+        id:6003,user:{id:$id,login:$login},
+        created_at:"2026-07-31T07:55:00Z",
+        updated_at:"2026-07-31T08:00:30Z",
+        issue_url:"https://api.github.com/repos/example/repo/issues/493",
+        body:"**P0** a finding added by a later edit."
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+jq -c '.[0][0]' "${fixtures}/comments.pages.json" >"${fixtures}/comment-6003.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 10 findings
+assert_accepted comment 6003
+
+echo "==> challenge-r4-codex-adversarial-2: a badge whose comment is untouched since before the trigger does not block"
+# The inverse, so the fix is a stamp choice and not "always block".
+new_cycle
+jq -cn \
+    --argjson id "$actor_id" \
+    --arg login "$actor_login" \
+    --arg prefix "${head_sha:0:10}" \
+    '[[
+      {
+        id:6004,user:{id:$id,login:$login},
+        created_at:"2026-07-31T07:55:00Z",
+        updated_at:"2026-07-31T07:55:00Z",
+        body:"**P1** a finding from before this trigger."
+      },
+      {
+        id:6005,user:{id:$id,login:$login},
+        created_at:"2026-07-31T08:00:02Z",
+        body:("Codex Review: Didn\u0027t find any major issues. Nice work!\n\n**Reviewed commit:** `" + $prefix + "`")
+      }
+    ]]' >"${fixtures}/comments.pages.json"
+run_check '2026-07-31T08:01:00Z'
+assert_status 0 clean
+assert_accepted comment 6005
+
 # Last line on purpose: every case above must have run for this to print.
 echo "integrator Codex cloud-review classifier: PASS"
