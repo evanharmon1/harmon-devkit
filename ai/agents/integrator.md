@@ -489,9 +489,15 @@ malformed `check_out` your brief did not anticipate — stop and report it
 rather than fabricating a value.
 
 A `10` raised by inline threads also carries `unanswered[]` — one
-`{comment_id, review_id, path}` entry per unadjudicated bot thread on the
-head, **across every review that posted one** (harmon-devkit#737). Feed every
-entry into `unanswered_thread_roots` and `findings[]`; the single
+`{thread_root, comment_id, review_id, path}` entry per unadjudicated bot
+thread on the head, **across every review that posted one**
+(harmon-devkit#737). Feed every entry's **`thread_root`** into
+`unanswered_thread_roots`, and the entry into `findings[]`. The two ids are
+not interchangeable: GitHub sets `in_reply_to_id` to the thread ROOT on every
+reply, so `comment_id` names the bot comment that raised the finding while
+`thread_root` names the thread a reply must land in — and
+`unanswered_thread_roots` is defined as thread ids
+(harmon-devkit#1050, `challenge-r5-codex-adversarial-6`). The single
 `accepted.id` names one review, and the bot can post two on one head minutes
 apart, so trusting it alone is how the second review's findings reach the
 readiness gate unanswered.

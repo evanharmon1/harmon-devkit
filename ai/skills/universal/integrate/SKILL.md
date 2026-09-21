@@ -890,8 +890,13 @@ watch. Leave Project fields unchanged; §7 records why they are manual.
     a clean `0` with no other open finding and an empty
     `unanswered_thread_roots` proceeds toward §6.
     A `10` raised by inline threads carries `unanswered[]` on the checker's
-    own output — one `{comment_id, review_id, path}` per unadjudicated bot
-    thread on the head, **from every review that posted one**. Work that list,
+    own output — one `{thread_root, comment_id, review_id, path}` per
+    unadjudicated bot thread on the head, **from every review that posted
+    one**. It is each entry's `thread_root` that feeds
+    `unanswered_thread_roots`, which the schema defines as thread ids:
+    GitHub sets `in_reply_to_id` to the thread ROOT on every reply, so
+    `comment_id` names the comment that raised the finding and only
+    `thread_root` names the thread a reply lands in. Work that list,
     not the single `accepted.id`: the bot can post two reviews on one head
     minutes apart, and one accepted review id cannot name findings that came
     from both (harmon-devkit#737, observed on harmon-devkit#720, where the
