@@ -401,6 +401,21 @@ function resolveRounds(doc, profile, levelName) {
   if (levelName === "forensic" && rounds.min_rounds < 2) {
     throw new PolicyError(`[rounds.${policyName}]: forensic rigor requires min_rounds >= 2 (got ${rounds.min_rounds})`);
   }
+  // harmon-init#1326. `integration` bounds cycles that review something new. A
+  // cycle whose head differs from the last reviewed head ONLY by a base merge
+  // that changed nothing under review re-reads identical code by construction,
+  // so charging it measures the base branch's traffic rather than the change's
+  // difficulty. Those cycles are EXEMPT and counted against this equal,
+  // separate ceiling instead.
+  //
+  // Derived rather than authored: there is no rigor level at which re-reviewing
+  // identical code should cost a charged cycle, so a knob could only ever hold
+  // the wrong value — and one set to 0 would silently restore the bug. Equal to
+  // `integration` rather than unbounded because exempt is not free: every cycle
+  // still spends a polling window and a review. It tracks `integration`
+  // including at 0, where cloud review is off and there is no cycle of either
+  // kind to run.
+  rounds.integration_exempt = rounds.integration;
   return rounds;
 }
 
@@ -1185,6 +1200,11 @@ function decodeLegacyRounds(doc, levelName) {
     challenge: level.challenge,
     review: level.review,
     integration: level.shepherd,
+    // A historical policy has no base-merge exemption, so a decode may not
+    // invent one: these shapes spend integration and remediation from ONE
+    // shared total, and an exempt ceiling on top would let a branch buy cycles
+    // the merge-base policy never permitted (harmon-init#1326).
+    integration_exempt: 0,
     remediation: BUILTIN_REMEDIATION_FALLBACK(level.shepherd),
     min_rounds: level.min_rounds,
     wall_clock_min: BUILTIN_WALL_CLOCK_MIN_FALLBACK,
@@ -1223,6 +1243,11 @@ function decodeV1Rounds(doc, levelName) {
     challenge: table.challenge,
     review: table.review,
     integration: table.shepherd,
+    // A historical policy has no base-merge exemption, so a decode may not
+    // invent one: these shapes spend integration and remediation from ONE
+    // shared total, and an exempt ceiling on top would let a branch buy cycles
+    // the merge-base policy never permitted (harmon-init#1326).
+    integration_exempt: 0,
     remediation: BUILTIN_REMEDIATION_FALLBACK(table.shepherd),
     min_rounds: table.min_rounds,
     wall_clock_min: BUILTIN_WALL_CLOCK_MIN_FALLBACK,
@@ -1726,7 +1751,8 @@ function cliResolve(args) {
     console.log(`rigor: ${resolved.rigor.level} (source: ${resolved.source})`);
     console.log(
       `rounds[${resolved.rounds.policy}]: challenge<=${resolved.rounds.challenge} review<=${resolved.rounds.review} ` +
-        `integration<=${resolved.rounds.integration} remediation<=${resolved.rounds.remediation} ` +
+        `integration<=${resolved.rounds.integration} (+${resolved.rounds.integration_exempt} exempt) ` +
+        `remediation<=${resolved.rounds.remediation} ` +
         `min_rounds=${resolved.rounds.min_rounds} wall_clock_min=${resolved.rounds.wall_clock_min}`,
     );
     if (resolved.breadth) {

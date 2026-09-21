@@ -200,11 +200,15 @@ difficulty. Such a cycle is **exempt**: it runs, and it spends the separate
 second ceiling is why: a busy base branch could otherwise spend a whole run
 re-reviewing code nobody changed.
 
-Do not classify a cycle by eye. Pass `--previous-head <last reviewed SHA>` to
-`reserve`, which decides it from evidence — the previous head must be an
+Do not classify a cycle by eye. `reserve` decides it from evidence — the previous head must be an
 ancestor of this one, and the files the new commits changed must not intersect
 the files the PR has under review — and keeps the two running totals in state
-as `charged_cycles` / `exempt_cycles`. A conflict resolution, or a fix slipped
+as `charged_cycles` / `exempt_cycles`. It reads the previously reviewed head
+from that same state rather than from anything you pass, so there is nothing
+to supply and no way to misreport it; `--previous-head` exists only to have
+the reservation refuse if your idea of the last reviewed head disagrees with
+the record. Pass `--run-id` so the totals belong to this run and a later run
+on the same PR does not inherit its spend. A conflict resolution, or a fix slipped
 into the merge push, touches a file under review and charges normally.
 Anything the check cannot establish charges, because an exemption is a spend
 the reviewer never sanctioned. Report both counts on the integrator result as

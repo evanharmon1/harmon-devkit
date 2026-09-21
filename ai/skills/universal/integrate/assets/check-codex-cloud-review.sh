@@ -34,7 +34,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   check-codex-cloud-review.sh reserve --state FILE --repo OWNER/REPO --pr N --head SHA --attempt 1|2 [--finder SLUG]
-                                     [--previous-head SHA]
+                                     [--previous-head SHA] [--run-id ID]
   check-codex-cloud-review.sh attach --state FILE --trigger-id N
   check-codex-cloud-review.sh attach --state FILE --requested-at ISO8601
   check-codex-cloud-review.sh check --state FILE [--actor-id N] [--actor-login LOGIN] [--timeout-min N] [--now ISO8601]
@@ -45,14 +45,22 @@ Usage:
 When --finder is given on reserve, actor identity and verdict classification
 are driven by the finder's profile in the trusted registry (C1-C3).
 
---previous-head names the head the LAST cycle reviewed (harmon-init#1326).
-Given it, `reserve` classifies this cycle as charged or exempt and keeps the
-two running totals in state as `charged_cycles` / `exempt_cycles`. A cycle is
-exempt only when the previous head is an ancestor of this one AND the new
-commits changed no file the PR has under review — a base merge that reviews
-identical code. Everything else, including anything that cannot be
-established, is charged. Omit the flag and the cycle is charged, which is the
-behavior of every caller that predates the ceiling.
+`reserve` classifies each new cycle as charged or exempt against the two
+ceilings (harmon-init#1326) and keeps the running totals in state as
+`charged_cycles` / `exempt_cycles`. A cycle is exempt only when the previously
+reviewed head is an ancestor of this one AND the new commits changed no file
+the PR has under review — a base merge that re-reads identical code.
+Everything else, including anything that cannot be established, is charged.
+
+The previously reviewed head is taken from PERSISTED STATE, never from a
+caller: a caller free to name any SHA could otherwise skip past a fix commit
+and manufacture an exemption. `--previous-head` is therefore optional and
+purely confirmatory — supply it to have the reservation refuse rather than
+proceed if your idea of the last reviewed head disagrees with the record.
+
+--run-id scopes the totals to one run. The state file outlives the run that
+wrote it, so a second run against the same PR would otherwise inherit the
+first run's spend; naming a different run starts the totals again.
 
 `check` exits 0 clean, 10 findings, 11 pending, 12 retry, 13 escalate,
 14 PR no longer open, 2 indeterminate. Exit 14 means GitHub answered and
@@ -119,6 +127,7 @@ reap_budget_sec=60
 reap_deadline_epoch=
 finder_slug=
 previous_head=
+run_id=
 requested_at_arg=
 
 while [ "$#" -gt 0 ]; do
@@ -137,6 +146,7 @@ while [ "$#" -gt 0 ]; do
         --actor-login) actor_login=$2 ;;
         --finder) finder_slug=$2 ;;
         --previous-head) previous_head=$2 ;;
+        --run-id) run_id=$2 ;;
         --requested-at) requested_at_arg=$2 ;;
         --timeout-min)
             timeout_min=$2
@@ -807,7 +817,13 @@ classify_cycle_charge() {
     }
 
     overlap=$(jq -r -n --argjson moved "$moved_payload" --argjson prev "$prev_patch" --argjson head "$head_patch" '
-          def names: (.files // []) | map(.filename);
+          # Challenge round 2, P1 (confirmed): a rename is reported under the
+          # NEW name plus `previous_filename`. Matching only `filename` lets a
+          # merge that renames a reviewed file miss on both sides at once —
+          # the moved entry names the new path, the reviewed patch the old —
+          # and a file under review changes while the intersection stays
+          # empty. Both names count, on both sides.
+          def names: (.files // []) | map(.filename, .previous_filename) | map(select(. != null));
           ($moved | names | unique) as $changed
           | (($prev | names) + ($head | names) | unique) as $under_review
           | ($changed - ($changed - $under_review)) | join(", ")
@@ -896,8 +912,20 @@ reserve)
     carried_charged=0
     carried_exempt=0
     if [ -f "$state_file" ]; then
-        carried_charged=$(jq -r '.charged_cycles // 0' "$state_file")
-        carried_exempt=$(jq -r '.exempt_cycles // 0' "$state_file")
+        # Challenge round 2, P1 (confirmed): these totals bound a RUN, not a
+        # PR, and the state file outlives the run that wrote it. A second run
+        # against the same PR would otherwise inherit the first run's spend and
+        # start already over budget — or, worse, have its own honest counters
+        # read as a mismatch by the gate. When the caller names a run and it is
+        # not the run the totals were accumulated for, the totals start again.
+        state_run_id=$(jq -r '.run_id // empty' "$state_file")
+        if [ -n "$run_id" ] && [ -n "$state_run_id" ] && [ "$run_id" != "$state_run_id" ]; then
+            carried_charged=0
+            carried_exempt=0
+        else
+            carried_charged=$(jq -r '.charged_cycles // 0' "$state_file")
+            carried_exempt=$(jq -r '.exempt_cycles // 0' "$state_file")
+        fi
     fi
     charge_class=charged
     charge_reason="no persisted prior reviewed head; charging"
@@ -1045,6 +1073,7 @@ reserve)
         --arg charge_reason "$charge_reason" \
         --argjson charged_cycles "$carried_charged" \
         --argjson exempt_cycles "$carried_exempt" \
+        --arg run_id "$run_id" \
         '{
           version:2,repo:$repo,pr:$pr,head:$head,attempt:$attempt,
           phase:"reserved",reserved_at:$reserved_at,
@@ -1057,7 +1086,8 @@ reserve)
           charge:$charge,
           charge_reason:$charge_reason,
           charged_cycles:$charged_cycles,
-          exempt_cycles:$exempt_cycles
+          exempt_cycles:$exempt_cycles,
+          run_id:(if $run_id == "" then null else $run_id end)
         }')
     write_state "$state_file" "$payload"
     release_state_lock
